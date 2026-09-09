@@ -164,6 +164,20 @@ match a stock build of the same tool. See
 [docs/changelog.md](docs/changelog.md) and
 [docs/external.md](docs/external.md) for what changed.
 
+## Acknowledgments
+
+This work was supported in part by the Japan Science and Technology Agency
+(JST) under the Research and Development Program for Next-Generation Edge AI
+Semiconductors, Grant Number JPMJES2512; by UT-Battelle, LLC, under Contract
+No. DE-AC05-00OR22725 with the U.S. Department of Energy (DOE); and by the
+DOE National Nuclear Security Administration through Los Alamos National
+Laboratory under Contract No. 89233218CNA000001. This material is based upon
+work supported by the U.S. Department of Energy, Office of Science, Office of
+Advanced Scientific Computing Research, through the "Competitive Research
+Portfolio" (DE-FOA-0003264), under Award Number DE-SC0025645 and FWP ERKJ452.
+This work has been assigned LA-UR-26-25042 and is approved for public
+release; distribution is unlimited.
+
 ## License
 
 GPL-2.0. See [LICENSE](LICENSE).
