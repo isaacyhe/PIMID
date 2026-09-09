@@ -171,7 +171,7 @@ This work was supported in part by the Japan Science and Technology Agency
 Semiconductors, Grant Number JPMJES2512; by UT-Battelle, LLC, under Contract
 No. DE-AC05-00OR22725 with the U.S. Department of Energy (DOE); and by the
 DOE National Nuclear Security Administration through Los Alamos National
-Laboratory under Contract No. 89233218CNA000001. This material is based upon
+Laboratory under Contract No. 89233218CNA000001. This software is based upon
 work supported by the U.S. Department of Energy, Office of Science, Office of
 Advanced Scientific Computing Research, through the "Competitive Research
 Portfolio" (DE-FOA-0003264), under Award Number DE-SC0025645 and FWP ERKJ452.
