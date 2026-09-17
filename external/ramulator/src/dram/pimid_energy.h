@@ -134,7 +134,53 @@ struct IDDSpec {
  * misattribute the numbers. The substantive half of the same divergence, the
  * timing layer and the energy layer describing different parts, is carried
  * numerically by the trfc_ns/trefi_ns columns and is not a comment question. */
-inline IDDSpec iddFor(const std::string& tech) {
+/* 1.11.66: TEMPERATURE-DEPENDENT REFRESH. Every DRAM family halves tREFI
+ * (doubles refresh rate) above 85 C; HBM goes further. The model had been
+ * temperature-FLAT: config.temperature_k reached McPAT, CACTI and NVSim but
+ * never the DRAM refresh duty, so a 105 C run priced the same refresh power
+ * as a 45 C one. The multiplier below is what the standards and vendor
+ * controller guides specify, applied to tREFI (duty = tRFC / tREFI).
+ *
+ * SOURCES (all in misc/):
+ *  DDR3/DDR4/DDR5, LPDDR5, GDDR6 -- one step: 2x refresh above 85 C.
+ *    JESD79-5D Table 70 printed p.173: "tREFI1, 0 C <= TCASE <= 85 C, 3.9 us"
+ *      and the 85 < TCASE <= 95 C row at 1.95 us (tREFI halves).
+ *    JESD79-3E / Micron MT41K MT40A: "2x refresh rate" required above 85 C
+ *      (the extended-temperature range, ASR/SRT).
+ *    JESD209-5C Table 240 NOTE 2 p.287: 1x refresh rate at or below 85 C;
+ *      the MR4 temperature-derating ladder above it (0.5x tREFI at
+ *      85-105 C in the standard's MR4 table).
+ *    JESD250D GDDR6: 2x refresh above 85 C via the temperature sensor
+ *      readout (MR7 TS / refresh rate), same shape.
+ *  HBM2/HBM3 -- a LADDER, not one step, keyed by TEMP[2:0]:
+ *    Intel UG-20031 (Stratix 10 MX HBM2 IP) Table 30 p.66 and Intel Agilex
+ *      7 M-series HBM2E IP UG (doc 773264) Table 5 p.17, identical:
+ *      TEMP 000 -> 4 x tREFI (refresh 4x slower), 001 -> 2 x, 011 -> 1 x
+ *      (nominal), 010 -> 0.5 x, 110 -> 0.25 x tREFI.
+ *    AMD DS923 v1.20 p.5 note 16: "While operating the HBM above 95 C, the
+ *      refresh rate must be at least 4x the refresh rate at 95 C."
+ *    AMD PG276 v1.0 p.23: tREFI 3.9 us at 0-85 C, 1.95 us at 85-95 C.
+ *    Consistent reading of the three: nominal to 85 C; 0.5 x tREFI at
+ *      85-95 C; 0.25 x at 95-105 C; the 4x-slower and 2x-slower rungs are
+ *      the cold end (below ~45 C / ~65 C, vendor-specific) which this model
+ *      does NOT credit -- taking a refresh-power DISCOUNT for cold operation
+ *      on a vendor-specific threshold would be inventing a benefit; the
+ *      penalties above 85 C are what every source agrees on.
+ *  Above 105 C: no source specifies a rate (HBM CATTRIP at 120 C, PG313
+ *      p.98; DDR extended range ends at 95 C). The last rung is held and the
+ *      consumer says so.
+ *
+ * Returns the factor to MULTIPLY tREFI by (< 1 = more frequent refresh). */
+inline double refreshTempFactor(const std::string& tech, int temperature_k) {
+    const double t_c = temperature_k - 273.15;
+    const bool hbm = (tech.substr(0, 3) == "HBM");
+    if (t_c <= 85.0) return 1.0;                 // nominal, every family
+    if (!hbm)        return 0.5;                 // DDR/LPDDR/GDDR: one step
+    if (t_c <= 95.0) return 0.5;                 // HBM 85-95 C  (PG276, UG-20031 010)
+    return 0.25;                                 // HBM > 95 C   (DS923 n.16, UG-20031 110)
+}
+
+inline IDDSpec iddTableFor(const std::string& tech) {
     /* idd2p (last column). 1.11.56 (audit D006): this column is APPROXIMATE
      * and is the one column in the table that is not a datasheet read. The
      * DDR/LPDDR/GDDR entries are rounded IDD2P fast-exit figures for the part
@@ -245,6 +291,22 @@ inline IDDSpec iddFor(const std::string& tech) {
     announceUnknownTech("iddFor", tech,
                         "array energy, background standby and refresh power");
     return {1.2, 58,35,42,140,150,155, 350.0, 7800.0, 1, 25};  // unknown -> DDR4 class
+}
+
+/* 1.11.66: the IDD row AT A TEMPERATURE. The datasheet table above is the
+ * nominal-range (<= 85 C) row; this applies refreshTempFactor() to tREFI so
+ * every refresh-duty consumer (stateWithRefreshMW, refreshMW, backgroundMW,
+ * backgroundUnitMW, backgroundSystemMW) sees the operating point's refresh
+ * rate. The default of 358 K = 85 C is the top of the nominal range, i.e. a
+ * caller that does not state a temperature gets exactly the old behaviour.
+ * The IDD currents themselves are NOT temperature-scaled here: datasheets
+ * specify IDD at a fixed case temperature and publish no derating curve for
+ * the active currents; only the refresh RATE is normatively temperature-
+ * dependent. */
+inline IDDSpec iddFor(const std::string& tech, int temperature_k = 358) {
+    IDDSpec s = iddTableFor(tech);
+    s.trefi_ns *= refreshTempFactor(tech, temperature_k);
+    return s;
 }
 
 /* 1.11.46 (FIX-PRE-FLEET L181): DEVICES PER ACCESS. The IDD columns are
@@ -681,13 +743,13 @@ inline double stateWithRefreshMW(const IDDSpec& s, double idd_state) {
 /* The refresh EXCESS over active standby. Reported as its own line item, and
  * that is the only thing it means: it is IDD3N-relative and must not be added
  * to a baseline that is not IDD3N. backgroundUnitMW() no longer calls it. */
-inline double refreshMW(const std::string& tech) {
-    IDDSpec s = iddFor(tech);
+inline double refreshMW(const std::string& tech, int temperature_k = 358) {
+    IDDSpec s = iddFor(tech, temperature_k);
     return s.vdd * (s.idd5 - s.idd3n) * (s.trfc_ns / s.trefi_ns);
 }
-inline double backgroundMW(const std::string& tech) {
-    IDDSpec s = iddFor(tech);
-    return stateWithRefreshMW(s, s.idd3n);   // == vdd*idd3n + refreshMW(tech)
+inline double backgroundMW(const std::string& tech, int temperature_k = 358) {
+    IDDSpec s = iddFor(tech, temperature_k);
+    return stateWithRefreshMW(s, s.idd3n);   // == vdd*idd3n + refreshMW(tech, T)
 }
 
 /* 1.11.20 (user decision D13): POPULATION. How many IDD-bearing units the
@@ -778,10 +840,10 @@ inline int backgroundUnits(const std::string& tech,
  * backgroundMW(). That was the point of D15, and it is why the 1.11.20 gate
  * asserts a stated delta for DRAM cells rather than bit-equality. */
 inline double backgroundUnitMW(const std::string& tech, double r_idle,
-                               bool pg_enabled) {
+                               bool pg_enabled, int temperature_k = 358) {
     if (r_idle < 0.0) r_idle = 0.0;
     if (r_idle > 1.0) r_idle = 1.0;
-    IDDSpec s = iddFor(tech);
+    IDDSpec s = iddFor(tech, temperature_k);
     const double kHysteresisDerate = 0.99;
     /* Each state pays its OWN refresh (E15) -- see stateWithRefreshMW. */
     const double active_mw = stateWithRefreshMW(s, s.idd3n);  // IDD3N, row open
@@ -804,8 +866,9 @@ inline double backgroundSystemMW(const std::string& tech, double r_idle,
                                  bool pg_enabled,
                                  const std::string& device_width = "",
                                  int ranks_per_channel = 1,
-                                 int channels = 1) {   // 1.11.52 (A015)
-    return backgroundUnitMW(tech, r_idle, pg_enabled) *
+                                 int channels = 1,        // 1.11.52 (A015)
+                                 int temperature_k = 358) {   // 1.11.66
+    return backgroundUnitMW(tech, r_idle, pg_enabled, temperature_k) *
            static_cast<double>(backgroundUnits(tech, device_width,
                                                ranks_per_channel, channels));
 }

@@ -7,6 +7,66 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.65 -- the bus turns at the preset's clock, and refresh feels the heat
+
+Two items the vendor-document campaign left queued, landed together because
+only one of them moves a shipped number.
+
+THE DQ TURNAROUND PENALTY IS DERIVED. Since 1.10.6 the in-memory network
+has charged the shared DQ bus a direction-reversal penalty (JEDEC tWTR)
+between a write and a read, from a hand-written per-technology ns table --
+"nWTR_L x tCK, transcribed from the preset", as its comment said, with the
+1.11.52 audit already noting that nothing read it at run time and a preset
+change would not move it. It had drifted: GDDR6's 6.27 ns was 11 ck x 0.570,
+computed from a tCK that 1.11.63 corrected to 1.000 ns, so GDDR6's
+turnaround was priced 1.75x LOW against the preset the run simulates.
+HBM3's 8.11 survived only because the same release halved its cycle count
+and doubled its tCK. The R6 cure, as for LPDDR5's ns getters in 1.11.63:
+the preset transcription gains an nWTR column (nWTRL where the family
+splits it, nWTR for DDR3, and for DDR5 the Max(16nCK, 10ns) term of JESD79-5D
+Table 334's tCCD_L_WTR composite), and main.cpp derives the ns as nWTR x
+tCK at load, prints the derivation, and REFUSES (exit 2, with the reason)
+if the transcription lacks nWTR or its tCK disagrees with the impl -- a
+stale transcription can no longer price a different clock. The gate proves
+the refusal fires through the PIMID_TWTR_BREAK fault hook. Values at the
+shipped presets: DDR3 7.5, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 11.0
+(was 6.27), HBM2 8.33, HBM3 8.125 ns. Only GDDR6 moves.
+
+REFRESH FOLLOWS TEMPERATURE. config.temperature_k reached McPAT, CACTI and
+NVSim, and never the DRAM refresh duty: a 105 C run priced the same refresh
+power as a 45 C one. Every DRAM family refreshes twice as often above
+85 C, and HBM four times as often above 95 C; the sources were assembled
+by the September document sweeps and are now applied as a multiplier on
+tREFI at the one choke point every refresh consumer passes through
+(iddFor -> stateWithRefreshMW / refreshMW / backgroundMW /
+backgroundUnitMW / backgroundSystemMW). DDR3/4/5, LPDDR5 and GDDR6: 0.5x
+tREFI above 85 C (JESD79-5D Table 70's 3.9 -> 1.95 us; JESD79-3E and the
+Micron sheets' extended-temperature 2x; JESD209-5C Table 240 NOTE 2 and
+the MR4 derating; JESD250D's temperature-sensor refresh). HBM2/HBM3: 0.5x
+at 85-95 C and 0.25x above 95 C (AMD PG276 p.23; AMD DS923 note 16 ">= 4x
+above 95 C"; Intel UG-20031 Table 30 and the Agilex M HBM2E IP guide's
+identical TEMP[2:0] ladder). The cold-end rungs those controllers expose
+(2x and 4x SLOWER refresh below vendor-specific thresholds) are NOT
+credited -- a refresh-power discount on a threshold no standard fixes
+would be an invented benefit. Above 105 C no source specifies a rate; the
+last rung is held. The IDD currents are not temperature-scaled: datasheets
+give them at a fixed case temperature with no derating curve, so the
+refresh RATE is the only normatively temperature-dependent term.
+Temperature is set on the wrapper at both oracle sites -- device scope and
+the system-scope report -- before initialize(), the two-site lesson of
+1173B. The default 350 K = 77 C is inside the nominal range, so every
+existing result is bit-identical; the ladder engages only when a config
+states power.temperature_c above 85.
+
+Documentation: docs/yaml_reference.md gains the temperature ladder, the
+dq_turnaround derivation, and -- overdue since 1.11.63 --
+power.termination_pj_per_bit, which had been wired but never documented.
+
+Data impact: GDDR6 only (turnaround penalty 6.27 -> 11.0 ns on every
+write-to-read turn of the shared bus). Nothing else moves at default
+temperature. The corpus re-sim on >= 1.11.65 remains the gate before any
+CAL number is quoted.
+
 ## 1.11.64 -- vendor silicon, and the layout that density hid
 
 The release that reads the parts' own papers. Six ISSCC/JSSC device papers

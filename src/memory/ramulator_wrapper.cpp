@@ -126,12 +126,13 @@ pimid::PresetOrganization makePresetOrg(const char* name, const char* src,
 pimid::PresetTiming makePresetTiming(const char* name, const char* src,
                                      int rate, int nBL, int nCL, int nRCD,
                                      int nRP, int nRAS, int table_tCK_ps,
-                                     int ck_divisor_e6) {
+                                     int ck_divisor_e6, int nWTR = 0) {
     pimid::PresetTiming t;
     t.preset_name = name;
     t.preset_source = src;
     t.rate_mtps = rate;
     t.nBL = nBL;
+    t.nWTR = nWTR;   // 1.11.65
     t.nCL = nCL;
     t.nRCD = nRCD;
     t.nRP = nRP;
@@ -175,19 +176,19 @@ void RamulatorWrapper::resolvePresetTiming() {
         // is NOT this run's.)
         preset_timing_ = makePresetTiming(
             "DDR3_1600H", "external/ramulator/src/dram/impl/DDR3.cpp timing_presets",
-            1600, 4, 9, 9, 9, 28, 1250, 2);
+            1600, 4, 9, 9, 9, 28, 1250, 2, /*nWTR*/ 6);      // DDR3_1600H nWTR 6
     } else if (dt == "DDR4") {
         // DDR4.cpp, row "DDR4_2400R": nBL 4, nCL/nRCD/nRP 16, nRAS 39, tCK 833,
         // tCK = 2E6/rate.
         preset_timing_ = makePresetTiming(
             "DDR4_2400R", "external/ramulator/src/dram/impl/DDR4.cpp timing_presets",
-            2400, 4, 16, 16, 16, 39, 833, 2);
+            2400, 4, 16, 16, 16, 39, 833, 2, /*nWTR*/ 9);     // DDR4_2400R nWTRL 9
     } else if (dt == "DDR5") {
         // DDR5.cpp, row "DDR5_3200AN": nBL 8, nCL/nRCD/nRP 24, nRAS 52, tCK 625,
         // tCK = 2E6/rate.
         preset_timing_ = makePresetTiming(
             "DDR5_3200AN", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
-            3200, 8, 24, 24, 24, 52, 625, 2);
+            3200, 8, 24, 24, 24, 52, 625, 2, /*nWTR*/ 16);    // DDR5: tWTR_L term = Max(16nCK,10ns) = 16 (JESD79-5D T334)
     } else if (dt == "LPDDR5") {
         /* LPDDR5.cpp, row "LPDDR5_6400": nBL16 2, nCL 17, nRCD 15, nRPab 17,
          * nRPpb 15, nRAS 34, tCK 1250 ps, tCK = 8E6/rate. nRP is taken from the
@@ -197,7 +198,7 @@ void RamulatorWrapper::resolvePresetTiming() {
          * p.261, row 1011B covers 6000 < rate <= 6400 and gives RL = 17). */
         preset_timing_ = makePresetTiming(
             "LPDDR5_6400", "external/ramulator/src/dram/impl/LPDDR5.cpp timing_presets",
-            6400, 2, 17, 15, 15, 34, 1250, 8);
+            6400, 2, 17, 15, 15, 34, 1250, 8, /*nWTR*/ 10);   // LPDDR5_6400 nWTRL 10
     } else if (dt == "GDDR6") {
         /* GDDR6.cpp, row "GDDR6_2000_1350mV_double": nBL 8, nCL 24, nRCDRD 26,
          * nRP 26, nRAS 53, tCK 1000 ps, tCK = 2E6/rate. nRCD is the READ
@@ -206,7 +207,7 @@ void RamulatorWrapper::resolvePresetTiming() {
         preset_timing_ = makePresetTiming(
             "GDDR6_2000_1350mV_double",
             "external/ramulator/src/dram/impl/GDDR6.cpp timing_presets",
-            2000, 8, 24, 26, 26, 53, 1000, 2);
+            2000, 8, 24, 26, 26, 53, 1000, 2, /*nWTR*/ 11);   // GDDR6_2000_1350mV_double nWTRL 11
     } else if (dt == "HBM2") {
         /* HBM2.cpp, row "HBM2_2.4Gbps": nBL 2, nCL/nRCDRD 20, nRP 18, nRAS
          * 40, tCK 833 ps, tCK = 2E6/rate. 1.11.63 (JESD235D): nBL 4 -> 2 (PC
@@ -215,7 +216,7 @@ void RamulatorWrapper::resolvePresetTiming() {
          * encoded a 16 ns claim that appears nowhere in the standard). */
         preset_timing_ = makePresetTiming(
             "HBM2_2.4Gbps", "external/ramulator/src/dram/impl/HBM2.cpp timing_presets",
-            2400, 2, 20, 20, 18, 40, 833, 2);
+            2400, 2, 20, 20, 18, 40, 833, 2, /*nWTR*/ 10);    // HBM2_2.4Gbps nWTRL 10
     } else if (dt == "HBM3") {
         /* HBM3.cpp, row "HBM3_6.4Gbps", AS RE-DERIVED INTO THE CK DOMAIN: nBL
          * 2, nCL/nRCDRD/nRP 26, nRAS 53, tCK 625 ps, and tCK = 4E6/rate
@@ -228,13 +229,13 @@ void RamulatorWrapper::resolvePresetTiming() {
          * the row that is actually in the tree. */
         preset_timing_ = makePresetTiming(
             "HBM3_6.4Gbps", "external/ramulator/src/dram/impl/HBM3.cpp timing_presets",
-            6400, 2, 26, 26, 26, 53, 625, 4);
+            6400, 2, 26, 26, 26, 53, 625, 4, /*nWTR*/ 13);    // HBM3_6.4Gbps nWTRL 13 (CK domain)
     } else {
         // Unknown technology: the DDR4 substitution, announced in initialize().
         preset_timing_ = makePresetTiming(
             "DDR4_2400R",
             "external/ramulator/src/dram/impl/DDR4.cpp timing_presets (substituted)",
-            2400, 4, 16, 16, 16, 39, 833, 2);
+            2400, 4, 16, 16, 16, 39, 833, 2, /*nWTR*/ 9);     // DDR4_2400R nWTRL 9
     }
 }
 
@@ -1452,7 +1453,7 @@ double RamulatorWrapper::getRefreshEnergy() const {
      * clock domain is the DRAM clock from the architecture object, which is
      * the domain tREFI is specified in. */
     const double trefi_ns =
-        Ramulator::pimid_energy::iddFor(dram_type_).trefi_ns;
+        Ramulator::pimid_energy::iddFor(dram_type_, temperature_k_).trefi_ns;   // 1.11.66
 
     double clock_period_ns = 1.0;  // Default 1ns modeling cycle
     if (dram_arch_) {
@@ -1847,10 +1848,10 @@ double RamulatorWrapper::getInterfaceAreaMM2() const {
     return io.io_area_mm2;
 }
 double RamulatorWrapper::getRefreshPowerMW() const {
-    return Ramulator::pimid_energy::refreshMW(dram_type_);
+    return Ramulator::pimid_energy::refreshMW(dram_type_, temperature_k_);   // 1.11.66
 }
 double RamulatorWrapper::getBackgroundPowerMW() const {
-    return Ramulator::pimid_energy::backgroundMW(dram_type_);
+    return Ramulator::pimid_energy::backgroundMW(dram_type_, temperature_k_);   // 1.11.66
 }
 int RamulatorWrapper::getBackgroundUnits(const std::string& device_width,
                                          int ranks_per_channel,
@@ -1888,7 +1889,8 @@ double RamulatorWrapper::getBackgroundSystemMW(double r_idle, bool pg_enabled,
     }
     return Ramulator::pimid_energy::backgroundSystemMW(dram_type_, r_idle,
                                                        pg_enabled, device_width,
-                                                       ranks_per_channel, channels);
+                                                       ranks_per_channel, channels,
+                                                       temperature_k_);   // 1.11.66
 }
 
 void RamulatorWrapper::updateEnergyMetrics() const {

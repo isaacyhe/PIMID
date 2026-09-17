@@ -201,6 +201,7 @@ memory:
 | `memory.banks` | int | `4` | Number of memory banks. DRAM techs enforce minimum (DDR4 >= 16/chip). |
 | `memory.subarrays_per_bank` | int | `4` | Subarrays per bank. |
 | `memory.latency` | int | `-1` | Override memory latency in cycles. `-1` = auto from external models. |
+| `memory.dq_turnaround` | bool | `true` | Charge the shared DQ bus a direction-reversal penalty (JEDEC tWTR) between a write and a read. Since 1.11.65 the penalty is DERIVED as nWTR_L x tCK from the Ramulator timing preset the run selects (DDR3 7.5 ns, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 11.0, HBM2 8.33, HBM3 8.125 at the shipped presets) and printed at load; earlier releases carried a hand-written table that had drifted 1.75x low for GDDR6. Set `false` for a design with a dedicated PIM interconnect and no shared bus. |
 
 ### Memory Timing Override
 
@@ -509,6 +510,44 @@ SRAM and NVM technologies never take this factor: their PEs are LOGIC-family
 (SRAM is a logic process; MRAM/PCM/ReRAM place their storage element in the
 metal stack above conventional logic transistors), so no periphery transform
 is applied at all.
+
+### Operating temperature and refresh (`power.temperature_*`)
+
+```yaml
+power:
+  temperature_c: 77         # or temperature_k: 350; default 350 K = 77 C
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `power.temperature_k` | int | `350` | Operating temperature in kelvin. Reaches McPAT, CACTI and NVSim (leakage), and since 1.11.65 the DRAM refresh rate. |
+| `power.temperature_c` | int | -- | Same knob in Celsius (`+273`). |
+
+**Refresh follows temperature (since 1.11.65).** Every DRAM family refreshes
+twice as often above 85 C, and HBM four times as often above 95 C; before
+1.11.65 the refresh duty was temperature-flat and a 105 C run priced the same
+refresh power as a 45 C one. The multiplier on tREFI is now:
+
+| Family | <= 85 C | 85-95 C | > 95 C | Sources |
+|---|---|---|---|---|
+| DDR3/DDR4/DDR5, LPDDR5, GDDR6 | 1x | 0.5x | 0.5x (held) | JESD79-5D Table 70 (tREFI 3.9 us -> 1.95 us); JESD79-3E / Micron extended-temperature 2x refresh; JESD209-5C Table 240 NOTE 2 + MR4 derating |
+| HBM2, HBM3 | 1x | 0.5x | 0.25x | AMD PG276 p.23 (3.9 -> 1.95 us at 85-95 C); AMD DS923 note 16 (>= 4x above 95 C); Intel UG-20031 Table 30 / Agilex M HBM2E IP UG Table 5 (TEMP[2:0] ladder) |
+
+The cold-end rungs the HBM controllers expose (2x and 4x SLOWER refresh below
+vendor-specific thresholds) are deliberately NOT credited: they would grant a
+refresh-power discount on a threshold no standard fixes. Above 105 C no source
+specifies a rate (HBM CATTRIP is 120 C); the last rung is held. The default
+350 K sits inside the nominal range, so results at the default are unchanged
+from earlier releases -- the ladder engages only when a config states a
+temperature above 85 C. The refresh rate is the ONLY temperature-dependent
+term in the DRAM energy model: datasheets specify IDD at a fixed case
+temperature and publish no derating curve for the active currents.
+
+### DQ termination override (`power.termination_pj_per_bit`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `power.termination_pj_per_bit` | float | unset (model) | Prices BOTH read and write DQ termination at the stated pJ/bit, overriding the read/write split loops. Use it to state an ODT-on operating point for LPDDR5 (whose JEDEC default is ODT disabled, JESD209-5C Table 84) or a non-default RTT for any DDR family. Wired since 1.11.63; earlier releases named the key in console messages but did not parse it. |
 
 ### McPAT Overrides
 

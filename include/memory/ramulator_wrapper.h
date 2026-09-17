@@ -111,6 +111,16 @@ struct PresetTiming {
     std::string preset_source;      // e.g. "external/ramulator/src/dram/impl/DDR4.cpp"
     int rate_mtps = 0;              // the row's `rate` column, MT/s on the DQ
     int nCL = 0, nRCD = 0, nRP = 0, nRAS = 0, nBL = 0;
+    /* 1.11.65: the write-to-read turnaround, in CK of THIS row. The
+     * same-bank-group figure (nWTRL / nWTR_L) where the family splits it,
+     * the single nWTR where it does not (DDR3), and for DDR5 the tWTR_L
+     * term of the standard's composite (JESD79-5D Table 334: tCCD_L_WTR =
+     * CWL + WBL/2 + Max(16nCK, 10ns) -> 16 at 625 ps). Consumed by the DQ
+     * turnaround penalty in main.cpp, which used to carry a hand-written
+     * ns table nothing read at run time -- GDDR6's entry had drifted 1.75x
+     * after the 1.11.63 tCK correction. 0 = not transcribed; the consumer
+     * then refuses rather than guesses. */
+    int nWTR = 0;
     int table_tCK_ps = 0;           // the row's own tCK_ps column
     int ck_divisor_e6 = 2;          // the impl's own tCK = ck_divisor_e6 * 1E6 / rate
     int tCK_ps = 0;                 // DERIVED, exactly as the impl derives it
@@ -124,6 +134,7 @@ struct PresetTiming {
     double tRCD_ns() const { return nRCD * tCK_ns(); }
     double tRP_ns()  const { return nRP  * tCK_ns(); }
     double tRAS_ns() const { return nRAS * tCK_ns(); }
+    double tWTR_ns() const { return nWTR * tCK_ns(); }   // 1.11.65
 };
 
 /**
@@ -205,6 +216,11 @@ public:
      * that set the width before initialize() and callers that set it after are
      * both correct. */
     void setDeviceWidth(const std::string& w);  // 1.11.46; 1.11.59 (C018)
+    /* 1.11.66: the DRAM's operating temperature, for the refresh-rate ladder
+     * (pimid_energy.h refreshTempFactor). Default 358 K = 85 C = top of the
+     * nominal range, i.e. the pre-1.11.66 behaviour. */
+    void setTemperatureK(int k) { temperature_k_ = k; }
+    int  getTemperatureK() const { return temperature_k_; }
     /* 1.11.52 (audit D003): the MEASURED row-buffer miss fraction from the
      * run (PE-MI rowHits/rowMisses). <0 = not measured, and the array energy
      * then uses the stated 0.5 fallback while the caller says so. */
@@ -419,6 +435,7 @@ private:
     mutable Cycle last_energy_update_;
     double energy_bank_override_pJ_per_byte_ = 0.0;  // 0 = IDD default; >0 = user override
     double energy_term_override_pJ_per_bit_ = -1.0;  // <0 = model default; >=0 = user override
+    int temperature_k_ = 358;   // 1.11.66: refresh-ladder input; 85 C nominal
 
     // Cycle counter
     Cycle current_cycle_;

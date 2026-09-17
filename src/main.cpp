@@ -4231,28 +4231,54 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                 /* 1.10.6: the shared channel DQ bus pays a penalty to reverse
                  * direction, and a bandwidth-limited link does not know that.
                  * tWTR (write-to-read) is the dominant JEDEC turnaround; the
-                 * value is each technology's OWN, TRANSCRIBED from the
-                 * Ramulator2 preset this run selects -- every line below
-                 * carries its preset name and the nWTR_L x tCK arithmetic
-                 * that produced it. 1.11.52 (audit B003) corrects the
-                 * previous wording, which said the values were READ from
-                 * the preset: no tWTR accessor exists on the wrapper or in
-                 * DRAMTiming, so nothing reads them at run time and a
-                 * preset change would not move them. Sourced constants
-                 * with their derivation shown, not model output. Read-to-write is approximated by the same
+                 * value is each technology's OWN, nWTR_L x tCK from the
+                 * Ramulator2 preset this run selects. 1.11.52 (audit B003)
+                 * noted that no tWTR accessor existed, so a hand table stood
+                 * in and a preset change would not move it; 1.11.65 gives the
+                 * preset transcription an nWTR column and derives the ns at
+                 * run time, so it now does. Read-to-write is approximated by the same
                  * figure; stated approximation, conservative in direction.
                  * Off with memory.dq_turnaround: false -- a design with a
                  * dedicated PIM interconnect has no shared bus to turn. */
                 if (config.dq_turnaround_enabled) {
-                    double twtr_ns =
-                        (tech=="DDR3")   ? 7.50 :   // DDR3_1600H  : 6ck  x 1.250
-                        (tech=="DDR4")   ? 7.50 :   // DDR4_2400R  : 9ck  x 0.833
-                        (tech=="DDR5")   ? 10.00 :  // DDR5_3200AN : 16ck x 0.625
-                        (tech=="LPDDR5") ? 12.50 :  // LPDDR5_6400 : 10ck x 1.250
-                        (tech=="GDDR6")  ? 6.27 :   // GDDR6_2000  : 11ck x 0.570
-                        (tech=="HBM2")   ? 8.33 :   // HBM2_2.4    : 10ck x 0.833
-                        (tech=="HBM3")   ? 8.11 :   // HBM3_6.4    : 26ck x 0.312
-                        0.0;
+                    /* 1.11.65: DERIVED from the transcribed preset, not a
+                     * table. The table this replaces was hand-written ns
+                     * (nWTR_L x tCK, one row per technology) that nothing
+                     * read at run time, and it had already drifted: its GDDR6
+                     * entry was 6.27 ns = 11 ck x 0.570, computed from a tCK
+                     * that 1.11.63 corrected to 1.000 ns -- so GDDR6's
+                     * turnaround penalty was 1.75x LOW against the preset
+                     * this run simulates. HBM3's 8.11 survived only because
+                     * the CK-domain fix halved its cycle count and doubled
+                     * its tCK in the same release. The R6 cure, same as the
+                     * LPDDR5 ns getters in 1.11.63: the preset transcription
+                     * carries nWTR and tCK, and the ns is their product.
+                     * derivable() also requires the row's tCK to agree with
+                     * the impl's derivation, so a stale transcription refuses
+                     * here instead of pricing a different clock. */
+                    pimid::PresetTiming pt = bw_q.getPresetTiming();
+                    /* Fault hook for the gate: PIMID_TWTR_BREAK=1 blanks the
+                     * transcribed nWTR so the refusal below is exercised.
+                     * Test-only; never set in a real run. */
+                    if (getenv("PIMID_TWTR_BREAK") != nullptr) pt.nWTR = 0;
+                    if (!pt.derivable() || pt.nWTR <= 0) {
+                        std::cerr << "[config] FATAL: cannot derive the DQ "
+                                     "turnaround penalty for " << tech
+                                  << " -- the transcribed Ramulator timing "
+                                     "preset '" << pt.preset_name
+                                  << "' is missing nWTR or its tCK disagrees "
+                                     "with the impl's derivation. Set "
+                                     "memory.dq_turnaround: false to model a "
+                                     "dedicated PIM interconnect with no shared "
+                                     "bus, or repair the transcription in "
+                                     "ramulator_wrapper.cpp." << std::endl;
+                        std::exit(2);
+                    }
+                    const double twtr_ns = pt.tWTR_ns();
+                    std::cout << "  [mem] DQ turnaround penalty: " << twtr_ns
+                              << " ns = nWTR " << pt.nWTR << " x tCK "
+                              << pt.tCK_ns() << " ns, from preset "
+                              << pt.preset_name << std::endl;
                     /* Stored as ns x100; the interface converts at the SAME
                      * clock its service-time formula uses, so the two cannot
                      * be quoted in different cycle domains. */
@@ -7674,6 +7700,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * knob was still dead at the point of use. Both scopes apply it
              * now, before initialize(). */
             ram_oracle.setTerminationOverridePJPerBit(config.termination_pj_per_bit);
+            ram_oracle.setTemperatureK(config.temperature_k);   // 1.11.66: refresh ladder
             /* 1.11.52 (audit D003): the array's activate/precharge share is
              * now weighted by the run's OWN measured row-buffer miss rate
              * (PE-MI rowHits/rowMisses) instead of a hardcoded 0.5. It is
@@ -8917,7 +8944,8 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                           int effective_banks = 0,
                                           int ranks_per_channel = 1,   // 1.11.52 (A015)
                                           int channels = 1,
-                                          double termination_pj_per_bit = -1.0)   // 1.11.63 (R7, gate 1173B E3)
+                                          double termination_pj_per_bit = -1.0,   // 1.11.63 (R7, gate 1173B E3)
+                                          int temperature_k = 358)                 // 1.11.66 (refresh ladder)
 {
     if (memory_tech.empty()) return 0.0;
     /* 1.11.52 (audit A020): A MEMORY WITH NO ACCESSES IS NOT A MEMORY WITH NO
@@ -8960,6 +8988,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         /* 1.11.63 (R7): gate 1173B E3 caught the knob half-wired (parsed,
          * never applied). Set before initialize(), both scopes. */
         ram_oracle.setTerminationOverridePJPerBit(termination_pj_per_bit);
+        ram_oracle.setTemperatureK(temperature_k);   // 1.11.66: refresh ladder
         ram_oracle.initialize();
         /* Intensive per-access accessors. getArrayReadEnergyNJ folds activation
          * and column access, so act/pre are NOT added separately -- adding them
@@ -10267,7 +10296,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               effectiveDramBanks(tech, config),   // A008
                                               config.hierarchy_ranks_per_channel, // A015
                                               config.hierarchy_dram_channels,
-                                              config.termination_pj_per_bit);   // 1.11.63 (R7)
+                                              config.termination_pj_per_bit,   // 1.11.63 (R7)
+                                              config.temperature_k);           // 1.11.66
                 {
                 double die = computeDramDieAreaMM2(tech, false,
                                                    effectiveDramBanks(tech, config));
@@ -10327,7 +10357,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               effectiveDramBanks(node.memory_tech, config),
                                               config.hierarchy_ranks_per_channel,  // A015
                                               config.hierarchy_dram_channels,
-                                              config.termination_pj_per_bit);   // 1.11.63 (R7)
+                                              config.termination_pj_per_bit,   // 1.11.63 (R7)
+                                              config.temperature_k);           // 1.11.66
                 host_done = true;
             } else if (node.role == UnifiedConfig::SystemNode::DEVICE && !dev_done &&
                        zsim_stats.dev.has_activity()) {
@@ -10346,7 +10377,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               effectiveDramBanks(node.memory_tech, config),
                                               config.hierarchy_ranks_per_channel,  // A015
                                               config.hierarchy_dram_channels,
-                                              config.termination_pj_per_bit);   // 1.11.63 (R7)
+                                              config.termination_pj_per_bit,   // 1.11.63 (R7)
+                                              config.temperature_k);           // 1.11.66
                 dev_done = true;
             }
         }
