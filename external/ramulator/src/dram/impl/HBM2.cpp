@@ -18,14 +18,39 @@ class HBM2 : public IDRAM, public Implementation {
       {"Default",     {28,17,21,80,90,65, 3,3,3,3,3,40}},
     };
 
+    /* 1.11.64 (JESD235D, misc/JESD235D.pdf): THE BANK/ROW SPLIT, corrected.
+     *
+     * The comment this replaces asserted "Density scales via ROWS, not banks".
+     * Table 4 ("HBM Channel Addressing"), printed p.6, says JEDEC scales BOTH,
+     * and in that order -- banks first, then rows:
+     *   2 Gb/channel (1 Gb/PC):  Bank Address BA[2:0] =  8 banks, RA[13:0] = 16384 rows
+     *   4 Gb/channel (2 Gb/PC):  Bank Address BA[3:0] = 16 banks, RA[13:0] = 16384 rows
+     *   8 Gb/channel (4 Gb/PC):  Bank Address BA[3:0] = 16 banks, RA[14:0] = 32768 rows
+     * with "Page Size per PC 1 KB" at every density. Bank groups: Table 5
+     * p.8 assigns 16 banks to four groups ("0 and 1 ... 12 to 15 Group D").
+     *
+     * The 2 Gb row was already right. The 4 Gb and 8 Gb rows each carried
+     * HALF the banks and TWICE the rows, which keeps the density product
+     * exact -- that is why it survived every completeness check -- while
+     * describing a part with half the bank-level parallelism and twice the
+     * row space. On a bank-placement PIM model that is a first-order error:
+     * it halves the banks available to interleave over and dilutes the
+     * row-hit rate at fixed footprint.
+     *
+     * WHAT DELIBERATELY DOES NOT CHANGE (verified before touching this, the
+     * check that caught the equivalent HBM3 proposal as a defect): dq = 128
+     * with 64 columns and m_internal_prefetch_size = 2 reproduce JEDEC's
+     * per-PC quantities exactly -- page = 64 x 128 = 8192 b = 1 KB/PC, and
+     * access granularity = 128 x 2n = 256 b = 32 B, matching Table 4's 1 KB
+     * page and the standard's 32 B/256-bit prefetch. JEDEC factors the same
+     * products as 64 DQ x 32 columns x 4n. Re-factoring to JEDEC's shape
+     * without also moving the prefetch would HALVE the access granularity,
+     * so the factorization is left alone and documented instead. */
     inline static const std::map<std::string, Organization> org_presets = {
       //   name     density   DQ    Ch Pch  Bg Ba   Ro     Co
-      // JEDEC JESD235: HBM2 = 16 banks/channel (2 pseudo-ch x 4 BG x 2 banks).
-      // Density scales via ROWS, not banks (the earlier 4Gb/8Gb used Ba=4 = 32
-      // banks, which is HBM3's count, and 8Gb mis-labeled density as 6<<10).
-      {"HBM2_2Gb",   {2<<10,  128,  {1, 2,  4,  2, 1<<14, 1<<6}}},
-      {"HBM2_4Gb",   {4<<10,  128,  {1, 2,  4,  2, 1<<15, 1<<6}}},
-      {"HBM2_8Gb",   {8<<10,  128,  {1, 2,  4,  2, 1<<16, 1<<6}}},
+      {"HBM2_2Gb",   {2<<10,  128,  {1, 2,  4,  2, 1<<14, 1<<6}}},   //  8 banks/PC, RA[13:0]
+      {"HBM2_4Gb",   {4<<10,  128,  {1, 2,  4,  4, 1<<14, 1<<6}}},   // 16 banks/PC, RA[13:0]
+      {"HBM2_8Gb",   {8<<10,  128,  {1, 2,  4,  4, 1<<15, 1<<6}}},   // 16 banks/PC, RA[14:0]
     };
 
     inline static const std::map<std::string, std::vector<int>> timing_presets = {

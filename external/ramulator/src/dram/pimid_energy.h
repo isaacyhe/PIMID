@@ -481,15 +481,21 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  *           layer-consistency with the IDD-sourced array energy.
  *   LPDDR5: 0 both directions (JESD209-5C Tbl 84 p.144: DQ ODT Disable
  *           (Default); Micron IDD conditions are ODT-off).
- * CONTROLLER-SIDE WRITE DRIVER, now sourced as a RANGE with the applied
- * value inside it: Intel 743844-015 (misc/, Vol.1 of the 13th/14th-gen
- * datasheet) Table 87 p.208 gives host RON_UP(DQ) = RON_DN(DQ) = 30..50
- * ohm for DDR5, and Table 86 p.207 the same 30..50 for DDR4 (host
- * RODT(DQ): 30..240 / 40..200). The applied 34 ohm -- the DRAM-class
- * RZQ/7 value -- lies inside that host range; per the band doctrine the
- * range is stated here and the point chosen within it (its ends move the
- * write loop (34+120=154) by only -3%/+10%).
- * The override prices BOTH directions at the user's stated pJ/bit. */
+ * CONTROLLER-SIDE WRITE DRIVER, sourced as a RANGE/SET with the applied
+ * value inside it -- no assumption remains:
+ *   DDR4/DDR5: Intel 743844-015 (misc/, Vol.1 of the 13th/14th-gen
+ *   datasheet) Table 87 p.208 gives host RON_UP(DQ) = RON_DN(DQ) =
+ *   30..50 ohm for DDR5, Table 86 p.207 the same for DDR4 (host RODT(DQ):
+ *   30..240 / 40..200). Applied 34 (the DRAM-class RZQ/7 value) lies
+ *   inside the range; its ends move the write loop (34+120=154) by only
+ *   -3%/+10%.
+ *   GDDR6: Achronix Speedster7t GDDR6 User Guide UG091 (misc/), Table 3
+ *   p.16: "DQ driver impedance (RON) 40/48/60 ohm" -- a host-controller
+ *   PHY's settable set, matching the standard 60/40 and 48/40 pairings.
+ *   Applied 40 is a member of the set; 48 or 60 would move the write
+ *   loop (40+120=160) by +5%/+12.5%.
+ * Per the band doctrine the range/set is stated here and the point chosen
+ * within it. The override prices BOTH directions at the stated pJ/bit. */
 inline double terminationNJ(const std::string& tech, double term_override_pJ_per_bit,
                             double rate_mts, bool is_write) {
     if (term_override_pJ_per_bit >= 0.0)
@@ -550,7 +556,34 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
      * option, not a default; users modelling ODT-on systems override via
      * power.termination_pj_per_bit. */
     else if (tech=="LPDDR5") {sch=LVSTL; vddq=0.5; ron_rd=40; rtt_rd=0; ron_wr=40; rtt_wr=0;}
-    else if (tech.substr(0,3)=="HBM") return 0.0;                      // interposer (JESD238B cl.9.1)
+    /* 1.11.64: HBM's zero is not an omission, and the vertical interconnect
+     * is NOT a missing term. Three independent confirmations that the DQ
+     * link is unterminated: JESD238B.01 cl.9.1 measures HBM3 read-burst
+     * current at "IOUT = 0mA; Ctotal = 2.5 pF" (a capacitive load, no DC
+     * path); ISCA 2025 tutorial slide 46 (Song, Samsung) states flatly "ODT
+     * not allowed in HBM (static power)"; and every HBM device paper we hold
+     * lists the interface as "CMOS, un-terminated" (Chun JSSC 2021 Table I
+     * p.200).
+     *
+     * WHY NO SEPARATE TSV TERM IS ADDED, having acquired the only public
+     * measurement of one. Cho ISSCC 2018 12.3 Fig.12.3.1 (misc/) measures
+     * per-TSV driver current on a real HBM2 stack -- ~880 uA multi-drop vs
+     * ~610 uA with the spiral point-to-point structure, at 1.0 V and
+     * 3.3 Gb/s PRBS, i.e. roughly 0.27 -> 0.19 pJ/bit for the TSV driver
+     * alone. It is tempting to add that as the "missing" vertical-link
+     * energy. It would DOUBLE COUNT. The IDD columns above are per-CHANNEL
+     * DEVICE currents (see devicesPerAccess below), and an IDD4R/IDD4W
+     * measurement is taken at the stack's supply balls with a read or write
+     * burst in flight -- the TSVs are inside the device under test, so their
+     * driver current is already inside the measured burst current. This is
+     * exactly the structural difference from DDR-class parts, whose DQ bus
+     * leaves the package and terminates externally, which is why those get a
+     * termination term and HBM does not: for HBM the interface is internal
+     * and is priced by the array/burst currents, not beside them.
+     * The Cho figure is therefore a DECOMPOSITION insight -- what fraction
+     * of stack current is vertical signalling -- and belongs in validation,
+     * not in the charged model. */
+    else if (tech.substr(0,3)=="HBM") return 0.0;
     else {
         /* 1.11.57 (latent D007): unknown -> POD12/DDR4 electricals, said out
          * loud. This branch also disagrees with iddFor()'s exact "HBM2"/"HBM3"

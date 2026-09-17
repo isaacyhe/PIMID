@@ -106,7 +106,32 @@ class HBM3 : public IDRAM, public Implementation {
        *     nRRDL, nWTRS      13 x 0.3125 = 4.0625 ns               ->  7
        * Identities hold afterwards: nRC 79 = nRAS 53 + nRP 26; nCCDS 2 >= nBL
        * 2; nCCDL 4 > nCCDS 2; nWTRL 13 > nWTRS 7; nRRDL 7 > nRRDS 5.
-       * nRFC/nRFCSB/nREFISB stay -1 (supplied by the per-density tables). */
+       * nRFC/nRFCSB/nREFISB stay -1 (supplied by the per-density tables).
+       *
+       * 1.11.64 -- VENDOR SILICON CONFIRMS THE TWO LOAD-BEARING CLAIMS ABOVE,
+       * from two independent vendors (papers now in misc/):
+       *  (a) THE CK DOMAIN, tCK = data_rate / 4. This release-1.11.63 fix was
+       *      derived from JESD238B.01 Table 92 and is now stated outright in
+       *      silicon papers by both HBM3 makers:
+       *        Ryu et al., Samsung, JSSC 58(4) Apr 2023 p.1052 -- the 2 nCK
+       *          GBUS window is "equivalent to 1 ns at 8 Gb/s/pin", i.e.
+       *          tCK = 0.5 ns against an 8 Gb/s pin = rate/4.
+       *        Park et al., SK hynix, JSSC 58(1) Jan 2023 p.259 -- "the data
+       *          timing window as wide as 1tCK that corresponds to 571.4 ps
+       *          for the 7-Gb/s operation", i.e. 4/7 ns = rate/4.
+       *      (Much of the open-source community models HBM3 CK at rate/2,
+       *      which these two measurements rule out.)
+       *  (b) nCCDS = 2 and nCCDL = 4, EXACTLY the values in the row below:
+       *      Ryu p.1052 gives tCCDS = 2 nCK "to any bank group" and
+       *      tCCDL = 4 nCK "to the same bank group ... determined by
+       *      considering core cycle time and OD-ECC computation time".
+       *      At 8 Gb/s/pin those are 1 ns and 2 ns. First vendor
+       *      corroboration of the 1.11.63 CK-domain re-derivation.
+       *  Structural confirmation of the family split, from the ISCA 2025
+       *  tutorial slide 56 (Woo/Elsasser, Rambus): tCCD_L is ~5 ns where the
+       *  IO sense amp sits at the end of the bank (DDR/LPDDR) and ~2.5 ns
+       *  where it sits mid-bank (GDDR/HBM) -- the physical reason HBM's
+       *  column-to-column spacing is half the DDR figure. */
       {"HBM3_6.4Gbps", {6400, 2, 26, 26, 26, 26, 53, 79, 26, 7, 13, 13, 2, 4, 5, 7, 7, 13, 13, 26, -1, -1, 6240, -1, 13, 625}},
     };
 

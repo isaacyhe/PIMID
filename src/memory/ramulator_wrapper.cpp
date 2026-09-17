@@ -289,13 +289,21 @@ void RamulatorWrapper::resolvePresetOrganization() {
             "external/ramulator/src/dram/impl/GDDR6.cpp org_presets",
             1024, ww, 2, 32, 16384, co, false);
     } else if (dt == "HBM2") {
-        /* HBM2.cpp:22-30. density is PER CHANNEL ("channel density" in the
-         * file's own error text); {1 Ch, 2 Pch, 4 Bg, 2 Ba} = 16 banks per
-         * channel. No device width applies. */
+        /* HBM2.cpp org_presets. density is PER CHANNEL ("channel density" in
+         * the file's own error text). No device width applies.
+         * 1.11.64 (JESD235D Tbl 4 p.6): {1 Ch, 2 Pch, 4 Bg, 4 Ba} = 32 banks
+         * per channel (16 per pseudo-channel) over 16384 rows, tracking the
+         * org-preset correction in HBM2.cpp -- the old transcription (16
+         * banks/channel, 32768 rows) mirrored the pre-1.11.64 preset, which
+         * carried half the banks and twice the rows at this density. This
+         * value feeds getPresetRowsPerBank(), which is the SOLE authority for
+         * subarrays_per_bank, the in-memory tree shape, the tree-coverage
+         * assertion and pages_per_unit (ruling R4) -- so it must track the
+         * preset or those four quantities describe a different part. */
         preset_org_ = makePresetOrg(
             "HBM2_4Gb",
             "external/ramulator/src/dram/impl/HBM2.cpp org_presets",
-            512, 128, 1, 16, 32768, 64, true);
+            512, 128, 1, 32, 16384, 64, true);
     } else if (dt == "HBM3") {
         // HBM3.cpp:21-26. Per-channel density; 2 Pch x 4 Bg x 4 Ba = 32 banks.
         preset_org_ = makePresetOrg(

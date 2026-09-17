@@ -198,7 +198,16 @@ public:
          *     density") and not the stack. This is the unit the die-area path
          *     needs -- HBM2's 1024 MB is the 8 Gb Sohn ISSCC-2016 core die
          *     exactly, which is why HBM2's 96.00 mm^2/die lands on its
-         *     published anchor -- and it is deliberately NOT the unit its
+         *     published anchor (1.11.64: a SECOND vendor anchor for the same
+         *     8 Gb HBM2 core-die density now exists -- Cho et al., SK hynix,
+         *     ISSCC 2018 12.3 Fig.12.3.7, "Chip size 81.8 mm^2" for an 8 Gb
+         *     2-channel core die, against Samsung's 96.00 mm^2 at 20 nm.
+         *     The two bracket the real spread of an 8 Gb HBM2 core die at
+         *     roughly 82-96 mm^2, a 17% band across vendors and process
+         *     generations; the 96.00 anchor is retained as the modelled
+         *     point because the rest of the HBM2 row is Samsung-derived, and
+         *     the band is what a die-area claim should be quoted with) --
+         *     and it is deliberately NOT the unit its
          *     partner chips_per_rank counts (that is the CHANNEL count, 8/16).
          *     Ruling R2.
          * RamulatorWrapper::initialize() cross-checks both readings against the
@@ -738,8 +747,28 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     // ===== ORGANIZATION (VERIFIED) =====
 
     arch->organization.subarrays_per_bank = 4;
-    arch->organization.banks_per_bank_group = 4;
-    arch->organization.bank_groups_per_chip = 4;  // Per channel
+    /* 1.11.64 (JESD235D Table 4 p.6, Table 5 p.8): 8 bank groups PER CHANNEL,
+     * not 4 -- 32 banks per channel, not 16.
+     *
+     * JEDEC gives BA[3:0] = 16 banks PER PSEUDO-CHANNEL at 4 Gb/channel, and
+     * a channel is two pseudo-channels, so a channel carries 32 banks in 8
+     * groups of 4 (Table 5 assigns 16 banks to four groups within a PC; the
+     * channel has two such PCs). This object carried 4 groups x 4 banks = 16
+     * per channel, which agreed with the pre-1.11.64 org preset -- both were
+     * describing the same wrong part.
+     *
+     * THIS FIELD MUST MOVE WITH THE PRESET. The preset supplies bank ROWS
+     * (via getPresetRowsPerBank -> pages_per_unit) while this object supplies
+     * bank COUNT (via effectiveDramBanks -> total_units). Correcting the
+     * preset's rows alone halved total_units x pages_per_unit, i.e. halved
+     * the modelled capacity -- caught by gate 1174A before landing, and the
+     * exact "separate blast radius" the DDR5 entry below warns about. The two
+     * authorities are corrected together here.
+     * Blast radius, as that note lists it: effectiveDramBanks() (total_units
+     * 128 -> 256 at 8 channels), the CACTI area query, and the BankGroup
+     * level's fanout in the hierarchy ladder. */
+    arch->organization.banks_per_bank_group = 4;   // JESD235D Tbl 5 p.8
+    arch->organization.bank_groups_per_chip = 8;   // 4 per pseudo-channel x 2 PC
     arch->organization.chips_per_rank = 8;  // 8 channels (not traditional "chips")
     arch->organization.ranks_per_channel = 1;  // Single stack
     arch->organization.subarray_size_kb = 1024;  // Larger than DDR4
@@ -761,7 +790,13 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
      * 4x. Both need re-simulation. RamulatorWrapper::
      * applyPresetDensityToArchitecture() stamps the same value at runtime, so
      * this literal is a check on the derivation. */
-    arch->organization.bank_size_mb = 32;  // preset HBM2_4Gb: 4 Gb/channel / 16 banks
+    /* 1.11.64: 16 MB, following the corrected bank count. The derivation
+     * the block above states is unchanged -- one bank of the simulated
+     * preset -- but the divisor is now JEDEC's 32 banks per channel, not 16:
+     * 512 MB / 32 = 16 MB. applyPresetDensityToArchitecture() stamps the
+     * same value at runtime from the preset, so this literal remains a check
+     * on that derivation rather than a second authority. */
+    arch->organization.bank_size_mb = 16;  // preset HBM2_4Gb: 4 Gb/channel / 32 banks
     /* 1.11.61 (ruling R2): HBM KEEPS CORE-DIE SEMANTICS, and says so.
      *
      * 1024 MB is ONE CORE DIE, not one channel and not the stack. The preset

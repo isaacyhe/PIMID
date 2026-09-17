@@ -26,23 +26,42 @@ class DDR5 : public IDRAM, public Implementation {
       // {"DDR5_64Gb_x16", {64<<10,  16, {1, 1, 4, 4, 1<<18, 1<<10}}},
     };
 
-    /* 1.11.63 (calibration): nRC 75/77/79 -> 76/78/80, DERIVED-FROM-IDENTITY.
-     * tRC is ACT-to-ACT on the SAME bank and cannot be shorter than ACT-to-PRE
-     * plus the precharge period: tRC >= tRAS + tRP is definitional and needs
-     * no speed-bin table. All three rows violated it by exactly one cycle:
-     *   3200AN  nRAS 52 + nRP 24 = 76, row said 75 (46.875 ns vs 47.5 ns)
-     *   3200BN  nRAS 52 + nRP 26 = 78, row said 77
-     *   3200C   nRAS 52 + nRP 28 = 80, row said 79
-     * JESD79-5 is NOT held by this tree, so nRC is set to the identity value
-     * computed from the row's OWN nRAS and nRP -- DERIVED-FROM-IDENTITY, not
-     * sourced, and no bin value is invented. Every other field in these rows
-     * (rate, nBL, nCL, nRCD, nRP, nRAS, nWR, nRTP, nCWL, nPPD, nCCD*, nRRDS,
-     * nFAW, the whole refresh block and nCS) stays as it is: UNCHECKABLE. */
+    /* 1.11.63 (calibration): nRC 75/77/79 -> 76/78/80, then tagged
+     * DERIVED-FROM-IDENTITY because JESD79-5 was not held. 1.11.64: IT IS
+     * HELD (misc/JESD79-5D.pdf, v1.41 published Nov 2025), and the fix is
+     * UPGRADED TO CONFIRMED-NORMATIVE: Speed Bin Table NOTE 8, printed
+     * p.407, verbatim -- "tRC(min) shall always be greater than or equal to
+     * tRAS(min) + tRP(min), and when using the appropriate rounding
+     * algorithms, nRC(min) shall always be greater than or equal to
+     * nRAS(min) + nRP(min)." The plain cl.13.2 rounding of the tabulated
+     * tRC (47.000/48.250/49.500 ns, Table 283 p.390) yields exactly the OLD
+     * 75/77/79 -- NOTE 8 is precisely the clause that overrides them to
+     * 76/78/80. The identity fix was the standard's own rule.
+     * The rest of these rows is verified against JESD79-5D (2026-09-04):
+     * the three rows ARE published bins DDR5-3200AN/BN/C (CL-nRCD-nRP
+     * 24-24-24 / 26-26-26 / 28-28-28, Table 283 p.390 -- the Q3'16 ballot
+     * draft's 25-25-25 became 24 when odd CLs were eliminated, NOTE 12
+     * p.407); nRAS 52 (tRAS 32 ns), nWR 48 (tWR 30 ns, the standard's own
+     * worked example, Table 333 p.448), nRTP 12 (Max(12nCK,7.5ns)), CWL =
+     * CL-2 (MR0 NOTE), nPPD 2, nCCDS 8 (RBL/2), nCCDL 8 (Max(RBL/2,5ns)),
+     * the WTR composites match Table 334's formulas term for term, nRRDS 8,
+     * and all nine org presets match Tables 4-7 p.7 exactly. Remaining
+     * NOT-IN-STANDARD: nCS (no tCS AC parameter exists) and every IDD
+     * magnitude (ch.11 defines conditions only). One modelling choice
+     * flagged, not changed: nCCDL_WR selects 16 vs 32 by DQ width, where
+     * Table 334 conditions tCCD_L_WR2 = 16 on "second write not RMW" --
+     * the width heuristic stands in for x4 on-die-ECC RMW and is stated
+     * here as a choice, not a standard value. */
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
       //   name         rate   nBL  nCL nRCD   nRP  nRAS   nRC   nWR  nRTP nCWL nPPD nCCDS nCCDS_WR nCCDS_WTR nCCDL nCCDL_WR nCCDL_WTR nRRDS nRRDL nFAW nRFC1 nRFC2 nRFCsb nREFI nREFSBRD nRFM1 nRFM2 nRFMsb nDRFMab nDRFMsb nCS, tCK_ps
-      {"DDR5_3200AN",  {3200,   8,  24,  24,   24,   52,   76,   48,   12,  22,  2,    8,     8,     22+8+4,    8,     16,    22+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     30,    -1,   -1,   -1,     -1,     -1,    2,   625}},
-      {"DDR5_3200BN",  {3200,   8,  26,  26,   26,   52,   78,   48,   12,  24,  2,    8,     8,     24+8+4,    8,     16,    24+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     30,    -1,   -1,   -1,     -1,     -1,    2,   625}},
-      {"DDR5_3200C",   {3200,   8,  28,  28,   28,   52,   80,   48,   12,  26,  2,    8,     8,     26+8+4,    8,     16,    26+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     30,    -1,   -1,   -1,     -1,     -1,    2,   625}},
+      /* 1.11.64 (JESD79-5D): the nREFSBRD column carried 30 -- Table 73
+       * printed p.174 gives tREFSBRD(min) = 30 ns AT EVERY DENSITY, and the
+       * 30 had been stored in the CYCLE column (= 18.75 ns, 37.5% short of
+       * the JEDEC minimum). -1 now: filled from the ns value at load like
+       * every other refresh timing in this file (48 nCK at 625 ps). */
+      {"DDR5_3200AN",  {3200,   8,  24,  24,   24,   52,   76,   48,   12,  22,  2,    8,     8,     22+8+4,    8,     16,    22+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
+      {"DDR5_3200BN",  {3200,   8,  26,  26,   26,   52,   78,   48,   12,  24,  2,    8,     8,     24+8+4,    8,     16,    24+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
+      {"DDR5_3200C",   {3200,   8,  28,  28,   28,   52,   80,   48,   12,  26,  2,    8,     8,     26+8+4,    8,     16,    26+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
     };
 
     inline static const std::map<std::string, std::vector<double>> voltage_presets = {
@@ -440,29 +459,34 @@ class DDR5 : public IDRAM, public Implementation {
         }
       }(m_timing_vals("rate"));
 
-      /* 1.11.63 (calibration): nRRDL 5 -> 8, DERIVED-FROM-IDENTITY, not sourced.
-       * nRRDL is ACT-to-ACT within one bank group and nRRDS the same across
-       * bank groups; a same-bank-group activate cannot be issued sooner than a
-       * different-bank-group one, so tRRD_L >= tRRD_S is definitional. Every
-       * shipped DDR5 preset carries nRRDS = 8 while this table supplied
-       * nRRDL = 5 -- 3 cycles short, and the wrong way round.
-       * JESD79-5 is NOT held by this tree (no DDR5 standard and no DDR5 part
-       * datasheet exists anywhere in it), so no bin value is available and
-       * none is invented: nRRDL is raised to exactly nRRDS, the definitional
-       * floor, and no further. It is marked DERIVED-FROM-IDENTITY rather than
-       * sourced, and the real tRRD_L of a DDR5-3200 part is larger than this.
-       * Revisit when JESD79-5 or a Micron MT60B datasheet is held. */
+      /* 1.11.63 raised nRRDL 5 -> 8 as DERIVED-FROM-IDENTITY with the caveat
+       * "the real tRRD_L of a DDR5-3200 part is larger than this. Revisit
+       * when JESD79-5 ... is held." IT IS HELD NOW (misc/JESD79-5D.pdf,
+       * published Nov 2025), and the revisit says: 8 is EXACT. Table 334
+       * printed p.449: tRRD_L(1K) = tRRD_L(2K) = Max(8nCK, 5ns); at tCK =
+       * 0.625 ns both terms are 8 nCK. CONFIRMED-NORMATIVE -- the identity
+       * floor and the standard's value coincide, and the old caveat that the
+       * real part is slower is WITHDRAWN. */
       constexpr int nRRDL_TABLE[3][1] = {
       // 3200
-        { 8, },  // x4  -- = nRRDS (identity floor)
-        { 8, },  // x8  -- = nRRDS (identity floor)
-        { 8, },  // x16 -- = nRRDS (identity floor)
+        { 8, },  // x4  -- tRRD_L(1K) Max(8nCK,5ns) = 8 (JESD79-5D T334 p.449)
+        { 8, },  // x8  -- tRRD_L(1K), same
+        { 8, },  // x16 -- tRRD_L(2K) Max(8nCK,5ns) = 8, same
       };
+      /* 1.11.64 (JESD79-5D): the x4 and x16 rows were SWAPPED relative to
+       * the standard's page-size keying. Tables 4-7 printed p.7 give page
+       * size x4 = 1KB, x8 = 1KB, x16 = 2KB at every density; Table 334
+       * p.449 gives tFAW(1K) = Max(32nCK, 20ns) = 32 and tFAW(2K) =
+       * Max(40nCK, 25ns) = 40 at DDR5-3200. The old table had x4 = 40
+       * (conservative) and x16 = 32 -- a REAL TIMING VIOLATION for x16
+       * orgs, 8 nCK more permissive than the standard allows. x8 (the org
+       * every shipped preset uses) was correct, so no shipped result moved
+       * before this fix; a hand-written x16 org would have. */
       constexpr int nFAW_TABLE[3][1] = {
       // 3200  
-        { 40, },  // x4
-        { 32, },  // x8
-        { 32, },  // x16
+        { 32, },  // x4  -- 1KB page -> tFAW(1K) = 32 (JESD79-5D T4/T334)
+        { 32, },  // x8  -- 1KB page -> tFAW(1K) = 32
+        { 40, },  // x16 -- 2KB page -> tFAW(2K) = 40
       };
 
       if (dq_id != -1 && rate_id != -1) {
@@ -531,8 +555,16 @@ class DDR5 : public IDRAM, public Implementation {
       m_timing_vals("nRFC1")  = JEDEC_rounding_DDR5(tRFC_TABLE[0][density_id], tCK_ps);
       m_timing_vals("nRFC2")  = JEDEC_rounding_DDR5(tRFC_TABLE[1][density_id], tCK_ps);
       m_timing_vals("nRFCsb") = JEDEC_rounding_DDR5(tRFCsb_TABLE[0][density_id], tCK_ps);
-      m_timing_vals("nREFI")  = JEDEC_rounding_DDR5(tREFI_BASE, tCK_ps);
+      /* 1.11.64 (JESD79-5D cl.13.2 printed p.448): tREFI is a MAXIMUM
+       * parameter (Table 70 p.173), and the standard prescribes a distinct
+       * max algorithm -- round DOWN, no 997 correction factor, no +1 nCK.
+       * The min-algorithm this line used gave 6222; the max algorithm gives
+       * trunc(3.9e6 / 625) = 6240. 0.29% -- conservative direction (refresh
+       * slightly too often), but the wrong clause. */
+      m_timing_vals("nREFI")  = (tREFI_BASE * 1000LL) / tCK_ps;
 
+      constexpr int tREFSBRD_NS = 30;   // JESD79-5D Table 73 p.174, all densities
+      m_timing_vals("nREFSBRD") = JEDEC_rounding_DDR5(tREFSBRD_NS, tCK_ps);
       m_timing_vals("nRFM1")  = m_timing_vals("nRFC1");
       m_timing_vals("nRFM2")  = m_timing_vals("nRFC2");
       m_timing_vals("nRFMsb") = m_timing_vals("nRFCsb") * m_RH_radius;

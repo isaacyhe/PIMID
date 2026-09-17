@@ -3311,10 +3311,22 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     else if (tech == "GDDR6")    { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     // HBM has 2 pseudo-channels/channel; PIMID has no pseudo-ch level, so fold
     // them into the BG count to match Ramulator2/JEDEC per-channel org:
-    //   HBM2 {1,2,4,2} = 2 pch x 4 BG x 2 banks = 16 banks (8 BG/ch)
+    //   HBM2 {1,2,4,4} = 2 pch x 4 BG x 4 banks = 32 banks (8 BG/ch)
     //   HBM3 {1,2,4,4} = 2 pch x 4 BG x 4 banks = 32 banks (8 BG/ch)
     // chips_per_rank = channels per stack (HBM2 8, HBM3 16).
-    else if (tech == "HBM2") { banks_per_bg = 2; bg_per_chip = 8; chips_per_rank = 8; }
+    /* 1.11.64: HBM2 folds to 32 banks per channel, not 16 -- the FOURTH and
+     * last site of the JESD235D bank/row correction, and the one that
+     * actually reaches the emitted geometry. This table feeds tech_min_banks
+     * (the "technology requires at least N banks" guard below) and, through
+     * config.num_banks, the --total-units the kernel is invoked with. With
+     * HBM2 left at 2 x 8 = 16 here while the org preset had moved to 32, a
+     * config pinning `banks: 16` was silently accepted, total_units stayed
+     * 128 while pages_per_unit halved, and the modelled capacity halved --
+     * gate 1174B's H2' arm, which asserts units x pages_per_unit directly.
+     * HBM2 and HBM3 now carry the same per-channel bank shape, which is what
+     * JEDEC gives them (BA[3:0] per pseudo-channel in both); they still
+     * differ in channels per stack, which is the chips_per_rank column. */
+    else if (tech == "HBM2") { banks_per_bg = 4; bg_per_chip = 8; chips_per_rank = 8; }
     else if (tech == "HBM3")     { banks_per_bg = 4; bg_per_chip = 8; chips_per_rank = 16; }
     /* 1.9.35: the two lines above BOOK THE CHANNEL DIMENSION TWICE for HBM.
      * chips_per_rank is set to the channel count per stack, as the comment above

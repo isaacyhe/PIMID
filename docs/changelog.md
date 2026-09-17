@@ -7,6 +7,146 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.64 -- vendor silicon, and the layout that density hid
+
+The release that reads the parts' own papers. Six ISSCC/JSSC device papers
+arrived (RIKEN IEEE Xplore) alongside the published JESD79-5D, and between
+them they corrected an organization defect, confirmed two derivations,
+retired a staged change that would have been a bug, and answered a
+modelling question that had been queued for a user ruling.
+
+HBM2 ORGANIZATION (JESD235D Table 4, printed p.6; Table 5 p.8). The 4 Gb
+and 8 Gb org presets each carried HALF the banks and TWICE the rows the
+standard specifies -- 8 banks/pseudo-channel over 32768 rows where JEDEC
+gives 16 banks over 16384 (and, at 8 Gb/channel, 16 over 32768). The
+density product closed exactly either way, which is why it survived every
+completeness and capacity cross-check this tree has; what it described was
+a part with half the bank-level parallelism and twice the row space. On a
+bank-placement PIM model that is first-order: half the banks to interleave
+over, and a diluted row-hit rate at fixed footprint. The 2 Gb preset was
+already right and is unchanged.
+
+The fix is THREE-SITE, and each of the two sites beyond the obvious one
+was found by something failing rather than by reading the code.
+
+Site 2, the wrapper's own transcription of the org preset:
+getPresetRowsPerBank() -- sole authority for subarrays_per_bank, the
+in-memory tree shape, the tree-coverage assertion and pages_per_unit
+(ruling R4) -- reads that transcription, not the Ramulator source. The
+first build after the preset edit was green and moved NOTHING.
+
+Site 3, the ARCHITECTURE OBJECT, and this one was a defect this release
+introduced before gate 1174A caught it. Bank ROWS come from the preset
+(-> pages_per_unit) but bank COUNT comes from the architecture object
+(effectiveDramBanks -> total_units). With only the preset corrected, the
+1174A logs showed --pages-per-unit halving 65536 -> 32768 while
+--total-units stayed at 128: the modelled capacity HALVED. Neither the R1
+capacity cross-check nor the R4 derivation covers a bank-count
+disagreement between the two authorities, so nothing warned. The DDR5
+entry in dram_architecture_v2.h had in fact predicted this exact hazard
+-- "moving the bank count is a separate change with a separate blast
+radius (the CACTI area query and effectiveDramBanks())" -- and the
+warning was read only after tripping over it. The object now carries
+JEDEC's 8 bank groups per channel (4 per pseudo-channel x 2 PC = 32
+banks) and bank_size_mb 32 -> 16 MB to match. Gate 1174B asserts the
+product directly: units must double, pages per unit must halve, and
+their product must hold.
+
+WHAT DELIBERATELY DID NOT CHANGE, and why the staged plan was dropped.
+The 1.11.63 changelog staged "HBM3 org DQ 128 -> 64 + columns 64 -> 128"
+and an equivalent HBM2 re-factoring. Checking the vendor organization
+against ours showed the re-factoring would have been a DEFECT: dq 128 x
+2n prefetch = 256 b = 32 B is exactly JEDEC's access granularity (32 DQ x
+BL8), and halving dq without moving the prefetch halves it to 16 B. Our
+factorization (128 x 64 x 2n) and JEDEC's (32 x 256 x 8n) produce the same
+page size, the same granularity and the same density; only the bookkeeping
+differs. The staged change is dropped, documented at both presets, and if
+the factorization is ever aligned it must be the triple, not the pair.
+
+HBM3, CONFIRMED BY VENDOR SILICON. Two independent makers state the CK
+domain outright: Ryu et al. (Samsung, JSSC 58(4) p.1052) give a 2 nCK bus
+window "equivalent to 1 ns at 8 Gb/s/pin", and Park et al. (SK hynix, JSSC
+58(1) p.259) give "1tCK ... 571.4 ps for the 7-Gb/s operation" -- both
+tCK = data_rate/4, confirming the 1.11.63 CK-domain correction and
+refuting the rate/2 convention much of the open-source community uses.
+Ryu also gives tCCDS = 2 nCK and tCCDL = 4 nCK, matching this tree's
+values exactly. The ISCA 2025 tutorial (Woo/Elsasser, Rambus) supplies the
+physical reason HBM's column spacing is half DDR's: the IO sense amp sits
+mid-bank rather than at the bank end. Their organization (16 ch x 2 pCH x
+32 DQ, 16 banks/pCH in 4 groups, 16384 rows, 1 KB page/pCH, 2 Gb/pCH)
+closes arithmetically to the advertised 16 Gb die and 16/24 GB cubes
+across three independent papers, and matches ours in every derived
+quantity.
+
+THE TSV QUESTION, ANSWERED WITHOUT A RULING. 1.11.63 raised "PIMID models
+no vertical-interconnect energy" as a decision item, since HBM's charged
+DQ interface is zero. Cho et al. (SK hynix, ISSCC 2018 12.3 Fig.12.3.1)
+measure per-TSV driver current on real HBM2 silicon -- ~880 uA multi-drop
+vs ~610 uA spiral point-to-point at 1.0 V, 3.3 Gb/s PRBS, i.e. roughly
+0.27 -> 0.19 pJ/bit for the driver alone -- which looks like the missing
+term. It is not: the IDD columns are per-channel DEVICE currents, and an
+IDD4R/IDD4W measurement is taken at the stack's supply balls with a burst
+in flight, so the TSVs are inside the device under test and their current
+is already inside the measured burst. That is precisely the structural
+difference from DDR-class parts, whose DQ bus leaves the package and
+terminates externally. No term is added; the measurement is recorded as a
+decomposition insight for validation. HBM termination = 0 now has three
+independent confirmations (JESD238B.01 cl.9.1; ISCA 2025 slide 46 "ODT not
+allowed in HBM (static power)"; Chun JSSC 2021 Table I "CMOS,
+un-terminated").
+
+DDR5, the three JESD79-5D defects (carried from 1.11.63's verification
+pass): nFAW's x4 and x16 rows were SWAPPED against the standard's
+page-size keying (Tables 4-7 give x4 = 1 KB, x16 = 2 KB; Table 334 gives
+tFAW(1K) = 32, tFAW(2K) = 40 nCK) -- the old x16 = 32 was 8 nCK more
+permissive than the standard allows, a real timing violation for a
+hand-written x16 org, while x8, which every shipped preset uses, was
+correct; nREFI applied the MINIMUM-parameter rounding algorithm to a
+MAXIMUM parameter (clause 13.2 prescribes round-down with no correction
+factor), 6222 -> 6240 nCK; and nREFSBRD carried Table 73's 30 ns in the
+CYCLE column, 37.5% short of the JEDEC minimum, now derived at load like
+every other refresh timing (48 nCK). Flagged, not changed: nCCDL_WR
+selects 16 vs 32 by DQ width where Table 334 conditions tCCD_L_WR2 on
+"second write not RMW" -- the width heuristic stands in for x4
+on-die-ECC RMW and is documented as a modelling choice.
+
+PROVENANCE. GDDR6's host-side write-driver RON is sourced (Achronix
+Speedster7t UG091 Table 3 p.16: "DQ driver impedance (RON) 40/48/60 ohm";
+our 40 is in the set), which retires the last stated assumption in the R7
+read/write termination split -- every electrical input is now a sourced
+value or a point inside a sourced range. A second HBM2 die-area anchor
+joins Sohn's: Cho's 81.8 mm^2 for an 8 Gb 2-channel core die, recorded as
+an 82-96 mm^2 cross-vendor band rather than a point. docs/sources.md gains
+a vendor-silicon-papers section with the scope caveats that matter --
+notably that Chae's 0.25/0.29 pJ/bit is a SoC-side PHY figure with the
+DRAM die excluded, and must never be used as DRAM I/O energy.
+
+NOT CITABLE, recorded so nobody is tempted: misc/"DRAM Lecture
+Tomishima.pdf" carries "Intel Confidential - Internal Use Only" on 85 of
+its 90 pages. Background reading only -- no citation, no figure, and no
+number from it in any config's provenance.
+
+STAGED, not bundled: the temperature-dependent refresh ladder. It is now
+sourced across three vendors (Intel's TEMP[2:0] 4x/2x/1x/0.5x/0.25x tREFI
+in the Stratix 10 MX and Agilex M HBM guides; AMD DS923's ">= 4x above
+95 C"; PG276's tREFI halving at 85-95 C) and our refresh model is
+temperature-flat, but it is a cross-cutting feature and ships in its own
+attributable release.
+
+Data impact: every HBM2 result. Bank count per channel doubles (16 -> 32),
+rows per bank halve, bank_size_mb halves, the in-memory tree loses half
+its leaves (32 -> 16 in the reference co-sim cell) and pages_per_unit
+halves with total_units doubling to hold capacity -- so the address-to-unit
+map, PE locality and hop distance all move. On cycles the honest statement
+is narrower than "everything moves": the memory-timed weave result moves
+(1174A measured +3.8% on the reference cell with only half the fix in),
+while per-core simulated cycles move on some cores and not others,
+depending on whether that core's traffic is layout-sensitive. DDR5 moves
+by +0.29% on nREFI plus two corrections that are inert at the shipped
+presets. HBM3, LPDDR5, GDDR6, DDR3 and DDR4 are unchanged -- their
+entries here are provenance and documentation. The corpus re-sim on
+>= 1.11.64 remains the gate before any CAL number is quoted.
+
 ## 1.11.63 -- the standards arrive, and the presets answer to them
 
 The calibration release. R6 (2026-08-24, user): "we mainly rely on the

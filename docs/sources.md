@@ -18,7 +18,7 @@ sources disagree) a band.
 | DDR5 electricals (R7 rd/wr split) | POD at 1.1 V; read 34+40, write 34+120. NOTE: no "POD11" JESD8-* standard exists (family is POD18/15/135/125/12/10, all in misc/); the 1.1 V point is JESD79-5's own | Micron DDR5 core sheet p.453 IDD conditions (MR5 RZQ/7 drivers, MR35 RTT_NOM RZQ/6, MR34 RTT_WR RZQ/2) | CACTI-IO injection |
 | GDDR6 electricals (R7 rd/wr split) | POD135; read 40+60, write 40+120; MR1 default = termination DISABLED, IDD operating point priced | Samsung K4Z80325BC p.166 (driver 40 / termination 60 characteristics), p.144 IDD conditions ("All ODTs are enabled with ZQ/2", ZQ=240), p.49 MR1; JESD250D (topology) | CACTI-IO injection |
 | Controller-side write driver RON (DDR4/DDR5) | applied 34 ohm, inside the sourced host range 30-50 ohm | Intel 743844-015 (misc/) Table 87 p.208 (DDR5: RON_UP/DN(DQ) 30-50 ohm, RODT(DQ) 30-240) and Table 86 p.207 (DDR4: 30-50, RODT 40-200); range stated at the row, point chosen within it | `pimid_energy.h` (ron_wr) |
-| Controller-side write driver RON (GDDR6) | 40 ohm -- ASSUMED equal to the DRAM's pull-down class (same 240-ohm ZQ reference); no public GDDR6 host-silicon doc in misc/ | the one remaining stated assumption of the R7 split | `pimid_energy.h` (ron_wr) |
+| Controller-side write driver RON (GDDR6) | applied 40 ohm, a member of the sourced host set {40/48/60} | Achronix Speedster7t GDDR6 User Guide UG091 (misc/achronix_speedster7t_gddr6_user_guide_ug091.pdf), Table 3 p.16: "DQ driver impedance (RON) 40/48/60 ohm" (host PHY; CA RON same set, CA term 60/120/240) -- closes the R7 split's last stated assumption (2026-09-04) | `pimid_energy.h` (ron_wr) |
 | LPDDR5 termination topology | LVSTL, VSS-referenced; DQ ODT default = Disable | Micron datasheets (misc/315b-441b-*.pdf, misc/MICT-S-A0025741931-1.pdf); JESD209-5C Table 84 p.144 (misc/JESD209-5C.pdf) | `pimid_energy.h` (rtt=0 encodes the JEDEC default; sourcing residue N8 CLOSED 1.11.63) |
 | LPDDR5 VDDQ | 0.50 V TYP (0.30 V ODT-off; range 0.47-0.57 V) | Micron LPDDR5X y52p p.1 Features; Micron_LPDDR5_MT62F p.1 and Table 7 p.14 | CACTI-IO injection (`cacti_io_wrapper.cpp`), `pimid_energy.h` |
 | LPDDR5 driver RON | 40 ohm | Micron IDD-table Note 4 ("Output load = 5pF; RON = 40 ohms; TC = 25 C"): Micron_LPDDR5_MT62F p.15, y52p p.43, y52q p.33, MICT-S p.30, y4bm p.25 | CACTI-IO injection, `pimid_energy.h` |
@@ -102,3 +102,50 @@ JESD212C, JESD232A, JESD235B ballout, JESD238B (HBM3), JESD239E, JESD250D
 Micron LPDDR5X datasheets, Sohn 2016/2017, Vogelsang 2010, O'Connor 2017,
 the UPMEM Hot Chips 31 deck, and Gomez-Luna 2021. `misc/` is not part of
 the published tree; this file is.
+
+## Corroborations and normative upgrades (2026-09-04 document sweeps)
+
+| Item | Corroborating/upgrading source | Effect |
+|---|---|---|
+| DDR5 preset chain (bins 3200AN/BN/C = 24/26/28, nRAS 52, nWR 48, nRTP 12, nCCD*/WTR formulas, all nine orgs, rounding algorithm, VDD/VPP) | JESD79-5D v1.41 (misc/JESD79-5D.pdf, published Nov 2025): Table 283 p.390, Table 334 p.449, Tables 4-7 p.7, cl.13.2 p.447-448, Table 196 p.330 | Micron-transcription citations upgraded to NORMATIVE; the Q3'16 ballot draft's differing bins are superseded (odd CLs eliminated, NOTE 12 p.407) |
+| DDR5 R7 electricals (RON 34/40/48 @ RZQ=240; RTT_WR default 240; RTT_NOM_WR/RD default 80; RTT_PARK default OFF; IDD conditions RZQ/7 + RZQ/6 + RZQ/2) | JESD79-5D MR5 p.38, MR34 p.61, MR35 p.62, Table 315 NOTE 2 p.431, Tables 191/245 pp.325/366 | All four R7 anchors now NORMATIVE; the "self-contained 1.1 V point, no JESD8-*" claim is confirmed (the standard never references any JESD8-* document) |
+| HBM2 refresh model (tREFI 3.9 us; tRFC 260 ns @4H / 350 ns @8H) | AMD PG276 v1.0 p.23 (misc/amd_pg276_axi_hbm_controller_product_guide.pdf) -- vendor-authored controller guide | Independent second-vendor confirmation of the JESD235D-anchored values; also sources tREFI halving at 85-95 C |
+| HBM temperature-refresh ladder (4x/2x/1x/0.5x/0.25x tREFI by TEMP[2:0]) | Intel UG-20031 Table 30 p.66 + Agilex M HBM2E IP UG Table 5 p.17 (misc/); AMD DS923 note 16 p.5 (>=4x above 95 C) | Sourced across three vendors; candidate future modeling item (current refresh model is temperature-flat) |
+| HBM3 tRFCab 260 ns at the emitted HBM3_4Gb org | JESD238B.01 Table 93 PDF p.179: tRFCab keyed by CHANNEL density -- 4 Gb/ch 260, 8 Gb/ch 350, 16 Gb/ch 450 | Community flag (ramulator2/gem5 "350 ns") resolved: they describe an 8 Gb/channel org; both readings are the same table, different rows |
+| HBM1/HBM2 timing structure + I/O energy class | SK hynix Hot Chips 26/28 decks (misc/paper_hc26/hc28_*.pdf): tRC 40-48 ns, tCCD 1 CK, 2 KB page, per-gen speeds, I/O energy ratios | Vendor-authored public corroboration for the HBM2 rung |
+| HBM2E PHY energy | Samsung HC32 poster (misc/paper_hc32_*.pdf) p.11: measured WRITE 1.07 / READ 0.56 / IDLE 0.02 pJ/b at 0.75/1.2 V | Validation band for the interface-energy layer |
+| HBM2 measured IDD + model-error band | CMU-SAFARI HBM-Power artifact (misc/zen_hbm2_idd_*.csv): 36-chip IDD distributions; DRAMSim3-class HBM2 power model = 20.7% MAPE (all-0s) / 39.8% (random) vs silicon | The citable error bar for simulator-derived HBM energy; per-chip spread 1.6-1.8x standby |
+| HBM2 measured latency/timing | Shuhai TC'21 (hit/closed/miss 106.7/122.2/137.8 ns); DSN'24 read-disturbance artifact (tRAS 29 ns, tREFI 3.9 us, tRC ~45-48 ns on real parts) | Row-buffer state machine and refresh-model validation anchors |
+
+## Vendor silicon papers (ISSCC/JSSC, acquired 2026-09-17)
+
+Six vendor-authored device papers, cited under RIKEN's IEEE Xplore license.
+These are the strongest public source class for the parts whose datasheets
+are NDA-only. Note what they do and do not contain: vendor papers publish
+bandwidth, voltages, organization, die/package geometry, energy-per-bit for
+the PHY, and measured operating corners -- they do NOT publish JEDEC-style
+core AC timing tables or IDD tables.
+
+| Item | Value | Source | Use |
+|---|---|---|---|
+| HBM2 org bank/row split | 2 Gb/ch: 8 banks/PC, RA[13:0]; 4 Gb/ch: 16 banks/PC, RA[13:0]; 8 Gb/ch: 16 banks/PC, RA[14:0]; 1 KB page/PC at every density | JESD235D Table 4 p.6, Table 5 p.8 | CALIBRATION -- fixed the 4 Gb and 8 Gb org presets (1.11.64) |
+| HBM2 core-die area (2nd vendor anchor) | 81.8 mm^2, 8 Gb 2-channel core die | Cho et al., SK hynix, ISSCC 2018 12.3 Fig.12.3.7 | Band with Sohn's 96.00 mm^2: an 8 Gb HBM2 core die is ~82-96 mm^2 across vendors |
+| HBM2 per-TSV driver current | ~880 uA (multi-drop) -> ~610 uA (spiral P2P), 1.0 V, 3.3 Gb/s PRBS; derived ~0.27 -> ~0.19 pJ/bit for the TSV driver alone | Cho ISSCC 2018 Fig.12.3.1 (chart-read; the pJ/bit derivation is ours) | VALIDATION only -- NOT added as a term: per-channel device IDD already contains TSV current (see pimid_energy.h) |
+| HBM2 refresh | 8K / 32 ms -> tREFI 3.90625 us; page 1 KB/PC | Cho ISSCC 2018 Fig.12.3.7 | Corroborates the JESD235D-anchored refresh model |
+| HBM2E clock + latency | tCK 0.4 ns measured at 5 Gb/s/pin and VDD 1.1 V; RL41 | Chun et al., Samsung, JSSC 56(1) 2021 Fig.18(a) p.207 | Reference rung; HBM2E is not a modelled technology |
+| HBM3 CK domain | tCK = data_rate / 4, stated by BOTH vendors: 2 nCK = 1 ns at 8 Gb/s (Ryu JSSC 58(4) p.1052); 1 tCK = 571.4 ps at 7 Gb/s (Park JSSC 58(1) p.259) | Ryu 2023; Park 2023 | CONFIRMS the 1.11.63 CK-domain correction; refutes the rate/2 convention common in open-source models |
+| HBM3 column spacing | tCCDS = 2 nCK (different bank group), tCCDL = 4 nCK (same bank group) | Ryu JSSC 58(4) p.1052 | First vendor corroboration of our nCCDS 2 / nCCDL 4 |
+| HBM3 organization | 16 ch x 2 pCH x 32 DQ, BL8, 32 B granularity, 16 banks/pCH in 4 BG, 16384 rows, 1 KB page/pCH, 2 Gb/pCH -> 16 Gb core die | Ryu p.1052/1057; Park p.257/264; Lee ISSCC 2024 Fig.13.4.6 p.239 | Closes arithmetically across three independent papers; our preset is equivalent (different factorization) |
+| HBM3 rails | VDD/VDDQ/VDDQL/VPP = 1.1 / 1.1 / 0.4 / 1.8 V; JEDEC minimum operating voltage 1.067 V | Ryu p.1052; Park p.264; Lee p.239 (3/3 agree) | CALIBRATION |
+| HBM3 PHY energy | 0.25 pJ/bit write / 0.29 read at 9 Gb/s/pin, VDD 0.66 V / VDDQ 0.30 V. SCOPE: SoC-side PHY incl. digital back-end (TRX, strobe control, per-bit de-skew, read FIFO, VT tracking, DFI logic, addr/cmd interface, DFT) -- THE DRAM DIE IS EXCLUDED | Chae et al., Samsung Foundry, JSSC 59(1) 2024 Table II p.239 | VALIDATION for a controller-PHY term ONLY; never as DRAM I/O energy. Note Chae's 0.30 V VDDQ vs the DRAM papers' 0.40 V VDDQL -- 1.8x under CV^2 |
+| HBM3E vs HBM3 | "bump map footprint, the number of channel and I/Os, and the operation voltage, are identical to the latest HBM3" -- corroborated by the paper's own table (ballmap 7.08 x 8.82 mm, bump pitch 96 x 110 um, chip 11 x 11 mm, rails all identical). EXCEPTIONS: density (24 Gb dies, 16-high -> 48 GB) and row address RA<0:13> -> RA<0:14> | Lee et al., SK hynix, ISSCC 2024 13.4 p.238-239 | Justifies modelling HBM3E as HBM3 at a raised pin rate -- for the INTERFACE, not for capacity or row count |
+| HBM termination | "ODT not allowed in HBM (static power)"; interface "CMOS, un-terminated" | ISCA 2025 tutorial slide 46 (Song, Samsung); Chun JSSC 2021 Table I p.200 | Third independent corroboration of HBM termination = 0 (with JESD238B cl.9.1) |
+| HBM2 system power split | SoC PHY 33.3% / DRAM core 37.4% / DRAM interface + channel IO 29.3%, at 2 Gb/s streaming reads, 1024 DQ | ISCA 2025 Tutorial slide 15, sourced "Rambus Inc." (Woo/Elsasser, Rambus) | VALIDATION band for the ONE-FABRIC three-way projection. Condition: read-streaming best case, not mixed traffic |
+| Cross-generation tCCD in ns | DRAM core frequency pinned <= 200 MHz since DDR2; tCCD_L pinned at 5 ns since DDR2-800; prefetch absorbs all data-rate scaling | ISCA 2025 Tutorial slide 130 | Structural cross-check; JEDEC gives tCCD_L in tCK per bin, this gives the ns invariant |
+| tCCD_L family split, with cause | ~5 ns where the IO sense amp sits at the bank end (DDR/LPDDR) vs ~2.5 ns mid-bank (GDDR/HBM) | ISCA 2025 Tutorial slide 56 | Physical justification for our per-family tCCD_L values -- not derivable from the standards |
+| DDR5 latency-under-load validation target | DDR5-6400, 8 BG x 4 banks, 1/2 ranks, 32-entry R/W queues, 67/33 R/W, closed page, random: 54 ns unloaded; saturation ~17.5 GB/s (32 banks) and ~23.3 GB/s (64 banks) of 51.2 GB/s peak | ISCA 2025 Tutorial slides 93-95 (DRAMSys) | VALIDATION -- a fully specified, reproducible performance target; standards contain no performance data |
+
+NOT CITABLE (held for background only): `misc/DRAM Lecture Tomishima.pdf`
+carries "Intel Confidential - Internal Use Only" on 85 of its 90 pages. No
+number from it may appear in a config, a figure, or the manuscript with
+that deck as its provenance.
