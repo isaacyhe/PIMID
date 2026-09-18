@@ -7,6 +7,98 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.67 -- the part the knob names, at every door
+
+The re-sim pre-flight ran the corpus configs through `--print-mem-info` on
+the 1.11.66 binary before a node was spent on them, and DDR5 failed its own
+reconciliation check on every default run. Three defects, one root: the
+1.11.66 speed-grade knob (R8 #9) moved the DDR5 default part to 4800B but did
+not reach everything that describes the part. Each fixed and validated
+separately, device scope, old-vs-new on the same configs.
+
+1. **The architecture object kept the factory rate.**
+   `applyPresetTimingsToArchitecture()` stamped timings, clock and burst but
+   not `data_rate_mtps`, which stayed at the literal 3200. The 1.11.56 check
+   (architecture rate x width x channels must reproduce the rate table's
+   bandwidth) therefore failed at 4800 -- 25600 vs 38400 MB/s -- and, by the
+   1.11.57 B001/B002 rule, the per-level link ladder was NOT adopted: every
+   default DDR5 run fell back to the placeholder table ("88 bits, 26.4 GB/s"
+   at the channel) and said so. The rate is now stamped from the preset's own
+   `rate` column for the four technologies that own an object (DDR4, DDR5,
+   HBM2, HBM3). DDR3 is deliberately excluded: it reads DDR4's object as a
+   proxy, and stamping its rate would make the check pass and DDR4's ladder
+   be adopted under a DDR3 provenance line -- the false claim 1.11.57 refused.
+   Validated: at 3200 / 4800 / 5600 the new binary prints "Hierarchy link
+   ladder from the DDR5 architecture object 256/8/16/8/64/64/64" and
+   "PROJECTED from the sourced ladder ... invariant checked", zero mismatch
+   warnings; the old binary fires 7/2/7 and "NOT adopted". DDR4, HBM2, HBM3
+   (rate stamp == literal) and DDR3/LPDDR5/GDDR6 (not stamped) are
+   byte-identical old vs new.
+
+2. **A retired note came back, and lied.** `sayPresetRate()` compared the
+   static rate table (3200) against the preset and printed "DDR5 is modelled
+   at 3200 MT/s (energy, termination and bandwidth)" -- a claim that has been
+   false since 1.11.63 made `modelledRateMTs()` (the preset) the one authority
+   for all three, and one line above `modelledRateMTs()` saying the opposite.
+   The lambda is now a no-op (the per-tech branches keep naming their preset
+   in one place); the disclosure survives, once and correctly, in
+   `modelledRateMTs()`. The static table's DDR5 row follows the default part
+   (4800) so the default run is quiet and 3200 / 5600 say "the static rate
+   table still says 4800 MT/s and is ignored". Validated at all three grades;
+   old fires 7/2/7 false notes.
+
+3. **The knob reached eleven doors of eighteen.** main.cpp constructs
+   `RamulatorWrapper` at eighteen sites; `applyDramKnobs()` (1.11.66) was
+   wired into eleven. The other seven constructed the DEFAULT part: the
+   latency helper behind `getMemoryLatencyCycles()`, `reportBandwidthScopes()`
+   (the ladder gate itself), the chip/bank oracle, the host-MC bandwidth and
+   the multi-node M/D/1 rate queries. Measured at grade 3200 on 1.11.66:
+   cycles at 3200AN, but access latency 66 cycles and "rank bus 38.4 GB/s"
+   (the 4800B part) and the ladder gate evaluated on the wrong object.
+   Invisible at the default grade, which is why gate 1176A D9 passed. The four
+   run-wide knobs (device width, DDR5 grade, temperature, termination
+   override) are now recorded ONCE, `RamulatorWrapper::setRunWideKnobs()`,
+   right after the YAML block where their last assignment lives, and every
+   constructor starts from them; `applyDramKnobs()` stays as the idempotent
+   per-instance path. Validated: 3200 now reports 25.6 GB/s, 60 cycles, the
+   8 Gb org and zero 16 Gb mentions; 5600 reports 44.8 GB/s, 65 cycles; the
+   default run is byte-identical to the state after fix 2; the six other
+   technologies byte-identical to 1.11.66 (the un-knobbed instances now also
+   run at the config's 350 K instead of the member's 358 K -- same refresh
+   rung, no observable moves).
+
+Not fixed here, stated: DDR3, LPDDR5 and GDDR6 have no architecture object of
+their own (1.11.57 B001) and run on the declared placeholder ladder; whether
+to build the three objects from the standards now in hand before the corpus
+re-sim is a ruling for the re-sim plan. The wrapper's early "In-Memory Network
+Initialized" block prints the per-technology TABLE widths before adoption is
+decided, so it disagrees with the adopted ladder on a run that adopts one --
+cosmetic, listed.
+
+Data impact: DDR5 only, and it is large. Default runs now simulate on the
+sourced link ladder instead of the placeholder table, and the cycle count
+rises by an amount that depends on workload size (stream_triad, 16 PE, BANK,
+detailed NoC): +18.0% at 1M elements, +33.1% at 400k, +102.3% at 100k --
+always the same direction, always far outside the run-to-run band. Gate 1177D
+measured that band in the same runs: 2.38% over six repeats, with the
+new-vs-old mean difference at 0.70%, inside it. Non-default grades now
+describe one part throughout.
+
+DDR4 -- and by extension every technology whose object already reconciled --
+is UNCHANGED, established three ways: device-scope output byte-identical
+(bit-deterministic), the new binary reproducing the old binary's exact
+access-counter vector (rd/wr/remoteAcc/instrs) in repeated runs, and the
+cycle means agreeing inside the measured band. DDR3, LPDDR5 and GDDR6 are
+byte-identical in device scope.
+
+Gate history, recorded because it cost four runs: 1177A passed 7 of 8 arms;
+its M1 arm failed three times on ARM defects, not product defects -- a
+timeout, an exact-cycle-equality assertion on a metric that is not bit-stable
+under OMP thread scheduling, a single-run counter comparison that sampled
+workload jitter, and a drift threshold with no source behind it. 1177D
+asserts what the metrics carry: an exact counter-vector match, and tolerances
+measured from the old binary's own drift in the same run.
+
 ## 1.11.66 -- round five: the register, the shape, and a clock put back
 
 Round 5 audited 1.11.60 through 1.11.65 in three lanes -- code, gates,

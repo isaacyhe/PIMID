@@ -39,6 +39,36 @@ RamulatorWrapper::RamulatorWrapper(const std::string& config_path, const std::st
       bandwidth_tracker_(nullptr),
       internal_network_(nullptr),
       pim_plugin_(nullptr) {
+    /* 1.11.67: start from the run-wide knobs when main has recorded them, so
+     * an instance constructed at a site that never calls applyDramKnobs()
+     * still describes the part this run simulates. The setters are used
+     * (not raw assignment) so the grade is validated the same way here. */
+    if (s_run_knobs_set_) {
+        device_width_ = s_run_device_width_;       // before dram_arch_ exists: plain record
+        ddr5_grade_mtps_ = s_run_ddr5_grade_mtps_;  // validated once in setRunWideKnobs()
+        temperature_k_ = s_run_temperature_k_;
+        energy_term_override_pJ_per_bit_ = s_run_termination_pj_per_bit_;
+    }
+}
+
+bool        RamulatorWrapper::s_run_knobs_set_ = false;
+std::string RamulatorWrapper::s_run_device_width_;
+int         RamulatorWrapper::s_run_ddr5_grade_mtps_ = 4800;
+int         RamulatorWrapper::s_run_temperature_k_ = 358;
+double      RamulatorWrapper::s_run_termination_pj_per_bit_ = -1.0;
+
+void RamulatorWrapper::setRunWideKnobs(const std::string& device_width, int ddr5_grade_mtps,
+                                       int temperature_k, double termination_pj_per_bit) {
+    if (ddr5_grade_mtps != 3200 && ddr5_grade_mtps != 4800 && ddr5_grade_mtps != 5600) {
+        // Same refusal as setDdr5SpeedGrade(): the grade names a part this tree holds.
+        RamulatorWrapper probe("", "DDR5");
+        probe.setDdr5SpeedGrade(ddr5_grade_mtps);   // prints the FATAL and exits 2
+    }
+    s_run_device_width_ = device_width;
+    s_run_ddr5_grade_mtps_ = ddr5_grade_mtps;
+    s_run_temperature_k_ = temperature_k;
+    s_run_termination_pj_per_bit_ = termination_pj_per_bit;
+    s_run_knobs_set_ = true;
 }
 
 RamulatorWrapper::~RamulatorWrapper() {
@@ -596,6 +626,27 @@ void RamulatorWrapper::applyPresetTimingsToArchitecture() {
     dram_arch_->timing.clock_freq_mhz = 1000.0 / preset_timing_.tCK_ns();
     if (preset_timing_.nBL > 0)
         dram_arch_->timing.tBurst_ns = preset_timing_.nBL * preset_timing_.tCK_ns();
+    /* 1.11.67 (re-sim pre-flight): THE DATA RATE IS STAMPED TOO, for the
+     * technologies that OWN their object. 1.11.66 made the DDR5 part a
+     * setting (3200AN / 4800B / 5600B) and moved the default to 4800B, but
+     * this field kept the factory literal 3200, so the reconciliation check
+     * in initialize() failed on every default DDR5 run (38400 vs 25600 MB/s)
+     * and the per-level link ladder fell back to the placeholder table --
+     * the D002 defect in its 1.11.56 form, reintroduced by the knob that was
+     * meant to close it. The rate is the preset's own `rate` column, the same
+     * number modelledRateMTs() prices termination from, so cycles, ladder and
+     * energy describe one part again at every grade.
+     *
+     * DDR3 is deliberately NOT in this set although it is in `ruled`: it
+     * reads DDR4's object as an organisation proxy (1.11.57 B001), and
+     * stamping DDR3-1600's rate onto that proxy would make the check pass and
+     * DDR4's ladder be adopted under a DDR3 provenance line -- exactly the
+     * false claim 1.11.57 refused. Its ns timings are stamped (energy reads
+     * them); its ladder stays declared placeholder until it has an object. */
+    const bool owns_object = (dt == "DDR4" || dt == "DDR5" ||
+                              dt == "HBM2" || dt == "HBM3");
+    if (owns_object && preset_timing_.rate_mtps > 0)
+        dram_arch_->timing.data_rate_mtps = preset_timing_.rate_mtps;
     // The two hierarchical times declare themselves as sums of the four above.
     dram_arch_->deriveHierarchicalAccessTimes();
 }
@@ -1208,22 +1259,20 @@ void RamulatorWrapper::parseConfiguration() {
          * derivePresetCapacityAndBandwidth() below the chain -- so a branch
          * here names a preset and a channel count and nothing else.
          *
-         * The disclosure this block exists for is unchanged: sayPresetRate()
-         * still announces every technology whose modelled rate and timing
-         * preset differ. */
-        auto sayPresetRate = [](const std::string& t, const char* preset,
-                                double preset_mts) {
-            double mts = PIMID::CactiIOWrapper::dramRateMTs(t);
-            if (mts > 0.0 && preset_mts > 0.0 &&
-                std::fabs(mts - preset_mts) > 1.0) {
-                std::cerr << "[mem] NOTE: " << t << " is modelled at " << mts
-                          << " MT/s (energy, termination and bandwidth), while "
-                             "the Ramulator2 timing preset in use is " << preset
-                          << " at " << preset_mts << " MT/s -- upstream ships "
-                             "no timing bin at the modelled rate. Timing comes "
-                             "from the preset; everything else from the "
-                             "modelled rate." << std::endl;
-            }
+         * 1.11.67 (re-sim pre-flight): THE NOTE THIS LAMBDA PRINTED WAS
+         * FALSE. It compared the static rate table against the preset and
+         * claimed that energy, termination and bandwidth follow the TABLE --
+         * true before 1.11.63, when modelledRateMTs() made the preset the one
+         * authority for all three. On every default DDR5 run since 1.11.66
+         * (table 3200, preset 4800B) it announced "modelled at 3200 MT/s
+         * (energy, termination and bandwidth)" one line before
+         * modelledRateMTs() announced the opposite, and the first line was the
+         * wrong one. The disclosure it existed for is still made, once and
+         * correctly, by modelledRateMTs() itself ("the static rate table
+         * still says X and is ignored"). The lambda is now a no-op kept so
+         * the per-technology branches keep naming their preset and rate in
+         * one place, where a future reader looks for them. */
+        auto sayPresetRate = [](const std::string&, const char*, double) {
         };
 
         /* 1.11.66 (exposed by the shape check): the org preset named here

@@ -349,7 +349,13 @@ double CactiIOWrapper::dramRateMTs(const std::string& t) {
      * injected+sourced, so exact_map is true and CACTI-IO's figure REPLACES
      * the scheme table: the termination energy was quoted for a part 1.5x
      * faster than the one whose cycles are counted. */
-    if (t == "DDR5")   return 3200;   // preset DDR5_3200AN
+    /* 1.11.67: 4800, the DEFAULT part since 1.11.66 (memory.dram.
+     * ddr5_speed_grade: 4800 -> DDR5_4800B / DDR5_16Gb_x8). This table is
+     * consulted only as modelledRateMTs()'s fallback and comparison basis --
+     * the preset's own rate column is the authority at every grade -- so the
+     * row's job is to agree with the default so the default run is quiet, and
+     * to make a non-default grade say that the table is ignored. */
+    if (t == "DDR5")   return 4800;   // preset DDR5_4800B (default grade)
     if (t == "LPDDR5") return 6400;
     if (t == "GDDR6")  return 14000;
     if (t == "HBM2")   return 2400;   // 1.11.57 (C001): preset HBM2_2.4Gbps

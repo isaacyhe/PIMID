@@ -225,6 +225,27 @@ public:
      * Must be called before initialize(); ignored for other technologies. */
     void setDdr5SpeedGrade(int mtps);
     int  getDdr5SpeedGrade() const { return ddr5_grade_mtps_; }
+    /* 1.11.67 (re-sim pre-flight): RUN-WIDE KNOB DEFAULTS.
+     *
+     * main.cpp constructs this class at eighteen sites -- oracles, probes,
+     * the latency helper, the bandwidth-scope report that gates ladder
+     * adoption, the host-MC and multi-node M/D/1 rates. 1.11.66 routed the
+     * four run-wide knobs (device width, DDR5 grade, temperature,
+     * termination override) through applyDramKnobs() and reached eleven of
+     * them; the other seven -- among them the latency helper and the ladder
+     * gate -- kept constructing the DEFAULT part. Measured at grade 3200:
+     * cycles at 3200AN, access latency and reported bandwidth at 4800B, the
+     * 16 Gb org booked for an 8 Gb run. Invisible at the default grade, which
+     * is why gate 1176A D9 passed.
+     *
+     * The knobs are run-wide by definition (one memory.dram block, one
+     * power.temperature per run), so they are set ONCE, here, as soon as the
+     * config is complete, and every constructor from then on starts from
+     * them. applyDramKnobs() stays as the per-instance path and is now
+     * idempotent with this. A library user who never calls this gets the
+     * pre-1.11.67 member defaults, unchanged. */
+    static void setRunWideKnobs(const std::string& device_width, int ddr5_grade_mtps,
+                                int temperature_k, double termination_pj_per_bit);
     /* The key the energy layer selects an IDD row by: the technology, plus a
      * "-<grade>" suffix for DDR5 (pimid_energy.h baseTech() strips it for
      * every family-level decision). */
@@ -468,6 +489,13 @@ private:
      * <= 85 C rung, so no result differs between them. */
     int temperature_k_ = 358;
     int ddr5_grade_mtps_ = 4800; // 1.11.66 (R8 #9): 3200 | 4800 (default) | 5600
+    // 1.11.67: the run-wide values setRunWideKnobs() recorded; consulted by
+    // the constructor when s_run_knobs_set_ is true.
+    static bool        s_run_knobs_set_;
+    static std::string s_run_device_width_;
+    static int         s_run_ddr5_grade_mtps_;
+    static int         s_run_temperature_k_;
+    static double      s_run_termination_pj_per_bit_;
 
     // Cycle counter
     Cycle current_cycle_;

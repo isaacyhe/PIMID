@@ -13873,6 +13873,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    /* 1.11.67: the four run-wide DRAM knobs are final here (every assignment
+     * to them is inside the YAML block above; no CLI flag touches them), so
+     * record them ONCE for every RamulatorWrapper this run constructs --
+     * including the seven sites applyDramKnobs() never reached (the latency
+     * helper, reportBandwidthScopes(), the chip/bank oracle, the host-MC and
+     * multi-node bandwidth queries). See the header note on setRunWideKnobs. */
+    pimid::RamulatorWrapper::setRunWideKnobs(config.dram_device_width, config.ddr5_speed_grade,
+                                             config.temperature_k, config.termination_pj_per_bit);
+
     /* Auto-derive memory controller type and parameters from technology.
      *
      * 1.11.57 (audit round 3, B009): DEVICE SCOPE ONLY here. In system scope
