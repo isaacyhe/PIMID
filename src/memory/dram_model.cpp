@@ -863,4 +863,14 @@ void DRAMModel::setArrayCapacityBytes(uint64_t /*bytes*/) {}
 /* 1.11.25: DRAM access width is fixed by the JEDEC organization. */
 void DRAMModel::setAccessWidthBits(uint32_t /*bits*/) {}
 
+void DRAMModel::setTemperatureK(int k) {
+    if (ramulator_instance_) ramulator_instance_->setTemperatureK(k);   // 1.11.66 (B4)
+}
+
+void DRAMModel::setDramPartKnobs(const std::string& device_width, int ddr5_speed_grade) {
+    if (!ramulator_instance_) return;
+    ramulator_instance_->setDeviceWidth(device_width);
+    ramulator_instance_->setDdr5SpeedGrade(ddr5_speed_grade);
+}
+
 } // namespace pimid

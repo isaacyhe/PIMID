@@ -416,9 +416,14 @@ class DDR4 : public IDRAM, public Implementation {
 
       // Refresh timings
       // tRFC table (unit is nanosecond!)
+      /* 1.11.66 (round 5, F10): tRFC1[8Gb] 360 -> 350 ns. Micron MT40A
+       * p.369: "tRFC1 MIN = 350 ns" for the 8 Gb die (260 / 550 for 4 / 16
+       * Gb, which the table already had right); JESD79-4 gives the same
+       * 350, and pimid_energy.h's DDR4 row had carried 350 all along -- the
+       * timing model refreshed 2.9% longer than the energy model priced. */
       constexpr int tRFC_TABLE[3][4] = {
       //  2Gb   4Gb   8Gb  16Gb
-        { 160,  260,  360,  550}, // Normal refresh (tRFC1)
+        { 160,  260,  350,  550}, // Normal refresh (tRFC1) -- 8 Gb: MT40A p.369
         { 110,  160,  260,  350}, // FGR 2x (tRFC2)
         { 90,   110,  160,  260}, // FGR 4x (tRFC4)
       };

@@ -130,6 +130,15 @@ private:
     std::string tierLatencySource(Tier tier, Op op) const override;
     void setArrayCapacityBytes(uint64_t bytes) override;
     void setAccessWidthBits(uint32_t bits) override;
+    /* 1.11.66 (round 5, B4): the temperature main.cpp hands every memory
+     * model (setTemperatureK, 1.11.52 D055) had no DRAMModel override and so
+     * never reached the owned RamulatorWrapper -- the refresh ladder was dead
+     * on the co-sim device path. Forwarded now, together with the two knobs
+     * the MemoryModel interface has no slot for (device width, DDR5 grade),
+     * so the co-sim DRAM describes the same part as the device-scope oracle. */
+public:
+    void setTemperatureK(int k) override;
+    void setDramPartKnobs(const std::string& device_width, int ddr5_speed_grade);
 };
 
 } // namespace pimid

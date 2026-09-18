@@ -62,6 +62,29 @@ class DDR5 : public IDRAM, public Implementation {
       {"DDR5_3200AN",  {3200,   8,  24,  24,   24,   52,   76,   48,   12,  22,  2,    8,     8,     22+8+4,    8,     16,    22+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
       {"DDR5_3200BN",  {3200,   8,  26,  26,   26,   52,   78,   48,   12,  24,  2,    8,     8,     24+8+4,    8,     16,    24+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
       {"DDR5_3200C",   {3200,   8,  28,  28,   28,   52,   80,   48,   12,  26,  2,    8,     8,     26+8+4,    8,     16,    26+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
+      /* 1.11.66 (round 5, F6 -- user ruling R8 #9): DDR5-4800 and DDR5-5600
+       * rows, THE B BINS, because the Micron MT60B dies whose IDD currents
+       * pimid_energy.h now carries at these grades are B-bin parts: Rev A is
+       * marked -48B = DDR5-4800B 40-39-39 (addendum p.1 Table 1), Rev D is
+       * -56B = DDR5-5600B 46-45-45 (addendum p.2 Table 2). An IDD row and a
+       * timing row must describe ONE part. Both rows are computed with the
+       * procedure that reproduces the 3200AN row field-for-field:
+       *   JESD79-5D Table 287 printed p.394 (4800B: tAA/tRCD/tRP 16.000 ns,
+       *   tRAS 32, tRC 48; CL 40 by NOTE 12's even-CL rule over 38.35) and
+       *   Table 289 p.396 (5600B: 16.000 / 32 / 48; CL 46 over 44.7);
+       *   per-speed AC from Table 335 p.450 (4800) and Table 336 p.451
+       *   (5600); cl. 13.2 min rounding; nRC = nRAS + nRP per NOTE 8 p.407
+       *   (4800: 77+39 = 116 = round(48000/416); 5600: 90+45 = 135).
+       *   tCK 416 / 357 ps = 2E6/rate truncated, which is what the standard
+       *   itself uses (Table 333 p.448 worked row "4800 ... 416").
+       * Rescale-only vs the 3200 row (same ns, new tCK): nRAS 32 ns -> 77 /
+       * 90; nWR 30 ns -> 72 / 84; nRTP Max(12nCK,7.5ns) -> 18 / 21 (the 12
+       * nCK floor binds only at 3200); nCCDL Max(8nCK,5ns) -> 12 / 14;
+       * nCCDL_WR2 Max(16nCK,10ns) -> 24 / 28; the WTR terms Max(4nCK,2.5ns)
+       * -> 6 / 7 and Max(16nCK,10ns) -> 24 / 28. Fixed in nCK at every
+       * speed: nBL 8, nPPD 2, nCCDS 8, nRRDS 8, nFAW 32 (1K) / 40 (2K). */
+      {"DDR5_4800B",   {4800,   8,  40,  39,   39,   77,  116,   72,   18,  38,  2,    8,     8,     38+8+6,   12,     24,    38+8+24,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   416}},
+      {"DDR5_5600B",   {5600,   8,  46,  45,   45,   90,  135,   84,   21,  44,  2,    8,     8,     44+8+7,   14,     28,    44+8+28,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   357}},
     };
 
     inline static const std::map<std::string, std::vector<double>> voltage_presets = {
@@ -455,6 +478,8 @@ class DDR5 : public IDRAM, public Implementation {
       int rate_id = [](int rate) -> int {
         switch (rate) {
           case 3200:  return 0;
+          case 4800:  return 1;   // 1.11.66
+          case 5600:  return 2;   // 1.11.66
           default:    return -1;
         }
       }(m_timing_vals("rate"));
@@ -467,11 +492,11 @@ class DDR5 : public IDRAM, public Implementation {
        * 0.625 ns both terms are 8 nCK. CONFIRMED-NORMATIVE -- the identity
        * floor and the standard's value coincide, and the old caveat that the
        * real part is slower is WITHDRAWN. */
-      constexpr int nRRDL_TABLE[3][1] = {
-      // 3200
-        { 8, },  // x4  -- tRRD_L(1K) Max(8nCK,5ns) = 8 (JESD79-5D T334 p.449)
-        { 8, },  // x8  -- tRRD_L(1K), same
-        { 8, },  // x16 -- tRRD_L(2K) Max(8nCK,5ns) = 8, same
+      constexpr int nRRDL_TABLE[3][3] = {
+      // 3200  4800  5600   -- tRRD_L = Max(8nCK, 5ns): 8 / 12 / 14 (T334 p.449, T335 p.450, T336 p.451)
+        { 8,   12,   14 },  // x4  (1K page)
+        { 8,   12,   14 },  // x8  (1K page)
+        { 8,   12,   14 },  // x16 (2K page; same formula)
       };
       /* 1.11.64 (JESD79-5D): the x4 and x16 rows were SWAPPED relative to
        * the standard's page-size keying. Tables 4-7 printed p.7 give page
@@ -482,11 +507,13 @@ class DDR5 : public IDRAM, public Implementation {
        * orgs, 8 nCK more permissive than the standard allows. x8 (the org
        * every shipped preset uses) was correct, so no shipped result moved
        * before this fix; a hand-written x16 org would have. */
-      constexpr int nFAW_TABLE[3][1] = {
-      // 3200  
-        { 32, },  // x4  -- 1KB page -> tFAW(1K) = 32 (JESD79-5D T4/T334)
-        { 32, },  // x8  -- 1KB page -> tFAW(1K) = 32
-        { 40, },  // x16 -- 2KB page -> tFAW(2K) = 40
+      constexpr int nFAW_TABLE[3][3] = {
+      // 3200  4800  5600   -- tFAW(1K) = Max(32nCK, ns) and tFAW(2K) = Max(40nCK, ns); the ns
+      //                      floors (20/13.333/11.428 and 25/16.666/14.285) are exactly 32 / 40 tCK
+      //                      at each speed, so the nCK term binds everywhere (T334/T335/T336)
+        { 32,   32,   32 },  // x4  -- 1KB page
+        { 32,   32,   32 },  // x8  -- 1KB page
+        { 40,   40,   40 },  // x16 -- 2KB page
       };
 
       if (dq_id != -1 && rate_id != -1) {
@@ -495,9 +522,9 @@ class DDR5 : public IDRAM, public Implementation {
       }
 
       // tCCD_L_WR2 (with RMW) table
-      constexpr int nCCD_L_WR2_TABLE[1] = {
-      // 3200  
-        32,
+      constexpr int nCCD_L_WR2_TABLE[3] = {
+      // 3200  4800  5600   -- tCCD_L_WR = Max(32nCK, 20ns): 32 / 48 / 56
+        32,   48,   56,
       };
       if (dq_id == 0) {
         m_timing_vals("nCCDL_WR") = nCCD_L_WR2_TABLE[rate_id];

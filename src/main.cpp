@@ -58,6 +58,7 @@
 #include "memory/cacti_wrapper.h"
 #include "memory/ramulator_wrapper.h"
 #include "memory/memory_model.h"
+#include "memory/dram_model.h"          // 1.11.66 (B4): setDramPartKnobs on the co-sim DRAM model
 #include "memory/internal_dram_network.h"
 #include "sparse_htree.h"
 #include "pimid_noc_shm.h"
@@ -163,12 +164,16 @@ static int validateTechNodeNm(int node_nm, const char* what);  // 1.11.51 (L70):
  * was written; the defect was a parameter that documented an influence it did
  * not have, waiting for someone to trust it. Removed rather than renamed:
  * there is no capacity to pass that this function would honour. */
+static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& config);
+
 static int getMemoryLatencyCycles(const std::string& memory_tech, double frequency_mhz,
                                    int array_tech_node_nm,
                                    bool use_yaml_override = false, double yaml_latency_ns = -1.0,
                                    int pe_hierarchy_level = -999,
                                    int array_temperature_k = 350,   // 1.11.52 (D055)
-                                   int access_line_bytes = 64) {    // 1.11.56 (B018)
+                                   int access_line_bytes = 64,      // 1.11.56 (B018)
+                                   const std::string& device_width = "",   // 1.11.66 (B4)
+                                   int ddr5_speed_grade = 4800) {          // 1.11.66 (B4/R8 #9)
     double latency_ns = 0.0;
 
     /* 1.11.56 (audit B018): the SRAM/NVM array queries hardcoded a 512-bit
@@ -225,6 +230,8 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                 model->setTechNodeNm(validateTechNodeNm(array_tech_node_nm,
                                                         "tier latency query"));
                 model->setTemperatureK(array_temperature_k);   // 1.11.52 (D055)
+                if (auto* dm = dynamic_cast<pimid::DRAMModel*>(model.get()))
+                    dm->setDramPartKnobs(device_width, ddr5_speed_grade);   // 1.11.66 (B4)
                 model->initialize();
                 const auto tier = tierForPlacement(pe_hierarchy_level);
                 if (model->hasTier(tier)) {
@@ -253,7 +260,8 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                                                 array_tech_node_nm,
                                                 false, -1.0,
                                                 -999, array_temperature_k,
-                                                access_line_bytes)  // 1.11.56 (B018)
+                                                access_line_bytes,  // 1.11.56 (B018)
+                                                device_width, ddr5_speed_grade)  // 1.11.66
                          * 1000.0 / frequency_mhz;
         }
     }
@@ -1279,6 +1287,7 @@ struct UnifiedConfig {
     // Selects both the Ramulator2 org preset and PIMID's chips/rank + BG/chip
     // so the timing model and the in-memory hierarchy stay consistent.
     std::string dram_device_width;
+    int ddr5_speed_grade = 4800;   // 1.11.66 (R8 #9): memory.dram.ddr5_speed_grade, 3200|4800|5600
 
     // Comprehensive memory characteristics (for YAML override of external models)
     // If use_yaml_memory_params is true, user provided complete params in YAML
@@ -2085,6 +2094,25 @@ struct UnifiedConfig {
         mpi_ranks(0) {}
 };
 
+/* 1.11.66 (round 5, B2 + R8 #9): ONE PLACE THAT CONFIGURES A DRAM ORACLE.
+ * Eleven sites in this file construct a parameter-oracle RamulatorWrapper
+ * (empty config path) and each set some subset of the knobs that select the
+ * part -- device width at seven of them, temperature at two, and the new
+ * DDR5 speed grade at none until now. B2 found effectiveDramBanks() and the
+ * die-area oracle reading an x8 part in an x16 run because their sites set
+ * nothing. Every oracle now goes through here, before initialize(), so a
+ * site cannot be half-configured: width, DDR5 grade, temperature, and the
+ * termination override, from the run's config. The ordering matters --
+ * the wrapper resolves its preset transcriptions in initialize(), and the
+ * grade and width both select which row is transcribed. */
+static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& config) {
+    w.setDeviceWidth(config.dram_device_width);
+    w.setDdr5SpeedGrade(config.ddr5_speed_grade);
+    w.setTemperatureK(config.temperature_k);
+    w.setTerminationOverridePJPerBit(config.termination_pj_per_bit);
+}
+
+
 /**
  * @brief Parse a bandwidth string with unit suffix and return MB/s.
  *
@@ -2332,6 +2360,7 @@ static void getMemControllerConfig(UnifiedConfig& config) {
         if ((ct == "simple" || ct == "weavesimple") && isDramBased(tech)) {
             try {
                 pimid::RamulatorWrapper bw_query("", tech);
+                applyDramKnobs(bw_query, config);   // 1.11.66
                 bw_query.initialize();
                 double rank_bw_gbs = bw_query.getRankBandwidth();
                 int tech_bw = static_cast<int>(rank_bw_gbs * 1000.0);
@@ -2419,7 +2448,8 @@ static void getMemControllerConfig(UnifiedConfig& config) {
             int lat_cy = getMemoryLatencyCycles(tech, config.frequency_mhz,
                                                 config.tech_node_nm, false, -1.0,
                                                 -999, config.temperature_k,
-                                                config.cache_line_size);
+                                                config.cache_line_size,
+                                                config.dram_device_width, config.ddr5_speed_grade);
             if (lat_cy > 0 && config.frequency_mhz > 0)
                 acc_ns = lat_cy * 1000.0 / config.frequency_mhz;
         } catch (const std::exception& e) {
@@ -2699,12 +2729,38 @@ static bool dramHTreeBuilder(const std::string& tech,
          * its source rung's bandwidth; L0 the stated fold. Violation is FATAL
          * -- this is the check that turns "the two fabrics drifted" from a
          * four-round audit finding into an immediate failure. */
+        /* 1.11.66 (round 5, B1): THE INVARIANT NOW HAS AN INDEPENDENT SIDE.
+         * As written in 1.11.60 it SET L[li] from rung r = rungOfTreeTier(..)
+         * and CHECKED it against the same rung's bandwidth recomputed by the
+         * same formula -- a tautology that only PIMID_FABRIC_BREAK or float
+         * rounding could fail. The B001 defect it was built to catch (a wrong
+         * rung index applied to both sides) would have passed it. The side
+         * that can actually drift is the MAPPING from tree tier to layer
+         * index, which the consumer (sparse_htree.h buildSparseHTree) derives
+         * with its own function, layerForLevel(). So the check now asks that
+         * function which layer this tier's link lands in, and refuses if the
+         * emitter and the consumer disagree about the mapping -- that is the
+         * drift ONE FABRIC exists to prevent. The bandwidth equality stays as
+         * the second arm. */
         for (int li = 3; li >= 1; --li) {
             const int tier = chanL - (3 - li);
             if (tier < 0) continue;
             const int r = rungOfTreeTier(tier);
             const double rung_bw = config.sourced_ladder_bw[r];
             if (rung_bw <= 0.0) continue;
+            /* childLevel of the link that crosses this tier boundary is the
+             * tier itself (a link from tier t's node up to tier t+1). */
+            const int consumer_li = pimid_htree::layerForLevel(tier, chanL);
+            if (consumer_li != li) {
+                std::cerr << "[fabric] FATAL: the topology emitter places tree tier "
+                          << tier << " in layer L" << li << " but the consumer's "
+                             "layerForLevel(" << tier << ", chanL=" << chanL
+                          << ") = L" << consumer_li
+                          << ". The two fabrics disagree about which link carries "
+                             "which rung -- exactly the drift the ONE FABRIC "
+                             "invariant exists to refuse." << std::endl;
+                std::exit(2);
+            }
             const double layer_bw = L[li].width_bits / 8.0 * L[li].freq_ghz;
             if (std::fabs(layer_bw - rung_bw) > 0.01 * rung_bw) {
                 std::cerr << "[fabric] FATAL: topology layer L" << li
@@ -3306,7 +3362,10 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     std::string tech = config.memory_tech;
     if (tech == "DDR3")          { banks_per_bg = 8; bg_per_chip = 1; chips_per_rank = 8; }
     else if (tech == "DDR4")     { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 8; }
-    else if (tech == "DDR5")     { banks_per_bg = 4; bg_per_chip = 8; chips_per_rank = 8; }
+    /* 1.11.66 (R5 A2): 2 banks/BG, not 4 -- JESD79-5D Table 4 p.7, 8 Gb x8
+     * = 8 BG x 2 = 16 banks (32 begins at 16 Gb). Tracks the preset and the
+     * architecture object; see the note in dram_architecture_v2.h. */
+    else if (tech == "DDR5")     { banks_per_bg = 2; bg_per_chip = 8; chips_per_rank = 8; }
     else if (tech == "LPDDR5")   { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     else if (tech == "GDDR6")    { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     // HBM has 2 pseudo-channels/channel; PIMID has no pseudo-ch level, so fold
@@ -3521,7 +3580,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             std::string preset_name;
             try {
                 pimid::RamulatorWrapper geo("", tech);
-                geo.setDeviceWidth(config.dram_device_width);
+                applyDramKnobs(geo, config);
                 geo.initialize();
                 bank_rows = static_cast<long long>(geo.getPresetRowsPerBank());
                 preset_name = geo.getPresetOrganization().preset_name;
@@ -3590,6 +3649,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     if (ladder_is_dram && config.hierarchy_dram_channels <= 1) {
         try {
             pimid::RamulatorWrapper ch("", tech);
+            applyDramKnobs(ch, config);   // 1.11.66
             ch.initialize();
             uint32_t nch = ch.getNumChannels();
             if (nch >= 1) config.hierarchy_dram_channels = static_cast<int>(nch);
@@ -3682,7 +3742,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     if (ladder_is_dram && ladder_sourced) {
         try {
             pimid::RamulatorWrapper lad("", tech);
-            lad.setDeviceWidth(config.dram_device_width);
+            applyDramKnobs(lad, config);
             lad.initialize();
             int    w[7]  = {0,0,0,0,0,0,0};
             double bw[7] = {0,0,0,0,0,0,0};
@@ -4112,7 +4172,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         if (ladder_is_dram) {
             try {
                 pimid::RamulatorWrapper geo("", tech);
-                geo.setDeviceWidth(config.dram_device_width);
+                applyDramKnobs(geo, config);
                 geo.initialize();
                 bank_bytes = geo.getBankSizeMB() * 1024ULL * 1024ULL;
             } catch (const std::exception&) { bank_bytes = 0; }
@@ -4223,6 +4283,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             int num_chan = 1;
             try {
                 pimid::RamulatorWrapper bw_q("", tech);
+                applyDramKnobs(bw_q, config);   // 1.11.66
                 bw_q.initialize();
                 agg_mbs = static_cast<double>(bw_q.getBandwidth());  // aggregate (stack/device) BW
                 // Real datasheet AGGREGATE sustainable BW (MB/s): the detailed
@@ -4909,16 +4970,45 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     out << "        pagesPerUnit = " << config.pages_per_unit << ";\n";
     /* 1.11.52 (audit D003): the DRAM ROW size, so the memory interface can
      * MEASURE the row-buffer hit rate the array-energy model used to assume
-     * (ROW_MISS_FRAC = 0.5). JEDEC page size is a spec fact per generation;
-     * 1 KB is the DDR3/DDR4 x8 page and 2 KB the wide-interface HBM/GDDR
-     * page. Non-DRAM technologies have no row buffer -> 0, and the consumer
-     * then claims no measurement. */
+     * (ROW_MISS_FRAC = 0.5). Non-DRAM technologies have no row buffer -> 0,
+     * and the consumer then claims no measurement.
+     *
+     * 1.11.66 (round 5, A3): DERIVED from the preset, not a per-generation
+     * guess. The table this replaces ("1 KB is the DDR x8 page, 2 KB the
+     * HBM/GDDR page") disagreed with the simulated presets on three of the
+     * seven: DDR3_8Gb_x8 has 2048 columns x 8 DQ = 2 KB (table said 1 KB),
+     * and HBM2/HBM3's per-pseudo-channel page is 64 columns x 128 DQ = 1 KB
+     * (table said 2 KB) -- JESD235D Table 4 and JESD238B Table 4 both print
+     * "Page Size per PC 1 KB". This value is the STRIDE of the measured
+     * row-miss fraction that feeds the dominant activate-energy term, so a
+     * 2x error here is a 2x error in how often the model thinks a row
+     * opens. PresetOrganization::rowBytes() = cols x dq / 8 has existed
+     * since 1.11.61 with no caller; it is the caller now, and the 1.11.66
+     * shape check binds that transcription to the device Ramulator actually
+     * instantiates, so this number is verified rather than believed. Width
+     * follows the run's device width, as every other preset read does. */
     {
         const std::string& mt = config.memory_tech;
         uint32_t row_bytes = 0;
-        if (mt == "DDR3" || mt == "DDR4" || mt == "DDR5") row_bytes = 1024;
-        else if (mt == "LPDDR5")                          row_bytes = 2048;
-        else if (mt == "GDDR6" || mt == "HBM2" || mt == "HBM3") row_bytes = 2048;
+        const bool is_dram = (mt == "DDR3" || mt == "DDR4" || mt == "DDR5" ||
+                              mt == "LPDDR5" || mt == "GDDR6" || mt == "HBM2" || mt == "HBM3");
+        if (is_dram) {
+            try {
+                pimid::RamulatorWrapper rb("", mt);
+                applyDramKnobs(rb, config);
+                rb.setAnchorQuiet(true);
+                rb.initialize();
+                const auto& po = rb.getPresetOrganization();
+                if (po.valid) row_bytes = static_cast<uint32_t>(po.rowBytes());
+            } catch (const std::exception& e) {
+                std::cerr << "[config] WARNING: could not derive the DRAM row size for "
+                          << mt << " from its preset (" << e.what()
+                          << "); the row-miss measurement will be disabled (0)." << std::endl;
+                row_bytes = 0;
+            }
+            std::cout << "  [mem] DRAM row (page) size: " << row_bytes
+                      << " B, from preset organization (cols x dq / 8)" << std::endl;
+        }
         out << "        dramRowBytes = " << row_bytes << ";\n";
     }
     out << "        assumeLocal = 1;\n";  // perfect data prep: device computes local (both scopes)
@@ -5092,7 +5182,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                 config.use_yaml_memory_params,
                 config.memory_params.read_latency_ns,
                 config.pe_hierarchy_level, config.temperature_k,
-                config.cache_line_size);                 // 1.11.56 (B018)
+                config.cache_line_size,                  // 1.11.56 (B018)
+                config.dram_device_width, config.ddr5_speed_grade);   // 1.11.66
             if (tool_cycles > 0) {
                 local_latency = tool_cycles;
                 std::cout << "  [pe-mi] local access latency " << local_latency
@@ -7694,13 +7785,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         // DRAM: Ramulator2 energy model
         try {
             pimid::RamulatorWrapper ram_oracle("", config.memory_tech);
-            ram_oracle.setDeviceWidth(config.dram_device_width);   // 1.11.46 (L181)
-            /* 1.11.63 (R7): gate 1173B E3 caught this half-wired -- the key
-             * was parsed into config but the setter was never called, so the
-             * knob was still dead at the point of use. Both scopes apply it
-             * now, before initialize(). */
-            ram_oracle.setTerminationOverridePJPerBit(config.termination_pj_per_bit);
-            ram_oracle.setTemperatureK(config.temperature_k);   // 1.11.66: refresh ladder
+            applyDramKnobs(ram_oracle, config);   // 1.11.66: width, DDR5 grade, temperature, termination
             /* 1.11.52 (audit D003): the array's activate/precharge share is
              * now weighted by the run's OWN measured row-buffer miss rate
              * (PE-MI rowHits/rowMisses) instead of a hardcoded 0.5. It is
@@ -8124,11 +8209,17 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                          * zero rather than report it. No value changes here;
                          * what changes is that a missing term stops looking
                          * like a zero one. */
-                        const bool iface_exact_map =
-                            ram_oracle.getInterfaceDynamicEnergyNJ() > 0.0;
+                        /* 1.11.66 (round 5, B5): read the wrapper's own
+                         * "withheld" flag (interfaceAreaWithheld(), added in
+                         * 1.11.60 for exactly this distinction and never
+                         * called) instead of inferring the cause from a
+                         * proxy -- the energy term being non-zero says the
+                         * map is exact, not that the area was withheld. The
+                         * two coincide today; the flag is the authority. */
+                        const bool iface_withheld = ram_oracle.interfaceAreaWithheld();
                         std::cout << "    + IO area:     none for this"
                                      " technology -- "
-                                  << (iface_exact_map
+                                  << (iface_withheld
                                       ? "CACTI-IO's area polynomial is an"
                                         " extrapolation above 3162 MHz and is"
                                         " withheld at this bus clock"
@@ -8918,6 +9009,7 @@ static int effectiveDramBanks(const std::string& memory_tech,
                               const UnifiedConfig& config) {
     try {
         pimid::RamulatorWrapper oracle("", memory_tech);
+        applyDramKnobs(oracle, config);   // 1.11.66 (B2): the x16 part has half the bank groups
         oracle.initialize();
         int bpb = (config.banks_per_bg_override > 0)
                   ? config.banks_per_bg_override : oracle.getBanksPerBankGroup();
@@ -8945,7 +9037,8 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                           int ranks_per_channel = 1,   // 1.11.52 (A015)
                                           int channels = 1,
                                           double termination_pj_per_bit = -1.0,   // 1.11.63 (R7, gate 1173B E3)
-                                          int temperature_k = 358)                 // 1.11.66 (refresh ladder)
+                                          int temperature_k = 358,                 // 1.11.65 (refresh ladder)
+                                          int ddr5_speed_grade = 4800)             // 1.11.66 (R8 #9)
 {
     if (memory_tech.empty()) return 0.0;
     /* 1.11.52 (audit A020): A MEMORY WITH NO ACCESSES IS NOT A MEMORY WITH NO
@@ -8988,7 +9081,8 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         /* 1.11.63 (R7): gate 1173B E3 caught the knob half-wired (parsed,
          * never applied). Set before initialize(), both scopes. */
         ram_oracle.setTerminationOverridePJPerBit(termination_pj_per_bit);
-        ram_oracle.setTemperatureK(temperature_k);   // 1.11.66: refresh ladder
+        ram_oracle.setTemperatureK(temperature_k);   // 1.11.65: refresh ladder
+        ram_oracle.setDdr5SpeedGrade(ddr5_speed_grade);   // 1.11.66 (R8 #9)
         ram_oracle.initialize();
         /* Intensive per-access accessors. getArrayReadEnergyNJ folds activation
          * and column access, so act/pre are NOT added separately -- adding them
@@ -10297,7 +10391,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.hierarchy_ranks_per_channel, // A015
                                               config.hierarchy_dram_channels,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
-                                              config.temperature_k);           // 1.11.66
+                                              config.temperature_k,            // 1.11.65
+                                              config.ddr5_speed_grade);        // 1.11.66 (R8 #9)
                 {
                 double die = computeDramDieAreaMM2(tech, false,
                                                    effectiveDramBanks(tech, config));
@@ -10358,7 +10453,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.hierarchy_ranks_per_channel,  // A015
                                               config.hierarchy_dram_channels,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
-                                              config.temperature_k);           // 1.11.66
+                                              config.temperature_k,            // 1.11.65
+                                              config.ddr5_speed_grade);        // 1.11.66 (R8 #9)
                 host_done = true;
             } else if (node.role == UnifiedConfig::SystemNode::DEVICE && !dev_done &&
                        zsim_stats.dev.has_activity()) {
@@ -10378,7 +10474,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.hierarchy_ranks_per_channel,  // A015
                                               config.hierarchy_dram_channels,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
-                                              config.temperature_k);           // 1.11.66
+                                              config.temperature_k,            // 1.11.65
+                                              config.ddr5_speed_grade);        // 1.11.66 (R8 #9)
                 dev_done = true;
             }
         }
@@ -10516,7 +10613,8 @@ public:
                                                   config_.memory_params.read_latency_ns,
                                                   config_.pe_hierarchy_level,
                                                   config_.temperature_k,   // 1.11.52 (D055)
-                                                  config_.cache_line_size);  // 1.11.56 (B018)
+                                                  config_.cache_line_size,   // 1.11.56 (B018)
+                                                  config_.dram_device_width, config_.ddr5_speed_grade);   // 1.11.66
         }
 
         // Cache latencies: YAML override > CACTI > defaults
@@ -13035,6 +13133,13 @@ int main(int argc, char** argv) {
                     config.dram_device_width =
                         yaml_cfg["memory"]["dram"]["device_width"].as<std::string>(config.dram_device_width);
                 }
+                /* 1.11.66 (R8 #9): the DDR5 speed grade. Validated at the
+                 * wrapper (3200/4800/5600; FATAL otherwise). Applied at every
+                 * oracle site through applyDramKnobs() below. */
+                if (yaml_cfg["memory"]["dram"] && yaml_cfg["memory"]["dram"]["ddr5_speed_grade"]) {
+                    config.ddr5_speed_grade =
+                        yaml_cfg["memory"]["dram"]["ddr5_speed_grade"].as<int>(config.ddr5_speed_grade);
+                }
 
                 // Parse memory parameters from YAML
                 // To override external models, user must provide ALL 5 required params:
@@ -13980,14 +14085,33 @@ int main(int argc, char** argv) {
                                                         config.cache_line_size));
         double bw_gbs = 12.8;
         bool bw_sourced = false;
+        std::string timing_line;
         if (pimid::isDRAM(pimid::parseMemoryTechnology(mtech_up))) {
             try {
                 pimid::RamulatorWrapper bw_query("", mtech_up);
+                applyDramKnobs(bw_query, config);
                 bw_query.initialize();
                 bw_gbs = bw_query.getRankBandwidth();
                 bw_sourced = true;
+                /* 1.11.66 (round 5, C4 + gate observability): print the ns
+                 * timings, clock, burst and refresh factor the energy and
+                 * ladder models actually consume, so a gate can assert them
+                 * directly instead of inferring them from a composite. These
+                 * are the values AFTER the preset stamp and the temperature
+                 * ladder -- the model's inputs, not the file's literals. */
+                std::ostringstream t;
+                t << "  [mem] " << mtech_up << " model inputs: tRCD=" << bw_query.getTRCD()
+                  << " tCAS=" << bw_query.getTCAS() << " tRP=" << bw_query.getTRP()
+                  << " tRAS=" << bw_query.getTRAS() << " tBurst=" << bw_query.getTBurst()
+                  << " ns";
+                if (const auto* a = bw_query.getDRAMArchitecture())
+                    t << " core_clock=" << a->timing.clock_freq_mhz << " MHz";
+                t << " refresh_temp_factor=" << bw_query.getRefreshTempFactor()
+                  << " (T=" << config.temperature_k << " K)";
+                timing_line = t.str();
             } catch (...) {}
         }
+        if (!timing_line.empty()) std::cout << timing_line << std::endl;
         std::cout << "tech=" << mtech_up << " freq_mhz=" << print_mem_info_freq
                   << " node_nm=" << config.tech_node_nm
                   << " line_bytes=" << config.cache_line_size

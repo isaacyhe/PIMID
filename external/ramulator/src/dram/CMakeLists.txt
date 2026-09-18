@@ -17,6 +17,8 @@ target_sources(
   impl/GDDR6.cpp
   impl/HBM2.cpp
   impl/HBM3.cpp
+
+  pimid_org_probe.h  pimid_org_probe.cpp
 )
 
 target_link_libraries(

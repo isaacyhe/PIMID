@@ -216,11 +216,35 @@ public:
      * that set the width before initialize() and callers that set it after are
      * both correct. */
     void setDeviceWidth(const std::string& w);  // 1.11.46; 1.11.59 (C018)
-    /* 1.11.66: the DRAM's operating temperature, for the refresh-rate ladder
+    /* 1.11.66 (round 5 F6, user ruling R8 #9): DDR5 SPEED GRADE as a
+     * setting -- 3200, 4800 (default) or 5600 MT/s. The grade selects ONE
+     * PART: timing preset (DDR5_3200AN / DDR5_4800B / DDR5_5600B), org (8 Gb
+     * at 3200 -- the only 3200 datasheet class held -- and the 16 Gb Micron
+     * MT60B die at 4800/5600), IDD row (Rev A = 4800B, Rev D = 5600B), the
+     * data rate the energy/bandwidth basis uses, and every transcription.
+     * Must be called before initialize(); ignored for other technologies. */
+    void setDdr5SpeedGrade(int mtps);
+    int  getDdr5SpeedGrade() const { return ddr5_grade_mtps_; }
+    /* The key the energy layer selects an IDD row by: the technology, plus a
+     * "-<grade>" suffix for DDR5 (pimid_energy.h baseTech() strips it for
+     * every family-level decision). */
+    std::string energyKey() const;
+    /* 1.11.66: THE modelled data rate, from the transcribed preset row --
+     * one authority. Since the GDDR6 rate column was corrected to the pin
+     * rate, every preset's `rate` IS the rate PIMID prices, so the static
+     * CactiIOWrapper::dramRateMTs() table is no longer a second authority:
+     * it is retained only as the cross-check this function warns against. */
+    double modelledRateMTs() const;
+    /* 1.11.66 (round 5 A6): FATAL if the transcribed org (banks/rows/cols)
+     * disagrees field-by-field with the device Ramulator instantiates from
+     * the preset. PIMID_ORG_BREAK=1 forces the mismatch for gates. */
+    void checkTranscribedOrganizationShape();
+    /* 1.11.65: the DRAM's operating temperature, for the refresh-rate ladder
      * (pimid_energy.h refreshTempFactor). Default 358 K = 85 C = top of the
      * nominal range, i.e. the pre-1.11.66 behaviour. */
     void setTemperatureK(int k) { temperature_k_ = k; }
     int  getTemperatureK() const { return temperature_k_; }
+    double getRefreshTempFactor() const;   // 1.11.66: the ladder multiplier in force
     /* 1.11.52 (audit D003): the MEASURED row-buffer miss fraction from the
      * run (PE-MI rowHits/rowMisses). <0 = not measured, and the array energy
      * then uses the stated 0.5 fallback while the caller says so. */
@@ -435,7 +459,15 @@ private:
     mutable Cycle last_energy_update_;
     double energy_bank_override_pJ_per_byte_ = 0.0;  // 0 = IDD default; >0 = user override
     double energy_term_override_pJ_per_bit_ = -1.0;  // <0 = model default; >=0 = user override
-    int temperature_k_ = 358;   // 1.11.66: refresh-ladder input; 85 C nominal
+    /* 1.11.65 refresh-ladder input. Two defaults exist by design and agree
+     * in effect (round 5 C2): the RUN default is config.temperature_k = 350 K
+     * (77 C), which every oracle receives via applyDramKnobs(); this member's
+     * 358 K (85 C) is the fallback for a wrapper nobody configured, chosen as
+     * the top of the nominal range so an unconfigured wrapper reproduces the
+     * pre-1.11.65 (temperature-flat) behaviour exactly. Both sit in the
+     * <= 85 C rung, so no result differs between them. */
+    int temperature_k_ = 358;
+    int ddr5_grade_mtps_ = 4800; // 1.11.66 (R8 #9): 3200 | 4800 (default) | 5600
 
     // Cycle counter
     Cycle current_cycle_;

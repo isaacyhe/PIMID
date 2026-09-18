@@ -149,3 +149,25 @@ NOT CITABLE (held for background only): `misc/DRAM Lecture Tomishima.pdf`
 carries "Intel Confidential - Internal Use Only" on 85 of its 90 pages. No
 number from it may appear in a config, a figure, or the manuscript with
 that deck as its provenance.
+
+## Round-5 calibration corrections (1.11.66, 2026-09-18)
+
+| Item | Value now | Source | Note |
+|---|---|---|---|
+| GDDR6 clock relation | 8 bits/pin per CK: rate 14000 MT/s, tCK = 8E6/rate = 571 ps, nBL 2, nCCDS 2 | Samsung K4Z80325BC Table 91 (tCK 0.57 ns at 14 Gbps); JESD250D Table 1 (CK 1.5 GHz <-> 12 Gbps). Proof: every preset cycle count reproduces Samsung's 14 Gbps AC set at 0.57 ns within 1-2% and nothing at 1.00 ns | CORRECTS a 1.11.63 regression (2 bits/pin assumed) that 1.11.65 propagated into tWTR. All seven presets' rate column now equals the priced rate; the static rate table is demoted to a cross-check |
+| GDDR6 tRFCab | 120 ns (all densities) | Samsung Table 92 PDF p.158; SK hynix H56G42A Table 67 PDF p.157 | Was DDR4's 360/220 (impl/energy) |
+| GDDR6 ns getters | derived from the preset (14.85/13.7/14.85/30.3 ns) | preset x 571 ps | The 14.8/28.0 literals were the vendor values; the derivation now reproduces them |
+| DDR3 org transcription | 65536 rows x 2048 cols (x8) | DDR3.cpp 1.11.63 rows | Transcription had gone stale (131072 x 1024); density product hid it |
+| DDR5 banks, 8 Gb x8 | 8 BG x 2 = 16 | JESD79-5D Table 4 printed p.7 (BA0); 32 begins at 16 Gb (Tables 5-7) | Arch object + main.cpp table were at 32; preset was right |
+| DDR5 speed grades | 3200AN (8 Gb) / 4800B / 5600B (16 Gb); default 4800 | JESD79-5D Tables 283/287/289 (bins), 335/336 (per-speed AC), 71 (16 Gb tRFC1 295), 73, cl.13.2 rounding | The Micron dies are B-bin parts (-48B, -56B) |
+| DDR5 IDD, 4800B / 16 Gb | IDD0 103, IDD2N 92, IDD3N 142, IDD4R 377, IDD4W 349, IDD5B 277, IDD2P 88 mA | Micron MT60B Rev A addendum Table 6 pp.17-19 | Default grade |
+| DDR5 IDD, 5600B / 16 Gb | 53 / 49 / 91 / 218 / 241 / 377 / 47 mA | Micron MT60B Rev D addendum Table 8 pp.18-20 | |
+| DDR5 IDD, 3200 / 8 Gb | 55 / 34 / 42 / 148 / 168 / 120 / 20 mA | UNSOURCED (no held datasheet publishes a 3200 column) | Stated; 2-3x below either addendum on standby |
+| DDR4 IDD5B | 362 mA | Derived from Micron MT40A Rev A IDD5R 64 / IDD2N 50 at tRFC/tREFI 350/7800; equals upstream Ramulator2 DDR4.cpp Default | Was 155 (unsourced) |
+| DDR4 tRFC1, 8 Gb | 350 ns | Micron MT40A p.369 | Was 360 |
+| HBM2 IDD row | IDD0 141, IDD2N 136, IDD3N 133, IDD4R 464, IDD4W 356, IDD5B 189 mA per channel | CMU-SAFARI HBM-Power 36-chip means / 8 channels (misc/zen_hbm2_idd_36chips_summary.csv); conversion per JESD235D cl. 9.1 printed p.100 | User ruling R8 #10; measurement-class. IDD2P 7 stays unmeasured. Model stack standby 1.31 W vs measured 1.37 W |
+| HBM3 arch core clock | 1600 MHz (stamped from tCK 625) | JESD238B.01 Table 92; Ryu JSSC'23 p.1052; Park JSSC'23 p.259 | Was 3200 (rate/2) |
+| HBM2/HBM3 arch ns timings | stamped from preset (HBM2 16.66/16.66/15.0/33.3; HBM3 16.25 x3 / 33.125) | preset x tCK | The R6 stamp now covers all five object-bearing techs |
+| dramRowBytes | preset cols x dq / 8 (DDR3 2048, DDR4/5 1024, LPDDR5 2048, GDDR6 2048, HBM2/3 1024 B) | preset org rows; HBM: JESD235D/238B "Page Size per PC 1 KB" | Was a per-generation guess wrong on three of seven |
+| LPDDR5 tREFI (energy row) | 3906 ns | JESD209-5C 3.906 us; = LPDDR5.cpp tREFI_BASE | Was 3904 |
+| Organization shape check | transcription banks/rows/cols bound field-by-field to the instantiated IDRAM at every wrapper init | -- | Structural; PIMID_ORG_BREAK proves it fires |

@@ -201,7 +201,9 @@ memory:
 | `memory.banks` | int | `4` | Number of memory banks. DRAM techs enforce minimum (DDR4 >= 16/chip). |
 | `memory.subarrays_per_bank` | int | `4` | Subarrays per bank. |
 | `memory.latency` | int | `-1` | Override memory latency in cycles. `-1` = auto from external models. |
-| `memory.dq_turnaround` | bool | `true` | Charge the shared DQ bus a direction-reversal penalty (JEDEC tWTR) between a write and a read. Since 1.11.65 the penalty is DERIVED as nWTR_L x tCK from the Ramulator timing preset the run selects (DDR3 7.5 ns, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 11.0, HBM2 8.33, HBM3 8.125 at the shipped presets) and printed at load; earlier releases carried a hand-written table that had drifted 1.75x low for GDDR6. Set `false` for a design with a dedicated PIM interconnect and no shared bus. |
+| `memory.dram.device_width` | string | `x8` | DRAM device width (`x4`/`x8`/`x16`) for the DDR family. Selects the org preset row and, since 1.11.66, the org Ramulator instantiates -- the two are bound by a live shape check. |
+| `memory.dram.ddr5_speed_grade` | int | `4800` | DDR5 speed grade, one of `3200`, `4800`, `5600` (since 1.11.66). Selects ONE part: timing preset (`DDR5_3200AN` / `DDR5_4800B` / `DDR5_5600B` -- the B bins at 4800/5600 because the Micron MT60B dies whose IDD currents are used are -48B/-56B parts), org (8 Gb at 3200, the 16 Gb MT60B die at 4800/5600), IDD row (Micron Rev A / Rev D addenda), and data rate. The 3200 row's IDD is unsourced (no held datasheet has a 3200 column) and is stated so. Any other value is a FATAL configuration error. |
+| `memory.dq_turnaround` | bool | `true` | Charge the shared DQ bus a direction-reversal penalty (JEDEC tWTR) between a write and a read. Since 1.11.65 the penalty is DERIVED as nWTR_L x tCK from the Ramulator timing preset the run selects (DDR3 7.5 ns, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 6.28, HBM2 8.33, HBM3 8.125 at the shipped presets; GDDR6 read 11.0 in 1.11.65 from a wrong clock, corrected in 1.11.66) and printed at load; earlier releases carried a hand-written table that had drifted 1.75x low for GDDR6. Set `false` for a design with a dedicated PIM interconnect and no shared bus. |
 
 ### Memory Timing Override
 
@@ -520,8 +522,8 @@ power:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `power.temperature_k` | int | `350` | Operating temperature in kelvin. Reaches McPAT, CACTI and NVSim (leakage), and since 1.11.65 the DRAM refresh rate. |
-| `power.temperature_c` | int | -- | Same knob in Celsius (`+273`). |
+| `power.temperature_k` | int | `350` | Operating temperature in kelvin. Reaches McPAT, CACTI and NVSim (leakage), and since 1.11.65 the DRAM refresh rate. **Legal values: 300..400 in steps of 10** -- CACTI evaluates only those points and the loader refuses anything else (so 373 K = 100 C is rejected; use 370 or 380). Consequently the refresh ladder's 85 C / 95 C thresholds are crossed at exactly 360 K (87 C) and 370 K (97 C). |
+| `power.temperature_c` | int | -- | Same knob in Celsius (`+273`); the 10 K grid applies after conversion. |
 
 **Refresh follows temperature (since 1.11.65).** Every DRAM family refreshes
 twice as often above 85 C, and HBM four times as often above 95 C; before

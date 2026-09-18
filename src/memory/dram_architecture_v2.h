@@ -1021,20 +1021,27 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * is "Micron D1a, 8 Gb / 25.41 mm^2 (TechInsights)". At the preset's
      * density it lands at 25.40 mm^2, on that measured part.
      *
-     * ONE RESIDUAL, STATED RATHER THAN SILENTLY RESOLVED: the preset spans its
-     * 8 Gb over 8 BG x 2 Ba = 16 banks, while this object (and main.cpp's
-     * hierarchy table) carry JEDEC's 8 BG x 4 Ba = 32. On this one field the
-     * preset is the odd authority -- a JEDEC DDR5 x8 device really has 32
-     * banks. bank_size_mb follows the PRESET (8 Gb / 16 = 64 MB), because
-     * bank_size_mb exists to describe the part whose cycles are counted, and
-     * the bank COUNTS are left where JEDEC puts them. So 32 x 64 MB does not
-     * reproduce chip_size_mb here, and that is the two authorities disagreeing
-     * rather than an arithmetic slip. Ruling R1 names chip_size_mb and
-     * bank_size_mb only; moving the bank count is a separate change with a
-     * separate blast radius (the CACTI area query and effectiveDramBanks()). */
+     * 1.11.66 (round 5, A2/F2): THE RESIDUAL IS RESOLVED, AND THE PRESET WAS
+     * RIGHT. The 1.11.61 note that stood here claimed "a JEDEC DDR5 x8 device
+     * really has 32 banks" and kept this object at 8 BG x 4 Ba against the
+     * preset's 8 BG x 2. JESD79-5D (misc/, published Nov 2025), Table 4
+     * printed p.7: the 8 Gb x8 addressing is "BG Address BG0~BG2 | Bank
+     * Address in a BG BA0 | # BG / # Banks per BG / # Banks = 8 / 2 / 16".
+     * 32 banks (BA0~BA1) begins at 16 Gb (Tables 5-7). The preset
+     * DDR5_8Gb_x8 = {8 BG, 2 Ba} was correct and 1.11.64's JESD79-5D pass
+     * verified it; this object and main.cpp's per-tech table were the two
+     * wrong authorities -- the HBM2 1174A defect class with the sign
+     * reversed. Consequences while wrong: tech_min_banks forced >= 256
+     * banks per rank where the part has 128, so total_units x pages_per_unit
+     * modelled an address space 2x the simulated rank, and the bus-shared PE
+     * count read 32 where the device has 16. Both authorities now carry
+     * JEDEC's 8 Gb shape, 32 x 64 MB is no longer claimed, and 16 x 64 MB =
+     * 1024 MB reproduces chip_size_mb -- the two authorities agree. The
+     * blast radius the old note named (CACTI area query, effectiveDramBanks)
+     * is exactly what moves, and moves to the part. */
     arch->organization.subarrays_per_bank = 128;  // DERIVED: 64 MB bank / 512 KB subarray
-    arch->organization.banks_per_bank_group = 4;  // JEDEC: 4 banks per bank group
-    arch->organization.bank_groups_per_chip = 8;  // JEDEC: 8 bank groups (2x DDR4!)
+    arch->organization.banks_per_bank_group = 2;  // JESD79-5D Tbl 4 p.7: 8 Gb x8 = BA0 -> 2 per BG
+    arch->organization.bank_groups_per_chip = 8;  // JESD79-5D Tbl 4 p.7: BG0~BG2 -> 8 groups
     arch->organization.chips_per_rank = 8;  // x8 organization
     arch->organization.ranks_per_channel = 2;  // Typical DIMM
     arch->organization.subarray_size_kb = 512;  // Typical
@@ -1232,8 +1239,17 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     // ===== ORGANIZATION (VERIFIED) =====
 
     arch->organization.subarrays_per_bank = 4;
-    arch->organization.banks_per_bank_group = 4;  // Same as HBM2
-    arch->organization.bank_groups_per_chip = 4;  // Per pseudo-channel
+    /* 1.11.66 (round 5, B3): 8 bank groups per CHANNEL, not 4 -- the same
+     * per-pseudo-channel-vs-per-channel slip 1.11.64 fixed on HBM2. JESD238B
+     * Table 4 gives BA[3:0] = 16 banks per pseudo-channel in 4 groups; a
+     * channel is two pseudo-channels, so 32 banks in 8 groups per channel --
+     * which is what the preset {2 Pch, 4 Bg, 4 Ba}, main.cpp's per-tech
+     * table and three vendor papers (Ryu p.1052, Park p.257, Lee p.239) all
+     * say. This object was the one authority still at 16, and bank_size_mb
+     * below already divided by 32. Latent (nothing HBM3 read this field for
+     * a live number in 1.11.65) but a disagreement in the register. */
+    arch->organization.banks_per_bank_group = 4;  // JESD238B Tbl 4/5: 4 per group
+    arch->organization.bank_groups_per_chip = 8;  // 4 per pseudo-channel x 2 PC
     arch->organization.chips_per_rank = 16;  // 16 pseudo-channels
     arch->organization.ranks_per_channel = 1;  // Single stack
     arch->organization.subarray_size_kb = 1024;  // Same as HBM2

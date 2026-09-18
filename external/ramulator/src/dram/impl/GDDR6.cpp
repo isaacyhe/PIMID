@@ -76,11 +76,35 @@ class GDDR6 : public IDRAM, public Implementation {
      *     nWR, nRTP, nCWL, nCCDL, nRRD*, nWTR*, nFAW, nRREFD, nRFCpb) stays as
      *     it is: UNCHECKABLE against JESD250D by the standard's own design. */
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
-      //       name                rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nFAW  nRFC nREFI nRREFD nRFCpb tCK_ps
-      {"GDDR6_2000_1350mV_double", {2000,  8,  24,    26,     16,  26,   53,   79,   26,   4,   6,   8,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   1000}},
-      {"GDDR6_2000_1250mV_double", {2000,  8,  24,    30,     19,  30,   60,   89,   30,   4,   6,   8,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   1000}},
-      {"GDDR6_2000_1350mV_quad",   {2000,  4,  24,    26,     16,  26,   53,   79,   26,   4,   6,   4,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   1000}},
-      {"GDDR6_2000_1250mV_quad",   {2000,  4,  24,    30,     19,  30,   60,   89,   30,   4,   6,   4,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   1000}},
+      /* 1.11.66 (round 5, lane C -- CORRECTS A 1.11.63 REGRESSION). GDDR6
+       * carries 8 bits/pin per CK (WCK = 4x CK, DDR on WCK -- JESD250D Table 1
+       * p.5: CK 1.5 GHz <-> 12 Gbps; Samsung K4Z80325BC Table 91: tCK 0.57 ns
+       * AT 14 Gbps), NOT the 2 bits/pin the 1.11.63 derivation assumed.
+       * Upstream's tCK 570 ps was right, and the proof is arithmetic: every
+       * cycle count in this row reproduces Samsung's 14 Gbps AC set at 0.57 ns
+       * within 1-2% -- nRCDRD 26 = 14.82 (tRCDRD 15 ns), nRP 26 = 14.82 (15),
+       * nRAS 53 = 30.2 (30), nRC 79 = 45.0 (45), nRCDWD 16 = 9.1 (9), nRFCpb
+       * 105 = 59.9 (60), nREFI 3333 = 1.90 us (1.9) -- and reproduces NOTHING
+       * at 1.000 ns. The 1.11.63 re-mirror to 1000 ps kept the counts and
+       * changed the clock, turning the timing model into a 2 Gbps/pin part
+       * (no such GDDR6 exists) with every row timing 1.75x slow; 1.11.65 then
+       * derived the DQ turnaround from it (11.0 ns where 4tCK+4 = 6.27 is
+       * the vendor figure).
+       *
+       * The row's "2000" was never a data rate; it named the CK class. The
+       * rate column now carries the PIN rate PIMID prices (14000 MT/s, the
+       * value CactiIOWrapper::dramRateMTs has held all along), tCK derives as
+       * 8E6/rate = 571 ps, and the burst is re-expressed in the 8-bit domain:
+       * BL16 on 16 DQ = 32 B per burst = 2 CK, so nBL 8 -> 2 and nCCDS 8 -> 2
+       * (back-to-back bursts to different bank groups). Every other count is
+       * UNCHANGED -- they were right, in the clock they were written for.
+       * The _quad rows are not shipped by PIMID; they receive the same clock
+       * correction so the file is self-consistent. */
+      //       name                 rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nFAW  nRFC nREFI nRREFD nRFCpb tCK_ps
+      {"GDDR6_2000_1350mV_double", {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
+      {"GDDR6_2000_1250mV_double", {14000,  2,  24,    30,     19,  30,   60,   89,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
+      {"GDDR6_2000_1350mV_quad",   {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
+      {"GDDR6_2000_1250mV_quad",   {14000,  2,  24,    30,     19,  30,   60,   89,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
     };
 
 
@@ -310,17 +334,21 @@ class GDDR6 : public IDRAM, public Implementation {
        * the derivation in two of them (LPDDR5 1250 vs 312, GDDR6 570 vs 1000).
        * The divisor was `1E6 / (rate / 2)`, whose integer division threw away
        * the half-MT/s of odd rates (DDR3-1333 came out 1501 ps instead of
-       * 1500, DDR3/DDR4-2133 938 instead of 937); it is now the exact
-       * 2e6/rate the column documents. GDDR6 is a DDR-clocked interface --
-       * one data beat per CK edge -- so 2 bits/pin per CK is the right
-       * relation here (LPDDR5 and HBM3 are not, and say so in their files). */
+       * 1500, DDR3/DDR4-2133 938 instead of 937).
+       * 1.11.66: the sentence that stood here -- "GDDR6 is a DDR-clocked
+       * interface, one data beat per CK edge, so 2 bits/pin per CK" -- was
+       * WRONG, and the row comment above carries the proof. GDDR6's data
+       * strobe WCK runs at 4x CK with DDR on WCK: 8 bits/pin per CK, so
+       * tCK = 8e6/rate (Samsung Table 91: 0.57 ns at 14 Gbps; 8e6/14000 =
+       * 571). This is the same family shape as LPDDR5 (8e6) and the
+       * quarter-rate relation of HBM3 (4e6), not DDR's 2e6. */
       int preset_tCK_ps = m_timing_vals("tCK_ps");
-      int tCK_ps = 2E6 / m_timing_vals("rate");
+      int tCK_ps = 8E6 / m_timing_vals("rate");
       m_timing_vals("tCK_ps") = tCK_ps;
       if (preset_provided && preset_tCK_ps != tCK_ps) {
         throw ConfigurationError(
           "In \"{}\", the timing preset's tCK_ps column says {} ps but the "
-          "rate of {} MT/s derives {} ps (tCK = 2e6/rate). The derivation "
+          "rate of {} MT/s derives {} ps (tCK = 8e6/rate). The derivation "
           "wins at run time, so the column must mirror it -- fix the preset!",
           get_name(), preset_tCK_ps, m_timing_vals("rate"), tCK_ps);
       }
@@ -334,9 +362,12 @@ class GDDR6 : public IDRAM, public Implementation {
         }
       }(m_organization.dq);
 
+      /* 1.11.66: keyed on the PIN rate now that the rate column carries it
+       * (14000, see the row comment); the old key 2000 would have returned
+       * -1 and silently skipped the per-width nRRD/nFAW table below. */
       int rate_id = [](int rate) -> int { //should low voltage operation be added here?
         switch (rate) {
-          case 2000:  return 0;
+          case 14000: return 0;
           default:    return -1;
         }
       }(m_timing_vals("rate"));
@@ -369,11 +400,27 @@ class GDDR6 : public IDRAM, public Implementation {
 
       // Refresh timings
       // tRFC table (unit is nanosecond!)
-      constexpr int tRFC_TABLE[3][3] = {
+      /* 1.11.66 (round 5, lane C): the table this replaces was DDR4's tRFC1/
+       * tRFC2/tRFC4 column set (260/360/550 at 4/8/16 Gb -- JESD79-4's
+       * numbers), inherited with the rest of this file and never a GDDR6
+       * value. Both held vendor sheets give the all-bank refresh cycle time
+       * directly, and they agree:
+       *   Samsung K4Z80325BC (8 Gb) Table 92 PDF p.158: tRFCab 120 ns
+       *   SK hynix H56G42A (16 Gb) Table 67 PDF p.157:  tRFCab 120 ns
+       * -- 120 ns at BOTH densities (GDDR6 refreshes per bank group in
+       * parallel; the all-bank figure does not grow with density the way a
+       * DDR4 chip's does). The per-bank tRFCpb is 60 ns in both, which the
+       * row's nRFCpb 105 x 0.571 = 60 ns already carries. JESD250D itself
+       * leaves the AC cell blank (vendor-specified), so the vendor sheets
+       * are the authority. With tREFI 1900 ns the refresh occupancy goes
+       * 360/1900 = 18.9% -> 120/1900 = 6.3%, which is what a 14 Gb/s GDDR6
+       * channel actually loses to refresh. GDDR6 has no fine-granularity
+       * refresh modes (no tRFC2/tRFC4 exist in JESD250D), so the table is
+       * one row; the 4 Gb column has no shipped part behind it and carries
+       * the same 120 with that stated. */
+      constexpr int tRFC_TABLE[1][3] = {
       //  4Gb   8Gb  16Gb
-        { 260,  360,  550}, // Normal refresh (tRFC1)
-        { 160,  260,  350}, // FGR 2x (tRFC2)
-        { 110,  160,  260}, // FGR 4x (tRFC4)
+        { 120,  120,  120}, // tRFCab: Samsung Tbl 92 / SK hynix Tbl 67, 120 ns at 8 and 16 Gb
       };
 
       // tREFI(base) table (unit is nanosecond!)

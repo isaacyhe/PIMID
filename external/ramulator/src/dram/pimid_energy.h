@@ -134,7 +134,7 @@ struct IDDSpec {
  * misattribute the numbers. The substantive half of the same divergence, the
  * timing layer and the energy layer describing different parts, is carried
  * numerically by the trfc_ns/trefi_ns columns and is not a comment question. */
-/* 1.11.66: TEMPERATURE-DEPENDENT REFRESH. Every DRAM family halves tREFI
+/* 1.11.65: TEMPERATURE-DEPENDENT REFRESH. Every DRAM family halves tREFI
  * (doubles refresh rate) above 85 C; HBM goes further. The model had been
  * temperature-FLAT: config.temperature_k reached McPAT, CACTI and NVSim but
  * never the DRAM refresh duty, so a 105 C run priced the same refresh power
@@ -249,8 +249,39 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * LPDDR5 trefi 3904.0 disagrees with LPDDR5.cpp's tREFI_BASE 3906 by 2 ns;
      * both are UNCHECKABLE (deferred to General LPDDR5 Spec 3 / JESD209-5,
      * neither held) so neither is moved. */
-    if (tech == "DDR5")   return {1.1, 55,34,42,148,168,120, 195.0, 3900.0, 1, 20};
-    if (tech == "DDR4")   return {1.2, 58,35,42,140,150,155, 350.0, 7800.0, 1, 25};
+    /* 1.11.66 (round 5, F6 -- user ruling R8 #9): THE DDR5 ROW FOLLOWS THE
+     * SPEED GRADE, because an IDD row and a timing row must describe one
+     * part. The held Micron MT60B 16 Gb die addenda (misc/) publish x8 IDD
+     * limits at exactly two grades, and both are B-bin parts:
+     *   Rev A (Rev. D 02/2023) Table 6 pp.17-19, DDR5-4800B:
+     *     IDD0 103, IDD2N 92, IDD3N 142, IDD4R 377, IDD4W 349, IDD5B 277,
+     *     IDD2P 88 mA; tRFC1(16 Gb) 295 ns (JESD79-5D Table 71 p.173)
+     *   Rev D (Rev. F 04/2024) Table 8 pp.18-20, DDR5-5600B:
+     *     IDD0 53, IDD2N 49, IDD3N 91, IDD4R 218, IDD4W 241, IDD5B 377,
+     *     IDD2P 47 mA; tRFC1 295 ns
+     * Both are "maximum values ... worst-case process, temperature and
+     * voltage" at VDD = VDDQ = 1.1 V, and both list IDD5B (burst, all-bank)
+     * directly -- no IDD5R conversion needed, unlike DDR4. The 3200 row
+     * (8 Gb, DDR5_3200AN) keeps its previous currents with the gap STATED:
+     * no held datasheet publishes a 3200 column, so that row's IDD is
+     * unsourced (lane C F6 measured it 2-3x below either addendum on
+     * standby). Default grade is 4800. The energy caller passes the grade;
+     * the tRFC column is 195 ns at 8 Gb and 295 ns at 16 Gb. */
+    if (tech == "DDR5-3200") return {1.1, 55, 34, 42,148,168,120, 195.0, 3900.0, 1, 20};   // 8 Gb, UNSOURCED IDD (stated)
+    if (tech == "DDR5-5600") return {1.1, 53, 49, 91,218,241,377, 295.0, 3900.0, 1, 47};   // MT60B Rev D T8, 16 Gb
+    if (tech == "DDR5" || tech == "DDR5-4800")
+                          return {1.1,103, 92,142,377,349,277, 295.0, 3900.0, 1, 88};   // MT60B Rev A T6, 16 Gb (default)
+    /* 1.11.66 (round 5, F5): idd5 155 -> 362 mA. The 155 had no source.
+     * Micron MT40A (misc/) tabulates IDD5R -- the DISTRIBUTED refresh current,
+     * one REF every tREFI averaged in (p.318 definition) -- not the burst
+     * IDD5B this column means. Converting the same Rev A row the other
+     * columns come from: IDD5B = IDD2N + (IDD5R - IDD2N) x tREFI / tRFC =
+     * 50 + 14 / (350/7800) = 362 mA. That is EXACTLY the IDD5B upstream
+     * Ramulator2 ships in DDR4.cpp's Default current preset, which is how
+     * upstream derived it too -- an independent reproduction. Refresh
+     * excess over IDD3N goes 113 -> 320 mA (2.8x); the printed refresh line
+     * had been 2.7x low. */
+    if (tech == "DDR4")   return {1.2, 58,35,42,140,150,362, 350.0, 7800.0, 1, 25};
     if (tech == "DDR3")   return {1.35,60,32,45,175,180,210, 350.0, 7800.0, 1, 18};
     /* 1.11.63 (calibration): the LPDDR5 IDD column is re-based on a HELD part
      * datasheet. Every one of the seven currents changed.
@@ -281,10 +312,36 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * is priced here -- the VDD1 draw (IDD01 2.9 mA, IDD4R1 7.2 mA, ...) and
      * the VDDQ draw (IDD4RQ 106 mA) are not in this struct's shape. The
      * provenance line above is updated to name the part actually used. */
-    if (tech == "LPDDR5") return {1.05,45,30,39,372,310,170, 210.0, 3904.0, 1,  2.5};
-    if (tech == "GDDR6")  return {1.35,70,45,60,210,230,180, 220.0, 1900.0, 1, 30};
+    if (tech == "LPDDR5") return {1.05,45,30,39,372,310,170, 210.0, 3906.0, 1,  2.5};   // 1.11.66 (L7): tREFI 3906 = JESD209-5C 3.906 us, = LPDDR5.cpp tREFI_BASE (was 3904)
+    if (tech == "GDDR6")  return {1.35,70,45,60,210,230,180, 120.0, 1900.0, 1, 30};   // 1.11.66: tRFCab 120 (Samsung T92 / SK hynix T67), was 220
     if (tech == "HBM3")   return {1.1, 30,18,22, 90,100, 70, 260.0, 3900.0, 16, 7};
-    if (tech == "HBM2")   return {1.2, 28,17,21, 80, 90, 65, 260.0, 3900.0, 8,  7};
+    /* 1.11.66 (round 5, F7 -- user ruling R8 #10): THE HBM2 IDD ROW IS
+     * MEASURED SILICON. The row this replaces (28/17/21/80/90/65 mA) traced
+     * to no vendor table -- HBM2 datasheets are NDA-only and JESD235D prints
+     * its IDD value columns empty by construction (Table 65 p.105). The
+     * CMU-SAFARI HBM-Power artifact (misc/zen_hbm2_idd_36chips_summary.csv,
+     * 2026) measured the JEDEC IDD loop patterns on 36 real HBM2 stacks
+     * (AMD Alveo U55C, DRAM Bender, ~800k samples) at the stack's primary
+     * VDD rail. The conversion to this row's per-CHANNEL unit is JEDEC's
+     * own: JESD235D cl. 9.1 printed p.100 -- "IDD and IPP measurements are
+     * taken with all channels of the HBM device simultaneously executing
+     * the same pattern. However, values in the vendor's datasheet shall be
+     * given per channel." So stack mean / 8 channels IS the datasheet
+     * quantity. Means across 36 chips, / 8:
+     *   IDD0 1125.1 -> 141   IDD2N 1087.4 -> 136   IDD3N 1067.3 -> 133
+     *   IDD4R 3710.1 -> 464  IDD4W 2844.6 -> 356   IDD5B 1514.5 -> 189
+     * These are as-measured operating points (IDD4R at 67.6 C mean case),
+     * not temperature-normalised minima, and the chip-to-chip spread is
+     * 1.3x on the burst loops and 1.6-1.8x on standby -- the per-chip file
+     * zen_hbm2_idd_per_chip.csv is the band any single number here sits in.
+     * Note IDD3N (133) <= IDD2N (136) on silicon: the open-row standby
+     * increment is inside measurement noise, as is IDD0 - IDD3N. The old
+     * row's only term that agreed with silicon was the refresh increment
+     * IDD5B - IDD3N (44 vs 46 mA). IDD2P was NOT measured; the 7 mA stays as
+     * the one un-sourced column and is stated so. Consequence: HBM2
+     * background ~6.5x, burst increments 3-5x -- the model had priced a
+     * stack's standby at 0.20 W where silicon draws 1.37 W. */
+    if (tech == "HBM2")   return {1.2, 141,136,133,464,356,189, 260.0, 3900.0, 8,  7};
     /* 1.11.57 (latent D007): unknown -> DDR4 class, and it says so. This
      * governs the array activate/precharge and burst energy, the background
      * standby power and the refresh line for the whole run. */
@@ -293,7 +350,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
     return {1.2, 58,35,42,140,150,155, 350.0, 7800.0, 1, 25};  // unknown -> DDR4 class
 }
 
-/* 1.11.66: the IDD row AT A TEMPERATURE. The datasheet table above is the
+/* 1.11.65: the IDD row AT A TEMPERATURE. The datasheet table above is the
  * nominal-range (<= 85 C) row; this applies refreshTempFactor() to tREFI so
  * every refresh-duty consumer (stateWithRefreshMW, refreshMW, backgroundMW,
  * backgroundUnitMW, backgroundSystemMW) sees the operating point's refresh
@@ -303,9 +360,17 @@ inline IDDSpec iddTableFor(const std::string& tech) {
  * specify IDD at a fixed case temperature and publish no derating curve for
  * the active currents; only the refresh RATE is normatively temperature-
  * dependent. */
+/* 1.11.66 (R8 #9): an energy KEY may carry a speed-grade suffix --
+ * "DDR5-4800" -- which selects the IDD row; every family-level decision
+ * (refresh ladder, termination scheme, devices per access, background
+ * units) sees the bare technology. baseTech() strips the suffix. */
+inline std::string baseTech(const std::string& key) {
+    const auto dash = key.find('-');
+    return (dash == std::string::npos) ? key : key.substr(0, dash);
+}
 inline IDDSpec iddFor(const std::string& tech, int temperature_k = 358) {
     IDDSpec s = iddTableFor(tech);
-    s.trefi_ns *= refreshTempFactor(tech, temperature_k);
+    s.trefi_ns *= refreshTempFactor(baseTech(tech), temperature_k);
     return s;
 }
 
@@ -367,7 +432,7 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
                           double row_miss_frac = -1.0) {
     if (bank_override_pJ_per_byte > 0.0)
         return bank_override_pJ_per_byte * 64.0 / 1000.0
-               * devicesPerAccess(tech, device_width);   // 1.11.57 (D004)
+               * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
     IDDSpec s = iddFor(tech);
     double e_actpre_pJ = s.vdd * (s.idd0 * tRC - s.idd3n * tRAS - s.idd2n * (tRC - tRAS));
     double e_rd_pJ     = s.vdd * (s.idd4r - s.idd3n) * tBurst;
@@ -383,7 +448,7 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)
                                  ? row_miss_frac : 0.5;
     return (ROW_MISS_FRAC * e_actpre_pJ + e_rd_pJ) / 1000.0
-           * devicesPerAccess(tech, device_width);   // 1.11.46 (L181)
+           * devicesPerAccess(baseTech(tech), device_width);   // 1.11.46 (L181)
 }
 inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
                            double tBurst, double bank_override_pJ_per_byte,
@@ -405,14 +470,14 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
      * writer anywhere in the tree. */
     if (bank_override_pJ_per_byte > 0.0)
         return bank_override_pJ_per_byte * 64.0 / 1000.0
-               * devicesPerAccess(tech, device_width);   // 1.11.57 (D004)
+               * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
     IDDSpec s = iddFor(tech);
     double e_actpre_pJ = s.vdd * (s.idd0 * tRC - s.idd3n * tRAS - s.idd2n * (tRC - tRAS));
     double e_wr_pJ     = s.vdd * (s.idd4w - s.idd3n) * tBurst;
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)
                                  ? row_miss_frac : 0.5;   // 1.11.52 (D003)
     return (ROW_MISS_FRAC * e_actpre_pJ + e_wr_pJ) / 1000.0
-           * devicesPerAccess(tech, device_width);   // 1.11.46 (L181)
+           * devicesPerAccess(baseTech(tech), device_width);   // 1.11.46 (L181)
 }
 
 /* 1.11.5 (audit): interfaceNJ REMOVED. It returned vdd*(idd4r-idd3n)*tBurst
@@ -743,7 +808,7 @@ inline double stateWithRefreshMW(const IDDSpec& s, double idd_state) {
 /* The refresh EXCESS over active standby. Reported as its own line item, and
  * that is the only thing it means: it is IDD3N-relative and must not be added
  * to a baseline that is not IDD3N. backgroundUnitMW() no longer calls it. */
-inline double refreshMW(const std::string& tech, int temperature_k = 358) {
+inline double refreshMW(const std::string& tech, int temperature_k = 358) {   // 1.11.65
     IDDSpec s = iddFor(tech, temperature_k);
     return s.vdd * (s.idd5 - s.idd3n) * (s.trfc_ns / s.trefi_ns);
 }
@@ -867,9 +932,9 @@ inline double backgroundSystemMW(const std::string& tech, double r_idle,
                                  const std::string& device_width = "",
                                  int ranks_per_channel = 1,
                                  int channels = 1,        // 1.11.52 (A015)
-                                 int temperature_k = 358) {   // 1.11.66
+                                 int temperature_k = 358) {   // 1.11.65
     return backgroundUnitMW(tech, r_idle, pg_enabled, temperature_k) *
-           static_cast<double>(backgroundUnits(tech, device_width,
+           static_cast<double>(backgroundUnits(baseTech(tech), device_width,
                                                ranks_per_channel, channels));
 }
 

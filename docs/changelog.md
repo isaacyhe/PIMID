@@ -7,6 +7,164 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.66 -- round five: the register, the shape, and a clock put back
+
+Round 5 audited 1.11.60 through 1.11.65 in three lanes -- code, gates,
+calibration -- and this release closes everything it found: twelve REAL
+defects, six latent, five cosmetic, and the gate arms that had passed
+without proving anything. Two user rulings (R8): the HBM2 IDD row becomes
+measured silicon, and the DDR5 speed grade becomes a setting. Discipline for
+the whole release was "fix one, validate one" (user decree): every item
+below carries an explicit PASS on a stated observable before the next was
+touched.
+
+THE REGRESSION I SHIPPED, PUT BACK. GDDR6's clock relation is 8 bits per
+pin per CK (WCK runs at 4x CK with DDR on WCK; Samsung K4Z80325BC Table 91:
+"tCK 0.57 ns" AT 14 Gbps; JESD250D Table 1: CK 1.5 GHz <-> 12 Gbps), not
+the 2 bits per pin the 1.11.63 CK-domain pass assumed for it. The proof is
+arithmetic: every cycle count in GDDR6_2000_1350mV_double reproduces
+Samsung's 14 Gbps AC set at 0.57 ns within 1-2% -- nRCDRD 26 = 14.82
+(tRCDRD 15), nRP 26 = 14.82 (15), nRAS 53 = 30.2 (30), nRC 79 = 45.0 (45),
+nRFCpb 105 = 59.9 (60), nREFI 3333 = 1.90 us -- and reproduces NOTHING at
+1.000 ns. Upstream's 570 ps had been right. Re-mirroring the column to 1000
+ps in 1.11.63 kept the counts and changed the clock, so the timing model
+became a 2 Gbps/pin part with every row timing 1.75x slow, and 1.11.65 then
+derived the DQ turnaround from it: the 11.0 ns that release called a
+correction replaced the right number, 6.27. The row's "2000" was never a
+data rate; the rate column now carries the pin rate PIMID prices (14000),
+tCK derives as 8E6/rate = 571 ps, nBL and nCCDS move to the 8-bit domain
+(2 and 2), rate_id is re-keyed, and the per-run "upstream ships no timing
+bin at the modelled rate" note falls silent because all seven presets' rate
+columns now equal the priced rate -- the static rate table is demoted from
+authority to cross-check (modelledRateMTs()). The GDDR6 ns getters, which
+round 5's code lane had flagged as 0.55x low, turn out to have been the
+vendor values all along; they are now DERIVED from the corrected preset and
+reproduce themselves (14.85 / 13.7 / 14.85 / 30.3 ns).
+
+GDDR6 tRFC: 360 ns (impl) and 220 (energy) were DDR4's columns. Both
+vendor sheets give tRFCab = 120 ns at 8 Gb and 16 Gb alike (Samsung Table
+92; SK hynix H56G42A Table 67). Refresh occupancy 18.9% -> 6.3%.
+
+THE SHAPE CHECK -- the structural fix behind four defects. Every
+organization cross-check this tree had was a PRODUCT identity (density ==
+banks x rows x cols x dq; capacity == chip x dies), and a transcription
+carrying half the banks and twice the rows satisfies every one of them.
+That is how the HBM2 org shipped wrong for three releases, how the DDR3
+transcription went stale against the 1.11.63 preset unnoticed (131072 x
+1024 where the preset says 65536 x 2048 -- 256 subarrays per bank instead
+of 128, a 1 KB page where the part has 2 KB), and how DDR5 sat at 2x the
+part. checkTranscribedOrganizationShape() binds the transcription FIELD BY
+FIELD -- banks, rows, columns -- to the device Ramulator actually
+instantiates from the named preset, at every wrapper's initialize(),
+including the parameter oracles that never build a Ramulator instance (a
+throwaway one is constructed purely to read its organization). dram.h is
+C++20 and PIMID is C++17, so the read goes through a small probe compiled
+inside the Ramulator library (pimid_org_probe). A mismatch is FATAL;
+PIMID_ORG_BREAK proves it fires on all seven technologies. The check earned
+its keep before the release closed: it found the oracle-side config emitter
+missing DDR5's required RFM parameter group (the co-sim emitter always had
+it -- two emitters, one part), a per-device-vs-per-channel bank-counting
+ambiguity for GDDR6, and the DDR-family config orgs hardcoding x8 while the
+transcription followed the run's device width, so an x4 run transcribed one
+part and simulated another.
+
+DDR5, 8 Gb x8, has 16 banks, not 32. JESD79-5D Table 4 printed p.7: "BG
+Address BG0~BG2 | Bank Address in a BG BA0 | 8 / 2 / 16"; 32 (BA0~BA1)
+begins at 16 Gb. The preset said 16 and 1.11.64 had verified it; the
+architecture object and main.cpp's per-tech table said 32, with a 1.11.61
+note asserting the opposite of the standard. Both authorities now carry
+JEDEC's shape; the false "requires at least 32 banks" guard stops firing;
+16 x 64 MB reproduces the object's 1024 MB chip size.
+
+DDR5 SPEED GRADE IS A SETTING (user ruling R8 #9): memory.dram.
+ddr5_speed_grade in {3200, 4800, 5600}, default 4800. One grade selects ONE
+part -- timing row, org, IDD row, rate. The held Micron MT60B addenda are
+16 Gb, B-bin dies (Rev A is marked -48B = DDR5-4800B 40-39-39; Rev D is
+-56B = 5600B 46-45-45), so the new timing rows are the B bins, computed
+with the procedure that reproduces the 3200AN row field-for-field
+(JESD79-5D Tables 287/289 for the bins, 335/336 for per-speed AC, Table 71
+for the 16 Gb tRFC1 295 ns, clause 13.2 rounding, NOTE 8 for nRC), and
+their IDD rows are Table 6 (Rev A: 103/92/142/377/349/277/88 mA) and Table
+8 (Rev D: 53/49/91/218/241/377/47). The 3200 row keeps the 8 Gb part and its
+previous currents with the gap STATED: no held datasheet publishes a 3200
+column. Plumbing: the wrapper carries the grade; an energyKey() "DDR5-4800"
+selects the IDD row while baseTech() keeps every family-level decision on
+the bare technology; the grade rides applyDramKnobs() to every oracle and
+threads through the system-scope report and the co-sim DRAM model.
+Consequence at the default: DDR5 moves to the 4800B bin and the 16 Gb org
+-- a different part than 1.11.65 simulated, by design.
+
+THE HBM2 IDD ROW IS MEASURED SILICON (user ruling R8 #10). The row it
+replaces (28/17/21/80/90/65 mA) traced to no vendor table -- HBM2 sheets
+are NDA-only and JESD235D prints its IDD value columns empty. The CMU-SAFARI
+HBM-Power artifact measured the JEDEC IDD loop patterns on 36 real HBM2
+stacks; JESD235D cl. 9.1 (printed p.100) says measurements are taken with
+all channels active and "shall be given per channel", so stack mean / 8 IS
+the datasheet quantity: IDD0 141, IDD2N 136, IDD3N 133, IDD4R 464, IDD4W
+356, IDD5B 189. The model's 8-channel stack standby now computes to 1.31 W
+against the measured 1.37 W (it had been 0.20 W). IDD2P was not measured
+and its 7 mA is stated as the one unsourced column.
+
+DDR4: IDD5 = 155 mA had no source. Micron MT40A tabulates IDD5R (the
+distributed figure, p.318); converting the same Rev A row the other columns
+come from gives IDD5B = 50 + 14 / (350/7800) = 362 mA -- exactly the value
+upstream Ramulator2 ships in DDR4.cpp's Default preset, an independent
+reproduction. Refresh line 6.1 -> 17.2 mW. And tRFC1[8 Gb] 360 -> 350 ns
+(MT40A p.369), which the energy row had carried all along.
+
+dramRowBytes -- the stride of the MEASURED row-miss fraction that feeds the
+activate term -- was a per-generation guess wrong on three of seven (DDR3
+1 KB where the part has 2 KB; HBM2/HBM3 2 KB where JESD235D/238B print
+"Page Size per PC 1 KB"). It is now the preset's cols x dq / 8, read through
+PresetOrganization::rowBytes(), which had existed since 1.11.61 with no
+caller, and is verified by the shape check.
+
+The R6 timing stamp now reaches HBM2 and HBM3 and stamps the core clock
+and burst as well as the four ns timings. HBM3's object carried
+clock_freq_mhz = 3200 -- the rate/2 convention both HBM3 makers' silicon
+papers refute -- and it drove HBM3's inner ladder rungs AND, through the L0
+reference anchor, every technology's Garnet latencies; it is 1600 now. HBM2
+tRP 12.5 -> 15.0, tRAS 28 -> 33.3, tBurst 3.33 -> 1.67 ns; HBM3 tRP 10 ->
+16.25, tRAS 24 -> 33.1. Validated on a NEW "[mem] <tech> model inputs:"
+line in --print-mem-info that prints the stamped ns timings, core clock,
+burst and refresh factor -- the model's inputs, directly observable -- after
+an energy-based validation FAILED for the right reason: three fixes
+(dramRowBytes, the stamp, the IDD row) converge on HBM2's per-access energy,
+and one observable cannot attribute three causes.
+
+LATENT AND COSMETIC, all closed: the ONE FABRIC invariant no longer checks a
+layer against the rung it was set from -- it asks the consumer's own
+layerForLevel() which layer a tier lands in and refuses if emitter and
+consumer disagree (the drift it was built to catch); applyDramKnobs() is
+the one place an oracle wrapper is configured (width, grade, temperature,
+termination) so effectiveDramBanks() and the die-area oracle stop reading an
+x8 part in an x16 run; the HBM3 object's 4 bank groups per channel becomes
+8; DRAMModel forwards setTemperatureK to its owned wrapper (the refresh
+ladder had been dead on the co-sim device path) and gains setDramPartKnobs;
+interfaceAreaWithheld() is read where the area is reported instead of
+inferring the cause from a proxy; LPDDR5's energy-row tREFI 3904 -> 3906 to
+match the impl and the standard; the temperature-ladder code tags say
+1.11.65, which is when it shipped; the two nominal temperature defaults are
+explained at the field; yaml_reference documents the 10 K grid (only 360 K
+and 370 K cross the ladder thresholds) and the two memory.dram keys.
+
+Gate 1176 follows the round-5 checklist: device-scope observables (bit-
+deterministic), every arm with a FIRES side, every grep verified against a
+live log before submission, configs checked against the validators. It also
+carries asserting arms for the two 1.11.64 claims that shipped without one
+(the DDR5 JESD79-5D fixes; GDDR6 host RON) and for the 1.11.60 Fbw topology
+header that gate 60 G4 left unread.
+
+Data impact: GDDR6 (every row timing 1.75x faster than 1.11.65; tWTR 11.0 ->
+6.28; refresh 3x less; activate energy via the derived getters, small);
+DDR5 (new default part: 4800B / 16 Gb / Rev A IDD -- cycles, background and
+refresh all move); HBM2 (IDD 3-8x; tBurst halves; rowBytes halves; bank
+count from 1.11.64); HBM3 (core clock halves on the inner ladder; tRP/tRAS
+stamped; rowBytes halves); DDR3 (subarrays 256 -> 128, page 2 KB); DDR4
+(refresh 2.8x). LPDDR5 is unchanged except tREFI 2 ns. The corpus re-sim on
+>= 1.11.66 is the gate before any CAL number is quoted; a written re-sim
+plan for approval is the next item.
+
 ## 1.11.65 -- the bus turns at the preset's clock, and refresh feels the heat
 
 Two items the vendor-document campaign left queued, landed together because
@@ -30,7 +188,10 @@ if the transcription lacks nWTR or its tCK disagrees with the impl -- a
 stale transcription can no longer price a different clock. The gate proves
 the refusal fires through the PIMID_TWTR_BREAK fault hook. Values at the
 shipped presets: DDR3 7.5, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 11.0
-(was 6.27), HBM2 8.33, HBM3 8.125 ns. Only GDDR6 moves.
+(was 6.27), HBM2 8.33, HBM3 8.125 ns. GDDR6 is the material move; HBM3
+also shifts 8.11 -> 8.125 (the table had rounded 13 x 0.625) -- 0.2%,
+recorded so "only GDDR6" is not read as exact. [Round 5 correction: the
+GDDR6 value 11.0 was itself WRONG -- see 1.11.66, which restores 6.28.]
 
 REFRESH FOLLOWS TEMPERATURE. config.temperature_k reached McPAT, CACTI and
 NVSim, and never the DRAM refresh duty: a 105 C run priced the same refresh
