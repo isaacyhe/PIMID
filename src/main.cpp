@@ -3367,7 +3367,22 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * architecture object; see the note in dram_architecture_v2.h. */
     else if (tech == "DDR5")     { banks_per_bg = 2; bg_per_chip = 8; chips_per_rank = 8; }
     else if (tech == "LPDDR5")   { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
-    else if (tech == "GDDR6")    { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
+    /* 1.11.70: chips_per_rank = 2, NOT 1 -- GDDR6 IS A TWO-CHANNEL DEVICE.
+     * This field carries channel multiplicity in this tree; the note four
+     * lines below says so for HBM ("chips_per_rank = channels per stack,
+     * HBM2 8, HBM3 16"), and GDDR6 was the one multi-channel part left at 1.
+     * JESD250D 4.1: "GDDR6 addressing is defined for a single channel with
+     * devices having 2 channels/device", and Table 19 gives 16 banks PER
+     * CHANNEL, so the device carries 32.
+     *
+     * WHY IT SURFACED NOW: the slot count here ignores channels while the
+     * channel-anchored projection (1.11.60) does not, so the two disagreed by
+     * exactly the channel count -- and the tree-coverage invariant caught it
+     * the moment GDDR6's ladder became adoptable (this release). Before that
+     * GDDR6 ran on the placeholder table and the tree was never built from
+     * the preset's two channels, so the disagreement could not fire. The
+     * invariant did its job: a latent shape error, fatal on first contact. */
+    else if (tech == "GDDR6")    { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 2; }
     // HBM has 2 pseudo-channels/channel; PIMID has no pseudo-ch level, so fold
     // them into the BG count to match Ramulator2/JEDEC per-channel org:
     //   HBM2 {1,2,4,4} = 2 pch x 4 BG x 4 banks = 32 banks (8 BG/ch)

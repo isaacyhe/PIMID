@@ -1031,6 +1031,180 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified(double por
 }
 
 //=============================================================================
+// GDDR6-14000 (1.11.70): GDDR6 gets its OWN architecture object.
+//
+// Last of the three that were reading DDR4's object (audit 1.11.57 B001).
+//
+// PROVENANCE. JEDEC JESD250D section 4.1 Table 19 ("Addressing Scheme"), the
+// 8 Gb x16 column: 2 channels per device, 4 Gb per channel, array pre-fetch
+// 256 bits per channel, BA[3:0] = 16 banks per channel, R[13:0] = 16384 rows,
+// C[5:0], page size 2 K. Same part as the preset GDDR6_8Gb_x16
+// ({2 Ch, 4 Bg, 4 Ba, 1<<14 Ro, 1<<10 Co}). As with LPDDR5, JEDEC's column
+// count (64) and Ramulator's (1024) differ only in unit -- 256-bit fetch
+// boundaries against 16-bit device words -- and both give the 2 KB page;
+// JESD250D states the relation itself in Table 19 note 3, "Page Size =
+// 2^COLBITS x (Prefetch_Size/8)".
+//
+// TWO CHANNELS PER DEVICE is the fact that reconciles this object. GDDR6's
+// channel is 16 bits (JESD250D 2.2: "two 16 bit wide fully independent
+// channels", the basis of ruling R3), and the aggregate the rate table
+// derives is 14000 MT/s x 16 bits / 8 x 2 channels = 56 GB/s. Reading DDR4's
+// 64-bit single-channel object gave 38.4 GB/s against that 56, which is the
+// mismatch that refused GDDR6's ladder.
+//
+// THE CLOCK. GDDR6 transfers 8 bits per pin per CK (WCK at 4x CK, DDR on
+// WCK), so tCK = 8E6 / rate = 571 ps at 14000 MT/s, not rate/2 as in the DDR
+// families. 1.11.66 corrected that in the preset and the transcription; this
+// object is written to the same divisor so the stamp is a check.
+//=============================================================================
+
+inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
+    auto arch = std::make_unique<DRAMArchitectureV2>("GDDR6-14000", "GDDR6");
+
+    // ===== DATAPATH STAGES =====
+
+    arch->datapath.row_buffer_bits = {
+        16384,  // 2 KB page x 8 bits
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD250D Table 19 (4.1), 8 Gb x16: page size 2K per channel",
+        "Activated row in the bitline sense amplifiers, per bank, per channel"
+    };
+    arch->datapath.gsa_datapath_bits = {
+        256,
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD250D Table 19: 'Array Pre-Fetch (bits, per channel) 256' in x16 mode",
+        "JEDEC publishes this for GDDR6, as it does for LPDDR5; it is an "
+        "inference only on the DDR parts. x8 mode would be 128."
+    };
+    arch->datapath.prefetch_datapath_bits = {
+        256,  // 16n prefetch x 16 DQ
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD250D 2.1: '16n prefetch architecture: 256 bit per array "
+        "read or write access per channel'",
+        "Stated twice in the standard: as a feature and as Table 19's column"
+    };
+    arch->datapath.bank_serialization_bits = {
+        8,
+        VerificationStatus::ESTIMATED,
+        "NOT DOCUMENTED by JEDEC; carried at the DDR/LPDDR estimate",
+        "CRITICAL BOTTLENECK and an admitted unknown, held equal across the "
+        "lineup so comparisons do not turn on an invented difference."
+    };
+    arch->datapath.chip_io_bits = {
+        16,  // x16 mode, per channel
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD250D Table 19: x16 mode, 16 DQ per channel",
+        "Per CHANNEL. The device carries two of these."
+    };
+    arch->datapath.rank_databus_bits = {
+        16,
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD250D: point-to-point channel, one device per channel",
+        "No multi-device rank exists in GDDR6; the rank bus IS the channel"
+    };
+    arch->datapath.channel_databus_bits = {
+        16,
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD250D 2.2 p.3: 'two 16 bit wide fully independent channels'; "
+        "Table 80 p.177: 'DQ[15:0] ... 16-bit data bus' (ruling R3)",
+        "THE field that reconciles: 16 bits x 14000 MT/s / 8 x 2 channels = 56 GB/s"
+    };
+
+    arch->bandwidth_limits.inference_method =
+        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        "bank group = bank x 2 (the bank-group port multiplier, UNSOURCED). "
+        "CONSERVATIVE: assumes the serialization path is the bottleneck.";
+    arch->bandwidth_limits.confidence_level =
+        "Medium-high - page, prefetch, widths, channel count and organisation are "
+        "JEDEC-verified; only the bank serialization width is an estimate";
+
+    // ===== ORGANIZATION (preset GDDR6_8Gb_x16, JESD250D Table 19) =====
+    // 4 Gb per channel / 16 banks = 32 MB per bank; 16384 rows x 2 KB = 32 MB
+    // confirms it. A 512-row subarray at a 2 KB page is 1 MB -> 32 subarrays,
+    // which is main.cpp's live count (16384 rows / 512).
+    arch->organization.subarrays_per_bank = 32;   // DERIVED: 32 MB bank / 1 MB subarray
+    arch->organization.banks_per_bank_group = 4;  // preset Ba 4; JEDEC BA[3:0] = 16 per channel
+    arch->organization.bank_groups_per_chip = 4;  // preset Bg 4
+    arch->organization.chips_per_rank = 1;        // point-to-point
+    arch->organization.ranks_per_channel = 1;     // GDDR6 has no rank dimension
+    arch->organization.subarray_size_kb = 1024;   // DERIVED: 512 rows x 2 KB page
+    arch->organization.bank_size_mb = 32;         // DERIVED: 4 Gb channel / 16 banks
+    arch->organization.chip_size_mb = 1024;       // the 8 Gb DEVICE, spanning 2 channels
+    arch->organization.rank_size_gb = 1;          // DERIVED: one 8 Gb device
+
+    // ===== TIMING (preset GDDR6_2000_1350mV_double; tCK = 8E6 / 14000 = 571 ps) =====
+    // nRCD 26, nCL 24, nRP 26, nRAS 53, nBL 2.
+    arch->timing.clock_freq_mhz = 1000.0 / 0.571;  // DERIVED: 1000 / tCK_ns
+    arch->timing.data_rate_mtps = 14000;
+    arch->timing.tRCD_ns = 26 * 0.571;   // DERIVED: nRCD 26 x tCK 571 ps
+    arch->timing.tCAS_ns = 24 * 0.571;   // DERIVED: nCL 24
+    arch->timing.tRP_ns  = 26 * 0.571;   // DERIVED: nRP 26
+    arch->timing.tRAS_ns = 53 * 0.571;   // DERIVED: nRAS 53
+    arch->timing.tBurst_ns = 2 * 0.571;  // DERIVED: nBL 2 x tCK
+
+    // Process-level stage delays, held at the lineup's common basis.
+    arch->timing.inner_bank.column_decoder_ns = 0.35;
+    arch->timing.inner_bank.column_mux_ns = 0.55;
+    arch->timing.inner_bank.subarray_output_drv_ns = 0.50;
+    arch->timing.inner_bank.local_io_ns = 0.75;
+    arch->timing.inner_bank.htree_horizontal_ns = 1.20;
+    arch->timing.inner_bank.htree_vertical_ns = 1.20;
+    arch->timing.inner_bank.global_io_ns = 1.50;
+    arch->timing.inner_bank.bank_io_driver_ns = 0.60;
+    arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
+    arch->timing.inner_bank.source =
+        "CACTI v6.5 analytical model (external/mcpat/cacti/), "
+        "DAS-MICRO'15 (Shih-Lien Lu et al.), "
+        "SALP-ISCA'12 (Yoongu Kim et al.), "
+        "Tiered-Latency DRAM HPCA'13 (Donghyuk Lee et al.)";
+
+    arch->deriveHierarchicalAccessTimes();
+
+    // DERIVED (see the 1.11.68 note in the DDR3 block): bank access + one
+    // burst, no unsourced rank hop.
+    // bank_access_ns = tRP + tRCD + tCAS = (26 + 26 + 24) x 0.571 = 43.396.
+    arch->timing.chip_access_ns = 43.396 + 1.142;
+    arch->timing.rank_access_ns = 43.396 + 1.142;
+
+    // ===== ENERGY (order-of-magnitude; the priced path uses the IDD rows) ====
+    arch->energy.subarray_energy_pJ = 1.0;
+    arch->energy.bank_energy_pJ = 2.0;
+    arch->energy.chip_energy_pJ = 5.0;
+    arch->energy.rank_energy_pJ = 10.0;
+    arch->energy.energy_source =
+        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "Order-of-magnitude only; the priced energy path uses the IDD rows.";
+
+    // ===== PE BUS CONSTRAINTS =====
+    // Per-channel bandwidth is DERIVED: 14000 MT/s x 16 bits / 8 = 28 GB/s.
+    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 16384;
+    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
+    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 2048;
+    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
+    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 28.0;
+    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
+    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 28.0;
+    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
+    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 28.0;
+    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
+    /* GDDR6 HAS NO LOGIC DIE; mirror the channel rung. */
+    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 28.0;
+    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = false;
+
+    return arch;
+}
+
+inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified(double port_width_scale) {
+    auto arch = createGDDR6_14000_Verified();
+    arch->port_width_scale = port_width_scale;
+    return arch;
+}
+
+//=============================================================================
 // HBM2 (Rigorously Verified)
 //=============================================================================
 

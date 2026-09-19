@@ -7,6 +7,45 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.70 -- GDDR6 stops borrowing DDR4's shape, and a latent shape error falls out
+
+Last of the three object-less technologies (audit 1.11.57 B001). With this
+release EVERY technology in the lineup owns an architecture object, and the
+DDR4-proxy branch is unreachable for the shipped seven; it stays only as the
+announced fallback for a technology added without one.
+
+`createGDDR6_14000_Verified()` is transcribed from JEDEC JESD250D section 4.1
+Table 19, the 8 Gb x16 column: 2 channels per device, 4 Gb per channel, array
+pre-fetch 256 bits per channel, BA[3:0] = 16 banks per channel, R[13:0] =
+16384 rows, C[5:0], page size 2 K. Same part as the preset GDDR6_8Gb_x16.
+The prefetch width is stated twice in the standard (section 2.1 features and
+Table 19), so it is VERIFIED here as it is for LPDDR5. The clock follows
+GDDR6's own divisor, tCK = 8E6 / rate = 571 ps, which 1.11.66 established:
+the object's core clock is 1751 MHz where DDR4's proxy said 1200.
+
+**THE INVARIANT CAUGHT A LATENT SHAPE ERROR, and it was fatal on first
+contact.** With the ladder adoptable for the first time, the channel-anchored
+projection built the tree from the preset's TWO channels and covered 32 bank
+organisations, while the slot count derived 16 -- the tree-coverage assertion
+refused the run outright. The cause was not in the new object: main.cpp's
+per-technology table gave GDDR6 `chips_per_rank = 1`, although that field
+carries channel multiplicity in this tree and the table's own note says so
+four lines below for HBM ("chips_per_rank = channels per stack, HBM2 8,
+HBM3 16"). GDDR6 was the one multi-channel part left at 1. It is now 2, per
+JESD250D 4.1: "GDDR6 addressing is defined for a single channel with devices
+having 2 channels/device". The error could not fire before this release,
+because GDDR6 ran on the placeholder ladder and the tree was never built from
+the preset's channels.
+
+Data impact: GDDR6 only. Its ladder is adopted for the first time (16-bit
+channel widths replacing DDR4's 64-bit ones), the reported per-channel
+bandwidth is 28 GB/s against an aggregate of 56 over two channels, the core
+clock moves 1200 to 1751 MHz, and the placement tree now spans 32 bank
+organisations rather than 16 -- the device's real bank count across both
+channels, which changes the element-to-organisation mapping for every GDDR6
+cell. DDR3, DDR4, DDR5, LPDDR5, HBM2 and HBM3 are byte-identical in device
+scope.
+
 ## 1.11.69 -- LPDDR5 stops borrowing DDR4's shape
 
 Second of the three object-less technologies (audit 1.11.57 B001); see
