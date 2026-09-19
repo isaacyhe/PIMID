@@ -650,6 +650,7 @@ void RamulatorWrapper::applyPresetTimingsToArchitecture() {
      * (createDDR3_1600_Verified), so stamping its rate describes the part it
      * actually simulates, which is the whole point of the check. */
     const bool owns_object = (dt == "DDR3" || dt == "DDR4" || dt == "DDR5" ||
+                              dt == "LPDDR5" ||            // 1.11.69
                               dt == "HBM2" || dt == "HBM3");
     if (owns_object && preset_timing_.rate_mtps > 0)
         dram_arch_->timing.data_rate_mtps = preset_timing_.rate_mtps;
@@ -791,6 +792,9 @@ void RamulatorWrapper::initialize() {
         } else if (dt == "DDR3") {
             // 1.11.68: DDR3 owns its object; it no longer reads DDR4's.
             dram_arch_ = pimid::memory::createDDR3_1600_Verified();
+        } else if (dt == "LPDDR5") {
+            // 1.11.69: LPDDR5 owns its object.
+            dram_arch_ = pimid::memory::createLPDDR5_6400_Verified();
         } else {
             dram_arch_ = pimid::memory::createDDR4_2400_Verified();
             if (!dt.empty() && dt != "DDR4") {
@@ -2284,6 +2288,9 @@ void RamulatorWrapper::enablePIMSupport(const std::string& dram_type) {
     if (dram_type_ == "DDR3") {
         dram_arch_ = pimid::memory::createDDR3_1600_Verified();   // 1.11.68
         std::cout << "Using DDR3-1600H architecture specs\n";
+    } else if (dram_type_ == "LPDDR5") {
+        dram_arch_ = pimid::memory::createLPDDR5_6400_Verified(); // 1.11.69
+        std::cout << "Using LPDDR5-6400 architecture specs\n";
     } else if (dram_type_ == "DDR4") {
         dram_arch_ = pimid::memory::createDDR4_2400_Verified();
         std::cout << "Using DDR4-2400 architecture specs\n";

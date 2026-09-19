@@ -7,6 +7,46 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.69 -- LPDDR5 stops borrowing DDR4's shape
+
+Second of the three object-less technologies (audit 1.11.57 B001); see
+1.11.68 for the shape of the defect. `createLPDDR5_6400_Verified()` is
+transcribed from JEDEC JESD209-5C section 2.2.4 Table 6, the 8 Gb column of
+"x16 Mode Addressing for BG Mode (4 Banks / 4 Bank Groups)": 4 banks per
+group, 4 bank groups, 32768 rows, 2048-byte page, array pre-fetch 256 bits.
+That is the part the preset LPDDR5_8Gb_x16 simulates.
+
+**Better sourced than the DDR objects in one place.** JEDEC publishes
+LPDDR5's array pre-fetch width (Table 6, "Array Pre-Fetch 256"), so the
+global sense-amplifier datapath here is VERIFIED rather than inferred from
+DAS-MICRO'15 as it is on DDR3 and DDR4, and it is four times the DDR figure.
+The burst arithmetic agrees independently: B0-B3 over x16 is also 256 bits.
+
+**LPDDR5 IS NOT A DIMM, and that is what makes the check pass.** One x16 die
+fronts the channel, so `chips_per_rank` is 1 and the rank bus IS the 16-bit
+channel, where the DDR parts assemble a 64-bit rank from eight x8 devices.
+Reading DDR4's object gave LPDDR5 a 64-bit rank and 19.2 GB/s against a rate
+table deriving 12.8, which is precisely the reconciliation failure that
+refused its ladder. The object now reports 12.8 GB/s at the rank and channel
+scopes, and the ladder is adopted.
+
+**On the column count, recorded so it is not "fixed" later:** Table 6 says 64
+columns, the Ramulator preset says 1024. They agree. JEDEC counts 256-bit
+fetch boundaries and Ramulator counts 16-bit device words; both give the same
+2 KB page.
+
+The bank serialisation width stays ESTIMATED and marked NOT DOCUMENTED, held
+equal to the DDR parts' for the reason given in 1.11.68, and the two
+hierarchical access times are DERIVED as bank access plus one burst rather
+than copied from DDR4's estimates.
+
+Data impact: LPDDR5 only. Its ladder is adopted for the first time, and every
+LPDDR5 hierarchy width, bandwidth and level latency moves from DDR4's
+borrowed 64-bit values to its own 16-bit ones; the reported rank bandwidth
+falls 19.2 to 12.8 GB/s, which is the part the cycles were always counted
+for. DDR3, DDR4, DDR5, GDDR6, HBM2 and HBM3 are byte-identical in device
+scope. GDDR6 is the last one still reading DDR4's object; it is 1.11.70.
+
 ## 1.11.68 -- DDR3 stops borrowing DDR4's shape
 
 1.11.67 measured what an unadopted link ladder costs: up to +102% in cycles

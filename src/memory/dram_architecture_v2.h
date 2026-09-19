@@ -851,6 +851,186 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified(double port_
 }
 
 //=============================================================================
+// LPDDR5-6400 (1.11.69): LPDDR5 gets its OWN architecture object.
+//
+// Second of the three technologies that were reading DDR4's object (audit
+// 1.11.57 B001). See the DDR3 block above for why this matters.
+//
+// PROVENANCE. JEDEC JESD209-5C section 2.2.4 Table 6 ("LPDDR5 SDRAM x16 Mode
+// Addressing for BG Mode, 4 Banks / 4 Bank Groups"), the 8 Gb column: 4 banks
+// per group, 4 bank groups, 32768 rows, 2048-byte page, array pre-fetch 256
+// bits. That is the same part the Ramulator preset LPDDR5_8Gb_x16 simulates
+// ({1 Ch, 1 Ra, 4 Bg, 4 Ba, 1<<15 Ro, 1<<10 Co}).
+//
+// ON THE COLUMN COUNT, so nobody "fixes" it later: JEDEC Table 6 says 64
+// columns and Ramulator's preset says 1024. They do not disagree. JEDEC counts
+// FETCH BOUNDARIES of 256 bits (64 x 256 / 8 = 2048 B) and Ramulator counts
+// 16-bit device words (1024 x 16 / 8 = 2048 B). Both describe the same 2 KB
+// page, which is the quantity this object carries.
+//
+// WHAT IS BETTER SOURCED HERE THAN ON DDR3/DDR4: the array pre-fetch width.
+// JEDEC publishes it for LPDDR5 (Table 6, "Array Pre-Fetch 256"), so the
+// global sense-amplifier datapath is VERIFIED rather than inferred from a
+// paper, and it is four times the 64-bit DDR figure.
+//
+// NOT A DIMM. One x16 die fronts the channel: chips_per_rank is 1 and the
+// rank bus IS the 16-bit channel, where the DDR parts build a 64-bit rank
+// from eight x8 devices. This is what makes the reconciliation check pass --
+// 6400 MT/s x 16 bits / 8 = 12.8 GB/s, the bandwidth the rate table derives.
+//=============================================================================
+
+inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
+    auto arch = std::make_unique<DRAMArchitectureV2>("LPDDR5-6400", "LPDDR5");
+
+    // ===== DATAPATH STAGES =====
+
+    arch->datapath.row_buffer_bits = {
+        16384,  // 2 KB page x 8 bits
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD209-5C Table 6 (2.2.4), 8 Gb x16 BG mode: page size 2048 bytes",
+        "Activated row in the bitline sense amplifiers, per bank"
+    };
+    arch->datapath.gsa_datapath_bits = {
+        256,
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD209-5C Table 6 (2.2.4): 'Array Pre-Fetch 256' for every density",
+        "JEDEC PUBLISHES this for LPDDR5, so unlike the DDR parts it is not an "
+        "inference from the literature. Four times the DDR 8n x8 figure."
+    };
+    arch->datapath.prefetch_datapath_bits = {
+        256,  // 16n burst x 16 DQ, equal to the array pre-fetch
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD209-5C Table 6: burst addresses B0-B3 over x16 = 256 bits, "
+        "matching the tabulated array pre-fetch",
+        "The two agree, which is the check on reading either one"
+    };
+    arch->datapath.bank_serialization_bits = {
+        8,
+        VerificationStatus::ESTIMATED,
+        "NOT DOCUMENTED by JEDEC for any LPDDR generation; carried at the DDR estimate",
+        "CRITICAL BOTTLENECK and an admitted unknown. Held equal to DDR3/DDR4's "
+        "so a cross-technology comparison does not turn on an invented "
+        "difference between two unsourced numbers."
+    };
+    arch->datapath.chip_io_bits = {
+        16,  // x16 device
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD209-5C Table 6: x16 DQ configuration",
+        "External package pins"
+    };
+    arch->datapath.rank_databus_bits = {
+        16,  // ONE x16 die fronts the channel -- not a 64-bit DIMM rank
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD209-5C: a 16-bit channel served by a single x16 die",
+        "NO 8-DEVICE RANK. This is the field that reconciles the object with "
+        "the rate table: 6400 MT/s x 16 bits / 8 = 12.8 GB/s."
+    };
+    arch->datapath.channel_databus_bits = {
+        16,
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD209-5C: 16-bit LPDDR5 channel",
+        "Matches CactiIOWrapper::dramChannelWidthBits(LPDDR5)"
+    };
+
+    arch->bandwidth_limits.inference_method =
+        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        "bank group = bank x 2 (the bank-group port multiplier, UNSOURCED). "
+        "CONSERVATIVE: assumes the serialization path is the bottleneck.";
+    arch->bandwidth_limits.confidence_level =
+        "Medium-high - page, prefetch, widths and organisation are all JEDEC-verified; "
+        "only the bank serialization width is an estimate";
+
+    // ===== ORGANIZATION (preset LPDDR5_8Gb_x16, JESD209-5C Table 6) =====
+    // 8 Gb / 16 banks = 64 MB per bank; 32768 rows x 2 KB = 64 MB confirms it.
+    // A 512-row subarray at a 2 KB page is 1 MB, so 64 subarrays per bank,
+    // which is also main.cpp's live count (32768 rows / 512).
+    arch->organization.subarrays_per_bank = 64;   // DERIVED: 64 MB bank / 1 MB subarray
+    arch->organization.banks_per_bank_group = 4;  // JESD209-5C Table 6
+    arch->organization.bank_groups_per_chip = 4;  // JESD209-5C Table 6 (BG mode)
+    arch->organization.chips_per_rank = 1;        // one x16 die per channel
+    arch->organization.ranks_per_channel = 1;     // LPDDR5 is point-to-point
+    arch->organization.subarray_size_kb = 1024;   // DERIVED: 512 rows x 2 KB page
+    arch->organization.bank_size_mb = 64;         // DERIVED: 8 Gb / 16 banks
+    arch->organization.chip_size_mb = 1024;       // preset LPDDR5_8Gb_x16: 8 Gb die
+    arch->organization.rank_size_gb = 1;          // DERIVED: 1 die x 1024 MB
+
+    // ===== TIMING (preset LPDDR5_6400; tCK = 8E6 / 6400 = 1250 ps) =====
+    // LPDDR5 divides 8E6 rather than the DDR families' 2E6: WCK runs at 4x CK
+    // and the bus is DDR on WCK. The bin is nRCD 15, nCL 17, nRP 15, nRAS 34.
+    arch->timing.clock_freq_mhz = 800;    // 1000 / 1.25 ns CK
+    arch->timing.data_rate_mtps = 6400;
+    arch->timing.tRCD_ns = 15 * 1.25;     // DERIVED: nRCD 15 x tCK 1.25 ns
+    arch->timing.tCAS_ns = 17 * 1.25;     // DERIVED: nCL 17
+    arch->timing.tRP_ns  = 15 * 1.25;     // DERIVED: nRP 15
+    arch->timing.tRAS_ns = 34 * 1.25;     // DERIVED: nRAS 34
+    arch->timing.tBurst_ns = 2.5;         // DERIVED: nBL 2 x tCK
+
+    // Process-level stage delays, held at the DDR basis for the same reason
+    // given in the DDR3 block: a cross-technology difference should come from
+    // JEDEC quantities, not from two different guesses.
+    arch->timing.inner_bank.column_decoder_ns = 0.35;
+    arch->timing.inner_bank.column_mux_ns = 0.55;
+    arch->timing.inner_bank.subarray_output_drv_ns = 0.50;
+    arch->timing.inner_bank.local_io_ns = 0.75;
+    arch->timing.inner_bank.htree_horizontal_ns = 1.20;
+    arch->timing.inner_bank.htree_vertical_ns = 1.20;
+    arch->timing.inner_bank.global_io_ns = 1.50;
+    arch->timing.inner_bank.bank_io_driver_ns = 0.60;
+    arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
+    arch->timing.inner_bank.source =
+        "CACTI v6.5 analytical model (external/mcpat/cacti/), "
+        "DAS-MICRO'15 (Shih-Lien Lu et al.), "
+        "SALP-ISCA'12 (Yoongu Kim et al.), "
+        "Tiered-Latency DRAM HPCA'13 (Donghyuk Lee et al.)";
+
+    arch->deriveHierarchicalAccessTimes();
+
+    // DERIVED, per the 1.11.68 note in the DDR3 block: bank access + one
+    // burst, with no unsourced rank hop added on top.
+    // bank_access_ns = tRP + tRCD + tCAS = 18.75 + 18.75 + 21.25 = 58.75.
+    arch->timing.chip_access_ns = 58.75 + 2.5;
+    arch->timing.rank_access_ns = 58.75 + 2.5;
+
+    // ===== ENERGY (order-of-magnitude; the priced path uses the IDD rows) ====
+    arch->energy.subarray_energy_pJ = 1.0;
+    arch->energy.bank_energy_pJ = 2.0;
+    arch->energy.chip_energy_pJ = 5.0;
+    arch->energy.rank_energy_pJ = 10.0;
+    arch->energy.energy_source =
+        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "Order-of-magnitude only; the priced energy path uses the IDD rows.";
+
+    // ===== PE BUS CONSTRAINTS =====
+    // Channel bandwidth is DERIVED: 6400 MT/s x 16 bits / 8 = 12.8 GB/s.
+    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 16384;
+    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
+    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 2048;
+    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
+    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
+    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
+    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
+    /* LPDDR5 HAS NO LOGIC DIE; mirror the channel rung so a LOGIC_DIE
+     * placement is not silently handed an HBM-class bus. */
+    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 16;
+    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = false;
+
+    return arch;
+}
+
+inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified(double port_width_scale) {
+    auto arch = createLPDDR5_6400_Verified();
+    arch->port_width_scale = port_width_scale;
+    return arch;
+}
+
+//=============================================================================
 // HBM2 (Rigorously Verified)
 //=============================================================================
 
