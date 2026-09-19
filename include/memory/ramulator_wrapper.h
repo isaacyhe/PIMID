@@ -56,6 +56,13 @@ struct PresetOrganization {
     int         dq_bits = 0;
     int         channels_in_density = 1;
     int         banks_in_density = 0;
+    /* 1.11.72: THE BANK GROUPING, per channel, from the same preset row.
+     * bank_groups x banks_per_group x channels_in_density must reproduce
+     * banks_in_density (checked in makePresetOrg). HBM folds its two
+     * pseudo-channels into bank_groups, as every other site in this tree
+     * does (main.cpp per-tech table, the architecture objects). */
+    int         bank_groups = 0;
+    int         banks_per_group = 0;
     uint64_t    rows_per_bank = 0;
     uint64_t    cols_per_row = 0;
     bool        per_channel_density = false;   // true for HBM2/HBM3
@@ -224,6 +231,14 @@ public:
      * data rate the energy/bandwidth basis uses, and every transcription.
      * Must be called before initialize(); ignored for other technologies. */
     void setDdr5SpeedGrade(int mtps);
+    /* 1.11.72: stamp the preset's bank grouping (banks per group, groups per
+     * chip) onto the architecture object, beside the R1 density stamp. The
+     * object literals for DDR5 described the 8 Gb part (2 banks/BG) while
+     * the default grade has simulated the 16 Gb part (4 banks/BG) since
+     * 1.11.66; every oracle that read getBanksPerBankGroup() -- power
+     * population, system-scope placement -- saw 16 banks on a 32-bank
+     * device. */
+    void applyPresetBankGroupingToArchitecture();
     int  getDdr5SpeedGrade() const { return ddr5_grade_mtps_; }
     /* 1.11.67 (re-sim pre-flight): RUN-WIDE KNOB DEFAULTS.
      *

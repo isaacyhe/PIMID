@@ -113,7 +113,8 @@ pimid::PresetOrganization makePresetOrg(const char* name, const char* src,
                                         uint64_t density_mb, int dq,
                                         int channels, int banks,
                                         uint64_t rows, uint64_t cols,
-                                        bool per_channel) {
+                                        bool per_channel,
+                                        int bank_groups, int banks_per_group) {
     pimid::PresetOrganization p;
     p.preset_name = name;
     p.preset_source = src;
@@ -121,6 +122,22 @@ pimid::PresetOrganization makePresetOrg(const char* name, const char* src,
     p.dq_bits = dq;
     p.channels_in_density = channels;
     p.banks_in_density = banks;
+    /* 1.11.72: the grouping is transcribed WITH the bank count and checked
+     * against it the same way the density is checked against the product:
+     * groups x banks-per-group x channels must be the banks. A row that
+     * cannot reproduce its own bank count is refused at the point it is
+     * written. */
+    p.bank_groups = bank_groups;
+    p.banks_per_group = banks_per_group;
+    if (bank_groups <= 0 || banks_per_group <= 0 ||
+        static_cast<long long>(bank_groups) * banks_per_group * channels != banks) {
+        std::cerr << "[mem] FATAL: transcribed bank grouping for " << name
+                  << " (" << bank_groups << " groups x " << banks_per_group
+                  << " banks x " << channels << " channel(s)) does not reproduce its "
+                  << banks << " banks. Fix the transcription in ramulator_wrapper.cpp."
+                  << std::endl;
+        std::exit(2);
+    }
     p.rows_per_bank = rows;
     p.cols_per_row = cols;
     p.per_channel_density = per_channel;
@@ -307,7 +324,8 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(
             (std::string("DDR3_8Gb_x") + std::to_string(ww)).c_str(),
             "external/ramulator/src/dram/impl/DDR3.cpp org_presets",
-            1024, ww, 1, 8, ro, co, false);
+            1024, ww, 1, 8, ro, co, false,
+            /* JESD79-3D 2.11: 8 banks, NO bank groups */ 1, 8);
     } else if (dt == "DDR4") {
         // DDR4.cpp:19-21  8 Gb rows: x4 {4 BG, 4 Ba, 1<<17, 1<<10},
         // x8 {4, 4, 1<<16, 1<<10}, x16 {2, 4, 1<<16, 1<<10}
@@ -317,7 +335,8 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(
             (std::string("DDR4_8Gb_x") + std::to_string(ww)).c_str(),
             "external/ramulator/src/dram/impl/DDR4.cpp org_presets",
-            1024, ww, 1, banks, ro, 1024, false);
+            1024, ww, 1, banks, ro, 1024, false,
+            /* JESD79-4: x4/x8 4 BG x 4; x16 2 BG x 4 */ (ww == 16) ? 2 : 4, 4);
     } else if (dt == "DDR5") {
         /* DDR5.cpp org_presets. 8 Gb rows: x4 {8 BG, 2 Ba, 1<<16, 1<<11},
          * x8 {8, 2, 1<<16, 1<<10}, x16 {4, 2, 1<<16, 1<<10}. 16 Gb rows: x4
@@ -336,13 +355,16 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(
             (std::string(g16 ? "DDR5_16Gb_x" : "DDR5_8Gb_x") + std::to_string(ww)).c_str(),
             "external/ramulator/src/dram/impl/DDR5.cpp org_presets",
-            g16 ? 2048 : 1024, ww, 1, banks, 65536, co, false);
+            g16 ? 2048 : 1024, ww, 1, banks, 65536, co, false,
+            /* JESD79-5D Tbl 4: x4/x8 8 BG, x16 4 BG; 16 Gb 4 banks/BG, 8 Gb 2 */
+            (ww == 16) ? 4 : 8, bpg);
     } else if (dt == "LPDDR5") {
         // LPDDR5.cpp:21-27 -- x16 only. {1, 1, 4 BG, 4 Ba, 1<<15, 1<<10}
         preset_org_ = makePresetOrg(
             "LPDDR5_8Gb_x16",
             "external/ramulator/src/dram/impl/LPDDR5.cpp org_presets",
-            1024, 16, 1, 16, 32768, 1024, false);
+            1024, 16, 1, 16, 32768, 1024, false,
+            /* JESD209-5C Tbl 6 BG mode: 4 BG x 4 */ 4, 4);
     } else if (dt == "GDDR6") {
         /* GDDR6.cpp:21-28. The density product INCLUDES the channel level
          * ({2, 4 BG, 4 Ba, Ro, Co}), so 8 Gb is the whole two-channel DEVICE
@@ -352,7 +374,8 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(
             (std::string("GDDR6_8Gb_x") + std::to_string(ww)).c_str(),
             "external/ramulator/src/dram/impl/GDDR6.cpp org_presets",
-            1024, ww, 2, 32, 16384, co, false);
+            1024, ww, 2, 32, 16384, co, false,
+            /* JESD250D Tbl 19, PER CHANNEL: 4 BG x 4 (x2 channels = 32) */ 4, 4);
     } else if (dt == "HBM2") {
         /* HBM2.cpp org_presets. density is PER CHANNEL ("channel density" in
          * the file's own error text). No device width applies.
@@ -368,13 +391,15 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(
             "HBM2_4Gb",
             "external/ramulator/src/dram/impl/HBM2.cpp org_presets",
-            512, 128, 1, 32, 16384, 64, true);
+            512, 128, 1, 32, 16384, 64, true,
+            /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
     } else if (dt == "HBM3") {
         // HBM3.cpp:21-26. Per-channel density; 2 Pch x 4 Bg x 4 Ba = 32 banks.
         preset_org_ = makePresetOrg(
             "HBM3_4Gb",
             "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
-            512, 128, 1, 32, 16384, 64, true);
+            512, 128, 1, 32, 16384, 64, true,
+            /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
     } else {
         /* Unknown technology: the same DDR4 substitution the architecture
          * object makes a few lines below, which announces itself there. */
@@ -384,7 +409,8 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(
             (std::string("DDR4_8Gb_x") + std::to_string(ww)).c_str(),
             "external/ramulator/src/dram/impl/DDR4.cpp org_presets (substituted)",
-            1024, ww, 1, banks, ro, 1024, false);
+            1024, ww, 1, banks, ro, 1024, false,
+            (ww == 16) ? 2 : 4, 4);
     }
 }
 
@@ -452,6 +478,49 @@ int RamulatorWrapper::getPresetDiesPerStack() const {
  * here (the live subarray count is main.cpp's bank_rows / subarray_height), and
  * a 512 KB subarray is DDR4's row geometry, not LPDDR5's or GDDR6's, so
  * deriving them here would invent a number. */
+/* 1.11.72: THE BANK GROUPING FOLLOWS THE PRESET, like the density (R1).
+ *
+ * The defect: 1.11.66 made the DDR5 default part 4800B / 16 Gb, whose preset
+ * (DDR5_16Gb_x8, JESD79-5D Table 4) has 8 bank groups x 4 banks = 32 banks
+ * per chip. The transcription followed (bpg = g16 ? 4 : 2, shape-checked
+ * live on every run) and so did the timed device. The architecture object
+ * did not: its literals still said 2 banks per group -- the 8 Gb part -- and
+ * three consumers read the object rather than the transcription:
+ * getBanksPerBankGroup()/getBankGroupsPerChip() (the power population and
+ * the system-scope placement, main.cpp ~8053/~8877/~9030) and, separately,
+ * main.cpp's own per-technology table (the placement tree). So the tree
+ * covered 128 bank organisations where the simulated part has 256, and the
+ * coverage invariant could not see it because both of its sides came from
+ * the same table. Found 2026-09-20 while tabulating the hierarchy under the
+ * bank; measured +2.7% cycles on the corrected tree (3 x 3 A/B, DDR4 BANK
+ * 100k). Bank SIZE was coincidentally right (16 Gb / 32 = 64 MB = 65536 rows
+ * x 1 KB), so only the COUNT and what derives from it were wrong.
+ *
+ * The fix is the R1 pattern: the preset row is the authority, and the object
+ * is stamped from the transcription the shape check already verifies against
+ * Ramulator. Every technology is stamped; for six of seven the object already
+ * agreed and nothing moves. */
+void RamulatorWrapper::applyPresetBankGroupingToArchitecture() {
+    if (!dram_arch_ || !preset_org_.valid) return;
+    if (preset_org_.bank_groups <= 0 || preset_org_.banks_per_group <= 0) return;
+    const int old_bg = dram_arch_->organization.bank_groups_per_chip;
+    const int old_bp = dram_arch_->organization.banks_per_bank_group;
+    dram_arch_->organization.bank_groups_per_chip = preset_org_.bank_groups;
+    dram_arch_->organization.banks_per_bank_group = preset_org_.banks_per_group;
+    if ((old_bg != preset_org_.bank_groups || old_bp != preset_org_.banks_per_group)
+        && !anchor_quiet_) {
+        static std::set<std::string> said;
+        if (said.insert(dram_type_ + preset_org_.preset_name).second) {
+            std::cerr << "[mem] NOTE: " << dram_type_ << " architecture object bank grouping "
+                      << old_bg << " groups x " << old_bp << " banks -> "
+                      << preset_org_.bank_groups << " x " << preset_org_.banks_per_group
+                      << ", stamped from preset " << preset_org_.preset_name
+                      << " (the object literal described a different part)."
+                      << std::endl;
+        }
+    }
+}
+
 void RamulatorWrapper::applyPresetDensityToArchitecture() {
     if (!dram_arch_ || !preset_org_.valid) return;
     std::string dt = dram_type_;
@@ -829,6 +898,7 @@ void RamulatorWrapper::initialize() {
      * object. AFTER the width -- the width decides which preset row applies --
      * and BEFORE the two checks below, which read the density. */
     applyPresetDensityToArchitecture();
+    applyPresetBankGroupingToArchitecture();   // 1.11.72
 
     /* 1.11.63 (R6-5): and the simulated bin's ns timings, beside the density
      * and for the same reason -- the object describes the part the preset
@@ -1104,7 +1174,8 @@ void RamulatorWrapper::setDeviceWidth(const std::string& w) {
      * re-resolve the preset and re-stamp the density. Before initialize() this
      * is harmless: initialize() resolves and stamps again. */
     resolvePresetOrganization();
-    applyPresetDensityToArchitecture();  // no-op until dram_arch_ exists
+    applyPresetDensityToArchitecture();
+    applyPresetBankGroupingToArchitecture();   // 1.11.72  // no-op until dram_arch_ exists
     /* 1.11.63 (R6-3/R6-5): the width also selects the devices-per-rank the
      * capacity derivation counts, so re-derive capacity_ (and, harmlessly,
      * bandwidth_, which the width does not reach) and re-stamp the ns bin.
@@ -1480,6 +1551,20 @@ void RamulatorWrapper::checkTranscribedOrganizationShape() {
     long long want_rows  = preset_org_.rows_per_bank;
     long long want_cols  = preset_org_.cols_per_row;
     if (getenv("PIMID_ORG_BREAK") != nullptr) { want_rows *= 2; want_banks /= 2; }
+    /* 1.11.72: the GROUPING is checked too. live.bankgroups is per pseudo-
+     * channel; the transcription folds pseudo-channels into its group count
+     * (as the objects and main.cpp's table do), so the comparison is
+     * pseudochannels x bankgroups against the transcribed groups. */
+    const long long live_groups = static_cast<long long>(live.pseudochannels) * live.bankgroups;
+    if (preset_org_.bank_groups > 0 &&
+        (live_groups != preset_org_.bank_groups || live.banks != preset_org_.banks_per_group)) {
+        std::cerr << "[mem] FATAL: the transcribed bank grouping for " << preset_org_.preset_name
+                  << " (" << preset_org_.bank_groups << " groups x " << preset_org_.banks_per_group
+                  << " banks) does not match the device Ramulator instantiated ("
+                  << live_groups << " x " << live.banks << "). Fix the transcription."
+                  << std::endl;
+        std::exit(2);
+    }
     if (live_banks_total != want_banks || live.rows != want_rows || live.columns != want_cols) {
         std::cerr << "[mem] FATAL: the transcribed organization for "
                   << preset_org_.preset_name << " (" << preset_org_.preset_source
@@ -2327,6 +2412,7 @@ void RamulatorWrapper::enablePIMSupport(const std::string& dram_type) {
      * technologies with no object of their own. */
     resolvePresetOrganization();
     applyPresetDensityToArchitecture();
+    applyPresetBankGroupingToArchitecture();   // 1.11.72
     /* 1.11.63 (R6-5): same for the ns bin -- a fresh factory object carries the
      * factory literals here too. */
     resolvePresetTiming();

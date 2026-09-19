@@ -1592,6 +1592,12 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->organization.subarrays_per_bank = 128;  // DERIVED: 64 MB bank / 512 KB subarray
     arch->organization.banks_per_bank_group = 2;  // JESD79-5D Tbl 4 p.7: 8 Gb x8 = BA0 -> 2 per BG
     arch->organization.bank_groups_per_chip = 8;  // JESD79-5D Tbl 4 p.7: BG0~BG2 -> 8 groups
+    /* 1.11.72: the two literals above describe the 8 Gb part and are the
+     * FALLBACK ONLY. RamulatorWrapper::applyPresetBankGroupingToArchitecture()
+     * stamps the simulated preset's grouping at runtime -- 4 banks/BG for the
+     * 16 Gb part the default 4800B grade selects (JESD79-5D Table 4), 2 for
+     * the 8 Gb part at grade 3200 -- so every consumer of getBanksPerBankGroup()
+     * sees the part the cycles are counted for. */
     arch->organization.chips_per_rank = 8;  // x8 organization
     arch->organization.ranks_per_channel = 2;  // Typical DIMM
     arch->organization.subarray_size_kb = 512;  // Typical

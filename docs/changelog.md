@@ -7,6 +7,61 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.72 -- DDR5 counts all its banks
+
+Found while tabulating the hierarchy under the bank for the pre-fleet
+discussion (2026-09-20): the fourth thing the 1.11.66 grade knob did not
+reach, after 1.11.67's three.
+
+**The defect.** 1.11.66 moved DDR5's default part to 4800B / 16 Gb. That
+part has 8 bank groups x 4 banks = 32 banks per chip (JESD79-5D Table 4;
+Ramulator preset DDR5_16Gb_x8), and the timed device, the transcription and
+the live shape check all agreed on 32. But the architecture object's
+literals still said 2 banks per group (the 8 Gb part), and so did main.cpp's
+per-technology table. Three consumers read those instead of the
+transcription: `getBanksPerBankGroup()`/`getBankGroupsPerChip()` -- the
+power population and the system-scope placement oracle -- and the placement
+tree itself. So every default-grade DDR5 cell put its 16 PEs over a tree of
+128 bank organisations on a 256-bank device, priced 16 banks per chip in the
+power model, and printed a tFAW note for half the streams. Bank SIZE was
+coincidentally right (16 Gb / 32 = 64 MB = 65536 rows x 1 KB), which is why
+nothing downstream complained. The tree-coverage invariant could not see it:
+both of its inputs came from the same table -- the "verified only against
+itself" case its own comment warns about.
+
+**The fix, the R1 pattern.** The preset row is the authority. The
+transcription now carries the grouping (`bank_groups`, `banks_per_group`),
+checked at construction against its own bank count and at run time against
+the device Ramulator instantiated (pseudo-channels x bank groups, and banks
+per group); `applyPresetBankGroupingToArchitecture()` stamps the object
+beside the density stamp; and main.cpp's DDR5 row follows the grade
+(`banks_per_bg = grade == 3200 ? 2 : 4`). Every technology is stamped; for
+six of seven the object already agreed and nothing moves.
+
+**Measured.** DDR5 at the default grade: the tree now covers 256 bank
+organisations (was 128); at grade 3200, 128 as before; x16 covers 64 (was
+32). Because the 16 Gb chip has 32 banks, the corpus shape `banks: 16` now
+trips the same minimum-bank guard HBM2/HBM3 already trip, and num_banks
+becomes the technology's 256 (it was accepted at 16 before) -- every
+default-grade DDR5 cell changes shape, not just its tree. Cycles: a 3 x 3
+A/B at 100k elements moved +2.7% with the row-miss fraction identical to six
+figures; the gate's 3 x 3 at 1M elements moved the mean +0.18% inside a 7.4%
+within-binary spread. The cycles movement is therefore size-dependent and
+NOT separable from OMP run-to-run scatter -- it is reported, not claimed;
+the change is structural and its evidence is device scope. DDR3, DDR4,
+LPDDR5, GDDR6, HBM2 and HBM3 are byte-identical in device scope.
+
+**Found alongside, NOT fixed here (latent, pre-existing since 1.11.67 made
+DDR5's ladder adoptable):** `memory.dram.device_width: x4` aborts on DDR5 --
+the x4 chip-DQ rung is 4 bits and the Garnet link builder refuses a link
+under 8 bits (`Link width must be byte-aligned`). Same on 1.11.71. Not a
+corpus configuration (x8 throughout); recorded in the fleet's open list.
+
+Data impact: DDR5 at grades 4800 and 5600 -- every such cell's
+element-to-organisation mapping, per-bank power population and tFAW
+accounting change; cycles move a few percent. Grade 3200 and every other
+technology are unchanged.
+
 ## 1.11.71 -- two silences, made audible
 
 Two small items, both about the run telling the truth about itself; neither

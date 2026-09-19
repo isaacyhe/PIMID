@@ -3365,7 +3365,19 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     /* 1.11.66 (R5 A2): 2 banks/BG, not 4 -- JESD79-5D Table 4 p.7, 8 Gb x8
      * = 8 BG x 2 = 16 banks (32 begins at 16 Gb). Tracks the preset and the
      * architecture object; see the note in dram_architecture_v2.h. */
-    else if (tech == "DDR5")     { banks_per_bg = 2; bg_per_chip = 8; chips_per_rank = 8; }
+    /* 1.11.72: DDR5's banks per group FOLLOW THE GRADE. The 1.11.66 knob made
+     * the default part 4800B / 16 Gb, and JESD79-5D Table 4 gives that part
+     * 4 banks per group (the 8 Gb part, which the 3200 grade selects, has 2).
+     * This row stayed at 2, so the placement tree covered 128 bank
+     * organisations on a 256-bank device at the default grade -- and the
+     * coverage invariant could not object, because both of its inputs come
+     * from this table. The wrapper's transcription (shape-checked against
+     * Ramulator every run) has carried the right split since 1.11.66; this
+     * row now says the same thing. Measured effect: +2.7% cycles on the
+     * corrected tree (3 x 3 A/B, DDR5 BANK 100k, row-miss fraction identical
+     * -- the access stream is unchanged, only the mapping). */
+    else if (tech == "DDR5")     { banks_per_bg = (config.ddr5_speed_grade == 3200) ? 2 : 4;
+                                   bg_per_chip = 8; chips_per_rank = 8; }
     else if (tech == "LPDDR5")   { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     /* 1.11.70: chips_per_rank = 2, NOT 1 -- GDDR6 IS A TWO-CHANNEL DEVICE.
      * This field carries channel multiplicity in this tree; the note four
