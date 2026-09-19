@@ -643,7 +643,13 @@ void RamulatorWrapper::applyPresetTimingsToArchitecture() {
      * DDR4's ladder be adopted under a DDR3 provenance line -- exactly the
      * false claim 1.11.57 refused. Its ns timings are stamped (energy reads
      * them); its ladder stays declared placeholder until it has an object. */
-    const bool owns_object = (dt == "DDR4" || dt == "DDR5" ||
+    /* 1.11.68: DDR3 JOINS THE SET. The exclusion note below was written in
+     * 1.11.67, when DDR3 read DDR4's object as a proxy and stamping its rate
+     * would have made the reconciliation check pass and DDR4's ladder be
+     * adopted under a DDR3 provenance line. DDR3 now has its own object
+     * (createDDR3_1600_Verified), so stamping its rate describes the part it
+     * actually simulates, which is the whole point of the check. */
+    const bool owns_object = (dt == "DDR3" || dt == "DDR4" || dt == "DDR5" ||
                               dt == "HBM2" || dt == "HBM3");
     if (owns_object && preset_timing_.rate_mtps > 0)
         dram_arch_->timing.data_rate_mtps = preset_timing_.rate_mtps;
@@ -782,6 +788,9 @@ void RamulatorWrapper::initialize() {
             dram_arch_ = pimid::memory::createHBM2_Verified();
         } else if (dt == "HBM3") {
             dram_arch_ = pimid::memory::createHBM3_Verified();
+        } else if (dt == "DDR3") {
+            // 1.11.68: DDR3 owns its object; it no longer reads DDR4's.
+            dram_arch_ = pimid::memory::createDDR3_1600_Verified();
         } else {
             dram_arch_ = pimid::memory::createDDR4_2400_Verified();
             if (!dt.empty() && dt != "DDR4") {
@@ -2272,7 +2281,10 @@ void RamulatorWrapper::enablePIMSupport(const std::string& dram_type) {
     // 1.11.59 (audit C018): a fresh object carries its factory organization,
     // so nothing is stamped on it yet; the width is re-applied below.
     arch_device_width_bits_ = 0;
-    if (dram_type_ == "DDR4") {
+    if (dram_type_ == "DDR3") {
+        dram_arch_ = pimid::memory::createDDR3_1600_Verified();   // 1.11.68
+        std::cout << "Using DDR3-1600H architecture specs\n";
+    } else if (dram_type_ == "DDR4") {
         dram_arch_ = pimid::memory::createDDR4_2400_Verified();
         std::cout << "Using DDR4-2400 architecture specs\n";
     } else if (dram_type_ == "DDR5") {
@@ -2763,6 +2775,17 @@ int RamulatorWrapper::getBankGroupPortBits() const {
                   << std::endl;
     }
     if (dram_arch_) {
+        /* 1.11.68: A TECHNOLOGY WITH NO BANK GROUPS GETS NO BANK-GROUP
+         * MULTIPLIER. DDR3 has eight banks sitting directly on the chip;
+         * bank groups arrive with DDR4. Doubling a bank's port to model the
+         * port of a structure the part does not contain is a different error
+         * from the unsourced-multiplier one described above, and it is one
+         * the object itself can settle: when bank_groups_per_chip is 1 the
+         * rung is a pass-through. This reaches ONLY DDR3 -- DDR4 has 4 bank
+         * groups, DDR5 and both HBM stacks 8 -- so no adopted ladder moves. */
+        if (dram_arch_->organization.bank_groups_per_chip <= 1) {
+            return dram_arch_->datapath.bank_serialization_bits.value_bits;
+        }
         return dram_arch_->datapath.bank_serialization_bits.value_bits * 2;
     }
     return 16;  // DDR4 default (8-bit bank serialization x 2)

@@ -7,6 +7,59 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.68 -- DDR3 stops borrowing DDR4's shape
+
+1.11.67 measured what an unadopted link ladder costs: up to +102% in cycles
+on DDR5. Three technologies were still in that state BY DESIGN. DDR3 is the
+first of them to be fixed.
+
+**The defect (audit 1.11.57 B001, open since).** RamulatorWrapper built an
+architecture object for DDR4/DDR5/HBM2/HBM3 only and handed DDR3 the
+DDR4-2400 one from an unannounced else-branch. Every width, internal
+bandwidth and derived hierarchy figure reported for DDR3 described DDR4, the
+run printed "there is no DDR3 architecture object in this tree", the
+reconciliation check failed, and the per-level ladder was refused. DDR3 ran
+on the per-technology placeholder table the source itself labels a
+design-specific placeholder.
+
+**The fix.** `createDDR3_1600_Verified()`, transcribed from JEDEC JESD79-3D
+section 2.11.5 for the 8 Gb x8 part the preset `DDR3_8Gb_x8` simulates:
+8 banks, row A0-A15 (65536 rows), column A0-A9 + A11 (2048 columns), page
+size 2 KB, 8n prefetch. The ns timings are the DDR3_1600H bin (nCL/nRCD/nRP
+9, nRAS 28 at tCK 1.25 ns) written as the arithmetic that produces them, so
+the preset stamp is a check rather than a change. DDR3 joins the set whose
+data rate is stamped from the preset, which is what makes the reconciliation
+check pass.
+
+**DDR3 HAS NO BANK GROUPS**, and the ladder now says so. `bank_groups_per_chip`
+is 1, and `getBankGroupPortBits()` returns the bank serialisation width
+unchanged when a part has no bank groups, instead of the x2 bank-group-port
+multiplier. That multiplier stays exactly where 1.11.57 left it for every
+part that HAS bank groups: unsourced, announced on every run, and
+deliberately unchanged because moving it would move the whole corpus. What
+changes here is narrower and is settled by the object rather than by taste:
+a part with one bank group has no bank-group port to be twice as wide as a
+bank's. DDR4 has 4 bank groups, DDR5 and both HBM stacks 8, so no adopted
+ladder moves.
+
+**What is still estimated, stated plainly.** The internal stages carry the
+same declared-estimate status they carry on DDR4 and DDR5: the global
+sense-amplifier width is INFERRED from DAS-MICRO'15, and the bank
+serialisation width is ESTIMATED and marked NOT DOCUMENTED, held equal to
+DDR4's so that a DDR3-versus-DDR4 comparison does not turn on an invented
+difference between two unsourced numbers. The two hierarchical access times
+are DERIVED here rather than copied from DDR4's 60/80 ns estimates: both are
+the bank access plus one burst, which is the floor the wrapper's own
+`getChipAccessLatency()` already computes, and adding an unsourced rank hop
+on top would repeat the shape 1.11.23 and 1.11.57 removed elsewhere.
+
+Data impact: DDR3 only. Its ladder is adopted for the first time, so every
+DDR3 hierarchy width, bandwidth and level latency changes from DDR4's
+borrowed values to its own, and the level-2 rung halves (16 to 8 bits) for
+the reason above. DDR4, DDR5, LPDDR5, GDDR6, HBM2 and HBM3 are byte-identical
+in device scope. LPDDR5 and GDDR6 still read DDR4's object and still declare
+their ladders unsourced; they are 1.11.69 and 1.11.70.
+
 ## 1.11.67 -- the part the knob names, at every door
 
 The re-sim pre-flight ran the corpus configs through `--print-mem-info` on

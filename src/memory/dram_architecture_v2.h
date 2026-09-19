@@ -655,6 +655,202 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified(double port_
 }
 
 //=============================================================================
+// DDR3-1600H (1.11.68): DDR3 gets its OWN architecture object.
+//
+// WHY THIS EXISTS. Until now RamulatorWrapper handed DDR3 the DDR4-2400
+// object from an unannounced else-branch (audit 1.11.57 B001). Every width,
+// internal bandwidth and derived hierarchy figure reported for DDR3
+// described DDR4, so the 1.11.56 reconciliation check failed and, by the
+// B001/B002 rule, the per-level link ladder was NOT adopted: DDR3 ran on the
+// per-technology placeholder table and every run said so. 1.11.67 measured
+// what an unadopted ladder is worth on DDR5 (up to +102% cycles), which is
+// why the three object-less technologies are being given their own.
+//
+// PROVENANCE. Organisation and page size are transcribed from JEDEC
+// JESD79-3D section 2.11.5 (8 Gb, x8: 8 banks, row A0-A15, column A0-A9+A11,
+// page size 2 KB) -- the same 8 Gb x8 part the Ramulator preset DDR3_8Gb_x8
+// simulates. The ns timings are the DDR3_1600H bin written as the arithmetic
+// that produces them, so RamulatorWrapper::applyPresetTimingsToArchitecture()
+// stamps a check rather than a change. The internal stages (global sense
+// amplifier width, bank serialisation) carry the SAME declared-estimate
+// status they carry on DDR4 and DDR5: JEDEC does not document them, and this
+// release does not pretend otherwise.
+//
+// WHAT DDR3 DOES NOT HAVE: bank groups. They arrive with DDR4. The eight
+// banks sit directly on the chip, so bank_groups_per_chip is 1 and the
+// bank-group rung of the ladder is a pass-through, which is the physical
+// truth rather than a borrowed DDR4 shape.
+//=============================================================================
+
+inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
+    auto arch = std::make_unique<DRAMArchitectureV2>("DDR3-1600H", "DDR3");
+
+    // ===== DATAPATH STAGES =====
+
+    arch->datapath.row_buffer_bits = {
+        16384,  // 2 KB page x 8 bits
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD79-3D 2.11.5: 8Gb x8 page size 2 KB; page size = 2^COLBITS x ORG / 8",
+        "Activated row in the bitline sense amplifiers. TWICE DDR4's x8 page, "
+        "because DDR3 x8 carries 11 column bits to DDR4's 10."
+    };
+    arch->datapath.gsa_datapath_bits = {
+        256,
+        VerificationStatus::INFERRED,
+        "DAS-MICRO15: 'data is read into 256 global sense-amplifiers'",
+        "Column I/O width. Same inference as DDR4: not a documented JEDEC quantity."
+    };
+    arch->datapath.prefetch_datapath_bits = {
+        64,  // 8n prefetch x 8-bit I/O
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD79-3D 3.1: 'The DDR3 SDRAM uses a 8n prefetch architecture'",
+        "8 bursts x 8 bits = 64 bits, the same 8n depth DDR4 keeps"
+    };
+    arch->datapath.bank_serialization_bits = {
+        8,
+        VerificationStatus::ESTIMATED,
+        "NOT DOCUMENTED by JEDEC for any DDR generation; carried at DDR4's estimate",
+        "CRITICAL BOTTLENECK and an admitted unknown: banks are assumed to "
+        "serialise through a narrow path to the chip periphery. Held equal to "
+        "DDR4's so the DDR3/DDR4 comparison does not turn on an invented "
+        "difference between two numbers neither of which is sourced."
+    };
+    arch->datapath.chip_io_bits = {
+        8,  // x8 device
+        VerificationStatus::VERIFIED,
+        "JEDEC JESD79-3D 2.11.5: x8 configuration",
+        "External package pins"
+    };
+    arch->datapath.rank_databus_bits = {
+        64,  // 8 chips x 8 bits
+        VerificationStatus::VERIFIED,
+        "JEDEC standard 64-bit rank interface (8 x8 devices per rank)",
+        "First wide interface in the DDR3 hierarchy"
+    };
+    arch->datapath.channel_databus_bits = {
+        64,
+        VerificationStatus::VERIFIED,
+        "Standard DDR3 memory-controller interface",
+        "Single-channel configuration, matching the preset's channel count"
+    };
+
+    arch->bandwidth_limits.inference_method =
+        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        "bank group = bank (DDR3 HAS NO BANK GROUPS, so the rung is a "
+        "pass-through and carries no multiplier). CONSERVATIVE: assumes the "
+        "serialization path is the bottleneck.";
+    arch->bandwidth_limits.confidence_level =
+        "Medium - external widths are JEDEC-verified, internal port widths are estimates";
+
+    // ===== ORGANIZATION (preset DDR3_8Gb_x8, JESD79-3D 2.11.5) =====
+    // 8 Gb / 8 banks = 128 MB per bank; 65536 rows x 2 KB = 128 MB confirms it.
+    // A 512-row subarray at a 2 KB page is 1 MB, so 128 MB / 1 MB = 128
+    // subarrays, which is also the live count main.cpp derives as
+    // bank_rows / subarray_height = 65536 / 512.
+    arch->organization.subarrays_per_bank = 128;   // DERIVED: 128 MB bank / 1 MB subarray
+    arch->organization.banks_per_bank_group = 8;   // JESD79-3D: 8 banks, no grouping
+    arch->organization.bank_groups_per_chip = 1;   // DDR3 HAS NO BANK GROUPS
+    arch->organization.chips_per_rank = 8;         // x8 organization
+    arch->organization.ranks_per_channel = 2;      // Typical DIMM
+    arch->organization.subarray_size_kb = 1024;    // DERIVED: 512 rows x 2 KB page
+    arch->organization.bank_size_mb = 128;         // DERIVED: 8 Gb / 8 banks
+    arch->organization.chip_size_mb = 1024;        // preset DDR3_8Gb_x8: 8 Gb device
+    arch->organization.rank_size_gb = 8;           // DERIVED: 8 x 1024 MB
+
+    // ===== TIMING (preset DDR3_1600H; tCK = 1E6 / (1600/2) = 1250 ps) =====
+    // The bin is CL9: nCL/nRCD/nRP 9, nRAS 28. Written as the arithmetic so
+    // applyPresetTimingsToArchitecture()'s stamp is a check, not a change.
+    arch->timing.clock_freq_mhz = 800;    // 1600 MT/s DDR -> 800 MHz CK
+    arch->timing.data_rate_mtps = 1600;
+    arch->timing.tRCD_ns = 9 * 1.25;      // DERIVED: DDR3_1600H nRCD 9 x tCK 1.25 ns
+    arch->timing.tCAS_ns = 9 * 1.25;      // DERIVED: nCL 9
+    arch->timing.tRP_ns  = 9 * 1.25;      // DERIVED: nRP 9
+    arch->timing.tRAS_ns = 28 * 1.25;     // DERIVED: nRAS 28
+    arch->timing.tBurst_ns = 5.0;         // VERIFIED: 8 beats @ 1600 MT/s
+
+    // Inner-bank stage delays are process-level, not part-level: they come
+    // from the same CACTI/academic basis as DDR4's and are held identical
+    // rather than re-estimated, so any DDR3-vs-DDR4 difference in this run
+    // comes from JEDEC quantities and not from two different guesses.
+    arch->timing.inner_bank.column_decoder_ns = 0.35;
+    arch->timing.inner_bank.column_mux_ns = 0.55;
+    arch->timing.inner_bank.subarray_output_drv_ns = 0.50;
+    arch->timing.inner_bank.local_io_ns = 0.75;
+    arch->timing.inner_bank.htree_horizontal_ns = 1.20;
+    arch->timing.inner_bank.htree_vertical_ns = 1.20;
+    arch->timing.inner_bank.global_io_ns = 1.50;
+    arch->timing.inner_bank.bank_io_driver_ns = 0.60;
+    arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
+    arch->timing.inner_bank.source =
+        "CACTI v6.5 analytical model (external/mcpat/cacti/), "
+        "DAS-MICRO'15 (Shih-Lien Lu et al.), "
+        "SALP-ISCA'12 (Yoongu Kim et al.), "
+        "Tiered-Latency DRAM HPCA'13 (Donghyuk Lee et al.)";
+
+    arch->deriveHierarchicalAccessTimes();   // subarray = tRCD+tCAS; bank = +tRP
+
+    /* 1.11.68: THESE TWO ARE DERIVED, NOT ESTIMATED.
+     *
+     * DDR4's object carries 60.0 and 80.0 ns tagged ESTIMATED, and the wrapper
+     * already ignores the first of them: getChipAccessLatency() returns
+     * getBankAccessLatency() + getTBurst(). Only rank_access_ns is read raw
+     * (ramulator_wrapper.cpp getRankAccessLatency, dram_model.cpp). Rather
+     * than copy two of DDR4's guesses onto a different part, both are set to
+     * the honest floor the wrapper itself computes: the bank access plus one
+     * burst. Manufacturing a rank hop penalty on top would repeat exactly the
+     * shape 1.11.23 and 1.11.57 (D020) removed from getBankGroupAccessLatency
+     * and getChannelAccessLatency -- an unsourced multiplier charged
+     * uniformly. If a sourced rank-traversal term ever arrives, it is added
+     * here and the change is visible.
+     * bank_access_ns = tRP + tRCD + tCAS = 3 x 11.25 = 33.75; + tBurst 5.0. */
+    arch->timing.chip_access_ns = 33.75 + 5.0;   // DERIVED: bank access + one burst
+    arch->timing.rank_access_ns = 33.75 + 5.0;   // DERIVED: no unsourced rank penalty
+
+    // ===== ENERGY (order-of-magnitude, same basis as DDR4) =====
+    // NOTE: these are NOT what prices a PIMID run. Array and interface energy
+    // come from the Ramulator2 IDD rows and the termination model
+    // (pimid_energy.h); these four fields are the architecture object's own
+    // coarse figures and are kept at DDR4's basis deliberately.
+    arch->energy.subarray_energy_pJ = 1.0;
+    arch->energy.bank_energy_pJ = 2.0;
+    arch->energy.chip_energy_pJ = 5.0;
+    arch->energy.rank_energy_pJ = 10.0;
+    arch->energy.energy_source =
+        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "Order-of-magnitude only; the priced energy path uses the IDD rows.";
+
+    // ===== PE BUS CONSTRAINTS =====
+    // Rank bandwidth is DERIVED, not quoted: 1600 MT/s x 8 B = 12.8 GB/s.
+    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 16384;  // the 2 KB row
+    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
+    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 2048;
+    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
+    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 64;
+    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
+    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 64;
+    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
+    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 64;
+    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
+    /* DDR3 HAS NO LOGIC DIE. The field exists for the HBM stacks; mirroring
+     * the rank rung here means a configuration that places elements at
+     * LOGIC_DIE on DDR3 is not silently handed an HBM-class 1024-bit bus. */
+    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 64;
+    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 12.8;
+    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = false;
+
+    return arch;
+}
+
+inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified(double port_width_scale) {
+    auto arch = createDDR3_1600_Verified();
+    arch->port_width_scale = port_width_scale;
+    return arch;
+}
+
+//=============================================================================
 // HBM2 (Rigorously Verified)
 //=============================================================================
 
