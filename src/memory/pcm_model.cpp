@@ -83,14 +83,14 @@ void PCMModel::initialize() {
              * the log used to say where a latency came from, so a ladder built
              * from invented multipliers was indistinguishable from a tool-read
              * one -- which is how reset = write * 0.3 survived. The residual
-             * between subarray and bank IS the intra-bank H-tree (NVSim runs
+             * between mat and bank IS the intra-bank H-tree (NVSim runs
              * with routingMode = h_tree). */
             {
                 const auto& t = pcm_arch_->timing;
-                std::cout << "  [tier] subarray " << t.subarray_read_ns
+                std::cout << "  [tier] mat      " << t.mat_read_ns
                           << " ns (NVSim components) | bank " << t.bank_read_ns
                           << " ns (NVSim bank->readLatency) | H-tree residual "
-                          << (t.bank_read_ns - t.subarray_read_ns) << " ns"
+                          << (t.bank_read_ns - t.mat_read_ns) << " ns"
                           << std::endl;
             }
         } else {
@@ -408,10 +408,10 @@ void PCMModel::printStats() const {
     }
 
     std::cout << "\nLatency (Inner-Bank Timing):" << std::endl;
-    std::cout << "  Subarray Read: " << getSubarrayReadLatency() << " ns" << std::endl;
+    std::cout << "  Mat Read: " << getSubarrayReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Subarray SET Write: " << getSubarraySetWriteLatency() << " ns (SLOW!)" << std::endl;
+    std::cout << "  Mat SET Write: " << getSubarraySetWriteLatency() << " ns (SLOW!)" << std::endl;
     std::cout << "  Bank SET Write: " << getBankSetWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip SET Write: " << getChipSetWriteLatency() << " ns" << std::endl;
 
@@ -570,7 +570,7 @@ void PCMModel::reportWearImbalance() const {
 
 double PCMModel::getSubarrayReadLatency() const {
     if (!pcm_arch_) return 0.0;
-    return pcm_arch_->timing.subarray_read_ns;
+    return pcm_arch_->timing.mat_read_ns;
 }
 
 double PCMModel::getBankReadLatency() const {
@@ -585,7 +585,7 @@ double PCMModel::getChipReadLatency() const {
 
 double PCMModel::getSubarraySetWriteLatency() const {
     if (!pcm_arch_) return 0.0;
-    return pcm_arch_->timing.subarray_set_ns;
+    return pcm_arch_->timing.mat_set_ns;
 }
 
 double PCMModel::getBankSetWriteLatency() const {
@@ -600,7 +600,7 @@ double PCMModel::getChipSetWriteLatency() const {
 
 double PCMModel::getSubarrayResetWriteLatency() const {
     if (!pcm_arch_) return 0.0;
-    return pcm_arch_->timing.subarray_reset_ns;
+    return pcm_arch_->timing.mat_reset_ns;
 }
 
 double PCMModel::getBankResetWriteLatency() const {
@@ -752,6 +752,26 @@ double PCMModel::getTierLatencyNs(Tier tier, Op op) const {
 }
 bool PCMModel::hasTier(Tier tier) const {
     return tier == Tier::SUBARRAY || tier == Tier::BANK || tier == Tier::CHIP;
+}
+/* 1.11.73: the one tier below the bank, from NVSim; -1 = not sourceable. */
+int PCMModel::l0UnitsPerBank() const {
+    if (!pcm_arch_) return -1;
+    const int v = pcm_arch_->organization.mats_per_bank;
+    return (v > 0) ? v : -1;
+}
+int PCMModel::l0WidthBits() const {
+    if (!pcm_arch_) return -1;
+    const int v = pcm_arch_->datapath.mat_io_bits;
+    return (v > 0) ? v : -1;
+}
+double PCMModel::l0BandwidthGBs() const {
+    if (!pcm_arch_) return -1.0;
+    const int mw = pcm_arch_->datapath.mat_io_bits;      // NVSim mat.numDataBit
+    const int bw = pcm_arch_->datapath.bank_io_bits;     // the configured word width
+    const double lat_ns = pcm_arch_->timing.bank_read_ns; // NVSim bank->readLatency
+    if (mw <= 0 || bw <= 0 || lat_ns <= 0.0) return -1.0;
+    // NVSim bank read bandwidth (word / readLatency) scaled by the mat's share of the word
+    return ((bw / 8.0) / lat_ns) * (static_cast<double>(mw) / bw);
 }
 std::string PCMModel::tierLatencySource(Tier tier, Op op) const {
     if (getTierLatencyNs(tier, op) < 0.0) return "";

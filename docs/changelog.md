@@ -7,6 +7,125 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.73 -- one tier below the bank, and it is the family's own
+
+User ruling (2026-09-20), after the inside-the-bank discussion: go exactly
+ONE level below the bank for every technology, no more -- SRAM has the
+subbank, the NVMs have the mat, the DRAMs have the subarray.
+
+**The defect.** Below the bank, the SRAM and NVM models described tiers the
+parts do not have and left the tier they do have unsourced. The SRAM
+extractor carried TWO levels (`subarray_access_ns`, `mat_access_ns` = the
+same number plus the H-tree), named after CACTI's internal geometry rather
+than any placement tier; its datapath widths were literals (128 / 64 bits);
+its "mats per bank" accessor returned CACTI's active-mat count under the
+wrong name. The NVM extractors priced L0 from `bank->mat.subarray.
+readLatency` -- the CACTI-style slice BELOW the mat -- while the mat itself
+(the unit NVSim H-trees into a bank) was cached but unused; mat width and
+mat count were never cached, so from the pregenerated cache they were
+unknown and were filled by literals (64 bits; 8 or 4 per bank). And the
+placement tree took its non-DRAM L0 count from the UnifiedConfig
+constructor's 4 and its L0 link from a per-technology table row (SRAM 128
+b / 40 GB/s, NVM 64 b / 9.6-12 GB/s) that described no part. Every level
+below the bank was called "Subarray" regardless of family.
+
+**The fix.** One tier below the bank per family, named, counted, sized and
+priced from the family's own tool:
+- SRAM: `SUBBANK` -- CACTI's line of `num_act_mats_hor_dir` mats activated
+  together for one data word. Its width IS the bank's (`parameter.cc`:
+  `num_do_b_subbank = out_w`), its count is CACTI's mats-per-bank over
+  mats-per-access (Ndwl x Ndbl / num_submarray_mats / num_active_mats), its
+  latency is the in-array component path already extracted (a PE at the
+  subbank skips the bank H-tree), its bandwidth is `out_w` per CACTI random
+  cycle time. `SRAMTiming.subbank_access_ns` replaces the subarray/mat
+  pair; the mat energy multiplier (x1.3) is gone with the tier.
+- NVM (STT-MRAM, PCM, ReRAM): `MAT` -- NVSim's mat. Latency from the
+  already-cached `bank->mat.readLatency`; width `mat.numDataBit` and count
+  `numRowMat x numColumnMat` are now captured live AND cached (two new XML
+  fields, `-1 = absent`); bandwidth is the mat's share of the NVSim bank
+  read bandwidth (mat width / word width). All `subarray_*` timing, energy
+  and datapath fields of the three NVM architectures are renamed `mat_*`.
+  An entry written before this release cannot source width or count: the
+  run says so, keeps the tree shape it has as an UNSOURCED count, and
+  REFUSES to place PEs at `MAT` until the cache is regenerated or
+  `memory.subarrays_per_bank` states a count (labelled user-set, as on
+  DRAM). No literal stands in.
+- DRAM: `SUBARRAY`, unchanged.
+- The plugin contract gains `l0UnitsPerBank()`, `l0WidthBits()`,
+  `l0BandwidthGBs()` (-1 = not sourceable) and `tierName(Tier, tech)`;
+  `Tier::SUBARRAY` stays the L0 enum. The tree's non-DRAM L0 count and link
+  now come from the model (`probeNonDramL0`, `applySourcedLadder` on level
+  0 only; levels 1+ keep the table and the run says so). `levelName`, the
+  McPAT NoC level names and the hierarchy summary print the family's word.
+- YAML: `pim.placement.level` accepts `SUBBANK` (SRAM) and `MAT` (NVM);
+  `SUBARRAY` on SRAM/NVM is accepted as the legacy spelling with a one-line
+  NOTE; `SUBBANK` on a non-SRAM part or `MAT` on a non-NVM part is refused
+  (before this release an unknown level word fell silently to BANK).
+
+**Measured** (device scope, corpus per-bank unit 64 KB, 64 B line, 22 nm,
+350 K). SRAM: CACTI puts the whole 512-bit word in ONE line of mats per
+CACTI bank, and the plugin model runs CACTI with the 64 KB unit split into
+8 banks, so the PIMID bank has 8 subbanks (8 CACTI banks x 1), each 512
+bits wide, 31.4 GB/s (out_w per 2.04 ns random cycle); the table said 4 x
+128 b / 40 GB/s. NVM: the regenerated
+NVSim characterizations give ONE mat per 64 KB bank, `numDataBit` 512 (the
+mat IS the bank's word), so the mat link is the bank read bandwidth: STT-MRAM
+19.4, PCM 22.6, ReRAM 18.4 GB/s; the table said 4 x 64 b / 12, 9.6, 11.2
+GB/s. Regeneration moved no bank-level number (mat latency 3.30 / 2.83 /
+3.49 ns and the bank figures reproduce the old cache to printed precision).
+So for the part the corpus characterizes, the tier below the bank is
+near-degenerate: full-width units, one per NVSim bank and one per CACTI
+bank -- which is what the tools say for this array, not a preset. DDR4, DDR5
+and HBM3 are byte-identical against 1.11.72; the four non-DRAM BANK cells
+are identical in every key line (array latencies, L1+ links, bridge ladder).
+The one visible change at BANK placement is the L0 entry of the printed
+level-latency ladder (its link is now the model's, e.g. SRAM 2 -> 4 PE
+cycles), a tier below the PE that a BANK traversal does not cross; gate 1183
+M1 checks that on full-run cycles. On the old cache MAT placement is
+refused, as designed.
+
+**Found by the gate's full run, FIXED here: the SRAM component fields were
+read out of a struct CACTI never fills.** Gate 1183A's first SUBBANK full
+run took 2.07e10 cycles (BANK: 1.23e6) with a placement latency of 5.5e+05
+ns. Every per-component CACTI accessor -- decoder, bitline, sense-amp,
+subarray-output and H-tree delays, the matching energies, array/column/
+wordline leakage, cell/subarray area -- read `uca_org_t::data_array`, the
+`results_mem_array` copy that the `cacti_interface()` path never populates,
+so they returned whatever memory held (measured: decoder 217 ns, subarray
+output driver 550 us, sense amp 36 fs, H-tree 0.4 fs, against an access
+time of 2.44 ns from the same result). Latent since 1.11.23 introduced the
+component sum; unreachable in any corpus cell because only SUBARRAY
+placement on SRAM priced it, and the printed "Inner-bank datapath latency:
+550220 ns" was in every SRAM log unread. All of them now read the chosen
+solution's live `mem_array` (`data_array2`, the object `getAccessTime()`
+belongs to); the asserted "wordline = 30% of bitline" term added on top of
+CACTI's own sum is gone (CACTI folds wordline drive into its decoder/bitline
+stages); and the extractor refuses the SUBBANK tier (-1, unsourceable) if
+the in-mat sum is not below the array access time. Measured after the fix:
+in-mat path 0.83 ns + H-trees 0 ns (CACTI builds no H-tree stage at this
+8-bank geometry) against access 2.44 ns, residual 1.61 ns in routing and mux
+stages; the SUBBANK full run completes at ordinary cycle counts. No BANK
+number depends on these accessors (bank latency is `getAccessTime()`, bank
+leakage is `getLeakagePower()`), which gate 1183A's B1/M1 arms check.
+
+**Found alongside, NOT fixed here (DISCUSS before the fleet):** the SRAM
+plugin model characterizes the 64 KB per-bank unit as an 8-way
+set-associative CACHE split into 8 CACTI banks (`SRAMModel` defaults,
+`is_cache = true`), while the flat path in `getMemoryLatencyCycles`
+characterizes the same unit as a 1-way RAM ("SRAM as memory, not cache",
+`is_cache = false`, CACTI's default bank split). Since 1.11.25 the fig2 SRAM
+BANK latency has come from the plugin model, i.e. from the cache-mode run
+(tag path included). Aligning the model to RAM mode changes every fig2 SRAM
+number and the subbank count (the split would then be CACTI's own), so it is
+a separate release under a user ruling, not a rider on this one.
+
+**Corpus impact.** fig2 cells are BANK placement: the L0 tier is below the
+PE and is never traversed, so device-scope output is numerically identical
+except the new L0 lines and the L0 name; DRAM is byte-identical. Only
+SUBBANK/MAT-placement runs (none in the corpus) change. The NVSim cache for
+the four corpus NVM parts is regenerated on a compute node as part of this
+release.
+
 ## 1.11.72 -- DDR5 counts all its banks
 
 Found while tabulating the hierarchy under the bank for the pre-fleet

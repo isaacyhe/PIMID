@@ -704,40 +704,51 @@ std::string CACTIWrapper::getErrorMessage() const {
 // CACTI 7.0 Subarray-Level Characteristics
 //=============================================================================
 
+/* 1.11.73: THE COMPONENT FIELDS COME FROM THE LIVE mem_array (data_array2).
+ * Every per-component delay/energy/area accessor below used to read
+ * uca_org_t::data_array, the results_mem_array COPY that CACTI's
+ * cacti_interface() path never fills -- so they returned whatever memory held
+ * (measured on the 64 KB SRAM unit: decoder 217 ns, subarray output driver
+ * 550 us, sense amp 36 fs, against an access time of 2.44 ns). Latent since
+ * 1.11.23; reachable only at SUBARRAY/SUBBANK placement on SRAM, which this
+ * release makes a real tier. data_array2 is the chosen solution's mem_array,
+ * the object getAccessTime()'s value belongs to. */
 double CACTIWrapper::getDecoderDelay() const {
-    if (!valid_ || !cacti_result_) return 0.0;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
     // Row predecoder + row decoder delay
-    return cacti_result_->data_array.delay_row_predecode_driver_and_block +
-           cacti_result_->data_array.delay_row_decoder;
+    return cacti_result_->data_array2->delay_row_predecode_driver_and_block +
+           cacti_result_->data_array2->delay_row_decoder;
 }
 
 double CACTIWrapper::getWordlineDelay() const {
-    if (!valid_ || !cacti_result_) return 0.0;
-    // Bitline delay includes wordline activation in CACTI's model
-    // We approximate wordline delay as a portion of the total path
-    // This is captured in the delay_bitlines field
-    return cacti_result_->data_array.delay_bitlines * 0.3;  // ~30% for wordline
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
+    /* 1.11.73: CACTI's path decomposition has no separate wordline stage --
+     * the wordline drive sits inside its row-decoder/bitline terms. The old
+     * "30% of the bitline delay" was an assertion added ON TOP of CACTI's own
+     * sum, i.e. a double count. Reported as 0 so the subbank latency is
+     * exactly CACTI's in-mat path. */
+    return 0.0;
 }
 
 double CACTIWrapper::getBitlineDelay() const {
-    if (!valid_ || !cacti_result_) return 0.0;
-    return cacti_result_->data_array.delay_bitlines;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
+    return cacti_result_->data_array2->delay_bitlines;
 }
 
 double CACTIWrapper::getSenseAmpDelay() const {
-    if (!valid_ || !cacti_result_) return 0.0;
-    return cacti_result_->data_array.delay_sense_amp;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
+    return cacti_result_->data_array2->delay_sense_amp;
 }
 
 double CACTIWrapper::getSubarrayOutputDelay() const {
-    if (!valid_ || !cacti_result_) return 0.0;
-    return cacti_result_->data_array.delay_subarray_output_driver;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
+    return cacti_result_->data_array2->delay_subarray_output_driver;
 }
 
 double CACTIWrapper::getHtreeDelay() const {
-    if (!valid_ || !cacti_result_) return 0.0;
-    return cacti_result_->data_array.delay_input_htree +
-           cacti_result_->data_array.delay_output_htree;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
+    return cacti_result_->data_array2->delay_input_htree +
+           cacti_result_->data_array2->delay_dout_htree;
 }
 
 uint32_t CACTIWrapper::getSubarrayRows() const {
@@ -750,18 +761,30 @@ uint32_t CACTIWrapper::getSubarrayCols() const {
     return static_cast<uint32_t>(cacti_result_->data_array2->num_col_subarray);
 }
 
-uint32_t CACTIWrapper::getSubarraysPerMat() const {
+/* 1.11.73: see the header note -- these name CACTI's fields for what they are. */
+uint32_t CACTIWrapper::getSubarraysPerBank() const {
     if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0;
-    // In CACTI, Ndbl * Ndwl gives the number of subarrays
-    // Per mat is typically 2x2 = 4 subarrays
     return static_cast<uint32_t>(cacti_result_->data_array2->Ndbl *
                                   cacti_result_->data_array2->Ndwl);
 }
-
-uint32_t CACTIWrapper::getMatsPerBank() const {
+uint32_t CACTIWrapper::getSubarraysPerMat() const {
     if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0;
-    // Number of active mats gives us mats per bank
+    return static_cast<uint32_t>(cacti_result_->data_array2->num_submarray_mats);
+}
+uint32_t CACTIWrapper::getMatsPerBank() const {
+    const uint32_t sa = getSubarraysPerBank(), spm = getSubarraysPerMat();
+    return (spm > 0) ? sa / spm : 0;
+}
+uint32_t CACTIWrapper::getActiveMatsPerAccess() const {
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0;
     return static_cast<uint32_t>(cacti_result_->data_array2->num_active_mats);
+}
+uint32_t CACTIWrapper::getSubbanksPerBank() const {
+    const uint32_t mats = getMatsPerBank(), act = getActiveMatsPerAccess();
+    return (act > 0) ? mats / act : 0;
+}
+uint32_t CACTIWrapper::getOutputWidthBits() const {
+    return config_.output_width_bits;
 }
 
 double CACTIWrapper::getWordlineCapacitance() const {
@@ -791,11 +814,11 @@ double CACTIWrapper::getBitlineCapacitance() const {
 }
 
 double CACTIWrapper::getDecoderEnergy() const {
-    if (!valid_ || !cacti_result_) return 0.0;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
     // Row predecoder + row decoder energy (convert J to nJ)
-    return (cacti_result_->data_array.power_row_predecoder_drivers.readOp.dynamic +
-            cacti_result_->data_array.power_row_predecoder_blocks.readOp.dynamic +
-            cacti_result_->data_array.power_row_decoders.readOp.dynamic) * 1e9;
+    return (cacti_result_->data_array2->power_row_predecoder_drivers.readOp.dynamic +
+            cacti_result_->data_array2->power_row_predecoder_blocks.readOp.dynamic +
+            cacti_result_->data_array2->power_row_decoders.readOp.dynamic) * 1e9;
 }
 
 double CACTIWrapper::getWordlineEnergy() const {
@@ -805,15 +828,15 @@ double CACTIWrapper::getWordlineEnergy() const {
 }
 
 double CACTIWrapper::getBitlineEnergy() const {
-    if (!valid_ || !cacti_result_) return 0.0;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
     // Bitline energy (convert J to nJ)
-    return cacti_result_->data_array.power_bitlines.readOp.dynamic * 1e9;
+    return cacti_result_->data_array2->power_bitlines.readOp.dynamic * 1e9;
 }
 
 double CACTIWrapper::getSenseAmpEnergy() const {
-    if (!valid_ || !cacti_result_) return 0.0;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
     // Sense amp energy (convert J to nJ)
-    return cacti_result_->data_array.power_sense_amps.readOp.dynamic * 1e9;
+    return cacti_result_->data_array2->power_sense_amps.readOp.dynamic * 1e9;
 }
 
 double CACTIWrapper::getArrayLeakage() const {
@@ -841,10 +864,12 @@ double CACTIWrapper::getSubarrayArea() const {
 }
 
 double CACTIWrapper::getCellArea() const {
-    if (!valid_ || !cacti_result_) return 0.0;
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
     // Cell area from subarray dimensions
-    double subarray_area = cacti_result_->data_array.subarray_memory_cell_area_height *
-                           cacti_result_->data_array.subarray_memory_cell_area_width;
+    /* 1.11.73: from the live mem_array's subarray geometry (um x um); the
+     * results-struct cell-area fields this read before are never filled. */
+    double subarray_area = cacti_result_->data_array2->subarray_length *
+                           cacti_result_->data_array2->subarray_height;
     uint32_t rows = getSubarrayRows();
     uint32_t cols = getSubarrayCols();
     if (rows > 0 && cols > 0) {

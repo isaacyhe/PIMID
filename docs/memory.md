@@ -32,6 +32,29 @@ in-package logic die.
 | DDR4, DDR5 | `SUBARRAY -> BANK -> BANK_GROUP -> RANK` |
 | LPDDR5, GDDR6 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL` |
 | HBM2, HBM3 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL -> LOGIC_DIE` |
+| SRAM | `SUBBANK -> BANK` (CHIP is the configured device network) |
+| STT_MRAM, PCM, RERAM | `MAT -> BANK` (CHIP is the configured device network) |
+
+**Exactly one tier below the bank, per family (1.11.73).** The word for that
+tier is the family's own, and each family has only one:
+
+| Family | Tier below the bank | What it is | Count and width come from |
+|---|---|---|---|
+| DRAM | `SUBARRAY` | the local-sense-amp row stripe (512 rows; 1024 on HBM) | the preset's `bank_rows` / the subarray height; width = the global sense-amp datapath of the architecture object |
+| SRAM | `SUBBANK` | CACTI's line of mats activated together to produce one data word; its width IS the bank's (`num_do_b_subbank = out_w`) | CACTI geometry: mats per access, `out_w` |
+| NVM | `MAT` | NVSim's mat, the unit it H-trees into a bank | NVSim: `numRowMat x numColumnMat`, `mat.numDataBit` (cached per part since 1.11.73) |
+
+`SUBARRAY` on SRAM/NVM is accepted as the legacy spelling (same level, the run
+names the canonical word once); `SUBBANK` on a non-SRAM part or `MAT` on a
+non-NVM part names a tier the part does not have and is refused. Note that
+CACTI's and NVSim's *own* "subarray" is a smaller thing than the DRAM
+subarray -- it is the array slice below a mat -- and is deliberately NOT a
+PIMID tier: there is one level below the bank, not two. An NVSim cache entry
+written before 1.11.73 carries no mat count or width; the run says the tier
+is not sourceable, keeps the tree shape it has as an unsourced count, and
+refuses to PLACE PEs at `MAT` until the cache is regenerated (or
+`memory.subarrays_per_bank` states a count explicitly, which is then labelled
+as user-set exactly as on DRAM).
 
 Finer placement = more PEs, each local to a smaller slice, and a deeper, more
 parallel device network. Coarser placement funnels more PEs through shared

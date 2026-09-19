@@ -93,6 +93,13 @@ struct SRAMOrganization {
     int mats_per_bank_rows;       // Mat grid (e.g., 4x4)
     int mats_per_bank_cols;
     size_t bank_size_kb;          // Per bank capacity
+    /* 1.11.73: THE SUBBANK -- the one tier below the bank this model
+     * exposes. mats_per_subbank = CACTI num_act_mats_hor_dir (the mats fired
+     * together per access); subbanks_per_bank = mats per bank / that. The
+     * mat and subarray fields below stay as CACTI's INTERNAL organisation
+     * (information), not as tiers a PE can be placed at. */
+    int subbanks_per_bank;        // CACTI: num_mats / num_act_mats_hor_dir
+    int mats_per_subbank;         // CACTI: num_act_mats_hor_dir
 
     // Mat level
     int subarrays_per_mat;        // Typically 4 (CACTI standard)
@@ -176,10 +183,17 @@ struct SRAMInnerBankTiming {
 struct SRAMTiming {
     double clock_freq_ghz;        // SRAM clock frequency
 
-    // Access latencies (total)
-    double subarray_access_ns;    // Access within subarray
-    double mat_access_ns;         // Cross-subarray access
-    double bank_access_ns;        // Access within bank
+    /* 1.11.73 (one level below the bank): SRAM has exactly ONE tier below
+     * the bank in this model, the SUBBANK -- the horizontal line of mats
+     * activated together whose outputs concatenate into one data word
+     * (CACTI parameter.cc: num_do_b_subbank = num_do_b_mat x
+     * num_act_mats_hor_dir). A PE placed at the subbank skips the bank
+     * H-tree, so its access is the mat access: decoder + wordline + bitline
+     * + sense amp + output driver. The fields this replaces
+     * (subarray_access_ns, mat_access_ns) described two tiers the model
+     * never exposed as placements and one of which (mat) nothing ever read. */
+    double subbank_access_ns;     // Access at the subbank: the mat path, no bank H-tree
+    double bank_access_ns;        // Access within bank (CACTI access time)
     double chip_access_ns;        // Cross-bank access
 
     /* 1.11.23: CACTI's cycle time is the RANDOM CYCLE TIME -- it includes
@@ -198,19 +212,22 @@ struct SRAMTiming {
 //=============================================================================
 
 struct SRAMEnergy {
+    /* 1.11.73: one tier below the bank, the subbank (the mats activated
+     * together for one data word). The in-array component energies CACTI
+     * reports (decoder, wordline, bitline, sense amp) are the subbank's;
+     * the old mat_energy_pJ (= subarray x 1.3, a literal) is gone. */
     // Energy per access (pJ)
-    double subarray_energy_pJ;
-    double mat_energy_pJ;
+    double subbank_energy_pJ;
     double bank_energy_pJ;
     double chip_energy_pJ;
 
     // Energy per byte (pJ/byte)
-    double subarray_energy_per_byte;
+    double subbank_energy_per_byte;
     double bank_energy_per_byte;
     double chip_energy_per_byte;
 
     // Leakage power (mW)
-    double subarray_leakage_mw;
+    double subbank_leakage_mw;
     double bank_leakage_mw;
     double chip_leakage_mw;
 
@@ -223,9 +240,14 @@ struct SRAMEnergy {
 
 struct SRAMDatapath {
     // Bitwidths at each level
-    int subarray_local_io_bits;   // Within subarray
-    int mat_io_bits;              // Mat-level I/O
-    int bank_io_bits;             // Bank-level I/O
+    /* 1.11.73: the subbank's width IS the bank's width -- CACTI defines the
+     * subbank as the mats that together produce one out_w word
+     * (parameter.cc 2110: num_do_b_subbank = out_w; 2239:
+     * num_do_b_bank_per_port = out_w). Both are filled from out_w, never
+     * from a literal. The old subarray_local_io_bits (128) and mat_io_bits
+     * (64) were literals nothing consumed. */
+    int subbank_io_bits;          // = out_w, the data word
+    int bank_io_bits;             // = out_w
     int chip_io_bits;             // Chip-level (to CPU)
 
     VerificationStatus verification_status;
@@ -255,8 +277,8 @@ public:
     void printSummary() const;
 
     // PIM-specific calculations
-    double getSubarrayBandwidth() const {
-        return (datapath.subarray_local_io_bits / 8.0) *
+    double getSubbankBandwidth() const {
+        return (datapath.subbank_io_bits / 8.0) *
                (timing.clock_freq_ghz * 1000.0);  // MB/s
     }
 

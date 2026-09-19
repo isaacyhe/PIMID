@@ -72,15 +72,29 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->organization.chip_size_mb = config.capacity_bytes / (1024 * 1024);
     arch->organization.bank_size_kb = (config.capacity_bytes / config.banks) / 1024;
 
-    // Get subarray organization from CACTI
+    /* 1.11.73: the tier below the bank is the SUBBANK -- CACTI's line of
+     * num_act_mats_hor_dir mats activated together for one data word
+     * (parameter.cc 2110/2239: its width is out_w, the bank's). Counts come
+     * from CACTI's own geometry (Ndwl x Ndbl subarrays, num_submarray_mats
+     * per mat, num_active_mats per access); the old getMatsPerBank() was
+     * returning the active-mat count under the wrong name. */
     uint32_t subarrays_per_mat = cacti_wrapper.getSubarraysPerMat();
     uint32_t mats_per_bank = cacti_wrapper.getMatsPerBank();
+    uint32_t mats_per_subbank = cacti_wrapper.getActiveMatsPerAccess();
+    uint32_t subbanks_per_bank = cacti_wrapper.getSubbanksPerBank();
 
-    // Estimate mat grid (assume square-ish)
-    int mats_sqrt = static_cast<int>(std::sqrt(mats_per_bank));
-    arch->organization.mats_per_bank_rows = mats_sqrt > 0 ? mats_sqrt : 4;
-    arch->organization.mats_per_bank_cols = mats_per_bank / arch->organization.mats_per_bank_rows;
-    if (arch->organization.mats_per_bank_cols == 0) arch->organization.mats_per_bank_cols = 1;
+    arch->organization.subbanks_per_bank = subbanks_per_bank > 0 ? subbanks_per_bank : 1;
+    arch->organization.mats_per_subbank = mats_per_subbank > 0 ? mats_per_subbank : 1;
+
+    // Mat grid: one row of mats per subbank, the subbanks stacked
+    arch->organization.mats_per_bank_rows = arch->organization.subbanks_per_bank;
+    arch->organization.mats_per_bank_cols = arch->organization.mats_per_subbank;
+    if (mats_per_bank > 0 &&
+        static_cast<uint32_t>(arch->organization.getMatsPerBank()) != mats_per_bank) {
+        // geometry CACTI reports but did not split evenly: keep the total honest
+        arch->organization.mats_per_bank_rows = 1;
+        arch->organization.mats_per_bank_cols = static_cast<int>(mats_per_bank);
+    }
 
     arch->organization.mat_size_kb = arch->organization.bank_size_kb /
                                       arch->organization.getMatsPerBank();
@@ -111,8 +125,10 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
      * tier at all.
      *
      * NOW, with getHtreeDelay() -- which CACTI exposes and nothing used:
-     *   subarray = the in-array component path
-     *   mat      = subarray + the H-tree CACTI computed for this geometry
+     *   subbank  = the in-array component path (1.11.73: ONE tier below the
+     *              bank, the subbank; a PE there reads its mats without the
+     *              bank H-tree, so the in-array path IS its access. The old
+     *              subarray/mat pair described CACTI internals, not tiers.)
      *   bank     = getAccessTime(), CACTI's own full-array number
      *   chip     = bank + ONE configured network hop, raised by the caller
      *              (SRAM is not DRAM-like: bank groups and ranks collapse to
@@ -122,9 +138,28 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
         (cacti_wrapper.getDecoderDelay() + cacti_wrapper.getWordlineDelay() +
          cacti_wrapper.getBitlineDelay() + cacti_wrapper.getSenseAmpDelay() +
          cacti_wrapper.getSubarrayOutputDelay()) * 1e9;
-    arch->timing.subarray_access_ns = sram_sub_ns;
-    arch->timing.mat_access_ns      = sram_sub_ns + cacti_wrapper.getHtreeDelay() * 1e9;
+    arch->timing.subbank_access_ns  = sram_sub_ns;
     arch->timing.bank_access_ns     = cacti_wrapper.getAccessTime() * 1e9;
+    /* 1.11.73: the tier below cannot be slower than the tier above. CACTI's
+     * access time is H-tree in + in-mat path + H-tree out (+ routing and mux
+     * stages), so the in-mat sum must sit below it; if it does not, the
+     * components are not describing this array and the tier is REFUSED
+     * (-1 -> unsourceable), never used. */
+    {
+        const double htree_ns = cacti_wrapper.getHtreeDelay() * 1e9;
+        const double resid_ns = arch->timing.bank_access_ns - htree_ns - sram_sub_ns;
+        std::cout << "  [SRAM] subbank in-mat path " << sram_sub_ns << " ns + H-trees "
+                  << htree_ns << " ns vs CACTI access " << arch->timing.bank_access_ns
+                  << " ns (residual " << resid_ns << " ns: route-to-bank and mux stages)"
+                  << std::endl;
+        if (!(sram_sub_ns > 0.0) || sram_sub_ns > arch->timing.bank_access_ns) {
+            std::cerr << "  [SRAM] NOTE: CACTI component path (" << sram_sub_ns
+                      << " ns) is not below the array access time ("
+                      << arch->timing.bank_access_ns << " ns); the SUBBANK tier is "
+                         "reported unsourceable rather than priced from it." << std::endl;
+            arch->timing.subbank_access_ns = -1.0;
+        }
+    }
     arch->timing.chip_access_ns     = arch->timing.bank_access_ns;
     arch->timing.cycle_time_ns      = cacti_wrapper.getCycleTime() * 1e9;
 
@@ -142,7 +177,7 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->timing.inner_bank.htree_vertical_ns = htree_total / 2.0;
 
     // Local/global I/O (estimate from total)
-    double remaining = arch->timing.subarray_access_ns -
+    double remaining = arch->timing.subbank_access_ns -
                        arch->timing.inner_bank.getRowPath() -
                        arch->timing.inner_bank.getColumnPath() -
                        htree_total;
@@ -162,36 +197,36 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->timing.inner_bank.source = "CACTI 7.0 extraction, " + arch->process_node + " process";
 
     // ===== ENERGY (EXTRACTED from CACTI 7.0!) =====
-    arch->energy.subarray_energy_pJ = cacti_wrapper.getDecoderEnergy() * 1000.0 +
-                                       cacti_wrapper.getWordlineEnergy() * 1000.0 +
-                                       cacti_wrapper.getBitlineEnergy() * 1000.0 +
-                                       cacti_wrapper.getSenseAmpEnergy() * 1000.0;
-    arch->energy.mat_energy_pJ = arch->energy.subarray_energy_pJ * 1.3;
+    arch->energy.subbank_energy_pJ = cacti_wrapper.getDecoderEnergy() * 1000.0 +
+                                      cacti_wrapper.getWordlineEnergy() * 1000.0 +
+                                      cacti_wrapper.getBitlineEnergy() * 1000.0 +
+                                      cacti_wrapper.getSenseAmpEnergy() * 1000.0;
     arch->energy.bank_energy_pJ = cacti_wrapper.getDynamicReadEnergy() * 1000.0;  // nJ to pJ
     arch->energy.chip_energy_pJ = arch->energy.bank_energy_pJ * 1.2;
 
     // Energy per byte
     double bytes_per_access = config.line_size;
-    arch->energy.subarray_energy_per_byte = arch->energy.subarray_energy_pJ / bytes_per_access;
+    arch->energy.subbank_energy_per_byte = arch->energy.subbank_energy_pJ / bytes_per_access;
     arch->energy.bank_energy_per_byte = arch->energy.bank_energy_pJ / bytes_per_access;
     arch->energy.chip_energy_per_byte = arch->energy.chip_energy_pJ / bytes_per_access;
 
     // Leakage (EXTRACTED from CACTI 7.0!)
-    arch->energy.subarray_leakage_mw = cacti_wrapper.getArrayLeakage();
+    arch->energy.subbank_leakage_mw = cacti_wrapper.getArrayLeakage();
     arch->energy.bank_leakage_mw = cacti_wrapper.getLeakagePower() / config.banks;
     arch->energy.chip_leakage_mw = cacti_wrapper.getLeakagePower();
 
     arch->energy.energy_source = "CACTI 7.0 extraction, " + arch->process_node;
 
     // ===== DATAPATH =====
-    // Estimate from CACTI organization
-    arch->datapath.subarray_local_io_bits = 128;  // Typical
-    arch->datapath.mat_io_bits = 64;
-    arch->datapath.bank_io_bits = config.output_width_bits > 0 ? config.output_width_bits : 64;
+    /* 1.11.73: the subbank's width is the bank's width by CACTI's own
+     * construction (num_do_b_subbank = out_w) -- no literal. The chip port
+     * remains an inference (SRAM's chip network is ours to specify). */
+    arch->datapath.bank_io_bits = static_cast<int>(cacti_wrapper.getOutputWidthBits());
+    arch->datapath.subbank_io_bits = arch->datapath.bank_io_bits;
     arch->datapath.chip_io_bits = arch->datapath.bank_io_bits * 4;  // Wider at chip level
 
     arch->datapath.verification_status = VerificationStatus::INFERRED;
-    arch->datapath.source = "CACTI 7.0 organization inference";
+    arch->datapath.source = "CACTI 7.0: subbank/bank width = out_w; chip port inferred";
 
     return arch;
 }
@@ -231,13 +266,15 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->organization.chip_size_mb = chip_mb > 0 ? chip_mb : 8;
     arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
 
-    uint32_t subarrays_per_mat = nvsim_wrapper.getSubarraysPerMat();
-    uint32_t mats_per_bank = nvsim_wrapper.getMatsPerBank();
-    arch->organization.subarrays_per_bank = subarrays_per_mat * mats_per_bank;
-    if (arch->organization.subarrays_per_bank == 0) arch->organization.subarrays_per_bank = 8;
-
-    arch->organization.subarray_size_kb = arch->organization.bank_size_kb /
-                                           arch->organization.subarrays_per_bank;
+    /* 1.11.73: the tier below the bank is NVSim's MAT (numRowMat x
+     * numColumnMat per bank). Cached since 1.11.73; an older cache entry
+     * yields 0 = UNKNOWN, and the run reports the tier unsourceable rather
+     * than filling it (the old code multiplied two counts into a subarray
+     * total and fell back to a literal 8). */
+    const uint32_t mats_per_bank = nvsim_wrapper.getMatsPerBank();
+    arch->organization.mats_per_bank = static_cast<int>(mats_per_bank);
+    arch->organization.mat_size_kb = (mats_per_bank > 0)
+        ? arch->organization.bank_size_kb / mats_per_bank : 0;
 
     arch->organization.wordlines_per_subarray = nvsim_wrapper.getSubarrayRows();
     arch->organization.bitlines_per_subarray = nvsim_wrapper.getSubarrayCols();
@@ -288,14 +325,14 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
      * notably on a cache hit, since the pregenerated NVSim cache predates
      * these fields -- and the tier is then reported unsourceable, not
      * filled. */
-    const double stt_sub_s = nvsim_wrapper.getSubarrayLatency();
+    const double stt_sub_s = nvsim_wrapper.getMatLatency();  /* 1.11.73: the MAT, one tier below the bank */
     const double stt_sub_read_ns = (stt_sub_s > 0.0) ? stt_sub_s * 1e9 : -1.0;
     arch->timing.bank_read_ns  = nvsim_wrapper.getReadLatency()  * 1e9;
     arch->timing.bank_write_ns = nvsim_wrapper.getWriteLatency() * 1e9;
-    arch->timing.subarray_read_ns = stt_sub_read_ns;
+    arch->timing.mat_read_ns = stt_sub_read_ns;
     /* the write path shares the array traversal and adds the cell's own
      * switching time, which NVSim reports separately as the cell latency */
-    arch->timing.subarray_write_ns =
+    arch->timing.mat_write_ns =
         stt_sub_read_ns + nvsim_wrapper.getCellWriteLatency() * 1e9;
     arch->timing.chip_read_ns  = arch->timing.bank_read_ns;
     arch->timing.chip_write_ns = arch->timing.bank_write_ns;
@@ -355,11 +392,11 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
      * On the cache path they are zero for the same reason as the delays above,
      * so this field is 0 rather than a fraction of something invented -- and
      * energy_source below says which case a run is in. */
-    arch->energy.subarray_read_energy_pJ = nvsim_wrapper.getDecoderEnergy() * 1000.0 +
+    arch->energy.mat_read_energy_pJ = nvsim_wrapper.getDecoderEnergy() * 1000.0 +
                                             nvsim_wrapper.getWordlineEnergy() * 1000.0 +
                                             nvsim_wrapper.getBitlineEnergy() * 1000.0 +
                                             nvsim_wrapper.getSenseAmpEnergy() * 1000.0;
-    arch->energy.subarray_write_energy_pJ = arch->energy.subarray_read_energy_pJ * 3.0;  // Write higher
+    arch->energy.mat_write_energy_pJ = arch->energy.mat_read_energy_pJ * 3.0;  // Write higher
 
     arch->energy.bank_read_energy_pJ = nvsim_wrapper.getReadDynamicEnergy() * 1000.0;  // nJ to pJ
     arch->energy.bank_write_energy_pJ = nvsim_wrapper.getWriteDynamicEnergy() * 1000.0;
@@ -379,7 +416,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
      * back to one subarray. It now returns NVSim's own
      * subarray.senseAmp.leakage, which already IS per subarray -- dividing
      * again would report a sense amplifier as a fraction of itself. */
-    arch->energy.subarray_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
+    arch->energy.mat_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
     /* 1.11.56 (audit D058): ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
      *
      * This block used to read NVSim's figure as a WHOLE-CHIP number: chip =
@@ -422,15 +459,17 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
      * uncommented literal because the field asserts the opposite of the truth.
      * Nothing reads verification_status today, so no number moved; the stamp
      * would have been believed the first time a consumer appeared. */
-    arch->datapath.subarray_local_io_bits = 64;
+    /* 1.11.73: the mat's width is NVSim's mat.numDataBit (cached; 0 from an
+     * older cache = UNKNOWN, reported unsourceable). The literal 64 is gone. */
+    arch->datapath.mat_io_bits = static_cast<int>(nvsim_wrapper.getMatWidthBits());
     arch->datapath.bank_io_bits = config.word_width_bits > 0 ? config.word_width_bits : 64;
     arch->datapath.chip_io_bits = arch->datapath.bank_io_bits * 4;
 
     arch->datapath.verification_status = VerificationStatus::ESTIMATED;
     arch->datapath.source =
-        "ASSERTED (unsourced): subarray_local_io_bits = 64, chip_io_bits = "
-        "4 x bank; bank_io_bits is the CONFIGURED word width, not a tool "
-        "output. NVSim reports no datapath width.";
+        "mat_io_bits = NVSim mat.numDataBit (0 = unknown from an older cache); "
+        "chip_io_bits = 4 x bank ASSERTED; bank_io_bits is the CONFIGURED word "
+        "width, not a tool output.";
 
     // ===== ENDURANCE =====
     /* 1.11.57 (latent D063): NVSim MODELS NO ENDURANCE. The source string
@@ -477,7 +516,7 @@ inline void updateSRAMArchitectureFromCACTI(
     arch.timing.inner_bank.htree_vertical_ns = htree_total / 2.0;
 
     // Update access times
-    arch.timing.subarray_access_ns = cacti_wrapper.getAccessTime() * 1e9;
+    arch.timing.subbank_access_ns = cacti_wrapper.getAccessTime() * 1e9;
     arch.timing.bank_access_ns = cacti_wrapper.getCycleTime() * 1e9;
 
     // Update energy
@@ -498,7 +537,7 @@ inline void updateSRAMArchitectureFromCACTI(
  * DELETED. All three had zero callers anywhere in the tree, and all three were
  * stale duplicates of the extract*() functions above that still carried the
  * defects those were repaired for: the PCM one assigned
- * `subarray_reset_ns = write_ns * 0.3`, the assertion 1.11.23 removed from the
+ * `mat_reset_ns = write_ns * 0.3`, the assertion 1.11.23 removed from the
  * extractor and whose release note said it was gone; all three assigned
  * getReadLatency() (NVSim's BANK figure) straight into subarray_*, the tier
  * collapse 1.11.23 corrected; all three stamped
@@ -549,9 +588,12 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->organization.chip_size_mb = chip_mb > 0 ? chip_mb : 16;
     arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
 
-    uint32_t mats_per_bank = nvsim_wrapper.getMatsPerBank();
-    arch->organization.mats_per_bank = mats_per_bank > 0 ? mats_per_bank : 4;
-    arch->organization.mat_size_kb = arch->organization.bank_size_kb / arch->organization.mats_per_bank;
+    /* 1.11.73: NVSim's mat count, cached; 0 = UNKNOWN from an older cache
+     * (reported unsourceable, no literal 4 fallback). */
+    const uint32_t mats_per_bank = nvsim_wrapper.getMatsPerBank();
+    arch->organization.mats_per_bank = static_cast<int>(mats_per_bank);
+    arch->organization.mat_size_kb = (mats_per_bank > 0)
+        ? arch->organization.bank_size_kb / mats_per_bank : 0;
 
     arch->organization.wordlines_per_mat = nvsim_wrapper.getSubarrayRows();
     arch->organization.bitlines_per_mat = nvsim_wrapper.getSubarrayCols();
@@ -603,10 +645,10 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
      * notably on a cache hit, since the pregenerated NVSim cache predates
      * these fields -- and the tier is then reported unsourceable, not
      * filled. */
-    const double pcm_sub_s = nvsim_wrapper.getSubarrayLatency();
+    const double pcm_sub_s = nvsim_wrapper.getMatLatency();  /* 1.11.73: the MAT, one tier below the bank */
     const double pcm_sub_read_ns = (pcm_sub_s > 0.0) ? pcm_sub_s * 1e9 : -1.0;
     arch->timing.bank_read_ns     = read_latency_ns;
-    arch->timing.subarray_read_ns = pcm_sub_read_ns;
+    arch->timing.mat_read_ns = pcm_sub_read_ns;
     arch->timing.chip_read_ns     = read_latency_ns;
 
     // Write latencies (PCM has VERY asymmetric SET/RESET)
@@ -638,7 +680,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
         const double set_ns = (set_s > 0.0) ? set_s * 1e9 : write_latency_ns;
         arch->timing.set_from_generic_write = !(set_s > 0.0);
         arch->timing.bank_set_ns     = set_ns;
-        arch->timing.subarray_set_ns = pcm_sub_read_ns;
+        arch->timing.mat_set_ns = pcm_sub_read_ns;
         arch->timing.chip_set_ns     = set_ns;
     }
 
@@ -653,11 +695,11 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
         const double rst_ns = (rst_s > 0.0) ? rst_s * 1e9 : -1.0;
         if (rst_ns > 0.0) {
             arch->timing.bank_reset_ns     = rst_ns;
-            arch->timing.subarray_reset_ns = pcm_sub_read_ns;
+            arch->timing.mat_reset_ns = pcm_sub_read_ns;
             arch->timing.chip_reset_ns     = rst_ns;
         } else {
             arch->timing.bank_reset_ns     = arch->timing.bank_set_ns;
-            arch->timing.subarray_reset_ns = arch->timing.subarray_set_ns;
+            arch->timing.mat_reset_ns = arch->timing.mat_set_ns;
             arch->timing.chip_reset_ns     = arch->timing.chip_set_ns;
         }
     }
@@ -682,8 +724,8 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->timing.inner_bank.bank_output_drv_ns = 0.30;
 
     // PCM-specific write pulses
-    arch->timing.inner_bank.set_pulse_ns = arch->timing.subarray_set_ns * 0.9;  // Crystallization
-    arch->timing.inner_bank.reset_pulse_ns = arch->timing.subarray_reset_ns * 0.9;  // Amorphization
+    arch->timing.inner_bank.set_pulse_ns = arch->timing.mat_set_ns * 0.9;  // Crystallization
+    arch->timing.inner_bank.reset_pulse_ns = arch->timing.mat_reset_ns * 0.9;  // Amorphization
 
     /* 1.11.23: see the STT-MRAM block -- the component delays are tool-read,
      * the local/global I/O and output-driver terms are not, so the block is
@@ -705,7 +747,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
 
     /* 1.11.57 (latent D059): NVSim's own per-subarray component energies, not
      * percentages of a mat scalar; zero when the run came from the cache. */
-    arch->energy.subarray_read_energy_pJ = (nvsim_wrapper.getDecoderEnergy() +
+    arch->energy.mat_read_energy_pJ = (nvsim_wrapper.getDecoderEnergy() +
                                              nvsim_wrapper.getWordlineEnergy() +
                                              nvsim_wrapper.getBitlineEnergy() +
                                              nvsim_wrapper.getSenseAmpEnergy()) * 1000.0;
@@ -713,12 +755,12 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->energy.chip_read_energy_pJ = arch->energy.bank_read_energy_pJ * 1.7;
 
     // SET energy is much higher (crystallization requires sustained current)
-    arch->energy.subarray_set_energy_pJ = arch->energy.subarray_read_energy_pJ * 40.0;
+    arch->energy.mat_set_energy_pJ = arch->energy.mat_read_energy_pJ * 40.0;
     arch->energy.bank_set_energy_pJ = write_energy_nJ * 1000.0;
     arch->energy.chip_set_energy_pJ = arch->energy.bank_set_energy_pJ * 1.5;
 
     // RESET energy is moderate
-    arch->energy.subarray_reset_energy_pJ = arch->energy.subarray_set_energy_pJ * 0.5;
+    arch->energy.mat_reset_energy_pJ = arch->energy.mat_set_energy_pJ * 0.5;
     arch->energy.bank_reset_energy_pJ = arch->energy.bank_set_energy_pJ * 0.55;
     arch->energy.chip_reset_energy_pJ = arch->energy.chip_set_energy_pJ * 0.55;
 
@@ -743,7 +785,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     // Leakage
     /* 1.11.57 (latent D059): no second division -- getSenseAmpLeakage() is
      * NVSim's own per-subarray sense-amp leakage now, not 30% of the mat. */
-    arch->energy.subarray_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
+    arch->energy.mat_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
     /* 1.11.56 (audit D058): ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
      *
      * This block used to read NVSim's figure as a WHOLE-CHIP number: chip =
@@ -791,15 +833,16 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
      * STT-MRAM block. mat_io_bits is a literal, chip_io_bits is bank echoed,
      * bank_io_bits is the configured word width. None of it is a tool output,
      * and the block used to stamp itself VERIFIED / "NVSim extraction". */
-    arch->datapath.mat_io_bits = 64;
+    /* 1.11.73: mat width from NVSim mat.numDataBit (cached; 0 = unknown). */
+    arch->datapath.mat_io_bits = static_cast<int>(nvsim_wrapper.getMatWidthBits());
     arch->datapath.bank_io_bits = config.word_width_bits > 0 ? config.word_width_bits : 64;
     arch->datapath.chip_io_bits = arch->datapath.bank_io_bits;
 
     arch->datapath.verification_status = VerificationStatus::ESTIMATED;
     arch->datapath.source =
-        "ASSERTED (unsourced): mat_io_bits = 64, chip_io_bits = bank_io_bits; "
-        "bank_io_bits is the CONFIGURED word width, not a tool output. NVSim "
-        "reports no datapath width.";
+        "mat_io_bits = NVSim mat.numDataBit (0 = unknown from an older cache); "
+        "chip_io_bits = bank_io_bits ASSERTED; bank_io_bits is the CONFIGURED "
+        "word width, not a tool output.";
 
     return arch;
 }
@@ -850,13 +893,15 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->organization.chip_size_mb = chip_mb > 0 ? chip_mb : 2;
     arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
 
-    uint32_t subarrays_per_mat = nvsim_wrapper.getSubarraysPerMat();
-    uint32_t mats_per_bank = nvsim_wrapper.getMatsPerBank();
-    arch->organization.subarrays_per_bank = subarrays_per_mat * mats_per_bank;
-    if (arch->organization.subarrays_per_bank == 0) arch->organization.subarrays_per_bank = 8;
-
-    arch->organization.subarray_size_kb = arch->organization.bank_size_kb /
-                                           arch->organization.subarrays_per_bank;
+    /* 1.11.73: the tier below the bank is NVSim's MAT (numRowMat x
+     * numColumnMat per bank). Cached since 1.11.73; an older cache entry
+     * yields 0 = UNKNOWN, and the run reports the tier unsourceable rather
+     * than filling it (the old code multiplied two counts into a subarray
+     * total and fell back to a literal 8). */
+    const uint32_t mats_per_bank = nvsim_wrapper.getMatsPerBank();
+    arch->organization.mats_per_bank = static_cast<int>(mats_per_bank);
+    arch->organization.mat_size_kb = (mats_per_bank > 0)
+        ? arch->organization.bank_size_kb / mats_per_bank : 0;
 
     // Crossbar dimensions
     arch->organization.crossbar_rows = nvsim_wrapper.getSubarrayRows();
@@ -894,10 +939,10 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
      * notably on a cache hit, since the pregenerated NVSim cache predates
      * these fields -- and the tier is then reported unsourceable, not
      * filled. */
-    const double rer_sub_s = nvsim_wrapper.getSubarrayLatency();
+    const double rer_sub_s = nvsim_wrapper.getMatLatency();  /* 1.11.73: the MAT, one tier below the bank */
     const double rer_sub_read_ns = (rer_sub_s > 0.0) ? rer_sub_s * 1e9 : -1.0;
     arch->timing.bank_read_ns     = read_latency_ns;
-    arch->timing.subarray_read_ns = rer_sub_read_ns;
+    arch->timing.mat_read_ns = rer_sub_read_ns;
     arch->timing.chip_read_ns     = read_latency_ns;
 
     // Write latencies (ReRAM has fast writes!)
@@ -911,7 +956,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
         return nullptr;
     }
     arch->timing.bank_write_ns     = write_latency_ns;
-    arch->timing.subarray_write_ns =
+    arch->timing.mat_write_ns =
         rer_sub_read_ns + nvsim_wrapper.getCellWriteLatency() * 1e9;
     arch->timing.chip_write_ns = write_latency_ns * 1.35;
 
@@ -971,7 +1016,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
 
     /* 1.11.57 (latent D059): NVSim's own per-subarray component energies, not
      * percentages of a mat scalar; zero when the run came from the cache. */
-    arch->energy.subarray_read_energy_pJ = (nvsim_wrapper.getDecoderEnergy() +
+    arch->energy.mat_read_energy_pJ = (nvsim_wrapper.getDecoderEnergy() +
                                              nvsim_wrapper.getWordlineEnergy() +
                                              nvsim_wrapper.getBitlineEnergy() +
                                              nvsim_wrapper.getSenseAmpEnergy()) * 1000.0;
@@ -979,7 +1024,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->energy.chip_read_energy_pJ = arch->energy.bank_read_energy_pJ * 1.95;
 
     // Write energy (moderate for ReRAM)
-    arch->energy.subarray_write_energy_pJ = arch->energy.subarray_read_energy_pJ * 8.0;
+    arch->energy.mat_write_energy_pJ = arch->energy.mat_read_energy_pJ * 8.0;
     arch->energy.bank_write_energy_pJ = write_energy_nJ * 1000.0;
     arch->energy.chip_write_energy_pJ = arch->energy.bank_write_energy_pJ * 1.65;
 
@@ -999,7 +1044,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     // Leakage
     /* 1.11.57 (latent D059): no second division -- getSenseAmpLeakage() is
      * NVSim's own per-subarray sense-amp leakage now, not 30% of the mat. */
-    arch->energy.subarray_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
+    arch->energy.mat_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
     /* 1.11.56 (audit D058): ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
      *
      * This block used to read NVSim's figure as a WHOLE-CHIP number: chip =
@@ -1046,17 +1091,18 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     /* 1.11.57 (latent D057): NVSim reports no datapath width -- see the
      * STT-MRAM block. All four of these are asserted or echoed inputs, and the
      * block used to stamp itself VERIFIED / "NVSim extraction". */
-    arch->datapath.subarray_local_io_bits = analog_capable ? 128 : 64;  // Wider for analog
+    /* 1.11.73: mat width from NVSim mat.numDataBit (cached; 0 = unknown);
+     * the 64/128-by-analog literal is gone. */
+    arch->datapath.mat_io_bits = static_cast<int>(nvsim_wrapper.getMatWidthBits());
     arch->datapath.bank_io_bits = config.word_width_bits > 0 ? config.word_width_bits : 64;
     arch->datapath.chip_io_bits = arch->datapath.bank_io_bits * 2;
     arch->datapath.crossbar_analog_bits = analog_capable ? 8 : 0;  // 8-bit analog resolution
 
     arch->datapath.verification_status = VerificationStatus::ESTIMATED;
     arch->datapath.source =
-        "ASSERTED (unsourced): subarray_local_io_bits (64/128 by analog "
-        "capability), chip_io_bits = 2 x bank, crossbar_analog_bits = 8; "
-        "bank_io_bits is the CONFIGURED word width, not a tool output. NVSim "
-        "reports no datapath width.";
+        "mat_io_bits = NVSim mat.numDataBit (0 = unknown from an older cache); "
+        "chip_io_bits = 2 x bank and crossbar_analog_bits = 8 ASSERTED; "
+        "bank_io_bits is the CONFIGURED word width, not a tool output.";
 
     return arch;
 }

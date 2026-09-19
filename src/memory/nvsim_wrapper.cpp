@@ -392,6 +392,12 @@ namespace {
          * the tier is then reported unsourceable, never filled. */
         double subarray_latency_s = -1.0;
         double mat_latency_s = -1.0;
+        /* 1.11.73 (one level below the bank): the MAT is the NVM tier below
+         * the bank, so its width and count must survive the cache like its
+         * latency does. -1 = absent (older cache file): the tier's width and
+         * count are then reported unsourceable, never filled. */
+        int    mat_width_bits = -1;   // bank->mat.numDataBit
+        int    mats_per_bank  = -1;   // bank->numRowMat x numColumnMat
     };
     static std::map<NVMCacheKey, NVMCacheVal> g_nvsim_cache;
 
@@ -614,6 +620,8 @@ namespace {
          * placements until the cache is regenerated. Never fabricated. */
         if (!get("subarray_latency_s", v.subarray_latency_s)) v.subarray_latency_s = -1.0;
         if (!get("mat_latency_s", v.mat_latency_s)) v.mat_latency_s = -1.0;
+        { double t; v.mat_width_bits = get("mat_width_bits", t) ? static_cast<int>(t) : -1; }
+        { double t; v.mats_per_bank  = get("mats_per_bank",  t) ? static_cast<int>(t) : -1; }
         return true;
     }
     static void nvsimDiskStore(const NVMCacheKey& k, const NVMCacheVal& v) {
@@ -665,6 +673,8 @@ namespace {
           << "  <area_mm2>" << v.area_mm2 << "</area_mm2>\n"
           << "  <subarray_latency_s>" << v.subarray_latency_s << "</subarray_latency_s>\n"
           << "  <mat_latency_s>" << v.mat_latency_s << "</mat_latency_s>\n"
+          << "  <mat_width_bits>" << v.mat_width_bits << "</mat_width_bits>\n"
+          << "  <mats_per_bank>" << v.mats_per_bank << "</mats_per_bank>\n"
           << "</nvsim_characterization>\n";
     }
 }
@@ -712,6 +722,8 @@ void NVSimWrapper::runNVSim() {
             cached_write_latency_s_ = v.write_latency_s;
             cached_subarray_latency_s_ = v.subarray_latency_s;
             cached_mat_latency_s_ = v.mat_latency_s;
+            cached_mat_width_bits_ = v.mat_width_bits;     // 1.11.73
+            cached_mats_per_bank_  = v.mats_per_bank;
             cached_read_energy_nj_  = v.read_energy_nj;
             cached_write_energy_nj_ = v.write_energy_nj;
             cached_leakage_mw_      = v.leakage_mw;
@@ -889,6 +901,11 @@ void NVSimWrapper::runNVSim() {
                 const double mat = nvsim_result_->bank->mat.readLatency;
                 v.subarray_latency_s = (sub > 0.0) ? sub : -1.0;
                 v.mat_latency_s      = (mat > 0.0) ? mat : -1.0;
+                // 1.11.73: the mat's width and the bank's mat count, from NVSim.
+                const long mw = nvsim_result_->bank->mat.numDataBit;
+                const int  mm = nvsim_result_->bank->numRowMat * nvsim_result_->bank->numColumnMat;
+                v.mat_width_bits = (mw > 0) ? static_cast<int>(mw) : -1;
+                v.mats_per_bank  = (mm > 0) ? mm : -1;
             }
             // Persist only when the warehouse mode permits writing (RW/WO).
             // The in-memory map is process-local but gated too for consistency.
@@ -1233,10 +1250,19 @@ uint32_t NVSimWrapper::getSubarraysPerMat() const {
            nvsim_result_->bank->numColumnSubarray;
 }
 
+/* 1.11.73: cache-aware, like getMatLatency(). From the cache an older file
+ * yields -1 -> 0 here, and the caller reports the count unsourceable. */
 uint32_t NVSimWrapper::getMatsPerBank() const {
+    if (cached_) return (cached_mats_per_bank_ > 0) ? static_cast<uint32_t>(cached_mats_per_bank_) : 0;
     if (!valid_ || !nvsim_result_ || !nvsim_result_->bank) return 0;
-    return nvsim_result_->bank->numRowMat *
-           nvsim_result_->bank->numColumnMat;
+    const int mm = nvsim_result_->bank->numRowMat * nvsim_result_->bank->numColumnMat;
+    return (mm > 0) ? static_cast<uint32_t>(mm) : 0;
+}
+uint32_t NVSimWrapper::getMatWidthBits() const {
+    if (cached_) return (cached_mat_width_bits_ > 0) ? static_cast<uint32_t>(cached_mat_width_bits_) : 0;
+    if (!valid_ || !nvsim_result_ || !nvsim_result_->bank) return 0;
+    const long mw = nvsim_result_->bank->mat.numDataBit;
+    return (mw > 0) ? static_cast<uint32_t>(mw) : 0;
 }
 
 uint32_t NVSimWrapper::getNumSenseAmps() const {

@@ -177,6 +177,38 @@ public:
      * sourceable <tier> tier" when the pair splits. */
     virtual bool hasTier(Tier tier) const = 0;
 
+    /* 1.11.73: ONE tier below the bank, per family (ruling 2026-09-20):
+     *   SRAM -> subbank  (CACTI: the line of mats activated together for one
+     *                     data word; its width is the bank's out_w)
+     *   NVM  -> mat      (NVSim: numRowMat x numColumnMat per bank; width =
+     *                     mat.numDataBit)
+     *   DRAM -> subarray (the local-sense-amp row stripe; unchanged)
+     * Tier::SUBARRAY stays the enum for L0 -- renaming it is churn with no
+     * information -- and tierName(t, tech) prints the family's word. The two
+     * organisation queries answer -1 when the model cannot SOURCE the value
+     * (e.g. an NVSim cache entry written before these fields existed); the
+     * caller reports that and never substitutes a count. */
+    virtual int l0UnitsPerBank() const { return -1; }
+    virtual int l0WidthBits() const { return -1; }
+    /* The L0 link bandwidth in GB/s, or -1 when not sourceable. SRAM: the
+     * subbank IS the access, so out_w per CACTI random-cycle time. NVM: the
+     * word is formed by the active mats together, so each mat carries
+     * mat.numDataBit of every access -- NVSim bank read bandwidth scaled by
+     * mat width / word width. */
+    virtual double l0BandwidthGBs() const { return -1.0; }
+    static const char* l0Name(MemoryTechnology tech) {
+        switch (tech) {
+            case MemoryTechnology::SRAM:     return "subbank";
+            case MemoryTechnology::STT_MRAM:
+            case MemoryTechnology::PCM:
+            case MemoryTechnology::ReRAM:    return "mat";
+            default:                         return "subarray";
+        }
+    }
+    static const char* tierName(Tier t, MemoryTechnology tech) {
+        return (t == Tier::SUBARRAY) ? l0Name(tech) : tierName(t);
+    }
+
     /* Where the number came from -- the tool and the quantity, e.g.
      * "NVSim bank->readLatency" or "Ramulator tRCD+tCAS". Empty when the
      * model cannot source it. */

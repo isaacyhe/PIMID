@@ -81,13 +81,13 @@ struct STTMRAMOrganization {
     size_t chip_size_mb;
 
     // Bank level
-    int subarrays_per_bank;       // 4-16 typical
+    int mats_per_bank;       // 4-16 typical
     size_t bank_size_kb;
 
     // Subarray level (mat)
     int wordlines_per_subarray;   // Rows (e.g., 512-1024)
     int bitlines_per_subarray;    // Columns (e.g., 1024-2048)
-    size_t subarray_size_kb;
+    size_t mat_size_kb;
 
     int getBanksPerChip() const {
         return bank_rows * bank_cols;
@@ -176,12 +176,12 @@ struct STTMRAMTiming {
     double clock_freq_ghz;
 
     // READ latencies
-    double subarray_read_ns;
+    double mat_read_ns;
     double bank_read_ns;
     double chip_read_ns;
 
     // WRITE latencies (much slower!)
-    double subarray_write_ns;
+    double mat_write_ns;
     double bank_write_ns;
     double chip_write_ns;
 
@@ -190,7 +190,7 @@ struct STTMRAMTiming {
 
     // Read/Write asymmetry ratio
     double getWriteToReadRatio() const {
-        return subarray_write_ns / subarray_read_ns;
+        return mat_write_ns / mat_read_ns;
     }
 };
 
@@ -200,12 +200,12 @@ struct STTMRAMTiming {
 
 struct STTMRAMEnergy {
     // Read energy (low)
-    double subarray_read_energy_pJ;
+    double mat_read_energy_pJ;
     double bank_read_energy_pJ;
     double chip_read_energy_pJ;
 
     // Write energy (HIGH!)
-    double subarray_write_energy_pJ;
+    double mat_write_energy_pJ;
     double bank_write_energy_pJ;
     double chip_write_energy_pJ;
 
@@ -214,14 +214,14 @@ struct STTMRAMEnergy {
     double write_energy_per_byte;
 
     // Leakage (very low - non-volatile!)
-    double subarray_leakage_mw;
+    double mat_leakage_mw;
     double bank_leakage_mw;
     double chip_leakage_mw;
 
     std::string energy_source;
 
     double getWriteToReadEnergyRatio() const {
-        return subarray_write_energy_pJ / subarray_read_energy_pJ;
+        return mat_write_energy_pJ / mat_read_energy_pJ;
     }
 };
 
@@ -242,7 +242,7 @@ struct STTMRAMEndurance {
 //=============================================================================
 
 struct STTMRAMDatapath {
-    int subarray_local_io_bits;
+    int mat_io_bits;
     int bank_io_bits;
     int chip_io_bits;             // External interface
 
@@ -274,13 +274,13 @@ public:
     void printSummary() const;
 
     // PIM-specific calculations
-    double getSubarrayReadBandwidth() const {
-        return (datapath.subarray_local_io_bits / 8.0) *
+    double getMatReadBandwidth() const {
+        return (datapath.mat_io_bits / 8.0) *
                (1000.0 / timing.inner_bank.getTotalReadLatency());  // MB/s
     }
 
-    double getSubarrayWriteBandwidth() const {
-        return (datapath.subarray_local_io_bits / 8.0) *
+    double getMatWriteBandwidth() const {
+        return (datapath.mat_io_bits / 8.0) *
                (1000.0 / timing.inner_bank.getTotalWriteLatency());  // MB/s
     }
 

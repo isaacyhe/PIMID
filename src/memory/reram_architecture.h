@@ -42,8 +42,8 @@ struct ReRAMOrganization {
     int banks_per_chip;
     int bank_rows, bank_cols;
     size_t chip_size_mb, bank_size_kb;
-    int subarrays_per_bank;
-    size_t subarray_size_kb;
+    int mats_per_bank;
+    size_t mat_size_kb;
     int crossbar_rows, crossbar_cols;  // Crossbar array size
 };
 
@@ -87,18 +87,18 @@ struct ReRAMInnerBankTiming {
 
 struct ReRAMTiming {
     double clock_freq_ghz;
-    double subarray_read_ns, bank_read_ns, chip_read_ns;
-    double subarray_write_ns, bank_write_ns, chip_write_ns;
+    double mat_read_ns, bank_read_ns, chip_read_ns;
+    double mat_write_ns, bank_write_ns, chip_write_ns;
     double analog_compute_ns;      // Analog crossbar operation
     ReRAMInnerBankTiming inner_bank;
 };
 
 struct ReRAMEnergy {
-    double subarray_read_energy_pJ, bank_read_energy_pJ, chip_read_energy_pJ;
-    double subarray_write_energy_pJ, bank_write_energy_pJ, chip_write_energy_pJ;
+    double mat_read_energy_pJ, bank_read_energy_pJ, chip_read_energy_pJ;
+    double mat_write_energy_pJ, bank_write_energy_pJ, chip_write_energy_pJ;
     double analog_compute_energy_pJ;  // Very low!
     double read_energy_per_byte, write_energy_per_byte;
-    double subarray_leakage_mw, bank_leakage_mw, chip_leakage_mw;
+    double mat_leakage_mw, bank_leakage_mw, chip_leakage_mw;
     std::string energy_source;
 };
 
@@ -111,7 +111,7 @@ struct ReRAMEndurance {
 };
 
 struct ReRAMDatapath {
-    int subarray_local_io_bits, bank_io_bits, chip_io_bits;
+    int mat_io_bits, bank_io_bits, chip_io_bits;
     int crossbar_analog_bits;      // Analog compute resolution
     VerificationStatus verification_status;
     std::string source;

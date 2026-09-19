@@ -430,7 +430,7 @@ void SRAMModel::resetStats() {
 
 double SRAMModel::getSubarrayReadLatency() const {
     if (!sram_arch_) return 0.0;
-    return sram_arch_->timing.subarray_access_ns;
+    return sram_arch_->timing.subbank_access_ns;
 }
 
 double SRAMModel::getBankReadLatency() const {
@@ -474,10 +474,37 @@ double SRAMModel::getTierLatencyNs(Tier tier, Op op) const {
 bool SRAMModel::hasTier(Tier tier) const {
     return tier == Tier::SUBARRAY || tier == Tier::BANK || tier == Tier::CHIP;
 }
+/* 1.11.73: the one tier below the bank, from CACTI; -1 = not sourceable. */
+int SRAMModel::l0UnitsPerBank() const {
+    if (!sram_arch_) return -1;
+    /* PIMID's SRAM "bank" is the whole per-bank array CACTI is run on (its
+     * bank tier latency is getAccessTime() of that array). CACTI splits that
+     * array into `banks` independent banks (this model's configured split,
+     * 8), each of which delivers the full out_w word from one line of mats
+     * -- so the subbanks below the PIMID bank are CACTI banks x subbanks per
+     * CACTI bank. The split itself is a configured input, not a CACTI
+     * result; see the 1.11.73 ledger's open item on the SRAM array mode. */
+    const int per_cacti_bank = sram_arch_->organization.subbanks_per_bank;
+    const int cacti_banks    = sram_arch_->organization.banks_per_chip;
+    if (per_cacti_bank <= 0 || cacti_banks <= 0) return -1;
+    return per_cacti_bank * cacti_banks;
+}
+int SRAMModel::l0WidthBits() const {
+    if (!sram_arch_) return -1;
+    const int v = sram_arch_->datapath.subbank_io_bits;
+    return (v > 0) ? v : -1;
+}
+double SRAMModel::l0BandwidthGBs() const {
+    if (!sram_arch_) return -1.0;
+    const int w = sram_arch_->datapath.subbank_io_bits;
+    const double cyc = sram_arch_->timing.cycle_time_ns;   // CACTI random cycle time
+    if (w <= 0 || cyc <= 0.0) return -1.0;
+    return (w / 8.0) / cyc;   // bytes per ns == GB/s
+}
 std::string SRAMModel::tierLatencySource(Tier tier, Op op) const {
     if (getTierLatencyNs(tier, op) < 0.0) return "";
     switch (tier) {
-        case Tier::SUBARRAY: return "CACTI component delays";
+        case Tier::SUBARRAY: return "CACTI component delays (the subbank, one tier below the bank)";
         case Tier::BANK:     return "CACTI getAccessTime";
         case Tier::CHIP:     return "CACTI getAccessTime + configured net hop";
         default:             return "";

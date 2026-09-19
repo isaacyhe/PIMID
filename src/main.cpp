@@ -240,11 +240,11 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                 }
                 if (tier_ns > 0.0) {
                     std::cout << "  [mem] " << memory_tech << " @ "
-                              << pimid::MemoryModel::tierName(tier) << " placement: "
+                              << pimid::MemoryModel::tierName(tier, mt) << " placement: "
                               << tier_ns << " ns (" << prov << ")" << std::endl;
                 } else {
                     std::cout << "  [mem] " << memory_tech << " has no sourceable "
-                              << pimid::MemoryModel::tierName(tier)
+                              << pimid::MemoryModel::tierName(tier, mt)
                               << " tier; using the flat characterization"
                               << std::endl;
                 }
@@ -1278,6 +1278,13 @@ struct UnifiedConfig {
     int num_banks;
     int subarrays_per_bank;
     bool subarrays_per_bank_user_set = false;  // true when user set the count directly
+    /* 1.11.73: the ONE tier below the bank (SRAM subbank / NVM mat / DRAM
+     * subarray). subarrays_per_bank is its count for every family; these
+     * three describe where it came from for the non-DRAM families. */
+    std::string l0_name = "subarray";
+    int  l0_width_bits = 0;      // 0 = unknown / not sourced
+    double l0_bandwidth_gbs = 0.0; // 0 = unknown / not sourced
+    bool l0_sourced = false;
     int subarray_height = 0;                    // rows per subarray; 0 = per-tech default
     int bg_per_chip_override = 0;                // bank-groups/chip; 0 = per-tech JEDEC default
     int banks_per_bg_override = 0;              // banks/bank-group; 0 = per-tech JEDEC default
@@ -3319,9 +3326,83 @@ static void reportStatedConstants(const UnifiedConfig& config) {
                  "are not listed here.)" << std::endl;
 }
 
+/* 1.11.73: the L0 organisation of a non-DRAM family, from the model that
+ * characterizes its array (CACTI for SRAM, NVSim for the NVMs). Until this
+ * release SRAM/NVM took the UnifiedConfig constructor's 4 for the count and a
+ * table literal (128/64 bits) for the width -- neither described the part.
+ * SRAM: subbanks/bank and their width (= the bank's out_w) from CACTI's own
+ * geometry. NVM: mats/bank and mat.numDataBit from NVSim, cached since
+ * 1.11.73; an older cache entry cannot source them, the run says so, and a
+ * run that PLACES PEs at that tier is refused rather than run on a number
+ * nobody produced. memory.subarrays_per_bank in YAML still overrides the
+ * count, and says so, exactly as it does for DRAM. */
+static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
+    std::string tech = config.memory_tech;
+    std::transform(tech.begin(), tech.end(), tech.begin(), ::toupper);
+    const bool is_sram = (tech == "SRAM");
+    int units = -1, width = -1;
+    try {
+        pimid::MemoryTechnology mt = pimid::parseMemoryTechnology(tech);
+        auto model = pimid::MemoryModelFactory::createMemoryModel(mt, "");
+        if (!model) return;
+        model->setArrayCapacityBytes(64ULL * 1024ULL);   // the per-bank unit (see getMemoryLatencyCycles)
+        model->setAccessWidthBits(static_cast<uint32_t>(std::max(1, config.cache_line_size)) * 8u);
+        model->setTechNodeNm(validateTechNodeNm(config.tech_node_nm, "L0 organisation query"));
+        model->setTemperatureK(config.temperature_k);
+        model->initialize();
+        units = model->l0UnitsPerBank();
+        width = model->l0WidthBits();
+        const double bwq = model->l0BandwidthGBs();
+        config.l0_bandwidth_gbs = (bwq > 0.0) ? bwq : 0.0;
+    } catch (const std::exception& e) {
+        std::cerr << "[hierarchy] " << tech << " L0 organisation query failed ("
+                  << e.what() << "); the tree keeps " << config.subarrays_per_bank
+                  << " " << config.l0_name << "s/bank as an UNSOURCED shape" << std::endl;
+        return;
+    }
+    config.l0_width_bits = (width > 0) ? width : 0;
+    if (config.subarrays_per_bank_user_set) {
+        std::cout << "  [hierarchy] " << tech << " L0 = " << config.l0_name << ": "
+                  << config.subarrays_per_bank << " per bank -- set by "
+                     "memory.subarrays_per_bank (the model reports "
+                  << (units > 0 ? std::to_string(units) : std::string("no sourceable count"))
+                  << ")" << std::endl;
+        config.l0_sourced = false;
+        return;
+    }
+    if (units > 0) {
+        config.subarrays_per_bank = units;
+        config.l0_sourced = true;
+        std::cout << "  [hierarchy] " << tech << " L0 = " << config.l0_name << ": "
+                  << units << " per bank, "
+                  << (width > 0 ? std::to_string(width) + " bits wide" : std::string("width not sourceable"))
+                  << " (" << (is_sram ? "CACTI geometry: configured CACTI banks x subbanks per CACTI bank (mats per access); width = out_w"
+                                      : "NVSim mat count and mat.numDataBit, cached")
+                  << ")" << std::endl;
+        return;
+    }
+    std::cout << "  [hierarchy] NOTE: " << tech << " " << config.l0_name
+              << " count is NOT sourceable"
+              << (is_sram ? "" : " (the NVSim cache entry predates 1.11.73; regenerate it)")
+              << "; the tree keeps " << config.subarrays_per_bank
+              << " per bank as an UNSOURCED shape" << std::endl;
+    if (pe_level == 0) {
+        std::cerr << "FATAL: PEs are placed at the " << config.l0_name << " tier of "
+                  << tech << " but the model cannot source the " << config.l0_name
+                  << " count. Regenerate the NVSim cache for this part, or set "
+                     "memory.subarrays_per_bank to run on a declared count."
+                  << std::endl;
+        std::exit(2);
+    }
+}
+
 static void computeHierarchyLatencies(UnifiedConfig& config) {
     // Map placement_level string to integer
-    if (config.placement_level == "SUBARRAY")       config.pe_hierarchy_level = 0;
+    /* 1.11.73: L0 has a per-family word -- SUBBANK (SRAM), MAT (NVM),
+     * SUBARRAY (DRAM). All three map to level 0; the family check follows. */
+    if (config.placement_level == "SUBARRAY" ||
+        config.placement_level == "SUBBANK"  ||
+        config.placement_level == "MAT")             config.pe_hierarchy_level = 0;
     else if (config.placement_level == "BANK")      config.pe_hierarchy_level = 1;
     else if (config.placement_level == "BANK_GROUP") config.pe_hierarchy_level = 2;
     else if (config.placement_level == "CHIP")      config.pe_hierarchy_level = 3;
@@ -3330,6 +3411,37 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     else if (config.placement_level == "LOGIC_DIE") config.pe_hierarchy_level = 6;  // aggregation (HBM base die)
     else if (config.placement_level == "HOST_MC")   config.pe_hierarchy_level = -1;  // PEs share host MC
     else                                             config.pe_hierarchy_level = 1;  // default BANK
+
+    /* 1.11.73: the L0 word must be the family's own. SUBBANK on anything but
+     * SRAM, or MAT on anything but an NVM, names a tier the part does not
+     * have and is refused; the legacy SUBARRAY on SRAM/NVM is accepted (every
+     * existing config uses it) and the run names the canonical word once. */
+    {
+        std::string t = config.memory_tech;
+        std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+        const bool is_sram = (t == "SRAM");
+        const bool is_nvm  = (t == "STT_MRAM" || t == "PCM" || t == "RERAM");
+        const std::string& pl = config.placement_level;
+        if (pl == "SUBBANK" && !is_sram) {
+            std::cerr << "FATAL: pim.placement.level SUBBANK is an SRAM tier; " << t
+                      << " has no subbank. Use MAT for STT_MRAM/PCM/RERAM or "
+                         "SUBARRAY for DRAM." << std::endl;
+            std::exit(2);
+        }
+        if (pl == "MAT" && !is_nvm) {
+            std::cerr << "FATAL: pim.placement.level MAT is an NVM (NVSim) tier; " << t
+                      << " has no mat tier. Use SUBBANK for SRAM or SUBARRAY for "
+                         "DRAM." << std::endl;
+            std::exit(2);
+        }
+        if (pl == "SUBARRAY" && (is_sram || is_nvm)) {
+            std::cout << "  NOTE: pim.placement.level SUBARRAY on " << t
+                      << " is the legacy name; the tier below the bank is the "
+                      << (is_sram ? "SUBBANK" : "MAT")
+                      << " (accepted, same level)." << std::endl;
+        }
+        config.l0_name = is_sram ? "subbank" : (is_nvm ? "mat" : "subarray");
+    }
 
     // Validate: PEs at a non-MC tier require a PE-MC at that tier
     // Skip for trace-gen: it only records QEMU execution, no simulation needed
@@ -3690,6 +3802,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * refused the run -- correctly, because the tree would then have priced
      * only a sixteenth of the memory the config described. The tiers B060 is
      * actually about are the three at the top, which had no branch at all. */
+    if (!ladder_is_dram) probeNonDramL0(config, pe_level);   // 1.11.73: L0 count from the model
     if (pe_level == 0)      slots = config.subarrays_per_bank * banks_per_bg * bg_per_chip * chips_per_rank;
     else if (pe_level == 1) slots = banks_per_bg * bg_per_chip * chips_per_rank;
     else if (pe_level == 2) slots = bg_per_chip * chips_per_rank;
@@ -3716,6 +3829,27 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     if (!hierarchy) {
         config.hierarchy_enabled = false;
         return;
+    }
+    /* 1.11.73: the non-DRAM L0 link takes the model's width and bandwidth
+     * (SRAM: out_w per CACTI cycle time; NVM: NVSim mat width and its share
+     * of the bank read bandwidth). The per-technology table's L0 row (128 b
+     * / 40 GB/s SRAM, 64 b / 9.6-12 GB/s NVM) was a literal that described
+     * no part. Levels 1+ keep the table, as before, and are named so. */
+    if (!ladder_is_dram) {
+        if (config.l0_width_bits > 0 && config.l0_bandwidth_gbs > 0.0) {
+            int    w0[7]  = {config.l0_width_bits, 0, 0, 0, 0, 0, 0};
+            double bw0[7] = {config.l0_bandwidth_gbs, 0, 0, 0, 0, 0, 0};
+            hierarchy->applySourcedLadder(w0, bw0);
+            std::cout << "  [hierarchy] L0 " << config.l0_name << " link: "
+                      << config.l0_width_bits << " bits, " << config.l0_bandwidth_gbs
+                      << " GB/s from the " << tech << " model (levels 1+ keep the "
+                         "per-technology table)" << std::endl;
+        } else {
+            std::cout << "  [hierarchy] NOTE: L0 " << config.l0_name
+                      << " link width/bandwidth NOT sourceable from the " << tech
+                      << " model; the per-technology table row stands (UNSOURCED)"
+                      << std::endl;
+        }
     }
 
     /* 1.11.56 (audit D064/D065): take the per-level link widths from the DRAM
@@ -6347,7 +6481,8 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
         for (int lvl = pe_level; lvl < 7; lvl++) {
             NoCLevel nc;
-            nc.name = level_names[lvl];
+            /* 1.11.73: L0 carries the family's word (subbank / mat / subarray) */
+            nc.name = (lvl == 0) ? std::string("L0_") + config.l0_name : std::string(level_names[lvl]);
             /* 1.11.52 (audit B038): the family owner's guard was dropped
              * here. applyProcessFamily requires dram_family_tech BEFORE the
              * placement test, so an SRAM or NVM device is family 0 at every
@@ -14845,8 +14980,10 @@ int main(int argc, char** argv) {
 
             // Display hierarchy info
             if (config.hierarchy_enabled) {
+                /* 1.11.73: L0 is the family's word (Subbank / Mat / Subarray) */
                 const std::array<std::string, 7> level_names = {
-                    "Subarray", "Bank", "BankGroup", "Chip", "Rank", "Channel", "System"
+                    [&]{ std::string n = config.l0_name; if (!n.empty()) n[0] = static_cast<char>(::toupper(n[0])); return n; }(),
+                    "Bank", "BankGroup", "Chip", "Rank", "Channel", "System"
                 };
                 std::cout << "  Hierarchy: " << config.memory_tech << " internal network" << std::endl;
                 if (config.placement_level != "HOST_MC") {
@@ -15454,8 +15591,10 @@ int main(int argc, char** argv) {
 
             // Display hierarchy info (exec mode)
             if (config.hierarchy_enabled) {
+                /* 1.11.73: L0 is the family's word (Subbank / Mat / Subarray) */
                 const std::array<std::string, 7> level_names = {
-                    "Subarray", "Bank", "BankGroup", "Chip", "Rank", "Channel", "System"
+                    [&]{ std::string n = config.l0_name; if (!n.empty()) n[0] = static_cast<char>(::toupper(n[0])); return n; }(),
+                    "Bank", "BankGroup", "Chip", "Rank", "Channel", "System"
                 };
                 std::cout << "  Hierarchy: " << config.memory_tech << " internal network" << std::endl;
                 if (config.placement_level != "HOST_MC") {

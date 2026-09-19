@@ -133,6 +133,7 @@ public:
      * cache predates these fields), so callers refuse rather than substitute. */
     double getSubarrayLatency() const;      // bank->mat.subarray.readLatency, s
     double getMatLatency() const;           // bank->mat.readLatency, s
+    uint32_t getMatWidthBits() const;       // 1.11.73: bank->mat.numDataBit; 0 = unsourced (old cache)
     double getSetLatency() const;           // SET path latency, s; <0 unknown
     double getResetLatency() const;         // RESET path latency, s; <0 unknown
     double getCellArea() const;             // Cell area in um^2
@@ -245,6 +246,8 @@ private:
      * cache. -1 = this cache file predates the fields. */
     double cached_subarray_latency_s_ = -1.0;
     double cached_mat_latency_s_ = -1.0;
+    int    cached_mat_width_bits_ = -1;      // 1.11.73
+    int    cached_mats_per_bank_  = -1;      // 1.11.73
     double cached_read_energy_nj_ = 0.0;
     double cached_write_energy_nj_ = 0.0;
     double cached_leakage_mw_ = 0.0;

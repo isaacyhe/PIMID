@@ -143,6 +143,9 @@ private:
     //=== 1.11.24: the memory plugin contract (see MemoryModel) ===============
     double getTierLatencyNs(Tier tier, Op op) const override;
     bool hasTier(Tier tier) const override;
+    int l0UnitsPerBank() const override;   // 1.11.73
+    int l0WidthBits() const override;      // 1.11.73
+    double l0BandwidthGBs() const override; // 1.11.73
     std::string tierLatencySource(Tier tier, Op op) const override;
     void setArrayCapacityBytes(uint64_t bytes) override;
     void setAccessWidthBits(uint32_t bits) override;

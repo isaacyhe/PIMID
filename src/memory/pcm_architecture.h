@@ -82,9 +82,9 @@ struct PCMInnerBankTiming {
 
 struct PCMTiming {
     double clock_freq_ghz;
-    double subarray_read_ns, bank_read_ns, chip_read_ns;
-    double subarray_set_ns, bank_set_ns, chip_set_ns;
-    double subarray_reset_ns, bank_reset_ns, chip_reset_ns;
+    double mat_read_ns, bank_read_ns, chip_read_ns;
+    double mat_set_ns, bank_set_ns, chip_set_ns;
+    double mat_reset_ns, bank_reset_ns, chip_reset_ns;
     /* 1.11.56 (audit D062): true when NVSim did not resolve
      * FunctionUnit::setLatency and the *_set_ns fields therefore hold the
      * GENERIC WRITE latency. getSetLatency() has no cached branch, so this is
@@ -95,11 +95,11 @@ struct PCMTiming {
 };
 
 struct PCMEnergy {
-    double subarray_read_energy_pJ, bank_read_energy_pJ, chip_read_energy_pJ;
-    double subarray_set_energy_pJ, bank_set_energy_pJ, chip_set_energy_pJ;
-    double subarray_reset_energy_pJ, bank_reset_energy_pJ, chip_reset_energy_pJ;
+    double mat_read_energy_pJ, bank_read_energy_pJ, chip_read_energy_pJ;
+    double mat_set_energy_pJ, bank_set_energy_pJ, chip_set_energy_pJ;
+    double mat_reset_energy_pJ, bank_reset_energy_pJ, chip_reset_energy_pJ;
     double read_energy_per_byte, write_energy_per_byte;
-    double subarray_leakage_mw, bank_leakage_mw, chip_leakage_mw;
+    double mat_leakage_mw, bank_leakage_mw, chip_leakage_mw;
     std::string energy_source;
 };
 
@@ -130,7 +130,7 @@ public:
 
     bool isSuitableForPIM() const {
         // Only for read-heavy workloads!
-        return timing.subarray_set_ns / timing.subarray_read_ns > 10.0;
+        return timing.mat_set_ns / timing.mat_read_ns > 10.0;
     }
 };
 

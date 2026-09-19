@@ -85,14 +85,14 @@ void ReRAMModel::initialize() {
              * the log used to say where a latency came from, so a ladder built
              * from invented multipliers was indistinguishable from a tool-read
              * one -- which is how reset = write * 0.3 survived. The residual
-             * between subarray and bank IS the intra-bank H-tree (NVSim runs
+             * between mat and bank IS the intra-bank H-tree (NVSim runs
              * with routingMode = h_tree). */
             {
                 const auto& t = reram_arch_->timing;
-                std::cout << "  [tier] subarray " << t.subarray_read_ns
+                std::cout << "  [tier] mat      " << t.mat_read_ns
                           << " ns (NVSim components) | bank " << t.bank_read_ns
                           << " ns (NVSim bank->readLatency) | H-tree residual "
-                          << (t.bank_read_ns - t.subarray_read_ns) << " ns"
+                          << (t.bank_read_ns - t.mat_read_ns) << " ns"
                           << std::endl;
             }
             if (reram_config_.analog_capable) {
@@ -382,10 +382,10 @@ void ReRAMModel::printStats() const {
     }
 
     std::cout << "\nLatency (Inner-Bank Timing):" << std::endl;
-    std::cout << "  Subarray Read: " << getSubarrayReadLatency() << " ns" << std::endl;
+    std::cout << "  Mat Read: " << getSubarrayReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Subarray Write: " << getSubarrayWriteLatency() << " ns (fast!)" << std::endl;
+    std::cout << "  Mat Write: " << getSubarrayWriteLatency() << " ns (fast!)" << std::endl;
     std::cout << "  Bank Write: " << getBankWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip Write: " << getChipWriteLatency() << " ns" << std::endl;
 
@@ -519,7 +519,7 @@ void ReRAMModel::reportWearImbalance() const {
 
 double ReRAMModel::getSubarrayReadLatency() const {
     if (!reram_arch_) return 0.0;
-    return reram_arch_->timing.subarray_read_ns;
+    return reram_arch_->timing.mat_read_ns;
 }
 
 double ReRAMModel::getBankReadLatency() const {
@@ -534,7 +534,7 @@ double ReRAMModel::getChipReadLatency() const {
 
 double ReRAMModel::getSubarrayWriteLatency() const {
     if (!reram_arch_) return 0.0;
-    return reram_arch_->timing.subarray_write_ns;
+    return reram_arch_->timing.mat_write_ns;
 }
 
 double ReRAMModel::getBankWriteLatency() const {
@@ -677,10 +677,30 @@ double ReRAMModel::getTierLatencyNs(Tier tier, Op op) const {
 bool ReRAMModel::hasTier(Tier tier) const {
     return tier == Tier::SUBARRAY || tier == Tier::BANK || tier == Tier::CHIP;
 }
+/* 1.11.73: the one tier below the bank, from NVSim; -1 = not sourceable. */
+int ReRAMModel::l0UnitsPerBank() const {
+    if (!reram_arch_) return -1;
+    const int v = reram_arch_->organization.mats_per_bank;
+    return (v > 0) ? v : -1;
+}
+int ReRAMModel::l0WidthBits() const {
+    if (!reram_arch_) return -1;
+    const int v = reram_arch_->datapath.mat_io_bits;
+    return (v > 0) ? v : -1;
+}
+double ReRAMModel::l0BandwidthGBs() const {
+    if (!reram_arch_) return -1.0;
+    const int mw = reram_arch_->datapath.mat_io_bits;      // NVSim mat.numDataBit
+    const int bw = reram_arch_->datapath.bank_io_bits;     // the configured word width
+    const double lat_ns = reram_arch_->timing.bank_read_ns; // NVSim bank->readLatency
+    if (mw <= 0 || bw <= 0 || lat_ns <= 0.0) return -1.0;
+    // NVSim bank read bandwidth (word / readLatency) scaled by the mat's share of the word
+    return ((bw / 8.0) / lat_ns) * (static_cast<double>(mw) / bw);
+}
 std::string ReRAMModel::tierLatencySource(Tier tier, Op op) const {
     if (getTierLatencyNs(tier, op) < 0.0) return "";
     switch (tier) {
-        case Tier::SUBARRAY: return "NVSim component delays";
+        case Tier::SUBARRAY: return "NVSim mat.readLatency (the mat, one tier below the bank)";
         case Tier::BANK:     return "NVSim bank->readLatency (incl. H-tree)";
         case Tier::CHIP:     return "NVSim bank + configured net hop";
         default:             return "";

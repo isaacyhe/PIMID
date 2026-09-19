@@ -78,8 +78,9 @@ std::string SwitchHierarchyConfig::levelName(int idx) const {
         }
     } else if (!isDRAM(technology)) {
         // NVM/SRAM: L0-L1 active, L2-L6 passthrough
+        // 1.11.73: one tier below the bank per family -- SRAM subbank, NVM mat
         switch (idx) {
-            case 0: return "Subarray";
+            case 0: return (technology == MemoryTechnology::SRAM) ? "Subbank" : "Mat";
             case 1: return "Bank";
             default: return "Unused";
         }

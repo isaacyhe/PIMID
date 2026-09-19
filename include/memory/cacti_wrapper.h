@@ -238,8 +238,24 @@ public:
     // Subarray organization
     uint32_t getSubarrayRows() const;         // Number of rows per subarray
     uint32_t getSubarrayCols() const;         // Number of columns per subarray
-    uint32_t getSubarraysPerMat() const;      // Subarrays per mat
-    uint32_t getMatsPerBank() const;          // Mats per bank
+    /* 1.11.73 (one level below the bank): CACTI's organisation, named by
+     * what each field IS. The two accessors these replace were mislabelled:
+     * the old getSubarraysPerMat() returned Ndbl x Ndwl, which is the
+     * subarray count of the whole CACTI bank, and the old getMatsPerBank()
+     * returned num_active_mats, which is the mats fired together per access
+     * -- i.e. the SUBBANK's width in mats, not the bank's mat count.
+     *   subbank = the horizontal line of mats activated together whose
+     *             outputs concatenate into one data word (CACTI
+     *             parameter.cc: num_do_b_subbank = num_do_b_mat x
+     *             num_act_mats_hor_dir; number_subbanks = num_mats /
+     *             num_act_mats_hor_dir). Its width is out_w = the bank's.
+     * PIMID's SRAM tier below the bank is the subbank and nothing lower. */
+    uint32_t getSubarraysPerBank() const;     // Ndwl x Ndbl (CACTI bank)
+    uint32_t getSubarraysPerMat() const;      // num_submarray_mats
+    uint32_t getMatsPerBank() const;          // subarrays/bank / subarrays/mat
+    uint32_t getActiveMatsPerAccess() const;  // num_act_mats_hor_dir = mats per subbank
+    uint32_t getSubbanksPerBank() const;      // mats/bank / active mats
+    uint32_t getOutputWidthBits() const;      // out_w: the bank's AND the subbank's width
 
     // Subarray electrical parameters
     double getWordlineCapacitance() const;    // Wordline capacitance (F)
