@@ -7,6 +7,37 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.71 -- two silences, made audible
+
+Two small items, both about the run telling the truth about itself; neither
+moves a number.
+
+**A links[] entry without src or dst is refused (E-queue N10).** In
+`system.network.links[]` both endpoints defaulted to the empty string and the
+entry was kept, so a block with a missing or mistyped endpoint matched no node
+pair and its bandwidth, latency and type overrides were discarded without a
+word -- the run used the default link and reported nothing. A user who writes
+a links entry is describing the fabric they want measured; dropping it
+silently is the same class of defect as the unknown-key silence. It is now
+FATAL, naming which endpoint is missing, matching the `lanes` refusal that
+already sits in the same block.
+
+**The early "In-Memory Network Initialized" block says it is provisional.**
+The last piece of audit B006. InternalDRAMNetwork prints its per-level widths
+from its constructor, which runs before main.cpp decides whether the run's
+architecture object reconciles with its preset; when it does -- and since
+1.11.70 that is every technology -- buildHierarchy replaces every one of those
+widths with the sourced ladder. 1.11.57 added the superseding line
+("Hierarchy link ladder from the <tech> architecture object") but left the
+earlier block unlabelled, so a reader or a log parser still met two different
+fabrics under one technology name with no indication which one ran. The block
+now says, at the place that prints it, that its widths are the per-technology
+table defaults and that the adopted ladder below supersedes them.
+
+Data impact: none. Every technology is byte-identical in device scope apart
+from the label text itself; the N10 refusal only reaches a configuration
+that was previously silently mis-simulated.
+
 ## 1.11.70 -- GDDR6 stops borrowing DDR4's shape, and a latent shape error falls out
 
 Last of the three object-less technologies (audit 1.11.57 B001). With this

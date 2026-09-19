@@ -354,7 +354,24 @@ void InternalDRAMNetwork::initialize(int num_subarrays_per_bank,
     SwitchHierarchyConfig tmp_cfg;
     tmp_cfg.technology = technology_;
 
-    std::cout << "In-Memory Network Initialized (" << dram_type_ << "):\n";
+    /* 1.11.71 (the last piece of audit B006): SAY THAT THIS BLOCK IS
+     * PROVISIONAL, at the place that prints it.
+     *
+     * These widths are the per-technology table defaults applied in this
+     * constructor, which runs BEFORE main.cpp decides whether the run's
+     * architecture object reconciles with its preset. When it does -- and
+     * since 1.11.70 that is every technology in the lineup -- buildHierarchy
+     * replaces every width below with the sourced ladder and prints it as
+     * "Hierarchy link ladder from the <tech> architecture object". 1.11.57
+     * added that superseding line but left this block unlabelled, so a reader
+     * or a log parser still met two different fabrics under one technology
+     * name and no indication of which one ran. */
+    std::cout << "In-Memory Network Initialized (" << dram_type_ << ") "
+                 "-- PROVISIONAL per-technology table defaults, printed at "
+                 "construction. If a sourced ladder is adopted below "
+                 "(\"Hierarchy link ladder from the " << dram_type_
+              << " architecture object\"), THOSE widths are the ones "
+                 "simulated and these are superseded:\n";
     for (int i = 0; i < NUM_HIERARCHY_LEVELS; ++i) {
         std::string name = tmp_cfg.levelName(i);
         if (name == "Unused") {

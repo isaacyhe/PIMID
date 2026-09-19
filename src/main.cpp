@@ -13770,6 +13770,31 @@ int main(int argc, char** argv) {
                             UnifiedConfig::SystemLinkConfig link;
                             link.src_name = lnk["src"].as<std::string>("");
                             link.dst_name = lnk["dst"].as<std::string>("");
+                            /* 1.11.71 (E-queue N10): REFUSE AN UNADDRESSED
+                             * LINK. src and dst defaulted to "" and the entry
+                             * was kept, so a links[] block with a typo'd or
+                             * missing endpoint matched no node pair and its
+                             * bandwidth, latency and type overrides were
+                             * silently discarded -- the run then used the
+                             * default link and reported nothing. A user who
+                             * writes a links entry is describing the fabric
+                             * they want measured; dropping it without a word
+                             * is the same class of defect as the unknown-key
+                             * silence, and the `lanes` refusal directly below
+                             * already sets the pattern for this block. */
+                            if (link.src_name.empty() || link.dst_name.empty()) {
+                                std::cerr << "[config] FATAL: "
+                                             "system.network.links[] entry has "
+                                          << (link.src_name.empty() ? "no 'src'" : "")
+                                          << (link.src_name.empty() && link.dst_name.empty() ? " and " : "")
+                                          << (link.dst_name.empty() ? "no 'dst'" : "")
+                                          << ". A link must name both endpoints "
+                                             "or it matches no node pair and its "
+                                             "overrides are discarded silently. "
+                                             "Give both, or remove the entry."
+                                          << std::endl;
+                                std::exit(2);
+                            }
                             link.link_type = lnk["type"].as<std::string>("pcie_gen5");
                             // 1.11.57 (latent B033): see SystemLinkConfig.
                             if (lnk["lanes"]) {
