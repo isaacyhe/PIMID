@@ -58,20 +58,20 @@ public:
     uint64_t getEndurance() const { return endurance_; }
 
     // Inner-bank timing queries (NEW!)
-    double getSubarrayReadLatency() const;
+    double getMatReadLatency() const;
     double getBankReadLatency() const;
     double getChipReadLatency() const;
-    double getSubarraySetWriteLatency() const;   // Crystallization (SLOW!)
+    double getMatSetWriteLatency() const;   // Crystallization (SLOW!)
     double getBankSetWriteLatency() const;
     double getChipSetWriteLatency() const;
-    double getSubarrayResetWriteLatency() const; // Amorphization (faster)
+    double getMatResetWriteLatency() const; // Amorphization (faster)
     double getBankResetWriteLatency() const;
     double getChipResetWriteLatency() const;
     double getInnerBankReadLatency() const;
 
     // PIM support queries
     bool supportsBankPIM() const;
-    bool supportsSubarrayPIM() const;
+    bool supportsMatPIM() const;
     bool isReadOnlyPIM() const { return true; }  // Only read-heavy workloads!
 
 private:

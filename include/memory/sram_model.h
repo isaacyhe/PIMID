@@ -52,14 +52,14 @@ public:
     double getArea() const { return area_mm2_; }
 
     // Inner-bank timing queries (NEW!)
-    double getSubarrayReadLatency() const;
+    double getSubbankReadLatency() const;
     double getBankReadLatency() const;
     double getChipReadLatency() const;
     double getInnerBankDatapathLatency() const;  // Total inner-bank datapath
 
     // PIM support queries
     bool supportsBankPIM() const;
-    bool supportsSubarrayPIM() const;
+    bool supportsSubbankPIM() const;
 
 private:
     // SRAM-specific configuration

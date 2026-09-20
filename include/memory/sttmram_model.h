@@ -55,10 +55,10 @@ public:
     uint64_t getEndurance() const { return endurance_; }
 
     // Inner-bank timing queries (NEW!)
-    double getSubarrayReadLatency() const;
+    double getMatReadLatency() const;
     double getBankReadLatency() const;
     double getChipReadLatency() const;
-    double getSubarrayWriteLatency() const;
+    double getMatWriteLatency() const;
     double getBankWriteLatency() const;
     double getChipWriteLatency() const;
     double getInnerBankReadLatency() const;   // Total read path
@@ -66,7 +66,7 @@ public:
 
     // PIM support queries
     bool supportsBankPIM() const;
-    bool supportsSubarrayPIM() const;
+    bool supportsMatPIM() const;
 
 private:
     // STT-MRAM-specific configuration

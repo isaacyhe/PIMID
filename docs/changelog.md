@@ -7,6 +7,57 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.74 -- the tier below the bank is named consistently everywhere
+
+Follow-up to 1.11.73 after the user's review (2026-09-20): "make sure the
+namings are correct, and remove any residuals." No number moves.
+
+**What was still wrong.** The SRAM and NVM models still exposed their L0
+tier through accessors named `getSubarrayReadLatency` /
+`supportsSubarrayPIM` (SRAM) and `getSubarray{Read,Write,SetWrite,
+ResetWrite}Latency` / `supportsSubarrayPIM` (NVM); the NVSim wrapper still
+carried `getSubarrayLatency()` -- NVSim's sub-mat subarray, a tier below the
+one we stop at, with no caller left; the L0 network factory and its table
+were `createSubarrayNetwork` / `getSubarrayParams` for every family; the
+network factory printed "Subarrays per bank" for SRAM and NVM; the SRAM and
+STT-MRAM architecture headers described a Chip -> Bank -> Mat -> Subarray
+ladder and kept an uncalled subarray-to-subarray H-tree helper; and the two
+other YAML places that name L0 -- the count `memory.subarrays_per_bank` and
+the `noc.levels` key `subarray` -- accepted only the DRAM word.
+
+**Now.** SRAM: `getSubbankReadLatency`, `supportsSubbankPIM`. NVM:
+`getMat*Latency`, `supportsMatPIM`. NVSim wrapper: the sub-mat latency
+accessor, its cached member and its XML field are gone (an older cache file
+carrying the field is ignored). Network: `createLevel0Network` /
+`getLevel0Params`, and the factory prints Subbanks / Mats / Subarrays per
+bank by family. Headers: SRAM is Chip -> Bank -> Subbank, with Mat and
+Subarray marked CACTI-internal geometry; STT-MRAM is Chip -> Bank -> Mat,
+with the subarray marked NVSim-internal; the dead H-tree helpers are
+removed (DRAM's stays, DRAM's tier IS the subarray). YAML:
+`memory.subbanks_per_bank` (SRAM) and `memory.mats_per_bank` (NVM) are
+accepted beside the legacy `subarrays_per_bank`; `noc.levels.subbank` /
+`noc.levels.mat` beside `subarray`; exactly one of each, the wrong family's
+word is refused, the legacy word on SRAM/NVM prints the same one-line NOTE
+the placement level does, and the L0 probe reports which key set the count.
+CACTI's and NVSim's own internal names (`getSubarrayRows/Cols`,
+`getSubarraysPerMat`, `subarray_output_drv_ns`, `wordlines_per_subarray`)
+are kept: they are the tools' terms for geometry below the tier and are
+labelled as such, not tiers.
+
+**Measured** (gate 1184A, run 385709 against a full 1.11.73 runtime
+snapshot; three arm criteria corrected on the recorded logs: a regex that
+took the 0 in "L0" as the count, a factory print that --print-mem-info
+never reaches, and the old snapshot logging its own cache path). Seven
+DRAM technologies byte-identical; SRAM identical; STT-MRAM, PCM and ReRAM
+identical apart from the cache-path provenance lines. Aliases:
+`memory.subbanks_per_bank: 4` on SRAM sets the count to 4 and says which
+key did (the old binary ignored the key and kept 8); the same key on PCM
+is refused; the legacy key on STT-MRAM prints the NOTE and applies;
+`noc.levels.mat` on STT-MRAM applies (old binary: ignored); `noc.levels.
+subbank` on DDR4 refused; two L0 keys refused. Full runs: SRAM SUBBANK
+cycles identical to the old binary; PCM MAT cycles within 0.17% with the
+placement provenance now "NVSim read path @ mat" (old: "@ subarray").
+
 ## 1.11.73 -- one tier below the bank, and it is the family's own
 
 User ruling (2026-09-20), after the inside-the-bank discussion: go exactly
@@ -68,8 +119,11 @@ CACTI bank, and the plugin model runs CACTI with the 64 KB unit split into
 8 banks, so the PIMID bank has 8 subbanks (8 CACTI banks x 1), each 512
 bits wide, 31.4 GB/s (out_w per 2.04 ns random cycle); the table said 4 x
 128 b / 40 GB/s. NVM: the regenerated
-NVSim characterizations give ONE mat per 64 KB bank, `numDataBit` 512 (the
-mat IS the bank's word), so the mat link is the bank read bandwidth: STT-MRAM
+NVSim characterizations give ONE mat per 64 KB bank, `numDataBit` 512. In
+NVSim the bank supplies the whole word and each ACTIVE mat carries word /
+active-mats of it; with a single mat the share is the whole word, so here
+the mat link equals the bank read bandwidth (a larger bank would show
+narrower mats and a proportionally smaller mat link): STT-MRAM
 19.4, PCM 22.6, ReRAM 18.4 GB/s; the table said 4 x 64 b / 12, 9.6, 11.2
 GB/s. Regeneration moved no bank-level number (mat latency 3.30 / 2.83 /
 3.49 ns and the bank figures reproduce the old cache to printed precision).

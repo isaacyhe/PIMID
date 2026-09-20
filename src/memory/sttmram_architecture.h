@@ -6,7 +6,8 @@
  * parameters based on NVSim models and research papers.
  *
  * HIERARCHY:
- * Chip -> Bank -> Subarray -> MTJ Cell Array
+ * Chip -> Bank -> Mat (the PIMID tier below the bank; NVSim has no subbank)
+ *   -> [NVSim internal: Subarray] -> MTJ Cell Array
  *
  * KEY CHARACTERISTICS:
  * - Non-volatile (retains data without power)
@@ -61,12 +62,12 @@ namespace memory {
  *   - H-tree network
  *
  * Level 2: Bank
- *   - Multiple subarrays
+ *   - Multiple mats (NVSim numRowMat x numColumnMat)
  *   - Local row decoder
  *   - WL (Wordline) drivers
  *   - SL/BL switch matrix
  *
- * Level 3: Subarray
+ * Level 3: Mat (below it only NVSim-internal subarray geometry)
  *   - MTJ cell array
  *   - Sense amplifiers
  *   - Column decoder
@@ -84,7 +85,7 @@ struct STTMRAMOrganization {
     int mats_per_bank;       // 4-16 typical
     size_t bank_size_kb;
 
-    // Subarray level (mat)
+    // NVSim-internal subarray geometry inside the mat (informational, not a tier)
     int wordlines_per_subarray;   // Rows (e.g., 512-1024)
     int bitlines_per_subarray;    // Columns (e.g., 1024-2048)
     size_t mat_size_kb;
@@ -162,10 +163,6 @@ struct STTMRAMInnerBankTiming {
                mtj_switching_ns + write_verify_ns;
     }
 
-    // For PIM
-    double getSubarrayToSubarrayHTree() const {
-        return 2.0 * (htree_horizontal_ns + htree_vertical_ns);
-    }
 };
 
 //=============================================================================

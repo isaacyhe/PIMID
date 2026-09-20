@@ -382,10 +382,10 @@ void ReRAMModel::printStats() const {
     }
 
     std::cout << "\nLatency (Inner-Bank Timing):" << std::endl;
-    std::cout << "  Mat Read: " << getSubarrayReadLatency() << " ns" << std::endl;
+    std::cout << "  Mat Read: " << getMatReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Mat Write: " << getSubarrayWriteLatency() << " ns (fast!)" << std::endl;
+    std::cout << "  Mat Write: " << getMatWriteLatency() << " ns (fast!)" << std::endl;
     std::cout << "  Bank Write: " << getBankWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip Write: " << getChipWriteLatency() << " ns" << std::endl;
 
@@ -517,7 +517,7 @@ void ReRAMModel::reportWearImbalance() const {
 // Inner-Bank Timing Queries (NEW!)
 //=============================================================================
 
-double ReRAMModel::getSubarrayReadLatency() const {
+double ReRAMModel::getMatReadLatency() const {
     if (!reram_arch_) return 0.0;
     return reram_arch_->timing.mat_read_ns;
 }
@@ -532,7 +532,7 @@ double ReRAMModel::getChipReadLatency() const {
     return reram_arch_->timing.chip_read_ns;
 }
 
-double ReRAMModel::getSubarrayWriteLatency() const {
+double ReRAMModel::getMatWriteLatency() const {
     if (!reram_arch_) return 0.0;
     return reram_arch_->timing.mat_write_ns;
 }
@@ -576,8 +576,8 @@ bool ReRAMModel::supportsBankPIM() const {
     return reram_arch_->isSuitableForPIM();
 }
 
-bool ReRAMModel::supportsSubarrayPIM() const {
-    // ReRAM supports subarray PIM, especially for analog compute!
+bool ReRAMModel::supportsMatPIM() const {
+    // ReRAM supports mat-level PIM, especially for analog compute!
     return true;
 }
 
@@ -652,13 +652,14 @@ void ReRAMModel::initializeNVSim() {
 }
 
 
-/* 1.11.24: ReRAMModel under the plugin contract. NVM is not DRAM-like: subarray,
- * bank and chip only. The subarray/bank separation is the intra-bank H-tree
+/* 1.11.24: ReRAMModel under the plugin contract. NVM is not DRAM-like: mat,
+ * bank and chip only (1.11.73: the tier below the bank is NVSim's mat; NVSim has
+ * no subbank). The mat/bank separation is the intra-bank H-tree
  * NVSim builds (routingMode = h_tree), not a multiplier -- see 1.11.23. */
 double ReRAMModel::getTierLatencyNs(Tier tier, Op op) const {
     if (op == Op::READ) {
         switch (tier) {
-            case Tier::SUBARRAY: return getSubarrayReadLatency();
+            case Tier::SUBARRAY: return getMatReadLatency();
             case Tier::BANK:     return getBankReadLatency();
             case Tier::CHIP:     return getChipReadLatency();
             default:             return -1.0;
@@ -666,7 +667,7 @@ double ReRAMModel::getTierLatencyNs(Tier tier, Op op) const {
     }
     if (op == Op::WRITE) {
         switch (tier) {
-            case Tier::SUBARRAY: return getSubarrayWriteLatency();
+            case Tier::SUBARRAY: return getMatWriteLatency();
             case Tier::BANK:     return getBankWriteLatency();
             case Tier::CHIP:     return getChipWriteLatency();
             default:             return -1.0;

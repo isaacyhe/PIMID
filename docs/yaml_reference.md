@@ -927,6 +927,13 @@ Any other value (including the removed `timing_core`) is rejected with an error.
 | `SUBARRAY` | L0 | PE one tier below the bank on a DRAM technology (the subarray); accepted as the legacy spelling on SRAM/NVM |
 | `SUBBANK` | L0 | PE one tier below the bank on SRAM (CACTI subbank: the mats that form one data word). Refused on other families |
 | `MAT` | L0 | PE one tier below the bank on STT_MRAM/PCM/RERAM (NVSim mat). Refused on other families |
+
+The same family words apply to the two other places that name L0
+(1.11.74): the L0 count under `memory` -- `subarrays_per_bank` (DRAM; legacy
+spelling on SRAM/NVM, accepted with a NOTE), `subbanks_per_bank` (SRAM
+only), `mats_per_bank` (NVM only) -- and the L0 entry under `noc.levels` --
+`subarray`, `subbank`, `mat`. Give exactly one of each; a word that names a
+tier the technology does not have is refused.
 | `BANK` | L1 | PE at bank level |
 | `BANK_GROUP` | L2 | PE at bank group level |
 | `CHIP` | L3 | PE at chip/die level |

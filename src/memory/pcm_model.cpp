@@ -408,10 +408,10 @@ void PCMModel::printStats() const {
     }
 
     std::cout << "\nLatency (Inner-Bank Timing):" << std::endl;
-    std::cout << "  Mat Read: " << getSubarrayReadLatency() << " ns" << std::endl;
+    std::cout << "  Mat Read: " << getMatReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Mat SET Write: " << getSubarraySetWriteLatency() << " ns (SLOW!)" << std::endl;
+    std::cout << "  Mat SET Write: " << getMatSetWriteLatency() << " ns (SLOW!)" << std::endl;
     std::cout << "  Bank SET Write: " << getBankSetWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip SET Write: " << getChipSetWriteLatency() << " ns" << std::endl;
 
@@ -568,7 +568,7 @@ void PCMModel::reportWearImbalance() const {
 // Inner-Bank Timing Queries (NEW!)
 //=============================================================================
 
-double PCMModel::getSubarrayReadLatency() const {
+double PCMModel::getMatReadLatency() const {
     if (!pcm_arch_) return 0.0;
     return pcm_arch_->timing.mat_read_ns;
 }
@@ -583,7 +583,7 @@ double PCMModel::getChipReadLatency() const {
     return pcm_arch_->timing.chip_read_ns;
 }
 
-double PCMModel::getSubarraySetWriteLatency() const {
+double PCMModel::getMatSetWriteLatency() const {
     if (!pcm_arch_) return 0.0;
     return pcm_arch_->timing.mat_set_ns;
 }
@@ -598,7 +598,7 @@ double PCMModel::getChipSetWriteLatency() const {
     return pcm_arch_->timing.chip_set_ns;
 }
 
-double PCMModel::getSubarrayResetWriteLatency() const {
+double PCMModel::getMatResetWriteLatency() const {
     if (!pcm_arch_) return 0.0;
     return pcm_arch_->timing.mat_reset_ns;
 }
@@ -623,8 +623,8 @@ bool PCMModel::supportsBankPIM() const {
     return pcm_arch_->isSuitableForPIM();
 }
 
-bool PCMModel::supportsSubarrayPIM() const {
-    // PCM supports subarray PIM, but ONLY for read-heavy workloads
+bool PCMModel::supportsMatPIM() const {
+    // PCM supports mat-level PIM, but ONLY for read-heavy workloads
     return true;
 }
 
@@ -727,7 +727,7 @@ double PCMModel::getTierLatencyNs(Tier tier, Op op) const {
     switch (op) {
         case Op::READ:
             switch (tier) {
-                case Tier::SUBARRAY: return getSubarrayReadLatency();
+                case Tier::SUBARRAY: return getMatReadLatency();
                 case Tier::BANK:     return getBankReadLatency();
                 case Tier::CHIP:     return getChipReadLatency();
                 default:             return -1.0;
@@ -735,14 +735,14 @@ double PCMModel::getTierLatencyNs(Tier tier, Op op) const {
         case Op::SET:
         case Op::WRITE:
             switch (tier) {
-                case Tier::SUBARRAY: return getSubarraySetWriteLatency();
+                case Tier::SUBARRAY: return getMatSetWriteLatency();
                 case Tier::BANK:     return getBankSetWriteLatency();
                 case Tier::CHIP:     return getChipSetWriteLatency();
                 default:             return -1.0;
             }
         case Op::RESET:
             switch (tier) {
-                case Tier::SUBARRAY: return getSubarrayResetWriteLatency();
+                case Tier::SUBARRAY: return getMatResetWriteLatency();
                 case Tier::BANK:     return getBankResetWriteLatency();
                 case Tier::CHIP:     return getChipResetWriteLatency();
                 default:             return -1.0;
@@ -788,7 +788,7 @@ std::string PCMModel::tierLatencySource(Tier tier, Op op) const {
                   : set_substituted   ? "NVSim write path (setLatency not "
                                         "resolved; generic write substituted)"
                                       : "NVSim FunctionUnit::setLatency";
-    return std::string(q) + " @ " + tierName(tier);
+    return std::string(q) + " @ " + tierName(tier, getTechnology());   // 1.11.74: the family word (mat), not "subarray"
 }
 
 

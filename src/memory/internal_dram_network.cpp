@@ -2986,7 +2986,7 @@ namespace {
         double bandwidth_GBs;
     };
 
-    NetworkParams getSubarrayParams(const std::string& dram_type) {
+    NetworkParams getLevel0Params(const std::string& dram_type) {
         if (dram_type == "HBM3") return {512, 3, 115.2};
         if (dram_type == "HBM2") return {256, 3, 32.0};
         if (dram_type == "DDR5") return {128, 5, 25.6};
@@ -3043,13 +3043,13 @@ namespace {
     }
 }
 
-std::shared_ptr<NetworkModel> createSubarrayNetwork(
+std::shared_ptr<NetworkModel> createLevel0Network(
     const std::string& dram_type,
     int num_subarrays,
     bool use_garnet) {
 
     if (use_garnet) {
-        auto params = getSubarrayParams(dram_type);
+        auto params = getLevel0Params(dram_type);
         return createGarnetHTreeForDRAM(
             NetworkLevel::SUBARRAY_NETWORK,
             num_subarrays,
@@ -3068,7 +3068,7 @@ std::shared_ptr<NetworkModel> createSubarrayNetwork(
     config.router_pipeline = RouterPipelineComplexity::MINIMAL;
     config.router_latency = 1;
 
-    auto params = getSubarrayParams(dram_type);
+    auto params = getLevel0Params(dram_type);
     config.link_width_bytes = params.link_width_bits / 8;
     config.link_latency = params.link_latency_cycles;
 
@@ -3188,7 +3188,11 @@ std::shared_ptr<InternalDRAMNetwork> createHierarchicalNetwork(
     bool use_garnet) {
 
     std::cout << "\n[Factory] Creating hierarchical network for " << dram_type << ":" << std::endl;
-    std::cout << "  Subarrays per bank: " << num_subarrays_per_bank << std::endl;
+    {   /* 1.11.74: L0 is named per family -- SRAM subbank, NVM mat, DRAM subarray */
+        const std::string l0w = (dram_type == "SRAM") ? "Subbanks" :
+            (dram_type == "STT_MRAM" || dram_type == "PCM" || dram_type == "RERAM") ? "Mats" : "Subarrays";
+        std::cout << "  " << l0w << " per bank: " << num_subarrays_per_bank << std::endl;
+    }
     std::cout << "  Banks per BG: " << num_banks_per_bg << std::endl;
     std::cout << "  BGs per chip: " << num_bg_per_chip << std::endl;
     std::cout << "  Chips per rank: " << num_chips_per_rank << std::endl;

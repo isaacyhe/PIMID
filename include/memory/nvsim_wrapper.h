@@ -131,7 +131,6 @@ public:
      * source for a TIER, being the totals NVSim itself composed.
      * Return <0 when unavailable (notably on a cache hit -- the pregenerated
      * cache predates these fields), so callers refuse rather than substitute. */
-    double getSubarrayLatency() const;      // bank->mat.subarray.readLatency, s
     double getMatLatency() const;           // bank->mat.readLatency, s
     uint32_t getMatWidthBits() const;       // 1.11.73: bank->mat.numDataBit; 0 = unsourced (old cache)
     double getSetLatency() const;           // SET path latency, s; <0 unknown
@@ -244,7 +243,6 @@ private:
     double cached_write_latency_s_ = 0.0;
     /* 1.11.25: the sub-bank ladder, carried through the pregenerated
      * cache. -1 = this cache file predates the fields. */
-    double cached_subarray_latency_s_ = -1.0;
     double cached_mat_latency_s_ = -1.0;
     int    cached_mat_width_bits_ = -1;      // 1.11.73
     int    cached_mats_per_bank_  = -1;      // 1.11.73

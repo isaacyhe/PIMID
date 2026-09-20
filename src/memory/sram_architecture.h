@@ -6,7 +6,8 @@
  * SRAM is typically used for on-chip caches (L1/L2/L3/LLC).
  *
  * HIERARCHY:
- * Chip -> Bank -> Mat -> Subarray -> 6T Cell Array
+ * Chip -> Bank -> Subbank (the PIMID tier below the bank: a line of mats
+ * producing one data word) -> [CACTI internal: Mat -> Subarray] -> 6T Cell Array
  *
  * KEY DIFFERENCES from DRAM:
  * - No memory controller / rank levels (on-chip)
@@ -69,20 +70,18 @@ enum class VerificationStatus {
  *   - No memory controller (direct CPU access)
  *
  * Level 2: Bank
- *   - Multiple mats (e.g., 2x2, 4x4 grid)
- *   - H-tree network for routing
+ *   - The array CACTI is run on; its H-tree routes to the subbanks
  *   - Independent access (no bank groups!)
  *
- * Level 3: Mat
- *   - 4 subarrays (standard CACTI configuration)
- *   - Shared predecode logic
- *   - Subarray I/O
+ * Level 3: Subbank (1.11.73: the ONE PIMID tier below the bank)
+ *   - The line of mats activated together for one data word
+ *   - Width = the bank word (CACTI num_do_b_subbank = out_w)
+ *   - Access = the in-mat path: decoder, wordline, bitline, sense amp,
+ *     output driver (no bank H-tree)
  *
- * Level 4: Subarray
- *   - 6T SRAM cell array
- *   - Wordline decoder
- *   - Bitline sense amplifiers
- *   - Column multiplexer
+ * Below the subbank: CACTI-internal geometry only (Mat -> Subarray -> 6T
+ * cells, wordline decoder, sense amplifiers, column mux). Reported as
+ * information, never a placement tier.
  */
 struct SRAMOrganization {
     // Chip level (on-chip cache)
@@ -102,13 +101,13 @@ struct SRAMOrganization {
     int mats_per_subbank;         // CACTI: num_act_mats_hor_dir
 
     // Mat level
-    int subarrays_per_mat;        // Typically 4 (CACTI standard)
+    int subarrays_per_mat;        // CACTI internal (num_submarray_mats); not a PIMID tier
     size_t mat_size_kb;           // Per mat capacity
 
-    // Subarray level
+    // CACTI-internal subarray geometry (below the mat; informational, not a tier)
     int rows_per_subarray;        // Wordlines
     int cols_per_subarray;        // Bitlines
-    size_t subarray_size_kb;      // Per subarray capacity
+    size_t subarray_size_kb;      // Per CACTI subarray capacity
 
     int getMatsPerBank() const {
         return mats_per_bank_rows * mats_per_bank_cols;
@@ -169,11 +168,6 @@ struct SRAMInnerBankTiming {
         return getRowPath() + getColumnPath() + getInnerBankDatapath();
     }
 
-    // For PIM: Subarray-to-subarray (within same bank)
-    double getSubarrayToSubarrayHTree() const {
-        // Egress + Ingress
-        return 2.0 * (htree_horizontal_ns + htree_vertical_ns);
-    }
 };
 
 //=============================================================================

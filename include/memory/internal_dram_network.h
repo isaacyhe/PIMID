@@ -800,7 +800,7 @@ std::shared_ptr<NetworkModel> createGarnetHTreeForDRAM(
     int link_latency_cycles,
     double bandwidth_GBs);
 
-std::shared_ptr<NetworkModel> createSubarrayNetwork(
+std::shared_ptr<NetworkModel> createLevel0Network(
     const std::string& dram_type,
     int num_subarrays,
     bool use_garnet = false);

@@ -1285,6 +1285,8 @@ struct UnifiedConfig {
     int  l0_width_bits = 0;      // 0 = unknown / not sourced
     double l0_bandwidth_gbs = 0.0; // 0 = unknown / not sourced
     bool l0_sourced = false;
+    std::string l0_count_key;    // which YAML key set the L0 count ("" = model/derived)
+    std::string l0_level_key;    // which noc.levels key named L0 ("" = none)
     int subarray_height = 0;                    // rows per subarray; 0 = per-tech default
     int bg_per_chip_override = 0;                // bank-groups/chip; 0 = per-tech JEDEC default
     int banks_per_bg_override = 0;              // banks/bank-group; 0 = per-tech JEDEC default
@@ -2625,7 +2627,7 @@ static bool dramHTreeBuilder(const std::string& tech,
     int pe_level = config.pe_hierarchy_level;
     // Per-tech per-layer (link_width_bits, freq_GHz), layers leaf->root: L0,L1,L2,L3; plus channel count N.
     struct Layer { double width_bits; double freq_ghz; };
-    Layer L[4];          // L[0]=L0 (subarray-leaf) ... L[3]=L3 (channel)
+    Layer L[4];          // L[0]=L0 (the leaf tier below the bank) ... L[3]=L3 (channel)
     int N = 1;           // parallel DRAM channels
 
     if (tech == "DDR3") {
@@ -3363,8 +3365,9 @@ static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
     config.l0_width_bits = (width > 0) ? width : 0;
     if (config.subarrays_per_bank_user_set) {
         std::cout << "  [hierarchy] " << tech << " L0 = " << config.l0_name << ": "
-                  << config.subarrays_per_bank << " per bank -- set by "
-                     "memory.subarrays_per_bank (the model reports "
+                  << config.subarrays_per_bank << " per bank -- set by memory."
+                  << (config.l0_count_key.empty() ? std::string("subarrays_per_bank") : config.l0_count_key)
+                  << " (the model reports "
                   << (units > 0 ? std::to_string(units) : std::string("no sourceable count"))
                   << ")" << std::endl;
         config.l0_sourced = false;
@@ -3441,6 +3444,25 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                       << " (accepted, same level)." << std::endl;
         }
         config.l0_name = is_sram ? "subbank" : (is_nvm ? "mat" : "subarray");
+        /* 1.11.74: the same family rule for the count key and the noc.levels key */
+        auto family_check = [&](const std::string& key, const char* where) {
+            if (key.empty()) return;
+            const bool k_sub = (key == "subbanks_per_bank" || key == "subbank");
+            const bool k_mat = (key == "mats_per_bank" || key == "mat");
+            const bool k_sa  = !k_sub && !k_mat;
+            if ((k_sub && !is_sram) || (k_mat && !is_nvm)) {
+                std::cerr << "FATAL: " << where << "." << key << " names a tier " << t
+                          << " does not have (SRAM: subbank; STT_MRAM/PCM/RERAM: mat; DRAM: subarray)."
+                          << std::endl;
+                std::exit(2);
+            }
+            if (k_sa && (is_sram || is_nvm))
+                std::cout << "  NOTE: " << where << "." << key << " on " << t
+                          << " is the legacy name; the tier below the bank is the "
+                          << (is_sram ? "subbank" : "mat") << " (accepted, same level)." << std::endl;
+        };
+        family_check(config.l0_count_key, "memory");
+        family_check(config.l0_level_key, "noc.levels");
     }
 
     // Validate: PEs at a non-MC tier require a PE-MC at that tier
@@ -12948,8 +12970,22 @@ int main(int argc, char** argv) {
                         "subarray", "bank", "bank_group", "chip", "rank", "channel", "system"
                     };
                     for (int i = 0; i < 7; ++i) {
-                        if (levels[level_keys[i]]) {
-                            const auto& lv = levels[level_keys[i]];
+                        /* 1.11.74: noc.levels L0 accepts the family's word --
+                         * subarray (DRAM; legacy on SRAM/NVM), subbank (SRAM),
+                         * mat (NVM). One key only; family-checked later. */
+                        std::string key = level_keys[i];
+                        if (i == 0) {
+                            int nk = 0;
+                            for (const char* k : {"subarray", "subbank", "mat"}) if (levels[k]) { key = k; ++nk; }
+                            if (nk > 1) {
+                                std::cerr << "FATAL: noc.levels.subarray / subbank / mat name the same "
+                                             "level; give exactly one." << std::endl;
+                                std::exit(2);
+                            }
+                            if (nk == 1) config.l0_level_key = key;
+                        }
+                        if (levels[key]) {
+                            const auto& lv = levels[key];
                             if (lv["model"]) {
                                 config.network_level_model[i] = lv["model"].as<std::string>();
                                 config.network_level_model_user_set[i] = true;  // 1.11.56 (B058)
@@ -13277,9 +13313,25 @@ int main(int argc, char** argv) {
                 // default (or the given height) derives it in the org block.
                 if (yaml_cfg["memory"]["subarray_height"])
                     config.subarray_height = yaml_cfg["memory"]["subarray_height"].as<int>();
-                if (yaml_cfg["memory"]["subarrays_per_bank"]) {
-                    config.subarrays_per_bank = yaml_cfg["memory"]["subarrays_per_bank"].as<int>();
-                    config.subarrays_per_bank_user_set = true;
+                /* 1.11.74: the L0 count key carries the family's word --
+                 * memory.subarrays_per_bank (DRAM; legacy on SRAM/NVM),
+                 * memory.subbanks_per_bank (SRAM), memory.mats_per_bank (NVM).
+                 * Exactly one may be given; the family check follows in
+                 * computeHierarchyLatencies once the technology is settled. */
+                {
+                    int nkeys = 0;
+                    for (const char* k : {"subarrays_per_bank", "subbanks_per_bank", "mats_per_bank"}) {
+                        if (yaml_cfg["memory"][k]) {
+                            config.subarrays_per_bank = yaml_cfg["memory"][k].as<int>();
+                            config.subarrays_per_bank_user_set = true;
+                            config.l0_count_key = k; ++nkeys;
+                        }
+                    }
+                    if (nkeys > 1) {
+                        std::cerr << "FATAL: memory.subarrays_per_bank / subbanks_per_bank / "
+                                     "mats_per_bank name the same count; give exactly one." << std::endl;
+                        std::exit(2);
+                    }
                 }
                 // Optional JEDEC-org overrides (0/absent = per-tech JEDEC default).
                 if (yaml_cfg["memory"]["organization"]) {

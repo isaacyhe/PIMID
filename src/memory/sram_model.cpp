@@ -428,7 +428,7 @@ void SRAMModel::resetStats() {
 // Inner-Bank Timing Queries (NEW!)
 //=============================================================================
 
-double SRAMModel::getSubarrayReadLatency() const {
+double SRAMModel::getSubbankReadLatency() const {
     if (!sram_arch_) return 0.0;
     return sram_arch_->timing.subbank_access_ns;
 }
@@ -453,8 +453,8 @@ bool SRAMModel::supportsBankPIM() const {
     return true;
 }
 
-bool SRAMModel::supportsSubarrayPIM() const {
-    // SRAM supports subarray-level PIM (fast local operations)
+bool SRAMModel::supportsSubbankPIM() const {
+    // SRAM supports subbank-level PIM (fast local operations)
     return true;
 }
 
@@ -465,7 +465,7 @@ bool SRAMModel::supportsSubarrayPIM() const {
 double SRAMModel::getTierLatencyNs(Tier tier, Op op) const {
     if (op != Op::READ && op != Op::WRITE) return -1.0;
     switch (tier) {
-        case Tier::SUBARRAY: return getSubarrayReadLatency();
+        case Tier::SUBARRAY: return getSubbankReadLatency();
         case Tier::BANK:     return getBankReadLatency();
         case Tier::CHIP:     return getChipReadLatency();
         default:             return -1.0;

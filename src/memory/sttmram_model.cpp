@@ -397,10 +397,10 @@ void STTMRAMModel::printStats() const {
     }
 
     std::cout << "\nLatency (Inner-Bank Timing):" << std::endl;
-    std::cout << "  Mat Read: " << getSubarrayReadLatency() << " ns" << std::endl;
+    std::cout << "  Mat Read: " << getMatReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Mat Write: " << getSubarrayWriteLatency() << " ns" << std::endl;
+    std::cout << "  Mat Write: " << getMatWriteLatency() << " ns" << std::endl;
     std::cout << "  Bank Write: " << getBankWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip Write: " << getChipWriteLatency() << " ns" << std::endl;
 
@@ -529,7 +529,7 @@ void STTMRAMModel::initializeNVSim() {
 // Inner-Bank Timing Queries (NEW!)
 //=============================================================================
 
-double STTMRAMModel::getSubarrayReadLatency() const {
+double STTMRAMModel::getMatReadLatency() const {
     if (!mram_arch_) return 0.0;
     return mram_arch_->timing.mat_read_ns;
 }
@@ -544,7 +544,7 @@ double STTMRAMModel::getChipReadLatency() const {
     return mram_arch_->timing.chip_read_ns;
 }
 
-double STTMRAMModel::getSubarrayWriteLatency() const {
+double STTMRAMModel::getMatWriteLatency() const {
     if (!mram_arch_) return 0.0;
     return mram_arch_->timing.mat_write_ns;
 }
@@ -574,19 +574,20 @@ bool STTMRAMModel::supportsBankPIM() const {
     return mram_arch_->isSuitableForPIM();
 }
 
-bool STTMRAMModel::supportsSubarrayPIM() const {
-    // STT-MRAM supports subarray-level PIM (fast reads, persistent state)
+bool STTMRAMModel::supportsMatPIM() const {
+    // STT-MRAM supports mat-level PIM (fast reads, persistent state)
     return true;
 }
 
 
-/* 1.11.24: STTMRAMModel under the plugin contract. NVM is not DRAM-like: subarray,
- * bank and chip only. The subarray/bank separation is the intra-bank H-tree
+/* 1.11.24: STTMRAMModel under the plugin contract. NVM is not DRAM-like: mat,
+ * bank and chip only (1.11.73: the tier below the bank is NVSim's mat; NVSim has
+ * no subbank). The mat/bank separation is the intra-bank H-tree
  * NVSim builds (routingMode = h_tree), not a multiplier -- see 1.11.23. */
 double STTMRAMModel::getTierLatencyNs(Tier tier, Op op) const {
     if (op == Op::READ) {
         switch (tier) {
-            case Tier::SUBARRAY: return getSubarrayReadLatency();
+            case Tier::SUBARRAY: return getMatReadLatency();
             case Tier::BANK:     return getBankReadLatency();
             case Tier::CHIP:     return getChipReadLatency();
             default:             return -1.0;
@@ -594,7 +595,7 @@ double STTMRAMModel::getTierLatencyNs(Tier tier, Op op) const {
     }
     if (op == Op::WRITE) {
         switch (tier) {
-            case Tier::SUBARRAY: return getSubarrayWriteLatency();
+            case Tier::SUBARRAY: return getMatWriteLatency();
             case Tier::BANK:     return getBankWriteLatency();
             case Tier::CHIP:     return getChipWriteLatency();
             default:             return -1.0;

@@ -46,7 +46,11 @@ tier is the family's own, and each family has only one:
 
 `SUBARRAY` on SRAM/NVM is accepted as the legacy spelling (same level, the run
 names the canonical word once); `SUBBANK` on a non-SRAM part or `MAT` on a
-non-NVM part names a tier the part does not have and is refused. Note that
+non-NVM part names a tier the part does not have and is refused. The L0 count
+key (`memory.subarrays_per_bank` / `subbanks_per_bank` / `mats_per_bank`) and
+the `noc.levels` L0 key (`subarray` / `subbank` / `mat`) follow the same rule
+(1.11.74). NVSim itself defines bank, mat and subarray and nothing else, so no
+NVM has a subbank; CACTI defines the subbank for SRAM. Note that
 CACTI's and NVSim's *own* "subarray" is a smaller thing than the DRAM
 subarray -- it is the array slice below a mat -- and is deliberately NOT a
 PIMID tier: there is one level below the bank, not two. An NVSim cache entry

@@ -390,7 +390,6 @@ namespace {
          * not available at all, which is why it lives here and not only in
          * the result tree. Default -1 = absent, e.g. an older cache file:
          * the tier is then reported unsourceable, never filled. */
-        double subarray_latency_s = -1.0;
         double mat_latency_s = -1.0;
         /* 1.11.73 (one level below the bank): the MAT is the NVM tier below
          * the bank, so its width and count must survive the cache like its
@@ -618,7 +617,6 @@ namespace {
          * leaves the fields at -1 and the subarray/mat tiers are reported
          * unsourceable -- the run still works, it simply cannot price those
          * placements until the cache is regenerated. Never fabricated. */
-        if (!get("subarray_latency_s", v.subarray_latency_s)) v.subarray_latency_s = -1.0;
         if (!get("mat_latency_s", v.mat_latency_s)) v.mat_latency_s = -1.0;
         { double t; v.mat_width_bits = get("mat_width_bits", t) ? static_cast<int>(t) : -1; }
         { double t; v.mats_per_bank  = get("mats_per_bank",  t) ? static_cast<int>(t) : -1; }
@@ -671,7 +669,6 @@ namespace {
           << "  <write_energy_nj>" << v.write_energy_nj << "</write_energy_nj>\n"
           << "  <leakage_mw>" << v.leakage_mw << "</leakage_mw>\n"
           << "  <area_mm2>" << v.area_mm2 << "</area_mm2>\n"
-          << "  <subarray_latency_s>" << v.subarray_latency_s << "</subarray_latency_s>\n"
           << "  <mat_latency_s>" << v.mat_latency_s << "</mat_latency_s>\n"
           << "  <mat_width_bits>" << v.mat_width_bits << "</mat_width_bits>\n"
           << "  <mats_per_bank>" << v.mats_per_bank << "</mats_per_bank>\n"
@@ -720,7 +717,6 @@ void NVSimWrapper::runNVSim() {
             cached_ = true;
             cached_read_latency_s_  = v.read_latency_s;
             cached_write_latency_s_ = v.write_latency_s;
-            cached_subarray_latency_s_ = v.subarray_latency_s;
             cached_mat_latency_s_ = v.mat_latency_s;
             cached_mat_width_bits_ = v.mat_width_bits;     // 1.11.73
             cached_mats_per_bank_  = v.mats_per_bank;
@@ -897,9 +893,7 @@ void NVSimWrapper::runNVSim() {
                            getReadDynamicEnergy(), getWriteDynamicEnergy(),
                            getLeakagePower(), getArea() };
             if (nvsim_result_ && nvsim_result_->bank) {
-                const double sub = nvsim_result_->bank->mat.subarray.readLatency;
                 const double mat = nvsim_result_->bank->mat.readLatency;
-                v.subarray_latency_s = (sub > 0.0) ? sub : -1.0;
                 v.mat_latency_s      = (mat > 0.0) ? mat : -1.0;
                 // 1.11.73: the mat's width and the bank's mat count, from NVSim.
                 const long mw = nvsim_result_->bank->mat.numDataBit;
@@ -1016,13 +1010,6 @@ double NVSimWrapper::getWriteLatency() const {
 /* 1.11.23: the SET/RESET split, read from NVSim's own bank result rather than
  * asserted as a fraction of the write latency. */
 /* 1.11.25: real sub-bank latencies, straight from NVSim's result tree. */
-double NVSimWrapper::getSubarrayLatency() const {
-    if (cached_) return cached_subarray_latency_s_;   // -1 when the cache predates it
-    if (!valid_ || !nvsim_result_ || !nvsim_result_->bank) return -1.0;
-    double v = nvsim_result_->bank->mat.subarray.readLatency;
-    return (v > 0.0) ? v : -1.0;
-}
-
 double NVSimWrapper::getMatLatency() const {
     if (cached_) return cached_mat_latency_s_;
     if (!valid_ || !nvsim_result_ || !nvsim_result_->bank) return -1.0;
