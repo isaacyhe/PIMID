@@ -7,6 +7,61 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.76 -- audit round 6, part two: a misspelled section is no longer silent
+
+Four items from the same round (`_1166audit/R6_findings.md`). No number
+moves: all seven DRAM technologies are byte-identical against 1.11.75 in
+device scope, and every config in this tree still loads (14 of 14 checked,
+including the three shipped co-simulation examples).
+
+**R6-7: a misspelled top-level section was silent, and it discards everything
+inside it.** PIMID reads its YAML key by key and never asks what it did not
+read, so `memroy:` for `memory:` gave rc 0, no warning, and a run in which
+every memory setting -- technology, banks, device width, speed grade -- fell
+back to its default. The run is now refused, naming the section and listing
+the fourteen the parser reads. That is the same rule 1.11.57 (B036) applied
+to a value that could not be honoured, raised to a whole section.
+
+Scope, stated plainly: this catches a misspelled SECTION, not a misspelled
+key inside one. `memory.bankz`, `pim.placemnt` and `pim.pe.frequenci_mhz` are
+still accepted in silence. A complete key schema cannot be written correctly
+by hand here -- about 250 of the tree's YAML reads go through intermediate
+node variables rather than the root chain, so a hand-built whitelist would be
+incomplete and would refuse or warn on valid keys, which is worse than the
+silence it replaces. The nested case stays an open finding; for the fleet the
+cheap and safe guard is generator-side, comparing each generated config's key
+SET against a reference of the same shape, and the re-sim plan's pre-flight
+now says so instead of claiming the validator already catches this.
+
+**R6-L1: one function validated one of its two arguments.**
+`setRunWideKnobs()` refused a bad DDR5 grade but recorded `device_width`
+raw, leaving it to be validated a few hundred lines later; a wrapper built in
+between took `presetWidthBits(w, 0) -> 0` and fell back to x8 in silence. The
+tech-independent half of the check now runs where the knob is recorded; the
+per-technology legality (LPDDR5 x16 only, GDDR6 no x4) stays where the
+technology is known.
+
+**R6-L2: `probeNonDramL0()` returned in silence** when the model factory
+declined, while every other failure path in it prints why the tree kept an
+unsourced shape. It now says so.
+
+**R6-5: the two families' L0 bandwidths are computed on different bases, and
+the run now says which.** SRAM divides its subbank width by CACTI's random
+cycle time, the throughput bound; NVSim reports latencies and energies only
+-- there is no cycle or restore time anywhere in its `FunctionUnit` -- so an
+NVM mat divides by its share of the bank READ LATENCY and is optimistic by
+whatever the array's restore costs. Both are the best each tool offers, and
+printing the basis keeps a reader from comparing 31.4 GB/s against 19.4 GB/s
+as though they were the same quantity.
+
+**Also recorded, NOT fixed (needs a ruling).** Now that L0 is sourced for the
+non-DRAM families, the per-technology table that still supplies levels 1 and
+up contradicts the same array model at the very next rung: SRAM's L1 bank
+link is 64 bits at 20 GB/s in the table, while CACTI gives that bank a
+512-bit word every 2.037 ns, i.e. 31.4 GB/s. The table was equally unsourced
+before 1.11.73, so this is not a regression -- but the disagreement is newly
+visible and it sits at the corpus's own placement tier.
+
 ## 1.11.75 -- audit round 6: the cap asks for a time, and each bridge side follows its own level
 
 Audit round 6 (`_1166audit/R6_findings.md`) covers the 1.11.66..1.11.74 diff

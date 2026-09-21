@@ -64,6 +64,22 @@ void RamulatorWrapper::setRunWideKnobs(const std::string& device_width, int ddr5
         RamulatorWrapper probe("", "DDR5");
         probe.setDdr5SpeedGrade(ddr5_grade_mtps);   // prints the FATAL and exits 2
     }
+    /* 1.11.76 (audit round 6, R6-L1): THE TWO KNOBS IN THIS FUNCTION ARE NOW
+     * HELD TO THE SAME STANDARD. The grade above is refused here; the width was
+     * recorded raw -- the constructor comment says "plain record" -- and
+     * validated only later, in computeHierarchyLatencies(). Any wrapper built
+     * in the window between the two took presetWidthBits(w, 0) -> 0 and fell
+     * back to x8 silently. The run does exit afterwards, so no wrong number
+     * survived; what was wrong is that one function validated one of its two
+     * arguments. The per-technology legality (LPDDR5 x16 only, GDDR6 no x4)
+     * stays where the technology is known; this is the tech-independent half. */
+    if (!device_width.empty() &&
+        device_width != "x4" && device_width != "x8" && device_width != "x16") {
+        std::cerr << "[mem] FATAL: memory.dram.device_width = '" << device_width
+                  << "' is not a JEDEC device width. Supported values: x4, x8, x16."
+                  << std::endl;
+        std::exit(2);
+    }
     s_run_device_width_ = device_width;
     s_run_ddr5_grade_mtps_ = ddr5_grade_mtps;
     s_run_temperature_k_ = temperature_k;

@@ -3382,7 +3382,16 @@ static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
     try {
         pimid::MemoryTechnology mt = pimid::parseMemoryTechnology(tech);
         auto model = pimid::MemoryModelFactory::createMemoryModel(mt, "");
-        if (!model) return;
+        if (!model) {
+            /* 1.11.76 (audit round 6, R6-L2): SAY SO. Every other failure path
+             * in this function prints why the tree kept its unsourced shape;
+             * this one returned in silence, which is the class of fallback this
+             * project removes. */
+            std::cerr << "[hierarchy] " << tech << " has no plugin memory model, so the "
+                         "tree keeps " << config.subarrays_per_bank << " "
+                      << config.l0_name << "s/bank as an UNSOURCED shape" << std::endl;
+            return;
+        }
         model->setArrayCapacityBytes(64ULL * 1024ULL);   // the per-bank unit (see getMemoryLatencyCycles)
         model->setAccessWidthBits(static_cast<uint32_t>(std::max(1, config.cache_line_size)) * 8u);
         model->setTechNodeNm(validateTechNodeNm(config.tech_node_nm, "L0 organisation query"));
@@ -3898,10 +3907,24 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             int    w0[7]  = {config.l0_width_bits, 0, 0, 0, 0, 0, 0};
             double bw0[7] = {config.l0_bandwidth_gbs, 0, 0, 0, 0, 0, 0};
             hierarchy->applySourcedLadder(w0, bw0);
+            /* 1.11.76 (audit round 6, R6-5): NAME THE BASIS. The two families
+             * divide their width by different times because their tools report
+             * different things -- CACTI gives SRAM a random cycle time, which is
+             * the throughput bound; NVSim reports latencies and energies only
+             * (no cycle or restore time anywhere in FunctionUnit), so the mat's
+             * share of the bank READ LATENCY is the best available and is
+             * optimistic by whatever the array's restore costs. Printing both
+             * bases keeps a reader from comparing SRAM's figure with an NVM's
+             * as though they were the same quantity. */
+            const bool l0_is_sram = (tech == "SRAM");
             std::cout << "  [hierarchy] L0 " << config.l0_name << " link: "
                       << config.l0_width_bits << " bits, " << config.l0_bandwidth_gbs
-                      << " GB/s from the " << tech << " model (levels 1+ keep the "
-                         "per-technology table)" << std::endl;
+                      << " GB/s from the " << tech << " model ("
+                      << (l0_is_sram ? "width / CACTI random cycle time"
+                                     : "the mat's share of the NVSim bank read latency -- "
+                                       "NVSim reports no cycle time, so this is optimistic "
+                                       "by the array's restore")
+                      << "; levels 1+ keep the per-technology table)" << std::endl;
         } else {
             std::cout << "  [hierarchy] NOTE: L0 " << config.l0_name
                       << " link width/bandwidth NOT sourceable from the " << tech
@@ -12418,6 +12441,51 @@ int main(int argc, char** argv) {
     if (!config_file.empty()) {
         try {
             YAML::Node yaml_cfg = YAML::LoadFile(config_file);
+
+            /* 1.11.76 (audit round 6, R6-7): A MISSPELLED SECTION USED TO BE
+             * SILENT, AND IT DISCARDS EVERYTHING INSIDE IT.
+             *
+             * PIMID reads its YAML key by key and never asks what it did not
+             * read, so `memroy:` for `memory:` produced rc 0, no warning, and a
+             * run in which every memory setting -- technology, banks, device
+             * width, speed grade -- fell back to its default. That is the
+             * failure shape this project removes everywhere else: a knob that
+             * is accepted and not applied is refused rather than silently not
+             * applying (1.11.57 B036 set the precedent for a value; this is the
+             * same rule for a whole section).
+             *
+             * Scope, stated honestly: this catches a misspelled SECTION, not a
+             * misspelled key inside one. A complete key schema is not possible
+             * to write correctly by hand here -- roughly 250 of the tree's YAML
+             * reads go through intermediate node variables rather than the root
+             * chain, so a hand-built whitelist would be incomplete and would
+             * warn on valid keys, which is worse than the silence it replaces.
+             * The nested case stays an open finding with a generator-side
+             * key-set check recommended for the fleet (R6-7 in the round-6
+             * ledger). The fourteen names below are every section the parser
+             * reads, taken from the source; no config in this tree uses any
+             * other, and six of them cover every shipped and corpus config. */
+            {
+                static const std::set<std::string> kKnownSections = {
+                    "cache", "description", "host", "memory", "method", "name",
+                    "noc", "pim", "power", "scope", "simulation", "system",
+                    "technology", "workload"
+                };
+                if (yaml_cfg.IsMap()) {
+                    for (const auto& kv : yaml_cfg) {
+                        const std::string sec = kv.first.as<std::string>();
+                        if (kKnownSections.count(sec)) continue;
+                        std::cerr << "[config] FATAL: unknown top-level section '"
+                                  << sec << "' in " << config_file
+                                  << ". Everything inside it would be ignored and the "
+                                     "run would use defaults without saying so. Known "
+                                     "sections: cache, description, host, memory, "
+                                     "method, name, noc, pim, power, scope, simulation, "
+                                     "system, technology, workload." << std::endl;
+                        std::exit(2);
+                    }
+                }
+            }
 
             // Top-level simulation settings (can be overridden by CLI)
             if (!cli_method_set && yaml_cfg["method"]) {
