@@ -4346,16 +4346,55 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
              * number of RANKS or CHANNELS into num_banks -- under a message
              * that says "banks" and quotes a per-chip bank minimum. The
              * technology's own bank count is what belongs here. */
+            /* 1.11.84 (audit round 6, R6-19): ANNOUNCE THE SUBSTITUTION IN
+             * BOTH DIRECTIONS, NOT ONLY WHEN THE REQUEST IS TOO SMALL.
+             *
+             * `memory.banks` is INERT for every DRAM technology. The
+             * organisation comes from `slots`, derived from the preset two
+             * lines above, and this block only ever corrected `num_banks`
+             * when it was below the per-chip minimum. Measured on 1.11.83,
+             * config-load scope, DDR4:
+             *
+             *   banks: 16, 32, 128, 256, 1024 -> BYTE-IDENTICAL output
+             *   banks: 1 vs banks: 16         -> differ by ONE line, the
+             *                                    warning; the tree, the
+             *                                    geometry and every number
+             *                                    are the same
+             *
+             * and the same on DDR3, LPDDR5 and GDDR6 (16 vs 64: zero diff
+             * lines; 2 vs 16: one, the warning). So a DDR4 cell configured `banks: 16`
+             * has always simulated the preset's 128, and said nothing.
+             *
+             * That also makes docs/yaml_reference.md's per-technology table
+             * wrong: its "`banks: 16` gives -> 16, as asked" rows are not
+             * what runs. The table is corrected in the same release.
+             *
+             * This matters beyond tidiness because every corpus config sets
+             * `banks: 16`, so every DRAM cell's config understates the device
+             * it simulated by 8x, and a reader of those configs -- or of the
+             * table -- would not know. The number itself does not move: the
+             * runs were always the preset's, and nothing here changes what is
+             * simulated. Only the silence ends. */
             int tech_min_banks = banks_per_bg * bg_per_chip;  // minimum per chip
-            if (config.num_banks < tech_min_banks) {
-                const int tech_banks = banks_per_bg * bg_per_chip * chips_per_rank;
-                std::cerr << "WARNING: " << tech << " technology requires at least "
-                          << tech_min_banks << " banks per chip ("
-                          << banks_per_bg << " banks/BG x " << bg_per_chip << " BG/chip). "
-                          << "User specified num_banks=" << config.num_banks
-                          << ". Using the technology's bank count of " << tech_banks
-                          << ".\n";
-                config.num_banks = tech_banks;  // enforce minimum
+            const int tech_banks = banks_per_bg * bg_per_chip * chips_per_rank;
+            if (config.num_banks != tech_banks) {
+                std::cerr << "WARNING: " << tech << " simulates its PRESET bank"
+                             " count, not memory.banks. The configuration asked"
+                             " for " << config.num_banks << "; this run uses "
+                          << tech_banks << " (" << banks_per_bg << " banks/BG x "
+                          << bg_per_chip << " BG/chip x " << chips_per_rank
+                          << " chips/rank, minimum " << tech_min_banks
+                          << " per chip)";
+                if (config.num_banks < tech_min_banks) {
+                    std::cerr << ". The request was below the technology's"
+                                 " per-chip minimum";
+                }
+                std::cerr << ". memory.banks is honoured for SRAM and the NVMs,"
+                             " where no preset fixes the organisation, and is"
+                             " INERT for every DRAM technology -- the preset is"
+                             " the authority (R1/R6). Nothing about this run is"
+                             " wrong; the knob simply does not steer it.\n";
+                config.num_banks = tech_banks;
             }
         } else {
             // SRAM/NVM: user controls the organization freely

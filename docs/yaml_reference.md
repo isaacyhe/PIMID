@@ -198,20 +198,35 @@ memory:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `memory.technology` | string | `"SRAM"` | Memory technology. See [Memory Technologies](#memory-technologies). |
-| `memory.banks` | int | `4` | Number of memory banks. A DRAM technology enforces its own minimum and SUBSTITUTES its full count if you ask for less -- see the table below. |
+| `memory.banks` | int | `4` | Number of memory banks. Honoured for SRAM and the NVMs. **INERT for every DRAM technology**, which always simulates its preset's full bank count -- see the table below. |
 
-Per-technology bank minimums, and what a request of `banks: 16` actually
-runs (measured on 1.11.77; the run prints a WARNING naming both numbers when
-it substitutes):
+Per-technology bank counts, and what a request of `banks: 16` actually runs.
 
-| technology | minimum per chip | `banks: 16` gives |
+CORRECTED IN 1.11.84, on FOUR of its eight rows. The previous version said
+`banks: 16` ran "16, as asked" on DDR3, DDR4, DDR5-3200, LPDDR5 and GDDR6.
+Measured, it runs 64, 128, 128, 16 and 32. Only the LPDDR5 row was right, and
+it was right by coincidence: LPDDR5's preset count IS 16, so nothing is
+substituted there. HBM2, HBM3 and DDR5-4800 were already correct.
+`memory.banks` is INERT for every DRAM technology: the organisation comes
+from the preset, and the knob only ever decided whether a warning printed.
+Measured at config-load scope on 1.11.83 -- DDR4 at `banks:` 16, 32, 128, 256
+and 1024 produces BYTE-IDENTICAL output, and `banks: 1` differs from
+`banks: 16` by exactly one line, the warning itself. DDR3, LPDDR5 and GDDR6
+behave the same (16 against 64: zero differing lines).
+
+Since 1.11.84 the run says so on every DRAM cell whose `memory.banks` differs
+from the preset's count, which includes every corpus config (they set 16).
+Nothing about those runs changed -- they always simulated the preset's count;
+only the silence ended.
+
+| technology | minimum per chip | what `banks: 16` ACTUALLY runs |
 |---|---:|---|
-| DDR3 | 8 (8 banks/BG x 1 BG) | 16, as asked |
-| DDR4 | 16 (4 x 4) | 16, as asked |
-| DDR5 at grade 3200 | 16 (2 x 8) | 16, as asked |
+| DDR3 | 8 (8 banks/BG x 1 BG) | **64** (8 x 1 x 8 chips/rank) |
+| DDR4 | 16 (4 x 4) | **128** (4 x 4 x 8 chips/rank) |
+| DDR5 at grade 3200 | 16 (2 x 8) | **128** (2 x 8 x 8 chips/rank) |
 | DDR5 at grade 4800 / 5600 | 32 (4 x 8) | **256** (the 16 Gb part's 8 chips x 32) |
-| LPDDR5 | 16 (4 x 4) | 16, as asked |
-| GDDR6 | 16 (4 x 4) per channel | 16, as asked |
+| LPDDR5 | 16 (4 x 4) | 16 -- its preset count IS 16, so no substitution |
+| GDDR6 | 16 (4 x 4) per channel | **32** (4 x 4 x 2 chips/rank) |
 | HBM2 | 32 (4 x 8) per channel | **256** |
 | HBM3 | 32 (4 x 8) per channel | **512** |
 

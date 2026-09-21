@@ -7,6 +7,49 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.84 -- audit round 6, part ten: a knob that never steered anything
+
+**R6-19: `memory.banks` is INERT for every DRAM technology, the run never
+said so, and the reference table said the opposite.**
+
+Found by sweeping the knob, which no audit round had done. At config-load
+scope on DDR4:
+
+    banks: 16, 32, 128, 256, 1024    BYTE-IDENTICAL output
+    banks: 1  against  banks: 16     differ by ONE line -- the warning itself
+
+and the same on DDR3, LPDDR5 and GDDR6 (16 against 64: zero differing lines;
+2 against 16: one). The organisation comes from the preset's derived slot
+count; `memory.banks` only ever decided whether a warning printed.
+
+So a DDR4 cell configured `banks: 16` has always simulated the preset's 128
+banks, and neither the run nor the documentation said so. Worse, the
+reference table's per-technology rows claimed `banks: 16` ran "16, as asked"
+on DDR3, DDR4, DDR5-3200, LPDDR5 and GDDR6. Measured, it runs 64, 128, 128,
+16 and 32 -- four of those five rows were wrong. The LPDDR5 row was right by
+coincidence: that part's preset count IS 16, so nothing is substituted and it
+is the one DRAM technology where `banks: 16` means what it says.
+
+EVERY CORPUS CONFIG SETS `banks: 16`, so every DRAM cell's configuration
+understates the device it simulated by 8x on DDR4. That is a reading of the
+configs, not a defect in the results -- the runs were always the preset's,
+which is the R1/R6 rule that the preset is the authority.
+
+The substitution now announces in BOTH directions rather than only when the
+request is below the per-chip minimum. The message names what was asked for,
+what is used, the organisation behind it, whether the request was under the
+minimum, and that the knob IS honoured for SRAM and the NVMs where no preset
+fixes the organisation. The reference table is corrected in the same release
+and says what it was corrected from.
+
+DATA IMPACT: NONE. No value, no organisation and no model changes -- every
+DRAM run already used the preset's count. What changes is that a run whose
+`memory.banks` does not match now says so, which is every corpus cell. The
+cell runner counts WARNING lines, so this will raise the count on DRAM cells
+by one.
+
+Gate 1193A.
+
 ## 1.11.83 -- audit round 6, part nine: a legal config that dumped core
 
 **A 4-bit DRAM device, asked for with the default NoC model, aborted the
