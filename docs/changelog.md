@@ -57,9 +57,17 @@ those moves numbers the corpus carries. What was not defensible was emitting
 the figure in silence, which is what every DDR3 power run did until now.
 
 DATA IMPACT: NONE. No value changes; this adds one warning line per affected
-technology per run. It fires on DDR3 and on nothing else in the supported
-lineup. The cell runner counts WARNING lines, so affected cells become
+node per run. The cell runner counts WARNING lines, so affected cells become
 visible in the census rather than having to be remembered.
+
+WHAT IT FIRES ON, stated precisely. At each technology's DEFAULT node it
+fires on DDR3 and on nothing else, because DDR3 alone is pinned to the 32 nm
+table. It ALSO fires on any technology whose node is set coarse explicitly,
+which is correct and was measured: SRAM at `technology.node_nm: 22` reports
+0.509 W and does not warn; the same SRAM at 45 nm warns at 7972x and reports
+255.2 W. So the guard is a node guard, not a DDR3 guard, and it protects
+every configuration that reaches the broken region rather than only the one
+that reaches it by default.
 
 Gates 1190A and 1190B. The warning fires on DDR3 under 1.11.81 and does not
 under 1.11.80; it carries all seven required facts; DDR4 and HBM3 at 22 nm do
