@@ -7,6 +7,77 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.81 -- audit round 6, part seven: a router that cannot be a router
+
+**R6-10: McPAT's router input BUFFER is priced ~1300x too high at 32 nm, and
+nothing said so.** Round 6 measured an 889x step in NoC dynamic power between
+CACTI's 22 nm and 32 nm tables on one configuration with the access count
+held equal (flits within 0.001%). It is not the tables: in the same runs the
+cores scale 1.97x and the memory controller 1.45x across that step, smoothly,
+off exactly those tables. Printing the router's three per-access
+sub-component energies localised it to one of them:
+
+    node    buffer          crossbar        arbiter        router area
+    22 nm   2.52878e-11 J   2.43908e-12 J   3.80320e-13 J    309347
+    32 nm   3.20495e-08 J   4.97276e-12 J   7.52750e-13 J    577069
+    ratio      1267x            2.04x           1.98x          1.87x
+
+The crossbar, the arbiter and the area all scale physically. The buffer does
+not. The ratio that needs no cross-node comparison at all is the one inside a
+single router: the buffer costs 10.4x its own crossbar at 22 nm and 6445x at
+32 nm. A buffer an order of magnitude above the crossbar it feeds is an
+ordinary router; three orders above is not.
+
+WHAT IT MEANS FOR PIMID. DDR3 is the only technology whose die generation
+(3x/2x) pins it to the 32 nm table, and that pin sets the McPAT node as well
+as the array table. So DDR3 alone reports a fabric power about 100x too high
+-- 16.73 W total and 89.07 W peak against 0.139-0.344 W and 0.53-0.74 W for
+the other six technologies, which are at 22 nm and are fine. No DRAM die
+dissipates 16 W of on-die fabric.
+
+ALSO ELIMINATED, each by measurement rather than argument: traffic; geometry;
+the power aggregation (every sum reconciles to 0.0004%); every parameter in
+22nm.dat against 32nm.dat (largest ratio 2.2x); the `-C_junc` zero that
+22nm.dat carries and the other node tables do not (restoring it moved total
+power 1.3%, not 939x -- and it is upstream CACTI, never edited in this repo);
+missing table sections; and the DRAM-periphery family factors.
+
+THIS RELEASE WARNS. It does not clamp, scale or refuse. Each router now
+cross-checks its buffer against its own crossbar and, above 100x, prints what
+it found, what the measured ratios are on both tables, that the defect is in
+the buffer solve rather than the technology inputs, that DDR3 is the only
+technology this reaches, and that the number is not usable. The threshold is
+a tripwire, not a model: 100x sits between the two measured ratios with an
+order of magnitude of margin either side.
+
+It warns rather than repairs because the repair is a ruling that has not been
+made -- fix the buffer solve, unpin the fabric from the die generation while
+keeping the pin for the array, or refuse the affected runs -- and each of
+those moves numbers the corpus carries. What was not defensible was emitting
+the figure in silence, which is what every DDR3 power run did until now.
+
+DATA IMPACT: NONE. No value changes; this adds one warning line per affected
+technology per run. It fires on DDR3 and on nothing else in the supported
+lineup. The cell runner counts WARNING lines, so affected cells become
+visible in the census rather than having to be remembered.
+
+Gates 1190A and 1190B. The warning fires on DDR3 under 1.11.81 and does not
+under 1.11.80; it carries all seven required facts; DDR4 and HBM3 at 22 nm do
+not warn on either binary; device scope is byte-identical on all seven
+technologies.
+
+1190A's remaining arm failed, and the arm was wrong rather than the binary:
+its list of "deterministic" quantities included the three NoC level dynamic
+powers, which are activity-scaled -- runtime dynamic is per-access energy
+times a measured access count -- so they move with an OMP run's cycle jitter.
+1190B re-scored it on the recorded logs in two halves. The ten genuinely
+deterministic quantities (per-access read and write energy, DQ interface,
+refresh, three areas, the CACTI stanza) are IDENTICAL. The three NoC level
+powers are checked as a band rather than an equality, and moved 2.66%, 2.66%
+and 2.66% -- the same factor on all three, which is the signature of an
+unchanged per-access energy scaled by a slightly different access count, and
+better evidence of no model change than equality on a noisy quantity.
+
 ## 1.11.80 -- audit round 6, part six: the comment said it printed them
 
 **R6-13: `buildNoCLevelsForMcPAT` documented that it printed every derived

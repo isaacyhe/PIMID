@@ -40,6 +40,7 @@
 #include <cmath>
 #include <assert.h>
 #include "noc.h"
+#include <set>
 
 // Clamp NaN/infinity/negative power values to 0.
 static inline double sanitize_power(double v) {
@@ -108,6 +109,73 @@ void NoC::init_router()
 			nocdynp.virtual_channel_per_port, &(g_tp.peri_global),
 			nocdynp.input_ports,nocdynp.output_ports, M_traffic_pattern);
 	//router->print_router();
+
+	/* PIMID 1.11.81 (audit round 6, R6-10): CROSS-CHECK THE BUFFER AGAINST
+	 * ITS OWN CROSSBAR, AND SAY SO WHEN IT IS ABSURD.
+	 *
+	 * Round 6 measured a 889x step in NoC dynamic power between CACTI's
+	 * 22 nm and 32 nm tables, on one config with the access count held
+	 * equal. It is not the tables: in the same runs the cores scale 1.97x
+	 * and the memory controller 1.45x across that step, smoothly and off the
+	 * same tables. Printing the router's three sub-component per-access
+	 * energies localised it to ONE of them --
+	 *
+	 *     22 nm  buffer 2.52878e-11  crossbar 2.43908e-12  arbiter 3.80e-13
+	 *     32 nm  buffer 3.20495e-08  crossbar 4.97276e-12  arbiter 7.53e-13
+	 *
+	 * -- the crossbar and arbiter scale ~2x, the INPUT BUFFER 1267x. The
+	 * ratio that needs no cross-node comparison is the one inside a single
+	 * router: the buffer costs 10.4x its crossbar at 22 nm and 6445x at
+	 * 32 nm. A buffer an order of magnitude above the crossbar it feeds is
+	 * an ordinary router; three orders above is not.
+	 *
+	 * The consequence in PIMID is that DDR3 -- the ONLY technology pinned to
+	 * the 32 nm table, because its die generation is 3x/2x -- reports a
+	 * fabric power roughly 100x too high, and with it a total and a peak
+	 * that no DRAM die could dissipate. Every other technology sits at 22 nm
+	 * and is unaffected.
+	 *
+	 * This WARNS; it does not clamp, scale or refuse. The repair is a
+	 * modelling ruling the user has not made yet (fix the buffer solve,
+	 * move the fabric off the generation pin, or refuse the affected runs),
+	 * and any of those moves numbers the corpus carries. What is not
+	 * defensible is emitting the figure in silence, which is what happened
+	 * for every DDR3 power run until this release.
+	 *
+	 * The threshold is a TRIPWIRE, not a model: 100x sits between the two
+	 * measured ratios with an order of magnitude of margin on each side. It
+	 * is chosen to catch this failure, and it will fire on any future node
+	 * or router shape that breaks the same way. */
+	{
+		static std::set<int> warned_nodes;
+		const double buf = router->buffer.power.readOp.dynamic;
+		const double xbar = router->crossbar.power.readOp.dynamic;
+		const double kAbsurdRatio = 100.0;
+		if (xbar > 0.0 && buf / xbar > kAbsurdRatio &&
+		    warned_nodes.insert(g_ip->F_sz_nm).second) {
+			std::cerr
+			  << "[NoC] WARNING: at " << g_ip->F_sz_nm << " nm the router's"
+			     " input BUFFER is priced at " << (buf / xbar)
+			  << "x its own crossbar (buffer " << buf << " J/access,"
+			     " crossbar " << xbar << ", arbiter "
+			  << router->arbiter.power.readOp.dynamic << "). A buffer more"
+			     " than " << kAbsurdRatio << "x the crossbar it feeds is not"
+			     " a physical router, so this level's dynamic power -- and"
+			     " every total and peak built on it -- is NOT usable."
+			     " Measured at 10.4x on the 22 nm table against 6445x at"
+			     " 32 nm, with the crossbar, the arbiter and the router area"
+			     " all scaling a physical ~2x between them, so the defect is"
+			     " in the buffer solve and not in the technology inputs."
+			     " In PIMID this reaches DDR3 alone, which is the only"
+			     " technology whose die generation pins it to the 32 nm"
+			     " table. NOT corrected here: the repair is a modelling"
+			     " ruling (fix the solve, unpin the fabric from the"
+			     " generation, or refuse these runs) and each moves corpus"
+			     " numbers. See audit round 6, R6-10."
+			  << std::endl;
+		}
+	}
+
 	area.set_area(area.get_area()+ router->area.get_area()*nocdynp.total_nodes);
 
 	double long_channel_device_reduction = longer_channel_device_reduction(Uncore_device);
