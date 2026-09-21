@@ -38,6 +38,7 @@
 // ---------------------------------------------------------------------------
 #include <string>
 #include <set>
+#include <cstdlib>
 #include <iostream>
 
 namespace Ramulator {
@@ -426,6 +427,49 @@ inline int devicesPerAccess(const std::string& tech,
  * ramulator_wrapper.h, the member is initialised to 0.0, and nothing in src/
  * or include/ or any YAML key ever calls it -- so the 8x lived in a branch
  * that never runs. It runs the first time anyone wires a YAML key to it. */
+/* 1.11.79 (audit round 6, R6-11): THE ACTIVATE TERM MUST NOT COME OUT NEGATIVE.
+ *
+ * Micron TN-41-01's activate/precharge energy is
+ *     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
+ * and it presumes IDD0 -- a cycling one-bank activate/precharge current --
+ * exceeds the standby currents it subtracts. Six of this file's nine rows
+ * satisfy that. The two 16 Gb DDR5 rows added in 1.11.66 from the MT60B
+ * addenda do not: at 4800B, IDD0 103 against IDD3N 142, so
+ * IDD0 x tRC = 4970 < IDD3N x tRAS + IDD2N x (tRC - tRAS) = 6041 pA.ns and
+ * the term is -1178 pJ. Measured consequence on a default-grade DDR5 cell:
+ * per-access read -0.344 nJ, write -1.164 nJ, "Total dynamic: -5.5 mJ" --
+ * a negative energy in a reported number, and DDR5-4800 is the corpus part.
+ *
+ * Which side is wrong is a CALIBRATION question this file must not answer by
+ * itself: either the row mis-transcribes the addendum, or the row is right and
+ * the formula does not transfer to a 32-bank DDR5 device whose all-banks-active
+ * IDD3N can legitimately exceed a one-bank IDD0. Both need the datasheet and a
+ * ruling. What is NOT in question is that a negative energy may not be printed
+ * as if it were a measurement, so the run refuses and says exactly why. */
+inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec& s,
+                                         double tRC, double tRAS, double e_actpre_pJ) {
+    if (e_actpre_pJ >= 0.0) return;
+    std::cerr << "[power] FATAL: the activate/precharge energy for '" << tech
+              << "' comes out NEGATIVE (" << e_actpre_pJ << " pJ), so the array "
+                 "energy this run would report is not a physical quantity.\n"
+                 "  Micron TN-41-01: E = Vdd x (IDD0 x tRC - IDD3N x tRAS - "
+                 "IDD2N x (tRC - tRAS)), which presumes IDD0 exceeds the standby "
+                 "currents it subtracts.\n"
+                 "  This row: IDD0 " << s.idd0 << ", IDD2N " << s.idd2n
+              << ", IDD3N " << s.idd3n << " mA at Vdd " << s.vdd
+              << " V, tRC " << tRC << " ns, tRAS " << tRAS << " ns"
+              << " -- IDD0 x tRC = " << (s.idd0 * tRC)
+              << " against " << (s.idd3n * tRAS + s.idd2n * (tRC - tRAS))
+              << " subtracted.\n"
+                 "  Either the IDD row mis-transcribes its datasheet, or the row "
+                 "is right and this formula does not transfer to this part (a "
+                 "32-bank DDR5 device's all-banks-active IDD3N can exceed a "
+                 "one-bank IDD0). Resolve the row in pimid_energy.h against the "
+                 "datasheet, or price this technology's array by another route; "
+                 "do not read the negative number." << std::endl;
+    std::exit(2);
+}
+
 inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
                           double tBurst, double bank_override_pJ_per_byte,
                           const std::string& device_width = "",
@@ -435,6 +479,7 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
                * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
     IDDSpec s = iddFor(tech);
     double e_actpre_pJ = s.vdd * (s.idd0 * tRC - s.idd3n * tRAS - s.idd2n * (tRC - tRAS));
+    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
     double e_rd_pJ     = s.vdd * (s.idd4r - s.idd3n) * tBurst;
     /* 1.11.52 (audit D003): the activate/precharge share is MEASURED, not
      * assumed. It is the dominant term -- on DDR4 the act+pre part is ~1.42
@@ -473,6 +518,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
                * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
     IDDSpec s = iddFor(tech);
     double e_actpre_pJ = s.vdd * (s.idd0 * tRC - s.idd3n * tRAS - s.idd2n * (tRC - tRAS));
+    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
     double e_wr_pJ     = s.vdd * (s.idd4w - s.idd3n) * tBurst;
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)
                                  ? row_miss_frac : 0.5;   // 1.11.52 (D003)

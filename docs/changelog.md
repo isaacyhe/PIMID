@@ -7,6 +7,73 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.79 -- audit round 6, part five: a negative energy stops being a number
+
+**R6-11: DDR5 at its default grade reports a NEGATIVE array energy on
+workloads that miss the row buffer often enough, from a per-activate energy
+that is negative on every workload.**
+A CORRECTION TO THE FIRST STATEMENT OF THIS FIX, made before it shipped. The
+sign is workload-dependent, because the activate term is weighted by the
+MEASURED row-buffer miss fraction. Same device, same placement, same bank
+count, same preset, only the workload size changed:
+
+    stream_triad 1 000 000   miss fraction 0.76693    read -0.344 nJ
+    stream_triad   200 000   miss fraction 0.625946   read +0.984 nJ
+
+That makes the defect worse rather than milder: the same unphysical
+per-activate energy sits behind both, and on the positive cell it is
+invisible. It also means this release refuses more than the cells that would
+have printed a negative -- the refusal reads the IDD row at config load, so
+it blocks every DDR5-4800 and DDR5-5600 run regardless of access mix. That is
+deliberate: a negative activate energy is not physical whatever happens to
+mask it downstream.
+ Found by the seven-technology full-run smoke on 1.11.78, which runs
+each fig3 shape with `--power`: DDR5 printed `Per-access: read=-0.344 nJ,
+write=-1.164 nJ` and `Total dynamic: -5.5 mJ`. DDR3 and DDR4 on the same
+shape printed 100.0 and 66.4 mJ.
+
+The cause is arithmetic, and it is exact. Micron TN-41-01's activate and
+precharge energy is
+
+    E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
+
+which presumes IDD0 -- a cycling one-bank activate/precharge current --
+exceeds the standby currents it subtracts. Seven of this tree's nine IDD rows
+satisfy that. The two 16 Gb DDR5 rows added in 1.11.66 from the held MT60B
+addenda do not:
+
+| row | IDD0 | IDD2N | IDD3N | IDD0 > IDD3N |
+|---|---:|---:|---:|---|
+| DDR5-3200 (8 Gb) | 55 | 34 | 42 | yes |
+| **DDR5-4800 (16 Gb, the default)** | **103** | **92** | **142** | **no** |
+| **DDR5-5600 (16 Gb)** | **53** | **49** | **91** | **no** |
+| DDR4 / DDR3 / LPDDR5 / GDDR6 / HBM2 / HBM3 | | | | yes |
+
+At 4800B: `IDD0 x tRC = 103 x 48.256 = 4970` against
+`IDD3N x tRAS + IDD2N x (tRC - tRAS) = 6041`, so the term is -1178 pJ and it
+dominates the positive burst term.
+
+**Which side is wrong needs a ruling, so this release does not guess.** Either
+the rows mis-transcribe the addenda, or they are right and TN-41-01 does not
+transfer to a 32-bank DDR5 part whose all-banks-active IDD3N can legitimately
+exceed a one-bank IDD0. Both readings need the datasheet. What is not in
+question is that a negative energy must not be printed as though it were a
+measurement, so the run now REFUSES, naming the technology, the value, the
+formula, the row's own currents and both possible causes.
+
+**This BLOCKS DDR5 at grades 4800 and 5600**, which is deliberate and is the
+point: the corpus's DDR5 is 4800, and those cells were producing a negative
+energy into the CSV. DDR5 at 3200 is unaffected (its row is physical), as are
+the other six technologies -- verified, all seven load clean except the two
+DDR5 grades that cannot produce a physical number. The refusal is raised at
+CONFIG LOAD, not when the power report is finally printed, so a corpus cell
+fails in seconds instead of simulating for hours and then aborting.
+
+If the preferred outcome is instead to keep DDR5 cycles and withhold only the
+energy, that is a smaller change on the same check -- say so and it will be
+made; it was not assumed, because a partially-filled power report is easier
+to misread than a refusal.
+
 ## 1.11.78 -- audit round 6, part four: three documentation rows that had gone stale
 
 Documentation only -- no source file outside `docs/` changes, so every number

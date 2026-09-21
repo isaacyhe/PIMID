@@ -3986,6 +3986,20 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             pimid::RamulatorWrapper lad("", tech);
             applyDramKnobs(lad, config);
             lad.initialize();
+            /* 1.11.79 (audit round 6, R6-11): FAIL HERE, NOT AFTER THE RUN.
+             *
+             * The array-energy model refuses when a technology's IDD row makes
+             * the TN-41-01 activate term negative (the two 16 Gb DDR5 rows do:
+             * IDD3N exceeds IDD0, and a default-grade DDR5 cell reported
+             * "Total dynamic: -5.5 mJ"). That refusal lives in the energy path,
+             * which a device run reaches only when it PRINTS its power report
+             * -- at the very end. A corpus cell would therefore simulate for
+             * hours and then abort with nothing to show. Asking for the number
+             * once here, while the ladder wrapper is already built and
+             * initialised with this run's knobs, moves the refusal to config
+             * load, where it costs seconds. The value is deliberately
+             * discarded; only the check matters. */
+            (void) lad.getArrayReadEnergyNJ();
             int    w[7]  = {0,0,0,0,0,0,0};
             double bw[7] = {0,0,0,0,0,0,0};
             w[0]  = lad.getSubarrayPortBits();    bw[0] = lad.getSubarrayBandwidth();
