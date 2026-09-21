@@ -7,6 +7,50 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.83 -- audit round 6, part nine: a legal config that dumped core
+
+**A 4-bit DRAM device, asked for with the default NoC model, aborted the
+process instead of running or refusing.** `memory.dram.device_width: x4` is a
+documented value, accepted by the wrapper's own validator alongside x8 and
+x16, and a 4-bit device is the mainstream server DRAM part. Asked for, it
+threw an uncaught `std::invalid_argument` out of the cycle-accurate H-tree
+builder --
+
+    Link width must be byte-aligned (multiple of 8) and >= 8 bits (got 4 bits)
+
+-- and the process died with SIGABRT and a core dump, after the configuration
+had been echoed and the run had started.
+
+Found by sweeping the device-width axis, which no audit round had done. The
+first cell of the sweep aborted.
+
+MEASURED, DDR3 with x4:
+
+    BANK placement, noc.model detailed      SIGABRT, core dumped
+    RANK placement, noc.model detailed      SIGABRT, core dumped
+    BANK placement, noc.model analytical    rc=0, 0.661991 W
+
+So it is the combination that fails, not the device; a coarser placement does
+not help; and the analytical model simulates this part today.
+
+The guard inside the builder is CORRECT and stays -- Garnet's links are
+byte-granular and a 4-bit rung cannot be built. What was wrong was where the
+user found out. The run now refuses at CONFIG LOAD, in seconds, naming the
+knob, the model that cannot take it, both ways forward (switch to the
+analytical NoC, or use an 8-bit or 16-bit device), and the fact that this is
+a limitation of the network model rather than of the part.
+
+Same shape as 1.11.79, which moved a negative-energy refusal from the end of
+a run to config load for the same reason: a configuration that cannot work
+should say so before it consumes anything.
+
+DATA IMPACT: NONE for any configuration that previously produced a result. No
+x4 run has ever produced a number on the detailed NoC -- it produced a core
+dump -- so nothing is withdrawn. x4 on the analytical NoC is untouched and
+still works. No corpus cell uses x4.
+
+Gate 1192A.
+
 ## 1.11.82 -- audit round 6, part eight: three zeros and a knob, explained
 
 Three observability gaps found by round 6's late scans, batched because each

@@ -14371,6 +14371,46 @@ int main(int argc, char** argv) {
     pimid::RamulatorWrapper::setRunWideKnobs(config.dram_device_width, config.ddr5_speed_grade,
                                              config.temperature_k, config.termination_pj_per_bit);
 
+    /* 1.11.83 (audit round 6): REFUSE A 4-BIT DEVICE ON THE DETAILED NoC HERE,
+     * INSTEAD OF DUMPING CORE LATER.
+     *
+     * `memory.dram.device_width: x4` is a legal, validated value and a 4-bit
+     * device is the mainstream server DRAM part. Asked for with the DEFAULT
+     * NoC model, it did not produce a result and it did not produce an error:
+     * it threw an uncaught std::invalid_argument out of the cycle-accurate
+     * H-tree builder -- "Link width must be byte-aligned (multiple of 8) and
+     * >= 8 bits (got 4 bits)" (internal_dram_network.cpp) -- and the process
+     * aborted with a core dump, after the configuration had been echoed and
+     * the run had begun.
+     *
+     * The guard it hits is CORRECT and stays: Garnet's links are byte-granular
+     * and a 4-bit rung cannot be built. What was wrong is where the user
+     * learns it. Measured, DDR3 with x4:
+     *
+     *     BANK placement, noc.model detailed      SIGABRT, core dumped
+     *     RANK placement, noc.model detailed      SIGABRT, core dumped
+     *     BANK placement, noc.model analytical    rc=0, 0.661991 W
+     *
+     * -- so the combination is what fails, the analytical model is a real
+     * escape, and the refusal can say so. Placement does not help, which is
+     * why this does not try to narrow by placement. */
+    if (config.dram_device_width == "x4" && config.noc_cycle_accurate) {
+        std::cerr
+          << "[config] FATAL: memory.dram.device_width x4 (a 4-bit device)"
+             " cannot be simulated on the DETAILED NoC, which is the default"
+             " model. The cycle-accurate H-tree builds byte-granular Garnet"
+             " links, so a 4-bit rung is rejected inside it -- previously as"
+             " an uncaught exception that aborted the process with a core"
+             " dump partway into the run. Either set noc.model: analytical,"
+             " which simulates this part today (DDR3 x4 at BANK placement"
+             " completes and reports 0.661991 W), or choose an 8-bit or"
+             " 16-bit device with memory.dram.device_width: x8 or x16. This"
+             " is a limitation of the detailed network model, not of the"
+             " device: 4-bit DRAM is a mainstream server part."
+          << std::endl;
+        return 2;
+    }
+
     /* Auto-derive memory controller type and parameters from technology.
      *
      * 1.11.57 (audit round 3, B009): DEVICE SCOPE ONLY here. In system scope
