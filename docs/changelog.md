@@ -7,6 +7,79 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.80 -- audit round 6, part six: the comment said it printed them
+
+**R6-13: `buildNoCLevelsForMcPAT` documented that it printed every derived
+parameter with its formula, and printed none of them.** The function's doc
+comment had read, since it was written:
+
+    All derived parameters (duty_cycle, chip_coverage) are printed with
+    formulas and can be overridden via YAML power.mcpat_overrides.
+
+The override half was true. The printing half was not. Across its ~290 lines
+the function contained exactly one output statement, reporting how many
+levels were skipped as pass-through wire; grepping all seven technologies'
+full-run logs for `duty` returned nothing. Three quantities that McPAT scales
+its NoC power by -- `total_accesses`, `duty_cycle`, `chip_coverage` -- were
+derived from measured traffic and handed over in silence, and a YAML override
+of any of them was equally silent.
+
+This is the same defect shape the round has now closed three times: 1.11.76
+made an unknown YAML section refuse instead of being discarded, 1.11.77 made
+the density and timing stamps say what they overrode, and 1.11.78 removed
+three stale `yaml_reference` rows. A claim in a comment is a claim.
+
+Each emitted level now prints its three derived values WITH the arithmetic
+that produced them, and says when YAML replaced one. The flat-NoC branch
+prints the same line, because the stale claim was about the function and a
+run down the other path must not be the silent one.
+
+COVERAGE, STATED RATHER THAN IMPLIED: the gate exercises the hierarchical
+branch on two technologies and does not exercise the flat one. That is not a
+hole that can be closed with a config -- `hierarchy_enabled` is set false in
+exactly one place, when `createInternalDRAMNetwork()` returns null, so the
+flat branch is a failure fallback and no corpus cell reaches it. Its print is
+defensive and untested, and is declared here as such.
+
+**And the range nobody was holding it to.** `duty` is documented in this same
+function as a "fraction of peak bandwidth [0,1]" and nothing checked it
+against that. McPAT scales a level's peak/TDP term linearly with it, so a
+level whose duty came out above 1.0 would be priced past saturation -- and
+with nothing printed, silently. It now WARNS, naming the level and the three
+inputs (accesses, net cycles, nodes) that produced the value.
+
+It deliberately does NOT clamp. A clamp would move a number the paper
+carries, on a path that has never been seen to fire, and this project's rule
+is to announce a substitution rather than perform one quietly -- the rule
+1.11.79 followed when it refused a negative energy instead of guessing an IDD
+value.
+
+DATA IMPACT: NONE. No derived value changes; the release adds output lines
+and one conditional warning. On every shape measured in round 6 the duty is
+orders of magnitude below 1.0 (roughly 4e6 packets shared across levels
+against 1.2e7 cycles x 9 nodes), so the new warning is latent on the current
+corpus. Verified by gates 1189A and 1189B.
+
+1189A scored 8 arms PASS and one FAIL, and the FAIL was the arm's fault, not
+the binary's: it demanded that a 1.11.80 full-run log be BYTE-IDENTICAL to a
+1.11.79 one once the new lines were stripped. All 315 differing lines were
+measured per-run quantities from a nondeterministic OMP run -- per-core cycle
+and latency counters, the phase-sampled `[ChanBW]` and `[GarnetBatch]` lines,
+the `[E17]` gap histograms (whole-run cycles 437390000 against 437410000,
+0.005% apart), the scheduler watchdog line, and a `.topo` filename carrying
+the PID. Full-run OMP cycles are not bit-stable, so byte-identity was the
+wrong standard to hold them to.
+
+1189B replaced that arm with two that assert the same claim correctly:
+DEVICE SCOPE, which IS bit-deterministic, byte-identical across all seven
+technologies (including DDR5, where both binaries refuse the default 4800
+grade and the arm asserts matching behaviour rather than success); and the
+twelve deterministic `--power` quantities that appear only in a full run --
+per-access read and write energy, DQ interface energy, refresh, three area
+figures and the CACTI stanza -- all identical. `Background` was excluded from
+that list, with cause: it is weighted by the measured power-down residency
+and so inherits the gap histogram's jitter, 478.689 against 478.683 mW.
+
 ## 1.11.79 -- audit round 6, part five: a negative energy stops being a number
 
 **R6-11: DDR5 at its default grade reports a NEGATIVE array energy on

@@ -6501,8 +6501,15 @@ static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
  * If hierarchy is enabled, creates one NoC instance per active level.
  * Otherwise, creates a single NoC from the flat topology config.
  *
- * All derived parameters (duty_cycle, chip_coverage) are printed with
- * formulas and can be overridden via YAML power.mcpat_overrides.
+ * All derived parameters (total_accesses, duty_cycle, chip_coverage) are
+ * printed with their formulas on a "[NoC] level N" line -- one per emitted
+ * level, plus the flat case -- and can be overridden via YAML
+ * power.mcpat_overrides, in which case the line says so. A duty outside its
+ * defined [0,1] range warns; it is deliberately NOT clamped.
+ *
+ * 1.11.80 (audit R6-13): this sentence claimed the printing for a long time
+ * before any of it happened. Whoever edits here next: the claim and the code
+ * are now the same thing, and they have to be kept that way.
  */
 static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
     const UnifiedConfig& config,
@@ -6739,6 +6746,51 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.duty_cycle = duty;
             nc.chip_coverage = chip_cov;
 
+            /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED.
+             *
+             * This function's own doc comment has claimed since it was written
+             * that "all derived parameters (duty_cycle, chip_coverage) are
+             * printed with formulas". They were not: the function's only
+             * output line reported skipped levels, and grepping a full run's
+             * log for "duty" returned nothing. Three numbers that McPAT scales
+             * its NoC power by were computed from measured traffic and handed
+             * over in silence, and an override of any of them was equally
+             * silent -- the same defect the 1.11.77 stamps were shipped to
+             * close one layer down.
+             *
+             * The duty is also documented IN THIS FUNCTION as a "fraction of
+             * peak bandwidth [0,1]" and nothing held it to that. McPAT scales
+             * the peak/TDP term linearly with it, so a level above 1.0 would
+             * be priced past saturation. This WARNS rather than clamps: a
+             * clamp would move a number the paper carries, on a path nobody
+             * has yet seen fire, and the project's rule is to announce a
+             * substitution rather than perform one quietly. On every shape
+             * measured in round 6 the duty is orders of magnitude below 1. */
+            std::cout << "  [NoC] level " << (lvl - pe_level)
+                      << " (" << nc.name << "): accesses " << level_accesses
+                      << " = " << garnet_packets << " packets x "
+                      << level_weight << "/" << surviving_weight
+                      << "; duty " << duty << " = accesses/(" << net_cycles
+                      << " net cycles x " << nodes << " nodes)"
+                      << "; chip_coverage " << chip_cov << " = 1/"
+                      << surviving_levels << " surviving levels"
+                      << (it_dc != overrides.end() || it_cc != overrides.end() ||
+                          it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
+                      << std::endl;
+            if (!(duty >= 0.0 && duty <= 1.0)) {
+                std::cerr << "[NoC] WARNING: level " << (lvl - pe_level)
+                          << " duty_cycle " << duty << " is outside [0,1], the"
+                             " range this quantity is defined on (fraction of"
+                             " peak bandwidth). McPAT scales this level's"
+                             " peak power linearly with it, so the reported"
+                             " figure is priced past saturation. NOT clamped:"
+                             " the value is reported as computed so the cause"
+                             " -- an access share, a cycle window or a node"
+                             " count -- can be found. Level accesses "
+                          << level_accesses << ", net cycles " << net_cycles
+                          << ", nodes " << nodes << "." << std::endl;
+            }
+
             levels.push_back(nc);
         }
     } else {
@@ -6789,6 +6841,30 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
         nc.total_accesses = accesses;
         nc.duty_cycle = duty;
+
+        /* 1.11.80 (R6-13): the flat branch gets the same announcement as the
+         * hierarchical one above. The doc comment's claim is about the
+         * FUNCTION, so a run that takes this path must not be the one that
+         * stays silent -- that is how the claim went stale in the first
+         * place. */
+        std::cout << "  [NoC] flat (" << nc.name << "): accesses " << accesses
+                  << "; duty " << duty << " = accesses/(" << flat_net_cycles
+                  << " net cycles x " << flat_nodes << " nodes)"
+                  << "; chip_coverage " << nc.chip_coverage
+                  << (it_dc != overrides.end() || it_cc != overrides.end() ||
+                      it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
+                  << std::endl;
+        if (!(duty >= 0.0 && duty <= 1.0)) {
+            std::cerr << "[NoC] WARNING: flat duty_cycle " << duty
+                      << " is outside [0,1], the range this quantity is"
+                         " defined on (fraction of peak bandwidth). McPAT"
+                         " scales peak power linearly with it, so the"
+                         " reported figure is priced past saturation. NOT"
+                         " clamped: the value is reported as computed so the"
+                         " cause can be found. Accesses " << accesses
+                      << ", net cycles " << flat_net_cycles << ", nodes "
+                      << flat_nodes << "." << std::endl;
+        }
 
         levels.push_back(nc);
     }
