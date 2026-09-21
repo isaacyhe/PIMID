@@ -2363,6 +2363,32 @@ static void getMemControllerConfig(UnifiedConfig& config) {
     // Validate user-specified controller against technology
     if (config.zsim_mem_controller_type != "auto") {
         std::string ct = config.zsim_mem_controller_type;
+        /* 1.11.85 (audit round 6, R6-20): AN UNKNOWN VALUE IS NOT A DEFAULT.
+         *
+         * This block recognised `md1`/`weavemd1` (removed, warns) and
+         * `ramulator` (checked against the technology), and let ANYTHING ELSE
+         * fall through in silence to the auto-derived controller. Measured on
+         * 1.11.84: `memory.controller.type: bogus` returns rc=0 and produces
+         * output BYTE-IDENTICAL to `auto`, with no message. A typo -- say
+         * `ramulater` -- therefore silently ran a different controller from
+         * the one asked for.
+         *
+         * 1.11.76 closed this exact class for unknown YAML SECTIONS, and
+         * `pim.pe.type` already refuses an unknown value with rc=1. This
+         * brings the enum VALUES into line with both. */
+        if (ct != "simple" && ct != "weavesimple" && ct != "ramulator" &&
+            ct != "md1" && ct != "weavemd1") {
+            std::cerr << "Error: memory.controller.type '" << ct
+                      << "' is not a controller this build has. Valid values"
+                         " are auto, simple, weavesimple and ramulator (md1"
+                         " and weavemd1 are accepted and warn: they were"
+                         " removed because M/D/1 queuing is always active in"
+                         " simple). An unrecognised value used to fall through"
+                         " to the auto-derived controller in silence, so a"
+                         " typo ran a different controller from the one asked"
+                         " for." << std::endl;
+            std::exit(2);
+        }
         // Reject removed types
         if (ct == "md1" || ct == "weavemd1") {
             std::cerr << "  [WARN] Controller type '" << ct << "' has been removed. "
@@ -12913,6 +12939,22 @@ int main(int argc, char** argv) {
                     // Connection mode: shared_io (default) or separate_endpoints
                     if (placement_node["connection"]) {
                         std::string conn = placement_node["connection"].as<std::string>();
+                        /* 1.11.85 (R6-20): the else-branch below used to
+                         * absorb EVERY unrecognised value into shared_io
+                         * without a word, so `separate_endpoint` (singular)
+                         * silently ran the opposite connectivity. */
+                        if (conn != "separate_endpoints" && conn != "shared_io") {
+                            std::cerr << "Error: pim.placement.connection '"
+                                      << conn << "' is not a connectivity mode"
+                                         " this build has. Valid values are"
+                                         " shared_io (the PE shares the memory"
+                                         " organisation's network interface)"
+                                         " and separate_endpoints (the PE has"
+                                         " its own). An unrecognised value used"
+                                         " to fall through to shared_io in"
+                                         " silence." << std::endl;
+                            std::exit(2);
+                        }
                         if (conn == "separate_endpoints")
                             config.pe_mem_connection = UnifiedConfig::PEMemConnectionMode::SEPARATE_ENDPOINTS;
                         else
@@ -13176,6 +13218,27 @@ int main(int argc, char** argv) {
                 // (the legacy noc.cycle_accurate boolean key was removed --
                 //  noc.model: analytical | detailed is the only selector)
                 config.noc_routing = yaml_cfg["noc"]["routing"].as<std::string>(config.noc_routing);
+                /* 1.11.85 (R6-20): an unknown routing algorithm was accepted
+                 * and then ignored, the run falling back to whatever the
+                 * topology derives. Empty stays legal and means "derive". */
+                if (!config.noc_routing.empty()) {
+                    static const char* kRouting[] = {"XY", "DOR", "TABLE", "CUSTOM",
+                                                     "SHORTEST", "NCA", "DIRECT"};
+                    bool known = false;
+                    for (const char* r : kRouting)
+                        if (config.noc_routing == r) { known = true; break; }
+                    if (!known) {
+                        std::cerr << "Error: noc.routing '" << config.noc_routing
+                                  << "' is not a routing algorithm this build"
+                                     " has. Valid values are XY, DOR, TABLE,"
+                                     " CUSTOM, SHORTEST, NCA and DIRECT; leave"
+                                     " it empty to derive one from the"
+                                     " topology. An unrecognised value used to"
+                                     " be accepted and then ignored."
+                                  << std::endl;
+                        std::exit(2);
+                    }
+                }
                 std::transform(config.noc_routing.begin(), config.noc_routing.end(),
                                config.noc_routing.begin(), ::toupper);
                 if (yaml_cfg["noc"]["vcs_per_vnet"]) config.noc_vcs_user_set = true;

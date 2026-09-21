@@ -7,6 +7,38 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.85 -- audit round 6, part eleven: three enums that took any word
+
+**R6-20: an unrecognised value on three documented enum knobs was accepted
+and then ignored, in silence.** Measured on 1.11.84, config-load scope:
+
+    memory.controller.type: bogus      rc=0, output BYTE-IDENTICAL to `auto`
+    pim.placement.connection: bogus    rc=0, silently ran shared_io
+    noc.routing: BOGUS_ROUTE           rc=0, silently derived from topology
+
+None of the three said anything. So a typo -- `ramulater`, or
+`separate_endpoint` without the s -- ran a DIFFERENT model from the one asked
+for and reported success.
+
+`pim.pe.type` already refuses an unknown value with rc=1, and 1.11.76 closed
+this exact class for unknown YAML SECTIONS. The enum VALUES are now brought
+into line with both: each of the three refuses with rc=2 and lists what it
+does accept. `noc.routing` left empty remains legal and still means "derive
+from the topology"; `md1` and `weavemd1` remain accepted and still warn that
+they were removed.
+
+Found by sweeping the knobs, the same method that produced everything from
+R6-10 onward. This one came from asking a simple question of four enums --
+what does a nonsense value do? -- and getting three different wrong answers
+and one right one.
+
+DATA IMPACT: NONE for any configuration that was already valid. Every
+documented value on all three knobs behaves exactly as before; only
+undocumented ones change, from silent acceptance to a refusal. No corpus
+config uses an undocumented value.
+
+Gate 1194A.
+
 ## 1.11.84 -- audit round 6, part ten: a knob that never steered anything
 
 **R6-19: `memory.banks` is INERT for every DRAM technology, the run never
