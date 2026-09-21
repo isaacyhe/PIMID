@@ -7,6 +7,46 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.82 -- audit round 6, part eight: three zeros and a knob, explained
+
+Three observability gaps found by round 6's late scans, batched because each
+is a string and none changes a number.
+
+**R6-17: the temperature knob moves less than a reader expects, and the run
+said only the smallest part of it.** Swept 300/350/400 K on DDR3, DDR4 and
+DDR5 -- an axis no audit round had touched. Identical behaviour on all three:
+per-access array energy 1.00x, refresh EXACTLY 2.00x, background 1.1-1.3x,
+leakage 20-39x. The refresh doubling is real and sourced (JESD halves tREFI
+above 85 C; 400 K is 127 C). The flat array energy is by construction --
+`iddFor(tech, T)` uses its temperature argument for exactly one thing,
+scaling tREFI, and returns every IDD column unchanged, because those columns
+are the datasheet's stated-condition values. That reading of JEDEC is
+defensible and is NOT changed here. What was not defensible is that the run
+printed only "leakage rows snapped to the nearest 10 C step", naming the
+smallest of the three effects, so that someone setting
+`power.temperature_k: 400` to model a hot device would get a bit-identical
+array energy and no hint that this is what a temperature means here. The note
+now states all three.
+
+**Three technologies print a termination energy of exactly zero, and all
+three are right, but only the source said why.** Found by exercising RANK
+placement, which no corpus cell uses and no audit round had run: at BANK the
+run correctly reports "no DQ crossing" and the whole interface path is
+untouched. At RANK, DDR3/DDR4/DDR5/GDDR6 give 12.360/3.045/1.283/0.661 nJ per
+read, falling by generation as they should -- and LPDDR5, HBM2 and HBM3 give
+0.000. Those zeros are sourced (LPDDR5's DQ ODT default is Disable, JESD209-5C
+Tbl 84; HBM rides an interposer unterminated, JESD238B cl. 9.1) but the
+citations lived in the source, so in a log a sourced zero looked exactly like
+an unmodelled one. The line now carries its own citation, the same way 1.11.77
+made the stamps say what they overrode.
+
+**The NoC level lines added in 1.11.80 did not name their node.** The function
+has two call sites, and the system-scope one loops over DEVICE nodes, so two
+devices' level lines would have run together. Device scope is unchanged.
+
+DATA IMPACT: NONE. Three output strings and one optional argument; no value,
+no model and no configuration changes. Gate 1191A.
+
 ## 1.11.81 -- audit round 6, part seven: a router that cannot be a router
 
 **R6-10: McPAT's router input BUFFER is priced ~1300x too high at 32 nm, and

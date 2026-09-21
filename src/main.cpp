@@ -6515,9 +6515,15 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
     const UnifiedConfig& config,
     const GarnetParsedStats& garnet,
     uint64_t total_cycles,
-    const std::map<std::string, double>& overrides)
+    const std::map<std::string, double>& overrides,
+    /* 1.11.82 (audit round 6): the system-scope call site loops over DEVICE
+     * nodes, so without a label two nodes' level lines would run together.
+     * Device scope passes nothing and the lines read as before. */
+    const std::string& node_label)
 {
     using NoCLevel = pimid::McPATWrapper::NoCLevelConfig;
+    const std::string lbl = node_label.empty() ? std::string("")
+                                               : (node_label + " ");
     std::vector<NoCLevel> levels;
 
     // Map PIMID topology string to McPAT type (0=bus, 1=router-based)
@@ -6766,7 +6772,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
              * has yet seen fire, and the project's rule is to announce a
              * substitution rather than perform one quietly. On every shape
              * measured in round 6 the duty is orders of magnitude below 1. */
-            std::cout << "  [NoC] level " << (lvl - pe_level)
+            std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                       << " (" << nc.name << "): accesses " << level_accesses
                       << " = " << garnet_packets << " packets x "
                       << level_weight << "/" << surviving_weight
@@ -6847,7 +6853,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
          * FUNCTION, so a run that takes this path must not be the one that
          * stays silent -- that is how the claim went stale in the first
          * place. */
-        std::cout << "  [NoC] flat (" << nc.name << "): accesses " << accesses
+        std::cout << "  [NoC] " << lbl << "flat (" << nc.name << "): accesses " << accesses
                   << "; duty " << duty << " = accesses/(" << flat_net_cycles
                   << " net cycles x " << flat_nodes << " nodes)"
                   << "; chip_coverage " << nc.chip_coverage
@@ -7367,9 +7373,31 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * placements the knob is the real process choice, as it should be. */
     mcfg.tech_node_nm = validateTechNodeNm(config.tech_node_nm, "device PE node");
     mcfg.temperature_k = config.temperature_k;   // 1.11.52: was a literal 350
+    /* 1.11.82 (audit round 6, R6-17): SAY WHAT THE KNOB DOES AND DOES NOT DO.
+     *
+     * This note named the smallest of the knob's three effects and was silent
+     * about the two larger ones. Measured across 300/350/400 K on DDR3, DDR4
+     * and DDR5, identically on all three: per-access array energy 1.00x,
+     * refresh EXACTLY 2.00x, background 1.1-1.3x, leakage 20-39x.
+     *
+     * The refresh factor is real and sourced -- JESD halves tREFI above 85 C,
+     * and 400 K is 127 C. The flat array energy is by construction:
+     * iddFor(tech, T) uses its temperature argument for exactly one thing,
+     * scaling trefi_ns, and returns every IDD column unchanged, because those
+     * columns are the datasheet's stated-condition values. That is a
+     * defensible reading of JEDEC and it is not changed here.
+     *
+     * What was not defensible is a reader setting power.temperature_k: 400 to
+     * model a hot device, getting a bit-identical array energy, and having
+     * nothing in the log tell them that is what a temperature means here. */
     if (config.temperature_k != 350)
         std::cout << "  [tech] temperature " << config.temperature_k
-                  << " K (leakage rows snapped to the nearest 10 C step)"
+                  << " K: CACTI leakage rows snap to the nearest 10 C step;"
+                     " DRAM tREFI follows temperature (JESD halves it above"
+                     " 85 C, so refresh power doubles); the IDD columns"
+                     " themselves are the datasheet's stated-condition values"
+                     " and do NOT move with this knob, so per-access array"
+                     " energy is temperature-independent by construction"
                   << std::endl;
 
     /* 1.11.2: placement x technology -> PE process family. Every row is
@@ -7765,7 +7793,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     // Build per-level NoC configs. Include the single-PE hierarchy case: the
     // in-memory network spans all memory-org levels regardless of PE count.
     if (config.num_pes > 1 || config.hierarchy_enabled) {
-        auto noc_levels = buildNoCLevelsForMcPAT(config, garnet, cycles, overrides);
+        auto noc_levels = buildNoCLevelsForMcPAT(config, garnet, cycles, overrides, "");
         mcpat.setNoCLevels(noc_levels);
     }
 
@@ -8303,6 +8331,34 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                              " (withPHY=1 at these placements), so charging"
                              " this too double-counts one crossing]"
                           << std::endl;
+                /* 1.11.82 (audit round 6): A SOURCED ZERO MUST SAY IT IS ONE.
+                 *
+                 * Three of the seven technologies print 0.000 nJ here, and
+                 * all three are CORRECT: LPDDR5 because JESD209-5C Tbl 84
+                 * gives DQ ODT default = Disable, HBM2 and HBM3 because HBM
+                 * rides an interposer unterminated (JESD238B cl. 9.1, see
+                 * cacti_io_wrapper.cpp). Those citations lived in the source
+                 * and nowhere a reader of a log would look, so a sourced zero
+                 * was indistinguishable from an unmodelled one -- the exact
+                 * ambiguity 1.11.77 removed for the stamps and 1.11.80 for the
+                 * NoC parameters. Found by exercising RANK placement, which no
+                 * corpus cell uses and no audit round had run. */
+                if (iface_term_rd_nj == 0.0 && iface_term_wr_nj == 0.0) {
+                    const std::string bt = config.memory_tech;
+                    std::cout << "      the termination terms are zero BY"
+                                 " CITATION, not for want of a model: ";
+                    if (bt == "HBM2" || bt == "HBM3") {
+                        std::cout << bt << " rides an interposer and its DQ is"
+                                     " unterminated (JESD238B cl. 9.1)";
+                    } else if (bt == "LPDDR5") {
+                        std::cout << "LPDDR5's DQ ODT default is Disable"
+                                     " (JESD209-5C Tbl 84 p.144)";
+                    } else {
+                        std::cout << "this technology's DQ ODT resolves to"
+                                     " disabled at these settings";
+                    }
+                    std::cout << "." << std::endl;
+                }
                 /* 1.11.59 printed a BAND here while LPDDR5's Rtt was
                  * unsourced. 1.11.63: JESD209-5C Tbl 84 p.144 gives DQ ODT
                  * default = Disable, so the default termination term is zero
@@ -10263,7 +10319,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     uint64_t dev_cycles = (zsim_stats.dev_wall_cycles > 0)
                                         ? zsim_stats.dev_wall_cycles
                                         : (g.total_cycles > 0 ? g.total_cycles : total_cycles);
-                    auto measured = buildNoCLevelsForMcPAT(config, g, dev_cycles, overrides);
+                    auto measured = buildNoCLevelsForMcPAT(config, g, dev_cycles, overrides, node.name);
                     if (measured.size() >= 2) {
                         mcpat.setNoCLevels(measured);
                         noc_from_measurement = true;
