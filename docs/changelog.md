@@ -7,6 +7,35 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.78 -- audit round 6, part four: three documentation rows that had gone stale
+
+Documentation only -- no source file outside `docs/` changes, so every number
+and every run is identical to 1.11.77. Round 6's last lane checked the
+`yaml_reference` defaults column against the code constructor. Most of it is
+accurate (scope, memory.technology, pim.pe.count, pim.pe.frequency_mhz,
+pim.placement.level, noc.model, technology.node_nm and power.temperature_k
+all match). Three rows did not.
+
+- **`memory.banks`** said "DRAM techs enforce minimum (DDR4 >= 16/chip)",
+  naming one technology and leaving out the consequence. Three technologies
+  SUBSTITUTE their full count when a config asks for less, and one of them
+  joined the group in 1.11.72: at grade 4800 or 5600 a DDR5 config that says
+  `banks: 16` simulates 256. The row now carries the measured per-technology
+  minimum and what `banks: 16` actually runs, for all eight cases including
+  both DDR5 grades.
+- **`memory.dram.device_width`** documented its default as `x8`. The code
+  default is UNSET, which resolves to each technology's own JEDEC default --
+  x8 for DDR3/DDR4/DDR5 but x16 for LPDDR5 and GDDR6, which have no other
+  preset upstream. The row now says so, notes that HBM refuses the key
+  outright, and records that an unrecognised value is refused since 1.11.76.
+- **`memory.subarrays_per_bank`** read "Subarrays per bank" with a default of
+  `4`. The 4 is a starting value that the run replaces: DRAM derives the
+  count from the preset's `bank_rows` over the subarray height, and since
+  1.11.73 a non-DRAM technology takes it from its own array model. The row
+  now says that, that setting the key overrides the derivation, and that the
+  family spellings `subbanks_per_bank` and `mats_per_bank` exist since
+  1.11.74.
+
 ## 1.11.77 -- audit round 6, part three: every stamp says what it overrode
 
 Two findings, both from asking the same question 1.11.72 raised: which of

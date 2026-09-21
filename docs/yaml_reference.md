@@ -198,10 +198,30 @@ memory:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `memory.technology` | string | `"SRAM"` | Memory technology. See [Memory Technologies](#memory-technologies). |
-| `memory.banks` | int | `4` | Number of memory banks. DRAM techs enforce minimum (DDR4 >= 16/chip). |
-| `memory.subarrays_per_bank` | int | `4` | Subarrays per bank. |
+| `memory.banks` | int | `4` | Number of memory banks. A DRAM technology enforces its own minimum and SUBSTITUTES its full count if you ask for less -- see the table below. |
+
+Per-technology bank minimums, and what a request of `banks: 16` actually
+runs (measured on 1.11.77; the run prints a WARNING naming both numbers when
+it substitutes):
+
+| technology | minimum per chip | `banks: 16` gives |
+|---|---:|---|
+| DDR3 | 8 (8 banks/BG x 1 BG) | 16, as asked |
+| DDR4 | 16 (4 x 4) | 16, as asked |
+| DDR5 at grade 3200 | 16 (2 x 8) | 16, as asked |
+| DDR5 at grade 4800 / 5600 | 32 (4 x 8) | **256** (the 16 Gb part's 8 chips x 32) |
+| LPDDR5 | 16 (4 x 4) | 16, as asked |
+| GDDR6 | 16 (4 x 4) per channel | 16, as asked |
+| HBM2 | 32 (4 x 8) per channel | **256** |
+| HBM3 | 32 (4 x 8) per channel | **512** |
+
+DDR5 joined the substituting group in 1.11.72: its default part moved to
+4800B / 16 Gb in 1.11.66, and that die carries 8 bank groups of 4 banks
+where the 8 Gb die carries 8 of 2. A config that says `banks: 16` on
+DDR5 therefore simulates 256, and says so.
+| `memory.subarrays_per_bank` | int | derived | Count of the tier one level below the bank. The `4` in the config struct is only a starting value: on a DRAM technology the run DERIVES the count as the preset's `bank_rows` / subarray height (512 rows, 1024 on HBM), and since 1.11.73 a non-DRAM technology takes it from its own array model (CACTI for SRAM, NVSim for the NVMs). Setting this key overrides the derivation, and the run says which key set it. Family spellings `memory.subbanks_per_bank` (SRAM) and `memory.mats_per_bank` (NVM) are accepted since 1.11.74 -- give exactly one, and the wrong family's word is refused. |
 | `memory.latency` | int | `-1` | Override memory latency in cycles. `-1` = auto from external models. |
-| `memory.dram.device_width` | string | `x8` | DRAM device width (`x4`/`x8`/`x16`) for the DDR family. Selects the org preset row and, since 1.11.66, the org Ramulator instantiates -- the two are bound by a live shape check. |
+| `memory.dram.device_width` | string | unset | DRAM device width for the DDR family (`x4`/`x8`/`x16`). Selects the org preset row and, since 1.11.66, the org Ramulator instantiates -- the two are bound by a live shape check. UNSET means each technology's own JEDEC default, which is x8 for DDR3/DDR4/DDR5 and x16 for LPDDR5 and GDDR6; it is not a literal x8. LPDDR5 accepts only x16 and GDDR6 only x8/x16 (their other presets do not exist upstream), and HBM refuses the key outright -- a stacked part has no x4/x8/x16 width. An unrecognised value is refused since 1.11.76. |
 | `memory.dram.ddr5_speed_grade` | int | `4800` | DDR5 speed grade, one of `3200`, `4800`, `5600` (since 1.11.66). Selects ONE part: timing preset (`DDR5_3200AN` / `DDR5_4800B` / `DDR5_5600B` -- the B bins at 4800/5600 because the Micron MT60B dies whose IDD currents are used are -48B/-56B parts), org (8 Gb at 3200, the 16 Gb MT60B die at 4800/5600), IDD row (Micron Rev A / Rev D addenda), and data rate. The 3200 row's IDD is unsourced (no held datasheet has a 3200 column) and is stated so. Any other value is a FATAL configuration error. |
 | `memory.dq_turnaround` | bool | `true` | Charge the shared DQ bus a direction-reversal penalty (JEDEC tWTR) between a write and a read. Since 1.11.65 the penalty is DERIVED as nWTR_L x tCK from the Ramulator timing preset the run selects (DDR3 7.5 ns, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 6.28, HBM2 8.33, HBM3 8.125 at the shipped presets; GDDR6 read 11.0 in 1.11.65 from a wrong clock, corrected in 1.11.66) and printed at load; earlier releases carried a hand-written table that had drifted 1.75x low for GDDR6. Set `false` for a design with a dedicated PIM interconnect and no shared bus. |
 
