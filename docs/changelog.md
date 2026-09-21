@@ -7,6 +7,56 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.77 -- audit round 6, part three: every stamp says what it overrode
+
+Two findings, both from asking the same question 1.11.72 raised: which of
+this object's literals does the preset overwrite, and does anyone see it
+happen? No number moves anywhere -- the only change to any run's output is
+four added NOTE lines across three technologies.
+
+**R6-9: three stamps write over the architecture object, and two of them did
+it in silence.** `applyPresetBankGroupingToArchitecture()` has announced its
+override since 1.11.72 -- that release exists because a silent one let an
+object literal describe a different part for six releases. Its two siblings
+did not:
+
+- The DENSITY stamp's announcement was guarded by `dt != "DDR4" && dt !=
+  "DDR5" && not HBM`, and said "<tech> has no architecture object ... every
+  other field is still DDR4-2400's". Both halves are false: DDR3, LPDDR5 and
+  GDDR6 have owned objects since 1.11.68/69/70, and the exclusion hid the one
+  place the stamp actually moves something -- at the default grade DDR5
+  simulates the 16 Gb part while its object literal says 8 Gb, so every
+  default DDR5 run silently re-stamped 1024 -> 2048 MB.
+- The TIMING stamp never announced at all. Measured, it moves three of the
+  seven: DDR5 15/15/15/32.5 -> 16.224/16.64/16.224/32.032 ns (its literal is
+  the 3200AN bin, the run simulates 4800B), HBM2 16/16/12.5/28 ->
+  16.66/16.66/14.994/33.32, HBM3 16/16/10/24 -> 16.25/16.25/16.25/33.125.
+  Those are exactly the literals 1.11.66 replaced -- the numbers have been
+  right since then, and the correction has been invisible since then too.
+
+Both now announce, once per technology and preset, in the same shape as the
+grouping NOTE: old values, new values, the preset they came from. Silence
+means the literal already agreed, which is true for DDR3, DDR4, LPDDR5 and
+GDDR6, and for DDR5 at grade 3200. Output cost: DDR5 +2 lines, HBM2 +1,
+HBM3 +1, the other four unchanged; nothing removed, and every added line is
+a NOTE.
+
+**R6-8: two objects were never checked against their own preset.**
+`applyPresetTimingsToArchitecture()` returned early for LPDDR5 and GDDR6,
+under a comment reading "LPDDR5 and GDDR6 own no object (they borrow DDR4's
+as an organization proxy)". That was true when it was written in 1.11.66 and
+false from 1.11.69 and 1.11.70, which gave each of them one. The list was
+never extended -- while the `owns_object` line eight lines below it already
+named them, so one function disagreed with itself about which technologies
+own an object. They were therefore the only objects in the tree whose timing
+literals were never verified against the preset they claim to describe. No
+number was wrong, because the per-technology getters short-circuit to
+`preset_timing_` for those two; what was missing is that the object agreed
+with the getter by luck rather than by construction. Extending the list is
+byte-for-byte identical on all seven technologies, which is both the proof
+that the literals were right and the reason it is safe. Three stale comments
+asserting the vanished DDR4-proxy arrangement are corrected with it.
+
 ## 1.11.76 -- audit round 6, part two: a misspelled section is no longer silent
 
 Four items from the same round (`_1166audit/R6_findings.md`). No number

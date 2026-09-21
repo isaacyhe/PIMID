@@ -560,25 +560,40 @@ void RamulatorWrapper::applyPresetDensityToArchitecture() {
     }
     if (chip_mb == 0 || bank_mb == 0) return;
 
-    const bool moved = (dram_arch_->organization.chip_size_mb != chip_mb) ||
-                       (dram_arch_->organization.bank_size_mb != bank_mb);
+    const uint64_t old_chip_mb = dram_arch_->organization.chip_size_mb;
+    const uint64_t old_bank_mb = dram_arch_->organization.bank_size_mb;
+    const bool moved = (old_chip_mb != chip_mb) || (old_bank_mb != bank_mb);
     dram_arch_->organization.chip_size_mb = chip_mb;
     dram_arch_->organization.bank_size_mb = bank_mb;
     if (rank_gb > 0) dram_arch_->organization.rank_size_gb = rank_gb;
 
-    if (moved && dt != "DDR4" && dt != "DDR5" && dt.rfind("HBM", 0) != 0) {
-        static bool announced_density = false;
-        if (!announced_density) {
-            announced_density = true;
-            std::cerr << "[mem] NOTE: " << dt << " has no architecture object, "
-                         "but its DENSITY no longer describes DDR4-2400's. "
-                         "chip_size_mb and bank_size_mb are stamped from the "
-                         "preset this run simulates, "
-                      << preset_org_.preset_name << " (" << chip_mb
-                      << " MB device, " << preset_org_.banks_in_density
-                      << " banks, " << bank_mb
-                      << " MB/bank). Every other field on the object is still "
-                         "DDR4-2400's." << std::endl;
+    /* 1.11.77 (audit round 6, R6-9): ANNOUNCE THE OVERRIDE, LIKE ITS SIBLING.
+     *
+     * This read: if moved AND dt is not DDR4, not DDR5 and not HBM -- and then
+     * said "<dt> has no architecture object, but its DENSITY no longer
+     * describes DDR4-2400's ... every other field on the object is still
+     * DDR4-2400's". Both halves are now false. DDR3, LPDDR5 and GDDR6 have
+     * owned objects since 1.11.68/69/70, so nothing reads DDR4's any more, and
+     * the exclusion list was written when they did. Worse, the exclusion hid
+     * the one place the stamp actually moves something: at the default grade
+     * DDR5 simulates the 16 Gb part while its object literal says 8 Gb, so
+     * every default DDR5 run silently re-stamps 1024 -> 2048 MB. Its sibling,
+     * applyPresetBankGroupingToArchitecture(), announces exactly that kind of
+     * override (1.11.72) -- two stamps in one file, one speaking and one not.
+     *
+     * The NOTE is now about what it is: the preset overriding an object
+     * literal, for whichever technology it happens to. Silence means the
+     * literal already agreed. */
+    if (moved) {
+        static std::set<std::string> said_density;
+        if (!anchor_quiet_ && said_density.insert(dt + preset_org_.preset_name).second) {
+            std::cerr << "[mem] NOTE: " << dt << " architecture object density "
+                      << old_chip_mb << " MB device / " << old_bank_mb
+                      << " MB per bank -> " << chip_mb << " MB / " << bank_mb
+                      << " MB, stamped from preset " << preset_org_.preset_name
+                      << " (" << preset_org_.banks_in_density
+                      << " banks; the object literal described a different part)."
+                      << std::endl;
         }
     }
 }
@@ -648,17 +663,32 @@ void RamulatorWrapper::applyPresetTimingsToArchitecture() {
     if (!dram_arch_) return;
     std::string dt = dram_type_;
     std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
-    /* 1.11.66 (round 5, A5/F8/F9 under ruling R8 "fix all"): the stamp now
+    /* 1.11.66 (round 5, A5/F8/F9 under ruling R8 "fix all"): the stamp
      * reaches EVERY technology that owns an architecture object -- DDR3/4/5
      * as before, and HBM2/HBM3, which the note above quantified and left
-     * OPEN pending a decision. The decision is R8. LPDDR5 and GDDR6 own no
-     * object (they borrow DDR4's as an organization proxy) and are served by
-     * the per-tech getters, which derive from preset_timing_ directly.
+     * OPEN pending a decision. The decision is R8.
      * The HBM literals this replaces: HBM2 tRP 12.5 / tRAS 28.0 against the
      * preset's 15.0 / 33.3 ns; HBM3 tRP 10.0 / tRAS 24.0 against 16.25 /
-     * 33.1 -- activate energy moves HBM2 +19%, HBM3 +47%. */
+     * 33.1 -- activate energy moves HBM2 +19%, HBM3 +47%.
+     *
+     * 1.11.77 (audit round 6, R6-8): LPDDR5 AND GDDR6 ARE ON THE LIST NOW.
+     * This block used to end "LPDDR5 and GDDR6 own no object (they borrow
+     * DDR4's as an organization proxy) and are served by the per-tech
+     * getters" -- true when it was written, and false from 1.11.69 and
+     * 1.11.70, which gave each of them its own object. The list was never
+     * extended, so those two were the only objects in the tree whose timing
+     * literals were never checked against the preset they claim to describe,
+     * while the `owns_object` line a few lines below already named them --
+     * one function disagreeing with itself about which technologies own an
+     * object. The getters still short-circuit to preset_timing_ for these
+     * two, which is why no number was wrong; stamping makes the object agree
+     * with the getter instead of merely happening to. Measured: extending the
+     * list changes nothing on any of the seven technologies, byte for byte,
+     * which is the proof that the literals were right AND the reason it is
+     * safe to protect them. */
     const bool ruled = (dt == "DDR3" || dt == "DDR4" || dt == "DDR5" ||
-                        dt == "HBM2" || dt == "HBM3");
+                        dt == "HBM2" || dt == "HBM3" ||
+                        dt == "LPDDR5" || dt == "GDDR6");
     if (!ruled) return;
 
     /* THE STALENESS GUARD. Upstream now throws a ConfigurationError if a
@@ -691,10 +721,45 @@ void RamulatorWrapper::applyPresetTimingsToArchitecture() {
         return;
     }
 
+    /* 1.11.77 (audit round 6, R6-9): THE THIRD STAMP SPEAKS TOO.
+     *
+     * Three stamps write preset facts over this object's literals -- density,
+     * bank grouping and these four times. Only the grouping announced it
+     * (1.11.72), and that release exists because a silent override let an
+     * object literal describe a different part for six releases without
+     * anyone seeing it. This one is silent in the same way and on the same
+     * technology: DDR5's object carries 24 x 0.625 = 15.0 ns, the 3200AN bin,
+     * while a default run simulates 4800B and is stamped to 16.224 ns. The
+     * stamp is right -- the preset is the authority (R1/R6) -- but a reader
+     * comparing the object against the run could not tell it had happened. */
+    const double old_trcd = dram_arch_->timing.tRCD_ns;
+    const double old_tcas = dram_arch_->timing.tCAS_ns;
+    const double old_trp  = dram_arch_->timing.tRP_ns;
+    const double old_tras = dram_arch_->timing.tRAS_ns;
     dram_arch_->timing.tRCD_ns = preset_timing_.tRCD_ns();
     dram_arch_->timing.tCAS_ns = preset_timing_.tCAS_ns();
     dram_arch_->timing.tRP_ns  = preset_timing_.tRP_ns();
     dram_arch_->timing.tRAS_ns = preset_timing_.tRAS_ns();
+    {
+        auto moved1 = [](double a, double b) { return (a > b ? a - b : b - a) > 1e-9; };
+        const bool t_moved = moved1(old_trcd, dram_arch_->timing.tRCD_ns) ||
+                             moved1(old_tcas, dram_arch_->timing.tCAS_ns) ||
+                             moved1(old_trp,  dram_arch_->timing.tRP_ns)  ||
+                             moved1(old_tras, dram_arch_->timing.tRAS_ns);
+        static std::set<std::string> said_timing;
+        if (t_moved && !anchor_quiet_ &&
+            said_timing.insert(dt + preset_timing_.preset_name).second) {
+            std::cerr << "[mem] NOTE: " << dt << " architecture object timings "
+                      << old_trcd << "/" << old_tcas << "/" << old_trp << "/" << old_tras
+                      << " -> " << dram_arch_->timing.tRCD_ns << "/"
+                      << dram_arch_->timing.tCAS_ns << "/" << dram_arch_->timing.tRP_ns
+                      << "/" << dram_arch_->timing.tRAS_ns
+                      << " ns (tRCD/tCAS/tRP/tRAS), stamped from preset "
+                      << preset_timing_.preset_name
+                      << " (the object literal described a different speed bin)."
+                      << std::endl;
+        }
+    }
     /* 1.11.66 (A5/F8): THE CLOCK AND THE BURST ARE STAMPED TOO. clock_freq_mhz
      * is the CK the ladder rungs and getSubarrayBandwidth() multiply widths
      * by, and HBM3's object carried 3200 -- rate/2, the convention both HBM3
@@ -2610,7 +2675,8 @@ double RamulatorWrapper::getEffectiveBandwidthPerPE(PIMGranularity granularity,
 
 /* 1.11.63 (R6-5): THE DDR3 LINE IS GONE FROM ALL FOUR OF THESE.
  *
- * DDR3 borrows the DDR4 architecture object as an organization proxy, so its
+ * DDR3 borrowed the DDR4 architecture object as an organization proxy when
+ * this note was written (it has owned its own since 1.11.68), so its
  * TIMINGS used to be intercepted here -- and the values intercepted with were
  * DDR3-1600K's (nCL 11 -> 13.75 ns), while the preset this tree simulates is
  * DDR3_1600H (nCL 9 at tCK 1250 ps -> 11.25 ns). One part, two bins, 22%
@@ -2634,9 +2700,16 @@ double RamulatorWrapper::getEffectiveBandwidthPerPE(PIMGranularity granularity,
  * 16 x 833 ps and 39 x 833 ps -- so no literal in this file states a bin the
  * preset already fixes. */
 double RamulatorWrapper::getTRCD() const {
-    // Techs WITHOUT their own spec struct borrow the DDR4 struct as an
-    // organization proxy (initialize()), so per-tech timing must take
-    // precedence over dram_arch_ here.
+    /* The two short-circuits below predate 1.11.69/70. They were written when
+     * GDDR6 and LPDDR5 had no object of their own and borrowed DDR4's as an
+     * organization proxy, so reading dram_arch_ would have returned DDR4's
+     * timing; taking preset_timing_ directly was the fix. Both now own an
+     * object, and since 1.11.77 (R6-8) that object is stamped from the same
+     * preset, so the two paths return the same number. The short-circuits are
+     * kept because they are the more direct route to the same value and
+     * because they still hold if an object is ever missing; they are no
+     * longer the only thing standing between these technologies and DDR4's
+     * timing. */
     /* 1.11.66 (round 5, F3/A4): DERIVED from the preset now that the preset
      * is on the right clock. The 14.8 literal this replaces WAS the vendor
      * value (Samsung K4Z Table 91 tRCDRD 15 ns at 14 Gbps) -- and the
@@ -2698,8 +2771,12 @@ double RamulatorWrapper::getTRP() const {
 
 double RamulatorWrapper::getTRAS() const {
     /* 1.11.46 (FIX-PRE-FLEET L170): the same per-tech precedence getTRCD has.
-     * DDR3/LPDDR5/GDDR6 borrow the DDR4-2400 arch struct as an ORGANIZATION
-     * proxy, but its TIMINGS fed the array-energy formulas (idd0*tRC -
+     * DDR3/LPDDR5/GDDR6 BORROWED the DDR4-2400 arch struct as an ORGANIZATION
+     * proxy when this was written -- all three have owned their own object
+     * since 1.11.68/69/70, and since 1.11.77 (R6-8) every one of those objects
+     * is stamped from its own preset, so the borrowing this note describes is
+     * history. The per-tech precedence below is kept for the reason in
+     * getTRCD(). Its TIMINGS fed the array-energy formulas (idd0*tRC -
      * idd3n*tRAS ...), pricing three technologies' arrays on a fourth's
      * clock. Values: DDR3-1600K from JESD79-3D (in hand, normative);
      * LPDDR5-6400 from the Micron datasheets in hand (tRAS min 42 ns);
