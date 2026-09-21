@@ -173,7 +173,15 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                                    int array_temperature_k = 350,   // 1.11.52 (D055)
                                    int access_line_bytes = 64,      // 1.11.56 (B018)
                                    const std::string& device_width = "",   // 1.11.66 (B4)
-                                   int ddr5_speed_grade = 4800) {          // 1.11.66 (B4/R8 #9)
+                                   int ddr5_speed_grade = 4800,            // 1.11.66 (B4/R8 #9)
+                                   /* 1.11.75 (audit round 6, R6-2): the tool's OWN nanoseconds,
+                                    * for callers that need a time rather than a cycle count.
+                                    * The return value is quantised to a whole host cycle --
+                                    * ZSim needs that -- and a caller who converts it back to ns
+                                    * gets the quantum, not the array. At the corpus's 500 MHz
+                                    * the quantum is 2 ns, the same order as a whole non-DRAM
+                                    * array access, so the round trip was the number. */
+                                   double* out_latency_ns = nullptr) {
     double latency_ns = 0.0;
 
     /* 1.11.56 (audit B018): the SRAM/NVM array queries hardcoded a 512-bit
@@ -350,6 +358,9 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             latency_ns = wrapper.getTRCD() + wrapper.getTCAS();
         }
     }
+
+    // 1.11.75 (R6-2): hand back the unquantised time before rounding.
+    if (out_latency_ns) *out_latency_ns = latency_ns;
 
     // Convert nanoseconds to cycles: cycles = latency_ns * freq_mhz / 1000
     double cycles = latency_ns * frequency_mhz / 1000.0;
@@ -2454,13 +2465,38 @@ static void getMemControllerConfig(UnifiedConfig& config) {
         config.zsim_mem_controller_type = "simple";
         double acc_ns = -1.0;
         try {
+            /* 1.11.75 (audit round 6, R6-2): ASK FOR THE TIME, NOT THE CYCLE.
+             *
+             * This read the RETURN value -- a whole number of host cycles --
+             * and converted it back to nanoseconds, so the cap was built from
+             * the quantum rather than from the array. At the corpus's 500 MHz
+             * the quantum is 2 ns, which is the same order as a whole non-DRAM
+             * array access, so the round trip did not round the number, it
+             * replaced it: SRAM 0.219 ns became 2.0 (round(0.109) = 0, clamped
+             * up to one cycle: the cap 9.1x low), PCM 2.832 -> 2.0 (cap 41.6%
+             * high), STT-MRAM 3.298 -> 4.0 (17.6% low), ReRAM 3.487 -> 4.0
+             * (12.8% low). The cap is written into the generated ZSim config as
+             * the memory controller's bandwidth, so it is the service rate of
+             * every non-DRAM cell. The cycle count still rounds -- ZSim needs
+             * an integer -- and is kept as the fallback if the tool declines to
+             * report a time, which is announced rather than substituted. */
+            double exact_ns = -1.0;
             int lat_cy = getMemoryLatencyCycles(tech, config.frequency_mhz,
                                                 config.tech_node_nm, false, -1.0,
                                                 -999, config.temperature_k,
                                                 config.cache_line_size,
-                                                config.dram_device_width, config.ddr5_speed_grade);
-            if (lat_cy > 0 && config.frequency_mhz > 0)
+                                                config.dram_device_width, config.ddr5_speed_grade,
+                                                &exact_ns);
+            if (exact_ns > 0.0) {
+                acc_ns = exact_ns;
+            } else if (lat_cy > 0 && config.frequency_mhz > 0) {
                 acc_ns = lat_cy * 1000.0 / config.frequency_mhz;
+                std::cerr << "[bw] NOTE: " << tech << " array model reported no access "
+                             "TIME; the cap falls back to the rounded cycle count ("
+                          << lat_cy << " cy at " << config.frequency_mhz << " MHz = "
+                          << acc_ns << " ns), which is the host quantum and not the array."
+                          << std::endl;
+            }
         } catch (const std::exception& e) {
             std::cerr << "[bw] " << tech << " array characterization failed ("
                       << e.what() << ")" << std::endl;

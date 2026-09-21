@@ -7,6 +7,81 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.75 -- audit round 6: the cap asks for a time, and each bridge side follows its own level
+
+Audit round 6 (`_1166audit/R6_findings.md`) covers the 1.11.66..1.11.74 diff
+(27 files, ~2100 insertions) plus two tree-wide sweeps of defect classes the
+1.11.73 CACTI find exposed. Two REAL findings, both fixed here; two DISCUSS
+items recorded for a ruling; ten areas audited clean and listed so the next
+round does not re-walk them.
+
+**R6-2: the non-DRAM memory-controller bandwidth was built from a host cycle,
+not from the array.** The `[bw] <tech> M/D/1 cap` derivation called
+`getMemoryLatencyCycles()`, which ends in `round(latency_ns * freq / 1000)`
+clamped to at least 1, and then converted that whole cycle back to
+nanoseconds. At the corpus's 500 MHz the quantum is 2 ns -- the same order as
+an entire non-DRAM array access -- so the round trip did not round the number,
+it replaced it. The cap is written into the generated ZSim config as the
+memory controller's `bandwidth`, so it is the service rate of every fig2 cell.
+Measured, fig2 shape (256 banks, 64 B line):
+
+| tech | array model | cap used | cap now | was |
+|---|---|---|---|---|
+| SRAM | 0.21856 ns | 2.0 ns | 74 963 426 MB/s | 8 192 000 (9.1x low) |
+| PCM | 2.83215 ns | 2.0 ns | 5 785 004 MB/s | 8 192 000 (41.6% high) |
+| STT_MRAM | 3.29773 ns | 4.0 ns | 4 968 266 MB/s | 4 096 000 (17.6% low) |
+| RERAM | 3.48713 ns | 4.0 ns | 4 698 419 MB/s | 4 096 000 (12.8% low) |
+
+SRAM's was a clamp rather than a rounding: 0.219 ns is 0.109 cycles, which
+rounds to zero and is then raised to one whole cycle. `getMemoryLatencyCycles()`
+now reports the unquantised nanoseconds through an optional out-parameter; the
+return value still rounds, because ZSim needs an integer, and the rounded
+figure remains the fallback with a NOTE if a model declines to report a time.
+
+**R6-1: the non-DRAM sourced L0 link never reached its bridge.** 1.11.57
+(C005) established that "bridge[i] spans level i and level i+1, and its
+ingress and egress links ARE those two levels' links", but the loop wrote
+BOTH sides only when BOTH adjacent levels were sourced -- invisible while the
+only caller sourced all seven levels at once. 1.11.73 gave SRAM and the NVMs a
+sourced L0 by populating index 0 alone, so level 0 was re-described and bridge
+0 was not: measured, SRAM's L0 moved 128 -> 512 bits and STT-MRAM's 64 -> 512
+while the bridge ladder stayed `5/5/5/5/5/5`, bridge 0 still serialising over
+the table's 64-bit ingress at the table's clock. The two halves of one
+boundary described different buses -- the defect C005 exists to prevent,
+reintroduced for the non-DRAM families by this project's own release. Each
+side now follows its own level independently, which is bit-identical when
+every level is sourced and correct when only some are. Bridge 0 on SRAM goes
+5 -> 6 PE cycles: its router term now ticks at the subbank's own 0.49 GHz
+(512 bits per CACTI cycle time) instead of the table's assumed clock.
+
+**Measured.** All seven DRAM technologies are byte-identical in device scope
+against 1.11.74 -- the DRAM ladder sources every level, so the bridge change
+is a no-op there, and the bandwidth fix touches only the non-DRAM branch.
+DDR5 in system scope is byte-identical too.
+
+**Neither fix moves the corpus, and that is measured, not assumed.** fig2 is
+BANK placement, so bridge 0 sits below the PE and is not traversed; and the
+cap, though it was wrong by up to 9.1x, does not bind at the fig2 working
+set. SRAM full-run cycles are bit-identical (1 229 802 both). PCM was run
+3 x 3: new 1 257 542 / 1 257 542 / 1 260 057, old 1 257 542 / 1 260 078 /
+1 257 542 -- the two populations interleave, the means separate by 0.0006%
+against a within-binary spread of 0.20%, and the single-pair -0.40% the gate
+first reported was scatter. What the fixes correct is a number the run
+reports and emits into the generated ZSim config as the memory controller's
+bandwidth; it would bind on a bandwidth-bound configuration, and it is wrong
+in the ledger and in the emitted config until fixed either way.
+
+**Recorded for a ruling, NOT changed here.** (1) One SRAM array is
+characterised twice in a single run, 11.2x apart, and both numbers are live:
+the flat path asks CACTI for a 1-way RAM (0.2186 ns) and feeds the bandwidth
+cap, while the plugin `SRAMModel` asks for an 8-way cache in 8 banks
+(2.4404 ns) and feeds the PE tier latency. This is the re-sim plan's decision
+6, now quantified. (2) DDR5 is modelled as one 64-bit channel while JESD79-5
+defines two independent 32-bit sub-channels per DIMM; unlike GDDR6, whose two
+channels sit inside one device, DDR5's are formed from different device groups
+and Ramulator2's own organisation is `Ch = 1`, so the present value describes
+what is simulated and the gap belongs in the documentation.
+
 ## 1.11.74 -- the tier below the bank is named consistently everywhere
 
 Follow-up to 1.11.73 after the user's review (2026-09-20): "make sure the

@@ -1520,14 +1520,32 @@ void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],
      * a reader can still see them for what they are. A YAML level override
      * applied after this changes the level and not the bridge, which is the
      * same division of authority as before. */
+    /* 1.11.75 (audit round 6, R6-1): EACH SIDE FOLLOWS ITS OWN LEVEL.
+     *
+     * The rule above is per BOUNDARY, but the two descriptions it sets are per
+     * SIDE, and this loop required BOTH adjacent levels to be sourced before
+     * it wrote EITHER. That was invisible while the only caller sourced all
+     * seven levels at once (the DRAM ladder). 1.11.73 gave SRAM and the NVMs a
+     * sourced L0 by calling this function with index 0 alone populated, so
+     * level 0 was re-described and bridge 0 was not -- the two halves of one
+     * boundary describing different buses, which is the defect this block
+     * exists to prevent. Measured: SRAM's L0 moved 128 -> 512 bits and
+     * STT-MRAM's 64 -> 512 while bridge 0 stayed on the table's 64-bit ingress
+     * at the table's clock, so a PE placed at the subbank or the mat serialised
+     * its payload over a link the level no longer had.
+     *
+     * Splitting the guard is bit-identical when every level is sourced (both
+     * sides written, same values as before) and correct when only some are. */
     for (int b = 0; b < NUM_TIER_BOUNDARIES; ++b) {
         const int lo = b, hi = b + 1;
-        if (width_bits[lo] <= 0 || bandwidth_GBs[lo] <= 0.0) continue;
-        if (width_bits[hi] <= 0 || bandwidth_GBs[hi] <= 0.0) continue;
-        bridges_[b].lower_width_bits     = width_bits[lo];
-        bridges_[b].upper_width_bits     = width_bits[hi];
-        bridges_[b].lower_frequency_mhz  = network_configs_[lo].frequency_GHz * 1000.0;
-        bridges_[b].upper_frequency_mhz  = network_configs_[hi].frequency_GHz * 1000.0;
+        if (width_bits[lo] > 0 && bandwidth_GBs[lo] > 0.0) {
+            bridges_[b].lower_width_bits    = width_bits[lo];
+            bridges_[b].lower_frequency_mhz = network_configs_[lo].frequency_GHz * 1000.0;
+        }
+        if (hi < NUM_HIERARCHY_LEVELS && width_bits[hi] > 0 && bandwidth_GBs[hi] > 0.0) {
+            bridges_[b].upper_width_bits    = width_bits[hi];
+            bridges_[b].upper_frequency_mhz = network_configs_[hi].frequency_GHz * 1000.0;
+        }
     }
 }
 
