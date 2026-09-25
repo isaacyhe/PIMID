@@ -470,15 +470,57 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
     std::exit(2);
 }
 
+/* 1.11.86 (audit round 6, R6-11 resolved): THE ONE-BANK STANDBY BASELINE.
+ *
+ * Micron TN-41-01 prices activate+precharge by subtracting, from the IDD0
+ * loop, the background that loop would have drawn anyway:
+ *
+ *   E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
+ *
+ * IDD0 is JEDEC's ONE-BANK activate-precharge current: the loop cycles a
+ * single bank while every other bank sits precharged. But IDD3N is specified
+ * with ALL banks active. So the subtracted baseline describes a different
+ * device state from the one IDD0 was measured in, and it over-subtracts by
+ * whatever the other banks' active standby costs.
+ *
+ * On an 8-bank DDR3 that error is small and the term stays positive, which is
+ * why the formula has stood. On a 32-bank DDR5 it is larger than the term
+ * itself. Verified against the cited tables rather than assumed -- Micron
+ * MT60B 16Gb Die Rev A Table 6 (p.17-19) and Die Rev D Table 8 (p.18-20),
+ * read at the x8 column, which is this model's device width:
+ *
+ *              IDD0   IDD2N   IDD3N        IDD0 > IDD3N?
+ *   DDR5-4800   103     92     142              no
+ *   DDR5-5600    53     49      91              no
+ *
+ * Both rows transcribe the datasheet CORRECTLY. The rows were never the
+ * defect; the baseline was. A 32-bank device really does draw more with all
+ * banks open than while cycling one, and nothing is wrong with the part.
+ *
+ * The baseline the IDD0 loop actually runs at is one bank active and the rest
+ * precharged. Deriving it from the two specified points, linear in the number
+ * of open banks:
+ *
+ *   IDD3N(1 bank) = IDD2N + (IDD3N - IDD2N) / banks_per_device
+ *
+ * which reduces to the published formula when banks_per_device is 1, and
+ * recovers TN-41-01's intent on every part. */
+inline double oneBankActiveStandbyMA(const IDDSpec& s, int banks_per_device) {
+    const int n = (banks_per_device > 0) ? banks_per_device : 1;
+    return s.idd2n + (s.idd3n - s.idd2n) / static_cast<double>(n);
+}
+
 inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
                           double tBurst, double bank_override_pJ_per_byte,
                           const std::string& device_width = "",
-                          double row_miss_frac = -1.0) {
+                          double row_miss_frac = -1.0,
+                          int banks_per_device = 1) {
     if (bank_override_pJ_per_byte > 0.0)
         return bank_override_pJ_per_byte * 64.0 / 1000.0
                * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
     IDDSpec s = iddFor(tech);
-    double e_actpre_pJ = s.vdd * (s.idd0 * tRC - s.idd3n * tRAS - s.idd2n * (tRC - tRAS));
+    const double idd3n_1b = oneBankActiveStandbyMA(s, banks_per_device);  // 1.11.86
+    double e_actpre_pJ = s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
     double e_rd_pJ     = s.vdd * (s.idd4r - s.idd3n) * tBurst;
     /* 1.11.52 (audit D003): the activate/precharge share is MEASURED, not
@@ -498,7 +540,8 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
 inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
                            double tBurst, double bank_override_pJ_per_byte,
                            const std::string& device_width = "",
-                           double row_miss_frac = -1.0) {
+                           double row_miss_frac = -1.0,
+                           int banks_per_device = 1) {
     /* 1.11.5 (audit): writes consult IDD4W, not read*1.2. Same shape as the
      * read term: activate/precharge share plus the write burst current. */
     /* 1.11.57 (latent D004): the RETIRED 1.2 is gone from here too. Two lines
@@ -517,7 +560,8 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
         return bank_override_pJ_per_byte * 64.0 / 1000.0
                * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
     IDDSpec s = iddFor(tech);
-    double e_actpre_pJ = s.vdd * (s.idd0 * tRC - s.idd3n * tRAS - s.idd2n * (tRC - tRAS));
+    const double idd3n_1b = oneBankActiveStandbyMA(s, banks_per_device);  // 1.11.86
+    double e_actpre_pJ = s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
     double e_wr_pJ     = s.vdd * (s.idd4w - s.idd3n) * tBurst;
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)

@@ -7,6 +7,70 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.86 -- R6-11 resolved: the rows were right, the baseline was wrong
+
+1.11.79 refused DDR5 at 4800 and 5600 because their activate energy came out
+negative, and said the cause was either a mis-transcribed IDD row or a formula
+that does not transfer to a 32-bank part. It was the second.
+
+**The rows are correct.** Read against the cited tables at the x8 column, which
+is this model's device width -- Micron MT60B 16Gb Die Rev A Table 6 (p.17-19)
+and Die Rev D Table 8 (p.18-20):
+
+    part          IDD0   IDD2N   IDD3N     IDD0 > IDD3N
+    DDR5-4800      103     92     142           no
+    DDR5-5600       53     49      91           no
+
+Micron really does specify IDD3N above IDD0 on both parts, and nothing is
+wrong with them. A 32-bank device draws more with all banks open than it does
+cycling one.
+
+**The baseline was wrong.** Micron TN-41-01 prices activate and precharge by
+subtracting, from the IDD0 loop, the background that loop would have drawn:
+
+    E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
+
+IDD0 is JEDEC's ONE-BANK activate-precharge current: it cycles a single bank
+while the others sit precharged. IDD3N is specified with ALL banks active. So
+the subtracted term describes a different device state from the one IDD0 was
+measured in, and over-subtracts by what the other banks' active standby costs.
+On an 8-bank DDR3 that error is small and the result stays positive, which is
+why the formula has stood. On a 32-bank DDR5 it exceeds the term itself.
+
+The baseline is now the standby the loop actually runs at, derived from the
+two specified points and linear in the number of open banks:
+
+    IDD3N(1 bank) = IDD2N + (IDD3N - IDD2N) / banks_per_device
+
+which reduces to the published formula at one bank and recovers TN-41-01's
+intent on every part. The bank count comes from the run's own organisation,
+so it follows the preset rather than a literal.
+
+**DATA IMPACT: every DRAM array energy moves, and this invalidates the
+existing corpus energies.** The shift is exactly
+`(IDD3N - IDD2N) x tRAS x (n-1)/n`, measured per-access read energy on one
+shape:
+
+    DDR3      11.425 -> 13.512 nJ   +18.3%
+    DDR4       6.893 ->  7.863 nJ   +14.1%
+    DDR5-3200  7.739 ->  8.755 nJ   +13.1%
+    DDR5-4800  refused -> 8.887 nJ  now runs
+    DDR5-5600  refused -> 3.820 nJ  now runs
+    LPDDR5     1.148 ->  1.332 nJ   +16.0%
+    GDDR6      0.673 ->  0.952 nJ   +41.5%
+    HBM2       0.856 ->  0.801 nJ    -6.4%
+    HBM3       0.308 ->  0.368 nJ   +19.5%
+
+HBM2 falls rather than rises because it is the one row whose IDD3N sits below
+its IDD2N (133 against 136, measured silicon -- see R6-16), so its correction
+term is negative. That is the row whose own per-chip spread makes its activate
+energy undetermined; this release does not change that and R6-16 stays open.
+
+1.11.79's refusal is kept as a guard. It should no longer fire on any
+supported part, and it will still catch a future row that breaks the identity.
+
+Gate 1195A.
+
 ## 1.11.85 -- audit round 6, part eleven: three enums that took any word
 
 **R6-20: an unrecognised value on three documented enum knobs was accepted

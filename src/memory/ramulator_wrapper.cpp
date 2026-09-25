@@ -2005,13 +2005,21 @@ double RamulatorWrapper::getArrayReadEnergyNJ() const {
     return Ramulator::pimid_energy::arrayReadNJ(
         energyKey(), getTRC(), getTRAS(), getTBurst(), energy_bank_override_pJ_per_byte_,
         device_width_,        // 1.11.46 (L181): whole-rank basis
-        row_miss_frac_);      // 1.11.52 (D003): measured row-miss fraction
+        row_miss_frac_,       // 1.11.52 (D003): measured row-miss fraction
+        /* 1.11.86 (R6-11): banks per DEVICE, so the activate term can subtract
+         * the one-bank standby the IDD0 loop actually runs at rather than the
+         * all-bank IDD3N the datasheet specifies. */
+        static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()));
 }
 double RamulatorWrapper::getArrayWriteEnergyNJ() const {
     return Ramulator::pimid_energy::arrayWriteNJ(
         energyKey(), getTRC(), getTRAS(), getTBurst(), energy_bank_override_pJ_per_byte_,
         device_width_,        // 1.11.46 (L181)
-        row_miss_frac_);      // 1.11.52 (D003)
+        row_miss_frac_,       // 1.11.52 (D003)
+        /* 1.11.86 (R6-11): banks per DEVICE, so the activate term can subtract
+         * the one-bank standby the IDD0 loop actually runs at rather than the
+         * all-bank IDD3N the datasheet specifies. */
+        static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()));
 }
 double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
     /* 1.11.40 (audit N8, user ruling: harness the model, do not table the
