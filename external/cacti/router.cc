@@ -32,6 +32,8 @@
 
 
 #include "router.h"
+#include <iostream>
+#include <cstdlib>
 #include <cmath>
 
 Router::Router(
@@ -162,7 +164,48 @@ void Router::buffer_stats()
   dyn_p.number_way_select_signals_mat = 1;
   dyn_p.number_subbanks_decode = 0;
   dyn_p.num_act_mats_hor_dir = 1;
-  dyn_p.V_b_sense = Vdd; // FIXME check power calc.
+  /* PIMID 1.11.87 (audit round 6, R6-10 root cause): TWO DEFECTS IN WHAT THIS
+   * FUNCTION HANDS THE MAT, ONE OF THEM AN UNINITIALISED READ.
+   *
+   * (1) dyn_p is DEFAULT-CONSTRUCTED above, and DynamicParameter's default
+   *     constructor initialises exactly three fields (use_inp_params, cell,
+   *     is_valid). `wtype` is not one of them. The Mat builds its subarray
+   *     output wire as `new Wire(dp.wtype, ...)`, and Wire dispatches on
+   *     that value: Global..Global_30 (0-4) select one of the static
+   *     repeated-wire tables and Low_swing (5) a different model. Wire's
+   *     `else { assert(0); }` is unreachable -- it is the else of
+   *     `if (wt != Low_swing) ... else if (wt == Low_swing)`, so ANY other
+   *     value takes the first branch, matches no inner case, and falls out
+   *     with repeater_spacing and repeater_size never assigned (they are not
+   *     in Wire's initialiser list). The Mat's output-driver stage then
+   *     computes gate_C(repeater_size * wire_length / repeater_spacing) on
+   *     two uninitialised doubles. Measured: wtype = 1072483532 at 32 nm.
+   *     That is why the buffer's Mat converged at some nodes and returned
+   *     NaN/inf at others with no physical pattern, why two routers in ONE
+   *     run could disagree, and why the failing set MOVED when unrelated
+   *     locals were added to this function -- and why even the "converged"
+   *     values were not trustworthy: they were whatever the garbage divided
+   *     out to. This field did not exist when upstream McPAT wrote this
+   *     router against CACTI 6.5; it arrived with this fork's CACTI 7.0
+   *     integration, and mat.cc's own commented-out original used g_ip->wt.
+   *     Every other DynamicParameter in the tree is built through the full
+   *     constructor, which sets it; this is the only default construction.
+   *
+   * (2) The bitline SENSE voltage was set to the full peripheral rail
+   *     (upstream FIXME). CACTI's own SRAM path uses 5% of the cell rail,
+   *     floored at VBITSENSEMIN. With the hp corner both rails read the same
+   *     table column, so the Mat's bitline-restore log had a ZERO
+   *     denominator on every node (probe: Vbitpre=0.8 V_b_sense=0.8 denom=0
+   *     at 22 nm). Correcting it moved the 22 nm buffer 2.53e-11 -> 2.19e-11
+   *     (-13%) with wtype still garbage; the converged value under BOTH
+   *     fixes is what the release ships, measured in gate 1196A.
+   *
+   * Neither fix invents a number: (1) uses the wire type the NoC constructor
+   * already chose for this interface (Global_30 when Embedded, i.e. every
+   * device-scope run; Global otherwise), (2) uses CACTI's own convention. */
+  dyn_p.wtype     = g_ip->wt;
+  dyn_p.V_b_sense = (0.05 * g_tp.sram_cell.Vdd > VBITSENSEMIN)
+                    ? 0.05 * g_tp.sram_cell.Vdd : VBITSENSEMIN;
   dyn_p.ram_cell_tech_type = 0;
   dyn_p.num_r_subarray = (int) vc_buffer_size;
   dyn_p.num_c_subarray = (int) flit_size * (int) vc_count;
@@ -201,6 +244,31 @@ void Router::buffer_stats()
   // Sanitize: if dynamic energy is NaN/Inf, fall back to analytical SRAM estimate
   // using Router's own gate_cap/diff_cap primitives (which use CACTI technology params).
   if (!std::isfinite(buff.power.readOp.dynamic)) {
+    /* PIMID 1.11.87: REFUSE, do not substitute. The estimate below was
+     * measured against the Mat where both exist: 1267x above it at 32 nm on
+     * the shipped convention, ~800x below it once its microns-for-metres unit
+     * error is corrected. A number that far from the model it stands in for
+     * is not a fallback, it is a different answer, and publishing it under
+     * the Mat's name is how DDR3 reported 16.73 W of fabric power for eleven
+     * releases. Under the corrected sense voltage the Mat converges on every
+     * node the corpus uses; where it still does not (65 and 90 nm, one router
+     * of two, cause not yet located -- see R6-10) the run stops here and says
+     * so, the way 1.11.79 stops on a negative array energy. */
+    std::cerr << "[cacti] FATAL: the router input-buffer Mat returned a"
+                 " non-finite dynamic energy (" << buff.power.readOp.dynamic
+              << ") at " << g_ip->F_sz_nm << " nm for a " << (int)vc_buffer_size
+              << " x " << ((int)flit_size*(int)vc_count) << " buffer ("
+              << (int)vc_count << " VCs x " << (int)flit_size << " b). The"
+                 " analytical estimate this build used to substitute was"
+                 " measured ~1000x off the Mat (audit round 6, R6-10), so no"
+                 " number is emitted for this level. This is a CACTI Mat"
+                 " convergence failure on a short, wide SRAM array at a coarse"
+                 " node; the corpus nodes (22 nm, and 32 nm for DDR3) converge."
+                 " Options: use a node at which the Mat converges, reduce"
+                 " noc.vcs_per_vnet or noc.buffers_per_vc, or run"
+                 " noc.model: analytical, which does not price a router."
+              << std::endl;
+    std::exit(2);
     int cols = (int)flit_size * (int)vc_count;
     int rows = (int)vc_buffer_size;
     // Per-cell wordline cap (access transistor gate) and bitline cap (access transistor drain)

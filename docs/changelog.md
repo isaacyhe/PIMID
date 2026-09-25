@@ -7,6 +7,83 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.87 -- R6-10 resolved: the router read a wire type nobody set
+
+Audit round 6 found DDR3 reporting 16.73 W of on-die fabric power against
+0.14-0.34 W for the other six technologies, and traced it to McPAT's router
+input buffer: CACTI's Mat returned NaN for it at 32 nm (DDR3's table), and a
+silent fallback substituted a number ~1267x larger. This release fixes what
+the router hands the Mat. There were two defects, and the second is the one
+that matters.
+
+**(1) `wtype` was stack garbage.** `Router::buffer_stats()` default-constructs
+its `DynamicParameter`, and that constructor initialises three fields; `wtype`
+is not among them. The Mat builds its subarray output wire on that value. Wire
+dispatches on it -- Global..Global_30 pick a repeated-wire table, Low_swing a
+different model -- and its `else { assert(0); }` is unreachable: it is the else
+of `if (wt != Low_swing) ... else if (wt == Low_swing)`, so any other value
+takes the first branch, matches no inner case, and falls out with
+`repeater_spacing` and `repeater_size` never assigned. The Mat's output-driver
+stage then divides by one uninitialised double and multiplies by another.
+Measured: `wtype = 1072483532` at 32 nm. Consequences, all now explained: the
+Mat converged at some nodes and returned NaN/inf at others with no physical
+pattern; two routers in one run disagreed (NaN against inf at 65 nm); and the
+set of failing nodes MOVED when unrelated locals were added to the function (45
+nm converged in one probe build and failed in the next); and even the values
+that "converged" were not trustworthy, being whatever the garbage divided out
+to. Every other `DynamicParameter` in the tree goes through the full
+constructor, which sets the field; this was the only default construction. The
+field did not exist when upstream McPAT wrote this router against CACTI 6.5 --
+it arrived with this fork's CACTI 7.0 integration (de23ed6d), and mat.cc's own
+commented-out original used `g_ip->wt`. The fix is that line: the wire type the
+NoC constructor already chose for this interface (Global_30 when Embedded,
+which is every device-scope run; Global otherwise).
+
+**(2) The bitline sense voltage was the full rail.** An upstream FIXME set
+`V_b_sense = Vdd`. CACTI's own SRAM path uses 5% of the cell rail floored at
+80 mV. With the hp corner the cell and peripheral rails read the same table
+column, so the Mat's bitline-restore log had a zero denominator on every
+node. Corrected to CACTI's convention. On its own this moved the 22 nm
+buffer 2.53e-11 -> 2.19e-11 J (-13%) but did NOT stop the NaN at 32 nm,
+which is how (1) was found.
+
+**The fallback now refuses instead of substituting.** Where both the Mat and
+the analytical estimate could be evaluated, the estimate was ~1267x above
+the Mat on the shipped path and ~800x below it once its own
+microns-for-metres unit error is corrected. A stand-in that far from the
+model it replaces is a different answer, not a fallback. If the Mat still
+returns non-finite after both fixes, the run stops with a FATAL naming the
+node and the buffer geometry, the way 1.11.79 stops on a negative array
+energy, rather than publish a number under the Mat's name.
+
+DATA IMPACT: DDR3's fabric power collapses into the family, and every
+technology's NoC power moves. Measured with the release binary on the corpus
+shape at 32 nm (DDR3): total dynamic 14.664 W under 1.11.86 -> 0.157 W, a
+93x collapse, L2 bank-group 8.286 -> 0.0066 W, no FATAL. Every DDR3 power
+number in the previous corpus is superseded. At 22 nm the shipped build's
+garbage `wtype` happened to be 0 (= Global) -- which is the only reason those
+runs ever converged -- while the interface's wire type is Global_30, so the 22 nm technologies move as
+well. Measured with the probe build on the corpus shape at 22 nm, shipped
+garbage (0 = Global) against the interface's own Global_30:
+
+    buffer per access   2.190e-11 -> 1.212e-11 J   -45%
+    L2 bank-group       0.00750  -> 0.00434 W      -42%
+    L4 rank             0.00455  -> 0.00263 W      -42%
+    L1 bank bus         0.00210  -> 0.00209 W      unchanged (no router)
+    total dynamic       0.1060   -> 0.1006 W       -5%
+
+So every 22 nm technology's NoC power falls by roughly 40%, and its total by
+a few percent; DDR3's falls 93x. Every NoC and total-power figure in the
+previous corpus is superseded. Array energies are untouched (this release is
+NoC-only; 1.11.86 owns the array).
+
+Gate 1196A: DDR3 NoC dynamic collapses >100x and lands within 5x of DDR4's;
+the 22 nm technologies' NoC dynamic moves within a band set from the
+measurement above; the now-refusing fallback fires on nothing supported; the
+1.11.81 buffer/crossbar tripwire clears on DDR3; array energy, refresh and
+die area are unchanged on all four; device scope is byte-identical on all
+seven.
+
 ## 1.11.86 -- R6-11 resolved: the rows were right, the baseline was wrong
 
 1.11.79 refused DDR5 at 4800 and 5600 because their activate energy came out
