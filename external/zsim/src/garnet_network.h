@@ -212,6 +212,7 @@ private:
 
     // ── Statistics ───────────────────────────────────────────
     GarnetStats stats_;
+    bool roi_rebased_ = false;   // 1.11.90
 
 #ifdef HAVE_GARNET
     // ── Cycle-accurate Garnet bridge ──────────────────────────
@@ -1077,11 +1078,29 @@ public:
 
     const GarnetStats& getGarnetStats() const { return stats_; }
 
+    /* 1.11.90: drop the pre-ROI traffic. The network is driven by the memory
+     * hierarchy from process start (the plugin records by default), so the
+     * serial array-init traffic reached these counters and was then priced
+     * over the ROI wall clock. Called from the plugin at roi_begin, once per
+     * network. Returns the number of flits dropped so the caller can say so. */
+    uint64_t markRoiBegin() {
+        const uint64_t dropped = stats_.total_flits;
+        stats_.total_packets = 0; stats_.total_flits = 0; stats_.total_hops = 0;
+        stats_.buffer_reads = 0; stats_.buffer_writes = 0;
+        stats_.crossbar_traversals = 0; stats_.arbiter_events = 0;
+        stats_.link_traversals = 0; stats_.total_latency = 0;
+        roi_rebased_ = true;
+        return dropped;
+    }
+    bool roiRebased() const { return roi_rebased_; }
+
     void setTotalCycles(uint64_t cycles) { stats_.total_cycles = cycles; }
 
     void printStats() const {
-        info("[GarnetNetwork] Statistics (%s, %s):",
-             stats_.topology_name.c_str(), stats_.routing_name.c_str());
+        info("[GarnetNetwork] Statistics (%s, %s)%s:",
+             stats_.topology_name.c_str(), stats_.routing_name.c_str(),
+             roi_rebased_ ? " [ROI only: counters rebased at roi_begin, 1.11.90]"
+                          : " [whole run: no roi_begin was seen]");
         info("  Total packets: %lu", stats_.total_packets);
         info("  Total flits: %lu", stats_.total_flits);
         info("  Total hops: %lu", stats_.total_hops);

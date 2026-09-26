@@ -25,7 +25,7 @@
  * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.”
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
  *
  ***************************************************************************/
 
@@ -240,9 +240,11 @@ void Router::buffer_stats()
   buff.compute_delays(0);
   buff.compute_power_energy();
 
-  // CACTI 7 Mat can produce NaN for small router buffers (few rows, many columns).
-  // Sanitize: if dynamic energy is NaN/Inf, fall back to analytical SRAM estimate
-  // using Router's own gate_cap/diff_cap primitives (which use CACTI technology params).
+  // CACTI 7 Mat could produce NaN for small router buffers (few rows, many
+  // columns). If the dynamic energy is NaN/Inf, the run REFUSES: it prints a
+  // FATAL naming the non-finite value and exits. No substitute estimate is
+  // computed (the analytical SRAM fallback that used to follow was deleted in
+  // PIMID 1.11.88; see the block below for why).
   if (!std::isfinite(buff.power.readOp.dynamic)) {
     /* PIMID 1.11.87: REFUSE, do not substitute. The estimate below was
      * measured against the Mat where both exist: 1267x above it at 32 nm on

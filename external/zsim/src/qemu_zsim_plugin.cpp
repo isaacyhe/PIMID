@@ -213,6 +213,7 @@ static bool in_zsim[MAX_VCPUS];
 
 /* ROI state -- set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
 static std::atomic<bool> in_roi{true};              /* true = record; default on for non-ROI workloads */
+static void roiRebaseTrafficCounters(const char* where);   // 1.11.90, defined below
 // 1.6 thread-MPI: N rank-threads each bracket their own ROI in ONE process.
 // Baselines snapshot at the FIRST begin; termination fires at the LAST end.
 static std::atomic<int> g_roiRefCount{0};
@@ -293,6 +294,45 @@ static inline void snapshotRoiBaseCyc() {
     zinfo->hierarchy.mpiNocRoiBasePhase = zinfo->numPhases;
     __sync_synchronize();
     zinfo->hierarchy.mpiNocBaselined = 1;
+}
+
+/* 1.11.90: ROI-rebase the TRAFFIC counters. Cores rebase their own instrs
+ * and cycles in markRoiBegin (1.x), the PG residency window is opened by
+ * pgres.markRoi (1.11.18), but the cache, memory-controller and PE
+ * memory-interface counters, and Garnet's flit counters, kept counting from
+ * process start -- the plugin records by default -- so the serial pre-ROI
+ * array-init traffic was priced over the kernel's wall clock. Idempotent
+ * like markRoiBegin (re-snapshots the current instant). Prints what it
+ * dropped, once per call, so a log shows the window it reports. */
+static void roiRebaseTrafficCounters(const char* where) {
+    if (!zinfo) return;
+    uint64_t pre_mem = 0;
+    uint32_t groups = 0;
+    if (zinfo->roiRebaseStats) {
+        for (AggregateStat* g : *zinfo->roiRebaseStats) {
+            if (!g) continue;
+            /* what the "mem" group counted so far, for the log line */
+            if (g->name() && strcmp(g->name(), "mem") == 0) {
+                for (uint32_t i = 0; i < g->curSize(); i++) {
+                    AggregateStat* mc = g->get(i)->asAggregate();
+                    if (!mc) continue;
+                    for (uint32_t j = 0; j < mc->curSize(); j++) {
+                        Counter* c = mc->get(j)->asCounter();
+                        if (c && c->name() && (strcmp(c->name(), "rd") == 0 || strcmp(c->name(), "wr") == 0))
+                            pre_mem += c->get();
+                    }
+                }
+            }
+            g->roiRebase();
+            groups++;
+        }
+    }
+    uint64_t pre_flits = 0;
+    if (zinfo->garnetNetwork) pre_flits += zinfo->garnetNetwork->markRoiBegin();
+    if (zinfo->systemGarnetNetwork) pre_flits += zinfo->systemGarnetNetwork->markRoiBegin();
+    info("[roi] traffic counters rebased at roi_begin (%s): %u stat groups, "
+         "pre-ROI memory-controller accesses dropped: %lu, pre-ROI NoC flits dropped: %lu",
+         where, groups, (unsigned long)pre_mem, (unsigned long)pre_flits);
 }
 /* This rank's simulated cycle measured from its ROI baseline (floor-free).
  *
@@ -1642,6 +1682,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
             zinfo->pgres.markRoi(zinfo->numPhases, zinfo->globPhaseCycles);   // 1.11.18: PG residency window
             snapshotRoiBaseCyc();
+            roiRebaseTrafficCounters("first MPI barrier (synthesized baseline)");   // 1.11.90
             if (getenv("PIMID_DEBUG_RDV"))
                 info("Thread %d: synthesized per-rank ROI baseline at first "
                      "MPI BARRIER (cyc=%lu)", tid,
@@ -2577,6 +2618,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 in_roi.store(true);
                 mpi_roi_baselined = true;
                 snapshotRoiBaseCyc();
+                roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
                 /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
                  * branch returns before the legacy path's
                  * pgres.markRoi(), so under thread-MPI the power-gating
@@ -2620,6 +2662,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         // the first MPI op (see handleMpiMagicOp). rank 0 takes this path.
         mpi_roi_baselined = true;
         snapshotRoiBaseCyc();
+        roiRebaseTrafficCounters("roi_begin");   // 1.11.90
         // Co-sim: the ROI IS the offload region. The launching thread (and
         // every thread spawned inside the region) executes on the DEVICE;
         // out-of-ROI code executes on the host. Ordinary workloads are
@@ -2878,6 +2921,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                 in_roi.store(true);
                 mpi_roi_baselined = true;
                 snapshotRoiBaseCyc();
+                roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
                 /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
                  * branch returns before the legacy path's
                  * pgres.markRoi(), so under thread-MPI the power-gating
@@ -2921,6 +2965,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         // the first MPI op (see handleMpiMagicOp). rank 0 takes this path.
         mpi_roi_baselined = true;
         snapshotRoiBaseCyc();
+        roiRebaseTrafficCounters("roi_begin");   // 1.11.90
         // Co-sim: ROI = offload region (see the twin handler above).
         cosimRoiBeginOffload(tid);
     } else if (opcode == ZSIM_MAGIC_OP_ROI_END) {

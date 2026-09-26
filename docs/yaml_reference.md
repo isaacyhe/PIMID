@@ -103,7 +103,7 @@ pim:
 | `pim.pe.access_factor` | double | `1.0` | Cycles per load/store. `0.0` = free local access (PUM). |
 | `pim.pe.throughput_factor` | double | `1.0` | Parallelism divider on instruction count. |
 | `pim.pe.bit_serial` | bool | `false` | Datapath model. `false` = bit-parallel (operand width has no cycle cost). `true` = bit-serial PUM (compute cost proportional to `operand_width`). |
-| `pim.pe.issue_width` | int | `2` | In-order core issue width (uops issued per cycle, program order). Valid 1-6 (clamped to the 6-port FU model; out-of-range falls back to 2); practical range 1-4 -- real in-order cores are 2-3 wide, and beyond 4 the ports and RAW chains bind first. Applies to `in_order_core` only; env `PIMID_INORDER_WIDTH` overrides YAML. |
+| `pim.pe.issue_width` | int | `2` | In-order core issue width (uops issued per cycle, program order). Valid 1-6 (clamped to the 6-port FU model; out-of-range falls back to 2); practical range 1-4 -- real in-order cores are 2-3 wide, and beyond 4 the ports and RAW chains bind first. Applies to `in_order_core` only; env `PIMID_INORDER_WIDTH` overrides YAML. Since 1.11.89 McPAT prices the core at this same resolved width (both scopes; printed as `McPAT issue width N = the timing model's (...)`). |
 | `pim.pe.operand_width` | int | `32` | Datapath width in bits, used by BOTH halves of the model. Timing: with `bit_serial: true` compute cost scales linearly with width (a W-bit op = W bit-steps); with `bit_serial: false` it has no cycle cost. Power/area: always sizes the register files, queue entries and result buses. The power model quantises to 32-bit granularity, so a narrower element is priced as 32-bit and says so. |
 | `pim.pe.energy_factor` | double | `1.0` | Per-op energy scale factor (reporting only, does not affect timing). |
 | `pim.pe.lanes` | int | `1` | Datapath replication. `1` = scalar, `W` = W-wide. Sizes the arithmetic units, register file and result bus in the power/area model. It does NOT speed the element up on its own -- the timing model expresses width through `throughput_factor`, so set both. Declaring lanes without throughput_factor warns, since the result is an element that pays for W lanes and runs like one. |
@@ -611,7 +611,7 @@ time; `in_order_core` issue width defaults to 2, env-tunable via
 | Override Key | Type | Description |
 |-------------|------|-------------|
 | `pipeline_depth` | int | Pipeline stages (auto: alu=5, in_order=14, ooo=19). |
-| `issue_width` | int | Issue width (auto: alu/in_order=1, ooo=4). |
+| `issue_width` | int | Issue width (auto: alu=1, simple_core=1, ooo=4; in_order_core = the width the timing model runs, i.e. `pim.pe.issue_width` resolved as zsim resolves it, default 2 -- since 1.11.89, it was 1). |
 | `num_alus` | int | Number of ALUs. |
 | `num_muls` | int | Number of multipliers. |
 | `num_fpus` | int | Number of FPUs. |

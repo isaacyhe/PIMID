@@ -185,6 +185,11 @@ struct GlobSimInfo {
     // Garnet network for device NoC simulation (PIMID integration)
     GarnetNetwork* garnetNetwork;
 
+    /* 1.11.90: the stat subtrees whose counters are TRAFFIC and must be
+     * rebased at roi_begin (cache groups, "mem", "pe_mem"). Core groups are
+     * not here: cores rebase their own instrs/cycles in markRoiBegin. */
+    g_vector<AggregateStat*>* roiRebaseStats = nullptr;
+
     // Garnet network for system-level inter-node network (separate instance)
     GarnetNetwork* systemGarnetNetwork = nullptr;
 

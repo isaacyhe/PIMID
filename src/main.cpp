@@ -646,6 +646,7 @@ struct ZSimParsedOutput {
     uint64_t pg_sharedcache_active = 0;
     uint64_t pg_noc_active = 0;
     uint64_t pg_hostmc_active = 0;
+    bool     pg_hostmc_present = false;   // 1.11.89: absent (pre-1.11.8 dump) != zero
     uint64_t pg_devmc_active = 0;
     uint64_t pg_phase_window = 0;   // 1.11.18: ROI-relative denominator (0 = use phases)
     /* 1.11.51 (E17): the devMC inter-access gap histogram, read back from
@@ -1138,7 +1139,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "pgAnyCoreActivePhases") { out.pg_anycore_active = val; }
                 else if (key == "pgSharedCacheActivePhases") { out.pg_sharedcache_active = val; }
                 else if (key == "pgNocActivePhases") { out.pg_noc_active = val; }
-                else if (key == "pgHostMCActivePhases") { out.pg_hostmc_active = val; }
+                else if (key == "pgHostMCActivePhases") { out.pg_hostmc_active = val; out.pg_hostmc_present = true; }
                 else if (key == "pgDevMCActivePhases") { out.pg_devmc_active = val; }
                 else if (key == "phase") { out.phases = val; }
                 /* 1.11.18: the PG denominator is the PRICED window (phases
@@ -7230,6 +7231,69 @@ static void applyCornerAndPeripheryPricing(
 
 
 
+/* 1.11.89 (cloud review of 1.11.88, nit c): ONE refusal for "power was
+ * asked for and McPAT produced nothing". 1.11.88 added it at every McPAT
+ * site as a copied three-statement block; seven copies of one rule is how
+ * one of them drifts. Every site keeps its own wording -- the gates grep
+ * the second line -- and passes it as `site`; `who` keeps each site's first
+ * line (which McPAT failed) exactly as it was printed before. Exit code 3,
+ * as in 1.11.52 and 1.11.88. */
+[[noreturn]] static void fatalMcPATFailure(const char* site,
+                                           const std::exception& e,
+                                           const char* who = "[Power] McPAT failed: ") {
+    std::cerr << who << e.what() << std::endl;
+    std::cerr << "[Power] FATAL: power analysis was requested (--power) "
+                 "and " << site << ". Refusing to report a run with a "
+                 "silently missing power result." << std::endl;
+    std::exit(3);
+}
+
+/* 1.11.89: THE ISSUE WIDTH THE TIMING MODEL RAN, handed to McPAT.
+ *
+ * zsim's InOrderCore is dual-issue by default and honours pim.pe.issue_width
+ * (emitted as issueWidth into the zsim config); McPAT was handed a hard-coded
+ * issue_width = 1 for every in-order element, so a core simulated two-wide was
+ * priced one-wide -- half the fetch/decode/issue/commit width, and the
+ * structures sized from it. This reproduces the core's own resolution
+ * (external/zsim/src/in_order_core.cpp, InOrderCore ctor), in its order:
+ *   1. PIMID_INORDER_WIDTH, if set and in [1, NUM_PORTS]  (env override)
+ *   2. the configured width, if in [1, NUM_PORTS]          (pim.pe.issue_width)
+ *   3. 2                                                  (the core's default)
+ * NUM_PORTS is 6 (in_order_core.h). The env var is read here from the same
+ * process environment the simulator inherits. */
+static int inorderTimingIssueWidth(int configured, const char** src) {
+    const int kNumPorts = 6;   // external/zsim/src/in_order_core.h NUM_PORTS
+    int w = 2;
+    const char* s = "zsim InOrderCore default (pim.pe.issue_width out of range)";
+    if (configured >= 1 && configured <= kNumPorts) {
+        w = configured;
+        s = "pim.pe.issue_width (default 2 = zsim InOrderCore default)";
+    }
+    const char* env = getenv("PIMID_INORDER_WIDTH");
+    if (env) {
+        int v = atoi(env);
+        if (v >= 1 && v <= kNumPorts) {
+            w = v;
+            s = "PIMID_INORDER_WIDTH (env override, as in the core)";
+        }
+    }
+    if (src) *src = s;
+    return w;
+}
+
+/* 1.11.89 (fix 2): ONE arming rule for a memory-controller phase counter,
+ * used by both scopes. A counter is a measurement when it advanced, or when
+ * the side it watches made no accesses at all (then zero IS the answer).
+ * A counter that stayed at zero while its own side made accesses is not
+ * driven by this machine, and a residency read from it would report the
+ * whole memory idle. The accesses must be THE COUNTER'S OWN SIDE's: system
+ * scope used to weigh the device-MC counter against host+device accesses,
+ * which on a host-only baseline (device-MC 0, host traffic > 0) would call a
+ * correctly-idle device counter dead. */
+static bool pgCounterArmed(uint64_t active_phases, uint64_t own_side_accesses) {
+    return (active_phases > 0) || (own_side_accesses == 0);
+}
+
 /* 1.11.51 (E17): DRAM power-down residency from the MEASURED devMC gap
  * histogram, at a SOURCED per-generation threshold (settable via
  * memory.power_down_threshold_ns). Bucket b holds gaps in [2^b, 2^(b+1));
@@ -7241,7 +7305,9 @@ static void applyCornerAndPeripheryPricing(
  * ruling forbids inventing one). */
 static double gapPowerDownResidency(const UnifiedConfig& config,
                                     const ZSimParsedOutput& z,
-                                    double clock_mhz, std::string* prov) {
+                                    double clock_mhz, std::string* prov,
+                                    uint64_t* th_cyc_out = nullptr,
+                                    double* denom_cyc_out = nullptr) {
     /* 1.11.56 (audit A024): SAY why, at both refusal points. This function
      * refuses on purpose -- the E17 ruling forbids inventing a tXP we do not
      * have -- but it refused in silence, and on GDDR6 and HBM2/HBM3, the
@@ -7302,6 +7368,7 @@ static double gapPowerDownResidency(const UnifiedConfig& config,
      * idle outside the first/last access is real idle and is credited as
      * such only to the extent the window extends beyond the span. */
     double r = static_cast<double>(usable) / static_cast<double>(z.devmc_gap_span);
+    double denom = static_cast<double>(z.devmc_gap_span);   // 1.11.89: reported
     const double window_cyc = static_cast<double>(z.pg_window())
                             * static_cast<double>(config.phase_length > 0
                                                   ? config.phase_length : 10000);
@@ -7311,8 +7378,13 @@ static double gapPowerDownResidency(const UnifiedConfig& config,
             /* usable idle within the span, plus the untouched remainder of
              * the priced window, over the priced window. */
             r = (static_cast<double>(usable) + (window_cyc - span)) / window_cyc;
+            denom = window_cyc;
         }
     }
+    /* 1.11.89: the threshold and the denominator, for a caller that must
+     * bound what accesses OUTSIDE this histogram can take away from it. */
+    if (th_cyc_out) *th_cyc_out = th_cyc;
+    if (denom_cyc_out) *denom_cyc_out = denom;
     return (r > 1.0) ? 1.0 : r;
 }
 
@@ -7646,6 +7718,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         mcfg.num_alus = 3;
         mcfg.num_muls = 1;
         mcfg.num_fpus = 1;
+        /* 1.11.89: an in_order_core is priced at the width it was SIMULATED
+         * at (see inorderTimingIssueWidth). simple_core stays 1: zsim's
+         * SimpleCore is IPC-1 by construction. */
+        if (config.pe_type == "in_order_core") {
+            const char* wsrc = nullptr;
+            mcfg.issue_width = inorderTimingIssueWidth(config.inorder_issue_width, &wsrc);
+            std::cout << "  [power] in_order_core: McPAT issue width "
+                      << mcfg.issue_width << " = the timing model's (" << wsrc
+                      << ")" << std::endl;
+        }
     }
     /* 1.11.51 (L214): pim.pe.floating_point=false must remove the FPU from
      * the POWER model on every profile, not just on ALU (whose default
@@ -7792,11 +7874,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     try {
         mcpat.initialize();
     } catch (const std::exception& e) {
-        std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
-        std::cerr << "[Power] FATAL: power analysis was requested (--power) "
-                     "and McPAT refused the device configuration. Refusing to "
-                     "report a run with a silently missing power result." << std::endl;
-        std::exit(3);
+        fatalMcPATFailure("McPAT refused the device configuration", e);
     }
 
     // Feed simulation stats
@@ -7928,11 +8006,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
          * 0 with a report that simply has no power in it -- a fleet cell
          * would land in the corpus looking complete. A tool failure on a
          * requested analysis is a failed run. */
-        std::cerr << "\n[Power] McPAT failed: " << e.what() << std::endl;
-        std::cerr << "[Power] FATAL: power analysis was requested (--power) "
-                     "and produced nothing. Refusing to report a run with a "
-                     "silently missing power result." << std::endl;
-        std::exit(3);
+        fatalMcPATFailure("produced nothing", e, "\n[Power] McPAT failed: ");
     }
 
     // -- Print results (gated by report_detail) --
@@ -8081,11 +8155,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         try {
             host_mcpat.initialize();   // 1.11.88: same rule as the device (was an uncaught throw)
         } catch (const std::exception& e) {
-            std::cerr << "[Power] Host McPAT failed: " << e.what() << std::endl;
-            std::cerr << "[Power] FATAL: power analysis was requested (--power) "
-                         "and McPAT refused the host configuration. Refusing to "
-                         "report a run with a silently missing power result." << std::endl;
-            std::exit(3);
+            fatalMcPATFailure("McPAT refused the host configuration", e,
+                              "[Power] Host McPAT failed: ");
         }
 
         /* 1.9.29: price the host from ITS OWN measured counters.
@@ -8220,11 +8291,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             /* 1.11.88: same rule as the device McPAT above (1.11.52). A host
              * whose power could not be computed used to leave the System
              * Power Summary unprinted and the run exiting 0. */
-            std::cerr << "[Power] Host McPAT failed: " << e.what() << std::endl;
-            std::cerr << "[Power] FATAL: power analysis was requested (--power) "
-                         "and produced nothing for the host. Refusing to report "
-                         "a run with a silently missing power result." << std::endl;
-            std::exit(3);
+            fatalMcPATFailure("produced nothing for the host", e,
+                              "[Power] Host McPAT failed: ");
         }
     }
 
@@ -8341,9 +8409,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * whole memory reported idle. Refuse the descent and say so,
              * rather than print a number sourced from a dead counter. */
             double mc_r_idle = 0.0;
-            const bool devmc_armed =
-                (zsim_stats.pg_devmc_active > 0) ||
-                (zsim_stats.mem_rd + zsim_stats.mem_wr == 0);
+            const bool devmc_armed =   // 1.11.89: the shared rule (same expression)
+                pgCounterArmed(zsim_stats.pg_devmc_active,
+                               zsim_stats.mem_rd + zsim_stats.mem_wr);
             if (zsim_stats.pg_window() > 0 && devmc_armed) {
                 mc_r_idle = 1.0 - std::min(1.0,
                     static_cast<double>(zsim_stats.pg_devmc_active)
@@ -9508,10 +9576,33 @@ static int effectiveDramBanks(const std::string& memory_tech,
     }
 }
 
+/* 1.11.89: one CLASS of accesses to a system-scope array. A shared array
+ * takes accesses from two origins that differ in two priced ways:
+ *   - WHERE they come from decides DQ termination (fix 3): a PE-originated
+ *     access is judged by the PE placement; a host-originated access -- and
+ *     a coherence-flush writeback, which the host issues -- always drives
+ *     the DRAM's DQ pins from outside the device.
+ *   - WHETHER their row behaviour was measured (fix 1): the PE memory
+ *     interface counts rowHits/rowMisses; the host memory controller counts
+ *     none. A measured class uses its own measured fraction; an unmeasured
+ *     class uses the stated 0.5 fallback device scope uses for an
+ *     unmeasured run (ramulator_wrapper.cpp) -- no new default is made up
+ *     here, and one class's measurement is not lent to the other.
+ * The array is still ONE piece of silicon charged once: background and area
+ * are per array, only the per-access terms are per class. */
+struct ArrayAccessClass {
+    const char* who = "";         // printed label
+    uint64_t rd = 0, wr = 0;      // accesses of this class (wr includes flush)
+    bool crosses_dq = false;      // pays DQ termination
+    const char* dq_why = "";      // why it does / does not cross
+    double row_miss_frac = -1.0;  // <0 = not measured for this class
+    uint64_t row_misses = 0, row_total = 0;   // the measurement, for the log
+    const char* unmeasured_why = "";          // why not, when not
+};
+
 static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
-                                          uint64_t mem_rd, uint64_t mem_wr,
+                                          const std::vector<ArrayAccessClass>& classes,
                                           double r_idle = -1.0,
-                                          bool crosses_dq = false,
                                           bool pg_enabled = false,
                                           const std::string& device_width = "",
                                           double wall_seconds = 0.0,
@@ -9523,6 +9614,8 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                           int ddr5_speed_grade = 4800)             // 1.11.66 (R8 #9)
 {
     if (memory_tech.empty()) return 0.0;
+    uint64_t mem_rd = 0, mem_wr = 0;
+    for (const auto& c : classes) { mem_rd += c.rd; mem_wr += c.wr; }
     /* 1.11.52 (audit A020): A MEMORY WITH NO ACCESSES IS NOT A MEMORY WITH NO
      * POWER. This returned 0.0 silently on zero accesses, deleting the whole
      * memory section from the report and its BACKGROUND term from System
@@ -9566,11 +9659,6 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         ram_oracle.setTemperatureK(temperature_k);   // 1.11.65: refresh ladder
         ram_oracle.setDdr5SpeedGrade(ddr5_speed_grade);   // 1.11.66 (R8 #9)
         ram_oracle.initialize();
-        /* Intensive per-access accessors. getArrayReadEnergyNJ folds activation
-         * and column access, so act/pre are NOT added separately -- adding them
-         * would double-count within the array term itself. */
-        const double rd_nj = ram_oracle.getArrayReadEnergyNJ();
-        const double wr_nj = ram_oracle.getArrayWriteEnergyNJ();
         /* 1.11.20 (D6 + D13 + D15): same background device scope reports --
          * population-scaled and state-aware. r_idle < 0 means the residency
          * was never measured, which is NOT the same as measured-zero: the
@@ -9591,34 +9679,97 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         const double bg_mw = ram_oracle.getBackgroundSystemMW(
             (r_idle > 0.0 ? r_idle : 0.0), pg_enabled, device_width,
             ranks_per_channel, channels);
-        /* 1.11.20 (D6): DQ termination, placement-aware like 1.11.5. */
-        // 1.11.58: driver switching + PHY + termination, as device scope.
-        // 1.11.60 (A009/A010 revert, user-approved): termination-only, as
-        // device scope. CACTI-IO's driver+PHY prints informational below.
-        /* 1.11.63 (R7): read/write split, as device scope. */
-        const double iface_term_rd_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(false) : 0.0;
-        const double iface_term_wr_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(true)  : 0.0;
-        const double iface_drv_nj  = crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
-
-        const double total_rd_mj = rd_nj * static_cast<double>(mem_rd) / 1e6;
-        const double total_wr_mj = wr_nj * static_cast<double>(mem_wr) / 1e6;
-        /* 1.11.60 (audit round 4, A011): named for what it holds. Since
-         * 1.11.58 this is termination PLUS driver PLUS PHY; its previous name
-         * described only the first of the three, and the printed label below
-         * inherited that name. */
-        const double total_iface_mj =
-            (iface_term_rd_nj * static_cast<double>(mem_rd)
-             + iface_term_wr_nj * static_cast<double>(mem_wr)) / 1e6;
 
         std::cout << "\n--- Memory Array Energy (system) ---" << std::endl;
         std::cout << "  Technology:    " << memory_tech
                   << " (Ramulator2 energy model)" << std::endl;
         std::cout << "  Accesses:      " << (mem_rd + mem_wr)
                   << " on this node's memory" << std::endl;
-        std::cout << "  Per-access:    read=" << std::fixed << std::setprecision(3)
-                  << rd_nj << " nJ, write=" << wr_nj << " nJ (incl act+col)"
-                  << std::endl;
-        std::cout << "  Background:    " << std::setprecision(3) << bg_mw
+
+        double total_rd_mj = 0.0, total_wr_mj = 0.0, total_iface_mj = 0.0;
+        for (const auto& c : classes) {
+            if (c.rd + c.wr == 0) continue;
+            /* 1.11.89 (fix 1): the measured row-miss fraction, per class,
+             * set before the per-access query exactly as device scope sets
+             * it (1.11.52 D003). System scope never called
+             * setRowMissFraction, so every co-sim access was priced at the
+             * 0.5 fallback while the PE-MI's measurement sat in the dump. */
+            ram_oracle.setRowMissFraction(c.row_miss_frac);
+            if (c.row_miss_frac >= 0.0)
+                std::cout << "  [mem] row-buffer miss fraction MEASURED "
+                          << c.row_miss_frac << " (" << c.row_misses << " of "
+                          << c.row_total
+                          << " accesses opened a new row); it weights the "
+                             "activate/precharge share of array energy for the "
+                          << c.who << " accesses" << std::endl;
+            else
+                std::cout << "  [mem] row-buffer miss fraction NOT MEASURED for "
+                             "the " << c.who << " accesses (" << c.unmeasured_why
+                          << "); their array energy uses the stated 0.5 fallback "
+                             "for the activate/precharge share, as device scope "
+                             "does for a run with no row counters" << std::endl;
+            /* Intensive per-access accessors. getArrayReadEnergyNJ folds
+             * activation and column access, so act/pre are NOT added
+             * separately -- adding them would double-count within the array
+             * term itself. */
+            const double rd_nj = ram_oracle.getArrayReadEnergyNJ();
+            const double wr_nj = ram_oracle.getArrayWriteEnergyNJ();
+            /* 1.11.20 (D6): DQ termination, placement-aware like 1.11.5.
+             * 1.11.60 (A009/A010 revert, user-approved): termination-only, as
+             * device scope. CACTI-IO's driver+PHY prints informational below.
+             * 1.11.63 (R7): read/write split, as device scope. */
+            const double iface_term_rd_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(false) : 0.0;
+            const double iface_term_wr_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(true)  : 0.0;
+            const double iface_drv_nj  = c.crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
+            const double c_rd_mj = rd_nj * static_cast<double>(c.rd) / 1e6;
+            const double c_wr_mj = wr_nj * static_cast<double>(c.wr) / 1e6;
+            const double c_if_mj =
+                (iface_term_rd_nj * static_cast<double>(c.rd)
+                 + iface_term_wr_nj * static_cast<double>(c.wr)) / 1e6;
+            total_rd_mj += c_rd_mj; total_wr_mj += c_wr_mj; total_iface_mj += c_if_mj;
+
+            std::cout << "  " << c.who << " accesses: rd=" << c.rd
+                      << " wr=" << c.wr << std::endl;
+            std::cout << "    Per-access:    read=" << std::fixed << std::setprecision(3)
+                      << rd_nj << " nJ, write=" << wr_nj << " nJ (incl act+col)"
+                      << std::endl;
+            std::cout << "    DQ interface:  " << std::setprecision(3)
+                      << "rd=" << iface_term_rd_nj << " nJ, wr=" << iface_term_wr_nj
+                      << " nJ per access (" << c.dq_why << ")" << std::endl;
+            if (c.crosses_dq) {
+                std::cout << "      termination: rd=" << iface_term_rd_nj
+                          << " nJ (DRAM RON -> RX RTT_NOM class), wr="
+                          << iface_term_wr_nj
+                          << " nJ (ctrl RON -> DRAM RTT_WR class) [R7 split]"
+                             "  CACTI-IO driver+PHY: " << iface_drv_nj
+                          << " nJ [INFORMATIONAL, NOT charged -- 1.11.60 revert:"
+                             " McPAT already prices the PHY here]" << std::endl;
+                /* 1.11.82's rule, now that host accesses reach this branch
+                 * on every technology: a sourced zero says it is one. */
+                if (iface_term_rd_nj == 0.0 && iface_term_wr_nj == 0.0) {
+                    std::cout << "      the termination terms are zero BY"
+                                 " CITATION, not for want of a model: ";
+                    if (memory_tech == "HBM2" || memory_tech == "HBM3")
+                        std::cout << memory_tech << " rides an interposer and its DQ is"
+                                     " unterminated (JESD238B cl. 9.1)";
+                    else if (memory_tech == "LPDDR5")
+                        std::cout << "LPDDR5's DQ ODT default is Disable"
+                                     " (JESD209-5C Tbl 84 p.144)";
+                    else
+                        std::cout << "this technology's DQ ODT resolves to"
+                                     " disabled at these settings";
+                    std::cout << "." << std::endl;
+                }
+                double t_lo = 0.0, t_hi = 0.0; std::string t_prov;   // 1.11.59
+                if (ram_oracle.getTerminationEnergyBandNJ(t_lo, t_hi, t_prov))
+                    std::cout << "      termination BAND " << t_lo << "-" << t_hi
+                              << " nJ [" << t_prov << "]" << std::endl;
+            }
+            std::cout << std::defaultfloat;
+        }
+        ram_oracle.setRowMissFraction(-1.0);
+
+        std::cout << "  Background:    " << std::fixed << std::setprecision(3) << bg_mw
                   << " mW (standby+refresh over " << bg_units << " "
                   << (memory_tech.substr(0, 3) == "HBM" ? "channels/stack"
                                                         : "chips/rank")
@@ -9628,6 +9779,18 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                         : ", IDD2N page-close at measured idle")
                           : "")
                   << ")" << std::endl;
+        /* 1.11.89 (fix 2): the same descent line device scope prints, so a
+         * reader (and a gate) sees the two scopes' background the same way. */
+        if (r_idle > 0.0) {
+            std::cout << "  [pg] DRAM idle residency " << std::defaultfloat << r_idle
+                      << " -> background " << std::fixed << std::setprecision(3)
+                      << ram_oracle.getBackgroundPowerMW() * bg_units
+                      << " -> " << bg_mw << " mW ("
+                      << (pg_enabled ? "IDD2N page-close then IDD2P power-down"
+                                     : "IDD2N page-close; memory.power_down off, "
+                                       "no power-down")
+                      << ", refresh always on)" << std::endl;
+        }
         /* 1.11.56 (audit D074): name the one term for what it is. Background
          * already CONTAINS refresh (the relation is vdd*idd3n + refreshMW),
          * and a DRAM array's standby current IS its leakage -- there is no
@@ -9635,25 +9798,6 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         std::cout << "    (this figure already includes refresh, and it IS the "
                      "array's leakage -- these are one quantity, not three)"
                   << std::endl;
-        std::cout << "  DQ interface:  " << std::setprecision(3)
-                  << "rd=" << iface_term_rd_nj << " nJ, wr=" << iface_term_wr_nj
-                  << " nJ per access ("
-                  << (crosses_dq ? "accesses cross the DQ pins at this placement"
-                                 : "on-die placement: no DQ crossing, no interface charge")
-                  << ")" << std::endl;
-        if (crosses_dq) {
-            std::cout << "    termination: rd=" << iface_term_rd_nj
-                      << " nJ (DRAM RON -> RX RTT_NOM class), wr="
-                      << iface_term_wr_nj
-                      << " nJ (ctrl RON -> DRAM RTT_WR class) [R7 split]"
-                         "  CACTI-IO driver+PHY: " << iface_drv_nj
-                      << " nJ [INFORMATIONAL, NOT charged -- 1.11.60 revert:"
-                         " McPAT already prices the PHY here]" << std::endl;
-            double t_lo = 0.0, t_hi = 0.0; std::string t_prov;   // 1.11.59
-            if (ram_oracle.getTerminationEnergyBandNJ(t_lo, t_hi, t_prov))
-                std::cout << "    termination BAND " << t_lo << "-" << t_hi
-                          << " nJ [" << t_prov << "]" << std::endl;
-        }
         /* 1.11.60 (audit round 4, A011): same mislabel as device scope, same
          * correction -- what is printed here is the whole DQ interface since
          * 1.11.58, not the termination component of it. */
@@ -9745,8 +9889,46 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
     bool xing_link_charged = false;
     bool xing_warned_unknown = false;
 
+    /* 1.11.89 (fix 4): A BASELINE PRICES WHAT RAN. docs/cosim.md promises
+     * the NO_OFFLOAD baseline "no offload-driven device pricing", and the
+     * plugin keeps that promise on the timing side (threads never migrate,
+     * no bridge charge). This loop did not: every node with cores was
+     * priced, so a host-only baseline carried the declared device's PE
+     * block (on the 16-core DDR5 cell ~0.04 W and 6.43 mm^2) and BOTH ends
+     * of the link (two pcie_gen5 controllers) in its System Total -- silicon
+     * of a device that never executed and a link nothing crossed. The mode
+     * is recognised the way every other site in this file recognises it:
+     * the environment variable, in system scope. The memory array stays
+     * priced below: the host reads and writes it. */
+    const bool no_offload_baseline =
+        (getenv("PIMID_COSIM_NO_OFFLOAD") != nullptr) && (config.scope == "system");
+    if (no_offload_baseline) {
+        std::string dev_names;
+        for (const auto& n : config.system_nodes)
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.num_cores > 0)
+                dev_names += (dev_names.empty() ? "'" : ", '") + n.name + "'";
+        std::cout << "  [power] NO_OFFLOAD baseline: device node "
+                  << (dev_names.empty() ? std::string("(none)") : dev_names)
+                  << " and the " << config.pcie_link_type
+                  << " link controllers are NOT priced -- no offload happened "
+                     "(measured link crossings: "
+                  << (zsim_stats.xing_h2d_bytes + zsim_stats.xing_d2h_bytes)
+                  << " B); the memory array stays priced (the host uses it)."
+                  << std::endl;
+        if (zsim_stats.xing_h2d_bytes + zsim_stats.xing_d2h_bytes > 0 ||
+            zsim_stats.dev.real_instrs() > 0)
+            std::cerr << "[power] WARNING: PIMID_COSIM_NO_OFFLOAD is set but the "
+                         "dump shows device work or link traffic (h2d+d2h "
+                      << (zsim_stats.xing_h2d_bytes + zsim_stats.xing_d2h_bytes)
+                      << " B, device instrs " << zsim_stats.dev.real_instrs()
+                      << "); they are left unpriced as the mode says, and this "
+                         "run should be checked." << std::endl;
+    }
+
     for (const auto& node : config.system_nodes) {
         if (node.num_cores == 0) continue;  // memory-only, skip
+        if (no_offload_baseline &&
+            node.role == UnifiedConfig::SystemNode::DEVICE) continue;  // 1.11.89 (fix 4)
 
         NodePowerResult result;
         result.name = node.name;
@@ -9887,6 +10069,16 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             mcfg.num_alus = 3; mcfg.num_muls = 1; mcfg.num_fpus = 1;
             profile = McPAT::DeviceProfile::DEVICE_INORDER;
             result.core_desc = (effective_type == "in_order_core") ? "InOrder" : "Simple";
+            /* 1.11.89: same rule as device scope -- the node's own
+             * pim.pe.issue_width (1.11.56 B054 made it per-node), resolved
+             * the way the core resolves it. */
+            if (effective_type == "in_order_core") {
+                const char* wsrc = nullptr;
+                mcfg.issue_width = inorderTimingIssueWidth(node.inorder_issue_width, &wsrc);
+                std::cout << "  [power] " << node.name << ": in_order_core: McPAT "
+                             "issue width " << mcfg.issue_width
+                          << " = the timing model's (" << wsrc << ")" << std::endl;
+            }
         }
         /* 1.11.51 (L214): same rule per node -- an element that declares no
          * FPU prices none, on every profile. Node-scoped flag (E23/E24);
@@ -9923,6 +10115,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         mcfg.num_alus = ov_get_int("num_alus", mcfg.num_alus);
         mcfg.num_muls = ov_get_int("num_muls", mcfg.num_muls);
         mcfg.num_fpus = ov_get_int("num_fpus", mcfg.num_fpus);
+        /* 1.11.89: the width on the node's core-description line (the
+         * "<node> (<desc>, <MHz>, <nm>): <W>" line below), after overrides. */
+        if (profile == McPAT::DeviceProfile::DEVICE_INORDER)
+            result.core_desc += " issue_width=" + std::to_string(mcfg.issue_width);
         /* 1.11.49 (gate 1159J Z1): the default here was a literal 0, which
          * silently clobbered the corner mapping the role branches above had
          * just written -- the "[tech] ... corner applied" line printed and the
@@ -10087,7 +10283,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                  * shipped earlier in this release; gating the CONSUMER is the
                  * half gate 1159C proved missing. Timing keeps the link
                  * either way -- this is energy pricing only. */
-                if (!config.pcie_enabled) {
+                if (no_offload_baseline) {
+                    /* 1.11.89 (fix 4): no link controller on a baseline --
+                     * setPCIeStats is never called, number_units stays 0 and
+                     * McPAT emits no link component. Stated once above. */
+                } else if (!config.pcie_enabled) {
                     static bool said_disabled = false;
                     if (!said_disabled) {
                         said_disabled = true;
@@ -10693,12 +10893,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * land in the corpus with a device that costs nothing. Same
              * rule as the device path: a tool failure on a requested
              * analysis is a failed run. */
-            std::cerr << "  " << node.name << ": McPAT failed: " << e.what() << std::endl;
-            std::cerr << "[Power] FATAL: power analysis was requested (--power) "
-                         "and produced nothing for node '" << node.name
-                      << "'. Refusing to report a run with a silently missing "
-                         "power result." << std::endl;
-            std::exit(3);
+            const std::string who  = "  " + node.name + ": McPAT failed: ";
+            const std::string site = "produced nothing for node '" + node.name + "'";
+            fatalMcPATFailure(site.c_str(), e, who.c_str());
         }
 
         results.push_back(result);
@@ -10789,74 +10986,207 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         /* 1.11.20 (D6): the same two inputs device scope uses, computed ONCE
          * here and handed to every array report below, so system scope and
          * device scope cannot drift apart again. */
-        /* 1.11.52 (audit A005/A006): the DRAM idle descent is gated on
-         * memory.power_down OR the controller flag, not on pim.mc.pg alone.
-         * 1.11.45 split those flags apart -- power_down is the DRAM's own
-         * IDD2P state, pg_mc is the CONTROLLER's gating -- and device scope
-         * was updated (its comment says so explicitly: "no config.pg_mc in
-         * this condition"), while this path kept the controller gate. A
-         * co-sim run with memory.power_down: true and no pim.mc.pg reported
-         * IDD3N standby while device scope descended, for one machine.
+        /* 1.11.52 (audit A005/A006): the DRAM idle descent was gated on
+         * memory.power_down OR the controller flag, and the UNARMED-COUNTER
+         * refusal device scope has since 1.11.18 was added here.
          *
-         * A006: the UNARMED-COUNTER refusal device scope has since 1.11.18
-         * was also missing here. A dead pg_devmc_active yields r_idle = 1.0
-         * -- the whole memory reported idle -- and it was fed to the
-         * background model with no message at all. */
-        const bool sys_pd_asked = config.mem_power_down || config.pg_mc;
-        const bool sys_devmc_armed =
-            (zsim_stats.pg_devmc_active > 0) ||
-            (zsim_stats.mem_rd + zsim_stats.mem_wr == 0);
-        double sys_r_idle = -1.0;
-        if (sys_pd_asked && zsim_stats.pg_window() > 0 && sys_devmc_armed) {
-            sys_r_idle = 1.0 - std::min(1.0,
-                static_cast<double>(zsim_stats.pg_devmc_active)
-                    / static_cast<double>(zsim_stats.pg_window()));
-        } else if (sys_pd_asked && !sys_devmc_armed) {
-            std::cout << "  [pg] DRAM idle residency UNAVAILABLE: the "
-                         "device-MC phase counter never advanced despite "
-                      << (zsim_stats.mem_rd + zsim_stats.mem_wr)
-                      << " accesses. Background reported at active standby "
-                         "(IDD3N); no idle descent claimed." << std::endl;
-        }
-        /* 1.11.51 (E17): same supersession as device scope (D6: one
-         * derivation, two scopes). */
-        if (sys_pd_asked && sys_devmc_armed) {
-            std::string gprov;
-            /* 1.11.52 (audit A017): the histogram's cycles are in the clock
-             * the SYSTEM zsim config was emitted at -- the reference clock,
-             * i.e. the max over all nodes -- not the device's own frequency.
-             * Converting the tXP threshold with the device clock put the
-             * threshold in the wrong units by their ratio; since the buckets
-             * are powers of two, a ratio past 2x admits or drops a whole
-             * bucket of idle. */
-            const double hist_mhz = (config.reference_frequency_mhz > 0.0)
-                                    ? config.reference_frequency_mhz
-                                    : config.frequency_mhz;
-            double r_gap = gapPowerDownResidency(config, zsim_stats,
-                                                 hist_mhz, &gprov);
-            if (r_gap >= 0.0) {
-                std::cout << "  [pg] power-down residency from the MEASURED "
-                             "gap histogram: " << r_gap << " (" << gprov
-                          << ")." << std::endl;
-                sys_r_idle = r_gap;
-            }
-        }
-        /* 1.11.52 (audit A018/A019): the shared predicate, and it is asked
-         * PER MEMORY, not once for the whole system. The device's PE
-         * placement decided whether the HOST's own array paid termination:
-         * with elements at BANK placement the host's DIMM was reported as
-         * "on-die placement: no DQ crossing, no termination" -- about its
-         * own memory, which a host CPU always drives across real DQ pins.
-         * The host's memory is always off-package from the host's point of
-         * view (HOST_MC semantics); the device's memory is judged by the
-         * device's placement. */
-        const bool sys_crosses_dq =
-            crossesOffPackageDQ(config.pe_hierarchy_level, config.memory_tech);
-        const bool host_crosses_dq = crossesOffPackageDQ(-1, config.memory_tech);
-
+         * 1.11.89 (fix 2): NO GATE AT ALL, as in device scope. 1.11.20 (D15)
+         * removed the flag from device scope's condition -- an idle
+         * controller closes its pages whether or not anyone asked for power
+         * gating, so an idle array sits at precharge standby (IDD2N), and
+         * memory.power_down only decides whether the descent continues to
+         * IDD2P. 1.11.52 kept a flag gate here (mem_power_down || pg_mc), so
+         * every system-scope cell that set neither -- the whole fleet --
+         * reported flat IDD3N while its device-scope twin descended.
+         *
+         * WHOSE ACTIVITY. The residency is the idle fraction of the ARRAY,
+         * so it must count every controller that drives it:
+         *   shared array (coupled)       device MC AND host MC (union)
+         *   decoupled device array       device MC
+         *   decoupled host array         host MC
+         * 1.11.52 used the device-MC counter for all three. zsim exports
+         * each controller's active-phase COUNT, not the per-phase union, so
+         * the union is known only as a band, [max(d,h), min(d+h,W)] active
+         * phases of W; the upper end of activity is used (least idle, never
+         * credits idle a host access may have broken), and the band is
+         * printed. It collapses to the exact value whenever either side is
+         * zero -- a host-only baseline, or a co-sim whose host is quiet in
+         * the window.
+         *
+         * The gap histogram (E17) records DEVICE-MC events only. On a shared
+         * array the host-originated accesses (host-MC rd+wr and the flush
+         * writebacks) are invisible to it, so it cannot supersede as-is; it
+         * is lowered by the most those accesses can take away. One access
+         * inserted into the histogram's timeline splits at most one gap;
+         * with B the smallest histogram bucket that counts as usable
+         * (2^k >= tXP cycles), the usable idle lost to one split is below 2B
+         * cycles whether the pieces stay usable (lose tXP) or fall under the
+         * threshold (lose at most one bucket width each). So
+         *   r >= r_gap - N_host * 2B / window
+         * is a lower bound, printed with its terms. With no host accesses it
+         * is exactly device scope's figure. */
+        const uint64_t dev_acc  = zsim_stats.dev.mem_rd  + zsim_stats.dev.mem_wr;
+        const uint64_t host_acc = zsim_stats.host.mem_rd + zsim_stats.host.mem_wr;
+        const bool devmc_armed_s  = pgCounterArmed(zsim_stats.pg_devmc_active, dev_acc);
+        const bool hostmc_armed_s = pgCounterArmed(zsim_stats.pg_hostmc_active, host_acc);
         uint64_t line_b = (config.cache_line_size > 0)
                               ? static_cast<uint64_t>(config.cache_line_size) : 64;
         uint64_t flush_wr = zsim_stats.xing_flush_bytes / line_b;
+        auto arrayIdleResidency = [&](bool use_dev, bool use_host,
+                                      const char* array_name,
+                                      const std::string& array_tech) -> double {
+            /* Non-DRAM arrays have no standby/power-down model on this path
+             * (the reporter says so); nothing to derive, nothing to print. */
+            if (array_tech == "SRAM" || array_tech == "STT_MRAM" ||
+                array_tech == "PCM"  || array_tech == "RERAM" || array_tech.empty())
+                return -1.0;
+            double r = 0.0;
+            const uint64_t W = zsim_stats.pg_window();
+            bool phase_ok = true;
+            bool host_counted = use_host;
+            if (use_dev && !devmc_armed_s) {
+                std::cout << "  [pg] DRAM idle residency UNAVAILABLE: the "
+                             "device-MC phase counter never advanced despite "
+                          << dev_acc << " accesses. Background reported at "
+                             "active standby (IDD3N); no idle descent claimed."
+                          << std::endl;
+                phase_ok = false;
+            }
+            if (use_host && !zsim_stats.pg_hostmc_present) {
+                std::cout << "  [pg] " << array_name << ": the host-MC phase "
+                             "counter (pgHostMCActivePhases) is UNAVAILABLE in "
+                             "this dump; the phase-granular residency uses "
+                          << (use_dev ? "the device-MC counter alone"
+                                      : "nothing (no counter watches this array)")
+                          << ", which cannot see host-MC activity." << std::endl;
+                host_counted = false;
+                if (!use_dev) phase_ok = false;
+            } else if (use_host && !hostmc_armed_s) {
+                std::cout << "  [pg] DRAM idle residency UNAVAILABLE: the "
+                             "host-MC phase counter never advanced despite "
+                          << host_acc << " host accesses. Background reported "
+                             "at active standby (IDD3N); no idle descent claimed."
+                          << std::endl;
+                phase_ok = false;
+            }
+            if (phase_ok && W > 0) {
+                const double Wd = static_cast<double>(W);
+                const double d = use_dev ? static_cast<double>(zsim_stats.pg_devmc_active) : 0.0;
+                const double h = host_counted ? static_cast<double>(zsim_stats.pg_hostmc_active) : 0.0;
+                const double act_hi = std::min(d + h, Wd);
+                const double act_lo = std::min(std::max(d, h), Wd);
+                r = 1.0 - act_hi / Wd;
+                std::cout << "  [pg] " << array_name << ": phase-granular idle "
+                             "residency " << r << " from "
+                          << (use_dev ? "device-MC " : "")
+                          << (use_dev && host_counted ? "+ " : "")
+                          << (host_counted ? "host-MC " : "")
+                          << "activity (device-MC " << (use_dev ? d : 0.0)
+                          << ", host-MC " << h << " active of " << W
+                          << " phases";
+                if (use_dev && host_counted)
+                    std::cout << "; union not exported, band ["
+                              << (1.0 - act_hi / Wd) << ", "
+                              << (1.0 - act_lo / Wd)
+                              << "], the least-idle end is used";
+                std::cout << ")" << std::endl;
+            }
+            if (use_dev) {
+                /* 1.11.51 (E17): same supersession as device scope (D6: one
+                 * derivation, two scopes).
+                 * 1.11.52 (audit A017): the histogram's cycles are in the
+                 * clock the SYSTEM zsim config was emitted at -- the
+                 * reference clock, i.e. the max over all nodes -- not the
+                 * device's own frequency. */
+                const double hist_mhz = (config.reference_frequency_mhz > 0.0)
+                                        ? config.reference_frequency_mhz
+                                        : config.frequency_mhz;
+                std::string gprov;
+                uint64_t th_cyc = 0;
+                double denom = 0.0;
+                double r_gap = gapPowerDownResidency(config, zsim_stats, hist_mhz,
+                                                     &gprov, &th_cyc, &denom);
+                if (r_gap >= 0.0) {
+                    const uint64_t n_host = use_host ? (host_acc + flush_wr) : 0;
+                    if (n_host > 0 && denom > 0.0) {
+                        uint64_t B = 1;
+                        while (B < th_cyc) B <<= 1;
+                        const double lost = static_cast<double>(n_host)
+                                          * 2.0 * static_cast<double>(B) / denom;
+                        const double r_lo = std::max(0.0, r_gap - lost);
+                        std::cout << "  [pg] " << array_name << ": the device-MC "
+                                     "gap histogram does not see the " << n_host
+                                  << " host-originated accesses (host-MC "
+                                  << host_acc << " + flush writebacks "
+                                  << flush_wr << "); each can break at most one "
+                                     "usable gap, < 2 x " << B << " cycles, so "
+                                     "the gap residency is lowered from "
+                                  << r_gap << " to " << r_lo
+                                  << " (a LOWER bound)." << std::endl;
+                        r_gap = r_lo;
+                    }
+                    std::cout << "  [pg] power-down residency from the MEASURED "
+                                 "gap histogram: " << r_gap << " (" << gprov
+                              << "); phase-granular residency was " << r
+                              << " (10k-cycle window, granularity-limited)."
+                              << std::endl;
+                    r = r_gap;
+                }
+            } else {
+                std::cout << "  [pg] " << array_name << ": the gap histogram "
+                             "records device-MC events only; this array uses "
+                             "the phase-granular residency." << std::endl;
+            }
+            return r;
+        };
+        /* 1.11.52 (audit A018/A019): the shared predicate, and it is asked
+         * PER MEMORY, not once for the whole system. The host's memory is
+         * always off-package from the host's point of view (HOST_MC
+         * semantics); the device's memory is judged by the device's
+         * placement.
+         *
+         * 1.11.89 (fix 3): and PER ACCESS ORIGIN on a shared array. A019
+         * fixed the decoupled host array and left the coupled branch pricing
+         * every access -- host reads and writes and the flush writebacks
+         * included -- with the PE placement's answer, so at BANK placement a
+         * host CPU's accesses to the device DRAM paid no termination,
+         * although they cross the DQ pins like any host access does. Each
+         * class now carries its own answer. HBM's termination stays zero by
+         * its citation (the model returns 0; the report says so). */
+        const bool sys_crosses_dq =
+            crossesOffPackageDQ(config.pe_hierarchy_level, config.memory_tech);
+        const bool host_crosses_dq = crossesOffPackageDQ(-1, config.memory_tech);
+        const char* pe_dq_why = sys_crosses_dq
+            ? "PE-originated: accesses cross the DQ pins at this placement"
+            : "PE-originated: on-die placement, no DQ crossing, no interface charge";
+        const char* host_dq_why = "host-originated: a host access always drives "
+                                  "the DRAM's DQ pins";
+        /* 1.11.89 (fix 1): the PE memory interface's row counters measure
+         * the PE-originated accesses; nothing measures the host's. */
+        auto peClass = [&](uint64_t rd, uint64_t wr) {
+            ArrayAccessClass c;
+            c.who = "PE-originated";
+            c.rd = rd; c.wr = wr;
+            c.crosses_dq = sys_crosses_dq;
+            c.dq_why = pe_dq_why;
+            c.row_miss_frac = zsim_stats.rowMissFraction();
+            c.row_misses = zsim_stats.row_misses;
+            c.row_total = zsim_stats.row_hits + zsim_stats.row_misses;
+            c.unmeasured_why = "no PE-MI row counters in this run";
+            return c;
+        };
+        auto hostClass = [&](uint64_t rd, uint64_t wr) {
+            ArrayAccessClass c;
+            c.who = "host-originated";
+            c.rd = rd; c.wr = wr;
+            c.crosses_dq = host_crosses_dq;
+            c.dq_why = host_dq_why;
+            c.row_miss_frac = -1.0;
+            c.unmeasured_why = "the host memory controller exports no row "
+                               "counters; only the PE memory interface does";
+            return c;
+        };
+
         bool flush_charged = false;
         auto sayFlushCharged = [&](const char* where) {
             if (flush_wr == 0) return;
@@ -10868,17 +11198,21 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         };
         if (coupled) {
             std::string tech = d_tech.empty() ? h_tech : d_tech;
-            uint64_t all_rd = 0, all_wr = 0;
-            if (zsim_stats.host.has_activity()) { all_rd += zsim_stats.host.mem_rd; all_wr += zsim_stats.host.mem_wr; }
-            if (zsim_stats.dev.has_activity())  { all_rd += zsim_stats.dev.mem_rd;  all_wr += zsim_stats.dev.mem_wr;  }
-            all_wr += flush_wr;   // 1.11.15: the flush lands on the shared array
+            uint64_t pe_rd = 0, pe_wr = 0, h_rd = 0, h_wr = 0;
+            if (zsim_stats.host.has_activity()) { h_rd = zsim_stats.host.mem_rd; h_wr = zsim_stats.host.mem_wr; }
+            if (zsim_stats.dev.has_activity())  { pe_rd = zsim_stats.dev.mem_rd; pe_wr = zsim_stats.dev.mem_wr; }
+            h_wr += flush_wr;   // 1.11.15: the flush lands on the shared array (host-issued)
             if (!tech.empty()) {
                 std::cout << "  [mem] one memory (" << tech
                           << "): host and device accesses land on the same "
                              "silicon and are charged once" << std::endl;
                 sayFlushCharged("the shared array");
-                mem_power_total += reportSharedMemoryArrayEnergy(tech, all_rd, all_wr,
-                                              sys_r_idle, sys_crosses_dq,
+                const double r_shared = arrayIdleResidency(true, true, "shared array", tech);
+                std::vector<ArrayAccessClass> cls;
+                cls.push_back(peClass(pe_rd, pe_wr));
+                cls.push_back(hostClass(h_rd, h_wr));
+                mem_power_total += reportSharedMemoryArrayEnergy(tech, cls,
+                                              r_shared,
                                               config.mem_power_down,        // 1.11.45: split flag (was pg_mc)
                                               config.dram_device_width,
                                               wall_seconds,     // 1.11.20 D13
@@ -10937,10 +11271,13 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 std::cout << "  [mem] " << node.name << " (" << node.memory_tech
                           << "): host-side array energy" << std::endl;
                 sayFlushCharged("the host-side array");
-                mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech,
-                                              zsim_stats.host.mem_rd,
-                                              zsim_stats.host.mem_wr + flush_wr,  // 1.11.15
-                                              sys_r_idle, host_crosses_dq,        // 1.11.52 (A019)
+                const double r_host = arrayIdleResidency(false, true, "host array",
+                                                         node.memory_tech);
+                std::vector<ArrayAccessClass> cls;
+                cls.push_back(hostClass(zsim_stats.host.mem_rd,
+                                        zsim_stats.host.mem_wr + flush_wr));  // 1.11.15
+                mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech, cls,
+                                              r_host,                             // 1.11.89: host MC's own
                                               config.mem_power_down,  // 1.11.45: split flag (1.11.41)
                                               config.dram_device_width,
                                               wall_seconds,
@@ -10958,10 +11295,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 /* 1.11.46: E31 wired the host-side and coupled calls into the
                  * total and MISSED this one -- the decoupled device memory's
                  * power was computed, printed, and dropped from System Total. */
-                mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech,
-                                              zsim_stats.dev.mem_rd,
-                                              zsim_stats.dev.mem_wr,
-                                              sys_r_idle, sys_crosses_dq,         // 1.11.20
+                const double r_dev = arrayIdleResidency(true, false, "device array",
+                                                        node.memory_tech);
+                std::vector<ArrayAccessClass> cls;
+                cls.push_back(peClass(zsim_stats.dev.mem_rd, zsim_stats.dev.mem_wr));
+                mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech, cls,
+                                              r_dev,                              // 1.11.89: device MC's own
                                               config.mem_power_down,  // 1.11.45: split flag (1.11.41)
                                               config.dram_device_width,
                                               wall_seconds,
@@ -12728,13 +13067,22 @@ int main(int argc, char** argv) {
                     for (const auto& kv : yaml_cfg) {
                         const std::string sec = kv.first.as<std::string>();
                         if (kKnownSections.count(sec)) continue;
+                        /* 1.11.89 (cloud review of 1.11.88, nit a): the list
+                         * printed here was a SECOND literal beside the set,
+                         * and 1.11.88 added "synthetic" to the set and not to
+                         * the message -- so the refusal told a user the
+                         * section it had just accepted did not exist. One
+                         * source: the message is generated from the set. */
+                        std::string known;
+                        for (const auto& k : kKnownSections) {
+                            if (!known.empty()) known += ", ";
+                            known += k;
+                        }
                         std::cerr << "[config] FATAL: unknown top-level section '"
                                   << sec << "' in " << config_file
                                   << ". Everything inside it would be ignored and the "
                                      "run would use defaults without saying so. Known "
-                                     "sections: cache, description, host, memory, "
-                                     "method, name, noc, pim, power, scope, simulation, "
-                                     "system, technology, workload." << std::endl;
+                                     "sections: " << known << "." << std::endl;
                         std::exit(2);
                     }
                 }
@@ -15077,11 +15425,7 @@ int main(int argc, char** argv) {
                 try {
                     mcpat.initialize();   // 1.11.88: see the device-scope site
                 } catch (const std::exception& e) {
-                    std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
-                    std::cerr << "[Power] FATAL: power analysis was requested (--power) "
-                                 "and McPAT refused the NoC tool's configuration. Refusing "
-                                 "to report a run with a silently missing power result." << std::endl;
-                    std::exit(3);
+                    fatalMcPATFailure("McPAT refused the NoC tool's configuration", e);
                 }
 
                 mcpat.setTotalCycles(result.totalCycles > 0 ? result.totalCycles : 1);
@@ -15148,13 +15492,8 @@ int main(int argc, char** argv) {
                      * it. In sweep mode this used to say NOTHING and print
                      * the next rate's row, so a table could carry a hole no
                      * reader could see. Same rule as the device path. */
-                    std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
-                    std::cerr << "[Power] FATAL: power analysis was requested "
-                                 "(--power) and produced nothing"
-                              << (doSweep ? " for this sweep point" : "")
-                              << ". Refusing to report a run with a silently "
-                                 "missing power result." << std::endl;
-                    std::exit(3);
+                    fatalMcPATFailure(doSweep ? "produced nothing for this sweep point"
+                                              : "produced nothing", e);
                 }
             } else if (!doSweep) {
                 // No power, print basic results

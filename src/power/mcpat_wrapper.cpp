@@ -93,8 +93,9 @@ void McPATWrapper::initialize() {
             std::cout << "  Profile: HOST_OoO (x86 out-of-order)" << std::endl;
         else if (device_profile_ == DeviceProfile::DEVICE_ALU)
             std::cout << "  Profile: DEVICE_ALU (no caches)" << std::endl;
-        else
-            std::cout << "  Profile: DEVICE_INORDER" << std::endl;
+        else   /* 1.11.89: the width McPAT is handed, printed with the profile */
+            std::cout << "  Profile: DEVICE_INORDER (issue_width="
+                      << config_.issue_width << ")" << std::endl;
 
     } catch (const std::exception& e) {
         valid_ = false;

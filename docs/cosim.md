@@ -239,6 +239,21 @@ true<->Case 1, false<->Case 2, but independent -- CXL can expose unified
 addressing over non-default memory). **Baselines always run on the device's
 tech** regardless (no host-tech confound -- the retired v140 mistake).
 
+**Array energy of a shared memory (`true`, 1.11.89).** The one array is
+charged once, but its accesses are priced by origin. PE-originated accesses
+use the PE placement's DQ answer (on-die placements pay no termination) and
+the row-buffer miss fraction MEASURED by the PE memory interface.
+Host-originated accesses and the coherence-flush writebacks always pay DQ
+termination (a host access drives the DQ pins; HBM's termination is zero by
+citation, JESD238B cl. 9.1) and, having no row counters, use the stated 0.5
+activate/precharge fallback. The background descends by the array's measured
+idle residency with or without `memory.power_down` (that flag only adds the
+IDD2P step), exactly as in device scope; on a shared array the residency
+counts device-MC and host-MC activity (the union is printed as a band and its
+least-idle end used), and the device-MC gap histogram is lowered by the most
+the host's accesses could take from it. A decoupled array uses its own
+controller's counter only.
+
 ### 6. Host memory pricing -- calibrated host-path adder
 
 Host main-memory idle latency is a **physical composition**
@@ -260,6 +275,13 @@ only**: no device migration, no bridge/coherence/launch charge, no
 offload-driven device pricing. The unmodified OMP/MPI kernel runs on the host
 cores end to end against the host memory technology, from the **same binary**
 as the offload run. ROI begin/end still delimit the measured task region.
+On the power side (1.11.89) the declared device node and both ends of the
+link are **not priced** -- nothing ran on the device and nothing crossed the
+link -- so System Total power and area are the host plus the memory array,
+which stays priced because the host uses it. The report says so in one line
+(`[power] NO_OFFLOAD baseline: device node ... NOT priced`). The mode is read
+from the environment at power time, so a re-derivation of a baseline's power
+must run with the variable set too.
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.

@@ -956,7 +956,7 @@ static void InitSystem(Config& config) {
         zinfo->systemNetwork.enabled = config.get<uint32_t>("sys.systemNetwork.enabled", 0) != 0;
         zinfo->systemNetwork.numNodes = config.get<uint32_t>("sys.systemNetwork.numNodes", 0);
         zinfo->systemNetwork.model = config.get<uint32_t>("sys.systemNetwork.model", 0);
-        if (zinfo->systemNetwork.model == 1) zinfo->systemNetwork.model = 0;  // backward compat: MD1→SIMPLE
+        if (zinfo->systemNetwork.model == 1) zinfo->systemNetwork.model = 0;  // backward compat: MD1->SIMPLE
         zinfo->systemNetwork.linkWidthBits = config.get<uint32_t>("sys.systemNetwork.linkWidthBits", 512);
 
         // Read pre-computed inter-node latency matrix
@@ -1674,11 +1674,13 @@ static void InitSystem(Config& config) {
     }
 
     //Init stats: caches, mem
+    if (!zinfo->roiRebaseStats) zinfo->roiRebaseStats = new g_vector<AggregateStat*>();   // 1.11.90
     for (const char* group : cacheGroupNames) {
         AggregateStat* groupStat = new AggregateStat(true);
         groupStat->init(gm_strdup(group), "Cache stats");
         for (vector<BaseCache*>& banks : *cMap[group]) for (BaseCache* bank : banks) bank->initStats(groupStat);
         zinfo->rootStat->append(groupStat);
+        zinfo->roiRebaseStats->push_back(groupStat);   // 1.11.90
     }
 
     //Initialize event recorders
@@ -1687,6 +1689,7 @@ static void InitSystem(Config& config) {
     AggregateStat* memStat = new AggregateStat(true);
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);
+    zinfo->roiRebaseStats->push_back(memStat);   // 1.11.90
     /* 1.9.35: in co-simulation the PE memory interfaces were CONSTRUCTED and
      * then dropped from `mems` (see the cosimMode branch above, which clears the
      * vector so the host's own controllers can occupy it). They survived only in
@@ -1718,6 +1721,7 @@ static void InitSystem(Config& config) {
             if (mi) mi->initStats(peMemStat);
         }
         zinfo->rootStat->append(peMemStat);
+        zinfo->roiRebaseStats->push_back(peMemStat);   // 1.11.90
     }
 
     //Odds and ends: BuildCacheGroup new'd the cache groups, we need to delete them

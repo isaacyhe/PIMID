@@ -7,6 +7,188 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.89 -- system scope priced a different memory from device scope, and every scope priced the setup
+
+Found by a read-only audit of the system-scope power path
+(`runPerNodePowerAnalysis`, `reportSharedMemoryArrayEnergy`) before the
+90-cell system-scope fleet (co-sim DDR5/HBM3 x 5 kernels x omp/mpi, the
+NO_OFFLOAD baselines at 1/4/16 host cores, and the DDR5-3200 co-sim
+companions), plus one defect in the plugin that touches every cell. All
+confirmed by reading the code; the fleet was held until they shipped.
+
+**(1) The measured row-miss fraction never reached system scope.** Device
+scope has weighted the activate/precharge share of every access by the run's
+own PE-MI `rowHits`/`rowMisses` since 1.11.52 (D003). The system-scope
+reporter never called `setRowMissFraction`, so every co-sim access was priced
+at the 0.5 fallback while the measurement sat in the dump. Accesses are now
+priced by origin: PE-originated accesses at the MEASURED fraction (the same
+`[mem] row-buffer miss fraction MEASURED x` line device scope prints),
+host-originated accesses and flush writebacks at the stated 0.5 fallback with
+a line saying why -- the host memory controller exports no row counters, and
+one side's measurement is not lent to the other. No new default: 0.5 is the
+fallback device scope already states for an unmeasured run, and it does not
+refuse there, so neither does this.
+
+**(2) The idle descent was gated on flags the fleet never sets.** Device
+scope computes the DRAM idle residency unconditionally (1.11.20, D15: an idle
+controller closes its pages whether or not power gating was asked for; the
+`memory.power_down` flag only adds the IDD2P step). System scope gated the
+whole descent -- residency and the E17 gap histogram -- on
+`memory.power_down || pim.mc.pg`, so every fleet cell reported flat IDD3N
+standby while its device-scope twin descended (smoke: 1339.46 -> 940.16 mW
+at residency 0.98 in device scope, flat in system scope). The gate is gone.
+The residency also counted the wrong controller: it read the device-MC
+counter alone, for a shared array that the host MC drives too, and weighed
+that counter against host+device accesses -- which on a host-only baseline
+(device MC 0, host traffic > 0) would have refused the descent as a dead
+counter. One arming rule now serves both scopes (`pgCounterArmed`: a counter
+is a measurement if it advanced or its OWN side made no accesses). A shared
+array's phase residency counts device-MC and host-MC activity; zsim exports
+each count but not their per-phase union, so the union is printed as a band
+and its least-idle end is used (exact whenever either side is zero). The gap
+histogram records device-MC events only, so on a shared array it is lowered
+by the most the host's accesses can take from it (each host access or flush
+writeback breaks at most one usable gap, < 2B cycles for B the first usable
+bucket) and the bound is printed. A decoupled array uses its own controller
+only. If the dump carries no host-MC counter, the run says so and uses the
+device-MC counter alone.
+
+**(3) Host accesses to the shared array paid no DQ termination.** 1.11.52
+(A019) fixed the decoupled host array and left the coupled branch pricing
+every access with the PE placement's answer, so at BANK placement the host
+CPU's reads, writes and flush writebacks to the device DRAM were reported as
+"on-die placement: no DQ crossing". A host access always drives the DQ pins.
+Each access origin now carries its own answer; HBM's termination stays zero
+by citation (JESD238B cl. 9.1) and the report now says so on this path too.
+
+**(4) Baselines priced a device that never ran and a link nothing crossed.**
+docs/cosim.md promises the NO_OFFLOAD baseline "no offload-driven device
+pricing"; the per-node loop priced every node with cores anyway -- the
+declared 8-PE device block (~0.04 W, 6.43 mm^2 on the 16-core DDR5 smoke) and
+both pcie_gen5 link controllers landed in System Total power and area. Under
+`PIMID_COSIM_NO_OFFLOAD` in system scope (recognised the way every other site
+recognises it) the device node and the link are skipped with one line saying
+so; the memory array stays priced, because the host uses it. The mode is
+read at power time: a power re-derivation of a baseline must set it too.
+
+**(5) In-order PEs were priced single-issue while simulated dual-issue.**
+zsim's `InOrderCore` runs `issueWidth` 2 by default and honours
+`pim.pe.issue_width` (and `PIMID_INORDER_WIDTH`); McPAT was handed a
+hard-coded `issue_width = 1` for every in-order element in both scopes. It is
+now handed the width the core resolves, by the core's own precedence, which
+reaches the XML's fetch/decode/issue/peak/commit widths (the in-order profile
+emits `config_.issue_width` directly) and is printed on the core description
+(`Profile: DEVICE_INORDER (issue_width=N)`, `<node> (InOrder issue_width=N,
+...)`). `simple_core` stays 1 (IPC-1 by construction);
+`power.mcpat_overrides.issue_width` still wins.
+
+**(6) Traffic counters were never rebased at ROI begin, so setup traffic
+was priced over kernel time.** Every scope. The cores rebase their own
+instructions and cycles at `roi_begin` (`markRoiBegin`), and the power-gating
+window opens there (1.11.18), but the plugin records from process start
+(`in_roi` defaults on) and the cache, memory-controller and PE
+memory-interface counters, and Garnet's flit counters, had no baseline: they
+counted the serial pre-ROI array initialisation as well as the kernel, and
+power divided them by the kernel's wall clock. The audit's evidence: a co-sim
+host with 4 ROI instructions and 1.18 M L1D accesses, and one active host-MC
+phase in 109. For a stream kernel the init writes are the same order as the
+kernel's traffic, so cache dynamic, memory-array dynamic and NoC dynamic
+power were all inflated, in every cell. Now `Counter` and `VectorCounter`
+snapshot a base at `roi_begin` (`roiRebase`, forwarded through the
+aggregates; cores are not in the rebased set, they already rebase) and
+report the delta; Garnet's counters are zeroed there and its statistics
+header says `[ROI only ...]`; the plugin prints one line, `[roi] traffic
+counters rebased at roi_begin (...): N stat groups, pre-ROI memory-controller
+accesses dropped: X, pre-ROI NoC flits dropped: Y`, at each of its three
+baseline sites (legacy roi_begin, thread-MPI first roi_begin, synthesized
+first-barrier baseline). A run with no `roi_begin` reports the whole run and
+the Garnet header says so.
+
+Also, from the cloud review of 1.11.88: the unknown-top-level-section FATAL
+now lists the sections from the set it checks (the literal list omitted
+`synthetic`); the router comment that still promised an analytical fallback
+now says the run refuses; and the seven "McPAT failed / FATAL / exit(3)"
+blocks are one helper, `fatalMcPATFailure`, each site keeping its wording.
+
+DATA IMPACT (system scope only, except (5)):
+- co-sim array dynamic energy, both technologies: moves with each kernel's
+  measured row-miss fraction -- DOWN where the PE-MI measures a mostly
+  row-hit stream (below 0.5), UP where it measures a miss-heavy one;
+- DDR5 co-sim and baseline background power: DOWN (the descent now happens;
+  on DDR5 the gap histogram supersedes, lowered by the host-access bound);
+  HBM3 background moves DOWN as well, by the phase-granular residency only
+  (no tXP is tabulated for HBM, so the gap histogram is refused there as in
+  device scope);
+- DDR5 baseline and co-sim array energy: UP, by DQ termination on every
+  host-originated access and flush writeback (HBM3 unchanged by this term,
+  zero by citation);
+- baseline totals and area: DOWN by the inert device block and both link
+  controllers;
+- coremodel `in_order_core` cells (both scopes): core power and area UP, by
+  the doubled issue width;
+- EVERY cell, both scopes, by (6): cache dynamic, memory-array dynamic and
+  NoC dynamic power DOWN by the pre-ROI share of their traffic (largest for
+  stream_triad and histogram, whose initialisation touches every element;
+  smallest for bfs and stencil, whose kernels re-touch the data many times);
+  cycles unchanged (they were ROI-scoped already). Measured by gate 1198A
+  A8 on the smoke shape (HBM3, stream_triad 40000 elements, 16 alu_core):
+  1,166,956 memory-controller accesses dropped at roi_begin; Garnet flits
+  1,172,482 -> 21,477 (98% of the flits were pre-ROI: process start-up,
+  OpenMP runtime and array initialisation, all simulated); array dynamic
+  0.5 -> 0.1 mJ; cycles 7,037,535 -> 7,044,327 (run jitter). On the corpus
+  shapes the kernel's share is larger (the working set is 256 MB and the
+  start-up cost is fixed), but the pre-ROI share is not small for any
+  kernel, and every NoC and array dynamic figure in every previous corpus
+  carried it.
+Device-scope DRAM numbers are unchanged by (1)-(4) by construction: the only
+device-scope edit in their path replaces an expression with the helper
+holding the same expression.
+
+Gate 1198A, re-evaluated in part as 1198B: 1198A's A3 and A4 read a
+device-scope line that system scope prints differently (the firing lines
+were present, the quantity read NA), and A5 compared total power, which
+fix (6) lowers in the same run by more than the wider issue raises the
+core; 1198B re-runs those three with the system-scope extractors and, for
+A5, the core area, which the rebase does not touch. Each fix needs a FIRES
+side against 1.11.88:
+- A1 (fix 1): a co-sim cell whose PE-MI row-miss fraction is far from 0.5:
+  NEW prints `row-buffer miss fraction MEASURED` in the system report and its
+  per-access read energy differs from OLD's in the direction the fraction
+  predicts; OLD prints no such line in system scope. A1b: a baseline prints
+  `row-buffer miss fraction NOT MEASURED for the host-originated accesses`
+  and matches OLD's per-access energy to the digit.
+- A2 (fix 2): the DDR5 co-sim smoke with neither flag set: OLD background is
+  flat IDD3N, NEW prints `[pg] DRAM idle residency` and a background below
+  OLD's; the HBM3 twin prints the phase-granular line and no gap supersession;
+  a 16-core DDR5 baseline descends with NO `UNAVAILABLE` line (device MC 0 is
+  armed). A2b: with `memory.power_down: true`, NEW's descent is at or below
+  the no-flag NEW value.
+- A3 (fix 3): a DDR5 co-sim at BANK placement: NEW prints
+  `host-originated: a host access always drives the DRAM's DQ pins` with a
+  non-zero termination and array dynamic above OLD's; the HBM3 twin prints
+  the zero-by-citation line and an unchanged termination term.
+- A4 (fix 4): a 16-core DDR5 baseline: NEW prints `NO_OFFLOAD baseline:
+  device node` ... `NOT priced`, has no `Link controller` block and no device
+  node line, and its System Total power and area are below OLD's by the
+  device block plus the two controllers; the same config WITHOUT the
+  environment variable prices the device (the arm must fire only in the
+  mode).
+- A5 (fix 5): a coremodel `in_order_core` cell: NEW prints `McPAT issue width
+  2 = the timing model's` and `DEVICE_INORDER (issue_width=2)`, the emitted
+  XML carries `issue_width` 2, and core power is above OLD's; `simple_core`
+  and `ooo_core` twins byte-identical in power.
+- A6 (fix 6): an unknown section's FATAL lists `synthetic`; each McPAT
+  refusal trigger from gate 1197B still prints its exact second line and rc 3.
+- A7 parity: device scope on all seven technologies (DDR3, DDR4, DDR5,
+  LPDDR5, GDDR6, HBM2, HBM3) byte-identical to 1.11.88 at config load
+  (`--print-mem-info`), and a full alu_core run's core power identical to
+  1.11.88's; in_order device-scope cells differ only in core power.
+- A8 (fix 6): a device-scope stream_triad run: NEW prints the `[roi] traffic
+  counters rebased` line with a non-zero dropped count, its memory-controller
+  rd+wr total is BELOW OLD's by that count, its Garnet header says `[ROI
+  only`, and its cycles agree with OLD's within run jitter; a workload with
+  no roi_begin prints `[whole run` and matches OLD's counters.
+
 ## 1.11.88 -- a refused McPAT run could still land in the corpus looking complete
 
 Found by the cloud review of 1.11.87's diff, which asked what the new

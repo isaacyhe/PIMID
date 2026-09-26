@@ -96,6 +96,14 @@ class Stat : public GlobAlloc {
         virtual class VectorStat* asVector() { return nullptr; }
         virtual class Counter* asCounter() { return nullptr; }
         virtual class VectorCounter* asVectorCounter() { return nullptr; }
+        /* 1.11.90: ROI rebase. Counters that count TRAFFIC (cache hits and
+         * misses, memory-controller reads and writes, PE memory-interface
+         * events) were never rebased at roi_begin, while the cores' instrs and
+         * cycles were (markRoiBegin). Power divides the former by the latter's
+         * wall clock, so the serial pre-ROI array-init traffic was priced over
+         * the kernel's time. Aggregates forward; Counter and VectorCounter
+         * snapshot; everything else (proxies, lambdas) is left alone. */
+        virtual void roiRebase() {}
 
         const char* name() const {
             assert(_name);
@@ -185,7 +193,9 @@ class AggregateStat : public Stat {
         uint32_t curSize() const {
             return _children.size();
         }
-
+        void roiRebase() override {
+            for (Stat* c : _children) c->roiRebase();
+        }
 };
 
 /*  General scalar & vector classes */
@@ -234,9 +244,10 @@ class VectorStat : public Stat {
 class Counter : public ScalarStat {
     private:
         uint64_t _count;
+        uint64_t _roiBase;   // 1.11.90: value at roi_begin; get() reports the delta
 
     public:
-        Counter() : ScalarStat(), _count(0) {}
+        Counter() : ScalarStat(), _count(0), _roiBase(0) {}
 
         // Override type check for use without RTTI (Pin 4.x requires -fno-rtti)
         Counter* asCounter() override { return this; }
@@ -244,7 +255,11 @@ class Counter : public ScalarStat {
         void init(const char* name, const char* desc) {
             initStat(name, desc);
             _count = 0;
+            _roiBase = 0;
         }
+
+        void roiRebase() override { _roiBase = _count; }
+        uint64_t rawCount() const { return _count; }
 
         inline void inc(uint64_t delta) {
             _count += delta;
@@ -263,7 +278,7 @@ class Counter : public ScalarStat {
         }
 
         uint64_t get() const {
-            return _count;
+            return _count - _roiBase;
         }
 
         inline void set(uint64_t data) {
@@ -274,9 +289,14 @@ class Counter : public ScalarStat {
 class VectorCounter : public VectorStat {
     private:
         g_vector<uint64_t> _counters;
+        g_vector<uint64_t> _roiBases;   // 1.11.90
 
     public:
         VectorCounter() : VectorStat() {}
+        void roiRebase() override {
+            _roiBases.resize(_counters.size());
+            for (uint32_t i = 0; i < _counters.size(); i++) _roiBases[i] = _counters[i];
+        }
 
         // Override type check for use without RTTI (Pin 4.x requires -fno-rtti)
         VectorCounter* asVectorCounter() override { return this; }
@@ -286,7 +306,8 @@ class VectorCounter : public VectorStat {
             initStat(name, desc);
             assert(size > 0);
             _counters.resize(size);
-            for (uint32_t i = 0; i < size; i++) _counters[i] = 0;
+            _roiBases.resize(size);
+            for (uint32_t i = 0; i < size; i++) { _counters[i] = 0; _roiBases[i] = 0; }
             _counterNames = nullptr;
         }
 
@@ -314,7 +335,7 @@ class VectorCounter : public VectorStat {
         }
 
         inline virtual uint64_t count(uint32_t idx) const {
-            return _counters[idx];
+            return _counters[idx] - _roiBases[idx];
         }
 
         inline uint32_t size() const {
