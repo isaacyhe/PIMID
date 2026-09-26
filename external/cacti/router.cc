@@ -250,10 +250,12 @@ void Router::buffer_stats()
      * error is corrected. A number that far from the model it stands in for
      * is not a fallback, it is a different answer, and publishing it under
      * the Mat's name is how DDR3 reported 16.73 W of fabric power for eleven
-     * releases. Under the corrected sense voltage the Mat converges on every
-     * node the corpus uses; where it still does not (65 and 90 nm, one router
-     * of two, cause not yet located -- see R6-10) the run stops here and says
-     * so, the way 1.11.79 stops on a negative array energy. */
+     * releases. With the wire type set and the sense voltage corrected the
+     * Mat converged on every node measured (22, 32 and 65 nm, both routers;
+     * the 32 and 65 nm failures WERE the unset wire type, R6-10). If it ever
+     * returns non-finite again the run stops here and says so, the way
+     * 1.11.79 stops on a negative array energy. The estimate that used to
+     * follow this exit was unreachable and is deleted (1.11.88). */
     std::cerr << "[cacti] FATAL: the router input-buffer Mat returned a"
                  " non-finite dynamic energy (" << buff.power.readOp.dynamic
               << ") at " << g_ip->F_sz_nm << " nm for a " << (int)vc_buffer_size
@@ -261,31 +263,14 @@ void Router::buffer_stats()
               << (int)vc_count << " VCs x " << (int)flit_size << " b). The"
                  " analytical estimate this build used to substitute was"
                  " measured ~1000x off the Mat (audit round 6, R6-10), so no"
-                 " number is emitted for this level. This is a CACTI Mat"
-                 " convergence failure on a short, wide SRAM array at a coarse"
-                 " node; the corpus nodes (22 nm, and 32 nm for DDR3) converge."
+                 " number is emitted for this level. With the wire type set"
+                 " (1.11.87) the Mat converges at 22, 32 and 65 nm, so this is"
+                 " a new failure worth reporting with the config."
                  " Options: use a node at which the Mat converges, reduce"
                  " noc.vcs_per_vnet or noc.buffers_per_vc, or run"
                  " noc.model: analytical, which does not price a router."
               << std::endl;
     std::exit(2);
-    int cols = (int)flit_size * (int)vc_count;
-    int rows = (int)vc_buffer_size;
-    // Per-cell wordline cap (access transistor gate) and bitline cap (access transistor drain)
-    double wl_cap_per_cell = gate_cap(g_tp.min_w_nmos_ * 2);
-    double bl_cap_per_cell = diff_cap(g_tp.min_w_nmos_, 0, 1);
-    // Wordline energy: drive all cols in selected row
-    double E_wl = cols * wl_cap_per_cell * Vdd * Vdd;
-    // Bitline energy: half-swing discharge on flit_size columns
-    double E_bl = (int)flit_size * bl_cap_per_cell * Vdd * Vdd * 0.5;
-    // Sense amp + precharge overhead (~50% of bitline energy)
-    buff.power.readOp.dynamic = E_wl + E_bl * 1.5;
-    if (!std::isfinite(buff.power.readOp.leakage))
-      buff.power.readOp.leakage = rows * cols * cmos_Isub_leakage(
-          g_tp.min_w_nmos_, min_w_pmos, 2, nand) * Vdd;
-    if (!std::isfinite(buff.power.readOp.gate_leakage))
-      buff.power.readOp.gate_leakage = rows * cols * cmos_Ig_leakage(
-          g_tp.min_w_nmos_, min_w_pmos, 2, nand) * Vdd;
   }
 
   buffer.power.readOp  = buff.power.readOp;

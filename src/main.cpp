@@ -7784,7 +7784,20 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     else
         mcpat.setDeviceProfile(McPAT::DeviceProfile::DEVICE_INORDER);
 
-    mcpat.initialize();
+    /* 1.11.88 (gate 1197A, arm A0): initialize() validates the McPAT
+     * configuration and THROWS on e.g. a PE clock below 100 MHz, which the
+     * YAML loader accepts. It sat outside the 1.11.52 try around
+     * computePower(), so a legal-looking config ended in an uncaught
+     * exception and a core dump (rc 134) instead of the refusal. */
+    try {
+        mcpat.initialize();
+    } catch (const std::exception& e) {
+        std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
+        std::cerr << "[Power] FATAL: power analysis was requested (--power) "
+                     "and McPAT refused the device configuration. Refusing to "
+                     "report a run with a silently missing power result." << std::endl;
+        std::exit(3);
+    }
 
     // Feed simulation stats
     // OOO cores in QEMU mode may report cycles=0 (contention sim not triggered);
@@ -8065,7 +8078,15 @@ static void runPowerAnalysis(const UnifiedConfig& config,
 
         McPAT host_mcpat(host_cfg);
         host_mcpat.setDeviceProfile(McPAT::DeviceProfile::OOO);
-        host_mcpat.initialize();
+        try {
+            host_mcpat.initialize();   // 1.11.88: same rule as the device (was an uncaught throw)
+        } catch (const std::exception& e) {
+            std::cerr << "[Power] Host McPAT failed: " << e.what() << std::endl;
+            std::cerr << "[Power] FATAL: power analysis was requested (--power) "
+                         "and McPAT refused the host configuration. Refusing to "
+                         "report a run with a silently missing power result." << std::endl;
+            std::exit(3);
+        }
 
         /* 1.9.29: price the host from ITS OWN measured counters.
          *
@@ -8196,7 +8217,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             std::cout << "  Device Power:   " << dev_power.total_power << " W" << std::endl;
             std::cout << "  Total System:   " << (host_power.total_power + dev_power.total_power) << " W" << std::endl;
         } catch (const std::exception& e) {
+            /* 1.11.88: same rule as the device McPAT above (1.11.52). A host
+             * whose power could not be computed used to leave the System
+             * Power Summary unprinted and the run exiting 0. */
             std::cerr << "[Power] Host McPAT failed: " << e.what() << std::endl;
+            std::cerr << "[Power] FATAL: power analysis was requested (--power) "
+                         "and produced nothing for the host. Refusing to report "
+                         "a run with a silently missing power result." << std::endl;
+            std::exit(3);
         }
     }
 
@@ -10657,7 +10685,20 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * shape follows the system the user defined. */
             mcpat.printComponentBreakdown();
         } catch (const std::exception& e) {
+            /* 1.11.88 (cloud review of 1.11.87): POWER WAS ASKED FOR AND
+             * NOT PRODUCED, system scope. The device path has refused here
+             * since 1.11.52 (gate 1162C C4); this loop still printed one
+             * stderr line, left result.valid false and went on, so the
+             * System Total below skipped the node and a co-sim cell could
+             * land in the corpus with a device that costs nothing. Same
+             * rule as the device path: a tool failure on a requested
+             * analysis is a failed run. */
             std::cerr << "  " << node.name << ": McPAT failed: " << e.what() << std::endl;
+            std::cerr << "[Power] FATAL: power analysis was requested (--power) "
+                         "and produced nothing for node '" << node.name
+                      << "'. Refusing to report a run with a silently missing "
+                         "power result." << std::endl;
+            std::exit(3);
         }
 
         results.push_back(result);
@@ -12673,13 +12714,14 @@ int main(int argc, char** argv) {
              * warn on valid keys, which is worse than the silence it replaces.
              * The nested case stays an open finding with a generator-side
              * key-set check recommended for the fleet (R6-7 in the round-6
-             * ledger). The fourteen names below are every section the parser
-             * reads, taken from the source; no config in this tree uses any
+             * ledger). The fifteen names below are every section the parser
+             * reads, taken from the source (synthetic added 1.11.88); no config in this tree uses any
              * other, and six of them cover every shipped and corpus config. */
             {
                 static const std::set<std::string> kKnownSections = {
                     "cache", "description", "host", "memory", "method", "name",
                     "noc", "pim", "power", "scope", "simulation", "system",
+                    "synthetic",   // 1.11.88: documented (docs/network.md), read by --method synthetic; 1.11.76 left it out
                     "technology", "workload"
                 };
                 if (yaml_cfg.IsMap()) {
@@ -15032,7 +15074,15 @@ int main(int argc, char** argv) {
 
                 McPAT mcpat(mcfg);
                 mcpat.setDeviceProfile(McPAT::DeviceProfile::DEVICE_ALU);
-                mcpat.initialize();
+                try {
+                    mcpat.initialize();   // 1.11.88: see the device-scope site
+                } catch (const std::exception& e) {
+                    std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
+                    std::cerr << "[Power] FATAL: power analysis was requested (--power) "
+                                 "and McPAT refused the NoC tool's configuration. Refusing "
+                                 "to report a run with a silently missing power result." << std::endl;
+                    std::exit(3);
+                }
 
                 mcpat.setTotalCycles(result.totalCycles > 0 ? result.totalCycles : 1);
                 mcpat.setBusyCycles(result.totalCycles > 0 ? result.totalCycles : 1);
@@ -15094,8 +15144,17 @@ int main(int argc, char** argv) {
                                noc_power.runtime_dynamic, energy_per_pkt_pj);
                     }
                 } catch (const std::exception& e) {
-                    if (!doSweep)
-                        std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
+                    /* 1.11.88: the NoC tool asked for power and did not get
+                     * it. In sweep mode this used to say NOTHING and print
+                     * the next rate's row, so a table could carry a hole no
+                     * reader could see. Same rule as the device path. */
+                    std::cerr << "[Power] McPAT failed: " << e.what() << std::endl;
+                    std::cerr << "[Power] FATAL: power analysis was requested "
+                                 "(--power) and produced nothing"
+                              << (doSweep ? " for this sweep point" : "")
+                              << ". Refusing to report a run with a silently "
+                                 "missing power result." << std::endl;
+                    std::exit(3);
                 }
             } else if (!doSweep) {
                 // No power, print basic results

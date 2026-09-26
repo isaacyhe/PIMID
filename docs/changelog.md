@@ -7,6 +7,67 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.88 -- a refused McPAT run could still land in the corpus looking complete
+
+Found by the cloud review of 1.11.87's diff, which asked what the new
+`std::exit(2)` in the router does once `computePower()`'s fork isolation
+turns it into a caught `std::runtime_error`. Answer: in DEVICE scope the run
+stops (1.11.52, gate 1162C C4). In SYSTEM scope it did not. Three catch
+sites printed one stderr line and went on:
+
+- the per-node loop of system scope: `result.valid` stayed false, the node
+  was pushed anyway, and the System Total loop skips invalid nodes -- so a
+  co-sim cell whose device McPAT failed reported a total with the device
+  costing nothing, exit 0;
+- the host McPAT of the device-with-host path: the System Power Summary was
+  simply not printed, exit 0;
+- the NoC tool in sweep mode: nothing was printed at all and the next rate's
+  row followed, so a sweep table could carry a hole.
+
+All three now stop with the 1.11.52 FATAL and rc 3. Nothing in the corpus
+is affected by construction: no cell has ever printed "McPAT failed" (the
+fleet census greps for it), and the 22 nm nodes converge. The point is that
+the rule is now one rule.
+
+**Found by this release's own gate (1197A, arm A0), on both binaries.** The
+gate's trigger is a PE clock of 50 MHz, which the YAML loader accepts and
+McPAT's validator refuses. In device scope that refusal did not produce the
+1.11.52 FATAL: `initialize()` is where the validator runs, it sat OUTSIDE the
+try around `computePower()`, and the run died on an uncaught exception with
+a core dump (rc 134). The same at the host site and in the NoC tool. All
+three `initialize()` calls are now wrapped with the same FATAL and rc 3.
+
+**Also found by the gate (arm A2): the documented `synthetic:` section was
+refused.** 1.11.76 made an unknown top-level YAML section fatal and listed
+the fourteen sections the parser reads; `synthetic` (docs/network.md, read
+by `--method synthetic`) was not on the list, so the NoC tool's sweep could
+not be configured from YAML at all since 1.11.76. Added.
+
+Also in this release: the analytical estimate that followed the router's
+new exit was unreachable and is deleted, and the comment above it, which
+still said the 65 nm failure's cause was not located, is corrected -- it
+was the unset wire type, measured in 1.11.87's A/B.
+
+Gate 1197B (1197A was cancelled after it found the two defects above; the
+binary was rebuilt). The trigger is a PE clock of 50 MHz: the YAML loader
+accepts any positive frequency and McPAT's own validator refuses a core
+clock below 100 MHz. A0 device scope at that clock: OLD core-dumps (rc 134,
+"terminate called"), NEW refuses (rc 3, FATAL). A1 a system-scope run at
+that clock: OLD exits 0 with a System Total that omits the device, NEW stops
+with rc 3 and the FATAL naming the node. A2 the NoC tool at that clock: OLD
+core-dumps there too (rc 134; the same uncaught initialize(), R6-22 at
+its third site -- gate 1197B's first draft expected the softer "McPAT
+failed, exit 0" and FAILED on that expectation, re-evaluated as 1197C),
+NEW stops with rc 3. A2b the NoC tool's
+documented sweep section: OLD refuses it at config load (rc 2, "unknown
+top-level section"), NEW loads it and prints the sweep rows at 500 MHz. A3
+the corpus co-sim shape still completes; A4/A5 device- and system-scope
+loads byte-identical on all corpus shapes; A6 one full DDR3 run's NoC power
+within 5% of 1.11.87's. The host site has no firing arm: no plain config
+makes host McPAT alone fail (the host has no NoC and takes the device's or
+the corpus's 2 GHz clock), so it is covered by code reading of the same
+pattern, and said so here.
+
 ## 1.11.87 -- R6-10 resolved: the router read a wire type nobody set
 
 Audit round 6 found DDR3 reporting 16.73 W of on-die fabric power against
