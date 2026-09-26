@@ -778,7 +778,8 @@ struct ZSimParsedOutput {
     //   dev_wall_cycles  = max over device PEs of (simulated cycles)  [Garnet-timed;
     //                      device PE cycles already fold in memory-network stalls]
     // Only consumed by runPerNodePowerAnalysis (system scope). The device-SCOPE
-    // path (runPowerAnalysis) keeps using `cycles`, so its values are unchanged.
+    // path (runPowerAnalysis) prices over max_core_cycles (the critical-path
+    // max over the PEs) since 1.11.93 (F4) -- see core_recs below.
     uint64_t host_wall_cycles = 0;
     uint64_t dev_wall_cycles = 0;
     /* 1.11.7 (#85): host<->device crossing counters from the plugin
@@ -933,8 +934,28 @@ struct ZSimParsedOutput {
                                     // so this is a MEASURED branch-count proxy
     uint64_t branches = 0;          // conditional branches resolved
     uint64_t mispredBranches = 0;   // of those, mispredicted
-    uint64_t indirBranches = 0;     // indirect jmp/call resolutions
-    uint64_t rasReturns = 0;        // returns resolved against the RAS
+    uint64_t indirBranches = 0;     // indirect jmp/call resolutions (ROI, 1.11.93)
+    uint64_t rasReturns = 0;        // returns resolved against the RAS (ROI, 1.11.93)
+    /* 1.11.93 (F3/F4): ONE RECORD PER CORE, in dump order. `cycles` above is
+     * the FIRST core's count and the device-scope pricing window used to be
+     * exactly that -- core 0 can finish well before the slowest PE (a bfs
+     * 64-PE cell: 26% low), while the kernel ends when the LAST PE does.
+     * max_core_cycles is the critical-path max, the same number the "OMP
+     * cycles: X (... critical-path max)" line reports (max over the final
+     * dump's per-core "cycles: N # Simulated ..." lines). The per-core
+     * instruction counts feed the derived busy cycles of the pipeline duty.
+     * group: 0 = ungrouped, 1 = host cores, 2 = device PEs. */
+    struct CoreRec { int group = 0; uint64_t cycles = 0, instrs = 0, synthetic = 0; };
+    std::vector<CoreRec> core_recs;
+    uint64_t max_core_cycles = 0;
+    /* Executed (non-injected) instructions per core, for one group (0 = all). */
+    std::vector<uint64_t> realInstrsPerCore(int group) const {
+        std::vector<uint64_t> v;
+        for (const auto& r : core_recs)
+            if (group == 0 || r.group == group)
+                v.push_back(r.instrs > r.synthetic ? r.instrs - r.synthetic : 0);
+        return v;
+    }
 
     // L1I: fhGETS (filtered hits), hGETS (hits), mGETS (misses) -- accumulated across all instances
     uint64_t l1i_fhGETS = 0;
@@ -1053,6 +1074,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
      * own top-level groups, not nested under the core group, so `core_group`
      * cannot answer this -- it needs its own tracker. */
     CoreGroup cache_group = CoreGroup::NONE;
+    /* 1.11.93 (F3/F4): the per-core record the current core block writes;
+     * reset at every aggregate header so each "<group>-N:" block gets one. */
+    int cur_core_rec = -1;
 
     /* 1.9.29: learn the node names instead of hardcoding them. The config writer
      * emits core groups as "<node.name>_cores" for the host and "<node.name>_pes"
@@ -1128,6 +1152,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
         // Core-group detection: "host_cores"/"device_pes"/"cores" aggregate headers.
         // These are NOT cache scopes; core scalars are read at ROOT scope, so we only
         // tag which group's cores we are currently traversing.
+        if (is_aggregate) cur_core_rec = -1;   // 1.11.93: a new block begins
         if (is_aggregate) {
             /* 1.9.29: match the "<name>_cores" / "<name>_pes" convention rather
              * than the literal names, and record the node name so the cache
@@ -1266,6 +1291,29 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
             // Top-level stats
             if (scope == Scope::NONE || scope == Scope::ROOT) {
                 if (key == "cycles" && out.cycles == 0) out.cycles = val;
+                /* 1.11.93 (F3/F4): per-core record. "cycles" only on a core's
+                 * own clock line ("# Simulated cycles" / "# Simulated unhalted
+                 * cycles"), the same filter the OMP critical-path line uses. */
+                const bool core_cycles_line =
+                    (key == "cycles" && line.find("# Simulated") != std::string::npos);
+                if (core_cycles_line || key == "instrs" || key == "syntheticInstrs") {
+                    if (cur_core_rec < 0) {
+                        ZSimParsedOutput::CoreRec r;
+                        r.group = (core_group == CoreGroup::HOST) ? 1
+                                : (core_group == CoreGroup::DEVICE) ? 2 : 0;
+                        out.core_recs.push_back(r);
+                        cur_core_rec = static_cast<int>(out.core_recs.size()) - 1;
+                    }
+                    auto& r = out.core_recs[cur_core_rec];
+                    if (core_cycles_line) {
+                        r.cycles = val;
+                        out.max_core_cycles = std::max(out.max_core_cycles, val);
+                    } else if (key == "instrs") {
+                        r.instrs = val;
+                    } else {
+                        r.synthetic = val;
+                    }
+                }
                 /* 1.11.9 (#86, audit): instrs is SUMMED across cores, like every
                  * other activity counter. It used to latch the FIRST core's
                  * value while uops/bbls/branches/syntheticInstrs were all-core
@@ -1325,9 +1373,13 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "branches") { out.branches += val; if (grp) grp->branches += val; }
                 else if (key == "mispredBranches") {
                     out.mispredBranches += val; if (grp) grp->mispredBranches += val;
-                } else if (key == "indirBranches") {
+                } else if (key == "roiIndirBranches") {
+                    /* 1.11.93 (F6): the ROI-windowed BTB/RAS counts (zsim
+                     * 1.11.93). The raw indirBranches/rasReturns keys are
+                     * WHOLE-RUN and are no longer read: nothing priced on
+                     * the ROI may be fed a whole-run count. */
                     out.indirBranches += val; if (grp) grp->indirBranches += val;
-                } else if (key == "rasReturns") {
+                } else if (key == "roiRasReturns") {
                     out.rasReturns += val; if (grp) grp->rasReturns += val;
                 } else if (key == "pgActivePhases") {
                     /* 1.11.8: per-core PG residency, summed per group; each
@@ -7143,6 +7195,25 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
     const int vcs  = std::max(1, config.noc_vcs_per_vnet);
     const int bufs = std::max(1, config.noc_buffers_per_vc);
+    /* 1.11.93: McPAT prices the VC depth Garnet BUILT (garnet.
+     * effective_buffers_per_vc: max(buffers_per_vc, ceil(576 / flit)) = 5 at
+     * 128 b), the buffer the simulation ran on; 1.11.92 priced the configured
+     * depth and printed the built one. Both stay on the level line. 0 = the
+     * stats file carries no built depth: the configured one is priced. */
+    const int built_bufs = (garnet.effective_buffers_per_vc > 0)
+                         ? static_cast<int>(garnet.effective_buffers_per_vc) : 0;
+    auto vcText = [&]() -> std::string {
+        std::ostringstream t;
+        t << "; vcs=" << vcs << " buffers=" << bufs;
+        if (built_bufs > 0 && built_bufs != bufs)
+            t << " configured, " << built_bufs << " built and priced (Garnet:"
+                 " a VC must hold one data packet)";
+        else if (built_bufs > 0)
+            t << " (built and priced as configured)";
+        else
+            t << " (configured and priced; the stats file carries no built depth)";
+        return t.str();
+    };
 
     if (config.hierarchy_enabled && config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level < 7) {
         // Names for hierarchy levels
@@ -7449,6 +7520,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.total_accesses = level_accesses;
             nc.duty_cycle = duty;
             nc.chip_coverage = chip_cov;
+            nc.vc_buffer_entries = built_bufs;   // 1.11.93
 
             /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED -- every number
              * McPAT scales this level by, with its formula, on one line.
@@ -7467,11 +7539,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                       << (nc.type == 0 ? " (bus: one per node)"
                                        : (ports_from_tree ? " (widest router built at this level)"
                                                           : " (literal: no tree was built)"))
-                      << "; vcs=" << vcs << " buffers=" << bufs;
-            if (garnet.effective_buffers_per_vc > 0 &&
-                garnet.effective_buffers_per_vc != static_cast<uint32_t>(bufs))
-                std::cout << " (Garnet builds " << garnet.effective_buffers_per_vc
-                          << "/VC: a VC must hold one data packet)";
+                      << vcText();
             std::cout << (it_dc != overrides.end() || it_cc != overrides.end() ||
                           it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
                       << std::endl;
@@ -7543,6 +7611,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
         nc.total_accesses = accesses;
         nc.duty_cycle = duty;
+        nc.vc_buffer_entries = built_bufs;   // 1.11.93
 
         /* 1.11.80 (R6-13): the flat branch gets the same announcement as the
          * hierarchical one above. The doc comment's claim is about the
@@ -7556,7 +7625,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                   << nc.vertical_nodes << "x" << nc.horizontal_nodes << ")"
                   << "; chip_coverage " << nc.chip_coverage
                   << "; ports 5 (literal: a flat fabric has no tree)"
-                  << "; vcs=" << vcs << " buffers=" << bufs
+                  << vcText()
                   << (it_dc != overrides.end() || it_cc != overrides.end() ||
                       it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
                   << std::endl;
@@ -7973,6 +8042,109 @@ static int inorderTimingIssueWidth(int configured, const char** src) {
     }
     if (src) *src = s;
     return w;
+}
+
+/* 1.11.93 (F8): the in-order core's pipeline depth as the TIMING model has
+ * it. InOrderCore defines no stage list; the one depth it charges is the
+ * front-end flush/refill bubble on a mispredict, mispredPenalty = 7 cycles
+ * (external/zsim/src/in_order_core.cpp:77, "~= the OOO model's fetch-to-issue
+ * depth"), overridable in the core by PIMID_INORDER_MISPRED_PENALTY
+ * (in_order_core.cpp:78-82) -- resolved here the same way. McPAT's embedded
+ * undifferentiated-core fit (0.4109 x depth - 0.776, logic.cc) goes
+ * negative below 2 stages, so a smaller override is priced at 2 and says so.
+ * The power side used 14. */
+static int inorderTimingPipelineDepth(const char** src) {
+    int d = 7;
+    const char* s = "zsim InOrderCore mispredPenalty (fetch-to-issue refill depth)";
+    const char* env = getenv("PIMID_INORDER_MISPRED_PENALTY");
+    if (env) {
+        int v = atoi(env);
+        if (v >= 0 && v <= 1000) {
+            d = v;
+            s = "PIMID_INORDER_MISPRED_PENALTY (env override, as in the core)";
+        }
+    }
+    if (d < 2) {
+        d = 2;
+        s = "PIMID_INORDER_MISPRED_PENALTY below 2 -- priced at McPAT's 2-stage floor";
+    }
+    if (src) *src = s;
+    return d;
+}
+
+/* 1.11.93 (F6/F8): ONE description of each timing core for the power model,
+ * used by device scope, the co-sim host and the per-node path (they had three
+ * copies of the literals). Every value is the zsim core's, cited:
+ *   ooo_core      depth 13 = DISPATCH_STAGE, the deepest stage zsim OOOCore
+ *                 defines (fetch 1, decode 4, issue 7, dispatch 13:
+ *                 external/zsim/src/ooo_core.cpp:49-52; execution and commit
+ *                 are latency-charged, not staged) -- was 19; issue 4 =
+ *                 ISSUES_PER_CYCLE (ooo_core.cpp:56). ROB/window/queues are
+ *                 described in the wrapper (ooo_core.h:458-469). Branch
+ *                 predictor: yes (PAg + BTB/RAS, ooo_core.h:477/548).
+ *   in_order_core depth: inorderTimingPipelineDepth() (7; was 14); issue:
+ *                 inorderTimingIssueWidth() (1.11.89). Predictor: yes, the
+ *                 same structures (in_order_core.h:165/177).
+ *   alu_core      unchanged: 5-deep, one lane-sized datapath (the wrapper
+ *                 sizes it from pe_lanes). No predictor (ALUCore has none).
+ *   simple_core / null_core  zsim SimpleCore charges ONE cycle per
+ *                 instruction (simple_core.cpp:83, "IPC=1 except on memory
+ *                 accesses", simple_core.h) and NullCore one cycle per
+ *                 instruction with no memory (null_core.cpp:41): a 1-issue,
+ *                 unpipelined element with no predictor. Was priced as a
+ *                 14-stage in-order core with 3 ALUs, 1 MUL, 1 FPU. Now 1
+ *                 issue, 1 ALU, 1 MUL, 1 FPU (every class the core retires
+ *                 at IPC 1 needs its unit; the FPU still goes when the element
+ *                 declares none), depth 5: zsim defines no stages, a literal
+ *                 depth of 1 drives McPAT's embedded undifferentiated-core fit
+ *                 negative (0.4109 x 1 - 0.776 < 0, logic.cc), and 5 is the
+ *                 depth the other stage-less element (alu_core) is priced
+ *                 at -- a CHOICE, stated, not a zsim number.
+ * `who` prefixes the printed lines ("" in device scope, the node name in the
+ * per-node path). Returns the McPAT profile. */
+static pimid::McPATWrapper::DeviceProfile describeTimingCore(
+        pimid::McPATWrapper::SystemConfig& mcfg, const std::string& type,
+        int inorder_issue_width, const std::string& who) {
+    using W = pimid::McPATWrapper;
+    const std::string pfx = who.empty() ? std::string("  [power] ")
+                                        : "  [power] " + who + ": ";
+    if (type == "ooo_core") {
+        mcfg.pipeline_depth = 13;
+        mcfg.issue_width = 4;
+        mcfg.num_alus = 4; mcfg.num_muls = 2; mcfg.num_fpus = 2;
+        mcfg.has_branch_predictor = true;
+        return W::DeviceProfile::OOO;
+    }
+    if (type == "alu_core" || type == "alu") {
+        mcfg.pipeline_depth = 5;
+        mcfg.issue_width = 1;
+        mcfg.num_alus = 1; mcfg.num_muls = 0; mcfg.num_fpus = 0;
+        mcfg.has_branch_predictor = false;
+        return W::DeviceProfile::DEVICE_ALU;
+    }
+    if (type == "in_order_core") {
+        const char* dsrc = nullptr;
+        const char* wsrc = nullptr;
+        mcfg.pipeline_depth = inorderTimingPipelineDepth(&dsrc);
+        mcfg.issue_width = inorderTimingIssueWidth(inorder_issue_width, &wsrc);
+        mcfg.num_alus = 3; mcfg.num_muls = 1; mcfg.num_fpus = 1;
+        mcfg.has_branch_predictor = true;
+        std::cout << pfx << "in_order_core: McPAT issue width "
+                  << mcfg.issue_width << " = the timing model's (" << wsrc
+                  << "); pipeline depth " << mcfg.pipeline_depth << " ("
+                  << dsrc << ")" << std::endl;
+        return W::DeviceProfile::DEVICE_INORDER;
+    }
+    // simple_core, null_core (and any other stage-less IPC-1 core)
+    mcfg.pipeline_depth = 5;
+    mcfg.issue_width = 1;
+    mcfg.num_alus = 1; mcfg.num_muls = 1; mcfg.num_fpus = 1;
+    mcfg.has_branch_predictor = false;
+    std::cout << pfx << type << ": priced as a 1-issue, 1-ALU element with no"
+                 " branch predictor (zsim " << type << " retires one instruction"
+                 " per cycle), depth 5 (zsim defines no stages; the alu_core"
+                 " depth)" << std::endl;
+    return W::DeviceProfile::DEVICE_INORDER;
 }
 
 /* 1.11.89 (fix 2): ONE arming rule for a memory-controller phase counter,
@@ -8392,37 +8564,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     mcfg.fp_emul_cycles = (int)config.pe_fp_emul_cycles;   // 1.11.51 (L215/L223)
     mcfg.pe_imem_bytes  = config.pe_imem_bytes;
 
-    // Derive McPAT architecture from pe_type
-    if (config.pe_type == "ooo_core") {
-        mcfg.pipeline_depth = 19;
-        mcfg.issue_width = 4;
-        mcfg.num_alus = 4;
-        mcfg.num_muls = 2;
-        mcfg.num_fpus = 2;
-    } else if (config.pe_type == "alu_core" || config.pe_type == "alu") {
-        mcfg.pipeline_depth = 5;
-        mcfg.issue_width = 1;
-        mcfg.num_alus = 1;
-        mcfg.num_muls = 0;
-        mcfg.num_fpus = 0;
-    } else {
-        // in_order_core (real in-order, zsim InOrderCore), simple_core (coarse)
-        mcfg.pipeline_depth = 14;
-        mcfg.issue_width = 1;
-        mcfg.num_alus = 3;
-        mcfg.num_muls = 1;
-        mcfg.num_fpus = 1;
-        /* 1.11.89: an in_order_core is priced at the width it was SIMULATED
-         * at (see inorderTimingIssueWidth). simple_core stays 1: zsim's
-         * SimpleCore is IPC-1 by construction. */
-        if (config.pe_type == "in_order_core") {
-            const char* wsrc = nullptr;
-            mcfg.issue_width = inorderTimingIssueWidth(config.inorder_issue_width, &wsrc);
-            std::cout << "  [power] in_order_core: McPAT issue width "
-                      << mcfg.issue_width << " = the timing model's (" << wsrc
-                      << ")" << std::endl;
-        }
-    }
+    // Derive McPAT architecture from pe_type.
+    /* 1.11.93 (F6/F8): one owner -- describeTimingCore(). The profile is set
+     * on the wrapper below, after construction, from the same answer. */
+    const McPAT::DeviceProfile dev_profile =
+        describeTimingCore(mcfg, config.pe_type, config.inorder_issue_width, "");
     /* 1.11.51 (L214): pim.pe.floating_point=false must remove the FPU from
      * the POWER model on every profile, not just on ALU (whose default
      * happens to be zero). Before this, an FPU-less OOO or in-order element
@@ -8470,6 +8616,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         mcfg.l2_size_bytes = config.enable_l2 ? config.l2_size_kb * 1024ULL : 0;
         mcfg.l3_size_bytes = config.enable_l3 ? config.l3_size_kb * 1024ULL : 0;
     }
+    /* 1.11.93 (F1): the L2s the device-scope zsim config BUILDS
+     * (`caches = cache.l2.count`, default 1 shared by every PE; see the cfg
+     * writer's l2 block), not one private L2 per PE. */
+    mcfg.l2_instances = std::max(1, config.l2_count);
 
     /* 1.10.5: a controller per REGION, not per group of elements.
      *
@@ -8559,12 +8709,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * (runPerNodePowerAnalysis) already selected an out-of-order profile
      * correctly; only this device-scope path did not, which is why the defect
      * showed on device-scope cells and not on co-simulation ones. */
-    if (alu_only)
-        mcpat.setDeviceProfile(McPAT::DeviceProfile::DEVICE_ALU);
-    else if (config.pe_type == "ooo_core")
-        mcpat.setDeviceProfile(McPAT::DeviceProfile::OOO);
-    else
-        mcpat.setDeviceProfile(McPAT::DeviceProfile::DEVICE_INORDER);
+    /* 1.11.93: the profile describeTimingCore() chose (same mapping). */
+    mcpat.setDeviceProfile(dev_profile);
 
     /* 1.11.88 (gate 1197A, arm A0): initialize() validates the McPAT
      * configuration and THROWS on e.g. a PE clock below 100 MHz, which the
@@ -8580,7 +8726,24 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     // Feed simulation stats
     // OOO cores in QEMU mode may report cycles=0 (contention sim not triggered);
     // estimate cycles from instrs assuming IPC~=1 so McPAT gets reasonable values
-    uint64_t cycles = zsim_stats.cycles;
+    /* 1.11.93 (F4): the pricing window is the CRITICAL-PATH MAX over the PEs
+     * -- the "OMP cycles: X (... critical-path max)" number -- not core 0's
+     * count (zsim_stats.cycles, the first "cycles:" line). The kernel ends
+     * when the LAST PE does; core 0 was 26% short on a bfs 64-PE cell, which
+     * compressed every energy into a too-short window (core, MC and NoC
+     * dynamic W too high by the same ratio). The NoC levels below get the
+     * same window. A dump without per-core lines keeps the first-core
+     * count. System scope already prices over the max wall clock
+     * (runPerNodePowerAnalysis); a system-scope dump reaching this function
+     * (the system trace path) holds host cores too, so it keeps its old
+     * window rather than mixing clock domains in one max. */
+    const bool crit_window = (config.scope != "system") && zsim_stats.max_core_cycles > 0;
+    uint64_t cycles = crit_window ? zsim_stats.max_core_cycles : zsim_stats.cycles;
+    if (crit_window && zsim_stats.max_core_cycles != zsim_stats.cycles)
+        std::cout << "  [power] pricing window " << zsim_stats.max_core_cycles
+                  << " cycles = critical-path max over "
+                  << zsim_stats.core_recs.size() << " core(s) (core 0: "
+                  << zsim_stats.cycles << ")" << std::endl;
     uint64_t instrs = zsim_stats.instrs > 0 ? zsim_stats.instrs : 1;
     if (cycles == 0 && instrs > 1) {
         /* 1.11.48 (FIX-PRE-FLEET L220): 1.11.9 made `instrs` the ALL-CORE
@@ -8596,7 +8759,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     }
     if (cycles == 0) cycles = 1;
     mcpat.setTotalCycles(cycles);
-    mcpat.setBusyCycles(cycles);
+    /* 1.11.93 (F3): per-core executed instructions -> derived busy cycles
+     * (the pipeline duty); F6: the ROI-windowed BTB and RAS activity. */
+    mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(0));
+    mcpat.setMeasuredControlFlow(zsim_stats.indirBranches, zsim_stats.rasReturns);
     /* 1.9.33: subtract injected timing charges -- see the parser note. */
     if (zsim_stats.syntheticInstrs > 0 && instrs > zsim_stats.syntheticInstrs)
         instrs -= zsim_stats.syntheticInstrs;
@@ -8675,25 +8841,23 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     // -- Print derived-parameter transparency block (verbose only) --
     if (detail_verbose) {
         /* 1.11.56 (audit A025): stop labelling this an applied override.
-         * pipeline_duty_cycle is a function-local that nothing downstream
-         * reads -- the wrapper recomputes it as busy_cycles_/total_cycles_ and
-         * writes THAT to the XML, and this path sets both to `cycles`, so the
-         * value McPAT sees is 1.0 whatever the user writes. Printing the
-         * user's number under "[OVERRIDE from YAML]" claimed an effect that
-         * does not exist. */
-        double pipeline_duty_cycle = static_cast<double>(cycles) / cycles;  // always 1.0 (busy=total)
+         * 1.11.93 (F3): the duty is no longer 1.0 by construction -- it is the
+         * wrapper's derived runtime IPC / peak IPC, printed as handed to
+         * McPAT. The override key is still not applied (the duty is a
+         * measurement now, not a knob). */
+        double duty_ipc = 0.0; int duty_peak = 1;
+        const double pipeline_duty_cycle = mcpat.pricedPipelineDuty(&duty_ipc, &duty_peak);
         auto it_pdc = overrides.find("core.pipeline_duty_cycle");
 
         std::cout << "\nMcPAT Derived Inputs:" << std::endl;
-        std::cout << "  core.pipeline_duty_cycle    = busy_cycles / total_cycles = "
-                  << cycles << " / " << cycles << " = " << pipeline_duty_cycle << std::endl;
+        std::cout << "  core.pipeline_duty_cycle    = measured IPC / peak IPC = "
+                  << duty_ipc << " / " << duty_peak << " = " << pipeline_duty_cycle
+                  << " (window " << cycles << " cycles)" << std::endl;
         if (it_pdc != overrides.end())
             std::cout << "    NOTE: power.mcpat_overrides.core.pipeline_duty_cycle = "
-                      << it_pdc->second << " was parsed but is NOT applied. McPAT "
-                         "derives this ratio itself from the cycle counts it is "
-                         "given, and this path reports the element as busy for "
-                         "every simulated cycle, so the ratio is 1.0 by "
-                         "construction. Remove the key or model the idle time."
+                      << it_pdc->second << " was parsed but is NOT applied: the "
+                         "duty is derived from the measured instructions per core "
+                         "over the pricing window. Remove the key."
                       << std::endl;
 
         std::cout << "  mc.peak_transfer_rate       = " << mc_tech.peak_transfer_rate << " MT/s"
@@ -8816,11 +8980,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         McPAT::SystemConfig host_cfg;
         host_cfg.num_cores = config.host_num_cores;
         host_cfg.core_clock_mhz = host_clk_mhz;
-        host_cfg.pipeline_depth = 19;
-        host_cfg.issue_width = 4;
-        host_cfg.num_alus = 4;
-        host_cfg.num_muls = 2;
-        host_cfg.num_fpus = 2;
+        /* 1.11.93 (F6/F8): the host is priced as the zsim OOOCore this block
+         * has always described (OOO profile below) -- now with that core's
+         * depth, structures and branch predictor (describeTimingCore). */
+        (void)describeTimingCore(host_cfg, "ooo_core", 0, "host");
         // 1.9.32: the host IS a server part -- stated, not left to the default.
         host_cfg.device_scope = false;
         /* 1.11.49 (FIX-PRE-FLEET L119): power.device_corner never reached the
@@ -8835,6 +8998,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         host_cfg.l1d_size_bytes = (host_node ? host_node->l1d_kb : config.host_l1d_kb) * 1024;
         host_cfg.l2_size_bytes  = (host_node ? host_node->l2_kb  : config.host_l2_kb)  * 1024;
         host_cfg.l3_size_bytes  = (host_node ? host_node->l3_kb  : config.host_l3_kb)  * 1024;
+        /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per host
+         * core (`<node>_l2 { caches = node.num_cores }`). */
+        host_cfg.l2_instances = std::max(1, host_cfg.num_cores);
         host_cfg.num_memory_controllers = 1;
         /* 1.11.52 (audit A011): DERIVED, like every other MC clock in this
          * file (mcfg.mc_clock_mhz = frequency/2 at both other sites). The
@@ -8891,7 +9057,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             uint64_t host_cycles = (zsim_stats.host_wall_cycles > 0)
                                  ? zsim_stats.host_wall_cycles : cycles;
             host_mcpat.setTotalCycles(host_cycles);
-            host_mcpat.setBusyCycles(host_cycles);
+            // 1.11.93 (F3/F6): per-core host instructions; host BTB/RAS activity.
+            host_mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(1));
+            host_mcpat.setMeasuredControlFlow(hgrp.indirBranches, hgrp.rasReturns);
             host_mcpat.setTotalInstructions(hgrp.real_instrs());   // 1.9.33
             host_mcpat.setL1IAccesses(hgrp.l1i_total_reads(), hgrp.l1i_mGETS);
             host_mcpat.setL1DAccesses(hgrp.l1d_total_reads(), hgrp.l1d_total_writes(),
@@ -10886,33 +11054,15 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             (node.role == UnifiedConfig::SystemNode::DEVICE)
                 ? node.pe_type : node.core_type;
 
-        if (effective_type == "ooo_core") {
-            mcfg.pipeline_depth = 19; mcfg.issue_width = 4;
-            mcfg.num_alus = 4; mcfg.num_muls = 2; mcfg.num_fpus = 2;
-            profile = McPAT::DeviceProfile::OOO;
-            result.core_desc = "OOO";
-        } else if (effective_type == "alu_core") {
-            mcfg.pipeline_depth = 5; mcfg.issue_width = 1;
-            mcfg.num_alus = 1; mcfg.num_muls = 0; mcfg.num_fpus = 0;
-            profile = McPAT::DeviceProfile::DEVICE_ALU;
-            is_alu = true;
-            result.core_desc = "ALU";
-        } else {
-            mcfg.pipeline_depth = 14; mcfg.issue_width = 1;
-            mcfg.num_alus = 3; mcfg.num_muls = 1; mcfg.num_fpus = 1;
-            profile = McPAT::DeviceProfile::DEVICE_INORDER;
-            result.core_desc = (effective_type == "in_order_core") ? "InOrder" : "Simple";
-            /* 1.11.89: same rule as device scope -- the node's own
-             * pim.pe.issue_width (1.11.56 B054 made it per-node), resolved
-             * the way the core resolves it. */
-            if (effective_type == "in_order_core") {
-                const char* wsrc = nullptr;
-                mcfg.issue_width = inorderTimingIssueWidth(node.inorder_issue_width, &wsrc);
-                std::cout << "  [power] " << node.name << ": in_order_core: McPAT "
-                             "issue width " << mcfg.issue_width
-                          << " = the timing model's (" << wsrc << ")" << std::endl;
-            }
-        }
+        /* 1.11.93 (F6/F8): the same description device scope uses
+         * (describeTimingCore); 1.11.89's per-node issue width rides along
+         * (node.inorder_issue_width, 1.11.56 B054). */
+        profile = describeTimingCore(mcfg, effective_type, node.inorder_issue_width,
+                                     node.name);
+        is_alu = (profile == McPAT::DeviceProfile::DEVICE_ALU);
+        result.core_desc = (profile == McPAT::DeviceProfile::OOO) ? "OOO"
+                         : is_alu ? "ALU"
+                         : (effective_type == "in_order_core") ? "InOrder" : "Simple";
         /* 1.11.51 (L214): same rule per node -- an element that declares no
          * FPU prices none, on every profile. Node-scoped flag (E23/E24);
          * an explicit num_fpus override below still wins. */
@@ -10973,6 +11123,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             mcfg.l2_size_bytes = node.enable_l2 ? node.l2_kb * 1024ULL : 0;
             mcfg.l3_size_bytes = node.enable_l3 ? node.l3_kb * 1024ULL : 0;
         }
+        /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per core of
+         * the node (`<node>_l2 { caches = node.num_cores }`). */
+        mcfg.l2_instances = std::max(1, node.num_cores);
 
         /* MC. 1.11.52 (audit A004): the DEVICE node's controller count is
          * the same model quantity device scope derives -- one controller per
@@ -11581,13 +11734,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
 
             mcpat.initialize();
 
-            // Distribute stats proportionally by core count
-            double core_frac = static_cast<double>(node.num_cores) /
-                std::max(1, [&]() {
-                    int total = 0;
-                    for (const auto& n : config.system_nodes) total += n.num_cores;
-                    return total;
-                }());
+            /* 1.11.93 (F13): `core_frac` (this node's share of the system's
+             * cores) is DELETED. 1.11.44 (E26) removed every use of it --
+             * both fallbacks it fed now refuse the run -- and it was still
+             * computed here, unread. */
             // 1.9.10 fix: price this node over the true wall-clock TIME in ITS OWN
             // clock domain (node_cycles = wall_seconds * node_clock), instead of the
             // first-core contention-excluded count scaled by core fraction. The access
@@ -11657,7 +11807,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             if (node_instrs == 0) node_instrs = 1;
 
             mcpat.setTotalCycles(node_cycles);
-            mcpat.setBusyCycles(node_cycles);
+            /* 1.11.93 (F3/F6): this node's per-core executed instructions
+             * (derived busy cycles -> pipeline duty) and its BTB/RAS activity. */
+            mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(
+                (node.role == UnifiedConfig::SystemNode::HOST) ? 1 : 2));
+            mcpat.setMeasuredControlFlow(grp->indirBranches, grp->rasReturns);
             /* 1.9.28: node_instrs was computed and then never handed to McPAT,
              * so total_instructions_ kept its constructor value of zero and
              * EVERY core activity stat in the generated XML was zero --
@@ -11703,12 +11857,25 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                       << " l2=" << (have_grp ? grp->l2_total_reads() +
                                                grp->l2_total_writes() : 0)
                       << " mem=" << (have_grp ? grp->mem_rd + grp->mem_wr : 0)
-                      << (have_grp ? "  (measured, per-node)"
-                                   : "  (core-fraction fallback -- no per-node counters)")
+                      /* 1.11.93 (F13): the "(core-fraction fallback -- no
+                       * per-node counters)" alternative is deleted: have_grp
+                       * is a hard precondition since 1.11.44 (refused above),
+                       * so it could not print. */
+                      << "  (measured, per-node)"
                       << std::endl;
             mcpat.setMCTechParams(getMCTechParamsForMcPAT(node.memory_tech, 1));
 
             mcpat.computePower();
+            {
+                /* 1.11.93 (F3): the pipeline duty on the node's
+                 * core-description line, as a run fact. */
+                double ipc = 0.0; int peak = 1;
+                const double duty = mcpat.pricedPipelineDuty(&ipc, &peak);
+                std::ostringstream d;
+                d << ", pipeline duty " << duty << " (measured IPC " << ipc
+                  << " / peak " << peak << ")";
+                result.core_desc += d.str();
+            }
 
             auto power = mcpat.getSystemPower();
             result.total_power = power.total_power;
@@ -14630,6 +14797,20 @@ int main(int argc, char** argv) {
                 config.noc_routing_table_file = yaml_cfg["noc"]["routing_table_file"].as<std::string>(config.noc_routing_table_file);
                 // Message sizes in bits (0 = use defaults: control=64, data=576)
                 config.noc_control_msg_bits = yamlInt(yaml_cfg["noc"]["control_message_bits"], config.noc_control_msg_bits, "noc.control_message_bits");
+                /* 1.11.93: the key is read and reaches Garnet, but no call site
+                 * injects a Control message (one data packet per access; the
+                 * response is charged as 2 x one-way), so it steers nothing --
+                 * see the 1.11.92 open items. Said once per process, not
+                 * modelled. */
+                if (yaml_cfg["noc"]["control_message_bits"]) {
+                    static bool warned_ctrl_bits = false;
+                    if (!warned_ctrl_bits) {
+                        warned_ctrl_bits = true;
+                        std::cerr << "[config] WARNING: noc.control_message_bits is"
+                                     " accepted but inert in this release: every"
+                                     " fabric injection is a Data message" << std::endl;
+                    }
+                }
                 config.noc_data_msg_bits = yamlInt(yaml_cfg["noc"]["data_message_bits"], config.noc_data_msg_bits, "noc.data_message_bits");
 
                 // Ring direction: "unidirectional"/"uni" or "bidirectional"/"bi" (default)
@@ -16483,7 +16664,8 @@ int main(int argc, char** argv) {
                 }
 
                 mcpat.setTotalCycles(result.totalCycles > 0 ? result.totalCycles : 1);
-                mcpat.setBusyCycles(result.totalCycles > 0 ? result.totalCycles : 1);
+                /* 1.11.93 (F3): no setBusyCycles() any more -- the duty is
+                 * derived from the (single, placeholder) instruction below. */
                 mcpat.setTotalInstructions(1);
 
                 // Single flat NoC level with synthetic traffic stats
@@ -17788,8 +17970,9 @@ int main(int argc, char** argv) {
                     // the critical-path metric is the MAX across PEs -- exactly what the
                     // MPI path above reports. Emit the same "Total: ... (max: N)" summary
                     // so downstream OMP sweeps can grep a robust critical-path value
-                    // instead of head -1. Purely additive: the per-PE zsim.out lines,
-                    // out.cycles, and power analysis are untouched (bit-identical).
+                    // instead of head -1. Purely additive: the per-PE zsim.out lines
+                    // and out.cycles are untouched. 1.11.93 (F4): device-scope power
+                    // analysis now prices over this same max (parser: max_core_cycles).
                     /* 1.9.41: NOT gated on the declaration any more. The settings below are
                      * OpenMP-runtime hygiene: without them libgomp sizes its team from
                      * omp_get_num_procs(), which under qemu-user is the HOST core count, and

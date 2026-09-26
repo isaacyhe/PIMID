@@ -199,6 +199,16 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     coreStat->append(indirMispredsStat);
     coreStat->append(rasReturnsStat);
     coreStat->append(rasMispredsStat);
+    /* 1.11.93 (F6): ROI-windowed twins of indirBranches/rasReturns -- the
+     * BTB and RAS activity the power model prices (in_order_core.h). */
+    auto zib = [this]() -> uint64_t { return indirBranches - roiBaseIndir; };
+    LambdaStat<decltype(zib)>* roiIndirStat = new LambdaStat<decltype(zib)>(zib);
+    roiIndirStat->init("roiIndirBranches", "Indirect jmp/call resolutions fed to the BTB (ROI)");
+    coreStat->append(roiIndirStat);
+    auto zrr = [this]() -> uint64_t { return rasReturns - roiBaseRas; };
+    LambdaStat<decltype(zrr)>* roiRasStat = new LambdaStat<decltype(zrr)>(zrr);
+    roiRasStat->init("roiRasReturns", "Returns resolved against the RAS (ROI)");
+    coreStat->append(roiRasStat);
 
 #ifdef OOO_STALL_STATS
     profFetchStalls.init("fetchStalls",  "Fetch stalls");  coreStat->append(&profFetchStalls);

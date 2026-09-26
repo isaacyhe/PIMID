@@ -114,6 +114,12 @@ public:
          * logic per the placement matrix. Default 1 = on die (the single-
          * fabric device case, which is what an unannotated level meant). */
         int on_dram_die;
+        /* 1.11.93: the VC depth the ROUTER WAS BUILT WITH, which is what
+         * McPAT prices. Garnet raises the configured noc.buffers_per_vc to
+         * one whole data packet (576 b at the flit width: 5 at 128 b), and
+         * the simulation ran on that. 0 = not known (no stats file): the
+         * configured depth is priced and the level line says so. */
+        int vc_buffer_entries = 0;
         // Activity
         uint64_t total_accesses;  // packets at this level
         double duty_cycle;        // derived: total_accesses / total_cycles
@@ -428,6 +434,17 @@ public:
          * In-class defaults keep every existing construction site (which
          * assigns fields one by one) at native-logic behavior. */
         int process_family = 0;
+        /* 1.11.93 (F1): how many L2 caches the TIMING model built. The
+         * device-scope zsim config writes `caches = cache.l2.count` (default
+         * 1, shared by every PE); the system-scope writer builds one per
+         * core. McPAT prices exactly this many shared L2 instances; 0 = one
+         * per core (a caller that never said). */
+        int l2_instances = 0;
+        /* 1.11.93 (F6): the timing core runs a branch predictor (zsim
+         * OOOCore and InOrderCore do; ALUCore, SimpleCore and NullCore do
+         * not). The structure itself is zsim's, fixed at compile time, and
+         * is described in the wrapper next to its file:line citations. */
+        bool has_branch_predictor = false;
         double subarray_pitch_factor = 1.0;  // extra area factor at SUBARRAY placement
         // 1.11.3: which CACTI table the DRAM generation class maps to (22 or
         // 32); selects the per-class hp/comm-dram factor set.
@@ -512,7 +529,28 @@ public:
 
     // Set runtime statistics (needed for dynamic power calculation)
     void setTotalCycles(uint64_t cycles);
-    void setBusyCycles(uint64_t cycles);
+    /* 1.11.93 (F3): setBusyCycles() is GONE. Every caller passed the total
+     * cycle count, so busy/total -- McPAT's pipeline_duty_cycle, defined as
+     * runtime IPC / peak IPC (Niagara1_sharing_ST.xml:128) -- was 1.0 by
+     * construction and every PE was charged a full-rate pipeline whether it
+     * retired anything or not. No zsim core exports a busy-cycle counter
+     * (alu/simple/null/in_order/ooo checked), so busy cycles are derived per
+     * core as min(window, retired instructions / peak IPC) -- see
+     * pricedPipelineDuty(). Supply the per-core counts here; without them the
+     * all-core total over num_cores is used (the same mean when no core
+     * saturates). */
+    void setPerCoreInstructions(const std::vector<uint64_t>& instrs);
+    /* 1.11.93 (F6): ROI-windowed BTB lookups (indirect jmp/call resolutions)
+     * and RAS returns, measured by zsim (roiIndirBranches / roiRasReturns).
+     * They drive the BTB and RAS McPAT now builds for cores that have them. */
+    void setMeasuredControlFlow(uint64_t indirect_branches, uint64_t ras_returns);
+    /* 1.11.93 (F3): the pipeline duty the XML carries, with its parts, for
+     * the core-description line. `per_core` says whether per-core counts
+     * were supplied. */
+    double pricedPipelineDuty(double* ipc = nullptr, int* peak = nullptr,
+                              bool* per_core = nullptr) const;
+    /* 1.11.93 (F1): the L2 instances priced (0 = no L2 described). */
+    int pricedL2Instances() const;
     /* 1.9.28: MEASURED core activity. Without it the XML is built from fixed
      * fractions of the instruction count (70% int / 10% fp / 10% branch) for
      * every workload, so dynamic power is driven by a constant rather than by
@@ -523,8 +561,11 @@ public:
 
     /* 1.11.10 (#112): the COUNTED instruction mix, classified by the decoder
      * (x86_decoder.h OpClass) rather than the documented 87.5/12.5 split that
-     * stood in for it. All-core totals; the XML divides by core count like
-     * every other stat. Zero for any class means "not measured" and that term
+     * stood in for it. All-core totals, and since 1.11.93 (F2) the XML
+     * hands them to McPAT AS all-core totals: McPAT's homogeneous-core
+     * convention is that core statistics are the sum over every core
+     * (processor.cc:114 scales leakage and area by the core count, NOT
+     * runtime dynamic). Zero for any class means "not measured" and that term
      * falls back to the previous fraction, so a core model without a decoder
      * behaves exactly as before. */
     void setMeasuredMix(uint64_t nInt, uint64_t nMul, uint64_t nFp,
@@ -612,8 +653,12 @@ private:
 
     // Runtime statistics
     uint64_t total_cycles_;
-    uint64_t busy_cycles_;
     uint64_t total_instructions_;
+    std::vector<uint64_t> per_core_instrs_;      // 1.11.93 (F3)
+    uint64_t meas_indir_ = 0, meas_ras_ = 0;     // 1.11.93 (F6), ROI-windowed
+    /* 1.11.93 (F3/F6): the issue width McPAT is handed (the peak IPC the
+     * duty divides by) -- one owner for the XML and the printed duty. */
+    int effectiveIssueWidth() const;
     uint64_t meas_uops_ = 0;         // 1.9.28: 0 => fall back to fractions
     uint64_t meas_branches_ = 0;
     uint64_t meas_int_ = 0, meas_mul_ = 0, meas_fp_ = 0,
@@ -685,10 +730,8 @@ private:
      * memory-controller structural literals that have no configuration
      * surface. */
     mutable bool warned_mc_structure_ = false;
-    /* 1.11.57 (latent C035): latch for the one-time warning that busy cycles
-     * exceed total cycles, which used to make the idle-cycle subtraction wrap
-     * around instead of reporting the inconsistency. */
-    mutable bool warned_busy_exceeds_total_ = false;
+    /* 1.11.93 (F3): the 1.11.57 (C035) busy > total latch is gone with
+     * setBusyCycles(): busy cycles are derived and bounded by the window. */
     /* 1.11.57 (latent C018): latch for the one-time warning that the legacy
      * single-NoC branch had no NoC activity and is pricing the fabric from
      * memory-controller transaction counts instead. */
@@ -703,6 +746,10 @@ private:
      * before an ALU model replaces it. */
     double core_ifu_w_ = 0.0, core_lsu_w_ = 0.0, core_mmu_w_ = 0.0;
     double core_exu_w_ = 0.0, core_pipe_w_ = 0.0, core_undiff_w_ = 0.0;
+    /* 1.11.93 (F6): the predictor's share of the fetch unit, so a gate can
+     * see that it is priced: BTB and direction-predictor (+RAS) area of ONE
+     * core template, and their runtime power. */
+    double core_btb_area_mm2_ = 0.0, core_bpt_area_mm2_ = 0.0, core_bp_w_ = 0.0;
   public:
     struct CoreBreakdown { double ifu, lsu, mmu, exu, corepipe, undiff; };
     CoreBreakdown getCoreBreakdown() const {

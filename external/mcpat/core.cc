@@ -49,6 +49,7 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
  coredynp(dyn_p_),
  IB  (0),
  BTB (0),
+ BPT (0),   /* PIMID 1.11.93 (F6): was left uninitialised when predictionW == 0 */
  ID_inst  (0),
  ID_operand  (0),
  ID_misc  (0),
@@ -351,7 +352,18 @@ BranchPredictor::BranchPredictor(ParseXML* XML_interface, int ithCore_, InputPar
 		interface_ip.pure_ram            = true;
 
 	}
+	/* PIMID 1.11.93 (F6): a predictor with NO global table and NO chooser.
+	 * Upstream always builds the Alpha-21264 tournament (global + two local
+	 * levels + chooser + RAS). The cores PIMID simulates (zsim OOOCore and
+	 * InOrderCore) run a two-level PAg -- per-address histories and one
+	 * pattern table, no global history and no chooser (zsim ooo_core.h:49,
+	 * :477). global_predictor_entries = 0 / chooser_predictor_entries = 0
+	 * now mean "this table does not exist": it is not built, has no area,
+	 * leakage or energy, and every use below is guarded. A size of 0 used to
+	 * reach CACTI as a 0-byte array and abort the run. Upstream XMLs (every
+	 * reference file sets both > 0) are unaffected. */
 	//Global predictor
+	if (XML->sys.core[ithCore].predictor.global_predictor_entries > 0) {
 	data							 = int(ceil(XML->sys.core[ithCore].predictor.global_predictor_bits/8.0));
 	interface_ip.line_sz             = data;
 	interface_ip.cache_sz            = data*XML->sys.core[ithCore].predictor.global_predictor_entries;
@@ -371,6 +383,7 @@ BranchPredictor::BranchPredictor(ParseXML* XML_interface, int ithCore_, InputPar
 	globalBPT = new ArrayST(&interface_ip, "Global Predictor", Core_device, coredynp.opt_local, coredynp.core_ty);
 	globalBPT->area.set_area(globalBPT->area.get_area()+ globalBPT->local_result.area);
 	area.set_area(area.get_area()+ globalBPT->local_result.area);
+	}   /* PIMID 1.11.93 (F6): global table only when it exists */
 
 	//Local BPT (Level 1)
 	data							 = int(ceil(XML->sys.core[ithCore].predictor.local_predictor_size[0]/8.0));
@@ -396,7 +409,10 @@ BranchPredictor::BranchPredictor(ParseXML* XML_interface, int ithCore_, InputPar
 	//Local BPT (Level 2)
 	data							 = int(ceil(XML->sys.core[ithCore].predictor.local_predictor_size[1]/8.0));
 	interface_ip.line_sz             = data;
-	interface_ip.cache_sz            = data*XML->sys.core[ithCore].predictor.local_predictor_entries;
+	/* PIMID 1.11.93 (F6): the pattern table's own entry count when given. */
+	interface_ip.cache_sz            = data*((XML->sys.core[ithCore].predictor.local_predictor_l2_entries > 0)
+	                                         ? XML->sys.core[ithCore].predictor.local_predictor_l2_entries
+	                                         : XML->sys.core[ithCore].predictor.local_predictor_entries);
 	interface_ip.nbanks              = 1;
 	interface_ip.out_w               = interface_ip.line_sz*8;
 	interface_ip.access_mode         = 2;
@@ -415,6 +431,7 @@ BranchPredictor::BranchPredictor(ParseXML* XML_interface, int ithCore_, InputPar
 	area.set_area(area.get_area()+ L2_localBPT->local_result.area);
 
 	//Chooser
+	if (XML->sys.core[ithCore].predictor.chooser_predictor_entries > 0) {   /* PIMID 1.11.93 (F6) */
 	data							 = int(ceil(XML->sys.core[ithCore].predictor.chooser_predictor_bits/8.0));
 	interface_ip.line_sz             = data;
 	interface_ip.cache_sz            = data*XML->sys.core[ithCore].predictor.chooser_predictor_entries;
@@ -434,6 +451,7 @@ BranchPredictor::BranchPredictor(ParseXML* XML_interface, int ithCore_, InputPar
 	chooser = new ArrayST(&interface_ip, "Predictor Chooser", Core_device, coredynp.opt_local, coredynp.core_ty);
 	chooser->area.set_area(chooser->area.get_area()+ chooser->local_result.area);
 	area.set_area(area.get_area()+ chooser->local_result.area);
+	}   /* PIMID 1.11.93 (F6): chooser only when it exists */
 
 	//RAS return address stacks are Duplicated for each thread.
 	interface_ip.is_cache			 = false;
@@ -1938,9 +1956,11 @@ void BranchPredictor::computeEnergy(bool is_tdp)
     {
     	r_access = coredynp.predictionW*coredynp.BR_duty_cycle;
     	w_access = 0*coredynp.BR_duty_cycle;
+    	if (globalBPT) {   /* PIMID 1.11.93 (F6): absent table */
     	globalBPT->stats_t.readAc.access  = r_access;
     	globalBPT->stats_t.writeAc.access = w_access;
     	globalBPT->tdp_stats = globalBPT->stats_t;
+    	}
 
     	L1_localBPT->stats_t.readAc.access  = r_access;
     	L1_localBPT->stats_t.writeAc.access = w_access;
@@ -1950,9 +1970,11 @@ void BranchPredictor::computeEnergy(bool is_tdp)
     	L2_localBPT->stats_t.writeAc.access = w_access;
     	L2_localBPT->tdp_stats = L2_localBPT->stats_t;
 
+    	if (chooser) {   /* PIMID 1.11.93 (F6): absent table */
     	chooser->stats_t.readAc.access  = r_access;
     	chooser->stats_t.writeAc.access = w_access;
     	chooser->tdp_stats = chooser->stats_t;
+    	}
 
     	RAS->stats_t.readAc.access  = r_access;
     	RAS->stats_t.writeAc.access = w_access;
@@ -1964,9 +1986,11 @@ void BranchPredictor::computeEnergy(bool is_tdp)
     	//because most simulators cannot track finer grained details
     	r_access = XML->sys.core[ithCore].branch_instructions;
     	w_access = XML->sys.core[ithCore].branch_mispredictions + 0.1*XML->sys.core[ithCore].branch_instructions;//10% of BR will flip internal bits//0
+    	if (globalBPT) {   /* PIMID 1.11.93 (F6): absent table */
     	globalBPT->stats_t.readAc.access  = r_access;
     	globalBPT->stats_t.writeAc.access = w_access;
     	globalBPT->rtp_stats = globalBPT->stats_t;
+    	}
 
     	L1_localBPT->stats_t.readAc.access  = r_access;
     	L1_localBPT->stats_t.writeAc.access = w_access;
@@ -1976,21 +2000,24 @@ void BranchPredictor::computeEnergy(bool is_tdp)
     	L2_localBPT->stats_t.writeAc.access = w_access;
     	L2_localBPT->rtp_stats = L2_localBPT->stats_t;
 
+    	if (chooser) {   /* PIMID 1.11.93 (F6): absent table */
     	chooser->stats_t.readAc.access  = r_access;
     	chooser->stats_t.writeAc.access = w_access;
     	chooser->rtp_stats = chooser->stats_t;
+    	}
 
     	RAS->stats_t.readAc.access  = XML->sys.core[ithCore].function_calls;
     	RAS->stats_t.writeAc.access = XML->sys.core[ithCore].function_calls;
     	RAS->rtp_stats = RAS->stats_t;
    }
 
-	globalBPT->power_t.reset();
+	if (globalBPT) globalBPT->power_t.reset();   /* PIMID 1.11.93 (F6) */
 	L1_localBPT->power_t.reset();
 	L2_localBPT->power_t.reset();
-	chooser->power_t.reset();
+	if (chooser) chooser->power_t.reset();   /* PIMID 1.11.93 (F6) */
 	RAS->power_t.reset();
 
+    if (globalBPT)   /* PIMID 1.11.93 (F6) */
     globalBPT->power_t.readOp.dynamic   +=  globalBPT->local_result.power.readOp.dynamic*globalBPT->stats_t.readAc.access +
                 globalBPT->stats_t.writeAc.access*globalBPT->local_result.power.writeOp.dynamic;
     L1_localBPT->power_t.readOp.dynamic   +=  L1_localBPT->local_result.power.readOp.dynamic*L1_localBPT->stats_t.readAc.access +
@@ -1999,6 +2026,7 @@ void BranchPredictor::computeEnergy(bool is_tdp)
     L2_localBPT->power_t.readOp.dynamic   +=  L2_localBPT->local_result.power.readOp.dynamic*L2_localBPT->stats_t.readAc.access +
                 L2_localBPT->stats_t.writeAc.access*L2_localBPT->local_result.power.writeOp.dynamic;
 
+    if (chooser)   /* PIMID 1.11.93 (F6) */
     chooser->power_t.readOp.dynamic   +=  chooser->local_result.power.readOp.dynamic*chooser->stats_t.readAc.access +
                 chooser->stats_t.writeAc.access*chooser->local_result.power.writeOp.dynamic;
     RAS->power_t.readOp.dynamic   +=  RAS->local_result.power.readOp.dynamic*RAS->stats_t.readAc.access +
@@ -2006,22 +2034,26 @@ void BranchPredictor::computeEnergy(bool is_tdp)
 
     if (is_tdp)
     {
-    	globalBPT->power = globalBPT->power_t + globalBPT->local_result.power*pppm_lkg;
+    	if (globalBPT) globalBPT->power = globalBPT->power_t + globalBPT->local_result.power*pppm_lkg;   /* PIMID 1.11.93 (F6) */
     	L1_localBPT->power = L1_localBPT->power_t + L1_localBPT->local_result.power*pppm_lkg;
     	L2_localBPT->power = L2_localBPT->power_t + L2_localBPT->local_result.power*pppm_lkg;
-    	chooser->power = chooser->power_t + chooser->local_result.power*pppm_lkg;
+    	if (chooser) chooser->power = chooser->power_t + chooser->local_result.power*pppm_lkg;   /* PIMID 1.11.93 (F6) */
     	RAS->power = RAS->power_t + RAS->local_result.power*coredynp.pppm_lkg_multhread;
 
-    	power = power + globalBPT->power + L1_localBPT->power + L2_localBPT->power + chooser->power + RAS->power;
+    	power = power + L1_localBPT->power + L2_localBPT->power + RAS->power;
+    	if (globalBPT) power = power + globalBPT->power;   /* PIMID 1.11.93 (F6) */
+    	if (chooser)   power = power + chooser->power;
     }
     else
     {
-    	globalBPT->rt_power = globalBPT->power_t + globalBPT->local_result.power*pppm_lkg;
+    	if (globalBPT) globalBPT->rt_power = globalBPT->power_t + globalBPT->local_result.power*pppm_lkg;   /* PIMID 1.11.93 (F6) */
     	L1_localBPT->rt_power = L1_localBPT->power_t + L1_localBPT->local_result.power*pppm_lkg;
     	L2_localBPT->rt_power = L2_localBPT->power_t + L2_localBPT->local_result.power*pppm_lkg;
-    	chooser->rt_power = chooser->power_t + chooser->local_result.power*pppm_lkg;
+    	if (chooser) chooser->rt_power = chooser->power_t + chooser->local_result.power*pppm_lkg;   /* PIMID 1.11.93 (F6) */
     	RAS->rt_power = RAS->power_t + RAS->local_result.power*coredynp.pppm_lkg_multhread;
-    	rt_power = rt_power + globalBPT->rt_power + L1_localBPT->rt_power + L2_localBPT->rt_power + chooser->rt_power + RAS->rt_power;
+    	rt_power = rt_power + L1_localBPT->rt_power + L2_localBPT->rt_power + RAS->rt_power;
+    	if (globalBPT) rt_power = rt_power + globalBPT->rt_power;   /* PIMID 1.11.93 (F6) */
+    	if (chooser)   rt_power = rt_power + chooser->rt_power;
     }
 }
 
@@ -2034,6 +2066,7 @@ void BranchPredictor::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 	bool power_gating = XML->sys.power_gating;
 	if (is_tdp)
 	{
+		if (globalBPT) {   /* PIMID 1.11.93 (F6): absent table */
 		cout << indent_str<< "Global Predictor:" << endl;
 		cout << indent_str_next << "Area = " << globalBPT->area.get_area()*1e-6<< " mm^2" << endl;
 		cout << indent_str_next << "Peak Dynamic = " << globalBPT->power.readOp.dynamic*clockRate << " W" << endl;
@@ -2044,6 +2077,7 @@ void BranchPredictor::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 		cout << indent_str_next << "Gate Leakage = " << globalBPT->power.readOp.gate_leakage << " W" << endl;
 		cout << indent_str_next << "Runtime Dynamic = " << globalBPT->rt_power.readOp.dynamic/executionTime << " W" << endl;
 		cout <<endl;
+		}
 		cout << indent_str << "Local Predictor:" << endl;
 		cout << indent_str << "L1_Local Predictor:" << endl;
 		cout << indent_str_next << "Area = " << L1_localBPT->area.get_area() *1e-6 << " mm^2" << endl;
@@ -2066,6 +2100,7 @@ void BranchPredictor::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 		cout << indent_str_next << "Runtime Dynamic = " << L2_localBPT->rt_power.readOp.dynamic/executionTime << " W" << endl;
 		cout <<endl;
 
+		if (chooser) {   /* PIMID 1.11.93 (F6): absent table */
 		cout << indent_str << "Chooser:" << endl;
 		cout << indent_str_next << "Area = " << chooser->area.get_area()  *1e-6 << " mm^2" << endl;
 		cout << indent_str_next << "Peak Dynamic = " << chooser->power.readOp.dynamic*clockRate  << " W" << endl;
@@ -2076,6 +2111,7 @@ void BranchPredictor::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 		cout << indent_str_next << "Gate Leakage = " << chooser->power.readOp.gate_leakage  << " W" << endl;
 		cout << indent_str_next << "Runtime Dynamic = " << chooser->rt_power.readOp.dynamic/executionTime << " W" << endl;
 		cout <<endl;
+		}
 		cout << indent_str << "RAS:" << endl;
 		cout << indent_str_next << "Area = " << RAS->area.get_area() *1e-6 << " mm^2" << endl;
 		cout << indent_str_next << "Peak Dynamic = " << RAS->power.readOp.dynamic*clockRate  << " W" << endl;

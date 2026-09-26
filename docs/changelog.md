@@ -7,6 +7,247 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.93 -- every PE clocked a full pipeline, and the activity was divided by the PE count
+
+Found by a read-only audit of the PE core power path (2026-09-26): the
+wrapper's core description (`src/power/mcpat_wrapper.cpp`), the fork's
+`processor.cc`/`core.cc`/`logic.cc`, and the zsim cores. Reference shapes:
+HBM3, 16 alu_core PEs at BANK, stream_triad 40000
+(`_1166audit/g91_202324/N_HBM3.log`: core dynamic 0.0096 W, 333,456
+instructions, window 1,013,438 cycles) and 16 in_order_core PEs, gemv 256
+(`_1166audit/g89b_134326/N_ino.log`). This release fixes F1, F2, F3, F4,
+F6, F7, F8, F10, F12, F13 and two 1.11.92 leftovers; F5, F9 and F11 are
+held for a ruling (OPEN below). The fleet stays held.
+
+**(1) F1: one private 2 MB L2 per PE, where the timing model built one
+shared L2.** The wrapper emitted `number_of_L2s = num_cores` with
+`Private_L2 = 1`, while the device-scope zsim config builds `caches =
+cache.l2.count` (default 1) shared by every PE (N_ino.log:347 `l1d-0..15 ->
+l2-0`; :1868 priced 2048 KB per core; :1927 PE/core area 165.5 mm^2;
+:1903-1905 `L2 Caches: 0 W` because a private L2 is folded into "Cores").
+McPAT now prices `SystemConfig::l2_instances` shared instances
+(`Private_L2 = 0`, homogeneous): device scope passes `cache.l2.count`, the
+per-node path and the co-sim host pass `node.num_cores` (the system-scope
+writer builds one L2 per core there). Each instance gets its share of the
+zsim l2 group's accesses (McPAT multiplies a homogeneous L2's runtime
+dynamic by the instance count, processor.cc:141-143). Printed:
+`L2: 2048 KB x 1 shared instance(s), 16 core(s) per L2` (init) and
+`L2 Caches (1 x 2048 KB, shared by 16 core(s) each):` with its real
+numbers. The ALU profile has no caches: unchanged.
+
+**(2) F2: the activity term was divided by the PE count.** McPAT's
+homogeneous-core convention is that core statistics are the SUM over the
+cores: processor.cc:114 (`set_pppm(..., 1/executionTime, numCore, numCore,
+numCore)`) multiplies leakage and area by the core count but not runtime
+dynamic; core.cc:3969-4039 charge the pipeline over `total_cycles x
+number_of_cores`; McPAT's Niagara1.xml gives 8 cores 800,000 instructions
+in 100,000 cycles. The wrapper divided every activity statistic by
+num_cores (instructions, mix, loads/stores, branches, units, result buses,
+L1s), so the activity term was N times low -- N_HBM3.log:1325: ONE core's
+block sum 0.00959933 W equals the 16-core total 0.00960278 W. The XML now
+carries the all-core totals. The 1.11.52 (C013) comment that explained the
+two numbers by "population" was false for the dynamic term and is
+rewritten; the `[CoreBreakdown]` label says what the blocks are now
+(`core template, DEVICE_ALU (dynamic: all 16 cores' activity; leakage:
+one core)`). The `[Activity]` census lines say `(all cores; ...)`
+instead of `per core`.
+
+**(3) F3: pipeline_duty_cycle was 1.0 by construction.** Every call site
+passed busy = total (device scope, per-node, host, NoC probe), so the
+pipeline-register term (~98% of core dynamic on N_HBM3, mean PE IPC 0.021;
+a device with zero retired instructions was priced at 0.019 W, g89b
+O_bD5.log) was charged as if every PE issued every cycle. McPAT defines
+the duty as runtime IPC / peak IPC (Niagara1_sharing_ST.xml:128). No zsim
+core exports a busy-cycle counter (alu/simple/null/in_order/ooo read; the
+in-order stall counters are whole-run), so busy cycles are DERIVED per
+core: min(window, executed instructions / peak IPC), peak = the issue
+width McPAT is handed (ALU: lanes; in-order: its issue width; OOO: 4 =
+ISSUES_PER_CYCLE; simple/null: 1); the duty is their mean over the window.
+`setBusyCycles()` is removed (and with it the 1.11.57 busy > total clamp,
+which has nothing left to guard); the parser now keeps one record per core
+(`core_recs`: cycles, instrs, syntheticInstrs, group). Printed on the
+results core-description line: `Cores: 16 @ 500 MHz, pipeline duty
+0.0205647 (measured IPC 0.0205647 / peak 1, per core)`; per-node lines
+append `, pipeline duty D (measured IPC I / peak P)`; the verbose derived
+block prints `core.pipeline_duty_cycle = measured IPC / peak IPC = ...`.
+
+**(4) F4: the device-scope window was core 0's cycle count.** The parser
+latched the first `cycles:` line and runPowerAnalysis priced core, MC and
+NoC over it, while the kernel ends when the last PE does (the "OMP cycles:
+X (... critical-path max)" line). Device
+scope now prices over `max_core_cycles` -- the max over the final dump's
+per-core `cycles: N # Simulated ...` lines, the same number -- and hands
+the NoC levels the same window. A system-scope dump reaching this function
+(system trace path) keeps its old window (it holds host cores in another
+clock domain); the per-node path already prices over the max wall clock.
+Printed when the two differ: `[power] pricing window W cycles =
+critical-path max over N core(s) (core 0: C)`. Measured (gate 1202A/B):
+on bfs at 16 and at 64 PEs core 0 IS the critical-path max (5601573 and
+9321357 cycles, the "OMP cycles" max), and on every device-scope OMP dump
+in the audit's 561 gate logs the first `cycles:` line equals the max --
+the master thread's PE finishes last. The window is therefore UNCHANGED on
+every corpus shape and this fix binds only on a dump whose core 0 is not
+the last to finish; the "26% short at 64 PEs" figure that motivated it was
+release 1.8.8's measurement and no longer describes the timing model. The
+fix is kept as the correct definition, with no measured effect.
+
+**(5) F6: no branch predictor was priced.** `prediction_width` was never
+emitted (parsed as 0, core.cc:4312), so McPAT built no BTB, predictor or
+RAS (core.cc:236); `RAS_size=16`, `function_calls = inst/100` and a 1%
+mispredict stand-in fed nothing. zsim OOOCore and InOrderCore run the same
+structures: `BranchPredictorPAg<11, 18, 14>` (ooo_core.h:477,
+in_order_core.h:165; 2048 18-bit histories, one 16384-entry table of
+2-bit counters, no global history, no chooser) and `IndirectPredictor<9,
+16>` (ooo_core.h:548, in_order_core.h:177; 512-entry direct-mapped BTB of
+8-byte targets, 16-entry RAS), one prediction per basic block. The wrapper
+now emits exactly that for in_order_core and ooo_core (`prediction_width
+1`, `PBT` with `local_predictor_size 18,2`, 2048 entries,
+`local_predictor_l2_entries 16384`, global/chooser 0; `BTB_config
+4096,8,1,1,1,1`; `RAS_size 16`) and 0 / nothing for ALU, simple and null
+cores. Activity is measured: branch_instructions / branch_mispredictions =
+the core's own `branches`/`mispredBranches` (what the PAg saw); BTB reads =
+writes = indirect jmp/call resolutions; function_calls = RAS returns. The
+1% stand-in is gone (unmeasured = 0). Two supporting changes: (a) zsim's
+`indirBranches`/`rasReturns` are WHOLE-RUN counters, so both cores gain
+ROI-windowed twins `roiIndirBranches`/`roiRasReturns` (the raw keys stay,
+the parser reads only the ROI ones); (b) the McPAT fork builds a local
+predictor with NO global table and NO chooser when their entry counts are 0
+(every use guarded), sizes the pattern table from a new
+`local_predictor_l2_entries` (0 = upstream behaviour; every reference XML
+unaffected), and initialises `InstFetchU::BPT` (it was left uninitialised
+when prediction_width is 0). Printed: `[CoreBreakdown] branch predictor
+(core template, inside ifu): BTB area A mm^2, direction predictor + RAS
+area B mm^2, runtime W W` (any profile that has one).
+
+**(6) F7: literal activity where the mix is measured.** int_regfile reads
+= 2 x inst, writes = inst, float reads = 20%, writes = 10% of inst, and
+cdb_alu = inst, while the decoder measured the classes (mixFp 48.5% of
+instructions on the HBM3 stream cell). Now: int RF reads = 2 x (int + mul
+[+ soft-float int-op equivalents]) + loads + 2 x stores, writes = (int +
+mul [+ soft-float]) + loads; FP RF reads = 2 x fp, writes = fp; cdb_alu =
+the integer-ALU accesses, cdb_mul = multiplies, cdb_fpu = fp (0 on an
+FPU-less element); the OOO FP rename/window statistics = fp ops, the
+integer ones = the rest (were 10% of instructions / all instructions).
+Branches read EFLAGS, which McPAT's register files do not hold: none
+charged. The literals remain only for a run with no decoder, already
+warned as UNSOURCED.
+
+**(7) F8: the timing and power halves described different pipelines.**
+OOO: ROB 192 -> 128 (ooo_core.h:469), instruction window 64 -> 36
+(ooo_core.h:468), load/store queues 32 (ooo_core.h:458-459, unchanged,
+now cited), depth 19 -> 13 (DISPATCH_STAGE, the deepest stage zsim defines,
+ooo_core.cpp:49-52), issue 4 (ooo_core.cpp:56). McPAT-side values zsim
+does not define are kept and said so: FP window 32 (Penryn.xml:90; zsim's
+window is unified) and physical registers 180 (zsim has none; 180 is in
+none of the fork's reference XMLs -- an unsourced stand-in, kept). The
+wrapper no longer forces depth 19 on OOO (which also ignored a
+`pipeline_depth` override). In-order: depth 14 -> 7 (the core's
+fetch-to-issue refill depth `mispredPenalty`, in_order_core.cpp:77,
+honouring PIMID_INORDER_MISPRED_PENALTY like the core). simple_core and
+null_core: were a 14-deep in-order core with 3 ALU/1 MUL/1 FPU; now 1
+issue, 1 ALU, 1 MUL, 1 FPU, no predictor (SimpleCore retires one
+instruction per cycle, simple_core.cpp:83), depth 5 -- a stated choice
+(see OPEN). One owner: `describeTimingCore()` in main.cpp, used by device
+scope, the co-sim host and the per-node path (three literal copies
+before). Printed: `[power] in_order_core: McPAT issue width 2 = the timing
+model's (...); pipeline depth 7 (zsim InOrderCore mispredPenalty
+(fetch-to-issue refill depth))` and `[power] simple_core: priced as a
+1-issue, 1-ALU element with no branch predictor (zsim simple_core retires
+one instruction per cycle), depth 5 (zsim defines no stages; the alu_core
+depth)`.
+
+**(8) F10: 1-entry TLBs with 1 access each, from ParseXML defaults.** No
+zsim core models address translation, so every profile now emits
+`itlb`/`dtlb` with 0 accesses and 0 misses. McPAT cannot omit them
+(MemManU builds both unconditionally; 0 entries is a 0-byte CACTI request,
+core.cc:971/998), so they keep its 1-entry minimum: leakage and area of a
+floor the tool imposes, stated in the comment.
+
+**(9) F12/F13.** `[CoreBreakdown] ... undiff=0W` now reads `undiff=0W
+(McPAT sets undiffCore's peak power, not its runtime power; it is in the
+core total, not in this split)` and `pipe=0W (apportioned into
+ifu/lsu/mmu/exu)`. The unused `core_frac` (per-node path) and the
+unreachable `(core-fraction fallback -- no per-node counters)` string are
+deleted.
+
+**(10) 1.11.92 leftovers.** (i) `noc.control_message_bits` set in a
+config prints once: `[config] WARNING: noc.control_message_bits is
+accepted but inert in this release: every fabric injection is a Data
+message`; control messages are not modelled. (ii) McPAT now prices the VC
+depth Garnet BUILT (`garnet.effective_buffers_per_vc`, 5 at 576 b / 128 b)
+instead of the configured 2; the level lines print both: `vcs=2 buffers=2
+configured, 5 built and priced (Garnet: a VC must hold one data packet)`
+(`(built and priced as configured)` when equal; `(configured and priced;
+the stats file carries no built depth)` for an old stats file).
+
+DATA IMPACT (computed from the reference logs where stated; McPAT was not
+run on the login node).
+- fig3 alu (16 PE) and co-sim devices (alu profile): on N_HBM3 the four
+  blocks carry the apportioned pipeline equally (in-order apportionment,
+  core.cc:3992-4039, duty factors 1), and mmu has no other activity, so
+  pipeline = 4 x mmu = 9.442 mW (98.4% of 9.599 mW) and activity = 0.157
+  mW. New: pipeline x duty 0.020565 = 0.194 mW; activity x 16 = 2.518 mW;
+  net core dynamic ~2.71 mW (0.28x of 9.60 mW). F7 re-weights the register
+  file and result-bus accesses inside exu (int RF 0.65x, FP RF 4.85x,
+  cdb_alu 0.37x against the old literals), exu was 30% of the activity, so
+  the band is 2.3-3.1 mW. Core leakage and area unchanged on ALU (no
+  caches, no predictor; TLB floor as before).
+- pecount 1..64: the activity term scales by N relative to 1.11.92 (pe1
+  unchanged, pe64 x64), the pipeline term by the measured duty on every N;
+  F4 leaves the window unchanged on every shape measured (core 0 is the
+  critical-path max on bfs 16 and 64 PE and on the HBM3 reference).
+- coremodel in_order/ooo/simple: the L2 goes from N private 2 MB arrays to
+  cache.l2.count shared ones -- L2 area and leakage 16x down on the 16-PE
+  shapes and moved from "Cores" to "L2 Caches"; branch predictor area,
+  leakage and energy added (in_order/ooo); depth 14 -> 7 (in-order), 19 ->
+  13 and ROB/window 192/64 -> 128/36 (OOO), simple 14 -> 5 deep with 1
+  ALU; plus F2 (x16 activity) and F3 (in-order reference duty 0.096 =
+  IPC 0.193 / 2). The co-sim host (OOO) gets the OOO changes; its L2 count
+  is unchanged (one per core) but now prints on the L2 line.
+- NoC: the priced VC depth 2 -> 5 raises router buffer area, leakage and
+  per-access energy on every detailed-NoC cell; F4 moves the NoC window
+  with the core window.
+- Unchanged by construction: DRAM array energies (access-count based),
+  cycles (timing untouched; zsim gains two stat lines per core).
+
+Gate 1202A. FIRES side per fix, against 1.11.92:
+- F2/F3 (HBM3 reference shape): core dynamic in [2.3, 3.1] mW (OLD 9.60);
+  `pipeline duty` printed < 0.1 (expected 0.0205647, per core); the
+  `[CoreBreakdown]` exu-ifu-lsu activity (block minus the mmu block) 16x
+  the OLD on pe16 and 1x on pe1 (pec_16 vs pec_1).
+- F1/F6/F8 (in-order cell, `g89b_134326/cfg_ino.yaml` with
+  `PIMID_KEEP_MCPAT_XML=<dir>`): one `L2 Caches (1 x 2048 KB, shared by 16
+  core(s) each)` line with non-zero power; the kept XML carries
+  `number_of_L2s 1`, `Private_L2 0`, `pipeline_depth 7,7`,
+  `prediction_width 1`, a `PBT` and a `BTB` component; the
+  `[CoreBreakdown] branch predictor` line shows non-zero BTB and predictor
+  area; PE/core area far below 165.5 mm^2. OOO cell (`cor_ooo_core.yaml`):
+  `ROB_size 128`, `instruction_window_size 36`, `pipeline_depth 13,13`.
+  simple cell: `prediction_width 0`, `ALU_per_core 1`, `pipeline_depth 5,5`.
+- F4 (pecount pe64 bfs cell): the `[power] pricing window` line was
+  expected; it does not fire because core 0 is the max (above). Verified
+  instead: window = `OMP cycles` max = core 0 = the dump's max on 16 and
+  64 PEs, and the NoC level lines' `net cycles` = that window.
+- F7: kept XML int/fp regfile and cdb stats equal the formulas above from
+  the dump's mix counters.
+- F10: kept XML `itlb`/`dtlb` total_accesses 0.
+- VC depth: kept XML `input_buffer_entries_per_vc 5`; level line `5 built
+  and priced`. control_message_bits: one WARNING line when set (verified
+  on the login node by a config load: rc 0, printed once).
+- Parity: DRAM array energies and cycles identical to 1.11.92 on every
+  shape; NoC dynamic moves only through the VC depth and (F4) the window --
+  on the HBM3 reference (core 0 = max) any NoC change is the buffer depth
+  alone.
+
+OPEN (held for a ruling, not in this release): F5 (periphery leakage
+factor column, comm-dram vs lstp); F9 (`machine_bits` for x86 cores);
+F11 (delay-ratio literals). Choices made here that a ruling may revisit:
+simple/null depth 5 (zsim defines none; 1 is refused by McPAT's embedded
+fit); OOO physical registers 180 (unsourced, kept) and FP window 32
+(Penryn); OOO 4 ALU/2 MUL/2 FPU and in-order 3/1/1 unit counts (not in
+this audit's scope, unchanged); the BTB's 1-cycle throughput/latency
+(zsim charges none); TLBs at McPAT's 1-entry floor.
+
 ## 1.11.92 -- the fabric counted a packet as one flit and a link as a router
 
 Found by a read-only audit of the on-die fabric energy path (2026-09-26):

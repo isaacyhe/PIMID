@@ -193,6 +193,13 @@ class InOrderCore : public Core {
         uint64_t roiBaseBbls     = 0;
         uint64_t roiBaseBranches = 0;
         uint64_t roiBaseMispred  = 0;
+        /* 1.11.93 (F6): the BTB and RAS counters on the ROI window too. The
+         * power model now prices the BTB and the RAS this core runs, from
+         * these counts; the raw indirBranches/rasReturns stay whole-run
+         * diagnostics, and an ROI-priced structure fed a whole-run count is
+         * the 1.9.28 base-mismatch defect. */
+        uint64_t roiBaseIndir    = 0;
+        uint64_t roiBaseRas      = 0;
         uint64_t roiBaseCycle  = 0;
         uint64_t roiBaseCCycles = 0;   // 1.11.17: contention-cycle ROI base (parity with OOO 1.11.9)
 
@@ -230,6 +237,7 @@ class InOrderCore : public Core {
             roiBaseInstrs = instrs; roiBaseCycle = getCycles();  // adjusted clock: pre-ROI phantom excluded
             roiBaseUops = uops; roiBaseBbls = bbls;              // 1.9.33
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
+            roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10
         }

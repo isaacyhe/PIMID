@@ -33,7 +33,6 @@ McPATWrapper::McPATWrapper(const SystemConfig& config)
     , mcpat_parser_(nullptr)
     , mcpat_processor_(nullptr)
     , total_cycles_(0)
-    , busy_cycles_(0)
     , total_instructions_(0)
     , l1i_reads_(0)
     , l1i_read_misses_(0)
@@ -87,7 +86,14 @@ void McPATWrapper::initialize() {
         std::cout << "  Core Clock: " << config_.core_clock_mhz << " MHz" << std::endl;
         std::cout << "  L1I/L1D: " << (config_.l1i_size_bytes/1024) << "/"
                   << (config_.l1d_size_bytes/1024) << " KB" << std::endl;
-        std::cout << "  L2: " << (config_.l2_size_bytes/1024) << " KB" << std::endl;
+        /* 1.11.93 (F1): the L2 as McPAT prices it -- instance count and
+         * sharing, the timing model's. */
+        std::cout << "  L2: " << (config_.l2_size_bytes/1024) << " KB";
+        if (pricedL2Instances() > 0)
+            std::cout << " x " << pricedL2Instances() << " shared instance(s), "
+                      << (std::max(1, config_.num_cores) / pricedL2Instances())
+                      << " core(s) per L2";
+        std::cout << std::endl;
         std::cout << "  L3: " << (config_.l3_size_bytes/(1024*1024)) << " MB" << std::endl;
         std::cout << "  Technology: " << config_.tech_node_nm << " nm" << std::endl;
         if (device_profile_ == DeviceProfile::OOO)
@@ -140,9 +146,78 @@ void McPATWrapper::setTotalCycles(uint64_t cycles) {
     power_computed_ = false;
 }
 
-void McPATWrapper::setBusyCycles(uint64_t cycles) {
-    busy_cycles_ = cycles;
+void McPATWrapper::setPerCoreInstructions(const std::vector<uint64_t>& instrs) {
+    per_core_instrs_ = instrs;   // 1.11.93 (F3)
     power_computed_ = false;
+}
+
+void McPATWrapper::setMeasuredControlFlow(uint64_t indirect_branches,
+                                          uint64_t ras_returns) {
+    meas_indir_ = indirect_branches;   // 1.11.93 (F6)
+    meas_ras_   = ras_returns;
+    power_computed_ = false;
+}
+
+/* 1.11.93 (F3/F6): the issue width McPAT is handed -- and so the peak IPC
+ * the pipeline duty divides by. OOO: zsim OOOCore issues ISSUES_PER_CYCLE =
+ * 4 uops per cycle (external/zsim/src/ooo_core.cpp:56). ALU: one operation
+ * per lane per cycle (the element is sized from pe_lanes, below). In-order
+ * and simple: the width the caller resolved (in-order: pim.pe.issue_width,
+ * the zsim InOrderCore issueWidth; simple/null: 1, SimpleCore is IPC-1 by
+ * construction, simple_core.cpp:83). */
+int McPATWrapper::effectiveIssueWidth() const {
+    if (device_profile_ == DeviceProfile::OOO) return 4;
+    if (device_profile_ == DeviceProfile::DEVICE_ALU)
+        return (config_.pe_lanes > 0) ? config_.pe_lanes : 1;
+    return std::max(1, config_.issue_width);
+}
+
+/* 1.11.93 (F3): McPAT's pipeline_duty_cycle is runtime IPC over peak IPC
+ * (McPAT's own Niagara1_sharing_ST.xml:128). It scales the pipeline-register
+ * term, which McPAT charges per cycle x core (core.cc:3992-4039 multiply by
+ * total_cycles x number_of_cores), so with the old busy = total every PE was
+ * charged a full-rate pipeline for the whole window. On the HBM3 reference
+ * cell (16 alu_core PEs, stream_triad) that term was ~98% of core dynamic at
+ * a measured IPC of 0.021; a device with zero retired instructions was
+ * priced at 0.019 W.
+ *
+ * No zsim core exports a busy-cycle counter (alu_core.cpp, simple_core.cpp,
+ * null_core.cpp, in_order_core.cpp, ooo_core.cpp checked: `cycles` is the
+ * core's clock, and in_order's depStalls/issueStalls are whole-run, not ROI).
+ * So a core's busy cycles are DERIVED: min(window, retired instructions /
+ * peak IPC) -- the cycles it would have needed at full issue rate -- and the
+ * duty is their mean over the cores, over the window. Per-core counts when
+ * the caller supplied them; otherwise the all-core total over num_cores
+ * (identical unless a core saturates). */
+double McPATWrapper::pricedPipelineDuty(double* ipc, int* peak, bool* per_core) const {
+    const int pk = effectiveIssueWidth();
+    const double n = static_cast<double>(std::max(1, config_.num_cores));
+    const double T = static_cast<double>(total_cycles_);
+    const bool pc = !per_core_instrs_.empty() &&
+                    per_core_instrs_.size() == static_cast<size_t>(std::max(1, config_.num_cores));
+    if (peak) *peak = pk;
+    if (per_core) *per_core = pc;
+    if (!(T > 0.0)) { if (ipc) *ipc = 0.0; return 0.0; }
+    double busy_sum = 0.0, instr_sum = 0.0;
+    if (pc) {
+        for (uint64_t v : per_core_instrs_) {
+            instr_sum += static_cast<double>(v);
+            busy_sum  += std::min(T, static_cast<double>(v) / pk);
+        }
+    } else {
+        instr_sum = static_cast<double>(total_instructions_);
+        busy_sum  = n * std::min(T, instr_sum / n / pk);
+    }
+    if (ipc) *ipc = instr_sum / (n * T);
+    return busy_sum / (n * T);
+}
+
+/* 1.11.93 (F1): the shared L2 instances McPAT prices -- the timing model's
+ * count (SystemConfig::l2_instances), else one per core. */
+int McPATWrapper::pricedL2Instances() const {
+    if (config_.l1i_size_bytes == 0 || config_.l2_size_bytes == 0) return 0;
+    return (config_.l2_instances > 0) ? config_.l2_instances
+                                      : std::max(1, config_.num_cores);
 }
 
 void McPATWrapper::setTotalInstructions(uint64_t instructions) {
@@ -925,6 +1000,9 @@ struct ResultBlob {
      * the model object, and its standard output is sent to the null device on
      * purpose, so the split has to travel back the same way the areas do. */
     double core_ifu_w, core_lsu_w, core_mmu_w, core_exu_w, core_pipe_w, core_undiff_w;
+    /* 1.11.93 (F6): the predictor inside the fetch unit (one core template):
+     * BTB area, direction predictor + RAS area, and their runtime power. */
+    double core_btb_area_mm2, core_bpt_area_mm2, core_bp_w;
     /* 1.11.90: the McPAT fork's substitution ledger (basic_components.h),
      * one count per kind: array power clamps and unsolved arrays, router
      * sanitiser clamps, links left at zero power, non-finite reduction
@@ -1047,7 +1125,13 @@ uint64_t McPATWrapper::inputFingerprint() const {
     if (user_provided_xml_) f(config_.xml_file);
 
     // --- setter state: activity ---
-    f(total_cycles_);   f(busy_cycles_);   f(total_instructions_);
+    f(total_cycles_);   f(total_instructions_);
+    /* 1.11.93: per-core counts (the duty), measured BTB/RAS activity, the
+     * L2 instance count and the predictor switch all reach the XML. */
+    f(static_cast<uint64_t>(per_core_instrs_.size()));
+    for (uint64_t v : per_core_instrs_) f(v);
+    f(meas_indir_);     f(meas_ras_);
+    f(config_.l2_instances);  f(config_.has_branch_predictor);
     f(meas_uops_);      f(meas_branches_); f(meas_mispred_);
     f(meas_int_);       f(meas_mul_);      f(meas_fp_);
     f(meas_ld_);        f(meas_st_);       f(meas_mix_br_);
@@ -1073,6 +1157,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.input_ports);     f(lvl.output_ports);
         f(lvl.flit_bits);       f(lvl.clock_mhz);
         f(lvl.chip_coverage);   f(lvl.on_dram_die);
+        f(lvl.vc_buffer_entries);   // 1.11.93
         f(lvl.total_accesses);  f(lvl.duty_cycle);
     }
 
@@ -1245,6 +1330,7 @@ void McPATWrapper::computePower() {
                 blob.subst_counts[k] = pimid_substitution_count(k);
             blob.core_ifu_w = blob.core_lsu_w = blob.core_mmu_w = 0.0;
             blob.core_exu_w = blob.core_pipe_w = blob.core_undiff_w = 0.0;
+            blob.core_btb_area_mm2 = blob.core_bpt_area_mm2 = blob.core_bp_w = 0.0;
             if (!mcpat_processor_->cores.empty()) {
                 const Core& c0 = *mcpat_processor_->cores[0];
                 /* 1.11.18 (audit go-through): UNITS. A per-core sub-block's
@@ -1308,6 +1394,16 @@ void McPATWrapper::computePower() {
                 blob.core_exu_w    = wf(c0.exu, "exu");
                 blob.core_pipe_w   = wf(c0.corepipe, "corepipe");
                 blob.core_undiff_w = wf(c0.undiffCore, "undiffCore");
+                /* 1.11.93 (F6): the predictor, when McPAT built one
+                 * (prediction_width > 0). Area in um^2 -> mm^2. */
+                if (c0.ifu && c0.ifu->BTB) {
+                    blob.core_btb_area_mm2 = c0.ifu->BTB->area.get_area() * 1e-6;
+                    blob.core_bp_w += wf(c0.ifu->BTB, "BTB");
+                }
+                if (c0.ifu && c0.ifu->BPT) {
+                    blob.core_bpt_area_mm2 = c0.ifu->BPT->area.get_area() * 1e-6;
+                    blob.core_bp_w += wf(c0.ifu->BPT, "branch predictor");
+                }
             }
 
             std::fwrite(&blob, sizeof(blob), 1, f);
@@ -1479,6 +1575,9 @@ void McPATWrapper::computePower() {
     core_exu_w_    = blob.core_exu_w;
     core_pipe_w_   = blob.core_pipe_w;
     core_undiff_w_ = blob.core_undiff_w;
+    core_btb_area_mm2_ = blob.core_btb_area_mm2;   // 1.11.93 (F6)
+    core_bpt_area_mm2_ = blob.core_bpt_area_mm2;
+    core_bp_w_         = blob.core_bp_w;
     /* 1.9.36: report the split for a device profile. An ALU datapath has a
      * register file, an arithmetic unit and a result bus -- roughly the
      * execution unit alone. Everything else listed here is charged to it today
@@ -1490,15 +1589,29 @@ void McPATWrapper::computePower() {
                    + core_exu_w_ + core_pipe_w_ + core_undiff_w_;
         double absent = core_ifu_w_ + core_lsu_w_ + core_mmu_w_;
         if (tot > 0.0) {
-            std::cout << "  [CoreBreakdown] per core, "
+            /* 1.11.93 (F2/F12): the blocks are McPAT's core TEMPLATE (cores[0])
+             * and, since 1.11.93, it is fed the ALL-CORE activity (McPAT's
+             * homogeneous convention), so its runtime dynamic is the whole
+             * device's while its leakage is one core's. The label used to say
+             * "per core", which was true of the old (divided) activity only.
+             * pipe and undiff read 0 BY CONSTRUCTION and the label now says
+             * why: corepipe is apportioned into ifu/lsu/mmu/exu (core.cc
+             * :3959-4043), and UndiffCore sets only `power` -- never rt_power
+             * -- and is added to the core total from `power` (core.cc:4047),
+             * so a runtime split cannot see it. */
+            std::cout << "  [CoreBreakdown] core template, "
                       << (device_profile_ == DeviceProfile::DEVICE_ALU
-                              ? "DEVICE_ALU"
-                          : (device_profile_ == DeviceProfile::OOO)
-                              ? "OOO" : "DEVICE_INORDER")
+                              ? "DEVICE_ALU" : "DEVICE_INORDER")
+                      << " (dynamic: all " << config_.num_cores
+                      << " cores' activity; leakage: one core)"
                       << ": ifu=" << core_ifu_w_ << "W lsu=" << core_lsu_w_
                       << "W mmu=" << core_mmu_w_ << "W exu=" << core_exu_w_
-                      << "W pipe=" << core_pipe_w_ << "W undiff=" << core_undiff_w_
-                      << "W" << std::endl;
+                      << "W pipe=" << core_pipe_w_
+                      << "W (apportioned into ifu/lsu/mmu/exu) undiff="
+                      << core_undiff_w_
+                      << "W (McPAT sets undiffCore's peak power, not its runtime"
+                         " power; it is in the core total, not in this split)"
+                      << std::endl;
             /* Report the pieces, NOT a single removable percentage.
              *
              * Two McPAT conventions make a naive share misleading, and both were
@@ -1514,29 +1627,39 @@ void McPATWrapper::computePower() {
              * generation are genuinely needed and sit inside it. */
             double core_tot = component_power_.count(ComponentType::CORE)
                 ? component_power_[ComponentType::CORE].total_power : 0.0;
-            /* 1.11.52 (audit C013): SAY WHY THE TWO DIFFER, correctly. The
-             * parenthetical blamed undiffCore, which is false -- undiffCore
-             * IS in the block sum (core_undiff_w). The gap is two basis
-             * differences the reader cannot see:
-             *   (1) POPULATION: the blocks are ONE core (cores[0]); the core
-             *       total is all num_cores of them.
+            /* 1.11.93 (F2): WHY THE TWO DIFFER, corrected again. The 1.11.52
+             * (C013) note said "(1) POPULATION: the blocks are ONE core; the
+             * core total is all num_cores of them" and concluded the blocks
+             * sat ~16x below the total on a 16-PE device. That was FALSE for
+             * the dynamic term, and the reference log showed it: on the HBM3
+             * 16-PE cell the ONE-core block sum was 0.00959933 W and the
+             * 16-core total 0.00960278 W. McPAT scales a homogeneous core's
+             * area and LEAKAGE by the core count but NOT its runtime dynamic
+             * (processor.cc:114, set_pppm(..., 1/executionTime, numCore,
+             * numCore, numCore)): the dynamic is expected to arrive already
+             * summed over the cores (core.cc charges the pipeline over
+             * total_cycles x number_of_cores; McPAT's Niagara1.xml gives its
+             * 8 cores 800,000 instructions in 100,000 cycles). The wrapper
+             * divided every activity statistic by the core count, so the
+             * activity term was num_cores times low and the two numbers
+             * agreed. Since 1.11.93 the XML carries the all-core totals. What
+             * separates the two numbers now:
+             *   (1) LEAKAGE POPULATION: the blocks carry one core's leakage,
+             *       the total all num_cores cores' (dynamic: the same
+             *       all-core number on both sides).
              *   (2) LEAKAGE BASIS: the blocks read rt_power (runtime), the
-             *       total reads power (peak). 1.11.33 measured those ~6x
-             *       apart, because McPAT scales the execution unit's runtime
-             *       leakage with utilisation while the peak basis counts
-             *       every powered device -- which is why PIMID reports peak.
-             * On a 16-PE device that is ~16x times ~6x, i.e. the printed
-             * blocks sum sits about two orders below the printed core total.
-             * The blocks are a SHAPE (what fraction of a core each unit is),
-             * not an addend of the total. */
-            std::cout << "  [CoreBreakdown] blocks sum=" << tot << "W (ONE core, "
-                         "runtime-leakage basis)";
+             *       total reads power (peak); 1.11.33 measured those ~6x
+             *       apart.
+             *   (3) undiffCore: in the total, not in the blocks (above).
+             * The blocks are a SHAPE, not an addend of the total. */
+            std::cout << "  [CoreBreakdown] blocks sum=" << tot << "W (core template:"
+                         " all-core dynamic, one core's runtime leakage)";
             if (core_tot > 0.0) std::cout << "  core total=" << core_tot << "W ("
                                           << config_.num_cores
-                                          << " core(s), peak-leakage basis) --"
-                                             " different population AND different"
-                                             " leakage basis; the blocks are a"
-                                             " shape, not an addend";
+                                          << " core(s): same dynamic, peak leakage of"
+                                             " every core, plus the undifferentiated"
+                                             " core) -- the blocks are a shape, not"
+                                             " an addend";
             std::cout << std::endl;
             std::cout << "  [CoreBreakdown] ifu+lsu+mmu = " << absent << "W = "
                       << (100.0 * absent / tot) << "% of the block sum -- an UPPER BOUND on what an "
@@ -1544,6 +1667,14 @@ void McPATWrapper::computePower() {
                          "and instruction supply and address generation are still required."
                       << std::endl;
         }
+    }
+    /* 1.11.93 (F6): the branch predictor McPAT built for a core that runs
+     * one (inside ifu above), stated so its pricing can be checked. */
+    if (core_btb_area_mm2_ > 0.0 || core_bpt_area_mm2_ > 0.0) {
+        std::cout << "  [CoreBreakdown] branch predictor (core template, inside ifu):"
+                     " BTB area " << core_btb_area_mm2_ << " mm^2, direction"
+                     " predictor + RAS area " << core_bpt_area_mm2_
+                  << " mm^2, runtime " << core_bp_w_ << " W" << std::endl;
     }
     mcpat_total_area_mm2_ = blob.total_area_mm2;
 
@@ -1994,7 +2125,15 @@ void McPATWrapper::printDetailedResults() const {
 
     std::cout << "\n=== McPAT Power Analysis Results ===" << std::endl;
     std::cout << "Configuration:" << std::endl;
-    std::cout << "  Cores: " << config_.num_cores << " @ " << config_.core_clock_mhz << " MHz" << std::endl;
+    {
+        /* 1.11.93 (F3): the pipeline duty McPAT was handed, as a run fact. */
+        double ipc = 0.0; int peak = 1; bool per_core = false;
+        const double duty = pricedPipelineDuty(&ipc, &peak, &per_core);
+        std::cout << "  Cores: " << config_.num_cores << " @ " << config_.core_clock_mhz
+                  << " MHz, pipeline duty " << duty << " (measured IPC " << ipc
+                  << " / peak " << peak
+                  << (per_core ? ", per core" : ", all-core mean") << ")" << std::endl;
+    }
     std::cout << "  Technology: " << config_.tech_node_nm << " nm" << std::endl;
 
     printComponentBreakdown();
@@ -2126,8 +2265,17 @@ void McPATWrapper::printComponentBreakdown() const {
         print_component("Cores", getComponentPower(ComponentType::CORE));
     if (componentIsDescribed(ComponentType::L1_CACHE))
         print_component("L1 Caches", getComponentPower(ComponentType::L1_CACHE));
-    if (componentIsDescribed(ComponentType::L2_CACHE))
-        print_component("L2 Caches", getComponentPower(ComponentType::L2_CACHE));
+    if (componentIsDescribed(ComponentType::L2_CACHE)) {
+        /* 1.11.93 (F1): priced as the timing model's shared instances, so
+         * this line carries the L2 (a private L2 used to be folded into
+         * "Cores" and this line printed 0 W). */
+        const int nl2 = pricedL2Instances();
+        print_component("L2 Caches (" + std::to_string(nl2) + " x "
+                        + std::to_string(config_.l2_size_bytes / 1024) + " KB, shared by "
+                        + std::to_string(nl2 > 0 ? std::max(1, config_.num_cores) / nl2 : 0)
+                        + " core(s) each)",
+                        getComponentPower(ComponentType::L2_CACHE));
+    }
     if (componentIsDescribed(ComponentType::L3_CACHE))
         print_component("L3 Cache", getComponentPower(ComponentType::L3_CACHE));
     if (componentIsDescribed(ComponentType::MEMORY_CONTROLLER))
@@ -2178,7 +2326,17 @@ std::string McPATWrapper::generateXMLConfig() const {
      * user switched off is now simply not described, which is the same thing
      * the ALU path has always done. */
     const bool has_l2 = (config_.l2_size_bytes > 0);
-    int num_l2s = (alu_only || !has_l2) ? 0 : config_.num_cores;
+    /* 1.11.93 (F1): the L2 the TIMING model built, not one per core. This was
+     * `num_cores`, emitted with Private_L2 = 1: every in-order, OOO and simple
+     * PE was priced with its own 2 MB L2 folded into "Cores", while the
+     * device-scope zsim config builds `caches = cache.l2.count` (default 1)
+     * L2s shared by every PE (the in-order reference log: l1d-0..15 -> l2-0,
+     * priced as 16 x 2048 KB; PE/core area 165.5 mm^2; "L2 Caches: 0 W").
+     * Now McPAT gets pricedL2Instances() shared instances (Private_L2 = 0,
+     * homogeneous), each fed its share of the zsim l2 group's accesses, and
+     * the "L2 Caches" line carries them. The system-scope per-node writer
+     * builds one L2 per core, and its caller says so. */
+    int num_l2s = (alu_only || !has_l2) ? 0 : pricedL2Instances();
     bool has_l3 = !alu_only && (config_.l3_size_bytes > 0);
     int num_l3s = has_l3 ? 1 : 0;
     int num_cache_levels = alu_only ? 0 : (has_l3 ? 3 : (has_l2 ? 2 : 1));
@@ -2261,15 +2419,42 @@ std::string McPATWrapper::generateXMLConfig() const {
 
     int machine_type = is_ooo ? 0 : 1;
     int x86 = is_ooo ? 1 : 0;
-    int rob_size = is_ooo ? 192 : 0;
-    int inst_window_size = is_ooo ? 64 : 0;
+    /* 1.11.93 (F8): the OUT-OF-ORDER structures are zsim OOOCore's, the core
+     * the timing side simulates -- the power side described a different,
+     * larger machine (ROB 192, window 64, depth 19):
+     *   ROB 128 entries          external/zsim/src/ooo_core.h:469
+     *                            (ReorderBuffer<128, 4> rob)
+     *   instruction window 36    external/zsim/src/ooo_core.h:468
+     *                            (WindowStructure<1024, 36> insWindow)
+     *   load / store queues 32   external/zsim/src/ooo_core.h:458-459
+     *                            (ReorderBuffer<32, 4> loadQueue/storeQueue)
+     *   issue width 4            external/zsim/src/ooo_core.cpp:56
+     *                            (ISSUES_PER_CYCLE; effectiveIssueWidth())
+     *   pipeline depth           from the caller (main.cpp: the zsim stage
+     *                            constants, ooo_core.cpp:49-52)
+     * zsim does NOT define, and these stay McPAT-side values, said so:
+     *   FP instruction window 32 -- zsim's 36-entry window is UNIFIED (one
+     *     window for every uop class); McPAT's OOO model always builds a
+     *     separate FP issue queue and needs a size. 32 is McPAT's Penryn
+     *     reference (ProcessorDescriptionFiles/Penryn.xml:90).
+     *   physical registers 180 (int and fp) -- zsim models register
+     *     dependences through an architectural scoreboard (regScoreboard,
+     *     ooo_core.h:440) and has no physical register file or rename
+     *     table. 180 is this wrapper's long-standing value; it is NOT in
+     *     any of the fork's reference XMLs (Xeon.xml:98 and Penryn.xml:99
+     *     give 256, Alpha21364.xml:97 gives 80), so it is an unsourced
+     *     stand-in, kept rather than re-chosen here. */
+    int rob_size = is_ooo ? 128 : 0;
+    int inst_window_size = is_ooo ? 36 : 0;
     int fp_inst_window_size = is_ooo ? 32 : 0;
     int phy_regs_irf = is_ooo ? 180 : 32;
     int phy_regs_frf = is_ooo ? 180 : 32;
     int rename_scheme = is_ooo ? 0 : 0;  // RAT-based for both
     const char* lsu_order = is_ooo ? "OOO" : "inorder";
-    int pipeline_depth = is_ooo ? 19 : config_.pipeline_depth;
-    int issue_width = is_ooo ? 4 : config_.issue_width;
+    /* 1.11.93 (F8): the caller's depth on every profile (it used to be forced
+     * to 19 for OOO, which also silently ignored a pipeline_depth override). */
+    int pipeline_depth = config_.pipeline_depth;
+    int issue_width = effectiveIssueWidth();
     // FP issue width: McPAT never defaults fp_issue_width, so it MUST be emitted
     // for the OOO profile or the FPIssueQueue array is built with zero ports and
     // CACTI aborts ("Must have at least one port", exit 21). 2 matches McPAT's
@@ -2291,7 +2476,7 @@ std::string McPATWrapper::generateXMLConfig() const {
         phy_regs_irf   = 8 * lanes;
         const bool has_fpu_here = config_.pe_has_fp && (config_.num_fpus != 0);
         phy_regs_frf   = has_fpu_here ? (8 * lanes) : 1;  // 0 aborts CACTI
-        issue_width    = lanes;
+        issue_width    = lanes;   // == effectiveIssueWidth() on this profile
         /* 1.11.57 (latent C029): `fp_issue_width = has_fpu_here ? lanes : 0;`
          * used to sit here and is DELETED rather than emitted.
          *
@@ -2365,8 +2550,12 @@ std::string McPATWrapper::generateXMLConfig() const {
     /* 1.11.56 (audit C036): Private_L2 must follow num_l2s, not alu_only --
      * processor.cc:74 errors out when Private_L2 is set and numCore !=
      * numL2, which is exactly the state an l1i-present/L2-absent config
-     * reached once num_l2s stopped being num_cores. */
-    xml << "    <param name=\"Private_L2\" value=\"" << (num_l2s > 0 ? 1 : 0) << "\"/>\n";
+     * reached once num_l2s stopped being num_cores.
+     * 1.11.93 (F1): always 0. McPAT then prices the L2s as system-level
+     * shared caches (processor.cc:133-160) -- which is what a shared L2 is,
+     * and a per-core one priced this way costs the same while showing on its
+     * own line instead of inside "Cores". */
+    xml << "    <param name=\"Private_L2\" value=\"0\"/>\n";
     xml << "    <param name=\"number_of_L3s\" value=\"" << num_l3s << "\"/>\n";
     xml << "    <param name=\"number_of_NoCs\" value=\"" << num_nocs << "\"/>\n";
     xml << "    <param name=\"homogeneous_cores\" value=\"1\"/>\n";
@@ -2557,31 +2746,20 @@ std::string McPATWrapper::generateXMLConfig() const {
      * caller needs to know that its inputs disagree. Zero is the right
      * clamped value -- a fully busy core has no idle cycles -- but it is a
      * consequence of the inconsistency, not a measurement of it. */
-    uint64_t idle_cycles = 0;
-    if (total_cycles_ >= busy_cycles_) {
-        idle_cycles = total_cycles_ - busy_cycles_;
-    /* 1.11.60 (audit round 4, C006): diagOnce(). This one could NEVER have
-     * fired on real counters: at initialize() both busy_cycles_ and
-     * total_cycles_ are 0, so the comparison took the equal branch and latched
-     * nothing, and by the time setTotalCycles()/setBusyCycles() had run the
-     * only remaining evaluation was the child's silent one. The guard is a
-     * guard again. */
-    } else if (diagOnce(warned_busy_exceeds_total_)) {
-        std::cerr << "[power] WARNING: busy_cycles (" << busy_cycles_
-                  << ") exceeds total_cycles (" << total_cycles_
-                  << "). idle_cycles is emitted as 0; the unclamped unsigned "
-                     "subtraction would have wrapped to "
-                  << (total_cycles_ - busy_cycles_)
-                  << ". The two counters disagree -- most likely one is a "
-                     "per-core sum and the other a wall-clock count -- and no "
-                     "idle figure derived from them is meaningful until that "
-                     "is reconciled." << std::endl;
-    }
+    /* 1.11.93 (F3): busy cycles are DERIVED here (pricedPipelineDuty(): the
+     * mean over the cores of min(window, instructions / peak IPC)), so they
+     * cannot exceed the window and the idle subtraction cannot wrap; the
+     * 1.11.57 clamp-and-warn for a caller-supplied busy > total has nothing
+     * left to guard and is removed with setBusyCycles(). */
+    const uint64_t busy_cycles = static_cast<uint64_t>(
+        std::llround(pricedPipelineDuty() * static_cast<double>(total_cycles_)));
+    const uint64_t idle_cycles =
+        (total_cycles_ > busy_cycles) ? total_cycles_ - busy_cycles : 0;
 
     // System statistics
     xml << "    <stat name=\"total_cycles\" value=\"" << total_cycles_ << "\"/>\n";
     xml << "    <stat name=\"idle_cycles\" value=\"" << idle_cycles << "\"/>\n";
-    xml << "    <stat name=\"busy_cycles\" value=\"" << busy_cycles_ << "\"/>\n";
+    xml << "    <stat name=\"busy_cycles\" value=\"" << busy_cycles << "\"/>\n";
 
     // Core component -- homogeneous_cores=1 means emit exactly ONE core template
     for (int i = 0; i < 1; i++) {
@@ -2627,15 +2805,52 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <param name=\"store_buffer_size\" value=\"" << store_buffer << "\"/>\n";
         xml << "      <param name=\"load_buffer_size\" value=\"" << load_buffer << "\"/>\n";
         xml << "      <param name=\"memory_ports\" value=\"1\"/>\n";
-        xml << "      <param name=\"RAS_size\" value=\"16\"/>\n";
+        /* 1.11.93 (F6): the branch predictor the TIMING core runs. Nothing
+         * was emitted before, so prediction_width parsed as 0 (core.cc:4312)
+         * and McPAT built no BTB, no predictor and no RAS (core.cc:236), while
+         * zsim's in-order and OOO cores ran all three -- and RAS_size = 16,
+         * function_calls = inst/100 and a 1% mispredict stand-in fed nothing.
+         * zsim OOOCore and InOrderCore run the SAME structures:
+         *   direction: BranchPredictorPAg<11, 18, 14> (ooo_core.h:477,
+         *     in_order_core.h:165; class at ooo_core.h:49-68): 2^11 = 2048
+         *     per-address history registers of 18 bits, indexing ONE pattern
+         *     table of 2^14 = 16384 two-bit counters (uint8_t, values 0..3;
+         *     weak-not-taken 1, taken > 1). No global history, no chooser.
+         *   targets: IndirectPredictor<9, 16> (ooo_core.h:548,
+         *     in_order_core.h:177; class at ooo_core.h:122-159): a
+         *     direct-mapped, PC-tagged BTB of 2^9 = 512 entries, each holding
+         *     one 8-byte target, and a 16-entry return-address stack.
+         *   one prediction per basic block (the core predicts the branch that
+         *     ends the BBL: ooo_core.cpp:560-561), so prediction_width = 1.
+         * McPAT's predictor is the Alpha-21264 tournament; the fork (1.11.93)
+         * builds a two-level local predictor with NO global table and NO
+         * chooser when their entry counts are 0, and sizes the pattern table
+         * with its own local_predictor_l2_entries. ALU, simple and null cores
+         * run no predictor: prediction_width 0, nothing built. */
+        const bool has_bp = config_.has_branch_predictor && !is_alu;
+        xml << "      <param name=\"prediction_width\" value=\"" << (has_bp ? 1 : 0) << "\"/>\n";
+        xml << "      <param name=\"RAS_size\" value=\"" << (has_bp ? 16 : 0) << "\"/>\n";
 
         // Core statistics
-        uint64_t inst_per_core = total_instructions_ / std::max(1, config_.num_cores);
-        double pipeline_duty_cycle = (total_cycles_ > 0)
-            ? static_cast<double>(busy_cycles_) / total_cycles_
-            : 0.0;
+        /* 1.11.93 (F2): ALL-CORE TOTALS, as McPAT's homogeneous-core
+         * convention requires. processor.cc:114 multiplies a homogeneous
+         * core's leakage and area by the core count but NOT its runtime
+         * dynamic (set_pppm(..., 1/executionTime, numCore, numCore, numCore)),
+         * core.cc:3969-4039 charge the pipeline over total_cycles x
+         * number_of_cores, and McPAT's own Niagara1.xml gives its 8 cores
+         * 800,000 instructions in 100,000 cycles. This block divided every
+         * activity statistic by num_cores, so the activity term of core
+         * dynamic power was num_cores times low (the HBM3 16-PE reference:
+         * ONE core's block sum 0.00959933 W = the 16-core total 0.00960278 W).
+         * Every core statistic below -- instructions, mix, loads/stores,
+         * branches, register files, result buses, units, L1s -- is now the
+         * sum over the cores. The L2 is per INSTANCE (see there). */
+        uint64_t inst_all = total_instructions_;
+        /* 1.11.93 (F3): runtime IPC / peak IPC, derived per core -- see
+         * pricedPipelineDuty(). It was busy/total with busy = total. */
+        const double pipeline_duty_cycle = pricedPipelineDuty();
 
-        xml << "      <stat name=\"total_instructions\" value=\"" << inst_per_core << "\"/>\n";
+        xml << "      <stat name=\"total_instructions\" value=\"" << inst_all << "\"/>\n";
         /* 1.9.28: prefer MEASURED activity.
          *
          * 1.9.33: the branch count is now the simulator's OWN branch counter,
@@ -2688,40 +2903,39 @@ std::string McPATWrapper::generateXMLConfig() const {
         const bool meas_self_consistent =
             (meas_branches_ > 0) &&
             /* branches cannot exceed instructions retired */
-            (meas_branches_ / std::max(1, config_.num_cores) <= inst_per_core) &&
+            (meas_branches_ <= inst_all) &&
             /* every instruction decodes to at least one micro-op */
             (meas_uops_ == 0 ||
-             meas_uops_ / std::max(1, config_.num_cores) >= inst_per_core);
+             meas_uops_ >= inst_all);
 
-        uint64_t br_per_core = meas_self_consistent
-            ? meas_branches_ / std::max(1, config_.num_cores)
-            : inst_per_core * 10 / 100;   // UNSOURCED stand-in (see E22 note)
+        uint64_t br_all = meas_self_consistent
+            ? meas_branches_
+            : inst_all * 10 / 100;   // UNSOURCED stand-in (see E22 note)
         /* 1.11.60 (audit round 4, C006): diagOnce(). meas_branches_ is 0 at
          * initialize(), so this condition was false on the only pass that
          * could speak. */
         if (!meas_self_consistent && meas_branches_ > 0 &&
             diagOnce(warned_mix_)) {
             std::cout << "  [Activity] WARNING: measured instruction mix rejected as "
-                         "inconsistent (instrs/core=" << inst_per_core
-                      << " branches/core=" << (meas_branches_ / std::max(1, config_.num_cores))
-                      << " uops/core=" << (meas_uops_ / std::max(1, config_.num_cores))
-                      << "); using documented fractions instead. The counters are "
+                         "inconsistent (instrs=" << inst_all
+                      << " branches=" << (meas_branches_)
+                      << " uops=" << (meas_uops_)
+                      << ", all cores); using documented fractions instead. The counters are "
                          "on different bases -- see mcpat_wrapper.cpp." << std::endl;
         }
-        if (br_per_core > inst_per_core) br_per_core = inst_per_core;
-        uint64_t nonbr = inst_per_core - br_per_core;
-        uint64_t int_per_core = nonbr * 875 / 1000;   // 87.5% of non-branch
-        uint64_t fp_per_core  = nonbr - int_per_core;
+        if (br_all > inst_all) br_all = inst_all;
+        uint64_t nonbr = inst_all - br_all;
+        uint64_t int_all = nonbr * 875 / 1000;   // 87.5% of non-branch
+        uint64_t fp_all  = nonbr - int_all;
         /* 1.11.10 (#112): use the COUNTED mix when the decoder produced one.
          * The 87.5/12.5 split above was a documented stand-in for exactly this
          * measurement; it stays as the fallback for core models that never
          * decode. int carries mul/div (McPAT has no separate integer-multiply
          * stat at this level; the FU it drives is the same execution unit). */
-        const uint64_t ncores = std::max(1, config_.num_cores);
         bool mix_measured = (meas_int_ + meas_fp_ + meas_mul_) > 0;
         if (mix_measured) {
-            uint64_t mi = (meas_int_ + meas_mul_) / ncores;
-            uint64_t mf = meas_fp_ / ncores;
+            uint64_t mi = (meas_int_ + meas_mul_);
+            uint64_t mf = meas_fp_;
             /* 1.11.15 (audit): when the census is measured, its BRANCH class
              * replaces the core counter -- the decoder classifies ALL control
              * transfers (call/ret/jmp/indirect) while the core counter is
@@ -2742,24 +2956,24 @@ std::string McPATWrapper::generateXMLConfig() const {
              * regenerated XML could differ from the parent's); (3) fallbacks
              * kept int/fp from the PRE-census nonbr while branch kept the
              * census value, so the classes no longer summed to retirement. */
-            uint64_t pre_br = br_per_core, pre_int = int_per_core, pre_fp = fp_per_core;
+            uint64_t pre_br = br_all, pre_int = int_all, pre_fp = fp_all;
             if (meas_mix_br_ > 0) {
-                br_per_core = meas_mix_br_ / ncores;
-                if (br_per_core > inst_per_core) br_per_core = inst_per_core;
-                nonbr = inst_per_core - br_per_core;
-                int_per_core = nonbr * 875 / 1000;   // fraction fallback, census-branch base
-                fp_per_core  = nonbr - int_per_core;
+                br_all = meas_mix_br_;
+                if (br_all > inst_all) br_all = inst_all;
+                nonbr = inst_all - br_all;
+                int_all = nonbr * 875 / 1000;   // fraction fallback, census-branch base
+                fp_all  = nonbr - int_all;
             }
             bool census_ok = true;
-            uint64_t classified = mi + mf + br_per_core;
-            if (classified < inst_per_core) {
-                uint64_t deficit = inst_per_core - classified;
-                if (deficit * 20 > inst_per_core) {   // >5%: reject the census
+            uint64_t classified = mi + mf + br_all;
+            if (classified < inst_all) {
+                uint64_t deficit = inst_all - classified;
+                if (deficit * 20 > inst_all) {   // >5%: reject the census
                     census_ok = false;
                     if (diagOnce(warned_mix_)) {   // 1.11.60 (C006)
                         std::cout << "  [Activity] measured mix rejected: "
-                                  << deficit << "/" << inst_per_core
-                                  << " retired instructions per core are in NO "
+                                  << deficit << "/" << inst_all
+                                  << " retired instructions (all cores) are in NO "
                                      "class (>5%) -- census and retirement "
                                      "disagree; using documented fractions."
                                   << std::endl;
@@ -2768,8 +2982,8 @@ std::string McPATWrapper::generateXMLConfig() const {
                     mi += deficit;    // conservative: residual as int-class
                     if (diagOnce(warned_mix_)) {   // 1.11.60 (C006)
                         std::cout << "  [Activity] mix census covers "
-                                  << classified << "/" << inst_per_core
-                                  << " per core (deficit " << deficit
+                                  << classified << "/" << inst_all
+                                  << " (all cores; deficit " << deficit
                                   << ", <5%); residual priced as integer."
                                   << std::endl;
                     }
@@ -2779,10 +2993,10 @@ std::string McPATWrapper::generateXMLConfig() const {
                 /* Full fraction fallback: the BRANCH class reverts too -- a
                  * census that disagrees with retirement by >5% is not trusted
                  * for any of its classes. */
-                br_per_core  = pre_br;
-                nonbr        = inst_per_core - br_per_core;
-                int_per_core = pre_int;
-                fp_per_core  = pre_fp;
+                br_all  = pre_br;
+                nonbr        = inst_all - br_all;
+                int_all = pre_int;
+                fp_all  = pre_fp;
             } else if (mi + mf > nonbr) {
                 /* More classified instructions than retired ones means the two
                  * counters are on different bases -- the 1.9.28/1.11.9 defect
@@ -2790,128 +3004,177 @@ std::string McPATWrapper::generateXMLConfig() const {
                  * the census-branch base, so int+fp+branch still sums). */
                 if (diagOnce(warned_mix_)) {   // 1.11.60 (C006)
                     std::cout << "  [Activity] measured mix (" << mi << " int+mul, "
-                              << mf << " fp per core) exceeds retired non-branch "
+                              << mf << " fp, all cores) exceeds retired non-branch "
                               << nonbr << " -- bases disagree, using fractions"
                               << std::endl;
                 }
             } else {
-                int_per_core = mi;
-                fp_per_core  = mf;
+                int_all = mi;
+                fp_all  = mf;
                 if (diagOnce(warned_mix_)) {   // 1.11.60 (C006)
                     std::cout << "  [Activity] instruction mix COUNTED: "
-                              << int_per_core << " int+mul, " << fp_per_core
-                              << " fp, " << br_per_core << " branch per core "
+                              << int_all << " int+mul, " << fp_all
+                              << " fp, " << br_all << " branch, all cores "
                               << "(decoder-classified; the 87.5/12.5 stand-in "
                                  "is not used)" << std::endl;
                 }
             }
         }
-        xml << "      <stat name=\"int_instructions\" value=\"" << int_per_core << "\"/>\n";
-        xml << "      <stat name=\"fp_instructions\" value=\"" << fp_per_core << "\"/>\n";
-        xml << "      <stat name=\"branch_instructions\" value=\"" << br_per_core << "\"/>\n";
+        xml << "      <stat name=\"int_instructions\" value=\"" << int_all << "\"/>\n";
+        xml << "      <stat name=\"fp_instructions\" value=\"" << fp_all << "\"/>\n";
         /* 1.9.28: measured, not a fixed 1%. Mispredicts drive pipeline-flush
          * energy, and their rate varies enormously by workload -- a regular
          * stencil and an irregular graph traversal are not the same machine. */
         /* 1.9.29: gated on the same self-consistency test. A mispredict count
          * taken from a different base than the branch count it is a subset of
          * would report a mispredict RATE that is meaningless. */
-        uint64_t mispred_per_core = (meas_mispred_ > 0 && meas_self_consistent)
-            ? meas_mispred_ / std::max(1, config_.num_cores)
-            : inst_per_core * 1 / 100;
-        if (mispred_per_core > br_per_core) mispred_per_core = br_per_core;
-        xml << "      <stat name=\"branch_mispredictions\" value=\"" << mispred_per_core << "\"/>\n";
+        /* 1.11.93 (F6): McPAT reads branch_instructions and
+         * branch_mispredictions ONLY in the branch-predictor block (core.cc
+         * :1965-1966: reads = branches, writes = mispredicts + 10% of
+         * branches). For a core that runs a predictor they are the counts the
+         * predictor itself saw: the core's resolved conditional branches and
+         * its mispredictions (zsim `branches`/`mispredBranches`, ROI-windowed)
+         * -- not the census branch class, which also holds calls, returns and
+         * jumps the PAg never sees (those drive the BTB and RAS below). No
+         * predictor: nothing reads them; the census value stays for the record
+         * and mispredictions are 0. The 1% mispredict stand-in is GONE: an
+         * unmeasured count is 0, not one percent of the instructions. */
+        const uint64_t br_pred = has_bp ? meas_branches_ : br_all;
+        uint64_t mispred_all = (has_bp && meas_self_consistent) ? meas_mispred_ : 0;
+        if (mispred_all > br_pred) mispred_all = br_pred;
+        xml << "      <stat name=\"branch_instructions\" value=\"" << br_pred << "\"/>\n";
+        xml << "      <stat name=\"branch_mispredictions\" value=\"" << mispred_all << "\"/>\n";
         /* 1.11.47 (FIX-PRE-FLEET L200): mixLd/mixSt were measured, parsed,
          * stored -- and never used; loads/stores stayed hardcoded 20%/10%.
          * Measured values now reach McPAT, UNSOURCED fractions only as the
          * warned fallback for cores that never decode. */
-        {
-            const uint64_t nc_ = std::max(1, config_.num_cores);
-            if ((meas_ld_ + meas_st_) == 0)
-                warnUnsourcedMix("load/store mix", "20% loads, 10% stores");
-            uint64_t ld_pc = (meas_ld_ + meas_st_) > 0 ? meas_ld_ / nc_
-                                                       : inst_per_core * 20 / 100;
-            uint64_t st_pc = (meas_ld_ + meas_st_) > 0 ? meas_st_ / nc_
-                                                       : inst_per_core * 10 / 100;
-            xml << "      <stat name=\"load_instructions\" value=\"" << ld_pc << "\"/>\n";
-            xml << "      <stat name=\"store_instructions\" value=\"" << st_pc << "\"/>\n";
-        }
-        xml << "      <stat name=\"committed_instructions\" value=\"" << inst_per_core << "\"/>\n";
-        xml << "      <stat name=\"committed_int_instructions\" value=\"" << int_per_core << "\"/>\n";
-        xml << "      <stat name=\"committed_fp_instructions\" value=\"" << fp_per_core << "\"/>\n";
+        const bool ldst_measured = (meas_ld_ + meas_st_) > 0;
+        if (!ldst_measured)
+            warnUnsourcedMix("load/store mix", "20% loads, 10% stores");
+        const uint64_t ld_pc = ldst_measured ? meas_ld_ : inst_all * 20 / 100;
+        const uint64_t st_pc = ldst_measured ? meas_st_ : inst_all * 10 / 100;
+        xml << "      <stat name=\"load_instructions\" value=\"" << ld_pc << "\"/>\n";
+        xml << "      <stat name=\"store_instructions\" value=\"" << st_pc << "\"/>\n";
+        xml << "      <stat name=\"committed_instructions\" value=\"" << inst_all << "\"/>\n";
+        xml << "      <stat name=\"committed_int_instructions\" value=\"" << int_all << "\"/>\n";
+        xml << "      <stat name=\"committed_fp_instructions\" value=\"" << fp_all << "\"/>\n";
         xml << "      <stat name=\"pipeline_duty_cycle\" value=\"" << pipeline_duty_cycle << "\"/>\n";
         xml << "      <stat name=\"total_cycles\" value=\"" << total_cycles_ << "\"/>\n";
         /* 1.11.57 (latent C035): the clamped value computed above, not a
          * second unguarded subtraction. This is the site McPAT actually
          * parses. */
         xml << "      <stat name=\"idle_cycles\" value=\"" << idle_cycles << "\"/>\n";
-        xml << "      <stat name=\"busy_cycles\" value=\"" << busy_cycles_ << "\"/>\n";
-        xml << "      <stat name=\"ROB_reads\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"ROB_writes\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"rename_reads\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"rename_writes\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"fp_rename_reads\" value=\"" << (is_ooo ? inst_per_core * 10 / 100 : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"fp_rename_writes\" value=\"" << (is_ooo ? inst_per_core * 10 / 100 : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"inst_window_reads\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"inst_window_writes\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"inst_window_wakeup_accesses\" value=\"" << (is_ooo ? inst_per_core : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"fp_inst_window_reads\" value=\"" << (is_ooo ? inst_per_core * 10 / 100 : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"fp_inst_window_writes\" value=\"" << (is_ooo ? inst_per_core * 10 / 100 : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"fp_inst_window_wakeup_accesses\" value=\"" << (is_ooo ? inst_per_core * 10 / 100 : 0ULL) << "\"/>\n";
-        xml << "      <stat name=\"int_regfile_reads\" value=\"" << (inst_per_core * 2) << "\"/>\n";
-        xml << "      <stat name=\"int_regfile_writes\" value=\"" << inst_per_core << "\"/>\n";
-        xml << "      <stat name=\"float_regfile_reads\" value=\"" << (inst_per_core * 20 / 100) << "\"/>\n";
-        xml << "      <stat name=\"float_regfile_writes\" value=\"" << (inst_per_core * 10 / 100) << "\"/>\n";
-        xml << "      <stat name=\"function_calls\" value=\"" << (inst_per_core / 100) << "\"/>\n";
+        xml << "      <stat name=\"busy_cycles\" value=\"" << busy_cycles << "\"/>\n";
+        /* 1.11.93 (F7): EXECUTION ACTIVITY FROM THE MEASURED MIX. The unit
+         * counts are computed first because the register files and result
+         * buses below are derived from them. */
+        const bool mm_ = (meas_int_ + meas_fp_ + meas_mul_) > 0;
+        if (!mm_) warnUnsourcedMix("instruction mix",
+                                   "70% int, 10% fp, 5% mul");
+        uint64_t ia_pc = mm_ ? meas_int_ : inst_all * 70 / 100;
+        uint64_t fp_pc = mm_ ? meas_fp_  : inst_all * 10 / 100;
+        const uint64_t mu_pc = mm_ ? meas_mul_ : inst_all * 5 / 100;
+        /* 1.11.51 (L215/L223): on an FPU-less element the FP class does
+         * not vanish -- it EXECUTES as a soft-float integer sequence the
+         * timing side already charges at fp_emul_cycles per op. Pricing
+         * it at a zero-FPU cost while adding only cycles made the
+         * FPU-less element look MORE power-efficient (same energy over
+         * more time), and on the ALU profile the emulation bypassed
+         * every datapath scaling the element applies to its integer
+         * work. The fold below routes the emulation through the integer
+         * ALU stat -- one integer-op-equivalent per charged cycle, the
+         * same 1-CPI equivalence the timing charge uses -- so it now
+         * rides exactly the datapath factors real integer work rides. */
+        const bool soft_float = (config_.num_fpus == 0 && config_.fp_emul_cycles > 0);
+        if (soft_float && fp_pc > 0) {
+            uint64_t emul_ops = fp_pc * (uint64_t)config_.fp_emul_cycles;
+            std::cout << "  [Activity] FPU-less element: " << fp_pc
+                      << " FP ops (all cores) priced as soft-float integer work ("
+                      << emul_ops << " int-op equivalents at "
+                      << config_.fp_emul_cycles << " cycles/op)."
+                      << std::endl;
+            ia_pc += emul_ops;
+            fp_pc = 0;
+        }
+        /* 1.11.93 (F7): the OOO rename and window statistics follow the
+         * measured FP class instead of a flat 10% of instructions: the FP
+         * rename table and FP window see the FP ops, the integer ones see
+         * the rest. No measured mix: the 10% stand-in, UNSOURCED (warned
+         * above). */
+        const uint64_t fp_sched = fp_pc;
+        const uint64_t int_sched = (inst_all > fp_sched) ? inst_all - fp_sched : 0;
+        xml << "      <stat name=\"ROB_reads\" value=\"" << (is_ooo ? inst_all : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"ROB_writes\" value=\"" << (is_ooo ? inst_all : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"rename_reads\" value=\"" << (is_ooo ? int_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"rename_writes\" value=\"" << (is_ooo ? int_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"fp_rename_reads\" value=\"" << (is_ooo ? fp_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"fp_rename_writes\" value=\"" << (is_ooo ? fp_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"inst_window_reads\" value=\"" << (is_ooo ? int_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"inst_window_writes\" value=\"" << (is_ooo ? int_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"inst_window_wakeup_accesses\" value=\"" << (is_ooo ? int_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"fp_inst_window_reads\" value=\"" << (is_ooo ? fp_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"fp_inst_window_writes\" value=\"" << (is_ooo ? fp_sched : 0ULL) << "\"/>\n";
+        xml << "      <stat name=\"fp_inst_window_wakeup_accesses\" value=\"" << (is_ooo ? fp_sched : 0ULL) << "\"/>\n";
+        /* 1.11.93 (F7): REGISTER FILES FROM THE MEASURED MIX. This was
+         * int reads = 2 x instructions, int writes = instructions, fp reads =
+         * 20% and fp writes = 10% of instructions for every workload -- while
+         * the decoder counted, e.g., 48% FP instructions on the HBM3
+         * stream_triad cell. Now, per McPAT field:
+         *   int_regfile_reads  = 2 x (mixInt + mixMul [+ soft-float int-op
+         *                        equivalents])  -- two source operands per
+         *                        integer op
+         *                      + 1 x mixLd      -- the address base of a load
+         *                      + 2 x mixSt      -- address base and data
+         *   int_regfile_writes = (mixInt + mixMul [+ soft-float]) + mixLd
+         *                        -- one destination per op and per load
+         *   float_regfile_reads  = 2 x mixFp ; float_regfile_writes = mixFp
+         * (mixLd/mixSt are load/store UOPS, counted beside the instruction
+         * classes, so a memory-operand instruction contributes both its
+         * class's operands and its access's). Operand counts are the
+         * two-source/one-destination form McPAT's own register-file model
+         * assumes (it sizes the files with 2 read and 1 write port per issue
+         * slot); a load's destination is charged to the integer file because
+         * the census does not say which file a load writes. Branches read
+         * EFLAGS, which McPAT's register files do not hold: none charged.
+         * No measured mix: the old literals, UNSOURCED (warned above). */
+        uint64_t irf_r, irf_w, frf_r, frf_w;
+        if (mm_) {
+            irf_r = 2 * (ia_pc + mu_pc) + (ldst_measured ? ld_pc + 2 * st_pc : 0);
+            irf_w = (ia_pc + mu_pc) + (ldst_measured ? ld_pc : 0);
+            frf_r = 2 * fp_pc;
+            frf_w = fp_pc;
+        } else {
+            irf_r = inst_all * 2;          // UNSOURCED stand-in (no decoder)
+            irf_w = inst_all;
+            frf_r = inst_all * 20 / 100;
+            frf_w = inst_all * 10 / 100;
+        }
+        xml << "      <stat name=\"int_regfile_reads\" value=\"" << irf_r << "\"/>\n";
+        xml << "      <stat name=\"int_regfile_writes\" value=\"" << irf_w << "\"/>\n";
+        xml << "      <stat name=\"float_regfile_reads\" value=\"" << frf_r << "\"/>\n";
+        xml << "      <stat name=\"float_regfile_writes\" value=\"" << frf_w << "\"/>\n";
+        /* 1.11.93 (F6): RAS activity, MEASURED -- the returns resolved
+         * against the RAS (zsim roiRasReturns, ROI-windowed; each return
+         * pops what its call pushed). McPAT charges one RAS read and one
+         * write per function_call (core.cc:1983-1984). Was inst/100. No
+         * predictor: no RAS, 0. */
+        xml << "      <stat name=\"function_calls\" value=\"" << (has_bp ? meas_ras_ : 0ULL) << "\"/>\n";
         xml << "      <stat name=\"context_switches\" value=\"0\"/>\n";
         /* 1.11.47 (FIX-PRE-FLEET L199): the measured mix never reached the
          * stats that actually drive execution-unit power -- ialu/fpu/mul
          * stayed at 70/10/5% while the census sat computed above. Measured
          * classes now drive the units; the fractions remain only as the
          * warned no-decode fallback. */
-        {
-            const uint64_t nc_ = std::max(1, config_.num_cores);
-            const bool mm_ = (meas_int_ + meas_fp_ + meas_mul_) > 0;
-            if (!mm_) warnUnsourcedMix("instruction mix",
-                                       "70% int, 10% fp, 5% mul");
-            uint64_t ia_pc = mm_ ? meas_int_ / nc_ : inst_per_core * 70 / 100;
-            uint64_t fp_pc = mm_ ? meas_fp_  / nc_ : inst_per_core * 10 / 100;
-            uint64_t mu_pc = mm_ ? meas_mul_ / nc_ : inst_per_core * 5 / 100;
-            /* 1.11.51 (L215/L223): on an FPU-less element the FP class does
-             * not vanish -- it EXECUTES as a soft-float integer sequence the
-             * timing side already charges at fp_emul_cycles per op. Pricing
-             * it at a zero-FPU cost while adding only cycles made the
-             * FPU-less element look MORE power-efficient (same energy over
-             * more time), and on the ALU profile the emulation bypassed
-             * every datapath scaling the element applies to its integer
-             * work. The fold below routes the emulation through the integer
-             * ALU stat -- one integer-op-equivalent per charged cycle, the
-             * same 1-CPI equivalence the timing charge uses -- so it now
-             * rides exactly the datapath factors real integer work rides. */
-            if (config_.num_fpus == 0 && config_.fp_emul_cycles > 0 && fp_pc > 0) {
-                uint64_t emul_ops = fp_pc * (uint64_t)config_.fp_emul_cycles;
-                std::cout << "  [Activity] FPU-less element: " << fp_pc
-                          << " FP ops/core priced as soft-float integer work ("
-                          << emul_ops << " int-op equivalents at "
-                          << config_.fp_emul_cycles << " cycles/op)."
-                          << std::endl;
-                ia_pc += emul_ops;
-                fp_pc = 0;
-            }
-            xml << "      <stat name=\"ialu_accesses\" value=\"" << ia_pc << "\"/>\n";
-            xml << "      <stat name=\"fpu_accesses\" value=\"" << fp_pc << "\"/>\n";
-            xml << "      <stat name=\"mul_accesses\" value=\"" << mu_pc << "\"/>\n";
-        }
-        xml << "      <stat name=\"cdb_alu_accesses\" value=\"" << inst_per_core << "\"/>\n";
-        {
-            const uint64_t nc_ = std::max(1, config_.num_cores);
-            const bool mm_ = (meas_int_ + meas_fp_ + meas_mul_) > 0;
-            uint64_t cdb_fp = mm_ ? meas_fp_ / nc_ : inst_per_core * 10 / 100;
-            if (config_.num_fpus == 0 && config_.fp_emul_cycles > 0)
-                cdb_fp = 0;   // 1.11.51 (L215): no FPU result bus exists
-            xml << "      <stat name=\"cdb_mul_accesses\" value=\""
-                << (mm_ ? meas_mul_ / nc_ : inst_per_core * 5 / 100) << "\"/>\n";
-            xml << "      <stat name=\"cdb_fpu_accesses\" value=\"" << cdb_fp << "\"/>\n";
-        }
+        xml << "      <stat name=\"ialu_accesses\" value=\"" << ia_pc << "\"/>\n";
+        xml << "      <stat name=\"fpu_accesses\" value=\"" << fp_pc << "\"/>\n";
+        xml << "      <stat name=\"mul_accesses\" value=\"" << mu_pc << "\"/>\n";
+        /* 1.11.93 (F7): each result bus carries the results of its own unit:
+         * cdb_alu = the integer-ALU accesses (was every instruction,
+         * whatever its class), cdb_mul = multiplies, cdb_fpu = FP ops (0 on
+         * an FPU-less element: 1.11.51 L215, no FPU result bus exists). */
+        xml << "      <stat name=\"cdb_alu_accesses\" value=\"" << ia_pc << "\"/>\n";
+        xml << "      <stat name=\"cdb_mul_accesses\" value=\"" << mu_pc << "\"/>\n";
+        xml << "      <stat name=\"cdb_fpu_accesses\" value=\"" << (soft_float ? 0ULL : fp_pc) << "\"/>\n";
 
         if (alu_only) {
             /* 1.9.32: the element's instruction store, stated instead of
@@ -2947,7 +3210,7 @@ std::string McPATWrapper::generateXMLConfig() const {
                           << "degenerate instruction memory.\n";
                 imem_bytes = 64;
             }
-            uint64_t ifetch_per_core = inst_per_core;
+            uint64_t ifetch_all = inst_all;   // 1.11.93 (F2): all cores
             xml << "      <component id=\"system.core" << i << ".icache\" name=\"icache\">\n";
             xml << "        <param name=\"icache_config\" value=\"" << imem_bytes
                 << ",8,1,1,1,1,64,0\"/>\n";
@@ -2955,41 +3218,103 @@ std::string McPATWrapper::generateXMLConfig() const {
              * RESIDENT store -- InstFetchU builds it as a pure RAM (no tag)
              * and does not build miss/fill/prefetch buffers at all. */
             xml << "        <param name=\"buffer_sizes\" value=\"0,0,0,0\"/>\n";
-            xml << "        <stat name=\"read_accesses\" value=\"" << ifetch_per_core << "\"/>\n";
+            xml << "        <stat name=\"read_accesses\" value=\"" << ifetch_all << "\"/>\n";
             xml << "        <stat name=\"read_misses\" value=\"0\"/>\n";
             xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
             xml << "      </component>\n";
         }
 
         if (!alu_only) {
-            // L1 icache -- use actual per-core stats
-            uint64_t l1i_reads_per_core = l1i_reads_ / std::max(1, config_.num_cores);
-            uint64_t l1i_misses_per_core = l1i_read_misses_ / std::max(1, config_.num_cores);
+            // L1 icache. 1.11.93 (F2): all-core totals (the cores' icaches
+            // are inside McPAT's core template, whose runtime dynamic is not
+            // multiplied by the core count).
+            uint64_t l1i_reads_all = l1i_reads_;
+            uint64_t l1i_misses_all = l1i_read_misses_;
             xml << "      <component id=\"system.core" << i << ".icache\" name=\"icache\">\n";
             xml << "        <param name=\"icache_config\" value=\"" << config_.l1i_size_bytes
                 << ",64,8,1,1,3,64,0\"/>\n";
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,0\"/>\n";
-            xml << "        <stat name=\"read_accesses\" value=\"" << l1i_reads_per_core << "\"/>\n";
-            xml << "        <stat name=\"read_misses\" value=\"" << l1i_misses_per_core << "\"/>\n";
+            xml << "        <stat name=\"read_accesses\" value=\"" << l1i_reads_all << "\"/>\n";
+            xml << "        <stat name=\"read_misses\" value=\"" << l1i_misses_all << "\"/>\n";
             xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
             xml << "      </component>\n";
 
-            // L1 dcache -- use actual per-core stats
-            uint64_t l1d_reads_per_core = l1d_reads_ / std::max(1, config_.num_cores);
-            uint64_t l1d_writes_per_core = l1d_writes_ / std::max(1, config_.num_cores);
-            uint64_t l1d_rmisses_per_core = l1d_read_misses_ / std::max(1, config_.num_cores);
-            uint64_t l1d_wmisses_per_core = l1d_write_misses_ / std::max(1, config_.num_cores);
+            // L1 dcache. 1.11.93 (F2): all-core totals, as the icache.
+            uint64_t l1d_reads_all = l1d_reads_;
+            uint64_t l1d_writes_all = l1d_writes_;
+            uint64_t l1d_rmisses_all = l1d_read_misses_;
+            uint64_t l1d_wmisses_all = l1d_write_misses_;
             xml << "      <component id=\"system.core" << i << ".dcache\" name=\"dcache\">\n";
             xml << "        <param name=\"dcache_config\" value=\"" << config_.l1d_size_bytes
                 << ",64,8,1,1,3,64,0\"/>\n";
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
-            xml << "        <stat name=\"read_accesses\" value=\"" << l1d_reads_per_core << "\"/>\n";
-            xml << "        <stat name=\"write_accesses\" value=\"" << l1d_writes_per_core << "\"/>\n";
-            xml << "        <stat name=\"read_misses\" value=\"" << l1d_rmisses_per_core << "\"/>\n";
-            xml << "        <stat name=\"write_misses\" value=\"" << l1d_wmisses_per_core << "\"/>\n";
+            xml << "        <stat name=\"read_accesses\" value=\"" << l1d_reads_all << "\"/>\n";
+            xml << "        <stat name=\"write_accesses\" value=\"" << l1d_writes_all << "\"/>\n";
+            xml << "        <stat name=\"read_misses\" value=\"" << l1d_rmisses_all << "\"/>\n";
+            xml << "        <stat name=\"write_misses\" value=\"" << l1d_wmisses_all << "\"/>\n";
             xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
             xml << "      </component>\n";
         }
+        /* 1.11.93 (F6): the predictor structures -- zsim's, cited at the
+         * prediction_width emission above. McPAT builds them only when
+         * prediction_width > 0 (core.cc:236), so nothing is emitted for a
+         * core without one. */
+        if (has_bp) {
+            xml << "      <component id=\"system.core" << i << ".predictor\" name=\"PBT\">\n";
+            xml << "        <param name=\"prediction_width\" value=\"1\"/>\n";
+            /* level 1: 2048 histories x 18 bits; level 2: the pattern table,
+             * 16384 x 2-bit counters (local_predictor_l2_entries, fork
+             * 1.11.93). No global table, no chooser: 0 = not built. */
+            xml << "        <param name=\"local_predictor_size\" value=\"18,2\"/>\n";
+            xml << "        <param name=\"local_predictor_entries\" value=\"2048\"/>\n";
+            xml << "        <param name=\"local_predictor_l2_entries\" value=\"16384\"/>\n";
+            xml << "        <param name=\"global_predictor_entries\" value=\"0\"/>\n";
+            xml << "        <param name=\"global_predictor_bits\" value=\"0\"/>\n";
+            xml << "        <param name=\"chooser_predictor_entries\" value=\"0\"/>\n";
+            xml << "        <param name=\"chooser_predictor_bits\" value=\"0\"/>\n";
+            xml << "      </component>\n";
+            /* BTB_config = capacity bytes, line bytes, associativity, banks,
+             * throughput, latency: 512 entries x one 8-byte target =
+             * 4096 B, 8 B lines (the PC is the tag, which McPAT sizes from
+             * virtual_address_width), direct-mapped, one bank. zsim charges
+             * the BTB no latency of its own (a wrong target costs the
+             * mispredict bubble), so throughput and latency are 1 cycle, the
+             * smallest McPAT accepts. Accesses: every indirect jmp/call
+             * resolution reads the entry and rewrites it (ooo_core.h:139-144),
+             * MEASURED as zsim roiIndirBranches. */
+            xml << "      <component id=\"system.core" << i << ".BTB\" name=\"BTB\">\n";
+            xml << "        <param name=\"BTB_config\" value=\"4096,8,1,1,1,1\"/>\n";
+            xml << "        <stat name=\"read_accesses\" value=\"" << meas_indir_ << "\"/>\n";
+            xml << "        <stat name=\"write_accesses\" value=\"" << meas_indir_ << "\"/>\n";
+            xml << "      </component>\n";
+        }
+        /* 1.11.93 (F10): ADDRESS TRANSLATION, stated. Nothing was emitted, so
+         * McPAT built 1-entry TLBs with ParseXML's default of 1 access each.
+         * No zsim core models a TLB (grep of external/zsim/src: no TLB in
+         * any core or in the cache hierarchy; the timing side charges no
+         * translation for any PE, ALU, simple, in-order or OOO), so no
+         * translation activity is priced on any profile: 0 accesses, 0
+         * misses. McPAT cannot omit the TLB arrays -- MemManU builds both
+         * unconditionally and a 0-entry array is a 0-byte CACTI request
+         * (core.cc:971/998, cache_sz = number_entries x line) -- so they keep
+         * McPAT's minimum of 1 entry: its leakage and area remain, a floor
+         * the tool imposes, not a structure the element has. */
+        xml << "      <component id=\"system.core" << i << ".itlb\" name=\"itlb\">\n";
+        xml << "        <param name=\"number_entries\" value=\"1\"/>\n";
+        xml << "        <stat name=\"total_accesses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"total_misses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
+        xml << "      </component>\n";
+        xml << "      <component id=\"system.core" << i << ".dtlb\" name=\"dtlb\">\n";
+        xml << "        <param name=\"number_entries\" value=\"1\"/>\n";
+        xml << "        <stat name=\"total_accesses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"read_accesses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"write_accesses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"read_misses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"write_misses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"total_misses\" value=\"0\"/>\n";
+        xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
+        xml << "      </component>\n";
         xml << "    </component>\n";  // close coreN
     }
 
@@ -2997,10 +3322,15 @@ std::string McPATWrapper::generateXMLConfig() const {
     // 1.11.56 (audit C036): emitted only when an L2 was actually configured.
     if (num_l2s > 0) {
         for (int i = 0; i < 1; i++) {
-            uint64_t l2_reads_per = l2_reads_ / std::max(1, config_.num_cores);
-            uint64_t l2_writes_per = l2_writes_ / std::max(1, config_.num_cores);
-            uint64_t l2_rmisses_per = l2_read_misses_ / std::max(1, config_.num_cores);
-            uint64_t l2_wmisses_per = l2_write_misses_ / std::max(1, config_.num_cores);
+            /* 1.11.93 (F1): per INSTANCE. Unlike a homogeneous core, McPAT
+             * multiplies a homogeneous L2's runtime dynamic by the instance
+             * count (processor.cc:141-143), so the template carries one
+             * instance's share of the zsim l2 group's accesses. */
+            const uint64_t nl2 = static_cast<uint64_t>(std::max(1, num_l2s));
+            uint64_t l2_reads_per = l2_reads_ / nl2;
+            uint64_t l2_writes_per = l2_writes_ / nl2;
+            uint64_t l2_rmisses_per = l2_read_misses_ / nl2;
+            uint64_t l2_wmisses_per = l2_write_misses_ / nl2;
             xml << "    <component id=\"system.L2" << i << "\" name=\"L2" << i << "\">\n";
             xml << "      <param name=\"L2_config\" value=\"" << config_.l2_size_bytes
                 << ",64,8,8,8,23,64,1\"/>\n";
@@ -3103,8 +3433,15 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"output_ports\" value=\"" << lvl.output_ports << "\"/>\n";
             xml << "      <param name=\"virtual_channel_per_port\" value=\""
                 << std::max(1, config_.noc_vcs_per_vnet) << "\"/>\n";
+            /* 1.11.93: the depth Garnet BUILT (lvl.vc_buffer_entries: the
+             * configured noc.buffers_per_vc raised to one whole data packet,
+             * 5 at 576 b / 128 b), which is the buffer the simulation ran on;
+             * 1.11.92 priced the configured 2 and only printed the built 5.
+             * The configured depth only where the built one is unknown. */
             xml << "      <param name=\"input_buffer_entries_per_vc\" value=\""
-                << std::max(1, config_.noc_vc_buffer_size) << "\"/>\n";
+                << std::max(1, (lvl.vc_buffer_entries > 0) ? lvl.vc_buffer_entries
+                                                           : config_.noc_vc_buffer_size)
+                << "\"/>\n";
             xml << "      <param name=\"flit_bits\" value=\"" << lvl.flit_bits << "\"/>\n";
             xml << "      <param name=\"chip_coverage\" value=\"" << lvl.chip_coverage << "\"/>\n";
             /* 1.11.50 (L74): per-level family scope -- see NoCLevelConfig. */

@@ -57,6 +57,12 @@ typedef struct{
 	int predictor_entries;
 	int local_predictor_size[20];
 	int local_predictor_entries;
+	/* PIMID 1.11.93 (F6): entry count of the SECOND local level (the pattern
+	 * table). Upstream sizes both local levels with local_predictor_entries,
+	 * which describes an Alpha-21264 local predictor (1024 histories, 1024
+	 * counters). zsim's PAg has 2048 histories and 16384 counters, so the
+	 * second level needs its own count. 0 = upstream behaviour. */
+	int local_predictor_l2_entries;
 	int global_predictor_entries;
 	int global_predictor_bits;
 	int chooser_predictor_entries;

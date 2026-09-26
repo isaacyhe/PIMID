@@ -369,6 +369,7 @@ void ParseXML::parse(char* filepath)
 									continue;
 								}
 								if (strcmp(xNode4.getChildNode("param",k).getAttribute("name"),"local_predictor_entries")==0) {sys.core[i].predictor.local_predictor_entries=atoi(xNode4.getChildNode("param",k).getAttribute("value"));continue;}
+								if (strcmp(xNode4.getChildNode("param",k).getAttribute("name"),"local_predictor_l2_entries")==0) {sys.core[i].predictor.local_predictor_l2_entries=atoi(xNode4.getChildNode("param",k).getAttribute("value"));continue;}  /* PIMID 1.11.93 (F6) */
 								if (strcmp(xNode4.getChildNode("param",k).getAttribute("name"),"global_predictor_entries")==0) {sys.core[i].predictor.global_predictor_entries=atoi(xNode4.getChildNode("param",k).getAttribute("value"));continue;}
 								if (strcmp(xNode4.getChildNode("param",k).getAttribute("name"),"global_predictor_bits")==0) {sys.core[i].predictor.global_predictor_bits=atoi(xNode4.getChildNode("param",k).getAttribute("value"));continue;}
 								if (strcmp(xNode4.getChildNode("param",k).getAttribute("name"),"chooser_predictor_entries")==0) {sys.core[i].predictor.chooser_predictor_entries=atoi(xNode4.getChildNode("param",k).getAttribute("value"));continue;}
@@ -1585,6 +1586,7 @@ void ParseXML::initialize() //Initialize all
 		sys.core[i].predictor.predictor_size=1;
 		sys.core[i].predictor.predictor_entries=1;
 		sys.core[i].predictor.local_predictor_entries=1;
+		sys.core[i].predictor.local_predictor_l2_entries=0;   /* PIMID 1.11.93 (F6): 0 = upstream */
 		for (j=0; j<20; j++) sys.core[i].predictor.local_predictor_size[j]=1;
 		sys.core[i].predictor.global_predictor_entries=1;
 		sys.core[i].predictor.global_predictor_bits=1;

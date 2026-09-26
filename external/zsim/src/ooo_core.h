@@ -570,6 +570,8 @@ class OOOCore : public Core {
         uint64_t roiBaseBbls     = 0;
         uint64_t roiBaseBranches = 0;
         uint64_t roiBaseMispred  = 0;
+        uint64_t roiBaseIndir    = 0;   // 1.11.93 (F6): see in_order_core.h
+        uint64_t roiBaseRas      = 0;
 
 #ifdef OOO_STALL_STATS
         Counter profFetchStalls, profDecodeStalls, profIssueStalls;
@@ -631,6 +633,7 @@ class OOOCore : public Core {
             // 1.9.33: rebase the activity counters on the same window as instrs.
             roiBaseUops = uops; roiBaseBbls = bbls;
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
+            roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
             roiBaseSyntheticInstrs = syntheticInstrs;  // 1.9.33
             /* 1.11.9 (audit): cCycles was "left absolute as diagnostic", but
              * the parser SUMS it with ROI-windowed cycles for
