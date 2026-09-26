@@ -337,6 +337,43 @@ public:
                                  const std::string& device_width = "",
                                  int ranks_per_channel = 1,
                                  int channels = 1) const;   // 1.11.52 (A015)
+    /* 1.11.91 (audit R8-7): the same background, state-split by a MEASURED
+     * bank-open fraction (TN-41-01 BNK_ACT% = 1 - BNK_PRE%): IDD3N for
+     * active_frac, IDD2N/IDD2P (the existing descent, with r_pd as the
+     * power-down residency, capped at the precharged share) for the rest.
+     * *r_pd_used returns the residency actually applied. */
+    double getBackgroundSystemStatesMW(double active_frac, double r_pd,
+                                       bool pg_enabled,
+                                       const std::string& device_width = "",
+                                       int ranks_per_channel = 1,
+                                       int channels = 1,
+                                       double* r_pd_used = nullptr) const;
+    /* 1.11.91 (audit R8-8): the VPP rail's standby (IPP2N precharged, IPP3N
+     * active, x VPP) over the same population, split by the same active
+     * fraction. < 0 when the technology's row has no IPP values. */
+    double getIppSystemMW(double active_frac,
+                          const std::string& device_width = "",
+                          int ranks_per_channel = 1,
+                          int channels = 1) const;
+    /* 1.11.91 (audit R8-8): the DQ output rail per 64 B access that crosses
+     * the DQ (the caller applies crossesOffPackageDQ): (IDDQ4R|IDDQ4W -
+     * IDDQ3N) x VDDQ x getAccessBurstNs() x getDevicesPerAccess(), or the
+     * HBM band's midpoint. < 0 when the row publishes no IDDQ. band_lo/hi
+     * are set (and *is_band true) for a banded technology. */
+    double getIddqEnergyNJ(bool is_write, bool* is_band = nullptr,
+                           double* band_lo_nj = nullptr,
+                           double* band_hi_nj = nullptr) const;
+    /* 1.11.91 (audit R8-2): the IDD3N basis word of this technology's row:
+     * ALL_BANKS, ONE_BANK or UNVERIFIED (pimid_energy::Idd3nBasis). */
+    const char* getIdd3nBasisName() const;
+    /* 1.11.91 (item 11): the one-word provenance of this technology's IDD
+     * row -- MEASURED, DERIVED or CALIBRATED (pimid_energy::
+     * iddRowProvenance) -- or nullptr for a row the ruling has not reached. */
+    const char* getIddRowProvenance() const;
+    /* 1.11.91 (item 12): the per-STACK static floor of an HBM memory system,
+     * mW (pimid_energy::stackFloorSystemMW) -- already INCLUDED in
+     * getBackgroundSystemMW / getBackgroundSystemStatesMW; < 0 = none. */
+    double getStackFloorSystemMW(int channels) const;
 
     // Configuration queries
     uint64_t getCapacity() const { return capacity_; }
@@ -362,7 +399,28 @@ public:
      * invented relation between two independently specified JEDEC timings,
      * and had no callers. */
     double getTRC() const;                    // Row cycle time
-    double getTBurst() const;                 // Burst transfer time
+    double getTBurst() const;                 // Burst transfer time (ONE burst)
+    /* 1.11.91 (audit R8-1/R8-3/R8-4): the data path ONE 64 B access travels,
+     * from pimid_energy::accessPathFor() -- the single rule the array energy,
+     * the burst time and the PE memory interface's row stride all read.
+     *   getBeatsPerBurst()   nBL x the family's CK divisor of the simulated
+     *                        timing preset (DDR3/4 8, DDR5 16, LPDDR5 16,
+     *                        GDDR6 16, HBM2 4, HBM3 8); 0 if no preset
+     *   getDevicesPerAccess() path width / IDD-unit width (DDR5 x8: 4)
+     *   getBurstsPerAccess()  64 B / (path width x beats / 8), at least 1
+     *   getAccessBurstNs()    bursts x getTBurst(): the burst time the array
+     *                        energy charges per 64 B access
+     *   describeAccessPath()  the derivation, for the model-inputs line */
+    int getBeatsPerBurst() const;
+    int getDevicesPerAccess() const;
+    int getBurstsPerAccess() const;
+    double getAccessBurstNs() const;
+    std::string describeAccessPath() const;
+    std::string getAccessPathLabel() const;   // "32-bit sub-channel / 8-bit device"
+    /* 1.11.91 (R8-1): system bytes one ACT makes resident = the preset's
+     * per-device page (cols x dq / 8) x getDevicesPerAccess(). The row stride
+     * main.cpp emits to the PE memory interface. 0 if no preset. */
+    uint64_t getRowStrideBytes() const;
 
     // Subarray organization
     uint32_t getSubarraysPerBank() const;

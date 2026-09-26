@@ -584,7 +584,7 @@ temperature and publish no derating curve for the active currents.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `power.termination_pj_per_bit` | float | unset (model) | Prices BOTH read and write DQ termination at the stated pJ/bit, overriding the read/write split loops. Use it to state an ODT-on operating point for LPDDR5 (whose JEDEC default is ODT disabled, JESD209-5C Table 84) or a non-default RTT for any DDR family. Wired since 1.11.63; earlier releases named the key in console messages but did not parse it. |
+| `power.termination_pj_per_bit` | float | unset (model) | Prices BOTH read and write DQ termination at the stated pJ/bit, overriding the read/write split loops. Use it to state an ODT-on operating point for LPDDR5 (whose JEDEC default is ODT disabled, JESD209-5C Table 84) or a non-default RTT for any DDR family. Wired since 1.11.63; earlier releases named the key in console messages but did not parse it. The override replaces termination only: since 1.11.91 a DQ-crossing access also pays the DQ output rail (IDDQ, printed `iddq=`), which this key does not change. |
 
 ### McPAT Overrides
 

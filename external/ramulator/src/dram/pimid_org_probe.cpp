@@ -18,6 +18,8 @@ LiveOrganization liveOrganization(IMemorySystem* sys) {
         o.banks   = dram->get_level_size("bank");
         o.rows    = dram->get_level_size("row");
         o.columns = dram->get_level_size("column");
+        o.channel_width = dram->m_channel_width;          // 1.11.91 (R8-3)
+        o.dq            = dram->m_organization.dq;        // 1.11.91 (R8-3)
         o.valid   = (o.banks > 0 && o.rows > 0 && o.columns > 0);
     } catch (...) {
         o.valid = false;

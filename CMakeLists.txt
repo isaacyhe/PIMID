@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.11.90 LANGUAGES CXX)
+project(PIMID VERSION 1.11.91 LANGUAGES CXX)
 
 # The reported version is taken FROM the project version, so the two cannot
 # drift apart again (see release 1.10.2).
@@ -331,6 +331,9 @@ target_link_libraries(nvsim_warm pimid_lib)
 target_link_libraries(pimid pimid_lib)
 if(BUILD_PLUGINS)
     target_link_libraries(pimid pimid_plugin)
+    # 1.11.91 (item 13): main.cpp checks the linked plugin's version stamp
+    # only when the plugin is actually linked (checkLinkedPluginOnce).
+    target_compile_definitions(pimid PRIVATE PIMID_LINKED_PLUGIN=1)
 endif()
 if(HDF5_FOUND)
     target_include_directories(pimid PRIVATE ${HDF5_INCLUDE_DIRS})

@@ -7,6 +7,767 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.91 -- the array priced a rank the access never opened
+
+Found by a read-only audit of the DRAM array energy path (2026-09-26, round 8,
+ledger rows R8-1..R8-12): `ramulator_wrapper.cpp`, `pimid_energy.h`, the
+presets, the PE memory interface's row model and the report block, with the
+datasheets read page-ranged. Twelve findings. This release fixes the six that
+have one right answer (R8-1, R8-3, R8-4, R8-6, R8-11, R8-12) and, under the
+user's rulings of 2026-09-26 16:19-16:49, four more (R8-2, R8-7, R8-8, R8-9;
+items (7)-(10)); R8-5 and R8-10 still wait and are listed at the end. The
+fleet stays held.
+
+**(1) R8-1: the row stride was inferred from a page size that no longer
+identified the DDR classes.** The PE memory interface measures the row-miss
+fraction that weights the activate/precharge term (1.11.52, D003), and the
+stride of that measurement -- system bytes one ACT makes resident -- was
+reconstructed inside zsim as `rowBytes * ((rowBytes == 1024) ? chipsPerRank :
+1)` (`pe_memory_interface.h`). The test was written when `main.cpp` emitted
+1024 for exactly DDR3/DDR4/DDR5 and 2048 for everything else. Since 1.11.66
+the page is derived from the preset (cols x dq / 8), and the test stopped
+meaning "DDR class": HBM2/HBM3 have a 1 KB page per pseudo-channel (JESD235D
+and JESD238B Table 4, 64 cols x 128 DQ), so it fired there and multiplied the
+page by `chipsPerRank`, which for HBM carries the channels per stack -- HBM3
+stride 16 KB, HBM2 8 KB, against a 1 KB page, so a sequential stream's miss
+fraction was 16x / 8x low. DDR3_8Gb_x8's page is 2 KB (2048 cols x 8 DQ), so
+the test missed it and the stride was one device's page instead of 8 x 2 KB
+(8x high). DDR5 x8 got 8 x 1 KB where its 32-bit sub-channel opens 4 x 1 KB
+(2x low; see (2)). The stride is now computed by `main.cpp` from the same
+rule the array energy uses -- the preset page x the devices one access
+engages (`RamulatorWrapper::getRowStrideBytes()`) -- and emitted as
+`sys.hierarchy.dramRowStrideBytes`; zsim reads it and no longer reconstructs
+anything. A config that carries a page but no stride (written before
+1.11.91) gets no row measurement and says so, rather than a guessed one.
+Strides now: DDR3 x8 16384 B (was 2048), DDR4 x8 8192 (unchanged), DDR5 x8
+4096 (was 8192), LPDDR5 2048 (unchanged), GDDR6 2048 (unchanged), HBM2 1024
+(was 8192), HBM3 1024 (was 16384). The existing line now carries it:
+`[mem] DRAM row (page) size: 1024 B, from preset organization (cols x dq /
+8); row stride across the access: 4096 B = 4 device(s) x 1024 B (32-bit
+sub-channel / 8-bit device)`.
+
+**(2) R8-3: DDR5 charged eight devices for an access that engages four.**
+`devicesPerAccess()` answered "the whole 64-bit rank" (64 / device width) for
+every DDR class. Ramulator's DDR5 channel is a 32-bit sub-channel
+(`DDR5.cpp` `channel_width` default 32, internal prefetch 16): a 64 B access
+is BL16 on four x8 devices. With 8 devices x BL16 the model charged 128 B of
+activate and burst per 64 B access -- the per-device activate term and the
+burst term were both 2x on every DDR5 cell. The devices per access and the
+bursts per access now come from one description of the access's data path in
+`pimid_energy::accessPathFor()`: devices = path width / IDD-unit width, bytes
+per burst = path width x beats / 8, bursts = 64 B / bytes per burst. It gives
+DDR3/DDR4 8 (64-bit channel / x8), DDR5 4 (32-bit sub-channel / x8), LPDDR5
+1, GDDR6 1, HBM2 1 (one 128-bit channel, the IDD basis), HBM3 1 (one 64-bit
+channel); x4/x16 scale as before on DDR3/4 and as 8/2 on DDR5. For the DDR
+classes the path width IS the simulated channel width, and the organisation
+shape check now refuses a run whose instantiated device disagrees (live
+`channel_width` and DQ against the rule; `PIMID_ACCESS_PATH_BREAK=1` forces
+it). Printed on the model-inputs line: `devices per 64 B access: 4 (32-bit
+sub-channel / 8-bit device)`.
+
+**(3) R8-4: LPDDR5's burst term was one burst for two bursts of data.**
+`getTBurst()` is one burst of the preset: LPDDR5-6400 BL16 = 16 / 6400 MT/s =
+2.5 ns on one x16 channel = 32 B. A 64 B access needs two. The array energy
+now charges `getAccessBurstNs()` = bursts per access x one burst, with beats
+per burst read from the simulated timing preset (nBL x the family's CK
+divisor), so no burst length is restated. The same rule gives one burst --
+the existing values -- for DDR3/DDR4 (BL8 x 64 b = 64 B), DDR5 (BL16 x 32 b),
+HBM2 (BL4 x 128 b; the channel's IDD4R loop moves 64 B per 1.666 ns) and
+HBM3 (BL8 x 64 b, 64 B per 1.25 ns, as the audit verified). GDDR6 is held at
+its 1.11.90 charge (1 burst, 1.143 ns): on a per-DEVICE IDD basis (two x16
+channels) BL16 moves 64 B, on a per-CHANNEL basis it moves 32 B and the burst
+term would double. Which basis the IDD row is on is R8-5, awaiting the
+user's ruling; the model-inputs line says `[basis HELD pending R8-5]`.
+`getTBurst()` itself is unchanged: it is also a timing quantity (the chip
+rung of the latency ladder), and this release moves no timing. Printed:
+`bursts per 64 B access: 2 (BL16 x 16 bit = 32 B per burst); energy tBurst
+per 64 B = 5 ns`.
+
+**(4) R8-6: the co-sim/zsim timing model ran a different DDR5 part from the
+one the report priced.** `writeRamulatorConfigYaml` emitted
+`DDR5_8Gb_<w>` / `DDR5_3200AN` whatever the run's grade, while the energy
+path, the wrapper's oracles and the preset transcription price
+`memory.dram.ddr5_speed_grade` (default 4800B on the 16 Gb MT60B die). The
+emitter now reads the pair from the wrapper that owns the grade -> {org,
+timing} mapping (`resolvePresetOrganization` / `resolvePresetTiming`, bound to
+the instantiated device by the 1.11.66 shape check), so there is one table;
+if the pair cannot be resolved it refuses (rc 2) instead of emitting another
+part. 3200 still emits `DDR5_8Gb_<w>` / `DDR5_3200AN`. Printed: `[mem] NOTE:
+DDR5 is modelled at memory.dram.ddr5_speed_grade 4800; the co-sim/zsim
+Ramulator config emits org DDR5_16Gb_x8, timing DDR5_4800B (the same pair the
+energy path prices)`, and the wrapper's existing `is modelled at the preset's`
+line now names the pair.
+
+**(5) R8-11: HBM2's idle descent raised power.** `backgroundUnitMW` guarded
+power-down against precharge standby (pd <= pre) but not precharge standby
+against active standby. The HBM2 row is measured silicon where IDD2N (136 mA)
+sits above IDD3N (133 mA) -- inside the measurement noise -- so every idle
+cycle was priced above a busy one, up to +2.2% background. The idle state is
+now capped at the active state's power, the same way, with one line when the
+guard binds: `[mem] NOTE: HBM2 precharge standby IDD2N (136 mA) exceeds
+active standby IDD3N (133 mA) in its IDD row; the idle state is priced at the
+active state's power (an idle descent cannot raise power).` No other row has
+IDD2N > IDD3N.
+
+**(6) R8-12: the interface label named a term it does not sum.** Both report
+lines (device scope `Total dynamic`, system scope `Array dynamic`) said
+`iface=... [termination + driver/PHY]`. Since the 1.11.60 revert the summed
+term is termination only; CACTI-IO's driver/PHY figure prints as
+informational and is not in the total. Now `[termination only; driver/PHY
+informational, not summed]`. Numbers unchanged.
+
+**(7) R8-2, ruling (a): a per-technology IDD3N basis.** The 1.11.86
+one-bank baseline (`oneBankActiveStandbyMA`) diluted IDD3N to one bank as
+IDD2N + (IDD3N - IDD2N) / banks on every row, which presumes IDD3N was
+measured with ALL banks open. That is what the DDR sheets say -- Micron DDR5
+core sheet Table 387 p.450 IDD3N "Bank Activity: All banks open"; MT40A
+Table 136 p.317 "all banks open"; MT41K Table 13 note 3 p.36 "all banks open
+during IDD3N" -- and NOT what the HBM and GDDR6 standards say: JESD235D
+cl.9.1 (PDF p.109) "one bank is active"; JESD238B.01 Table 83 (PDF p.165,
+printed p.151) "one bank is active"; JESD250D Table 65 (PDF p.165, printed
+p.153) "one bank active". On those three the formula divided a one-bank
+increment by 32 (HBM2, HBM3) or 16 (GDDR6) a second time. `pimid_energy.h`
+now carries `enum class Idd3nBasis { ALL_BANKS, ONE_BANK, UNVERIFIED }`
+(`idd3nBasisFor()`, beside the rows, citations in the comment): ALL_BANKS
+for DDR3/DDR4/DDR5 keeps the dilution, ONE_BANK for HBM2/HBM3/GDDR6 uses
+IDD3N as specified, UNVERIFIED for LPDDR5 keeps the 1.11.86 formula (the
+held LPDDR5-class sheets list values with no bank condition -- the public
+Y52P LPDDR5X sheet p.42 defers to "General LPDDR5/LPDDR5X Specifications
+2", not held -- and misc/JESD209-5C.pdf is image-only here). The burst terms subtract IDD3N from
+IDD4R/IDD4W; the sheets were read for the burst loop's bank state: DDR5
+p.451 IDD4R/IDD4W "All banks open, RD [WR] commands cycling through banks",
+MT40A p.317 "all banks open", MT41K pp.37-38 "All banks open" -- so on the
+ALL_BANKS parts the burst's baseline IS the all-bank IDD3N and the
+subtraction stays. On the ONE_BANK parts the burst loops do NOT run at one
+bank (JESD235D PDF p.109 and JESD238B.01 PDF p.166 "all banks activated";
+JESD250D Table 65 "one bank in each of the 4 bank groups activated") and no
+held document specifies a standby at that many open banks, so the one-bank
+IDD3N stays subtracted and the residual (the other open banks' standby for
+tBurst) is stated in the comment, not corrected. Printed, one word on the
+model-inputs line: `; IDD3N basis ONE_BANK`.
+
+**(8) R8-7, ruling (b): TN-41-01 with a MEASURED bank-open fraction.**
+`backgroundUnitMW` priced IDD3N for 1 - r_idle, where r_idle is "phases with
+no memory-controller access" (10k-cycle phases) or the E17 gap histogram --
+traffic in the phase, i.e. the open-page assumption. TN-41-01 p.5 defines the
+states as "precharged (all of the banks are precharged) or active (one or
+more banks are open)" with BNK_PRE% the percentage of time all banks are
+precharged. Ramulator2 now measures it: `dram/pimid_bank_open.h` keeps, per
+unit that shares bank state (a rank where the organisation has one, else a
+channel), whether >= 1 bank-level node is "Opened" (or LPDDR5's
+"Pre-Opened"), recomputed only after an issued command or a future action,
+and the seven DRAM impls add the per-tick sums to
+`IDRAM::m_pimid_unit_cycles / m_pimid_open_unit_cycles`;
+`IMemorySystem::pimid_bank_open_totals()` exposes them; zsim's
+`RamulatorMemory` mirrors them into two Counters, `bankOpenCycles` and
+`bankOpenWindow`, in its aggregate inside the rebased "mem" group (so they
+report the ROI window, 1.11.90), registered only when the device keeps them.
+`main.cpp` reads them (Scope::MEM, all-nodes and per-node) and, in device
+scope and in all three system-scope branches, prices IDD3N for BNK_ACT% =
+bankOpenCycles / bankOpenWindow and IDD2N (IDD2P under power-down, the
+existing descent) for the rest, via `backgroundUnitStatesMW`; the phase/gap
+residency is only the power-down input there, capped at the precharged share
+(said on the line when it binds). ONE_BANK parts use their one-bank IDD3N
+under the same rule. Without the counters the 1.11.90 expression is used
+bit for bit. One line per priced array:
+`[mem] bank-open fraction MEASURED x (N of M memory cycles with >= 1 bank
+open; TN-41-01 BNK_PRE% = 1-x = y); traffic-phase fraction z (printed for
+comparison, not used)`, or `[mem] bank-open fraction UNMEASURED (<why>); the
+traffic-phase fraction z sets the IDD3N share`. WHERE IT IS MEASURED: only
+where a Ramulator2 controller saw every access to the array. Device scope
+(fig3, pecount, placement, coremodel) runs on the PE memory interface, which
+keeps no bank state: UNMEASURED on every such cell. System scope: the host
+array of a decoupled system and a shared array with no PE-originated
+traffic (the NO_OFFLOAD baselines) are MEASURED from the host controller; a
+shared array with PE traffic (co-sim) is UNMEASURED, because the host
+controller's counter sees only the host-originated accesses. Window unit:
+Ramulator is ticked once per zsim cycle (R8-13), so "memory cycles" are
+controller ticks x units.
+
+**(9) R8-8, ruling (a): IDDQ and IPP.** Every held sheet measures IDD on
+the VDD balls only (DDR5 core sheet p.448 "Any IPP or IDDQ current is not
+included in IDD currents"; MT40A p.314; JESD238B.01 cl.9.1 PDF p.164;
+JESD250D cl.8.8), so the DQ output rail and the pump rail are separate and
+were unpriced. IDDSpec gains `iddq3n/iddq4r/iddq4w/vddq` and
+`ipp2n/ipp3n/vpp` (unset sentinel -1 = not published, printed n/a).
+(a) IDDQ per access, ONLY on accesses that cross the DQ (the
+`crossesOffPackageDQ()` rule termination uses; on-die placements pay 0):
+(IDDQ4R|IDDQ4W - IDDQ3N) x VDDQ x tBurst(64 B) x devices. Values: DDR5-4800
+MT60B Rev A Table 6 IDDQ3N 31 (p.18), IDDQ4R 57, IDDQ4W 198 (p.19) at 1.1 V;
+DDR5-5600 Rev D Table 8 IDDQ3N 70, IDDQ4R 218 (p.19), IDDQ4W 271 (p.20);
+LPDDR5 [as re-sourced by (11): public Micron Y52P LPDDR5X Table 18 PDF
+pp.42-43, x16 7500 Mb/s] IDD3NQ 0.6, IDD4RQ 111.9 (typical, note 4), IDD4WQ
+0.6 mA at 0.5 V. DDR4: MT40A Table 148 publishes no IDDQ rows (only IDDQ2NT
+is defined, p.314) -> n/a. DDR3: Table 20 has none -> n/a. HBM2/HBM3: IDDQ is
+vendor-simulated (JESD238B.01 PDF p.164) -> the Cho ISSCC 2018 driver
+figure as a BAND, 0.19-0.27 pJ/bit, midpoint charged on reads, both ends
+printed; writes 0 (a write's DQ is driven by the host). GDDR6: JESD250D
+defines no IDDQ -> placeholder fields for the R8-9 derivation (n/a until
+then). Printed on the DQ interface line: `; iddq= rd A nJ, wr B nJ` (or
+`[BAND lo-hi]`, or `n/a`), and as `+ iddq=` in the Total dynamic / Array
+dynamic sums. (b) IPP background: VPP x (IPP3N x BNK_ACT% + IPP2N x
+(1 - BNK_ACT%)) per unit x the background population. DDR5 IPP2N 6 / IPP3N 7
+(Rev A pp.17-18; Rev D 7/8) at VPP 1.8 V (core sheet p.1); DDR4 IPP3N 3
+(Table 148 p.332), IPP2N = IPP3N by note 22 p.334, VPP 2.5 V (p.1); LPDDR5
+has no VPP ball, its 1.8 V VDD1 rail (IDD2N1 1.5, IDD3N1 2.8 mA, Y52P
+Table 18 p.42, per (11)) takes the slot -- the LPDDR5 row prices VDD2H only, so nothing doubles.
+DDR3 (no VPP rail), HBM2/HBM3 (no published IPP), GDDR6 (placeholder), DDR5-3200
+(no sheet): n/a. Printed `+ipp=Y mW` on the Background line; added to
+the system-scope memory wattage and to the device-scope leakage line.
+Refresh and burst IPP (IPP5B, IPP4R/W) are not priced. The two false
+comments are corrected in place: the 1.11.5 interfaceNJ note ("IDD4R is
+measured with the outputs driving: the on-die I/O switching is already in
+the array term") and the 1.11.64 HBM note ("their driver current is already
+inside the measured burst current"), plus the same claim in `main.cpp`'s
+device-scope comment. Two limits stated in the comments, not corrected:
+the DDR5 core sheet p.448 says IDDQ "cannot be directly used to calculate IO
+power" (priced by the ruling anyway); and IDDQ4W is measured with the DRAM's
+RTT enabled, so it contains the write termination's DC current that
+`terminationNJ()` also prices -- the two overlap on writes by at most the
+termination term (DDR5-4800: 0.418 nJ of the 2.445 nJ write IDDQ).
+
+Where it is measured, established by gates 1200A-1200C: the counters live
+in zsim's RamulatorMemory controller. The device-scope PE path has no zsim
+memory controller at all (the stats dump's `mem` group holds only the
+`pe-mi-N` PE memory interfaces; the "Controller: Ramulator" line in the
+report is the DRAM oracle that supplies the ladder, not a per-request
+controller), and the system-scope hosts run zsim's SimpleMemory (`type =
+"Simple"`, main.cpp emitZSimSystemConfig). So NO fleet cell instantiates
+RamulatorMemory, every fleet cell prints `bank-open fraction UNMEASURED`
+with its reason and keeps the traffic-phase fraction, and the measured
+path in this release is verified by construction only. It gets a firing
+configuration when HOST_MC placement routes through Ramulator2 (OPEN) or
+a host runs on `memory.controller.type: ramulator`. The counters are
+registered unconditionally (the first cut registered them only when the
+device reported itself tracked at construction). The HBM2 idle guard
+(item 5) likewise has no firing workload: the guard binds only at non-zero
+idle residency, and neither a saturating stream nor a 1-PE bfs produced
+any; it is verified by the header harness (the HBM2 row's IDD2N > IDD3N
+ordering case).
+
+**(10) R8-9, DDR4 and DDR3 rows: one revision of one sheet each.** DDR4 now
+reads Micron MT40A Table 148 "Die Rev. B", x8, DDR4-2400, p.332: IDD0 48,
+IDD2N 34, IDD3N 43, IDD4R 135, IDD4W 123, IDD2P 25 mA; the IDD5 (burst)
+column is converted from THAT revision's IDD5R 53 and IDD2N 34: 34 + 19 x
+7800 / 350 = 457.4 mA (was 362 from Rev A's IDD5R against another
+revision's standby). DDR3 now reads MT41K Table 20 "Die Rev. E", x8,
+DDR3/3L-1600, p.43: IDD0 55, IDD2N 32, IDD3N 38, IDD4R 157, IDD4W 125,
+IDD5B 235, and IDD2P1 32 mA, the FAST-exit figure (the old 18 was Table 20's
+IDD2P0, slow exit, under a comment that said fast). IDD2P1 equals IDD2N on
+this part, so DDR3 precharge power-down saves nothing: the sheet's number.
+The HBM3 and GDDR6 rows are the separate R8-9 derivation's and are not
+touched here beyond their basis flags.
+
+**(11) The IDD rows: one typical value per quantity, by component.** User
+rulings 2026-09-26 18:44-19:00 (PIMID outputs ONE absolute number per
+quantity, never a range; datasheet IDD values are guardbanded maxima) and
+19:30 (the typical values are derived by COMPONENT factors, not
+per-current factors). The model prices differences of the IDD columns --
+TN-41-01's activate term is the IDD0 loop minus its standby baseline, the
+burst is IDD4R/IDD4W minus IDD3N, refresh is IDD5B minus the state it
+interrupts -- so a factor acts on the quantity each IDD loop measures.
+The rows of `iddTableFor()` now STORE the datasheet maxima (HBM2/HBM3:
+measured silicon), and one function derives the typical currents every
+consumer prices: `typicalFromSpec(spec, ComponentFactors, Idd3nBasis,
+banks, tRC, tRAS)`, with the row's set from `componentFactorsFor()`;
+`iddFor()` returns it, `iddSpecFor()` returns the maxima (record and
+comparison only), and `arrayReadNJ`/`arrayWriteNJ` take `iddTypicalAt(tech,
+tRC, tRAS, banks)` so IDD0 is fixed at the activate energy's own timing.
+The chain, the anchors and the bands are in the code comments; the
+print-out carries one word, appended to the model-inputs line: `; IDD row
+MEASURED|DERIVED|CALIBRATED` (`pimid_energy::iddRowProvenance()`,
+`RamulatorWrapper::getIddRowProvenance()`).
+Anchors:
+- [G] Ghose, Yaglikci, Gupta, Lee, Chandrasekar, Ma, Mutlu, "What Your
+  DRAM Power Models Are Not Telling You: Lessons from a Detailed
+  Experimental Study", Proc. ACM Meas. Anal. Comput. Syst. (SIGMETRICS)
+  2018, https://arxiv.org/abs/1807.05102 -- 50 DDR3L-1600 modules, 3
+  vendors, measured/datasheet per current (vendor A/B/C): IDD2N
+  38.3/76.6/54.9%, IDD3N 23.4/53.2/33.4%, IDD0 40.2/42.6/45.4%, IDD4R
+  (I/O-corrected) 45.9/79.5/95.4%, IDD4W 49.1/54.5/59.0%, IDD5B
+  88.6/72.0/88.0%, IDD7 58.4/43.5/52.7%; IDD2P1 only ranges. Three-vendor
+  means: IDD0 0.427, IDD2N 0.566, IDD3N 0.367, IDD4R 0.736, IDD4W 0.542,
+  IDD5B 0.829.
+- [S] Shi et al., "Calibrating DRAMPower Model for HPC: A Runtime
+  Perspective from Real-Time Measurements", arXiv:2411.17960 (v3) --
+  Samsung M393A1G43DB0-CPB DDR4-2133 8 GB RDIMMs, HDEEM sensors on a
+  Haswell HPC node; Fig. 4(b) datasheet vs regression-calibrated per DIMM:
+  IDD0 1120->605, IDD2N 1040->599, IDD3N 1540->539, IDD4R 1750->967, IDD4W
+  1590->684 mA; refresh not calibrated. Ratios: IDD0 0.540, IDD2N 0.576,
+  IDD3N 0.350, IDD4R 0.553, IDD4W 0.430; energy-level ratios 0.25-0.51
+  (median 0.47).
+
+The components and the two-generation factors (for a generation neither
+anchor measured; assumption: vendors guardband it as they guardbanded
+DDR3L and DDR4):
+
+| component | factor | source |
+|---|---|---|
+| precharged standby state (IDD2N) | 0.57 | [G] 3-vendor mean 0.566; [S] DDR4 0.576 |
+| active standby state (IDD3N) | IDD3N_typ = IDD2N_typ + 0.36/0.57 x (IDD3N_spec - IDD2N_spec), clamped >= IDD2N_typ: the premium shrinks by the ratio of the two measured standby factors ([G] IDD3N 23-53% of spec, IDD2N 38-77%) | [G] |
+| activate excess (IDD0 loop current minus its TN-41-01 standby baseline) | 0.5 | [S] energy-level ratios 0.25-0.51 (median 0.47); [G] IDD0 loop 0.43 |
+| burst excess (IDD4R - IDD3N), (IDD4W - IDD3N) | 0.6 read, 0.5 write | [G] 0.74/0.54 (I/O-corrected), [S] 0.55/0.43 |
+| refresh excess (IDD5B - IDD2N) | 0.83 | [G] 88.6/72.0/88.0% |
+| precharge power-down (IDD2P) | 0.57 | same as standby ([G] gives ranges only); keeps IDD2P <= IDD2N |
+
+The typical row: idd2n_t = f.standby x IDD2N; idd3n_t = idd2n_t +
+f.premium x (IDD3N - IDD2N), >= idd2n_t; idd4r_t = idd3n_t + f.rd x
+(IDD4R - IDD3N); idd4w_t likewise with f.wr; idd5b_t = idd2n_t +
+f.refresh x (IDD5B - IDD2N); idd2p_t = f.pd x IDD2P. IDD0: with the
+tRC-weighted baseline the TN-41-01 formula defines, B = (IDD3N_1b x tRAS +
+IDD2N x (tRC - tRAS)) / tRC (IDD3N_1b = `oneBankActiveStandbyMA` on the
+row's basis), E = Vdd x tRC x (IDD0 - B); setting idd0_t = B_t + f.act x
+(IDD0 - B_spec) gives E_t = Vdd x tRC x f.act x (IDD0 - B_spec) = f.act x
+E_spec exactly, at the timing and bank count the energy path passes. A
+row with `e_actpre_pJ_override` (GDDR6, the IDD7 route) has the override
+scaled by f.act. IDDQ, IPP, tRFC and tREFI are not factored (no anchor).
+
+Why per-current factors failed (the first pass of this item, 18:44-19:00,
+stopped before the build was accepted): DDR5 IDD0 x 0.48 fell below IDD2N
+x 0.57 (4800B 49.4 < 52.4; 5600B 25.4 < 27.9), so the TN-41-01 activate
+term was negative at any tRC/tRAS and `refuseNegativeActivateEnergy`
+stopped every DDR5 run; IDD3N x 0.36 fell below IDD2N x 0.57 on every
+factored row, so the R8-11 guard priced the precharged state at the
+active one and the measured bank-open fraction of (8) stopped moving
+background; and IDD2P x 1.00 sat above the factored IDD2N on DDR3, DDR4
+and GDDR6, so power-down saved nothing. Under the component rule every
+factored row keeps idd2p_t <= idd2n_t <= idd3n_t <= idd4r_t, idd4w_t, a
+positive refresh excess, and an activate term of f.act x its positive
+spec value (checked per row, below).
+
+Per row:
+- DDR3 CALIBRATED, [G] alone (the anchor's own generation): standby
+  0.566, premium 0.367/0.566, activate 0.43 ([G]'s IDD0 loop ratio), burst
+  0.736 / 0.542, refresh 0.829, power-down 0.566. Stored: MT41K Rev E
+  Table 20 maxima {55, 32, 38, 157, 125, 235, IDD2P1 32}.
+- DDR4 CALIBRATED, [S] where it has the ratio: standby 0.576, premium
+  0.350/0.576, activate 0.540 (applied to the excess), burst 0.553 / 0.430,
+  power-down 0.576; refresh 0.83 from [G]. The ratios, not Shi's per-DIMM
+  absolutes, because the row is per x8 device of a different part.
+  Stored: MT40A Rev B Table 148 maxima {48, 34, 43, 135, 123, 457.4, IDD2P
+  25}.
+- DDR5-3200/4800/5600 DERIVED, the two-generation set. Stored: the MT60B
+  Rev A / Rev D maxima (4800B {103, 92, 142, 377, 349, 277, 88}, 5600B
+  {53, 49, 91, 218, 241, 377, 47}) and the unsourced 3200 row (stated).
+  The model-inputs line now prints `; IDD row DERIVED` for DDR5.
+- LPDDR5 DERIVED, RE-SOURCED (user ruling, same evening): the 8 Gb
+  LPDDR5-6400 sheet the row used since 1.11.63 is marked confidential on
+  every page and is no longer cited anywhere in the code comments or this
+  entry (older ledger entries are history and are left as written). The row now
+  reads the PUBLIC Micron Y52P LPDDR5X sheet (misc/315b-441b-561b-563b-
+  y52p-sdp-ddp-qdp-8dp-lpddr5x.pdf, Rev. H 03/2025, MT62F1G32D2 family, 16
+  Gb die), Table 18 PDF pp.42-43, x16, 7500 Mb/s: VDD2H IDD0 53, IDD2N
+  32.5, IDD3N 40, IDD4R 390, IDD4W 265, IDD52H 205, IDD2P 3.9 mA. Stored:
+  standby and activate as-is, burst excess over IDD3N x 6400/7500
+  (constant energy per bit: IDD4R 338.67, IDD4W 232.00); typical by the
+  two-generation set. IDDQ (IDD3NQ 0.6, IDD4RQ 111.9 typical, IDD4WQ 0.6
+  at 0.5 V) and the VDD1 pair in the IPP slot (IDD2N1 1.5, IDD3N1 2.8 at
+  1.8 V) come from the same table, unfactored and not rate-scaled.
+  Uncited cross-check (confidential sheet): agrees within ~15% on burst
+  and standby. The same sheet's rate-unscaled row is `LPDDR5X` (DERIVED),
+  NOT selectable: see OPEN.
+- GDDR6 DERIVED, and R8-5 decided: the row reads Samsung K4Z80325BC Table
+  82 (PDF p.146, x32, 1.35 V, HC14) per DEVICE {IDD0 430, IDD2N 310, IDD3N
+  460, IDD4R 1220, IDD4W 1470, IDD5B 790, IDD2P 230; tRFCab 120 ns}; a 64 B
+  access engages ONE x16 channel, so the row stores the PER-CHANNEL maxima
+  (device / 2, "measurements are taken per device with the same IDD
+  Measurement-Loop Patterns on both channels", p.144) and takes the
+  two-generation set. The access path follows: `accessPathFor` GDDR6 =
+  16-bit channel / 16-bit channel unit, BL16 x 16 b = 32 B, 2 bursts (the
+  burst is basis-neutral: half current x 2 bursts = the device figure x 1
+  burst); `backgroundUnits` already counts GDDR6 as ranks x channels with
+  the preset's 2 channels per device, so background and refresh = 2 x half
+  = per device. ACTIVATE via the IDD7 route, a new
+  `IDDSpec::e_actpre_pJ_override` the formula consults before TN-41-01:
+  1.35 V x (IDD7 1640 - IDD4R 1220) mA / 175 M ACT/s per device = 3.24 nJ
+  per channel ACT/PRE at the maxima, x the activate-excess factor 0.5 =
+  1620 pJ per activation. The three routes are recorded (IDD0: 0.61 nJ,
+  ill-conditioned; IDD7: 3.24 nJ, chosen, well-conditioned; physics
+  bracket 1.1-2.3 nJ). The printed path label changed from `2 x 16-bit
+  channels [basis HELD pending R8-5] / 32-bit device` to `16-bit channel /
+  16-bit channel (IDD basis)`.
+- HBM2 MEASURED, no component factors (measured-typical already), moved
+  to the preset's operating point: the SAFARI loops ran at 1.2 Gb/s/pin
+  (sources/table3/configs/HBM2_1.2Gbps_timing_BL4.json "tCK_ps": 1666.7)
+  on pseudo-channel 0 only (every IDD file "..._0_1_2_3_4_5_6_7_pc0_..."),
+  i.e. 76.8 Gb/s per channel, while the tree charges them at 2.4 Gb/s on
+  both PCs, 307.2 Gb/s. At constant energy per bit the IDD4R/IDD4W excess
+  over IDD3N x 307.2/76.8 = 4: 330.35 -> 1321.4 mA and 222.16 -> 888.65 mA
+  (read 5.16 pJ/bit, the measurement's own figure; the old charge was
+  1.29). Refresh: program_idd5() runs tRFC 160 nCK = 266.7 ns (not the 350
+  of its comment); the energy per REF is kept at the row's 260 ns tRFC by
+  IDD5B excess x 266.7/260 (53.39 -> 54.76 mA).
+- HBM3 DERIVED from the HBM2 measurement, no component factors: the
+  derivation document's row (_1166audit/IDD_DERIVATION_HBM3_GDDR6.md,
+  section-4 comment block in the code), standby re-based by (12): {IDD0
+  96.2, IDD2N 89, IDD3N 89, IDD4R 1532, IDD4W 1059, IDD5B 194, IDD2P
+  22.25}, VDDC 1.1 V, tRFC 260 ns.
+
+Before (the stored maxima, priced as they stand) and after (typical),
+COMPUTED from the rows and the 1.11.91 formulas by a harness over
+`pimid_energy.h` at each preset's printed timing -- not measured, no
+simulation run. Per-access array energy at the measured row-miss fraction
+m, nJ, and the memory system's background (one x8 rank, one LPDDR5 die,
+one GDDR6 device, one HBM stack; pg off, IPP excluded, refresh included),
+all-active / all-precharged, mW:
+
+| technology | read, before -> after | write, before -> after | m = 0.5 read / write | background before -> after |
+|---|---|---|---|---|
+| DDR3 x8 rank (8 dev) | 6.426 + 11.205 m -> 4.730 + 4.818 m | 4.698 + 11.205 m -> 2.546 + 4.818 m | 12.029 -> 7.139 (x0.59) / 10.300 -> 4.955 (x0.48) | 505.9 / 444.0 -> 317.3 / 277.2 |
+| DDR4 x8 rank (8 dev) | 2.943 + 5.982 m -> 1.627 + 3.230 m | 2.559 + 5.982 m -> 1.100 + 3.230 m | 5.934 -> 3.243 (x0.55) / 5.550 -> 2.716 (x0.49) | 591.3 / 508.8 -> 389.5 / 339.4 |
+| DDR5-3200 x8 (4 dev/access, 8/rank) | 2.332 + 4.353 m -> 1.399 + 2.177 m | 2.772 + 4.353 m -> 1.386 + 2.177 m | 4.509 -> 2.488 (x0.55) / 4.949 -> 2.474 (x0.50) | 403.9 / 337.0 -> 244.2 / 202.0 |
+| DDR5-4800 x8 | 3.441 + 2.115 m -> 2.065 + 1.058 m | 3.031 + 2.115 m -> 1.516 + 1.058 m | 4.499 -> 2.594 (x0.58) / 4.089 -> 2.044 (x0.50) | 1339.5 / 932.7 -> 820.6 / 563.7 |
+| DDR5-5600 x8 | 1.596 + 0.663 m -> 0.958 + 0.331 m | 1.885 + 0.663 m -> 0.942 + 0.331 m | 1.927 -> 1.123 (x0.58) / 2.216 -> 1.108 (x0.50) | 991.2 / 649.5 -> 642.8 / 427.0 |
+| LPDDR5 x16 die | 1.568 + 1.297 m -> 0.941 + 0.649 m | 1.008 + 1.297 m -> 0.504 + 0.649 m | 2.217 -> 1.265 (x0.57) / 1.657 -> 0.828 (x0.50) | 51.3 / 43.9 -> 32.2 / 27.5 |
+| GDDR6 device (2 ch) | 1.173 + 3.240 m -> 0.704 + 1.620 m | 1.558 + 3.240 m -> 0.779 + 1.620 m | 2.793 -> 1.514 (x0.54) / 3.178 -> 1.589 (x0.50) | 649.1 / 459.4 -> 392.3 / 272.5 |
+| HBM2 stack (8 ch) | 2.642 + 0.374 m (unchanged) | 1.777 + 0.374 m (unchanged) | 2.829 / 1.963 | 1317.4 / 1317.4 (unchanged) |
+| HBM3 stack (16 ch) | 1.984 + 0.391 m (unchanged) | 1.334 + 0.391 m (unchanged) | 2.180 / 1.529 | 2551.2 / 2551.2 (unchanged) |
+
+Per IDD unit the activate term is exactly f.act x the spec term (DDR3
+1400.6 -> 602.3 pJ, DDR4 747.8 -> 403.8, DDR5-3200 1088.3 -> 544.2,
+DDR5-4800 528.8 -> 264.4, DDR5-5600 165.7 -> 82.8, LPDDR5 1297.5 -> 648.7,
+GDDR6 3240 -> 1620), and each burst term exactly f.rd / f.wr x its spec
+term. Typical currents (mA; IDD0 at the preset's tRC/tRAS): DDR3 {28.13,
+18.11, 22.00, 109.59, 69.16, 186.40, 18.11}; DDR4 {27.17, 19.58, 25.05,
+75.93, 59.45, 371.01, 14.40}; DDR5-3200 {29.90, 19.38, 24.43, 88.03,
+87.43, 90.76, 11.40}; DDR5-4800 {58.08, 52.44, 84.02, 225.02, 187.52,
+205.99, 50.16}; DDR5-5600 {30.05, 27.93, 54.46, 130.66, 129.46, 300.17,
+26.79}; LPDDR5 {28.82, 18.53, 23.26, 202.46, 119.26, 161.70, 2.22}; LPDDR5X
+(not selectable) {-, 18.53, 23.26, 233.26, 135.76, 161.70, 2.22}; GDDR6
+per channel {-, 88.35, 135.72, 363.72, 388.22, 287.55, 65.55}, activate
+1620 pJ. Ordering checks, every factored row: idd2p_t <= idd2n_t <=
+idd3n_t <= idd4r_t and idd4w_t PASS; refresh excess idd5b_t - idd2n_t > 0
+PASS (DDR3 168.3, DDR4 351.4, DDR5-3200 71.4, DDR5-4800 153.6, DDR5-5600
+272.2, LPDDR5/LPDDR5X 143.2, GDDR6 199.2 mA); activate positive PASS.
+HBM2 (no factors) keeps its measured IDD3N 35.5 < IDD2N 38.0 mA (the
+R8-11 guard, as before; the only row that fails the ordering, stated in
+the row since 1.11.66).
+
+A finding for the paper: measured active standby sits barely above
+precharged standby -- on the anchors' own per-current means it is at or
+below it ([G] DDR3L 0.367 x 38 = 13.9 against 0.566 x 32 = 18.1 mA; [S]
+DDR4 539 against 599 mA per DIMM) -- so on real parts the bank-open
+fraction matters less than the datasheets implied. Under the ruled
+formula the absolute active-minus-precharged spread falls by the premium
+factor (DDR5-4800 rank 406.8 -> 256.9 mW, DDR4 82.5 -> 50.1, DDR3 61.9 ->
+40.1, GDDR6 189.7 -> 119.8), but the RELATIVE spread is about unchanged
+(DDR5-4800 1.44x -> 1.46x, DDR3 1.14x -> 1.15x, DDR4 1.16x -> 1.15x),
+because the premium factor 0.36/0.57 = 0.63 is larger than the standby
+factor 0.57. The model therefore keeps 63% of the datasheet premium; the
+anchors alone would support less. Stated, not corrected.
+
+**(12) HBM stack floor, user ruling option (c).** The SAFARI artifact's
+data/no_hbm_idd2_measurements.csv averages 821.3 mA for IDD2 with one
+channel enabled and idle against 1087.4 mA for the all-channel loop: 38.0 mA
+per channel plus a 783.3 mA floor that does not scale with channels (the
+artifact's IDD_ours_allzeros.json names it "off-power (778.1)"). Reading:
+per STACK, inside the package (logic-die PHY, clock trees, always-on
+circuits); the sensed rail is the stack supply (HBM_1V2 in platform.cpp),
+the FPGA-side PHY runs from VCCINT. Assumption: all of it is the stack's.
+It is priced as ONE per-stack static term, `IDDSpec::stack_floor_mw`: HBM2
+783.3 mA x 1.2 V = 939.96 mW, HBM3 x 1.1/1.2 = 861.6 mW, once per stack
+(`hbmStacks()`: the channel count over channels per stack, the arithmetic
+`backgroundUnits` uses). `backgroundSystemMW` / `backgroundSystemStatesMW`
+add it, so the Background line (and every sum of it, both scopes)
+includes it; the line prints `+stack=Z mW (per-stack floor, included in
+Background)` beside `+ipp=`. The per-channel HBM2 columns become the
+increments (36-chip stack mean - 783.3) / 8 -- IDD0 42.725, IDD2N 38.0125,
+IDD3N 35.5, IDD4R 35.5 + 1321.4, IDD4W 35.5 + 888.65, IDD5B 38.0125 +
+54.76 -- and HBM3's standby is the floor-excluded centre 89 mA (38.0 x
+0.878 x 1600/600). The floor cancels in every burst/refresh difference;
+HBM2's activate moves 409.8 -> 373.6 pJ only because the unrounded means
+replace the 1.11.66 row's rounded 141/136/133 (the ill-conditioned IDD0 -
+IDD3N difference, stated in the row). The artifact's measured "ipp" column
+was examined for HBM2/HBM3 IPP and REJECTED: platform.cpp computes
+Power_VPP as the card's PCIe 12 V + 3.3 V input power minus VCCINT,
+VCCINT_IO and HBM 1.2 V (a whole-card residual, ~3.12 A per stack after the
+standardiser's division by an assumed 2.5 V), not a VPP current; HBM2/HBM3
+IPP stays n/a.
+
+**(13) From the cloud review of 1.11.90.** Three fixes to the 1.11.90
+component loader (`src/main.cpp`), no model change:
+- The linked-plugin check assumed the plugin is always linked.
+  `checkLinkedPluginOnce()` required the libpimid_plugin.so stamp
+  unconditionally, but `pimid_plugin` is linked into `pimid` only when the
+  CMake option BUILD_PLUGINS is ON; a -DBUILD_PLUGINS=OFF binary would have
+  been refused, with a misleading "plugin from another build" FATAL, on its
+  first `findQemuPlugin()` / `findPimidMpiLib()` / `--check-components`.
+  CMake now defines `PIMID_LINKED_PLUGIN` on the `pimid` target inside the
+  same `if(BUILD_PLUGINS)` that links the plugin; without it the check
+  prints nothing and returns. The mismatch refusal is unchanged when the
+  plugin IS linked.
+- `readComponentStamp()` read the whole shared object into one
+  std::string to find a ~40-byte tag (libzsim_qemu.so is ~2 MB, read on
+  every start). It now reads fixed 64 KiB chunks, carrying the last (tag
+  length - 1) bytes across each boundary, and at most 64 bytes past the tag
+  for the version; same result (first occurrence, <= 64 characters, ""
+  when absent or unterminated).
+- Six call sites still carried `if (path.empty()) { ... "build with
+  --target X" ...; return 1; }` after `findQemuPlugin()` /
+  `findPimidMpiLib()`, unreachable since 1.11.90 made
+  `locatePimidComponent()` exit by itself. The branches are deleted and
+  their remediation is folded into the not-found FATAL:
+  `locatePimidComponent(name, sub, build_target)` names the target to
+  build (`cmake --build <build dir> --target pimid_mpi | zsim_qemu |
+  pimid_trace`, and that the seven targets are built together);
+  `findQemuPlugin()` takes the target as its second argument.
+
+DATA IMPACT:
+- HBM3 families (every HBM3 cell, both scopes): measured row-miss fraction
+  UP to 16x on sequential streams (stride 16 KB -> 1 KB), activate share of
+  array energy up accordingly (on the corpus row a pure sequential stream's
+  per-access read energy rises by roughly 40%; less where the measured
+  fraction is set by non-sequential access). Devices, bursts and background
+  unchanged.
+- fig3 HBM2: miss fraction UP to 8x on streams (8 KB -> 1 KB); background
+  DOWN by up to 2.2% at non-zero idle residency (the descent no longer
+  raises power; with `memory.power_down` only the tXP slice moves).
+- fig3 DDR3: miss fraction DOWN up to 8x on streams (2 KB -> 16 KB);
+  activate share down.
+- ALL DDR5 cells (fig3 3200 and 4800, co-sim, baselines): array energy per
+  access HALVES at a fixed miss fraction -- activate and burst both (e.g. the
+  1.11.86 DDR5-4800 shape, 8.887 nJ read, becomes ~4.44 nJ). The measured
+  PE-side miss fraction rises up to 2x on streams (8 KB -> 4 KB), so on a
+  stream the activate half comes back partly; host-originated accesses,
+  priced at the stated 0.5 fallback, halve outright.
+- fig3 LPDDR5: burst term DOUBLES: +0.874 nJ per read and +0.711 nJ per
+  write at the row as it stood before (11).
+- DDR5 co-sim and baselines: the zsim Ramulator now simulates the
+  4800B/16 Gb part the report prices; cycles move (the 4800B row has more CK
+  per operation -- nCL 40 against 24, nRCD 39 against 24 -- and 32 banks
+  against 16). DDR5-3200 companions unchanged in timing.
+- Unchanged: DDR4 x8, LPDDR5 and GDDR6 row strides; devices per access on
+  every technology except DDR5; burst per access on every technology except
+  LPDDR5; the emitted Ramulator config on every technology except DDR5 at
+  4800/5600; background on every row except HBM2; every number under (6).
+- (7) R8-2, activate/precharge per IDD unit, every cell of the family
+  (weighted by the measured miss fraction): HBM3 647.2 -> 506.0 pJ (-22%),
+  GDDR6 1484.1 -> 909.6 pJ (-39%), HBM2 293.6 -> 409.8 pJ (+40%). The
+  diluted baseline was the defect, so the direction is DOWN for HBM3/GDDR6
+  and UP for HBM2 (whose IDD3N < IDD2N on silicon). DDR3/4/5 and LPDDR5
+  unchanged by the basis. Burst terms unchanged.
+- (8) R8-7, background, ONLY where MEASURED (system-scope NO_OFFLOAD
+  baselines and decoupled host arrays): per unit P = P(IDD3N) x BNK_ACT% +
+  P(IDD2N) x (1 - BNK_ACT%) instead of x traffic share. DDR5-4800 per device
+  167.4 mW all-active vs 116.6 mW all-precharged, so a closed-page stream
+  with BNK_ACT% far below its traffic share moves toward 116.6 (up to -30%);
+  HBM3 27.7 vs 23.6 mW per channel (at most -15%). Device-scope cells and
+  co-sim shared arrays with PE traffic: UNMEASURED, background unchanged.
+- (9) R8-8, per DQ-crossing access (HOST_MC, RANK+, every host-originated
+  access; on-die placements 0): DDR5-4800 +0.381 nJ read, +2.445 nJ write
+  (4 devices); DDR5-5600 +(218-70) and +(271-70) mA x 1.1 V x tBurst x 4;
+  LPDDR5 +0.263 nJ read, 0 write; HBM2/HBM3 +0.118 nJ read [0.097-0.138],
+  0 write; DDR3/DDR4/GDDR6/DDR5-3200 n/a (0). IPP background: DDR5-4800 10.8
+  (precharged) to 12.6 (active) mW per device, x8 devices per rank = 86-101
+  mW; DDR4 7.5 mW per device (60 mW per x8 rank); LPDDR5 2.34-3.42 mW per
+  die; others n/a.
+- (10) R8-9, DDR4 x8 per device: activate/precharge 1247.4 -> 747.8 pJ
+  (-40%; per 64 B access x8 devices 9.980 -> 5.982 nJ), read burst 3.135 ->
+  2.943 nJ, write burst 3.455 -> 2.559 nJ per access; at a 0.5 miss
+  fraction read 8.124 -> 5.934, write 8.444 -> 5.550 nJ. Background per
+  device 67.6 -> 73.9 mW all-active, 59.6 -> 63.6 mW all-precharged (the
+  IDD5B 362 -> 457.4 refresh). DDR3 x8 per device: activate/precharge
+  1671.5 -> 1400.6 pJ (per access 13.372 -> 11.205 nJ), read burst 7.020 ->
+  6.426, write burst 7.290 -> 4.698 nJ per access; at 0.5 read 13.706 ->
+  12.029, write 13.976 -> 10.301 nJ. Background per device 70.7 -> 63.2 mW
+  all-active, 54.0 -> 55.5 mW all-precharged; the power-down state rises
+  to IDD2N (18 -> 32 mA), so DDR3 with memory.power_down loses its
+  power-down saving.
+- (11)+(12), COMPUTED from the rows and the 1.11.91 formulas (harness
+  over `pimid_energy.h`, before = items (1)-(10), after = (11)+(12) under
+  the 19:30 component rule; not measured, no simulation run). Per-access
+  array energy at the measured miss fraction m, nJ (read / write), and the
+  memory system's background (one rank or stack or device, pg off, IPP
+  excluded), all-active / all-precharged:
+  - DDR3 x8 rank: read 6.426 + 11.205 m -> 4.730 + 4.818 m; write 4.698 +
+    11.205 m -> 2.546 + 4.818 m; at m = 0.5 read 12.029 -> 7.139 (x0.59),
+    write 10.300 -> 4.955 (x0.48). Background 505.9 / 444.0 -> 317.3 /
+    277.2 mW.
+  - DDR4 x8 rank: read 2.943 + 5.982 m -> 1.627 + 3.230 m; write 2.559 +
+    5.982 m -> 1.100 + 3.230 m; at 0.5 read 5.934 -> 3.243 (x0.55), write
+    5.550 -> 2.716 (x0.49). Background 591.3 / 508.8 -> 389.5 / 339.4 mW.
+    IPP unchanged (60 mW per rank).
+  - DDR5 (every grade, every DDR5 cell): the rows did not move before
+    (11), so before = the maxima column of the (11) table: 4800 read
+    3.441 + 2.115 m -> 2.065 + 1.058 m, background 1339.5 / 932.7 ->
+    820.6 / 563.7 mW per rank; 3200 read 2.332 + 4.353 m -> 1.399 + 2.177
+    m; 5600 read 1.596 + 0.663 m -> 0.958 + 0.331 m (writes and
+    backgrounds in the table). IDDQ/IPP unchanged.
+  - LPDDR5 x16 die: read 1.748 + 0.940 m -> 0.941 + 0.649 m; write 1.423
+    + 0.940 m -> 0.504 + 0.649 m; at 0.5 read 2.218 -> 1.265 (x0.57),
+    write 1.893 -> 0.828 (x0.44). Background 48.3 / 39.4 -> 32.2 / 27.5
+    mW. IDDQ read 0.263 -> 0.278 nJ (DQ-crossing accesses); VDD1 (ipp
+    slot) 2.34-3.42 -> 2.70-5.04 mW per die (the re-source; neither is
+    factored).
+  - GDDR6 device (2 channel units): read 0.231 + 0.910 m -> 0.704 + 1.620
+    m; write 0.262 + 0.910 m -> 0.779 + 1.620 m; at 0.5 read 0.686 ->
+    1.514 (x2.21), write 0.717 -> 1.589 (x2.22). The burst term rises 3.0x
+    (read) / 3.0x (write) from the under-sourced old row (the Samsung
+    maxima alone would be 5.1x / 5.9x); activate 0.910 -> 1.620 nJ (IDD7 route).
+    Background 182.5 / 144.5 -> 392.3 / 272.5 mW.
+  - HBM2 stack (8 channels): read 0.662 + 0.410 m -> 2.642 + 0.374 m;
+    write 0.446 + 0.410 m -> 1.777 + 0.374 m; at 0.5 read 0.867 -> 2.829
+    (x3.26), write 0.651 -> 1.963 (x3.02); burst x3.99. Background 1312.6
+    -> 1317.4 mW (939.96 floor + 8 x 47.2). No component factors.
+  - HBM3 stack (16 channels): read 0.094 + 0.506 m -> 1.984 + 0.391 m;
+    write 0.107 + 0.506 m -> 1.334 + 0.391 m; at 0.5 read 0.347 -> 2.180
+    (x6.3), write 0.360 -> 1.529 (x4.2); burst x21 read, x12 write.
+    Background 443.5 / 377.8 -> 2551.2 / 2551.2 mW (861.6 floor + 16 x
+    105.6). No component factors.
+  Direction: DDR3/DDR4/DDR5/LPDDR5 roughly halve (x0.44-0.59 at m = 0.5;
+  background x0.60-0.67); GDDR6 rises (x2.2 net: the Samsung maxima,
+  halved by the factors); HBM2 burst x4; HBM3 burst x12-21 and background
+  x5.8 (the floor is a third of it).
+
+Gate 1200A. Each fix a FIRES side against 1.11.90, each with parity on what
+it does not touch:
+- F1 (R8-1): a device-scope run per technology: NEW's `DRAM row (page) size`
+  line prints `row stride across the access:` 16384 (DDR3), 4096 (DDR5),
+  1024 (HBM2, HBM3) and the emitted zsim config carries `dramRowStrideBytes`
+  with the same value; the HBM3 stream_triad cell's measured row-miss
+  fraction is above OLD's, DDR3's below. Parity: DDR4 8192, LPDDR5 2048,
+  GDDR6 2048, and their measured miss fractions identical to OLD's.
+- F2 (R8-3): `--print-mem-info` on DDR5 (4800 and 3200) prints `devices per
+  64 B access: 4 (32-bit sub-channel / 8-bit device)`; a DDR5 run's
+  per-access read and write energy are OLD's x 0.5 at the same miss fraction
+  (a run with the fallback 0.5, or the ratio after re-weighting by the
+  printed fraction). `PIMID_ACCESS_PATH_BREAK=1` refuses a DDR config load
+  rc 2 naming `channel_width`. Parity: DDR3/DDR4 print 8, LPDDR5/GDDR6/HBM2/
+  HBM3 print 1.
+- F3 (R8-4): LPDDR5 prints `bursts per 64 B access: 2 (BL16 x 16 bit = 32 B
+  per burst); energy tBurst per 64 B = 5 ns`, and its per-access read energy
+  exceeds OLD's by 0.874 nJ at the same miss fraction. Parity: every other
+  technology prints `bursts per 64 B access: 1` with `energy tBurst per 64 B`
+  equal to its `tBurst=` (GDDR6 1.14286, `[basis HELD pending R8-5]`).
+- F4 (R8-6): a DDR5-4800 config load prints `emits org DDR5_16Gb_x8, timing
+  DDR5_4800B`, and the written Ramulator YAML names that pair (OLD:
+  DDR5_8Gb_x8 / DDR5_3200AN); a co-sim DDR5 cell's cycles differ from OLD's.
+  Parity: the DDR5-3200 companion prints and writes `DDR5_8Gb_x8`,
+  `DDR5_3200AN`; the other six technologies' YAML byte-identical.
+- F5 (R8-11): an HBM2 run with idle residency > 0 prints the IDD2N/IDD3N NOTE
+  and its background is below OLD's (equal to the flat IDD3N value with
+  power-down off). Parity: no other technology prints the NOTE, and their
+  background is identical to OLD's.
+- F6 (R8-12): the report prints `[termination only; driver/PHY
+  informational, not summed]` in both scopes; the `iface=` value identical to
+  OLD's.
+- P: at config load (`--print-mem-info`) the only lines that differ from
+  1.11.90 on the seven technologies and the two system shapes are the
+  model-inputs line (the appended access path) and, on DDR5, the new
+  emission NOTE (plus, at 3200, the wrapper's `is modelled at the preset's`
+  NOTE, which now names the pair). [Rulings half: the model-inputs line
+  additionally ends in `; IDD3N basis <WORD>`; nothing else at config load.]
+- F7 (R8-2): `--print-mem-info` prints `IDD3N basis ALL_BANKS` on DDR3,
+  DDR4, DDR5 (3200 and 4800), `ONE_BANK` on HBM2, HBM3, GDDR6, `UNVERIFIED`
+  on LPDDR5. FIRES: at a fixed miss fraction the activate share of a
+  per-access energy moves HBM3 DOWN by 0.1412 nJ x miss fraction, GDDR6
+  DOWN by 0.5745 nJ x m, HBM2 UP by 0.1162 nJ x m (e.g. with the 0.5
+  fallback: HBM3 read 0.417 -> 0.347, GDDR6 read 0.974 -> 0.686, HBM2 read
+  0.809 -> 0.867 nJ). Parity: DDR5 and LPDDR5 per-access energies identical
+  to OLD at the same fraction.
+- F8 (R8-7): a system-scope DDR5 NO_OFFLOAD baseline cell (ClosedRowPolicy,
+  a stream) prints `bank-open fraction MEASURED x` with x FAR BELOW the
+  printed traffic-phase fraction, the zsim dump carries `bankOpenCycles`
+  and `bankOpenWindow` under `mem-0`, and its Background is below OLD's by
+  (P3N - P2N) x (traffic - x) x units. An HBM3 NO_OFFLOAD baseline prints a
+  MEASURED fraction and its Background moves by at most 15%. Arm on the
+  trigger: the same cells' dumps carry the two counters (grep) -- an absent
+  counter is a failed arm, not a pass. Parity: every device-scope cell prints
+  `bank-open fraction UNMEASURED (no bankOpenCycles counter ...)` and its
+  Background equals OLD's bit for bit on every technology except DDR3/DDR4
+  (whose rows move under (10)) -- the ipp term is printed separately;
+  a co-sim shared array with PE traffic prints UNMEASURED with the PE-MI
+  reason and its Background equals OLD's (same DDR3/DDR4 exception).
+- F9 (R8-8): FIRES on a DQ-crossing configuration: a DDR5-4800 NO_OFFLOAD
+  baseline prints `iddq= rd 0.381 nJ, wr 2.445 nJ` (host-originated), a
+  non-zero `+ iddq=` in Array dynamic, and `+ipp=` between 86.4 and 100.8 mW
+  per x8 rank per channel; an HBM3 HOST_MC or baseline cell prints
+  `iddq= rd 0.118 nJ [BAND 0.097-0.138], wr 0.000 nJ`. ZERO on-die: a fig3 DDR5
+  BANK cell prints `iddq= rd 0.000 nJ, wr 0.000 nJ` and `+ iddq=0.0`.
+  n/a: DDR3/DDR4/GDDR6 print `iddq= n/a`; DDR3/HBM2/HBM3/GDDR6 print
+  `+ipp=n/a`. Parity: the `rd=`/`wr=` termination values identical to OLD.
+- F10 (R8-9): DDR4 fig3 cell per-access read/write at the printed miss
+  fraction m equal 2.943 + 5.982 m and 2.559 + 5.982 m nJ (OLD 3.135 +
+  9.980 m and 3.455 + 9.980 m); DDR3: 6.426 + 11.205 m and 4.698 + 11.205 m
+  (OLD 7.020 + 13.372 m and 7.290 + 13.372 m). Parity: DDR5/LPDDR5/HBM
+  per-access energies unmoved by (10).
+- G11 (item 11, component rule), one arm per row. `--print-mem-info` on a
+  corpus config prints on the model-inputs line: DDR3 `; IDD row
+  CALIBRATED`, DDR4 `; IDD row CALIBRATED`, DDR5 at 3200, 4800 and 5600
+  `; IDD row DERIVED`, LPDDR5 `; IDD row DERIVED`, GDDR6 `; IDD row
+  DERIVED` (and `devices per 64 B access: 1 (16-bit channel / 16-bit
+  channel (IDD basis)); bursts per 64 B access: 2 (BL16 x 16 bit = 32 B per
+  burst); energy tBurst per 64 B = 2.28571 ns`), HBM2 `; IDD row
+  MEASURED`, HBM3 `; IDD row DERIVED` -- an absent word on any row is a
+  failed arm. FIRES: a run's printed per-access read energy at its printed
+  miss fraction m is within 1% of the computed typical value -- DDR3 4.730
+  + 4.818 m, DDR4 1.627 + 3.230 m, DDR5-3200 1.399 + 2.177 m, DDR5-4800
+  2.065 + 1.058 m, DDR5-5600 0.958 + 0.331 m, LPDDR5 0.941 + 0.649 m,
+  GDDR6 0.704 + 1.620 m nJ -- and NOT within 1% of the maxima value (DDR3
+  6.426 + 11.205 m, DDR4 2.943 + 5.982 m, DDR5-3200 2.332 + 4.353 m,
+  DDR5-4800 3.441 + 2.115 m, DDR5-5600 1.596 + 0.663 m, LPDDR5 1.568 +
+  1.297 m, GDDR6 1.173 + 3.240 m). Parity (no factors): HBM2 2.642 + 0.374
+  m and HBM3 1.984 + 0.391 m nJ, within 1%, and their Background equal to
+  the (12) values. Ordering arm (harness over the header, no run): every
+  factored row idd2p <= idd2n <= idd3n <= idd4r, idd4w, refresh excess >
+  0, activate > 0; HBM2's measured IDD3N < IDD2N is the one stated
+  exception. Superseded expectations of arms above: F3's GDDR6 parity (now
+  2 bursts, 2.28571 ns, the new label); F7's GDDR6/HBM values; F9's LPDDR5
+  values (iddq rd 0.278 nJ, VDD1 2.70-5.04 mW); F10's DDR3/DDR4 values.
+  F5 stands as written (the R8-11 NOTE prints on HBM2 only: the factored
+  rows keep IDD3N >= IDD2N).
+- G12 (item 12): an HBM2 and an HBM3 run print `+stack=939.96 mW` and
+  `+stack=861.6 mW` (one stack) on the Background line in device and in
+  system scope, and the Background value minus it equals the per-channel
+  sum (HBM2 8 x 47.2, HBM3 16 x 105.6 mW all-active). Arm on the trigger:
+  a two-stack HBM configuration (channels = 2 x per stack), if one loads,
+  prints twice the floor. Parity: no other technology prints `+stack=`.
+- G13 (item 13). Regression: `--check-components` on the normal build
+  (BUILD_PLUGINS ON) prints four `[load]` lines -- libpimid_plugin.so,
+  libpimid_mpi.so, libzsim_qemu.so, libpimid_trace.so, each `(1.11.91)` --
+  rc 0 (the chunked stamp read finds the tag in the ~2 MB libzsim_qemu.so).
+  FIRES (the flat-copy trigger of gate 1199A C1): the `pimid` binary copied
+  alone into an empty directory, PIMID_ROOT unset, `--check-components`
+  exits rc 2 with `[load] FATAL: libpimid_mpi.so not found` and the text
+  `--target pimid_mpi`; with libpimid_mpi.so copied beside it, the FATAL
+  names `libzsim_qemu.so` and `--target zsim_qemu`. Arm on the trigger: the
+  flat copy's first line is still `[load] libpimid_plugin.so: ...
+  (1.11.91)` (the plugin check ran and passed, so the FATAL is the
+  locator's). Not exercised: a -DBUILD_PLUGINS=OFF build (not built here).
+
+OPEN, awaiting rulings (the array numbers move again after these): [R8-2,
+R8-7, R8-8 and R8-9 (DDR4/DDR3) were RULED 2026-09-26 16:19-16:49 and are
+items (7)-(10) above; the HBM3/GDDR6 rows of R8-9 are the separate
+derivation's.] R8-2
+(the 1.11.86 one-bank baseline on HBM2/HBM3/GDDR6, whose IDD3N is already
+one-bank: a per-technology basis flag), R8-5 (GDDR6 IDD source and
+per-device vs per-channel basis -- which also decides whether GDDR6's burst
+term doubles under (3)), R8-7 (DDR background convention, TN-41-01 all-bank
+IDD3N vs one-bank consistent), R8-8 (IDDQ and IPP/VPP terms), R8-9 (preset
+provenance per technology: DDR4, DDR3, HBM3, GDDR6), R8-10 (the PE-MI
+open-row model against Ramulator's ClosedRowPolicy on DDR4/DDR5). [R8-5
+is decided by (11): per-channel GDDR6 row and path.]
+Still open after (11)/(12): the LPDDR5X technology (row present, not
+selectable: the public Y52P sheet gives only the density-dependent refresh
+set -- tRFCab 280, tRFCpb 140, tPBR2PBR 90, tPBR2ACT 7.5 ns -- and the newer
+public Micron automotive LPDDR5X sheet, 561b Y52Q DDP (MT62F512M64D2, Rev.
+G 05/2025, mouser.com Micron_10-16-2025_561b-y52q-ddp-auto-lpddr5x.pdf, 33
+pp., read in full 2026-09-26), gives only IDD Tables 12-16, the 8 Gb
+refresh set (Table 4: tRFCab 210, tRFCpb 120, tPBR2PBR 90, tPBR2ACT 7.5 ns)
+and a 16-bank extended-frequency Table 8 at 3733/4267 Mb/s (RL/WL/nWR);
+both defer tRCD, tRP, tRAS, tRC, tREFI, tWR, tRRD and tFAW, and RL/WL at
+7500/8533 Mb/s, to the General LPDDR5/LPDDR5X Specifications 2/3, not
+held, so no timing preset can be written from a public source); whether
+LPDDR5's IDDQ4R excess should also be rate-scaled 6400/7500; the active-
+standby premium factor 0.36/0.57 keeps 63% of the datasheet premium while
+the anchors' per-current means put measured IDD3N at or below IDD2N (see
+the finding in (11)). [Resolved by the 19:30 component ruling: the DDR5
+typical row (activate term now f.act x a positive spec term) and the
+per-current rows' IDD3N < IDD2N and IDD2P > IDD2N.]
+HOST_MC placement will route through Ramulator's controller (closed-page
+for DDR4/DDR5) in a later release; until then device scope is stated as
+the PE memory interface's open-page model.
+
 ## 1.11.90 -- a number the tool could not produce was still substituted in silence
 
 Found by a read-only audit of the tree (2026-09-26) for the one class the

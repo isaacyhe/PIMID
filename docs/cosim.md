@@ -254,6 +254,19 @@ least-idle end used), and the device-MC gap histogram is lowered by the most
 the host's accesses could take from it. A decoupled array uses its own
 controller's counter only.
 
+**IDD3N share, IDDQ and IPP (1.11.91).** The share of background priced at
+active standby (IDD3N) is the MEASURED bank-open fraction -- Ramulator2's
+`bankOpenCycles / bankOpenWindow` (memory cycles with >= 1 bank open, the
+TN-41-01 active state) -- when the controller that saw ALL of the array's
+accesses exported it; the idle residency above is then the power-down input
+only. The PE memory interface keeps no bank state, so a shared array with
+PE-originated traffic, every decoupled device array and every device-scope
+run print `bank-open fraction UNMEASURED (...)` and keep the traffic-phase
+share (1 - idle residency). Accesses that cross the DQ pins (the termination
+rule) also pay the DQ output rail, printed `iddq=` on the DQ interface line;
+the VPP standby is printed `+ipp=` on the Background line and counted in the
+system total.
+
 ### 6. Host memory pricing -- calibrated host-path adder
 
 Host main-memory idle latency is a **physical composition**

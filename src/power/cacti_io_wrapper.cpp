@@ -188,16 +188,17 @@ struct DramIOMap {
  *
  *   VDDQ = 0.50 V   SOURCED. "VDDQ = 0.50V or 0.45V TYP; 0.30V TYP (ODT off
  *                   only)" -- misc/315b-441b-561b-563b-y52p-*-lpddr5x.pdf p.1
- *                   Features, "Ultra-low-voltage core and I/O power supplies";
- *                   same line as "VDDQ = 0.5V NOM or 0.3V NOM (ODT off)" in
- *                   misc/Micron_LPDDR5_MT62F_datasheet.pdf p.1. The IDD table
- *                   header states the operating range VDDQ = 0.47-0.57 V
- *                   (same file, Table 7, p.14).
+ *                   Features, "Ultra-low-voltage core and I/O power supplies".
+ *                   The same sheet's IDD Table 18 note 5 (PDF p.43) states
+ *                   the operating range VDDQ = 0.47-0.57 V (DVFSQ disabled).
+ *                   [1.11.91: a second citation, to a sheet the user ruled
+ *                   not citable (confidential marking), was removed here.]
  *   RON  = 40 ohm   SOURCED. IDD-table Note 4, verbatim: "IDD4RQ value is
  *                   reference only. Typical value. Output load = 5pF; RON = 40
- *                   ohms; TC = 25 C" -- misc/Micron_LPDDR5_MT62F_datasheet.pdf
- *                   p.15; the identical note appears in y52p p.43, y52q p.33,
- *                   MICT-S-A0025741931-1 p.30 and y4bm p.25.
+ *                   ohms; TC = 25 C" -- misc/315b-441b-561b-563b-y52p-*-
+ *                   lpddr5x.pdf p.43 (Table 18 note 4); the identical note
+ *                   appears in y52q p.33, MICT-S-A0025741931-1 p.30 and y4bm
+ *                   p.25.
  *   RTT             NOT FOUND, still. Every Micron part sheet states only
  *                   "Programmable VSS on-die termination (ODT)" (Features,
  *                   p.1) and defers the ohm table to "General LPDDR5/LPDDR5X

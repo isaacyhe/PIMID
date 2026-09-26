@@ -80,6 +80,14 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       }
     };
 
+    bool pimid_bank_open_totals(uint64_t& unit_cycles,
+                                uint64_t& open_unit_cycles) override {   // PIMID 1.11.91 (R8-7)
+      if (!m_dram || !m_dram->m_pimid_bank_open_tracked) return false;
+      unit_cycles = m_dram->m_pimid_unit_cycles;
+      open_unit_cycles = m_dram->m_pimid_open_unit_cycles;
+      return true;
+    }
+
     float get_tCK() override {
       return m_dram->m_timing_vals("tCK_ps") / 1000.0f;
     }

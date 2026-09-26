@@ -1221,7 +1221,9 @@ double RamulatorWrapper::modelledRateMTs() const {
             said.insert(dram_type_ + std::to_string(int(preset))).second) {
             std::cerr << "[mem] NOTE: " << dram_type_ << " is modelled at the preset's "
                       << preset << " MT/s; the static rate table still says " << table
-                      << " MT/s and is ignored (one authority: the preset)." << std::endl;
+                      << " MT/s and is ignored (one authority: the preset: org "
+                      << preset_org_.preset_name << ", timing "
+                      << preset_timing_.preset_name << ")." << std::endl;   // 1.11.91 (R8-6)
         }
         return preset;
     }
@@ -1646,6 +1648,38 @@ void RamulatorWrapper::checkTranscribedOrganizationShape() {
                   << std::endl;
         std::exit(2);
     }
+    /* 1.11.91 (audit R8-3): THE ACCESS PATH IS BOUND TO THE SIMULATED
+     * CHANNEL. For the DDR classes pimid_energy::accessPathFor() states the
+     * channel one 64 B access travels (DDR3/4 64 bits, DDR5 a 32-bit
+     * sub-channel) and the IDD unit (the device width); both must be what
+     * Ramulator instantiated, or the array energy prices a different
+     * population from the one whose cycles are counted -- which is exactly
+     * how DDR5 carried 8 devices per access against a 32-bit channel. The
+     * other four technologies' Ramulator channel_width is an address-mapping
+     * granularity, not the IDD basis, and is not compared (see
+     * accessPathFor). PIMID_ACCESS_PATH_BREAK=1 forces the mismatch so a
+     * gate can prove the check fires. */
+    {
+        std::string bt = Ramulator::pimid_energy::baseTech(energyKey());
+        std::transform(bt.begin(), bt.end(), bt.begin(), ::toupper);
+        if (bt == "DDR3" || bt == "DDR4" || bt == "DDR5") {
+            const auto ap = Ramulator::pimid_energy::accessPathFor(bt, device_width_);
+            long long want_path = ap.path_bits, want_unit = ap.unit_bits;
+            if (getenv("PIMID_ACCESS_PATH_BREAK") != nullptr) want_path *= 2;
+            if (live.channel_width > 0 && live.dq > 0 &&
+                (live.channel_width != want_path || live.dq != want_unit)) {
+                std::cerr << "[mem] FATAL: the access path the array energy prices for "
+                          << bt << " (channel " << want_path << " bits, device "
+                          << want_unit << " bits: " << ap.path_name << " of "
+                          << ap.unit_name << "s) does not match the "
+                             "device Ramulator instantiated from "
+                          << preset_org_.preset_name << " (channel_width "
+                          << live.channel_width << ", dq " << live.dq
+                          << "). Fix pimid_energy::accessPathFor()." << std::endl;
+                std::exit(2);
+            }
+        }
+    }
     if (live_banks_total != want_banks || live.rows != want_rows || live.columns != want_cols) {
         std::cerr << "[mem] FATAL: the transcribed organization for "
                   << preset_org_.preset_name << " (" << preset_org_.preset_source
@@ -2002,8 +2036,11 @@ Cycle RamulatorWrapper::getAverageLatency() const {
 // readers -- they forward the wrapper's own timing getters + the user override
 // knobs into the Ramulator2-resident model. main.cpp is untouched (same API).
 double RamulatorWrapper::getArrayReadEnergyNJ() const {
+    /* 1.11.91 (audit R8-4): the burst time charged is the time to move the
+     * whole 64 B access on its data path (getAccessBurstNs), not one burst of
+     * the preset -- on LPDDR5 one BL16 on an x16 channel is 32 B. */
     return Ramulator::pimid_energy::arrayReadNJ(
-        energyKey(), getTRC(), getTRAS(), getTBurst(), energy_bank_override_pJ_per_byte_,
+        energyKey(), getTRC(), getTRAS(), getAccessBurstNs(), energy_bank_override_pJ_per_byte_,
         device_width_,        // 1.11.46 (L181): whole-rank basis
         row_miss_frac_,       // 1.11.52 (D003): measured row-miss fraction
         /* 1.11.86 (R6-11): banks per DEVICE, so the activate term can subtract
@@ -2013,7 +2050,7 @@ double RamulatorWrapper::getArrayReadEnergyNJ() const {
 }
 double RamulatorWrapper::getArrayWriteEnergyNJ() const {
     return Ramulator::pimid_energy::arrayWriteNJ(
-        energyKey(), getTRC(), getTRAS(), getTBurst(), energy_bank_override_pJ_per_byte_,
+        energyKey(), getTRC(), getTRAS(), getAccessBurstNs(), energy_bank_override_pJ_per_byte_,   // 1.11.91 (R8-4)
         device_width_,        // 1.11.46 (L181)
         row_miss_frac_,       // 1.11.52 (D003)
         /* 1.11.86 (R6-11): banks per DEVICE, so the activate term can subtract
@@ -2327,6 +2364,60 @@ double RamulatorWrapper::getBackgroundSystemMW(double r_idle, bool pg_enabled,
                                                        pg_enabled, device_width,
                                                        ranks_per_channel, channels,
                                                        temperature_k_);   // 1.11.66
+}
+
+double RamulatorWrapper::getBackgroundSystemStatesMW(double active_frac, double r_pd,
+                                                     bool pg_enabled,
+                                                     const std::string& device_width,
+                                                     int ranks_per_channel,
+                                                     int channels,
+                                                     double* r_pd_used) const {
+    /* 1.11.91 (R8-7): same disclosure as getBackgroundSystemMW when the
+     * power-down descent reads the approximate IDD2P column. */
+    if (pg_enabled && r_pd > 0.0) {
+        static bool warned_idd2p_states = false;
+        if (!warned_idd2p_states) {
+            warned_idd2p_states = true;
+            std::cerr << "[power] NOTE: memory.power_down is on and the run "
+                         "measured power-down residency, so the Background line for '"
+                      << dram_type_ << "' rests on the IDD2P column of "
+                         "pimid_energy.h, which is a datasheet read only for "
+                         "DDR3/DDR4/DDR5-4800/5600 (see its comment)." << std::endl;
+        }
+    }
+    return Ramulator::pimid_energy::backgroundSystemStatesMW(
+        energyKey(), active_frac, r_pd, pg_enabled, device_width,
+        ranks_per_channel, channels, temperature_k_, r_pd_used);
+}
+double RamulatorWrapper::getIppSystemMW(double active_frac,
+                                        const std::string& device_width,
+                                        int ranks_per_channel,
+                                        int channels) const {
+    const double unit = Ramulator::pimid_energy::ippUnitMW(energyKey(), active_frac);
+    if (unit < 0.0) return -1.0;
+    return unit * static_cast<double>(getBackgroundUnits(device_width,
+                                                         ranks_per_channel, channels));
+}
+double RamulatorWrapper::getIddqEnergyNJ(bool is_write, bool* is_band,
+                                         double* band_lo_nj,
+                                         double* band_hi_nj) const {
+    const auto b = Ramulator::pimid_energy::iddqBandFor(
+        Ramulator::pimid_energy::baseTech(energyKey()));
+    if (is_band) *is_band = b.valid;
+    return Ramulator::pimid_energy::iddqNJ(energyKey(), device_width_,
+                                           getAccessBurstNs(), is_write,
+                                           band_lo_nj, band_hi_nj);
+}
+double RamulatorWrapper::getStackFloorSystemMW(int channels) const {
+    return Ramulator::pimid_energy::stackFloorSystemMW(energyKey(), channels);   // 1.11.91 (item 12)
+}
+const char* RamulatorWrapper::getIddRowProvenance() const {
+    return Ramulator::pimid_energy::iddRowProvenance(energyKey());   // 1.11.91 (item 11)
+}
+const char* RamulatorWrapper::getIdd3nBasisName() const {
+    return Ramulator::pimid_energy::idd3nBasisName(
+        Ramulator::pimid_energy::idd3nBasisFor(
+            Ramulator::pimid_energy::baseTech(energyKey())));
 }
 
 void RamulatorWrapper::updateEnergyMetrics() const {
@@ -2844,6 +2935,63 @@ double RamulatorWrapper::getTBurst() const {
         return dram_arch_->timing.tBurst_ns;
     }
     return 3.33;  // DDR4-2400 default (8-beat burst @ 2400 MT/s)
+}
+
+/* 1.11.91 (audit R8-1/R8-3/R8-4): THE ACCESS DATA PATH, from one rule.
+ *
+ * getTBurst() stays ONE burst of the simulated preset: it is a timing
+ * quantity (the chip rung of the latency ladder, the architecture object's
+ * tBurst_ns) and this release does not move timing. The array ENERGY needs
+ * the time to move the whole 64 B access, which is bursts-per-access times
+ * that. beats per burst are read from the timing preset the run simulates
+ * -- nBL is in CK, and the family's CK divisor (2 DDR3/4/5 and HBM2, 4
+ * HBM3, 8 LPDDR5/GDDR6) is beats per CK -- so no burst length is restated
+ * here. The rule itself, and what it gives per technology, is in
+ * pimid_energy::accessPathFor(). */
+int RamulatorWrapper::getBeatsPerBurst() const {
+    if (!preset_timing_.valid || preset_timing_.nBL <= 0 ||
+        preset_timing_.ck_divisor_e6 <= 0) return 0;
+    return preset_timing_.nBL * preset_timing_.ck_divisor_e6;
+}
+int RamulatorWrapper::getDevicesPerAccess() const {
+    return Ramulator::pimid_energy::devicesPerAccess(
+        Ramulator::pimid_energy::baseTech(energyKey()), device_width_);
+}
+int RamulatorWrapper::getBurstsPerAccess() const {
+    return Ramulator::pimid_energy::burstsPer64B(
+        Ramulator::pimid_energy::baseTech(energyKey()), device_width_, getBeatsPerBurst());
+}
+double RamulatorWrapper::getAccessBurstNs() const {
+    return static_cast<double>(getBurstsPerAccess()) * getTBurst();
+}
+uint64_t RamulatorWrapper::getRowStrideBytes() const {
+    if (!preset_org_.valid) return 0;
+    const int dev = getDevicesPerAccess();
+    return preset_org_.rowBytes() * static_cast<uint64_t>(dev > 0 ? dev : 1);
+}
+std::string RamulatorWrapper::getAccessPathLabel() const {
+    const auto p = Ramulator::pimid_energy::accessPathFor(
+        Ramulator::pimid_energy::baseTech(energyKey()), device_width_);
+    return p.path_name + " / " + p.unit_name;
+}
+std::string RamulatorWrapper::describeAccessPath() const {
+    const auto p = Ramulator::pimid_energy::accessPathFor(
+        Ramulator::pimid_energy::baseTech(energyKey()), device_width_);
+    const int beats = getBeatsPerBurst();
+    std::ostringstream o;
+    o << "devices per 64 B access: " << getDevicesPerAccess()
+      << " (" << getAccessPathLabel() << ");"
+      << " bursts per 64 B access: " << getBurstsPerAccess();
+    if (beats > 0)
+        o << " (BL" << beats << " x " << p.path_bits << " bit = "
+          << (p.path_bits * beats / 8) << " B per burst)";
+    else
+        o << " (no timing preset: 1 assumed)";
+    o << "; energy tBurst per 64 B = " << getAccessBurstNs() << " ns";
+    if (preset_org_.valid)
+        o << "; row stride across the access = " << getDevicesPerAccess() << " x "
+          << preset_org_.rowBytes() << " B = " << getRowStrideBytes() << " B";
+    return o.str();
 }
 
 uint32_t RamulatorWrapper::getSubarraysPerBank() const {

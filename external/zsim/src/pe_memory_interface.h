@@ -1224,18 +1224,16 @@ protected:
     /* 1.11.57 (audit D006/D007/D008): the row model's geometry, resolved once
      * at construction so nothing on the access path has to allocate.
      *
-     * rowStrideBytes_ -- system bytes made resident by one ACT. On a DDR-class
-     * rank that is the per-device page times the number of devices the access
-     * engages; everywhere else it is the page itself. The DDR classes are the
-     * ones the emitter gives a 1 KB page (src/main.cpp emits 1024 for
-     * DDR3/DDR4/DDR5 and 2048 for LPDDR5/GDDR6/HBM2/HBM3), and they are
-     * exactly the classes with devicesPerAccess > 1: LPDDR5 and GDDR6 already
-     * arrive with chipsPerRank = 1, and for HBM chipsPerRank carries the
-     * channels-per-stack count (src/main.cpp says so where it sets it), which
-     * is NOT a set of devices striped across one access. Keying on the page
-     * size is therefore exact for every technology the emitter whitelists
-     * today; the durable form is for the emitter to send the stripe itself,
-     * which is a change on the PIMID side of the boundary.
+     * rowStrideBytes_ -- system bytes made resident by one ACT: the
+     * per-device page times the number of devices one access engages.
+     * 1.11.91 (audit R8-1): SENT BY THE EMITTER as
+     * sys.hierarchy.dramRowStrideBytes (src/main.cpp, from
+     * RamulatorWrapper::getDevicesPerAccess() -- the rule the array energy
+     * uses), which is the "durable form" the 1.11.57 note here called for.
+     * DDR3/DDR4 x8: 8 x page; DDR5 x8 (32-bit sub-channel): 4 x page;
+     * LPDDR5/GDDR6: one channel's page; HBM2/HBM3: one pseudo-channel's
+     * page. The old reconstruction keyed on "the DDR classes are the ones
+     * with a 1 KB page", which stopped being true in 1.11.66.
      *
      * rowSlotsPerUnit_ -- how many independent open rows a placement unit
      * holds, i.e. the banks below the placement level. Level codes follow the
@@ -1270,10 +1268,25 @@ protected:
     void initRowModel_() {
         const uint32_t rowBytes = zinfo ? zinfo->hierarchy.dramRowBytes : 0;
         if (rowBytes == 0) { rowStrideBytes_ = 0; return; }
-        const uint32_t chips = (zinfo->hierarchy.chipsPerRank > 0)
-                               ? zinfo->hierarchy.chipsPerRank : 1u;
-        const uint32_t devicesPerAccess = (rowBytes == 1024) ? chips : 1u;
-        rowStrideBytes_ = (uint64_t)rowBytes * devicesPerAccess;
+        /* 1.11.91 (audit R8-1): the stride is the EMITTER'S, explicitly. The
+         * `(rowBytes == 1024) ? chipsPerRank : 1` reconstruction that stood
+         * here keyed on a page size that stopped identifying the DDR classes
+         * when 1.11.66 made the page preset-derived (HBM2/HBM3 = 1 KB per
+         * pseudo-channel, DDR3 x8 = 2 KB): it multiplied HBM's page by the
+         * channels per stack and left DDR3's at one device. A config that
+         * carries a page but no stride (written before 1.11.91) gets NO row
+         * measurement rather than a reconstructed one, and says so; the
+         * energy consumer then states its own fallback. */
+        const uint32_t stride = zinfo->hierarchy.dramRowStrideBytes;
+        if (stride == 0) {
+            info("[%s] row-buffer model: sys.hierarchy.dramRowBytes = %u but no "
+                 "dramRowStrideBytes (config written before 1.11.91); the "
+                 "row-miss fraction is NOT measured.",
+                 name_.c_str(), rowBytes);
+            rowStrideBytes_ = 0;
+            return;
+        }
+        rowStrideBytes_ = (uint64_t)stride;
 
         const uint32_t bpg = (zinfo->hierarchy.banksPerBG > 0)
                              ? zinfo->hierarchy.banksPerBG : 1u;

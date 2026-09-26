@@ -70,6 +70,12 @@ class IMemorySystem : public TopLevel<IMemorySystem> {
     // virtual const SpecDef& get_supported_requests() = 0;
 
     virtual float get_tCK() { return -1.0f; };
+
+    /* PIMID 1.11.91 (audit R8-7): the cumulative bank-open sums of the DRAM
+     * device (dram/pimid_bank_open.h). false when the device does not keep
+     * them; the caller then exports nothing. */
+    virtual bool pimid_bank_open_totals(uint64_t& /*unit_cycles*/,
+                                        uint64_t& /*open_unit_cycles*/) { return false; };
 };
 
 }        // namespace Ramulator

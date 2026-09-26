@@ -268,6 +268,11 @@ struct GlobSimInfo {
          * the energy model assuming one. 0 = unknown -> no measurement is
          * claimed and the consumer says so. */
         uint32_t dramRowBytes = 0;
+        /* 1.11.91 (audit R8-1): system bytes one ACT makes resident -- the
+         * per-device page x the devices that open a row together -- computed
+         * by the emitter from the same rule the array energy uses. 0 = not
+         * sent -> the row model claims no measurement. */
+        uint32_t dramRowStrideBytes = 0;
         bool assumeLocal = false;         // perfect data prep: device computes on its local working set
         bool chargePrep = false;          // co-sim: first touch of a line pays reorg (cross-unit) + transfer
         uint32_t hostLinkXferCycles = 0;  // per first-touch host->device link transfer (0 = internal/on-package)

@@ -1,5 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
 
 namespace Ramulator {
 
@@ -46,8 +47,8 @@ class LPDDR5 : public IDRAM, public Implementation {
      * command timings in CK cycles. The derivation in set_timing_vals() is
      * corrected to match (8 bits/pin per CK, not 2), so this column's written
      * 1250 is now also the value actually used. `rate` stays 6400 -- a real
-     * Micron speed grade (the "6400 Mb/s" column heads Table 7 p.14 of
-     * misc/Micron_LPDDR5_MT62F_datasheet.pdf) -- and the thirteen CK-domain
+     * Micron speed grade [1.11.91: the sheet that showed it is ruled not
+     * citable (confidential marking); uncited cross-check] -- and the thirteen CK-domain
      * nXX fields keep their cycle counts, which RESTORES their intended
      * nanoseconds instead of changing them.
      *
@@ -224,6 +225,7 @@ class LPDDR5 : public IDRAM, public Implementation {
       Node(LPDDR5* dram, Node* parent, int level, int id) : DRAMNodeBase<LPDDR5>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -233,6 +235,8 @@ class LPDDR5 : public IDRAM, public Implementation {
 
   public:
     void tick() override {
+      m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
       m_clk++;
     };
 
@@ -247,12 +251,15 @@ class LPDDR5 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
     void issue_command(int command, const AddrVec_t& addr_vec) override {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {
@@ -420,13 +427,11 @@ class LPDDR5 : public IDRAM, public Implementation {
 
       /* 1.11.63 (calibration): tPBR2ACT at 8 Gb and 16 Gb, 8 -> 7.5 ns.
        * SOURCES (both held in misc/):
-       *   8 Gb die  -- Micron Automotive LPDDR5 MT62F512M32D2/MT62F1G32D4
-       *     (315b, Rev.D 4/2021), Table 4 "Refresh Requirement Parameters",
-       *     p.7, verbatim: "Per bank refresh to ACTIVATE command time
-       *     (different bank) | tPBR2ACT | 7.5 (BG and 16B Mode) | 10 (8B Mode)
-       *     | ns". The org this model uses is BG mode (4 bank groups x 4 banks
-       *     -- see org_presets and Micron Table 3 p.6), so 7.5 is the row that
-       *     applies. 8 was neither of the two tabulated values.
+       *   8 Gb die  -- [1.11.91: the 8 Gb sheet first cited here is ruled
+       *     not citable (confidential marking); it remains an uncited
+       *     cross-check that agrees: 7.5 ns in BG and 16B mode.] The org
+       *     this model uses is BG mode (4 bank groups x 4 banks -- see
+       *     org_presets), so the BG-mode value applies.
        *   16 Gb die -- Micron LPDDR5X Y52P (Rev. H 03/2025), Table 6 "Refresh
        *     Requirement Parameters", p.11: "tPBR2ACT | 7.5 | ns" (BG and 16B
        *     Mode). The 12 Gb Y4BM part gives the same 7.5.

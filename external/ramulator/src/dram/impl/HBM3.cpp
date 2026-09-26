@@ -1,5 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
 
 namespace Ramulator {
 
@@ -235,6 +236,7 @@ class HBM3 : public IDRAM, public Implementation {
       Node(HBM3* dram, Node* parent, int level, int id) : DRAMNodeBase<HBM3>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -244,6 +246,8 @@ class HBM3 : public IDRAM, public Implementation {
 
   public:
     void tick() override {
+      m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
       m_clk++;
     };
 
@@ -258,12 +262,15 @@ class HBM3 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
     void issue_command(int command, const AddrVec_t& addr_vec) override {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {

@@ -73,6 +73,14 @@ class IDRAM : public Clocked<IDRAM> {
 
     bool m_power_debug = false;
 
+    /* PIMID 1.11.91 (audit R8-7): the measured bank-open fraction
+     * (dram/pimid_bank_open.h). Implementations that keep the tracker set
+     * m_pimid_bank_open_tracked and accumulate the two sums once per tick;
+     * the others leave the flag false and the zsim side exports nothing. */
+    bool     m_pimid_bank_open_tracked = false;
+    uint64_t m_pimid_unit_cycles = 0;        // sum over ticks of units sampled
+    uint64_t m_pimid_open_unit_cycles = 0;   // sum over ticks of units with >= 1 bank open
+
     double s_total_background_energy = 0; // Total background energy consumed by the device
     double s_total_cmd_energy = 0;        // Total command energy consumed by the device
     double s_total_energy = 0;            // Total energy consumed by the device

@@ -60,6 +60,15 @@ RamulatorMemory::RamulatorMemory(const std::string& configFile,
     ramulatorFE->connect_memory_system(ramulatorSys);
     ramulatorSys->connect_frontend(ramulatorFE);
 
+    /* 1.11.91 (audit R8-7): does the device keep the bank-open sums? */
+    {
+        uint64_t w = 0, o = 0;
+        bankOpenTracked = ramulatorSys->pimid_bank_open_totals(w, o);
+        if (getenv("PIMID_DEBUG_BANKOPEN"))
+            fprintf(stderr, "[bankopen] %s: tracked=%d at construction (w=%lu o=%lu)\n",
+                    name.c_str(), bankOpenTracked ? 1 : 0, (unsigned long)w, (unsigned long)o);
+    }
+
     TickEvent<RamulatorMemory>* tickEv = new TickEvent<RamulatorMemory>(this, domain);
     tickEv->queue(0);
 }
@@ -78,6 +87,18 @@ void RamulatorMemory::initStats(AggregateStat* parentStat) {
     profWrites.init("wr", "Write requests"); memStats->append(&profWrites);
     profTotalRdLat.init("rdlat", "Total latency experienced by read requests"); memStats->append(&profTotalRdLat);
     profTotalWrLat.init("wrlat", "Total latency experienced by write requests"); memStats->append(&profTotalWrLat);
+    /* 1.11.91 (audit R8-7): ALWAYS registered. The first cut registered them
+     * only when the device reported itself tracked at construction, and a
+     * device whose init() had not yet run read as untracked, so no counter
+     * ever reached the dump (gate 1200A, D8/S8). A window of 0 in the dump
+     * now means "counter present, no bank state was ever sampled", and the
+     * reader says so; a missing counter means an older build. */
+    profBankOpenCycles.init("bankOpenCycles",
+        "Memory cycles x units (rank, or channel without ranks) with >= 1 bank open (Ramulator2 bank state)");
+    memStats->append(&profBankOpenCycles);
+    profBankOpenWindow.init("bankOpenWindow",
+        "Memory cycles x units sampled (the window bankOpenCycles is a fraction of)");
+    memStats->append(&profBankOpenWindow);
     parentStat->append(memStats);
 }
 
@@ -125,6 +146,16 @@ uint64_t RamulatorMemory::access(MemReq& req) {
 uint32_t RamulatorMemory::tick(uint64_t cycle) {
     ramulatorSys->tick();
     curCycle++;
+    /* 1.11.91 (audit R8-7): mirror the device's cumulative sums into the two
+     * Counters. set() keeps the raw count; the 1.11.90 roi_begin rebase
+     * subtracts the value at roi_begin, so get() is the ROI window. */
+    {
+        uint64_t w = 0, o = 0;
+        if (ramulatorSys->pimid_bank_open_totals(w, o)) {   // tracked or not, decided per tick
+            profBankOpenWindow.set(w);
+            profBankOpenCycles.set(o);
+        }
+    }
     return 1;
 }
 

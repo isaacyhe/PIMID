@@ -572,25 +572,62 @@ static std::string findQemuBinary() {
  * chooses it; it is checked the first time any component is resolved, from
  * the path the linker actually mapped. */
 
+/* 1.11.91 (item 13, cloud review of 1.11.90): a BOUNDED read. The first
+ * version slurped the whole shared object into one std::string to find a
+ * ~40-byte tag -- a multi-MB libzsim_qemu.so copied into memory on every
+ * start. Now: fixed 64 KiB chunks, carrying the last (tag length - 1) bytes
+ * of the window into the next one so a tag split across a chunk boundary
+ * is still found; after the tag, at most 64 more bytes are read for the
+ * version and its NUL. Same answer as before: the FIRST occurrence of the
+ * tag, a version of at most 64 characters, "" when absent or unterminated. */
 static std::string readComponentStamp(const std::string& path,
                                       const std::string& name) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return "";
-    std::string bytes((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
     const std::string tag = "@(#)PIMID_COMPONENT " + name + " ";
-    size_t pos = bytes.find(tag);
-    if (pos == std::string::npos) return "";
-    pos += tag.size();
-    size_t end = bytes.find('\0', pos);
-    if (end == std::string::npos || end - pos > 64) return "";
-    return bytes.substr(pos, end - pos);
+    const size_t kChunk = 64 * 1024;
+    const size_t kMaxVersion = 64;
+    std::vector<char> buf(kChunk);
+    std::string win;
+    auto readMore = [&]() -> bool {
+        f.read(buf.data(), static_cast<std::streamsize>(kChunk));
+        const std::streamsize got = f.gcount();
+        if (got <= 0) return false;
+        win.append(buf.data(), static_cast<size_t>(got));
+        return true;
+    };
+    while (readMore()) {
+        size_t pos = win.find(tag);
+        if (pos == std::string::npos) {
+            if (win.size() >= tag.size())               // keep the overlap only
+                win.erase(0, win.size() - (tag.size() - 1));
+            continue;
+        }
+        pos += tag.size();
+        size_t end = win.find('\0', pos);
+        while (end == std::string::npos && win.size() - pos <= kMaxVersion &&
+               readMore())
+            end = win.find('\0', pos);
+        if (end == std::string::npos || end - pos > kMaxVersion) return "";
+        return win.substr(pos, end - pos);
+    }
+    return "";
 }
 
 static void checkLinkedPluginOnce() {
     static bool done = false;
     if (done) return;
     done = true;
+    /* 1.11.91 (item 13, cloud review of 1.11.90): libpimid_plugin.so is
+     * linked only when CMake's BUILD_PLUGINS is ON, and CMake then defines
+     * PIMID_LINKED_PLUGIN for this target. A -DBUILD_PLUGINS=OFF binary has
+     * no plugin to check: it prints nothing and continues (before, it was
+     * refused with a misleading "plugin from another build" FATAL on its
+     * first component lookup). When the plugin IS linked, the mismatch
+     * refusal below stands. */
+#ifndef PIMID_LINKED_PLUGIN
+    return;
+#endif
     /* Look the stamp up in the global scope by name and ask which object it
      * lives in: that is the file the linker mapped. (A function pointer
      * would name the executable's PLT stub, not the library.) */
@@ -631,9 +668,14 @@ static void checkLinkedPluginOnce() {
 
 /* Resolve component `name` (sub = "" or "external/zsim/"), verify its
  * stamp, print the [load] line, and return the path. Never returns empty:
- * a missing or mismatched component exits 2. Resolved once per name. */
+ * a missing or mismatched component exits 2. Resolved once per name.
+ * 1.11.91 (item 13): `build_target` is the CMake target that produces the
+ * component; the not-found FATAL names it. It replaces the per-call-site
+ * "not found / build with --target X" branches, which were unreachable
+ * once this function began to exit by itself (1.11.90). */
 static std::string locatePimidComponent(const std::string& name,
-                                        const std::string& sub) {
+                                        const std::string& sub,
+                                        const std::string& build_target) {
     static std::map<std::string, std::string> resolved;
     auto hit = resolved.find(name);
     if (hit != resolved.end()) return hit->second;
@@ -688,8 +730,12 @@ static std::string locatePimidComponent(const std::string& name,
               << (env_root && env_root[0] ? "" : " (PIMID_ROOT is not set)")
               << ", and nowhere else: a CWD-relative guess is how a stale"
                  " component from another tree was loaded in silence before"
-                 " 1.11.90. Options: run the binary from its build tree, copy "
-              << name << " beside it, or set PIMID_ROOT." << std::endl;
+                 " 1.11.90. Options: build it (cmake --build <build dir>"
+                 " --target " << build_target << "; all seven targets are"
+                 " built together: pimid pimid_lib pimid_plugin pimid_trace"
+                 " pimid_mpi zsim_qemu zsim_trace), run the binary from its"
+                 " build tree, copy " << name << " beside it, or set"
+                 " PIMID_ROOT." << std::endl;
     std::exit(2);
 }
 
@@ -697,9 +743,12 @@ static std::string locatePimidComponent(const std::string& name,
  * @brief Find a QEMU plugin shared library by name (1.11.90: verified; see
  * locatePimidComponent). Exits 2 when it is missing or from another build.
  * @param plugin_name e.g. "libpimid_trace.so" or "libzsim_qemu.so"
+ * @param build_target the CMake target that builds it (pimid_trace /
+ *        zsim_qemu), named by the not-found FATAL (1.11.91 item 13)
  */
-static std::string findQemuPlugin(const std::string& plugin_name) {
-    return locatePimidComponent(plugin_name, "external/zsim/");
+static std::string findQemuPlugin(const std::string& plugin_name,
+                                  const std::string& build_target) {
+    return locatePimidComponent(plugin_name, "external/zsim/", build_target);
 }
 
 /**
@@ -707,7 +756,7 @@ static std::string findQemuPlugin(const std::string& plugin_name) {
  * locatePimidComponent). Exits 2 when it is missing or from another build.
  */
 static std::string findPimidMpiLib() {
-    return locatePimidComponent("libpimid_mpi.so", "");
+    return locatePimidComponent("libpimid_mpi.so", "", "pimid_mpi");
 }
 
 /**
@@ -778,6 +827,13 @@ struct ZSimParsedOutput {
     }
     uint64_t pemi_local_acc = 0;
     uint64_t pemi_remote_acc = 0;
+    /* 1.11.91 (audit R8-7): MEASURED bank-open time from the Ramulator2 memory
+     * controller (ramulator_mem_ctrl.cpp): memory cycles x units with >= 1
+     * bank open, over the cycles x units sampled, ROI-rebased with the rest of
+     * the "mem" group. Present only when a Ramulator2-backed controller
+     * exported them; the PE memory interface keeps no bank state. */
+    uint64_t bank_open_cycles = 0, bank_open_window = 0;
+    bool bank_open_present = false;
     /* 1.11.10 (#112): MEASURED instruction mix, summed over cores like every
      * other activity counter (1.11.9 put instrs on this same base, which is
      * what lets the mix be used at all). */
@@ -822,6 +878,10 @@ struct ZSimParsedOutput {
         uint64_t l2_hGETS = 0, l2_mGETS = 0, l2_hGETX = 0, l2_mGETXIM = 0;
         uint64_t l3_hGETS = 0, l3_mGETS = 0, l3_hGETX = 0, l3_mGETXIM = 0;
         uint64_t mem_rd = 0, mem_wr = 0;
+        /* 1.11.91 (audit R8-7): the Ramulator2 bank-open counters of this
+         * node's memory controllers (absent -> present stays false). */
+        uint64_t bank_open_cycles = 0, bank_open_window = 0;
+        bool bank_open_present = false;
 
         uint64_t l1i_total_reads() const { return l1i_fhGETS + l1i_hGETS + l1i_mGETS; }
         uint64_t l1d_total_reads() const { return l1d_fhGETS + l1d_hGETS + l1d_mGETS; }
@@ -1343,6 +1403,13 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                  * scope left them zero forever and the locality report never
                  * printed. They are a locality SPLIT, not memory accesses:
                  * do not add them to mem_rd/mem_wr. */
+                if (key == "bankOpenCycles") {   // 1.11.91 (R8-7)
+                    out.bank_open_cycles += val; out.bank_open_present = true;
+                    if (cgrp) { cgrp->bank_open_cycles += val; cgrp->bank_open_present = true; }
+                } else if (key == "bankOpenWindow") {
+                    out.bank_open_window += val; out.bank_open_present = true;
+                    if (cgrp) { cgrp->bank_open_window += val; cgrp->bank_open_present = true; }
+                }
                 if (key == "rowHits")   { out.row_hits += val; }
                 else if (key == "rowMisses") { out.row_misses += val; }
                 else if (key == "localAcc")  { out.pemi_local_acc += val; }
@@ -5507,9 +5574,25 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
      * shape check binds that transcription to the device Ramulator actually
      * instantiates, so this number is verified rather than believed. Width
      * follows the run's device width, as every other preset read does. */
+    /* 1.11.91 (audit R8-1): THE ROW STRIDE IS SENT, NOT INFERRED FROM THE PAGE.
+     * The PE memory interface used to reconstruct "system bytes one ACT makes
+     * resident" as rowBytes x (rowBytes == 1024 ? chipsPerRank : 1) -- a test
+     * written when this emitter sent 1024 for exactly the DDR classes. Since
+     * 1.11.66 the page is preset-derived, so the test fired for HBM (1 KB per
+     * pseudo-channel, x chipsPerRank = channels per stack: HBM3 16 KB, HBM2
+     * 8 KB, against a 1 KB page -> sequential miss fraction 16x / 8x low),
+     * missed DDR3 (2 KB page, stride 2 KB instead of 8 x 2 KB) and
+     * overcounted DDR5 (8 x 1 KB where the 32-bit sub-channel opens 4 x 1 KB).
+     * The stride is now computed HERE, from the same rule the array energy
+     * uses (RamulatorWrapper::getDevicesPerAccess(), pimid_energy::
+     * accessPathFor): the devices that open a row together x the per-device
+     * page. DDR3/4 x8 = 8 x page; DDR5 x8 = 4 x page; LPDDR5/GDDR6 = one
+     * channel's page; HBM2/HBM3 = one pseudo-channel's page. */
     {
         const std::string& mt = config.memory_tech;
         uint32_t row_bytes = 0;
+        uint32_t row_stride = 0;
+        std::string stride_why;
         const bool is_dram = (mt == "DDR3" || mt == "DDR4" || mt == "DDR5" ||
                               mt == "LPDDR5" || mt == "GDDR6" || mt == "HBM2" || mt == "HBM3");
         if (is_dram) {
@@ -5519,17 +5602,30 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                 rb.setAnchorQuiet(true);
                 rb.initialize();
                 const auto& po = rb.getPresetOrganization();
-                if (po.valid) row_bytes = static_cast<uint32_t>(po.rowBytes());
+                if (po.valid) {
+                    row_bytes = static_cast<uint32_t>(po.rowBytes());
+                    const int dev = rb.getDevicesPerAccess();
+                    row_stride = static_cast<uint32_t>(rb.getRowStrideBytes());
+                    std::ostringstream w;
+                    w << dev << " device(s) x " << row_bytes << " B ("
+                      << rb.getAccessPathLabel() << ")";
+                    stride_why = w.str();
+                }
             } catch (const std::exception& e) {
                 std::cerr << "[config] WARNING: could not derive the DRAM row size for "
                           << mt << " from its preset (" << e.what()
                           << "); the row-miss measurement will be disabled (0)." << std::endl;
                 row_bytes = 0;
+                row_stride = 0;
             }
             std::cout << "  [mem] DRAM row (page) size: " << row_bytes
-                      << " B, from preset organization (cols x dq / 8)" << std::endl;
+                      << " B, from preset organization (cols x dq / 8); row stride across "
+                         "the access: " << row_stride << " B";
+            if (!stride_why.empty()) std::cout << " = " << stride_why;
+            std::cout << std::endl;
         }
         out << "        dramRowBytes = " << row_bytes << ";\n";
+        out << "        dramRowStrideBytes = " << row_stride << ";\n";   // 1.11.91 (R8-1)
     }
     out << "        assumeLocal = 1;\n";  // perfect data prep: device computes local (both scopes)
     out << "        chargePrep = " << ((config.scope == "system") ? 1 : 0) << ";\n";  // co-sim: first-touch reorg+transfer
@@ -6349,7 +6445,8 @@ static uint32_t computeSystemNetLatency(const UnifiedConfig& config,
 // PIMID's chips/rank + BG/chip derivation (see the device_width block above).
 // Width legality per tech is validated earlier; this only swaps the suffix.
 static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
-                                     const std::string& device_width = "") {
+                                     const std::string& device_width,
+                                     const UnifiedConfig& config) {
     ofs << "Frontend:\n  impl: GEM5\n\n";
 
     bool useClosedRow = false;
@@ -6359,9 +6456,45 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
         ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: DDR3\n"
             << "    org:\n      preset: DDR3_8Gb_" << w << "\n    timing:\n      preset: DDR3_1600H\n";
     } else if (tech == "DDR5") {
+        /* 1.11.91 (audit R8-6): ONE CELL, ONE PART. This branch wrote
+         * DDR5_8Gb_<w> / DDR5_3200AN whatever the run's grade, while the
+         * energy path, the wrapper's oracles and the preset transcription
+         * price memory.dram.ddr5_speed_grade (default 4800B on the 16 Gb
+         * die): the co-sim / zsim timing model counted cycles of one part and
+         * the report priced another. The preset pair is now READ from the
+         * wrapper that owns the grade -> {org, timing} mapping
+         * (RamulatorWrapper::resolvePresetOrganization / resolvePresetTiming,
+         * which the 1.11.66 shape check binds to the device Ramulator
+         * instantiates), so there is one table and this emitter cannot drift
+         * from it. 3200 still emits DDR5_8Gb_<w> / DDR5_3200AN. */
         std::string w = device_width.empty() ? "x8" : device_width;
+        std::string org_p = "DDR5_8Gb_" + w, tim_p = "DDR5_3200AN";
+        try {
+            pimid::RamulatorWrapper rb("", "DDR5");
+            applyDramKnobs(rb, config);
+            rb.setAnchorQuiet(true);
+            rb.initialize();
+            if (rb.getPresetOrganization().valid && rb.getPresetTiming().valid) {
+                org_p = rb.getPresetOrganization().preset_name;
+                tim_p = rb.getPresetTiming().preset_name;
+            } else {
+                std::cerr << "[config] FATAL: the DDR5 preset pair for grade "
+                          << config.ddr5_speed_grade << " could not be resolved; refusing "
+                             "to emit a timing model for a different part." << std::endl;
+                std::exit(2);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[config] FATAL: could not resolve the DDR5 preset pair for grade "
+                      << config.ddr5_speed_grade << " (" << e.what()
+                      << "); refusing to emit a timing model for a different part." << std::endl;
+            std::exit(2);
+        }
+        std::cout << "  [mem] NOTE: DDR5 is modelled at memory.dram.ddr5_speed_grade "
+                  << config.ddr5_speed_grade << "; the co-sim/zsim Ramulator config emits org "
+                  << org_p << ", timing " << tim_p
+                  << " (the same pair the energy path prices)" << std::endl;
         ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: DDR5\n"
-            << "    org:\n      preset: DDR5_8Gb_" << w << "\n    timing:\n      preset: DDR5_3200AN\n"
+            << "    org:\n      preset: " << org_p << "\n    timing:\n      preset: " << tim_p << "\n"
             << "    RFM:\n      BRC: 2\n";
         useClosedRow = true;
     } else if (tech == "LPDDR5") {
@@ -6404,7 +6537,7 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
 static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string& tech) {
     std::string tmpCfg = "/tmp/pimid_ramulator_" + std::to_string(getpid()) + ".yaml";
     std::ofstream ofs(tmpCfg);
-    writeRamulatorConfigYaml(ofs, tech, config.dram_device_width);
+    writeRamulatorConfigYaml(ofs, tech, config.dram_device_width, config);
     ofs.close();
     config.ramulator_config_file = tmpCfg;
 }
@@ -7217,6 +7350,66 @@ static int memorySystemDieCount(const std::string& tech,
  * (LOGIC_DIE, or the channel tier of a channel-centric part) crosses TSVs
  * and microbumps, which our termination model prices at zero ODT; rank and
  * above, and HOST_MC, cross the package boundary and pay full termination. */
+/* 1.11.91 (audit R8-7, user ruling (b)): ONE place that decides the IDD3N
+ * share of DRAM background and prints what it used.
+ *
+ * MEASURED: the Ramulator2 controller exported bankOpenCycles and a non-zero
+ * bankOpenWindow for the accesses that reach this array -> BNK_ACT% =
+ * cycles / window, TN-41-01's "active (one or more banks are open)" state.
+ * UNMEASURED: the pre-1.11.91 traffic-phase fraction (1 - idle residency) is
+ * used, and the line says which and why. The why strings are run facts (a
+ * counter absent from this run's dump, traffic this counter did not see).
+ * For this release the traffic-phase fraction is printed beside a measured
+ * one, for comparison. The line is printed by the caller AFTER pricing, so it
+ * can also state a power-down residency that had to be capped at the
+ * precharged share. */
+struct BankOpenInput {
+    bool measured = false;
+    double active_frac = 0.0;       // BNK_ACT% when measured
+    uint64_t open_cycles = 0, window = 0;
+    std::string unmeasured_why;     // run fact, when not measured
+};
+static BankOpenInput bankOpenFrom(bool present, uint64_t open_cycles, uint64_t window,
+                                  const std::string& not_seen_why = "") {
+    BankOpenInput b;
+    if (!not_seen_why.empty()) { b.unmeasured_why = not_seen_why; return b; }
+    if (!present) {
+        b.unmeasured_why = "no bankOpenCycles counter in this run's stats: the "
+                           "memory path that served these accesses keeps no "
+                           "Ramulator2 bank state";
+        return b;
+    }
+    if (window == 0) {
+        b.unmeasured_why = "bankOpenWindow is 0 in the priced window";
+        return b;
+    }
+    b.measured = true;
+    b.open_cycles = open_cycles;
+    b.window = window;
+    b.active_frac = std::min(1.0, static_cast<double>(open_cycles)
+                                  / static_cast<double>(window));
+    return b;
+}
+static void printBankOpenLine(const BankOpenInput& b, double traffic_active,
+                              bool pd_capped, double r_pd_asked, double r_pd_used,
+                              const std::string& indent = "  ") {
+    if (b.measured) {
+        std::cout << indent << "[mem] bank-open fraction MEASURED " << b.active_frac
+                  << " (" << b.open_cycles << " of " << b.window
+                  << " memory cycles with >= 1 bank open; TN-41-01 BNK_PRE% = 1-x = "
+                  << (1.0 - b.active_frac) << "); traffic-phase fraction "
+                  << traffic_active << " (printed for comparison, not used)";
+    } else {
+        std::cout << indent << "[mem] bank-open fraction UNMEASURED ("
+                  << b.unmeasured_why << "); the traffic-phase fraction "
+                  << traffic_active << " sets the IDD3N share";
+    }
+    if (pd_capped)
+        std::cout << "; power-down residency " << r_pd_asked
+                  << " capped at the precharged share " << r_pd_used;
+    std::cout << std::endl;
+}
+
 static bool crossesOffPackageDQ(int pe_hierarchy_level,
                                 const std::string& memory_tech) {
     const bool channel_centric =
@@ -8558,8 +8751,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             ram_oracle.initialize();
             // 1.9.10: use the INTENSIVE per-access accessors (the older
             // extensive pair returned 0 on a fresh oracle). getArrayReadEnergyNJ()
-            // folds activation + column access AND the DQ burst current --
-            // JEDEC IDD4R is measured with the outputs driving.
+            // folds activation + column access AND the VDD burst current.
+            // [1.11.91 (audit R8-8): the old text went on "-- JEDEC IDD4R is
+            // measured with the outputs driving", implying the DQ drivers are
+            // in it. They are not: IDD is the VDD rail only, the drivers are on
+            // VDDQ (IDDQ, a separate row; DDR5 core sheet p.448, MT40A p.314).
+            // The DQ driver rail is priced below as iddq=, on DQ crossings.]
             //
             // 1.11.5 (audit): the old iface term was bit-identical to that DQ
             // burst current, so every access was double-charged; and it was
@@ -8612,6 +8809,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             const double iface_term_rd_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(false) : 0.0;
             const double iface_term_wr_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(true)  : 0.0;
             const double iface_drv_nj  = crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
+            /* 1.11.91 (audit R8-8): the DQ output rail (IDDQ), on the SAME
+             * crossing rule as termination; an on-die placement pays none. */
+            bool iddq_band = false;
+            double iddq_rd_lo = 0.0, iddq_rd_hi = 0.0;
+            const double iddq_rd_raw = ram_oracle.getIddqEnergyNJ(false, &iddq_band,
+                                                                  &iddq_rd_lo, &iddq_rd_hi);
+            const double iddq_wr_raw = ram_oracle.getIddqEnergyNJ(true);
+            const bool iddq_published = (iddq_rd_raw >= 0.0 && iddq_wr_raw >= 0.0);
+            const double iddq_rd_nj = (crosses_dq && iddq_published) ? iddq_rd_raw : 0.0;
+            const double iddq_wr_nj = (crosses_dq && iddq_published) ? iddq_wr_raw : 0.0;
             /* 1.11.8, corrected 1.11.56 (audit A028): with memory.power_down
              * the idle controller descends the DRAM into precharge power-down
              * (IDD2P) during measured no-traffic residency; refresh always
@@ -8672,14 +8879,47 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 ram_oracle.getBackgroundUnits(config.dram_device_width,
                                               config.hierarchy_ranks_per_channel,
                                               config.hierarchy_dram_channels);  // 1.11.52 (A015)
-            double bg_power_mw = ram_oracle.getBackgroundSystemMW(
-                mc_r_idle, config.mem_power_down, config.dram_device_width,
-                config.hierarchy_ranks_per_channel,
-                config.hierarchy_dram_channels);   // 1.11.52 (A015)
+            /* 1.11.91 (audit R8-7): the IDD3N share is the MEASURED
+             * bank-open fraction when the run carries it; the phase/gap
+             * residency above stays the power-down (CKE-low) input only.
+             * Without the measurement the 1.11.90 expression is used
+             * unchanged (active = 1 - residency). */
+            const BankOpenInput bank_open = bankOpenFrom(
+                zsim_stats.bank_open_present, zsim_stats.bank_open_cycles,
+                zsim_stats.bank_open_window);
+            const double traffic_active = 1.0 - mc_r_idle;
+            double bg_active_frac = traffic_active;
+            double bg_power_mw = 0.0;
+            double pd_used = mc_r_idle;
+            if (bank_open.measured) {
+                bg_active_frac = bank_open.active_frac;
+                bg_power_mw = ram_oracle.getBackgroundSystemStatesMW(
+                    bank_open.active_frac, mc_r_idle, config.mem_power_down,
+                    config.dram_device_width, config.hierarchy_ranks_per_channel,
+                    config.hierarchy_dram_channels, &pd_used);
+            } else {
+                bg_power_mw = ram_oracle.getBackgroundSystemMW(
+                    mc_r_idle, config.mem_power_down, config.dram_device_width,
+                    config.hierarchy_ranks_per_channel,
+                    config.hierarchy_dram_channels);   // 1.11.52 (A015)
+            }
+            printBankOpenLine(bank_open, traffic_active,
+                              bank_open.measured && config.mem_power_down
+                                  && pd_used < mc_r_idle,
+                              mc_r_idle, pd_used);
+            /* 1.11.91 (audit R8-8): the VPP rail's standby, same state split. */
+            const double ipp_mw = ram_oracle.getIppSystemMW(
+                bg_active_frac, config.dram_device_width,
+                config.hierarchy_ranks_per_channel, config.hierarchy_dram_channels);
+            /* 1.11.91 (item 12): the HBM per-stack floor, already inside
+             * bg_power_mw (backgroundSystem*MW adds it); < 0 = none. */
+            const double stack_mw = ram_oracle.getStackFloorSystemMW(
+                config.hierarchy_dram_channels);
             if (mc_r_idle > 0.0) {
                 std::cout << "  [pg] DRAM idle residency " << mc_r_idle
                           << " -> background "
                           << ram_oracle.getBackgroundPowerMW() * bg_units
+                             + (stack_mw > 0.0 ? stack_mw : 0.0)
                           << " -> " << bg_power_mw << " mW ("
                           << (config.mem_power_down ? "IDD2N page-close then IDD2P "
                                              "power-down"
@@ -8690,13 +8930,15 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             /* 1.11.20 (D13): scaled to the same population as the background
              * beside it, so the two lines are the same memory system. */
             double ref_energy = ram_oracle.getRefreshPowerMW() * bg_units;
-            double leakage_mw = bg_power_mw;
+            double leakage_mw = bg_power_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0);   // 1.11.91: + the VPP rail
 
             double total_rd_nj = rd_energy * zsim_stats.mem_rd;
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
             double total_act_nj = 0.0;  // folded into array rd/wr (no double-count)
             double total_iface_nj = iface_term_rd_nj * zsim_stats.mem_rd
                                   + iface_term_wr_nj * zsim_stats.mem_wr;
+            const double total_iddq_nj = iddq_rd_nj * zsim_stats.mem_rd
+                                       + iddq_wr_nj * zsim_stats.mem_wr;   // 1.11.91 (R8-8)
 
             std::cout << "  Technology:      " << config.memory_tech << " (Ramulator2 energy model)" << std::endl;
             std::cout << "  Per-access:      read=" << std::fixed << std::setprecision(3)
@@ -8705,7 +8947,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                       << " nJ, wr=" << iface_term_wr_nj << " nJ per access ("
                       << (crosses_dq ? "accesses cross the DQ pins at this placement"
                                      : "on-die placement: no DQ crossing, no interface charge")
-                      << ")" << std::endl;
+                      << ")";
+            /* 1.11.91 (audit R8-8): the IDDQ term beside termination. */
+            if (!iddq_published)
+                std::cout << "; iddq= n/a (no IDDQ row for " << config.memory_tech << ")";
+            else if (iddq_band && crosses_dq)
+                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ [BAND " << iddq_rd_lo
+                          << "-" << iddq_rd_hi << "], wr " << iddq_wr_nj << " nJ";
+            else
+                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ, wr " << iddq_wr_nj << " nJ";
+            std::cout << std::endl;
             if (crosses_dq) {
                 std::cout << "    termination:   rd=" << iface_term_rd_nj
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
@@ -8779,12 +9030,17 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                       << " mW (standby+refresh over " << bg_units << " "
                       << (config.memory_tech.substr(0, 3) == "HBM"
                               ? "channels/stack" : "chips/rank")
-                      << ")" << std::endl;
+                      << ")";
+            if (ipp_mw >= 0.0) std::cout << " +ipp=" << ipp_mw << " mW";   // 1.11.91 (R8-8)
+            else               std::cout << " +ipp=n/a";
+            if (stack_mw >= 0.0)   // 1.11.91 (item 12)
+                std::cout << " +stack=" << stack_mw << " mW (per-stack floor, included in Background)";
+            std::cout << std::endl;
             std::cout << "    of which refresh: " << ref_energy
                       << " mW (a component of Background, not an addition to it;"
                          " quoted at the IDD3N baseline)" << std::endl;
             std::cout << "    leakage:          " << leakage_mw
-                      << " mW (the same standby current, named the way the "
+                      << " mW (Background + ipp: the same standby current, named the way the "
                          "logic-side report names it -- not a further term)"
                       << std::endl;
             /* 1.11.60 (audit round 4, A011): the aggregate names the WHOLE
@@ -8800,10 +9056,18 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * to termination. It was invisible because the label kept working:
              * the column still parses, it just means something else now. */
             std::cout << "  Total dynamic:   " << std::setprecision(1)
-                      << (total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj) / 1e6
+                      << (total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj
+                          + total_iddq_nj) / 1e6
                       << " mJ (rd=" << total_rd_nj / 1e6 << " + wr=" << total_wr_nj / 1e6
-                      << " + act=" << total_act_nj / 1e6 << " + iface=" << total_iface_nj / 1e6
-                      << " [termination + driver/PHY])"
+                      << " + act=" << total_act_nj / 1e6
+                      << " + iddq=" << total_iddq_nj / 1e6   // 1.11.91 (R8-8)
+                      << " + iface=" << total_iface_nj / 1e6
+                      /* 1.11.91 (audit R8-12): the label said "termination +
+                       * driver/PHY" -- true for 1.11.58-59 only. Since the
+                       * 1.11.60 revert total_iface_nj sums the termination
+                       * term alone; driver/PHY is printed as informational
+                       * above and is NOT in this total. */
+                      << " [termination only; driver/PHY informational, not summed])"
                       << std::defaultfloat << std::endl;
 
             // DRAM die area via CACTI 7 (commercial DRAM cell model)
@@ -9837,7 +10101,8 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                           int channels = 1,
                                           double termination_pj_per_bit = -1.0,   // 1.11.63 (R7, gate 1173B E3)
                                           int temperature_k = 358,                 // 1.11.65 (refresh ladder)
-                                          int ddr5_speed_grade = 4800)             // 1.11.66 (R8 #9)
+                                          int ddr5_speed_grade = 4800,             // 1.11.66 (R8 #9)
+                                          const BankOpenInput& bank_open = BankOpenInput())   // 1.11.91 (R8-7)
 {
     if (memory_tech.empty()) return 0.0;
     uint64_t mem_rd = 0, mem_wr = 0;
@@ -9902,17 +10167,37 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * memory power read 2x low against a System Total Area that counts
          * both dies, and device scope on the same machine reported 2x more
          * than system scope for one memory. */
-        const double bg_mw = ram_oracle.getBackgroundSystemMW(
-            (r_idle > 0.0 ? r_idle : 0.0), pg_enabled, device_width,
-            ranks_per_channel, channels);
+        /* 1.11.91 (audit R8-7): the IDD3N share is the MEASURED bank-open
+         * fraction when the caller has one for the accesses that reach this
+         * array; r_idle is then the power-down residency only. Unmeasured:
+         * the 1.11.90 expression, unchanged. */
+        const double r_res = (r_idle > 0.0 ? r_idle : 0.0);
+        const double traffic_active = 1.0 - r_res;
+        double pd_used = r_res;
+        const double bg_mw = bank_open.measured
+            ? ram_oracle.getBackgroundSystemStatesMW(bank_open.active_frac, r_res,
+                  pg_enabled, device_width, ranks_per_channel, channels, &pd_used)
+            : ram_oracle.getBackgroundSystemMW(r_res, pg_enabled, device_width,
+                  ranks_per_channel, channels);
+        const double bg_active_frac = bank_open.measured ? bank_open.active_frac
+                                                         : traffic_active;
+        /* 1.11.91 (audit R8-8): the VPP rail's standby, same split. */
+        const double ipp_mw = ram_oracle.getIppSystemMW(bg_active_frac, device_width,
+                                                        ranks_per_channel, channels);
+        /* 1.11.91 (item 12): the HBM per-stack floor, already inside bg_mw. */
+        const double stack_mw = ram_oracle.getStackFloorSystemMW(channels);
 
         std::cout << "\n--- Memory Array Energy (system) ---" << std::endl;
         std::cout << "  Technology:    " << memory_tech
                   << " (Ramulator2 energy model)" << std::endl;
         std::cout << "  Accesses:      " << (mem_rd + mem_wr)
                   << " on this node's memory" << std::endl;
+        printBankOpenLine(bank_open, traffic_active,
+                          bank_open.measured && pg_enabled && pd_used < r_res,
+                          r_res, pd_used);   // 1.11.91 (R8-7)
 
         double total_rd_mj = 0.0, total_wr_mj = 0.0, total_iface_mj = 0.0;
+        double total_iddq_mj = 0.0;   // 1.11.91 (R8-8)
         for (const auto& c : classes) {
             if (c.rd + c.wr == 0) continue;
             /* 1.11.89 (fix 1): the measured row-miss fraction, per class,
@@ -9953,6 +10238,17 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                 (iface_term_rd_nj * static_cast<double>(c.rd)
                  + iface_term_wr_nj * static_cast<double>(c.wr)) / 1e6;
             total_rd_mj += c_rd_mj; total_wr_mj += c_wr_mj; total_iface_mj += c_if_mj;
+            /* 1.11.91 (audit R8-8): IDDQ on the class's own crossing answer. */
+            bool iddq_band = false;
+            double iddq_rd_lo = 0.0, iddq_rd_hi = 0.0;
+            const double iddq_rd_raw = ram_oracle.getIddqEnergyNJ(false, &iddq_band,
+                                                                  &iddq_rd_lo, &iddq_rd_hi);
+            const double iddq_wr_raw = ram_oracle.getIddqEnergyNJ(true);
+            const bool iddq_published = (iddq_rd_raw >= 0.0 && iddq_wr_raw >= 0.0);
+            const double iddq_rd_nj = (c.crosses_dq && iddq_published) ? iddq_rd_raw : 0.0;
+            const double iddq_wr_nj = (c.crosses_dq && iddq_published) ? iddq_wr_raw : 0.0;
+            total_iddq_mj += (iddq_rd_nj * static_cast<double>(c.rd)
+                              + iddq_wr_nj * static_cast<double>(c.wr)) / 1e6;
 
             std::cout << "  " << c.who << " accesses: rd=" << c.rd
                       << " wr=" << c.wr << std::endl;
@@ -9961,7 +10257,15 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                       << std::endl;
             std::cout << "    DQ interface:  " << std::setprecision(3)
                       << "rd=" << iface_term_rd_nj << " nJ, wr=" << iface_term_wr_nj
-                      << " nJ per access (" << c.dq_why << ")" << std::endl;
+                      << " nJ per access (" << c.dq_why << ")";
+            if (!iddq_published)
+                std::cout << "; iddq= n/a (no IDDQ row for " << memory_tech << ")";
+            else if (iddq_band && c.crosses_dq)
+                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ [BAND " << iddq_rd_lo
+                          << "-" << iddq_rd_hi << "], wr " << iddq_wr_nj << " nJ";
+            else
+                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ, wr " << iddq_wr_nj << " nJ";
+            std::cout << std::endl;
             if (c.crosses_dq) {
                 std::cout << "      termination: rd=" << iface_term_rd_nj
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
@@ -10004,13 +10308,19 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                           "power-down at measured idle"
                                         : ", IDD2N page-close at measured idle")
                           : "")
-                  << ")" << std::endl;
+                  << ")";
+        if (ipp_mw >= 0.0) std::cout << " +ipp=" << ipp_mw << " mW";   // 1.11.91 (R8-8)
+        else               std::cout << " +ipp=n/a";
+        if (stack_mw >= 0.0)   // 1.11.91 (item 12)
+            std::cout << " +stack=" << stack_mw << " mW (per-stack floor, included in Background)";
+        std::cout << std::endl;
         /* 1.11.89 (fix 2): the same descent line device scope prints, so a
          * reader (and a gate) sees the two scopes' background the same way. */
         if (r_idle > 0.0) {
             std::cout << "  [pg] DRAM idle residency " << std::defaultfloat << r_idle
                       << " -> background " << std::fixed << std::setprecision(3)
                       << ram_oracle.getBackgroundPowerMW() * bg_units
+                         + (stack_mw > 0.0 ? stack_mw : 0.0)   // 1.11.91 (item 12)
                       << " -> " << bg_mw << " mW ("
                       << (pg_enabled ? "IDD2N page-close then IDD2P power-down"
                                      : "IDD2N page-close; memory.power_down off, "
@@ -10028,11 +10338,12 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * correction -- what is printed here is the whole DQ interface since
          * 1.11.58, not the termination component of it. */
         std::cout << "  Array dynamic: " << std::setprecision(3)
-                  << (total_rd_mj + total_wr_mj + total_iface_mj)
+                  << (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj)
                   << " mJ (rd=" << total_rd_mj
                   << " + wr=" << total_wr_mj
+                  << " + iddq=" << total_iddq_mj   // 1.11.91 (R8-8)
                   << " + iface=" << total_iface_mj
-                  << " [termination + driver/PHY])"
+                  << " [termination only; driver/PHY informational, not summed])"   // 1.11.91 (R8-12)
                   << std::defaultfloat << std::endl;
         computeDramDieAreaMM2(memory_tech, /*print=*/true,
                               effective_banks);   // 1.11.9; 1.11.52 A008: same org as the total
@@ -10040,8 +10351,9 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * clock. Energy terms divide by the same seconds node power uses;
          * background is already a rate. */
         if (wall_seconds > 0.0) {
-            return (total_rd_mj + total_wr_mj + total_iface_mj) / 1000.0 / wall_seconds
-                   + bg_mw / 1000.0;
+            return (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj)
+                       / 1000.0 / wall_seconds
+                   + (bg_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0)) / 1000.0;   // 1.11.91 (R8-8)
         }
         return 0.0;
     } catch (const std::exception& e) {
@@ -11437,6 +11749,21 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 std::vector<ArrayAccessClass> cls;
                 cls.push_back(peClass(pe_rd, pe_wr));
                 cls.push_back(hostClass(h_rd, h_wr));
+                /* 1.11.91 (audit R8-7): the bank-open counters come from the
+                 * HOST's Ramulator2 controller, which sees only the host-
+                 * originated accesses; the PE-originated ones reach the array
+                 * through the PE memory interface, which keeps no bank state.
+                 * A fraction measured on part of the traffic is not this
+                 * array's BNK_ACT%, so with PE traffic it is not used. */
+                const BankOpenInput shared_bo = (pe_rd + pe_wr) > 0
+                    ? bankOpenFrom(false, 0, 0,
+                          "the PE-originated accesses reach this array through "
+                          "the PE memory interface, which keeps no bank state; "
+                          "the host controller's counter covers only the "
+                          "host-originated ones")
+                    : bankOpenFrom(zsim_stats.host.bank_open_present,
+                                   zsim_stats.host.bank_open_cycles,
+                                   zsim_stats.host.bank_open_window);
                 mem_power_total += reportSharedMemoryArrayEnergy(tech, cls,
                                               r_shared,
                                               config.mem_power_down,        // 1.11.45: split flag (was pg_mc)
@@ -11447,7 +11774,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.hierarchy_dram_channels,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
                                               config.temperature_k,            // 1.11.65
-                                              config.ddr5_speed_grade);        // 1.11.66 (R8 #9)
+                                              config.ddr5_speed_grade,         // 1.11.66 (R8 #9)
+                                              shared_bo);                      // 1.11.91 (R8-7)
                 {
                 double die = computeDramDieAreaMM2(tech, false,
                                                    effectiveDramBanks(tech, config));
@@ -11512,7 +11840,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.hierarchy_dram_channels,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
                                               config.temperature_k,            // 1.11.65
-                                              config.ddr5_speed_grade);        // 1.11.66 (R8 #9)
+                                              config.ddr5_speed_grade,         // 1.11.66 (R8 #9)
+                                              bankOpenFrom(zsim_stats.host.bank_open_present,   // 1.11.91 (R8-7)
+                                                           zsim_stats.host.bank_open_cycles,
+                                                           zsim_stats.host.bank_open_window));
                 host_done = true;
             } else if (node.role == UnifiedConfig::SystemNode::DEVICE && !dev_done &&
                        zsim_stats.dev.has_activity()) {
@@ -11535,7 +11866,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.hierarchy_dram_channels,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
                                               config.temperature_k,            // 1.11.65
-                                              config.ddr5_speed_grade);        // 1.11.66 (R8 #9)
+                                              config.ddr5_speed_grade,         // 1.11.66 (R8 #9)
+                                              bankOpenFrom(zsim_stats.dev.bank_open_present,   // 1.11.91 (R8-7)
+                                                           zsim_stats.dev.bank_open_cycles,
+                                                           zsim_stats.dev.bank_open_window));
                 dev_done = true;
             }
         }
@@ -13158,8 +13492,8 @@ int main(int argc, char** argv) {
              * same lookup a run does, without running anything. rc 0 when
              * all four match this binary, rc 2 (FATAL) otherwise. */
             findPimidMpiLib();
-            findQemuPlugin("libzsim_qemu.so");
-            findQemuPlugin("libpimid_trace.so");
+            findQemuPlugin("libzsim_qemu.so", "zsim_qemu");
+            findQemuPlugin("libpimid_trace.so", "pimid_trace");
             return 0;
         } else if (arg == "--print-mem-info" && i + 1 < argc) {
             /* Composer helper: print the simulator's own per-tech memory
@@ -15535,6 +15869,17 @@ int main(int argc, char** argv) {
                     t << " core_clock=" << a->timing.clock_freq_mhz << " MHz";
                 t << " refresh_temp_factor=" << bw_query.getRefreshTempFactor()
                   << " (T=" << config.temperature_k << " K)";
+                /* 1.11.91 (audit R8-3/R8-4): the access path the array
+                 * energy prices -- devices engaged and bursts per 64 B --
+                 * with its derivation, so a gate can grep the number that
+                 * moved rather than infer it from an energy. */
+                t << "; " << bw_query.describeAccessPath();
+                /* 1.11.91 (audit R8-2): the IDD3N basis of the row, one word. */
+                t << "; IDD3N basis " << bw_query.getIdd3nBasisName();
+                /* 1.11.91 (item 11): one provenance word for the IDD row,
+                 * nothing more; the chain is in pimid_energy.h's comment. */
+                if (const char* prov = bw_query.getIddRowProvenance())
+                    t << "; IDD row " << prov;
                 timing_line = t.str();
             } catch (...) {}
         }
@@ -16382,12 +16727,7 @@ int main(int argc, char** argv) {
             std::cout << "Using QEMU: " << qemu_binary << std::endl;
 
             // Find libpimid_trace.so plugin
-            std::string plugin_path = findQemuPlugin("libpimid_trace.so");
-            if (plugin_path.empty()) {
-                std::cerr << "Error: libpimid_trace.so not found" << std::endl;
-                std::cerr << "Build with: cmake --build . --target pimid_trace" << std::endl;
-                return 1;
-            }
+            std::string plugin_path = findQemuPlugin("libpimid_trace.so", "pimid_trace");   // exits 2 if missing (1.11.91 item 13)
             std::cout << "Plugin:   " << plugin_path << std::endl;
             std::cout << std::endl;
 
@@ -16421,12 +16761,7 @@ int main(int argc, char** argv) {
                 }
 
                 // Find libpimid_mpi.so (PIMID's in-scope shm-mailbox MPI transport)
-                std::string pimid_mpi_lib = findPimidMpiLib();
-                if (pimid_mpi_lib.empty()) {
-                    std::cerr << "Error: libpimid_mpi.so not found (searched build dirs)" << std::endl;
-                    std::cerr << "Build pimid_mpi target before using --mpi-ranks" << std::endl;
-                    return 1;
-                }
+                std::string pimid_mpi_lib = findPimidMpiLib();   // exits 2 if missing (1.11.91 item 13)
 
                 // Unique shm name per launch so concurrent pimid invocations don't collide
                 std::string shm_name = "/pimid_mpi_" + std::to_string(getpid());
@@ -16669,12 +17004,7 @@ int main(int argc, char** argv) {
             std::cout << "Using QEMU: " << qemu_binary << std::endl;
 
             // Find libzsim_qemu.so plugin
-            std::string plugin_path = findQemuPlugin("libzsim_qemu.so");
-            if (plugin_path.empty()) {
-                std::cerr << "Error: libzsim_qemu.so not found" << std::endl;
-                std::cerr << "Build with: cmake --build . --target zsim_qemu" << std::endl;
-                return 1;
-            }
+            std::string plugin_path = findQemuPlugin("libzsim_qemu.so", "zsim_qemu");   // exits 2 if missing (1.11.91 item 13)
             std::cout << "Plugin:   " << plugin_path << std::endl;
 
             // Determine core type for display
@@ -16911,13 +17241,7 @@ int main(int argc, char** argv) {
                 // exec mystery.
                 std::string mpi_thread_lib;
                 if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
-                    mpi_thread_lib = findPimidMpiLib();
-                    if (mpi_thread_lib.empty()) {
-                        std::cerr << "Error: libpimid_mpi.so not found (searched "
-                                  << "build dirs); required for thread-MPI"
-                                  << std::endl;
-                        return 1;
-                    }
+                    mpi_thread_lib = findPimidMpiLib();   // exits 2 if missing (1.11.91 item 13)
                 }
                 // Generate ZSim configuration file (reuse ZSimSimulator's logic)
                 ZSimSimulator zsim_helper(config);
@@ -17348,11 +17672,7 @@ int main(int argc, char** argv) {
                 std::cerr << "Error: qemu-x86_64 not found" << std::endl;
                 return 1;
             }
-            std::string plugin_path = findQemuPlugin("libzsim_qemu.so");
-            if (plugin_path.empty()) {
-                std::cerr << "Error: libzsim_qemu.so not found" << std::endl;
-                return 1;
-            }
+            std::string plugin_path = findQemuPlugin("libzsim_qemu.so", "zsim_qemu");   // exits 2 if missing (1.11.91 item 13)
 
             // Output directory
             std::string output_dir = "/tmp/pimid_system_zsim_" + std::to_string(getpid());
@@ -17479,13 +17799,7 @@ int main(int argc, char** argv) {
                 // before the fork so a missing library is a clean launcher error.
                 std::string sys_mpi_lib;
                 if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
-                    sys_mpi_lib = findPimidMpiLib();
-                    if (sys_mpi_lib.empty()) {
-                        std::cerr << "Error: libpimid_mpi.so not found (searched "
-                                  << "build dirs); required for thread-MPI"
-                                  << std::endl;
-                        return 1;
-                    }
+                    sys_mpi_lib = findPimidMpiLib();   // exits 2 if missing (1.11.91 item 13)
                     std::cout << "MPI Mode: " << config.mpi_ranks
                               << " ranks (serial deterministic simulation)"
                               << std::endl;

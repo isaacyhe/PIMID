@@ -1,5 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
 
 namespace Ramulator {
 
@@ -230,6 +231,7 @@ class DDR5 : public IDRAM, public Implementation {
       Node(DDR5* dram, Node* parent, int level, int id) : DRAMNodeBase<DDR5>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -250,6 +252,8 @@ class DDR5 : public IDRAM, public Implementation {
 
   public:
     void tick() override {
+      m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
       m_clk++;
 
       // Check if there is any future action at this cycle
@@ -257,6 +261,7 @@ class DDR5 : public IDRAM, public Implementation {
         auto& future_action = m_future_actions[i];
         if (future_action.clk == m_clk) {
           handle_future_action(future_action.cmd, future_action.addr_vec);
+          m_pimid_bank_open.touch(future_action.addr_vec);   // PIMID 1.11.91 (R8-7)
           m_future_actions.erase(m_future_actions.begin() + i);
         }
       }
@@ -274,6 +279,8 @@ class DDR5 : public IDRAM, public Implementation {
       set_powers();
       
       create_nodes();
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
     void issue_command(int command, const AddrVec_t& addr_vec) override {
@@ -281,6 +288,7 @@ class DDR5 : public IDRAM, public Implementation {
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_powers(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
     
       // Check if the command requires future action
       check_future_action(command, addr_vec);

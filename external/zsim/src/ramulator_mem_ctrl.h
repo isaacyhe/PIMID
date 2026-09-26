@@ -31,6 +31,15 @@ class RamulatorMemory : public MemObject {
         Counter profWrites;
         Counter profTotalRdLat;
         Counter profTotalWrLat;
+        /* 1.11.91 (audit R8-7): the measured bank-open fraction. Counters in
+         * this controller's aggregate, which sits in the rebased "mem" group
+         * (1.11.90 roiRebase), so both report the ROI window only. Registered
+         * only when the Ramulator2 device keeps the sums
+         * (dram/pimid_bank_open.h); absent otherwise, which the power model
+         * reads as UNMEASURED. */
+        Counter profBankOpenCycles;
+        Counter profBankOpenWindow;
+        bool bankOpenTracked = false;
         PAD();
 
     public:
