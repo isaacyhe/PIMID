@@ -235,6 +235,27 @@ Router::collateStats()
     m_crossbar_activity = crossbarSwitch.get_crossbar_activity();
 }
 
+/* PIMID 1.11.92 (F4): see Router.hh. */
+double
+Router::getBufferReadCount()
+{
+    double n = 0.0;
+    for (auto& iu : m_input_unit)
+        for (uint32_t v = 0; v < m_virtual_networks; v++)
+            n += iu->get_buf_read_activity(v);
+    return n;
+}
+
+double
+Router::getBufferWriteCount()
+{
+    double n = 0.0;
+    for (auto& iu : m_input_unit)
+        for (uint32_t v = 0; v < m_virtual_networks; v++)
+            n += iu->get_buf_write_activity(v);
+    return n;
+}
+
 void
 Router::resetState()
 {

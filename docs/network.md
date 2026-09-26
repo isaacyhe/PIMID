@@ -74,6 +74,20 @@ credit-based flow control, deadlock-free routing.
 - Flat topologies remain available for the host network and non-DRAM device
   memories: `MESH_2D`, `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined).
+- **NoC energy (1.11.92).** McPAT charges one router access per FLIT per
+  ROUTER crossed. The network counts true flits (ceil(message bits / source
+  port width), 5 for a 576-bit data message on a 128-bit port) and routers
+  crossed (links + 1 per packet); `Total hops` stays the link count, the
+  latency input. On the detailed DRAM tree each level's accesses are
+  MEASURED: the Garnet routers' own crossbar counters, attributed to levels
+  by the `rlevel` lines the tree builder writes into the `.topo` file, then
+  re-cut at the level's own datapath width from the sourced ladder. The
+  analytical NoC counts the same quantities from its tier walk. A stats file
+  without per-level counts falls back to the old preset split and the
+  `[NoC] level` line says `PRESET`; a run with fabric traffic and no count at
+  all, or a detailed run with no stats file, is refused (exit 3). Levels with
+  no branch router and no endpoint are not priced (pass-through wire; their
+  measured traversals are printed as not priced).
 
 ## `analytical` — closed form
 

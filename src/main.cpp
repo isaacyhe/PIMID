@@ -1933,6 +1933,12 @@ struct UnifiedConfig {
     int htree_level_branch[7]    = {-1,-1,-1,-1,-1,-1,-1};  // 1.11: per-level census
     int htree_level_endpoints[7] = {-1,-1,-1,-1,-1,-1,-1};
     int htree_all_routers    = -1;   // including degenerate single-child pass-throughs
+    /* 1.11.92 (F6): the widest router built at each level, in ports (router
+     * children + the parent link + endpoints attached there). McPAT sizes the
+     * crossbar and arbiter from it; the literal 5 it replaces described a
+     * mesh router, not the HBM3 hub (17 ports) or a 3-port bank-group node.
+     * -1 = no tree was built (or no router at that level). */
+    int htree_level_max_ports[7] = {-1,-1,-1,-1,-1,-1,-1};
     int htree_endpoints      = -1;   // PE endpoints + aggregated-region endpoints
     int htree_abstract       = -1;   // of those, the aggregated regions
     // Derived: topology-aware NoC average one-way latency (cycles)
@@ -3270,6 +3276,20 @@ static bool dramHTreeBuilder(const std::string& tech,
         }
         config.htree_endpoints      = tree.totalEndpoints();
         config.htree_abstract       = tree.numAbstract;
+        /* 1.11.92 (F6): ports per router = router children + parent link
+         * (every router but ROOT) + endpoints attached to it. */
+        {
+            std::map<int,int> epAt;
+            for (const auto& e : tree.extLinks) epAt[e.b]++;
+            for (int r = 0; r < tree.numRouters; ++r) {
+                int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+                if (lv < 0 || lv > 6) continue;
+                int ports = (childrenOf.count(r) ? childrenOf[r] : 0)
+                          + (r != 0 ? 1 : 0) + (epAt.count(r) ? epAt[r] : 0);
+                if (ports > config.htree_level_max_ports[lv])
+                    config.htree_level_max_ports[lv] = ports;
+            }
+        }
         std::cout << "[htree] " << branch << " branch routers of "
                   << tree.numRouters << " (" << (tree.numRouters - branch)
                   << " pass-through), " << tree.totalEndpoints()
@@ -3338,6 +3358,22 @@ static bool dramHTreeBuilder(const std::string& tech,
     }
     for (auto& e : tree.extLinks)
         f << "ext " << e.a << " " << e.b << " " << e.lat << " " << e.w << "\n";
+    /* 1.11.92 (F4/F3): the level and kind of every router, so the network can
+     * attribute its MEASURED per-router flit traversals to hierarchy levels
+     * and keep branch routers apart from pass-throughs. "rlevel <router>
+     * <level> <branch 1|0>"; branch = >= 2 router children, the same rule as
+     * the "[htree] N branch routers" census above. Garnet's own topology
+     * reader skips tokens it does not know, so this changes nothing it
+     * builds. */
+    {
+        std::map<int,int> kids;
+        for (const auto& l : tree.intLinks) kids[l.a]++;
+        for (int r = 0; r < tree.numRouters; ++r) {
+            int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+            f << "rlevel " << r << " " << lv << " "
+              << ((kids.count(r) && kids[r] >= 2) ? 1 : 0) << "\n";
+        }
+    }
     f.close();
     return true;
 }
@@ -6677,9 +6713,18 @@ static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config)
  * Matches the stats output by ZSim's GarnetNetwork::writeStatsFile()
  */
 struct GarnetParsedStats {
+    /* 1.11.92 (F10): did the file exist at all? A missing file used to parse
+     * to these defaults silently -- and the defaults were 1000 MHz and 128 b,
+     * so the documented fallbacks below them (the device clock, the Garnet
+     * flit) could never fire and a detailed run with no stats file was
+     * priced at an invented 1 GHz fabric carrying nothing. */
+    bool file_found = false;
     uint64_t total_packets = 0;
-    uint64_t total_flits = 0;
-    uint64_t total_hops = 0;
+    uint64_t data_packets = 0;       // 1.11.92
+    uint64_t control_packets = 0;    // 1.11.92
+    uint64_t total_flits = 0;        // TRUE flits since 1.11.92 (was packets)
+    uint64_t total_hops = 0;         // router-to-router links (latency input)
+    uint64_t total_router_traversals = 0;   // 1.11.92: flits x routers crossed
     uint64_t buffer_reads = 0;
     uint64_t buffer_writes = 0;
     uint64_t crossbar_traversals = 0;
@@ -6690,8 +6735,23 @@ struct GarnetParsedStats {
     uint32_t num_routers = 0;
     uint32_t num_rows = 0;
     uint32_t num_cols = 0;
-    uint32_t flit_size_bits = 128;
-    double clock_mhz = 1000.0;
+    uint32_t flit_size_bits = 0;     // 0 = absent (1.11.92 F10; was 128)
+    double clock_mhz = 0.0;          // 0 = absent (1.11.92 F10; was 1000)
+    uint32_t data_msg_bits = 0;      // 1.11.92: 0 = absent (older file)
+    uint32_t control_msg_bits = 0;
+    uint32_t buffers_per_vc = 0;             // configured
+    uint32_t effective_buffers_per_vc = 0;   // what Garnet built
+    /* 1.11.92 (F4/F1): per-hierarchy-level traversals (index = tree level).
+     * level_source: "measured_crossbar" (the Garnet routers' own counters),
+     * "tier_walk" (the analytical path's count) or "" (an older file, or a
+     * topology without router levels -- the preset split then stands in,
+     * and says so). */
+    std::string level_source;
+    uint64_t level_router_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t level_passthrough_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
+    uint32_t level_routers[7] = {0,0,0,0,0,0,0};
+    uint32_t level_branch_routers[7] = {0,0,0,0,0,0,0};
 };
 
 /**
@@ -6700,8 +6760,22 @@ struct GarnetParsedStats {
  */
 static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
     GarnetParsedStats stats;
+    /* 1.11.92 (gate 1201A): PIMID_NOC_STATS_FAULT gives the two NoC refusals
+     * a side that FIRES on demand, in the style of PIMID_MCPAT_FAULT.
+     * "missing" = read the file as absent (F10); "nocounts" = drop every
+     * traversal count after the parse (F1). Gate only; announced. */
+    const char* nsf = std::getenv("PIMID_NOC_STATS_FAULT");
+    const std::string noc_fault = nsf ? std::string(nsf) : std::string();
+    if (noc_fault == "missing" || noc_fault == "nocounts")
+        std::cerr << "[inject] PIMID_NOC_STATS_FAULT=" << noc_fault
+                  << ": " << (noc_fault == "missing"
+                                  ? "treating the Garnet stats file as absent"
+                                  : "dropping every NoC traversal count")
+                  << " (gate only)" << std::endl;
+    if (noc_fault == "missing") return stats;
     std::ifstream f(path);
     if (!f.is_open()) return stats;
+    stats.file_found = true;
 
     std::string line;
     while (std::getline(f, line)) {
@@ -6715,6 +6789,28 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
         // Trim whitespace
         while (!key.empty() && std::isspace(key.back())) key.pop_back();
         while (!val.empty() && std::isspace(val.front())) val.erase(val.begin());
+        while (!val.empty() && std::isspace(val.back())) val.pop_back();
+        /* 1.11.92 (F4): "garnet.level<k>.<field>" -- the bare-name strip below
+         * would collapse these onto one another, so read them first. */
+        {
+            const std::string pfx = "garnet.level";
+            if (key.compare(0, pfx.size(), pfx) == 0 && key.size() > pfx.size() &&
+                std::isdigit((unsigned char)key[pfx.size()])) {
+                int k = key[pfx.size()] - '0';
+                auto dot = key.find('.', pfx.size());
+                if (k >= 0 && k < 7 && dot != std::string::npos) {
+                    std::string fld = key.substr(dot + 1);
+                    try {
+                        if (fld == "router_traversals") stats.level_router_traversals[k] = std::stoull(val);
+                        else if (fld == "passthrough_traversals") stats.level_passthrough_traversals[k] = std::stoull(val);
+                        else if (fld == "packet_traversals") stats.level_packet_traversals[k] = std::stoull(val);
+                        else if (fld == "routers") stats.level_routers[k] = std::stoul(val);
+                        else if (fld == "branch_routers") stats.level_branch_routers[k] = std::stoul(val);
+                    } catch (...) {}
+                }
+                continue;
+            }
+        }
         /* 1.9.22: the writer emits DOTTED keys ("garnet.total_packets = N"),
          * while the comparisons below use bare names. Without stripping the
          * prefix every field silently kept its zero default: the file parsed
@@ -6729,6 +6825,14 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
 
         try {
             if (key == "total_packets") stats.total_packets = std::stoull(val);
+            else if (key == "data_packets") stats.data_packets = std::stoull(val);
+            else if (key == "control_packets") stats.control_packets = std::stoull(val);
+            else if (key == "total_router_traversals") stats.total_router_traversals = std::stoull(val);
+            else if (key == "data_msg_bits") stats.data_msg_bits = std::stoul(val);
+            else if (key == "control_msg_bits") stats.control_msg_bits = std::stoul(val);
+            else if (key == "buffers_per_vc") stats.buffers_per_vc = std::stoul(val);
+            else if (key == "effective_buffers_per_vc") stats.effective_buffers_per_vc = std::stoul(val);
+            else if (key == "level_source") stats.level_source = (val == "none") ? std::string() : val;
             else if (key == "total_flits") stats.total_flits = std::stoull(val);
             else if (key == "total_hops") stats.total_hops = std::stoull(val);
             else if (key == "buffer_reads") stats.buffer_reads = std::stoull(val);
@@ -6745,6 +6849,16 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
             else if (key == "clock_mhz") stats.clock_mhz = std::stod(val);
         } catch (...) {
             // Skip unparseable lines
+        }
+    }
+    if (noc_fault == "nocounts") {
+        stats.level_source.clear();
+        stats.total_router_traversals = 0;
+        stats.total_hops = 0;
+        for (int l = 0; l < 7; l++) {
+            stats.level_router_traversals[l] = 0;
+            stats.level_passthrough_traversals[l] = 0;
+            stats.level_packet_traversals[l] = 0;
         }
     }
     return stats;
@@ -6944,7 +7058,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
     /* 1.11.82 (audit round 6): the system-scope call site loops over DEVICE
      * nodes, so without a label two nodes' level lines would run together.
      * Device scope passes nothing and the lines read as before. */
-    const std::string& node_label)
+    const std::string& node_label,
+    /* 1.11.92 (F1): the run's PE-MI remote accesses (the on-die fabric
+     * traffic the timing model charged) and the stats file the counts came
+     * from, so a run whose fabric carried traffic but exported no traversal
+     * count is REFUSED rather than priced at zero. */
+    uint64_t remote_accesses,
+    const std::string& stats_path)
 {
     using NoCLevel = pimid::McPATWrapper::NoCLevelConfig;
     const std::string lbl = node_label.empty() ? std::string("")
@@ -6956,6 +7076,73 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         if (topo == "BUS") return 0;
         return 1;  // MESH_2D, TORUS_2D, RING, CROSSBAR, FAT_TREE, H_TREE, CUSTOM
     };
+
+    /* 1.11.92 (F8): McPAT needs a rectangle (horizontal x vertical nodes) and
+     * multiplies the two to get its node count, which sets router area and
+     * leakage. ceil(sqrt(n))^2 over-counted every non-square level (32 nodes
+     * priced as 36, 17 as 25). The most-square EXACT factorisation keeps the
+     * count true (a prime n becomes n x 1). */
+    auto exactRect = [](int n, int& rows, int& cols) {
+        if (n < 1) n = 1;
+        rows = 1;
+        for (int r = static_cast<int>(std::sqrt(static_cast<double>(n))); r >= 1; --r)
+            if (n % r == 0) { rows = r; break; }
+        cols = n / rows;
+    };
+
+    /* 1.11.92 (F10): the clock fallback is live now that a missing field
+     * parses as 0 instead of 1000 MHz. Say when it fires. */
+    if (!(garnet.clock_mhz > 0.0))
+        std::cout << "  [NoC] " << lbl << "the Garnet stats carry no network clock;"
+                     " the device clock " << deviceCycleClockMHz(config)
+                  << " MHz stands in for every level" << std::endl;
+    const int garnet_flit = (garnet.flit_size_bits > 0)
+                          ? static_cast<int>(garnet.flit_size_bits) : 128;
+    if (garnet.flit_size_bits == 0)
+        std::cout << "  [NoC] " << lbl << "the Garnet stats carry no flit width;"
+                     " 128 b (Garnet's built-in flit) stands in" << std::endl;
+    const uint32_t data_bits = garnet.data_msg_bits > 0 ? garnet.data_msg_bits : 576;
+
+    /* 1.11.92 (F1): REFUSE, do not price zero. A run whose PE-MIs sent
+     * traffic across the fabric but whose stats carry no traversal count at
+     * all (no per-level counts, no router traversals, no hops) would have
+     * every level priced at "accesses 0 ... 0W dynamic" -- the analytical
+     * NoC printed exactly that, as if measured, until this release. The rule
+     * is the 1.11.88 one: power was asked for and part of it cannot be
+     * produced, so the run is refused with the cause named. */
+    const bool has_levels = !garnet.level_source.empty();
+    /* Not on the detailed path: there every injection is counted as it is
+     * replayed, so zero means zero -- a detailed run whose remote accesses
+     * all hit the PE's own unit sends no packet at all (1.5.5), and its
+     * stats file says so. */
+    if (!config.noc_cycle_accurate &&
+        !has_levels && garnet.total_router_traversals == 0 &&
+        garnet.total_hops == 0 && remote_accesses > 0) {
+        std::cerr << "[NoC] FATAL: " << lbl << remote_accesses
+                  << " PE-MI remote accesses crossed the on-die fabric, but the"
+                     " network statistics (" << stats_path << ") carry no"
+                     " traversal count -- no per-level counts, no router"
+                     " traversals, no hops"
+                  << (garnet.file_found ? "" : " (the file does not exist)")
+                  << ". The NoC's dynamic power would be priced as 0 W for a"
+                     " fabric that carried traffic. Refusing to report it."
+                  << std::endl;
+        std::exit(3);
+    }
+
+    /* 1.11.92 (F4/F7): flits per packet as Garnet cut them (true flits over
+     * packets), used to turn a level's measured flit traversals back into
+     * packet crossings before they are re-cut at the level's own width. Every
+     * injection in this tree is a data message, so the ratio is exact; if
+     * control packets are ever recorded it becomes their mix-weighted mean
+     * and the re-cut below applies the data size to both. */
+    const uint64_t pkts_counted = garnet.data_packets + garnet.control_packets;
+    const double fpp = (pkts_counted > 0 && garnet.total_flits > 0)
+        ? static_cast<double>(garnet.total_flits) / static_cast<double>(pkts_counted)
+        : static_cast<double>((data_bits + garnet_flit - 1) / garnet_flit);
+
+    const int vcs  = std::max(1, config.noc_vcs_per_vnet);
+    const int bufs = std::max(1, config.noc_buffers_per_vc);
 
     if (config.hierarchy_enabled && config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level < 7) {
         // Names for hierarchy levels
@@ -6970,13 +7157,20 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         if (num_active < 1) num_active = 1;
 
         /* 1.9.22: McPAT's NoC `total_accesses` counts ROUTER TRAVERSALS, not
-         * end-to-end packets -- a packet crossing N routers is N accesses. Using
-         * total_packets undercounted the activity by the average hop count
-         * (measured 161,802 hops for 79,496 packets on a co-sim HBM3 cell, i.e.
-         * 2.04x). Prefer the measured hop count and fall back to packets only if
-         * hops were not recorded. */
-        uint64_t garnet_packets = (garnet.total_hops > 0)
-                                ? garnet.total_hops : garnet.total_packets;
+         * end-to-end packets -- a packet crossing N routers is N accesses.
+         *
+         * 1.11.92 (F2): and a router access is one FLIT, not one packet, and
+         * a packet crosses links + 1 routers, not links. The fallback below
+         * (used only when the stats carry no per-level counts) takes the
+         * flit x router total; an older file without it falls back to hops,
+         * the pre-1.11.92 unit, and the line says so. */
+        const bool have_rt = garnet.total_router_traversals > 0;
+        uint64_t garnet_packets = have_rt ? garnet.total_router_traversals
+                                : (garnet.total_hops > 0) ? garnet.total_hops
+                                                          : garnet.total_packets;
+        const char* preset_unit = have_rt ? "router flit traversals"
+                                : (garnet.total_hops > 0) ? "link hops (pre-1.11.92 unit)"
+                                                          : "packets";
 
         /* 1.11.50 (L74): the DRAM-periphery family used to blanket EVERY
          * level in this vector -- processor.cc transformed rank/channel/
@@ -7008,9 +7202,17 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         if (surviving_levels != num_active)
             std::cout << "  [NoC] " << (num_active - surviving_levels)
                       << " hierarchy level(s) are pure pass-through wire and are"
-                         " not priced; traversal weights and chip coverage are"
-                         " normalised over the " << surviving_levels
-                      << " level(s) that are" << std::endl;
+                         " not priced; chip coverage is normalised over the "
+                      << surviving_levels << " level(s) that are"
+                      << (has_levels ? "" : ", and so are the preset traversal weights")
+                      << std::endl;
+        if (!has_levels)
+            std::cout << "  [NoC] " << lbl << "no per-level traversal counts in "
+                      << stats_path << " (an older stats file, or a topology"
+                         " without router levels): the " << garnet_packets
+                      << " " << preset_unit << " are split across levels by the"
+                         " PRESET weight 1/(1+level), not by measurement"
+                      << std::endl;
 
         for (int lvl = pe_level; lvl < 7; lvl++) {
             NoCLevel nc;
@@ -7042,6 +7244,8 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             // Lower levels (subarray/bank) -> bus; upper levels -> router NoC
             nc.type = (lvl <= 1) ? 0 : topologyToMcPATType(config.noc_topology);
 
+            const std::string prefix = "noc." + std::to_string(lvl - pe_level);
+
             /* 1.11: size each level from the BUILT tree, not from the raw
              * organisation count. total_network_endpoints counts every bank and
              * subarray -- ~528 on a 16-element HBM3 config -- so this loop was
@@ -7058,16 +7262,39 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             if (config.htree_level_branch[0] >= 0) {
                 int chg = config.htree_level_branch[lvl]
                         + config.htree_level_endpoints[lvl];
-                if (chg <= 0) continue;   // pure pass-through wire: nothing to price
+                if (chg <= 0) {
+                    /* pure pass-through wire: nothing to price.
+                     *
+                     * 1.11.92 (F11): an override for this level used to be
+                     * ignored in silence -- the lookup came after this
+                     * continue. And (F4) the traversals MEASURED at this
+                     * level's routers are now known; say they are not priced
+                     * rather than let them vanish. */
+                    for (const char* k : {".duty_cycle", ".chip_coverage", ".total_accesses"})
+                        if (overrides.count(prefix + k))
+                            std::cerr << "[NoC] WARNING: power.mcpat_overrides."
+                                      << prefix << k << " is IGNORED: level "
+                                      << (lvl - pe_level) << " (" << nc.name
+                                      << ") has no branch router and no endpoint,"
+                                         " so it is not priced at all" << std::endl;
+                    if (has_levels && garnet.level_router_traversals[lvl] > 0)
+                        std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                                  << " (" << nc.name << "): "
+                                  << garnet.level_router_traversals[lvl]
+                                  << " flit traversals of pass-through routers"
+                                  << (garnet.level_source == "tier_walk"
+                                          ? " (analytical tier walk)" : " (MEASURED)")
+                                  << " are NOT priced: the level has no branch"
+                                     " router or endpoint, and pass-through"
+                                     " routers are not priced as wire in this"
+                                     " release" << std::endl;
+                    continue;
+                }
                 nodes = chg;
-                int g = static_cast<int>(std::ceil(std::sqrt((double)chg)));
-                nc.horizontal_nodes = g;
-                nc.vertical_nodes = g;
+                exactRect(chg, nc.vertical_nodes, nc.horizontal_nodes);
             } else if (lvl == pe_level) {
-                int grid = static_cast<int>(std::ceil(std::sqrt(pe_level_nodes)));
-                nc.horizontal_nodes = grid;
-                nc.vertical_nodes = grid;
                 nodes = pe_level_nodes;
+                exactRect(nodes, nc.vertical_nodes, nc.horizontal_nodes);
             } else {
                 // Higher levels have fewer nodes
                 int factor = 1;
@@ -7097,53 +7324,91 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     else factor *= 1;   // above the system root there is no further fan-in
                 }
                 nodes = std::max(2, pe_level_nodes / factor);
-                int g = static_cast<int>(std::ceil(std::sqrt(nodes)));
-                nc.horizontal_nodes = g;
-                nc.vertical_nodes = g;
+                exactRect(nodes, nc.vertical_nodes, nc.horizontal_nodes);
             }
 
-            nc.input_ports = (nc.type == 0) ? nodes : 5;
-            nc.output_ports = (nc.type == 0) ? nodes : 5;
-            /* 1.9.22: take the flit width and the network clock from the MEASURED
-             * Garnet stats rather than a literal and the PE frequency. The run
-             * writes both to garnet_stats.txt; hardcoding 128 silently ignored a
-             * reconfigured flit size, and config.frequency_mhz is the PE clock,
-             * not the network's. */
-            nc.flit_bits = (garnet.flit_size_bits > 0)
-                         ? static_cast<int>(garnet.flit_size_bits) : 128;
+            /* 1.11.92 (F6): a router's port count is the widest router the
+             * tree built at this level (children + parent + endpoints), not
+             * the literal 5 of a mesh router. It sizes McPAT's crossbar and
+             * arbiter. Without a tree (analytical runs) there is nothing to
+             * read, and the literal stays -- said on the level line. */
+            bool ports_from_tree = (config.htree_level_max_ports[lvl] > 0);
+            int rports = ports_from_tree ? config.htree_level_max_ports[lvl] : 5;
+            nc.input_ports = (nc.type == 0) ? nodes : rports;
+            nc.output_ports = (nc.type == 0) ? nodes : rports;
+
+            /* 1.11.92 (F7): each level is priced at ITS OWN datapath width, from
+             * the same ladder the "Hierarchy link ladder" line prints (after
+             * any noc.levels override). It was Garnet's single 128-bit flit at
+             * every level, so the 256-bit bank-group datapath and the 64-bit
+             * rank bus were both priced as 128-bit routers. Garnet's topology
+             * clamps widths at 128 b for its own flit engine; the power model
+             * is not bound by that clamp. */
+            int W = garnet_flit;
+            const char* wsrc = "Garnet flit width: no sourced ladder width for this level";
+            if (lvl < 7 && config.network_level_overrides[lvl].link_width_bits > 0) {
+                W = config.network_level_overrides[lvl].link_width_bits;
+                wsrc = "noc.levels override";
+            } else if (config.sourced_ladder_valid &&
+                       !(config.sourced_ladder_placeholder_mask & (1 << lvl)) &&
+                       config.sourced_ladder_w[lvl] > 0) {
+                W = config.sourced_ladder_w[lvl];
+                wsrc = "sourced ladder";
+            }
+            nc.flit_bits = W;
             /* 1.11.60 (audit round 4, B014): ONE clock authority, numerator
-             * and denominator alike.
-             *
-             * The duty-cycle conversion five lines below asks
-             * deviceCycleClockMHz() -- 1.11.57's A007 fix, which exists
-             * because in system scope config.frequency_mhz is the top-level
-             * system.frequency_mhz and not the device's. A007 converted the
-             * DENOMINATOR and left this fallback on the raw field, so the two
-             * halves of one ratio came from two different clocks. The fallback
-             * is live whenever no Garnet stats were parsed, i.e. on every
-             * analytical run -- half the shipped model lineup -- and on the
-             * shipped co-sim example that is 2000 MHz against a 500 MHz
-             * device: net_cycles scaled by 4 instead of 1, so every NoC
-             * level's duty_cycle handed to McPAT is 4x too small and the
-             * fabric's dynamic power with it. Invisible because in device
-             * scope the two fields are the same number, which is the scope the
-             * A007 gate exercised. */
+             * and denominator alike. The duty-cycle conversion below asks
+             * deviceCycleClockMHz() (1.11.57's A007 fix) for the clock the
+             * window's cycles were ticked in; the fabric's clock is the
+             * measured Garnet one, with the device clock standing in only
+             * when the stats carry none (live since 1.11.92 F10). */
             nc.clock_mhz = (garnet.clock_mhz > 0.0)
                          ? garnet.clock_mhz : deviceCycleClockMHz(config);
 
-            /* Distribute Garnet traversals: lower levels see more traffic;
-             * level i gets a share proportional to 1/(i+1-pe_level).
+            /* 1.11.92 (F4): the level's accesses are MEASURED. Garnet's routers
+             * count every flit through their crossbar; the tree builder knows
+             * each router's level; so the flits through this level's routers
+             * are a measurement, not a share of a total. Converted to packet
+             * crossings (measured flits / flits per packet as Garnet cut them)
+             * and re-cut at this level's width (F7): a 576-bit message is 5
+             * accesses of a 128-bit datapath but 3 of a 256-bit one.
              *
-             * 1.11.52 (audit A021): NORMALISE OVER THE LEVELS THAT SURVIVE.
-             * Levels with no chargeable node are skipped by the `continue`
-             * above (pure pass-through wire), but the weight sum and the
-             * coverage denominator still counted them -- so a skipped level's
-             * share of the MEASURED hop count was dropped on the floor and
-             * the emitted chip_coverage no longer tiled the die, silently.
-             * Both denominators now use the surviving set, computed once. */
+             * The analytical NoC (F1) supplies the same numbers from its tier
+             * walk. Only a stats file without per-level counts falls back to
+             * the old preset -- the level's share 1/(1+level) of the total,
+             * normalised over the surviving levels (1.11.52 A021) -- and the
+             * line says PRESET. */
             double level_weight = 1.0 / (1 + lvl - pe_level);
-            uint64_t level_accesses = static_cast<uint64_t>(
-                garnet_packets * level_weight / surviving_weight);
+            uint64_t level_accesses = 0;
+            std::ostringstream how;
+            const uint32_t fW = (data_bits + static_cast<uint32_t>(W) - 1) /
+                                static_cast<uint32_t>(W);
+            if (has_levels) {
+                const double pk = static_cast<double>(garnet.level_router_traversals[lvl]) / fpp;
+                level_accesses = static_cast<uint64_t>(std::llround(pk * fW));
+                how << "accesses " << level_accesses << " = " << pk
+                    << " packet crossings x " << fW << " flits (" << data_bits
+                    << " b at " << W << " b, " << wsrc << "); crossings = "
+                    << garnet.level_router_traversals[lvl]
+                    << " router flit traversals / " << fpp << " flits per packet, "
+                    << (garnet.level_source == "tier_walk"
+                            ? "from the analytical tier walk"
+                            : "MEASURED by this level's Garnet routers");
+                if (garnet.level_source != "tier_walk")
+                    how << " (path walk: " << garnet.level_packet_traversals[lvl]
+                        << " crossings)";
+            } else {
+                level_accesses = static_cast<uint64_t>(
+                    garnet_packets * level_weight / surviving_weight);
+                how << "accesses " << level_accesses << " = " << garnet_packets
+                    << " " << preset_unit << " x " << level_weight << "/"
+                    << surviving_weight << " [PRESET split]; width " << W
+                    << " b (" << wsrc << ")";
+            }
+            /* chip_coverage is a PRESET (1.11.92 note): the surviving levels
+             * split the die equally. Nothing measures a level's share of the
+             * die; it sets McPAT's wire length for the level's bus and scales
+             * its area. */
             double chip_cov = 1.0 / static_cast<double>(surviving_levels);
 
             /* duty_cycle: fraction of peak bandwidth [0,1].
@@ -7151,10 +7416,19 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
              *
              * 1.11.52 (audit A016): the CYCLES MUST BE THE NETWORK'S OWN. The
              * caller passes the PE/zsim-domain cycle count, while nc.clock_mhz
-             * two lines below is the MEASURED Garnet clock -- so when the
-             * fabric runs at a different frequency than the elements, the duty
-             * was off by exactly their ratio. Convert the window into network
-             * cycles before dividing. */
+             * is the MEASURED Garnet clock -- so when the fabric runs at a
+             * different frequency than the elements, the duty was off by
+             * exactly their ratio. Convert the window into network cycles
+             * before dividing.
+             *
+             * 1.11.92 (F9): this conversion is right only if the Garnet clock
+             * is the clock Garnet actually ticks in. In system scope the
+             * network used to be labelled with the reference (host) clock
+             * while it ticks device-PE cycles, so the ratio below divided
+             * every duty by host/device. init.cpp now labels it with the
+             * device clock, and in both scopes the ratio is 1: the window
+             * (device cycles) and the fabric (device-PE cycles) are the same
+             * clock. It stays general for a fabric that ever gets its own. */
             double net_cycles = static_cast<double>(total_cycles);
             {   // 1.11.57 (A007): the clock these cycles were ticked in.
                 const double cyc_mhz = deviceCycleClockMHz(config);
@@ -7165,7 +7439,6 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                 ? static_cast<double>(level_accesses) / (net_cycles * nodes) : 0.0;
 
             // Apply overrides
-            std::string prefix = "noc." + std::to_string(lvl - pe_level);
             auto it_dc = overrides.find(prefix + ".duty_cycle");
             if (it_dc != overrides.end()) duty = it_dc->second;
             auto it_cc = overrides.find(prefix + ".chip_coverage");
@@ -7177,35 +7450,29 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.duty_cycle = duty;
             nc.chip_coverage = chip_cov;
 
-            /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED.
-             *
-             * This function's own doc comment has claimed since it was written
-             * that "all derived parameters (duty_cycle, chip_coverage) are
-             * printed with formulas". They were not: the function's only
-             * output line reported skipped levels, and grepping a full run's
-             * log for "duty" returned nothing. Three numbers that McPAT scales
-             * its NoC power by were computed from measured traffic and handed
-             * over in silence, and an override of any of them was equally
-             * silent -- the same defect the 1.11.77 stamps were shipped to
-             * close one layer down.
-             *
-             * The duty is also documented IN THIS FUNCTION as a "fraction of
-             * peak bandwidth [0,1]" and nothing held it to that. McPAT scales
-             * the peak/TDP term linearly with it, so a level above 1.0 would
-             * be priced past saturation. This WARNS rather than clamps: a
-             * clamp would move a number the paper carries, on a path nobody
-             * has yet seen fire, and the project's rule is to announce a
-             * substitution rather than perform one quietly. On every shape
-             * measured in round 6 the duty is orders of magnitude below 1. */
+            /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED -- every number
+             * McPAT scales this level by, with its formula, on one line.
+             * 1.11.92: the accesses clause says what it counts (packet
+             * crossings x flits at this level's width, and whether measured),
+             * and the line carries the router shape handed to McPAT (ports,
+             * VCs per vnet, buffers per VC) as run facts. */
             std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
-                      << " (" << nc.name << "): accesses " << level_accesses
-                      << " = " << garnet_packets << " packets x "
-                      << level_weight << "/" << surviving_weight
+                      << " (" << nc.name << "): " << how.str()
                       << "; duty " << duty << " = accesses/(" << net_cycles
-                      << " net cycles x " << nodes << " nodes)"
+                      << " net cycles x " << nodes << " nodes, priced as "
+                      << nc.vertical_nodes << "x" << nc.horizontal_nodes << ")"
                       << "; chip_coverage " << chip_cov << " = 1/"
-                      << surviving_levels << " surviving levels"
-                      << (it_dc != overrides.end() || it_cc != overrides.end() ||
+                      << surviving_levels << " surviving levels (preset)"
+                      << "; ports " << nc.input_ports
+                      << (nc.type == 0 ? " (bus: one per node)"
+                                       : (ports_from_tree ? " (widest router built at this level)"
+                                                          : " (literal: no tree was built)"))
+                      << "; vcs=" << vcs << " buffers=" << bufs;
+            if (garnet.effective_buffers_per_vc > 0 &&
+                garnet.effective_buffers_per_vc != static_cast<uint32_t>(bufs))
+                std::cout << " (Garnet builds " << garnet.effective_buffers_per_vc
+                          << "/VC: a VC must hold one data packet)";
+            std::cout << (it_dc != overrides.end() || it_cc != overrides.end() ||
                           it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
                       << std::endl;
             if (!(duty >= 0.0 && duty <= 1.0)) {
@@ -7231,9 +7498,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         nc.type = topologyToMcPATType(config.noc_topology);
         int flat_nodes = (config.total_network_endpoints > 0)
                           ? config.total_network_endpoints : config.num_pes;
-        int grid = static_cast<int>(std::ceil(std::sqrt(flat_nodes)));
-        nc.horizontal_nodes = grid;
-        nc.vertical_nodes = grid;
+        exactRect(flat_nodes, nc.vertical_nodes, nc.horizontal_nodes);   // 1.11.92 (F8)
         nc.input_ports = 5;
         nc.output_ports = 5;
         /* 1.11.52 (audit A032): the flat branch takes the same MEASURED
@@ -7243,16 +7508,22 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
          * undercount by the average hop count (measured 2.04x on a co-sim
          * HBM3 cell). This branch runs whenever hierarchy is disabled or the
          * placement level is out of range. */
-        nc.flit_bits = (garnet.flit_size_bits > 0)
-                     ? static_cast<int>(garnet.flit_size_bits) : 128;
+        nc.flit_bits = garnet_flit;
         // 1.11.60 (audit round 4, B014): same authority as the hierarchical
         // branch, and the same one the duty-cycle denominator below uses.
         nc.clock_mhz = (garnet.clock_mhz > 0.0) ? garnet.clock_mhz
                                                 : deviceCycleClockMHz(config);
         nc.chip_coverage = 1.0;
 
-        uint64_t accesses = (garnet.total_hops > 0) ? garnet.total_hops
+        /* 1.11.92 (F2): flits x routers crossed, the unit McPAT charges; an
+         * older stats file without it falls back to hops, and says so. */
+        const bool have_rt = garnet.total_router_traversals > 0;
+        uint64_t accesses = have_rt ? garnet.total_router_traversals
+                          : (garnet.total_hops > 0) ? garnet.total_hops
                                                     : garnet.total_packets;
+        const char* unit = have_rt ? "router flit traversals"
+                         : (garnet.total_hops > 0) ? "link hops (pre-1.11.92 unit)"
+                                                   : "packets";
         // duty_cycle: fraction of peak bandwidth [0,1], in NETWORK cycles (A016)
         double flat_net_cycles = static_cast<double>(total_cycles);
         {   // 1.11.57 (A007): same authority as the hierarchical branch.
@@ -7279,9 +7550,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
          * stays silent -- that is how the claim went stale in the first
          * place. */
         std::cout << "  [NoC] " << lbl << "flat (" << nc.name << "): accesses " << accesses
+                  << " " << unit
                   << "; duty " << duty << " = accesses/(" << flat_net_cycles
-                  << " net cycles x " << flat_nodes << " nodes)"
+                  << " net cycles x " << flat_nodes << " nodes, priced as "
+                  << nc.vertical_nodes << "x" << nc.horizontal_nodes << ")"
                   << "; chip_coverage " << nc.chip_coverage
+                  << "; ports 5 (literal: a flat fabric has no tree)"
+                  << "; vcs=" << vcs << " buffers=" << bufs
                   << (it_dc != overrides.end() || it_cc != overrides.end() ||
                       it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
                   << std::endl;
@@ -8236,6 +8511,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     // for 1-PE device/hierarchy runs, collapsing their power to core+MC (~0.1W).
     mcfg.has_noc = (config.num_pes > 1 || config.hierarchy_enabled);
     mcfg.noc_clock_mhz = config.frequency_mhz;
+    /* 1.11.92 (F5): the router shape Garnet was configured with. Only the NoC
+     * probe passed these; device scope and the per-node path kept the
+     * wrapper's 4 VCs x 4 buffers while Garnet ran noc.vcs_per_vnet x
+     * noc.buffers_per_vc (2 x 2 on the detailed DRAM tree). */
+    mcfg.noc_vcs_per_vnet = std::max(1, config.noc_vcs_per_vnet);
+    mcfg.noc_vc_buffer_size = std::max(1, config.noc_buffers_per_vc);
     /* 1.10.5: the fabric priced here is the one the timing model routes on.
      *
      * It was one router per element on a ceil(sqrt(elements)) square grid --
@@ -8368,7 +8649,21 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     // Build per-level NoC configs. Include the single-PE hierarchy case: the
     // in-memory network spans all memory-org levels regardless of PE count.
     if (config.num_pes > 1 || config.hierarchy_enabled) {
-        auto noc_levels = buildNoCLevelsForMcPAT(config, garnet, cycles, overrides, "");
+        /* 1.11.92 (F10): a detailed NoC with NO stats file is refused. The
+         * parse used to return defaults (1000 MHz, 128 b, zero traffic) and
+         * the fabric was priced as an idle 1 GHz network -- a result that
+         * looks complete and measured nothing. Exit 3, as for every other
+         * power result that could not be produced (1.11.88). */
+        if (!garnet.file_found && config.noc_cycle_accurate) {
+            std::cerr << "[NoC] FATAL: the detailed NoC was requested but its"
+                         " statistics file " << garnet_path << " does not exist,"
+                         " so the fabric's traffic, clock and flit width are all"
+                         " unknown. Refusing to price the NoC from defaults."
+                      << std::endl;
+            std::exit(3);
+        }
+        auto noc_levels = buildNoCLevelsForMcPAT(config, garnet, cycles, overrides, "",
+                                                 zsim_stats.pemi_remote_acc, garnet_path);
         mcpat.setNoCLevels(noc_levels);
     }
 
@@ -10710,6 +11005,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         if (node.role == UnifiedConfig::SystemNode::DEVICE && node.num_pes > 1) {
             mcfg.has_noc = true;
             mcfg.noc_clock_mhz = node.frequency_mhz;
+            // 1.11.92 (F5): the router shape Garnet was configured with.
+            mcfg.noc_vcs_per_vnet = std::max(1, config.noc_vcs_per_vnet);
+            mcfg.noc_vc_buffer_size = std::max(1, config.noc_buffers_per_vc);
             mcfg.noc_num_routers = node.num_pes;
             int grid_side = static_cast<int>(std::ceil(std::sqrt(node.num_pes)));
             mcfg.noc_num_rows = grid_side;
@@ -11146,18 +11444,32 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             if (node.role == UnifiedConfig::SystemNode::DEVICE) {
                 std::string gpath = output_dir + "/garnet_stats.txt";
                 GarnetParsedStats g = parseGarnetStatsFile(gpath);
+                /* 1.11.92 (F10): same refusal as device scope -- a detailed
+                 * device fabric with no stats file is not priced from the
+                 * placeholder below. */
+                if (!g.file_found && config.noc_cycle_accurate && config.hierarchy_enabled) {
+                    std::cerr << "[NoC] FATAL: " << node.name << ": the detailed"
+                                 " NoC was requested but its statistics file "
+                              << gpath << " does not exist. Refusing to price the"
+                                 " device fabric from a placeholder." << std::endl;
+                    std::exit(3);
+                }
                 if (g.total_packets > 0) {
                     uint64_t dev_cycles = (zsim_stats.dev_wall_cycles > 0)
                                         ? zsim_stats.dev_wall_cycles
                                         : (g.total_cycles > 0 ? g.total_cycles : total_cycles);
-                    auto measured = buildNoCLevelsForMcPAT(config, g, dev_cycles, overrides, node.name);
+                    auto measured = buildNoCLevelsForMcPAT(config, g, dev_cycles, overrides, node.name,
+                                                           zsim_stats.pemi_remote_acc, gpath);
                     if (measured.size() >= 2) {
                         mcpat.setNoCLevels(measured);
                         noc_from_measurement = true;
                         std::cout << "  [NoC] " << node.name << ": priced from measured Garnet"
                                   << " (" << measured.size() << " levels, "
                                   << g.total_packets << " packets, "
-                                  << g.total_hops << " hops)" << std::endl;
+                                  << g.total_flits << " flits, "
+                                  << g.total_hops << " link hops, "
+                                  << g.total_router_traversals << " router flit traversals)"
+                                  << std::endl;
                     }
                 }
                 if (!noc_from_measurement) {

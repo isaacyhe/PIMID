@@ -720,6 +720,24 @@ public:
             // above does not, and used to.
             zinfo->pgres.noc.touch(zinfo->numPhases);
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
+            /* 1.11.92 (F1): COUNT the traversal the analytical model charges.
+             * This path priced latency from the tier walk below and recorded
+             * nothing, so the run exported zero NoC traffic and the power
+             * model reported every level at 0 W dynamic -- a number presented
+             * as measured, for a fabric that carried every one of these
+             * accesses. The same walk, counted per tier, into the same
+             * network statistics the detailed path fills. Post-ROI accesses
+             * are not counted, as on the detailed path. */
+            if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
+                uint32_t perLevel[7];
+                uint32_t links = hierTraversalLevels(
+                    myUnit, targetUnit, perLevel,
+                    zinfo->hierarchy.placementLevel, zinfo->hierarchy.subarraysPerBank,
+                    zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
+                    zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
+                if (myUnit != targetUnit)
+                    zinfo->garnetNetwork->recordTierWalk(perLevel, links);
+            }
             // hierLat = per-tier hop-based latency through LCA path (no double-counting)
             uint32_t hierLat = (uint32_t)computeHierTraversal(
                 myUnit, targetUnit,

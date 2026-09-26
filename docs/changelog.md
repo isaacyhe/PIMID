@@ -7,6 +7,263 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.92 -- the fabric counted a packet as one flit and a link as a router
+
+Found by a read-only audit of the on-die fabric energy path (2026-09-26):
+`garnet_network.h`, the Garnet routers' counters, `buildNoCLevelsForMcPAT`,
+the McPAT NoC emitter and McPAT's `noc.cc`/`processor.cc`. Reference shape:
+HBM3, 16 alu_core PEs at BANK, stream_triad 40000
+(`_1166audit/g91_202324/N_HBM3.log`): 21477 packets, 87462 hops, NoC
+dynamic 0.569 mW over the 2.027 ms ROI = 54 pJ per 64 B packet, 10-13x
+below what McPAT's own per-flit router energies imply. Eleven findings.
+This release fixes F1, F2, F4, F5, F6, F7, F8, F9, F10, F11; F3 needs a
+modelling ruling and is NOT fixed (options at the end). The fleet stays
+held.
+
+**(1) F2: a packet was one flit, and a router crossing was a link hop.**
+Every counting site (`accessNetwork`, the batch replay, `getAnalyticalLatency`,
+`getCycleAccurateLatency`) did `total_flits += 1` per PACKET and added the
+packet's hops to buffer reads/writes, crossbar and link traversals. The
+data message is 576 b and Garnet's NetworkInterface cuts it into
+ceil(576 / port width) = 5 flits on a 128-bit port; `getCustomHops` is the
+BFS LINK distance between the attached routers, while McPAT charges buffer +
+crossbar + arbiter per FLIT per ROUTER crossed, and a packet crosses links + 1
+routers (two endpoints on one router: 0 links, 1 router). The reference log
+printed `Total flits: 21477` beside `Total packets: 21477`. One counter
+(`countPacket_`) now does it: flits = ceil(message bits / source port width,
+read from the `.topo` ext line Garnet flitises at), router traversals =
+(routers on the tree path, = links + 1; 1 on BUS/CROSSBAR) x flits;
+`total_hops` stays the link count (the latency and M/D/1 input). New
+`total_router_traversals`, `data_packets`, `control_packets` in GarnetStats,
+`printStats` and `garnet_stats.txt`. `BatchAccess` carries a control flag and
+the replay injects `MessageSizeType::Control` when it is set -- but no site
+in the tree records a control injection (one data packet per access, RTT =
+2 x one-way), so `noc.control_message_bits` still steers nothing; see the
+open items. Printed: `Total packets: N (data D, control C)`, `Total flits: F
+(ceil(message bits / source port width) per packet; data 576 b, control 64
+b)`, `Total hops: H (router-to-router links per packet; the latency input)`,
+`Router traversals: R (flits x routers crossed, routers = links + 1)`,
+`Link traversals: L (flits x router-to-router links)`. The roi line:
+`pre-ROI NoC flits dropped: F (P packets; N pending pre-ROI records replayed
+first)` -- the number is true flits now.
+
+**(2) F4: one hop total split across levels by a preset, while the routers
+counted per flit and nobody read them.** `buildNoCLevelsForMcPAT` gave level
+l the share 1/(1+l-pe_level) of the single hop total. Garnet's routers keep
+per-flit counters (`InputUnit` buffer reads/writes, `CrossbarSwitch`
+activity). Reading the source: `resetNetworkState()` (every drain) does NOT
+zero them -- only `resetStats()` does, and nothing calls it -- so they are
+cumulative since construction (the finding said they were zeroed per drain;
+they are not, and a per-drain accumulation would have double-counted).
+`Router` gains `getCrossbarActivityCount()/getBufferReadCount()/
+getBufferWriteCount()`, `GarnetNetwork` gains `getRouterAt()`; the bridge
+harvests DELTAS per router before and after every reset, at roi_begin
+(then zeroes the ROI totals) and before the stats write. The tree builder
+now records every router's level (`SparseHTree::levelOfRouter`) and
+`dramHTreeBuilder` writes `rlevel <router> <level> <branch 1|0>` lines into
+the `.topo` (Garnet's reader skips unknown tokens). The stats file gains
+`garnet.level_source = measured_crossbar` and, per level k,
+`garnet.level<k>.router_traversals` (measured crossbar flits),
+`.passthrough_traversals`, `.packet_traversals` (path-walk cross-check),
+`.buffer_reads/.buffer_writes`, `.routers`, `.branch_routers`. main.cpp
+prices each surviving level from its MEASURED flits: packet crossings =
+measured flits / (total flits / packets), re-cut at the level's width (F7).
+A stats file without the keys (older runs, a topology without router
+levels) falls back to the preset split of the router-traversal total -- or
+of hops, for a pre-1.11.92 file -- and says `PRESET`. Traversals measured at
+a level with no branch router and no endpoint (HBM3's chip routers) are
+printed as not priced. `chip_coverage = 1/surviving_levels` stays for area
+and wire length and is now labelled a preset. Printed per level: `[NoC] level
+k (Lx_name): accesses A = P packet crossings x F flits (576 b at W b,
+sourced ladder); crossings = N router flit traversals / 5 flits per packet,
+MEASURED by this level's Garnet routers (path walk: M crossings); duty ...
+= accesses/(C net cycles x n nodes, priced as r x c); chip_coverage x = 1/s
+surviving levels (preset); ports p (widest router built at this level);
+vcs=2 buffers=2 (Garnet builds 5/VC: a VC must hold one data packet)`;
+`printStats` adds `Measured by the Garnet routers: crossbar X flits, buffer
+reads Y, buffer writes Z` and one `Level k (name): ... MEASURED at n
+router(s) (b branch; t of the flits through pass-through routers); m packet
+crossings by path walk` line per level.
+
+**(3) F5: McPAT priced 4 VCs x 4 buffers where Garnet ran 2 x 2.**
+`mcfg.noc_vcs_per_vnet`/`noc_vc_buffer_size` were set only in the NoC probe;
+device scope and the per-node path kept the wrapper defaults 4/4 while
+`noc.vcs_per_vnet`/`noc.buffers_per_vc` gave Garnet 2/2. Both sites now pass
+the configured values, and the level line carries them as run facts. Found
+while reading: Garnet itself raises the VC depth to one data packet
+(`initGarnetNetwork`: max(buffers_per_vc, ceil(576/128)) = 5), so the
+simulated depth is 5, not 2; this release passes the CONFIGURED 2 as
+instructed and prints the built depth beside it (`garnet.
+effective_buffers_per_vc`). Which of the two McPAT should price is an open
+item.
+
+**(4) F7: every level was priced at Garnet's one 128-bit flit.** The
+sourced ladder gives 512/128/256/1024/64/64/1024 b on HBM3 (the `.topo`
+links are clamped to 64/128 b for Garnet's flit engine). Each McPAT level
+now gets its own width -- a `noc.levels` override first, else the sourced
+ladder rung, else Garnet's flit width, the level line naming which -- and
+its accesses are re-cut at that width (576 b = 5 accesses at 128 b, 3 at
+256 b, 9 at 64 b), so bus and router datapaths are priced at their width
+without charging a wide datapath once per narrow flit.
+
+**(5) F1: the analytical NoC printed "accesses 0" and "0W dynamic" as if
+measured.** The analytical path (`pe_memory_interface.h` remote branch)
+charges latency from `computeHierTraversal` and never counted a traversal
+(evidence: `_1166audit/x4probe/bank_analytical.log`, every level `accesses
+0 = 0 packets`). The same tier walk now counts (`hierTraversalLevels`: 2 visits
+per tier below the LCA, 1 at it = links + 1) into
+`GarnetNetwork::recordTierWalk` (lock-free), with the same flit semantics;
+the stats file carries `garnet.level_source = tier_walk` and the per-level
+keys, and the level line says `from the analytical tier walk`. A run with
+PE-MI remote accesses whose stats carry no count at all -- no per-level
+counts, no router traversals, no hops -- is REFUSED, exit 3: `[NoC] FATAL:
+N PE-MI remote accesses crossed the on-die fabric, but the network
+statistics (<path>) carry no traversal count -- no per-level counts, no
+router traversals, no hops. The NoC's dynamic power would be priced as 0 W
+for a fabric that carried traffic. Refusing to report it.` Not applied on
+the detailed path, where every injection is counted as replayed and an
+all-own-unit run legitimately sends nothing. The analytical standalone-MC
+hop (`mcHopLatency`, one RTT, no tier walk) is still not counted.
+
+**(6) F6/F8/F10/F11 (low).** F6: router ports were the literal 5; each
+level now gets the widest router the tree built there (children + parent +
+attached endpoints: the HBM3 rank hub 17, a bank-group node 3); the flat
+fabric and tree-less runs keep 5 and say `literal`. F8: `ceil(sqrt(n))^2`
+priced 32 nodes as 36; McPAT now gets the most-square exact factorisation
+(32 = 4 x 8; a prime n is n x 1), printed `priced as r x c`. F10: the parse
+defaults were 1000 MHz and 128 b, so the documented fallbacks (device clock,
+Garnet flit) were dead and a MISSING stats file priced an idle 1 GHz fabric;
+defaults are now 0 with `file_found`, the fallbacks print when they fire,
+and a detailed run with no stats file is refused, exit 3: `[NoC] FATAL: the
+detailed NoC was requested but its statistics file <path> does not exist,
+so the fabric's traffic, clock and flit width are all unknown. Refusing to
+price the NoC from defaults.` (per-node: `[NoC] FATAL: <node>: ... Refusing
+to price the device fabric from a placeholder.`). F11: `markRoiBegin` zeroed
+the counters but not `phaseBatch_`, so the current phase's pre-ROI records
+were replayed and counted by the first ROI drain, and the records after the
+last drain were never replayed. `drainPendingRecords()` replays them at
+roi_begin (OMP/single-process only; under thread-MPI nothing is recorded
+before the baseline) and before the final stats write (both modes;
+thread-MPI folds every held bucket), printing `[roi] N pending NoC records
+replayed before the final stats write`. The roi_begin replay feeds the
+latency EWMA, so OMP detailed-NoC TIMING can move slightly in the first ROI
+phase. An override `noc.<k>.*` for a level that is not priced now warns
+`[NoC] WARNING: power.mcpat_overrides.noc.<k>.<field> is IGNORED: level k
+(<name>) has no branch router and no endpoint, so it is not priced at all`.
+
+**(7) F9 (checked by reading: CONFIRMED, fixed).** The device PEs count in
+their own clock (the system config emits the ALU factors clock-invariant;
+node wall time = device cycles / node MHz), and the replay injects each
+record at its PE cycle and ticks Garnet once per cycle, so Garnet's cycles
+are device-PE cycles. `init.cpp` labelled the network with
+`zinfo->freqMHz`, the REFERENCE (host) clock in system scope. main.cpp then
+handed McPAT the host clock as the device fabric's clockrate and converted
+`dev_wall_cycles` (already device cycles) to "network cycles" by x
+host/device, dividing every level's duty by that ratio (4x on the shipped
+2000/500 co-sim). The network is now labelled with
+`sys.hierarchy.nocBandwidthFreqMHz` (the device clock the hierarchy block
+already carries) when present; the conversion stays, and is 1 in both
+scopes. Device scope is unchanged (the two are the same number).
+
+**(8) F3 (NOT fixed: needs a ruling).** `has_global_link=0` on every level,
+so McPAT builds no links for router levels (their wires carry no energy or
+area), and pass-through routers are priced as routers wherever a level
+survives. Fixing it is not specified by the finding in three places:
+(a) which routers are pass-through -- the builder's rule (< 2 ROUTER
+children) calls HBM3's 16 bank-group nodes and 16 bank nodes pass-through
+although each bank-group node has an endpoint attached and arbitrates
+between it and its child; (b) where pass-through traversals of a level with
+no McPAT instance go (HBM3's chip routers: 1.93 crossings per packet) -- a
+new links-only instance per such level changes the surviving-level count
+and with it every level's preset chip_coverage and wire length; (c) McPAT's
+NoC has ONE `total_accesses` for both router and link energy, so "router
+accesses = branch traversals, link traversals = pass-through traversals"
+needs a second access count in the fork's `noc.cc`. The wire length per
+level would be McPAT's die-area-based one (sqrt(area x chip_coverage) /
+((h+v)/2) / 2) -- the tree builder has no geometry. The per-level
+pass-through counts are exported now, so the fix becomes pricing-only.
+
+DATA IMPACT. Every detailed-NoC cell: NoC runtime dynamic rises. For the
+HBM3 reference shape, with the target mix modelled as uniform over the 511
+non-own units (reproduces 4.02 links/packet against the measured 4.07), a
+packet crosses 1.03 bank, 1.12 bank-group, 1.93 chip and 0.94 rank routers;
+flits 5 per packet. Accesses per packet: bank 5.15 (5 at 128 b), bank group
+3.35 (3 at 256 b), rank 8.45 (9 at 64 b); chip crossings are not priced
+(pass-through level, F3). With McPAT's per-access energies from the
+reference log (bank bus 5.18 pJ, bank-group router 22.29 pJ, rank router
+27.05 pJ, all at 128 b / 5 ports / 4x4 VCs) scaled linearly with the new
+width: 26.7 + 149.4 + 114.3 = 290 pJ per 64 B packet (278 pJ without the
+width scaling), 5.2-5.4x the 54 pJ; NoC dynamic ~0.57 -> ~3.0-3.1 mW. Not
+computed on the login node (McPAT was not run): F5 (2x2 buffers lower the
+buffer energy, which dominates a McPAT router) and F6 (the 17-port hub
+raises crossbar/arbiter energy, the 3-port bank-group node lowers it) move
+the per-access energies, by an estimated 0.6-1.1x net; the band for this
+release is 3-8x (1.5-4.5 mW). Had the chip routers been priced as routers (the audit's
+10-13x assumed every router crossed), about +213 pJ more. Leakage and area:
+F8 lowers the node count on non-square levels (HBM3 bank bus 36 -> 32), F6
+and F5 move router area. Against the HBM3 2.55 W memory background the
+fabric change is +~2.5 mW, about +0.1% of total device power. Analytical
+family: NoC dynamic goes from 0 to a real value (tier-walk counts x flits),
+or the run refuses. System scope: each level's duty rises by host/device
+(4x on the shipped co-sim) and McPAT's fabric clock is the device's -- peak
+power moves; runtime dynamic moves only through McPAT's clock-dependent
+sizing. OMP detailed cells: the roi_begin replay (F11) removes pre-ROI
+records from the first ROI drain (small timing and count change); every
+cell gains the final phase's traffic.
+
+Gate 1201A. Each fix a FIRES side against 1.11.91 on the HBM3 reference
+shape unless said:
+- F2: NEW `Total flits` = 5.00 x `Total packets` (OLD 1.00x); `Router
+  traversals` = (`Total hops` + `Total packets`) x 5 exactly (OLD has no such
+  line); `garnet_stats.txt` carries `total_router_traversals`,
+  `data_packets` = `total_packets`, `control_packets = 0`.
+- F4: `garnet.level_source = measured_crossbar` and `garnet.level1/2/3/4.
+  router_traversals` > 0 in the stats file; `Measured by the Garnet routers:
+  crossbar X` with X = `Router traversals` (all delivered; a per-drain
+  double count or a missed harvest breaks it); each level's measured flits
+  = 5 x its path-walk crossings; the `[NoC] level` lines say `MEASURED by
+  this level's Garnet routers` (OLD: `packets x 1/1.75`) and a `(L3_chip):
+  ... are NOT priced` line appears. Fallback side: the same binary on a
+  1.11.91 `garnet_stats.txt` prints `PRESET split`.
+- F5: with `PIMID_KEEP_MCPAT_XML=<dir>` the kept XML's NoC components carry
+  `virtual_channel_per_port" value="2"` and `input_buffer_entries_per_vc"
+  value="2"` (OLD 4/4); the level lines carry `vcs=2 buffers=2 (Garnet
+  builds 5/VC ...)`.
+- F6/F8/F7: `L4_rank ... ports 17`, `L2_bankgroup ... ports 3`, `L1_bank ...
+  priced as 4x8`; the XML's `flit_bits` are 128/256/64 for L1/L2/L4 (OLD
+  128/128/128).
+- NoC dynamic in [1.5, 4.5] mW (OLD 0.569); a value outside says the
+  estimate above is wrong (report the per-level McPAT energies), not that a
+  fix failed.
+- F1: `_1166audit/x4probe/cfg_bank_analytical.yaml`: the stats file says
+  `level_source = tier_walk`, the level lines say `from the analytical tier
+  walk` with accesses > 0 and NoC dynamic > 0 (OLD 0 W). Refusal side: the
+  same run with `PIMID_NOC_STATS_FAULT=nocounts` exits 3 with `[NoC] FATAL:
+  ... carry no traversal count`.
+- F10: the reference shape with `PIMID_NOC_STATS_FAULT=missing` exits 3 with
+  `the detailed NoC was requested but its statistics file`; OLD priced it.
+- F11: an OMP detailed cell prints `pending pre-ROI records replayed first`
+  with N > 0 in the roi line and `[roi] N pending NoC records replayed before
+  the final stats write`; a thread-MPI cell prints `0 pending pre-ROI
+  records`.
+- F9: a system-scope co-sim (`g88_083416/cfg_sys_f50.yaml` shape): the stats
+  file's `garnet.clock_mhz` is the device node's MHz (OLD the reference
+  MHz), and the level lines' `net cycles` equal the device wall cycles.
+- Parity: device-scope `garnet.clock_mhz` unchanged; a thread-MPI detailed
+  cell's cycle count identical to OLD (no roi_begin replay there, and the
+  final replay runs after timing ends); `--print-mem-info` identical to OLD
+  on every technology apart from the `.topo` file's `rlevel` lines; memory
+  array and core power lines identical on a thread-MPI cell.
+
+Open (not in this release): F3 (above). `noc.control_message_bits` steers
+nothing: every recorded injection is a data message, and making control
+messages real is a model change -- (a) split each access into a Control
+request and a Data response (two packets, the measured RTT replaces 2 x
+one-way), (b) keep one packet per access and declare the knob inert with a
+warning, or (c) count a notional control return for energy only. And which
+VC depth McPAT prices: the configured `noc.buffers_per_vc` (2, this release)
+or the depth Garnet builds (5).
+
 ## 1.11.91 -- the array priced a rank the access never opened
 
 Found by a read-only audit of the DRAM array energy path (2026-09-26, round 8,

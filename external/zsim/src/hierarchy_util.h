@@ -164,6 +164,32 @@ static inline uint64_t computeHierTraversal(
     return total;
 }
 
+/* 1.11.92 (F1): the SAME tier walk as computeHierTraversal, counting instead
+ * of charging. perLevel[l] += the number of times the walk visits tier l's
+ * node: twice for every tier below the lowest common ancestor (up and back
+ * down), once at it -- links + 1 router visits for a walk of `links` links,
+ * the same traversal semantics as the detailed path. Returns the link count
+ * (2 x (lca - placement)); 0 and no visits for src == dst, which does not
+ * traverse, exactly as computeHierTraversal charges it nothing. */
+static inline uint32_t hierTraversalLevels(
+        uint32_t src_unit, uint32_t dst_unit, uint32_t perLevel[7],
+        uint32_t placement, uint32_t sa_per_bank,
+        uint32_t banks_per_bg, uint32_t bg_per_chip,
+        uint32_t chips_per_rank = 1, uint32_t ranks_per_channel = 1) {
+    for (int l = 0; l < 7; l++) perLevel[l] = 0;
+    if (src_unit == dst_unit) return 0;
+    HierPos src = unitToHierPos(src_unit, placement, sa_per_bank, banks_per_bg,
+                                 bg_per_chip, chips_per_rank, ranks_per_channel);
+    HierPos dst = unitToHierPos(dst_unit, placement, sa_per_bank, banks_per_bg,
+                                 bg_per_chip, chips_per_rank, ranks_per_channel);
+    int lca = computeLCA(src, dst);
+    int start = (int)placement;
+    for (int l = start; l < lca; l++)
+        if (l >= 0 && l < 7) perLevel[l] += 2;
+    if (lca >= 0 && lca < 7) perLevel[lca] += 1;
+    return (lca > start) ? (uint32_t)(2 * (lca - start)) : 0u;
+}
+
 /**
  * Map a PE to its primary (home) memory organization unit using the
  * flattened mapping table.  Returns pe_id when no mapping is configured

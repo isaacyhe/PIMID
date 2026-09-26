@@ -113,6 +113,18 @@ class Router : public BasicRouter, public Consumer
 
     int getBitWidth() { return m_bit_width; }
 
+    /* PIMID 1.11.92 (F4): read the per-flit activity counters the router
+     * keeps for power. They were collated only by collateStats(), which the
+     * PIMID bridge never calls, so the counters existed and nothing read
+     * them. resetState() (the per-drain network reset) does NOT zero them --
+     * only resetStats() does, and nothing in the bridge calls that -- so they
+     * are cumulative since construction; the reader takes deltas. */
+    double getCrossbarActivityCount() {
+        return crossbarSwitch.get_crossbar_activity();
+    }
+    double getBufferReadCount();    // defined in Router.cc (needs InputUnit)
+    double getBufferWriteCount();
+
     PortDirection getOutportDirection(int outport);
     PortDirection getInportDirection(int inport);
 

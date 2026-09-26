@@ -1435,6 +1435,32 @@ void McPATWrapper::computePower() {
             }
         }
     }
+    /* 1.11.92 (gate 1201A): PIMID_KEEP_MCPAT_XML makes the priced input
+     * greppable by a gate. The XML is already left in /tmp and archived to
+     * the run's output directory by main.cpp, but both are node-local on a
+     * compute node. =1 names the priced file on stderr; any other value is
+     * taken as a directory and the file is also copied there. */
+    if (const char* keep = std::getenv("PIMID_KEEP_MCPAT_XML")) {
+        if (keep[0] && !pending_xml_path_.empty()) {
+            std::cerr << "[power] McPAT XML kept (PIMID_KEEP_MCPAT_XML): "
+                      << pending_xml_path_ << std::endl;
+            if (std::string(keep) != "1") {
+                std::string base = pending_xml_path_;
+                size_t sl = base.rfind('/');
+                if (sl != std::string::npos) base = base.substr(sl + 1);
+                std::string dst = std::string(keep) + "/" + base;
+                std::ifstream in(pending_xml_path_, std::ios::binary);
+                std::ofstream out(dst, std::ios::binary);
+                if (in.good() && out.good()) {
+                    out << in.rdbuf();
+                    std::cerr << "[power] McPAT XML copied to " << dst << std::endl;
+                } else {
+                    std::cerr << "[power] WARNING: could not copy the McPAT XML to "
+                              << dst << std::endl;
+                }
+            }
+        }
+    }
     component_power_.clear();
     for (int i = 0; i < ResultBlob::kNumComponents; i++) {
         component_power_[kComponentOrder[i]] = blob.component_power[i];
@@ -3060,6 +3086,16 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"type\" value=\"" << lvl.type << "\"/>\n";
             xml << "      <param name=\"horizontal_nodes\" value=\"" << lvl.horizontal_nodes << "\"/>\n";
             xml << "      <param name=\"vertical_nodes\" value=\"" << lvl.vertical_nodes << "\"/>\n";
+            /* 1.11.92 (F3, NOT fixed): with has_global_link=0 McPAT builds no
+             * links for router levels, so their wires carry no energy or
+             * area, and pass-through routers are priced as routers wherever
+             * a level survives. Turning links on, and moving pass-through
+             * traversals from router accesses to link traversals, needs a
+             * modelling ruling (which routers are pass-through when an
+             * endpoint hangs on them; where the traversals of levels with no
+             * McPAT instance go; McPAT has ONE access count per instance) --
+             * see the 1.11.92 changelog. The per-level pass-through counts
+             * are already exported for it. */
             xml << "      <param name=\"has_global_link\" value=\"0\"/>\n";
             xml << "      <param name=\"link_throughput\" value=\"1\"/>\n";
             xml << "      <param name=\"link_latency\" value=\"1\"/>\n";

@@ -93,6 +93,15 @@ struct SparseHTree {
     int branchAtLevel[7] = {0,0,0,0,0,0,0};
     int endpointsAtLevel[7] = {0,0,0,0,0,0,0};
 
+    /* 1.11.92 (F4): the tree LEVEL of every router, indexed by router id
+     * (ROOT = 6 ... the placement level). The census above counts routers
+     * per level but threw away which router sat where, so nothing downstream
+     * could attribute a measured per-router traversal count to a level --
+     * and the power model split one hop total across levels by a preset.
+     * Filled from the same info map the build maintains, so it cannot
+     * disagree with the tree it describes. */
+    std::vector<int> levelOfRouter;
+
     int totalEndpoints() const { return numPEs + numAbstract; }
 
     /* 1.10: total PE-level organisations this tree accounts for -- one per PE
@@ -348,8 +357,11 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
 
     /* 1.11: census the built tree by level. Uses the same info map the build
      * maintained, so this cannot disagree with the tree it describes. */
+    t.levelOfRouter.assign((size_t)t.numRouters, -1);   // 1.11.92 (F4)
     for (const auto& kv : info) {
         int lvl = kv.second.first;
+        if (kv.first >= 0 && kv.first < t.numRouters)
+            t.levelOfRouter[(size_t)kv.first] = lvl;
         if (lvl < 0 || lvl > 6) continue;
         if ((int)kv.second.second.size() >= 2) t.branchAtLevel[lvl]++;
     }

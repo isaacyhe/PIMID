@@ -211,6 +211,9 @@ void SimEnd() {
     }
 
     if (zinfo->garnetNetwork) {
+        // 1.11.92 (F11): replay the final phase's pending records first.
+        zinfo->garnetNetwork->drainPendingRecords(false, zinfo->phaseLength,
+                                                  zinfo->numPhases + 1);
         zinfo->garnetNetwork->setTotalCycles(zinfo->globPhaseCycles);
         std::string garnetStatsPath = std::string(zinfo->outputDir) + "/garnet_stats.txt";
         zinfo->garnetNetwork->writeStatsFile(garnetStatsPath.c_str());

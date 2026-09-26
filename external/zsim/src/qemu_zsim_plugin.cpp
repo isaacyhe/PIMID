@@ -214,6 +214,7 @@ static bool in_zsim[MAX_VCPUS];
 /* ROI state -- set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
 static std::atomic<bool> in_roi{true};              /* true = record; default on for non-ROI workloads */
 static void roiRebaseTrafficCounters(const char* where);   // 1.11.90, defined below
+static bool threadMpiMode();   // 1.11.92: g_mpi_thread_mode, which is declared below
 // 1.6 thread-MPI: N rank-threads each bracket their own ROI in ONE process.
 // Baselines snapshot at the FIRST begin; termination fires at the LAST end.
 static std::atomic<int> g_roiRefCount{0};
@@ -327,12 +328,30 @@ static void roiRebaseTrafficCounters(const char* where) {
             groups++;
         }
     }
-    uint64_t pre_flits = 0;
-    if (zinfo->garnetNetwork) pre_flits += zinfo->garnetNetwork->markRoiBegin();
-    if (zinfo->systemGarnetNetwork) pre_flits += zinfo->systemGarnetNetwork->markRoiBegin();
+    /* 1.11.92 (F11): replay the pre-ROI records still waiting for a drain
+     * BEFORE the counters are zeroed, so they are dropped with the rest of
+     * the pre-ROI traffic instead of being replayed -- and counted -- by the
+     * first ROI drain. Not under thread-MPI: nothing is recorded there
+     * before the ROI baseline, which is set just before this call, so what
+     * is pending is ROI traffic. */
+    uint64_t pre_replayed = 0;
+    if (zinfo->garnetNetwork && !threadMpiMode())
+        pre_replayed = zinfo->garnetNetwork->drainPendingRecords(
+            false, zinfo->phaseLength, zinfo->numPhases);
+    uint64_t pre_flits = 0, pre_pkts = 0;
+    if (zinfo->garnetNetwork) {
+        pre_flits += zinfo->garnetNetwork->markRoiBegin();
+        pre_pkts  += zinfo->garnetNetwork->roiDroppedPackets();
+    }
+    if (zinfo->systemGarnetNetwork) {
+        pre_flits += zinfo->systemGarnetNetwork->markRoiBegin();
+        pre_pkts  += zinfo->systemGarnetNetwork->roiDroppedPackets();
+    }
     info("[roi] traffic counters rebased at roi_begin (%s): %u stat groups, "
-         "pre-ROI memory-controller accesses dropped: %lu, pre-ROI NoC flits dropped: %lu",
-         where, groups, (unsigned long)pre_mem, (unsigned long)pre_flits);
+         "pre-ROI memory-controller accesses dropped: %lu, pre-ROI NoC flits dropped: %lu "
+         "(%lu packets; %lu pending pre-ROI records replayed first)",
+         where, groups, (unsigned long)pre_mem, (unsigned long)pre_flits,
+         (unsigned long)pre_pkts, (unsigned long)pre_replayed);
 }
 /* This rank's simulated cycle measured from its ROI baseline (floor-free).
  *
@@ -428,6 +447,7 @@ static bool thread_initialized[MAX_THREADS];            // false until ensureThr
  * getenv; false in per-rank trace-gen processes (PIMID_MPI_RANK set), which
  * keep process-mode semantics. */
 static bool g_mpi_thread_mode = false;
+static bool threadMpiMode() { return g_mpi_thread_mode; }
 /* 1.11.19 (D4): emulated MPI rank count, resolved once at install.
  * 1.11.62 (ruling 5b): the coherence flush no longer DIVIDES by this. Every
  * rank's arrival walks the caches itself and charges the delta it finds, so
@@ -952,6 +972,15 @@ static void dumpTerminationStats() {
     dumpGapHistograms();   // 1.11.40 (audit E17): measurement only
 
     if (zinfo->garnetNetwork) {
+        /* 1.11.92 (F11): the records of the phase after the last drain were
+         * never replayed, so the final phase was missing from every count.
+         * Replay what is pending (thread-MPI: every bucket still held back
+         * by the cut) before the stats are written. */
+        uint64_t tail = zinfo->garnetNetwork->drainPendingRecords(
+            threadMpiMode(), zinfo->phaseLength, zinfo->numPhases + 1);
+        if (tail)
+            info("[roi] %lu pending NoC records replayed before the final stats write",
+                 (unsigned long)tail);
         zinfo->garnetNetwork->setTotalCycles(zinfo->globPhaseCycles);
         std::string garnetStatsPath = std::string(zinfo->outputDir) + "/garnet_stats.txt";
         zinfo->garnetNetwork->writeStatsFile(garnetStatsPath.c_str());

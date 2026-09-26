@@ -125,8 +125,23 @@ inline NoCRouting getDefaultRouting(NoCTopology topo) {
 struct GarnetStats {
     // Traffic statistics
     uint64_t total_packets = 0;
+    /* 1.11.92 (F2): TRUE flits -- ceil(message bits / source port width) per
+     * packet, the count Garnet's NetworkInterface actually flitises into. It
+     * was "+= 1 per packet", so a 576-bit data message over a 128-bit port
+     * (5 flits) was counted as one, and every energy built on it was 5x
+     * short. */
     uint64_t total_flits = 0;
+    /* Router-to-router LINK hops, per packet (BFS link distance on CUSTOM).
+     * Kept as the latency / M/D/1 input it has always been. NOT an energy
+     * count: a packet between two endpoints on one router is 0 links but
+     * crosses 1 router. */
     uint64_t total_hops = 0;
+    /* 1.11.92 (F2): what McPAT charges per access -- one flit through one
+     * router. Per packet: (routers crossed) x flits, routers crossed =
+     * links + 1 (1 on a BUS/CROSSBAR). */
+    uint64_t total_router_traversals = 0;
+    uint64_t data_packets = 0;      // injected as MessageSizeType::Data
+    uint64_t control_packets = 0;   // injected as MessageSizeType::Control
 
     // Router activity
     uint64_t buffer_reads = 0;
@@ -152,6 +167,34 @@ struct GarnetStats {
     // Topology / routing info
     std::string topology_name;
     std::string routing_name;
+
+    /* 1.11.92 (F4/F1): per-HIERARCHY-LEVEL traversals (index = tree level,
+     * 0 = subarray ... 6 = system root), ROI only.
+     *   level_flit_traversals: flits through a router of that level.
+     *     Detailed: MEASURED -- the routers' own crossbar counters, summed
+     *     by the level the tree builder assigned each router. Analytical:
+     *     the tier walk's router visits x flits per packet.
+     *   level_passthrough_flit_traversals: the subset through pass-through
+     *     routers (< 2 router children), kept apart for the F3 wire pricing.
+     *   level_packet_traversals: packets crossing a router of that level,
+     *     from the path walk (detailed) or the tier walk (analytical); the
+     *     detailed value is a cross-check on the measured flits.
+     * level_source says which ("measured_crossbar", "tier_walk" or "" when
+     * the run has no per-level attribution). */
+    uint64_t level_flit_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t level_passthrough_flit_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t level_buffer_reads[7] = {0,0,0,0,0,0,0};
+    uint64_t level_buffer_writes[7] = {0,0,0,0,0,0,0};
+    uint32_t level_routers[7] = {0,0,0,0,0,0,0};
+    uint32_t level_branch_routers[7] = {0,0,0,0,0,0,0};
+    std::string level_source;
+    // Measured whole-network totals from the Garnet routers (detailed only).
+    uint64_t measured_crossbar_flits = 0;
+    uint64_t measured_buffer_reads = 0;
+    uint64_t measured_buffer_writes = 0;
+    uint32_t data_msg_bits = 576;
+    uint32_t control_msg_bits = 64;
 };
 
 
@@ -209,10 +252,22 @@ private:
     std::vector<std::vector<uint32_t>> customAdj_;
     std::vector<uint32_t> epToRouter_;  // 1.9.36: endpoint id -> attached router id
     uint32_t customRouterCount_ = 0;
+    /* 1.11.92 (F2/F4): per-endpoint port width (the "ext" line's width field,
+     * the width Garnet's NI flitises at), and per-router tree level / branch
+     * flag from the "rlevel" lines main.cpp writes. Parent/depth are the
+     * rooted-tree view (ROOT = router 0) used by the per-packet path walk. */
+    std::vector<uint32_t> epWidth_;
+    std::vector<int> routerLevel_;
+    std::vector<uint8_t> routerBranch_;
+    std::vector<int> routerParent_;
+    std::vector<int> routerDepth_;
+    bool customIsTree_ = false;
 
     // ── Statistics ───────────────────────────────────────────
     GarnetStats stats_;
     bool roi_rebased_ = false;   // 1.11.90
+    uint64_t roiDroppedPackets_ = 0;   // 1.11.92: packets behind the dropped flits
+    bool tierWalkUsed_ = false;        // 1.11.92 (F1): analytical counts recorded
 
 #ifdef HAVE_GARNET
     // ── Cycle-accurate Garnet bridge ──────────────────────────
@@ -232,6 +287,12 @@ private:
     std::unordered_map<uint64_t, uint32_t> completedPackets_;
     // set of destinations with at least one pending packet (avoids scanning all nodes)
     std::unordered_set<uint32_t> activeDsts_;
+
+    /* 1.11.92 (F4): per-router activity, harvested from the Garnet routers'
+     * own counters. *Seen_ is the last raw value read (the counters are
+     * cumulative -- see Router.hh); *Tot_ is the ROI-window total. */
+    std::vector<double> rtrXbarSeen_, rtrBufRdSeen_, rtrBufWrSeen_;
+    std::vector<uint64_t> rtrXbarTot_, rtrBufRdTot_, rtrBufWrTot_;
 #endif
 
     // Lock for thread-safe direct Garnet access from multiple PE-MIs
@@ -298,6 +359,10 @@ public:
         stats_.clock_mhz = clockMhz;
         stats_.topology_name = nocTopologyStr(topology_);
         stats_.routing_name = nocRoutingStr(routing_);
+        // 1.11.92 (F2): the message sizes Garnet flitises (same defaults as
+        // gem5_compat Network::m_*_msg_size: control 64 b, data 576 b).
+        stats_.data_msg_bits = dataMsgBits_ > 0 ? dataMsgBits_ : 576;
+        stats_.control_msg_bits = controlMsgBits_ > 0 ? controlMsgBits_ : 64;
 
         // Parse custom topology file if needed
         if (topology_ == NoCTopology::CUSTOM && !customTopoFile_.empty()) {
@@ -580,16 +645,11 @@ public:
         // Save garnet time
         garnetTick_ = gem5::curTickRef();
 
-        // Update stats
+        // Update stats (1.11.92 F2: true flits and router traversals)
         uint32_t hops = getHopCount(src, dst);
         stats_.total_packets++;
-        stats_.total_hops += hops;
         stats_.total_latency += latCycles;
-        stats_.total_flits += 1;
-        stats_.buffer_reads += hops;
-        stats_.buffer_writes += hops;
-        stats_.crossbar_traversals += hops;
-        stats_.link_traversals += hops;
+        countPacket_(src, dst, hops, false);
 
         futex_unlock(&garnetLock_);
 
@@ -599,7 +659,13 @@ public:
 public:
     // ── Phase-level batch: record all PE remote accesses with their
     //    real ZSim cycle timestamps, then replay through Garnet.
-    struct BatchAccess { uint32_t src, dst; uint64_t cycle; };
+    /* 1.11.92 (F2): `ctrl` selects MessageSizeType::Control (control_msg_bits)
+     * over Data (data_msg_bits) for the injection. Every recording site in
+     * this tree records a data-bearing access (one packet per access, RTT =
+     * 2 x its one-way latency), so all of them pass Data today; the field
+     * exists so a control injection is flitised and counted at its own size
+     * the moment one is recorded. */
+    struct BatchAccess { uint32_t src, dst; uint64_t cycle; uint8_t ctrl = 0; };
 private:
     std::vector<BatchAccess> phaseBatch_;
     // Published rolling one-way avg latency (lock-free read by all PE threads).
@@ -646,8 +712,17 @@ public:
     void resetGarnetState() {
         if (!garnetInitialized_ || !garnetNet_) return;
 
+        /* 1.11.92 (F4): fold the routers' per-flit counters into the
+         * per-router totals BEFORE the reset, and re-read them after it.
+         * resetNetworkState() does not zero them today (only resetStats()
+         * does, and nothing calls it), so they are cumulative and the harvest
+         * takes deltas; the re-read keeps that correct if a future reset
+         * does zero them. Caller holds garnetLock_. */
+        harvestRouterCountersLocked_();
+
         // 1. Reset the gem5 Garnet network (routers, NIs, links, EventQueue)
         garnetNet_->resetNetworkState();
+        resnapRouterCountersLocked_();
 
         // 2. Clear all MessageBuffers (toNet and fromNet queues)
         for (auto* mb : allMsgBufs_) {
@@ -663,9 +738,10 @@ public:
      * Called from PE-MI on every remote access when Garnet is cycle-accurate.
      * Thread-safe (uses batchLock_).
      */
-    void recordBatchAccess(uint32_t src, uint32_t dst, uint64_t cycle) {
+    void recordBatchAccess(uint32_t src, uint32_t dst, uint64_t cycle,
+                           bool ctrl = false) {
         futex_lock(&batchLock_);
-        phaseBatch_.push_back({src, dst, cycle});
+        phaseBatch_.push_back({src, dst, cycle, (uint8_t)(ctrl ? 1 : 0)});
         // PIMID_INJ_DUMP=<path>: order-independent census of everything injected,
         // to separate "the runs execute different accesses" from "the runs bin the
         // same accesses into different phases". Per source node: count, and sums
@@ -942,7 +1018,8 @@ private:
                     acc.dst < numNodes_) {
                     auto msg = std::make_shared<gem5::ruby::SimpleMessage>(
                         acc.src, acc.dst,
-                        gem5::ruby::MessageSizeType::Data,
+                        acc.ctrl ? gem5::ruby::MessageSizeType::Control
+                                 : gem5::ruby::MessageSizeType::Data,
                         gem5::curTickRef());
                     msg->setTag(tag);
                     toNetBufs_[acc.src][0]->enqueue(
@@ -1046,19 +1123,15 @@ private:
                  delivered, validCount, validCount - delivered, phaseNum);
         }
 
-        // Update stats
+        // Update stats (1.11.92 F2: true flits and router traversals per
+        // packet; the routers' own counters are harvested at the reset)
         stats_.total_packets += delivered;
         stats_.total_latency += totalLat;
         for (auto& acc : batch) {
             if (acc.src == acc.dst || acc.src >= numNodes_ || acc.dst >= numNodes_)
                 continue;
             uint32_t hops = getHopCount(acc.src, acc.dst);
-            stats_.total_hops += hops;
-            stats_.total_flits++;
-            stats_.buffer_reads += hops;
-            stats_.buffer_writes += hops;
-            stats_.crossbar_traversals += hops;
-            stats_.link_traversals += hops;
+            countPacket_(acc.src, acc.dst, hops, acc.ctrl != 0);
         }
 
         garnetTick_ = gem5::curTickRef();
@@ -1082,38 +1155,226 @@ public:
      * hierarchy from process start (the plugin records by default), so the
      * serial array-init traffic reached these counters and was then priced
      * over the ROI wall clock. Called from the plugin at roi_begin, once per
-     * network. Returns the number of flits dropped so the caller can say so. */
+     * network. Returns the number of flits dropped so the caller can say so.
+     *
+     * 1.11.92 (F2/F4/F11): the returned count is TRUE flits now (it was
+     * packets under the name "flits"), the per-router counters and the
+     * per-level arrays are rebased with the rest, and the caller drains the
+     * pending pre-ROI records FIRST (drainPendingRecords) so they are
+     * replayed and dropped here instead of leaking into the first ROI
+     * drain. */
     uint64_t markRoiBegin() {
+#ifdef HAVE_GARNET
+        futex_lock(&garnetLock_);
+        harvestRouterCountersLocked_();
+        std::fill(rtrXbarTot_.begin(), rtrXbarTot_.end(), 0);
+        std::fill(rtrBufRdTot_.begin(), rtrBufRdTot_.end(), 0);
+        std::fill(rtrBufWrTot_.begin(), rtrBufWrTot_.end(), 0);
+        futex_unlock(&garnetLock_);
+#endif
         const uint64_t dropped = stats_.total_flits;
+        roiDroppedPackets_ = stats_.total_packets;
         stats_.total_packets = 0; stats_.total_flits = 0; stats_.total_hops = 0;
+        stats_.total_router_traversals = 0;
+        stats_.data_packets = 0; stats_.control_packets = 0;
         stats_.buffer_reads = 0; stats_.buffer_writes = 0;
         stats_.crossbar_traversals = 0; stats_.arbiter_events = 0;
         stats_.link_traversals = 0; stats_.total_latency = 0;
+        for (int l = 0; l < 7; l++) {
+            stats_.level_flit_traversals[l] = 0;
+            stats_.level_passthrough_flit_traversals[l] = 0;
+            stats_.level_packet_traversals[l] = 0;
+            stats_.level_buffer_reads[l] = 0;
+            stats_.level_buffer_writes[l] = 0;
+        }
+        stats_.measured_crossbar_flits = 0;
+        stats_.measured_buffer_reads = 0;
+        stats_.measured_buffer_writes = 0;
         roi_rebased_ = true;
         return dropped;
     }
     bool roiRebased() const { return roi_rebased_; }
+    uint64_t roiDroppedPackets() const { return roiDroppedPackets_; }
 
     void setTotalCycles(uint64_t cycles) { stats_.total_cycles = cycles; }
 
+    /* 1.11.92 (F11): replay the records still waiting for a drain.
+     *
+     * Two edges of the ROI window lost or mis-filed traffic. At roi_begin the
+     * counters were zeroed but phaseBatch_ was not, so the pre-ROI records of
+     * the current phase were replayed by the first ROI drain and counted as
+     * ROI traffic. At the end, the records of the phase after the last drain
+     * were never replayed at all, so the final phase was missing from the
+     * report. The plugin calls this at roi_begin (before markRoiBegin, OMP /
+     * single-process only: under thread-MPI nothing is recorded before the
+     * ROI baseline, so phaseBatch_ then holds ROI records) and once more
+     * before the final stats write (both modes; thread-MPI folds every
+     * pending bucket through the same cut logic, with an unbounded cut).
+     * The shared-memory MPI path keeps its records in the shm rings, not
+     * here, and is not touched. Returns the number of records replayed. */
+    uint64_t drainPendingRecords(bool threadMpi, uint32_t phaseLength,
+                                 uint64_t phaseNum) {
+#ifdef HAVE_GARNET
+        if (!cycleAccurate_) return 0;
+        if (threadMpi) {
+            futex_lock(&batchLock_);
+            uint64_t n = phaseBatch_.size();
+            for (auto& kv : pendingByPhase_) n += kv.second.size();
+            futex_unlock(&batchLock_);
+            if (n) foldByCut(~0ull, phaseLength);
+            return n;
+        }
+        futex_lock(&batchLock_);
+        std::vector<BatchAccess> batch = std::move(phaseBatch_);
+        phaseBatch_.clear();
+        futex_unlock(&batchLock_);
+        uint64_t n = batch.size();
+        if (n) runBatchDrain_(std::move(batch), phaseNum);
+        return n;
+#else
+        (void)threadMpi; (void)phaseLength; (void)phaseNum;
+        return 0;
+#endif
+    }
+
+    /* 1.11.92 (F1): the ANALYTICAL NoC's traversal count. The analytical
+     * path charges latency from the hierarchy tier walk and never touched
+     * these counters, so every analytical run exported zero traffic and the
+     * power model printed "accesses 0 ... 0W dynamic" at every level as if
+     * that had been measured. perLevel[l] = routers of tier l the walk
+     * visits (up to the LCA and back down: 2 per tier below the LCA, 1 at
+     * it -- the same links + 1 as the detailed path). Flits per packet are
+     * the message at this network's flit width, as on the detailed path.
+     * Lock-free: PE-MI threads call it concurrently. */
+    void recordTierWalk(const uint32_t perLevel[7], uint32_t links,
+                        bool ctrl = false) {
+        const uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
+        const uint32_t bits = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
+        const uint64_t flits = std::max(1u, (bits + fb - 1) / fb);
+        uint64_t routers = 0;
+        for (int l = 0; l < 7; l++) {
+            if (!perLevel[l]) continue;
+            __atomic_fetch_add(&stats_.level_packet_traversals[l],
+                               (uint64_t)perLevel[l], __ATOMIC_RELAXED);
+            __atomic_fetch_add(&stats_.level_flit_traversals[l],
+                               (uint64_t)perLevel[l] * flits, __ATOMIC_RELAXED);
+            routers += perLevel[l];
+        }
+        __atomic_fetch_add(&stats_.total_packets, (uint64_t)1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(ctrl ? &stats_.control_packets : &stats_.data_packets,
+                           (uint64_t)1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&stats_.total_hops, (uint64_t)links, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&stats_.total_flits, flits, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&stats_.total_router_traversals, routers * flits,
+                           __ATOMIC_RELAXED);
+        __atomic_fetch_add(&stats_.link_traversals, (uint64_t)links * flits,
+                           __ATOMIC_RELAXED);
+        tierWalkUsed_ = true;
+    }
+
+    /* 1.11.92 (F4): fold the routers' measured counters into the per-level
+     * arrays (detailed) and name the source. Called before the stats are
+     * written; takes garnetLock_. */
+    void finalizeStats() {
+#ifdef HAVE_GARNET
+        /* A detailed tree whose Garnet was never built (every access went to
+         * the PE's own unit, which does not enter the network) measured zero
+         * at every router: that is a measurement, and says so. */
+        if (cycleAccurate_ && !routerLevel_.empty() && !(garnetInitialized_ && garnetNet_)) {
+            for (size_t r = 0; r < routerLevel_.size(); r++) {
+                int lv = routerLevel_[r];
+                if (lv < 0 || lv > 6) continue;
+                stats_.level_routers[lv]++;
+                if (r < routerBranch_.size() && routerBranch_[r])
+                    stats_.level_branch_routers[lv]++;
+            }
+            stats_.level_source = "measured_crossbar";
+            return;
+        }
+        if (cycleAccurate_ && garnetInitialized_ && garnetNet_) {
+            futex_lock(&garnetLock_);
+            harvestRouterCountersLocked_();
+            stats_.measured_crossbar_flits = 0;
+            stats_.measured_buffer_reads = 0;
+            stats_.measured_buffer_writes = 0;
+            for (int l = 0; l < 7; l++) {
+                stats_.level_flit_traversals[l] = 0;
+                stats_.level_passthrough_flit_traversals[l] = 0;
+                stats_.level_buffer_reads[l] = 0;
+                stats_.level_buffer_writes[l] = 0;
+                stats_.level_routers[l] = 0;
+                stats_.level_branch_routers[l] = 0;
+            }
+            for (size_t r = 0; r < rtrXbarTot_.size(); r++) {
+                stats_.measured_crossbar_flits += rtrXbarTot_[r];
+                stats_.measured_buffer_reads   += rtrBufRdTot_[r];
+                stats_.measured_buffer_writes  += rtrBufWrTot_[r];
+                int lv = (r < routerLevel_.size()) ? routerLevel_[r] : -1;
+                if (lv < 0 || lv > 6) continue;
+                bool br = (r < routerBranch_.size()) && routerBranch_[r];
+                stats_.level_flit_traversals[lv] += rtrXbarTot_[r];
+                if (!br) stats_.level_passthrough_flit_traversals[lv] += rtrXbarTot_[r];
+                stats_.level_buffer_reads[lv]  += rtrBufRdTot_[r];
+                stats_.level_buffer_writes[lv] += rtrBufWrTot_[r];
+                stats_.level_routers[lv]++;
+                if (br) stats_.level_branch_routers[lv]++;
+            }
+            stats_.level_source = routerLevel_.empty() ? "" : "measured_crossbar";
+            futex_unlock(&garnetLock_);
+            return;
+        }
+#endif
+        stats_.level_source = tierWalkUsed_ ? "tier_walk" : "";
+    }
+
     void printStats() const {
+        static const char* kLvl[7] = { "subarray", "bank", "bankgroup", "chip",
+                                       "rank", "channel", "system" };
         info("[GarnetNetwork] Statistics (%s, %s)%s:",
              stats_.topology_name.c_str(), stats_.routing_name.c_str(),
              roi_rebased_ ? " [ROI only: counters rebased at roi_begin, 1.11.90]"
                           : " [whole run: no roi_begin was seen]");
-        info("  Total packets: %lu", stats_.total_packets);
-        info("  Total flits: %lu", stats_.total_flits);
-        info("  Total hops: %lu", stats_.total_hops);
-        info("  Link traversals: %lu", stats_.link_traversals);
-        info("  Buffer reads: %lu", stats_.buffer_reads);
-        info("  Buffer writes: %lu", stats_.buffer_writes);
-        info("  Crossbar traversals: %lu", stats_.crossbar_traversals);
+        info("  Total packets: %lu (data %lu, control %lu)", stats_.total_packets,
+             stats_.data_packets, stats_.control_packets);
+        info("  Total flits: %lu (ceil(message bits / source port width) per packet; "
+             "data %u b, control %u b)", stats_.total_flits,
+             stats_.data_msg_bits, stats_.control_msg_bits);
+        info("  Total hops: %lu (router-to-router links per packet; the latency input)",
+             stats_.total_hops);
+        info("  Router traversals: %lu (flits x routers crossed, routers = links + 1)",
+             stats_.total_router_traversals);
+        info("  Link traversals: %lu (flits x router-to-router links)",
+             stats_.link_traversals);
+        if (!stats_.level_source.empty() && stats_.level_source == "measured_crossbar") {
+            info("  Measured by the Garnet routers: crossbar %lu flits, buffer reads %lu, "
+                 "buffer writes %lu", stats_.measured_crossbar_flits,
+                 stats_.measured_buffer_reads, stats_.measured_buffer_writes);
+        }
+        for (int l = 0; l < 7; l++) {
+            if (!stats_.level_flit_traversals[l] && !stats_.level_packet_traversals[l] &&
+                !stats_.level_routers[l])
+                continue;
+            if (stats_.level_source == "measured_crossbar") {
+                info("  Level %d (%s): %lu flit traversals MEASURED at %u router(s) "
+                     "(%u branch; %lu of the flits through pass-through routers); "
+                     "%lu packet crossings by path walk", l, kLvl[l],
+                     stats_.level_flit_traversals[l], stats_.level_routers[l],
+                     stats_.level_branch_routers[l],
+                     stats_.level_passthrough_flit_traversals[l],
+                     stats_.level_packet_traversals[l]);
+            } else {
+                info("  Level %d (%s): %lu flit traversals, %lu packet crossings "
+                     "(analytical tier walk)", l, kLvl[l],
+                     stats_.level_flit_traversals[l], stats_.level_packet_traversals[l]);
+            }
+        }
         if (stats_.total_packets > 0) {
             info("  Avg latency: %lu cycles", stats_.total_latency / stats_.total_packets);
         }
     }
 
-    void writeStatsFile(const char* filename) const {
+    void writeStatsFile(const char* filename) {
+        finalizeStats();
         FILE* f = fopen(filename, "w");
         if (!f) {
             warn("[GarnetNetwork] Failed to write stats to %s", filename);
@@ -1123,8 +1384,11 @@ public:
         fprintf(f, "garnet.topology = %s\n", stats_.topology_name.c_str());
         fprintf(f, "garnet.routing = %s\n", stats_.routing_name.c_str());
         fprintf(f, "garnet.total_packets = %lu\n", stats_.total_packets);
+        fprintf(f, "garnet.data_packets = %lu\n", stats_.data_packets);
+        fprintf(f, "garnet.control_packets = %lu\n", stats_.control_packets);
         fprintf(f, "garnet.total_flits = %lu\n", stats_.total_flits);
         fprintf(f, "garnet.total_hops = %lu\n", stats_.total_hops);
+        fprintf(f, "garnet.total_router_traversals = %lu\n", stats_.total_router_traversals);
         fprintf(f, "garnet.buffer_reads = %lu\n", stats_.buffer_reads);
         fprintf(f, "garnet.buffer_writes = %lu\n", stats_.buffer_writes);
         fprintf(f, "garnet.crossbar_traversals = %lu\n", stats_.crossbar_traversals);
@@ -1137,7 +1401,39 @@ public:
         fprintf(f, "garnet.num_cols = %u\n", stats_.num_cols);
         fprintf(f, "garnet.flit_size_bits = %u\n", stats_.flit_size_bits);
         fprintf(f, "garnet.vcs_per_vnet = %u\n", stats_.vcs_per_vnet);
+        fprintf(f, "garnet.buffers_per_vc = %u\n", buffersPerVc_);
+        {
+            // What initGarnetNetwork builds: a VC must hold one data packet.
+            uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
+            uint32_t df = (stats_.data_msg_bits + fb - 1) / fb;
+            fprintf(f, "garnet.effective_buffers_per_vc = %u\n",
+                    std::max(buffersPerVc_, std::max(df, 1u)));
+        }
+        fprintf(f, "garnet.data_msg_bits = %u\n", stats_.data_msg_bits);
+        fprintf(f, "garnet.control_msg_bits = %u\n", stats_.control_msg_bits);
         fprintf(f, "garnet.clock_mhz = %.1f\n", stats_.clock_mhz);
+        fprintf(f, "garnet.level_source = %s\n",
+                stats_.level_source.empty() ? "none" : stats_.level_source.c_str());
+        fprintf(f, "garnet.measured_crossbar_flits = %lu\n", stats_.measured_crossbar_flits);
+        fprintf(f, "garnet.measured_buffer_reads = %lu\n", stats_.measured_buffer_reads);
+        fprintf(f, "garnet.measured_buffer_writes = %lu\n", stats_.measured_buffer_writes);
+        if (!stats_.level_source.empty()) {
+            for (int l = 0; l < 7; l++) {
+                fprintf(f, "garnet.level%d.router_traversals = %lu\n", l,
+                        stats_.level_flit_traversals[l]);
+                fprintf(f, "garnet.level%d.passthrough_traversals = %lu\n", l,
+                        stats_.level_passthrough_flit_traversals[l]);
+                fprintf(f, "garnet.level%d.packet_traversals = %lu\n", l,
+                        stats_.level_packet_traversals[l]);
+                fprintf(f, "garnet.level%d.buffer_reads = %lu\n", l,
+                        stats_.level_buffer_reads[l]);
+                fprintf(f, "garnet.level%d.buffer_writes = %lu\n", l,
+                        stats_.level_buffer_writes[l]);
+                fprintf(f, "garnet.level%d.routers = %u\n", l, stats_.level_routers[l]);
+                fprintf(f, "garnet.level%d.branch_routers = %u\n", l,
+                        stats_.level_branch_routers[l]);
+            }
+        }
         fclose(f);
     }
 
@@ -1500,6 +1796,125 @@ public:
 #endif
 
 private:
+    /* 1.11.92 (F2): flits for one message from endpoint `srcEp`. Garnet's
+     * NetworkInterface cuts a message into ceil(message bits / port width)
+     * flits, at the width of the source endpoint's link (NetworkInterface::
+     * flitisizeMessage, oPort->bitWidth()); there is no SerDes on these
+     * links, so the count is fixed at injection. */
+    uint32_t portWidthOf_(uint32_t ep) const {
+        if (ep < epWidth_.size() && epWidth_[ep] > 0) return epWidth_[ep];
+        return flitSizeBits_ > 0 ? flitSizeBits_ : 128;
+    }
+    uint32_t flitsFor_(uint32_t srcEp, bool ctrl) const {
+        const uint32_t w = portWidthOf_(srcEp);
+        const uint32_t b = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
+        return std::max(1u, (b + w - 1) / w);
+    }
+
+    /* 1.11.92 (F2/F4): the routers a packet crosses on the CUSTOM tree, in
+     * order: up from the source's router to the lowest common ancestor and
+     * down to the destination's (the only shortest path on a tree, which is
+     * what TABLE routing takes). false when the topology is not a rooted
+     * tree or an endpoint is unattached. */
+    bool pathRouters_(uint32_t srcEp, uint32_t dstEp,
+                      std::vector<uint32_t>& out) const {
+        out.clear();
+        if (!customIsTree_) return false;
+        if (srcEp >= epToRouter_.size() || dstEp >= epToRouter_.size()) return false;
+        uint32_t a = epToRouter_[srcEp], b = epToRouter_[dstEp];
+        if (a == UINT32_MAX || b == UINT32_MAX) return false;
+        if (a >= routerDepth_.size() || b >= routerDepth_.size()) return false;
+        std::vector<uint32_t> down;
+        while (routerDepth_[a] > routerDepth_[b]) {
+            out.push_back(a);
+            if (routerParent_[a] < 0) return false;
+            a = (uint32_t)routerParent_[a];
+        }
+        while (routerDepth_[b] > routerDepth_[a]) {
+            down.push_back(b);
+            if (routerParent_[b] < 0) return false;
+            b = (uint32_t)routerParent_[b];
+        }
+        while (a != b) {
+            out.push_back(a); down.push_back(b);
+            if (routerParent_[a] < 0 || routerParent_[b] < 0) return false;
+            a = (uint32_t)routerParent_[a]; b = (uint32_t)routerParent_[b];
+        }
+        out.push_back(a);
+        out.insert(out.end(), down.rbegin(), down.rend());
+        return true;
+    }
+
+    /* 1.11.92 (F2): ONE place that counts a packet. Replaces five copies of
+     * "total_flits += 1; buffer_reads += hops; ...", which counted a packet
+     * as one flit and a router traversal as a link hop. */
+    void countPacket_(uint32_t src, uint32_t dst, uint32_t hops, bool ctrl) {
+        const uint64_t flits = flitsFor_(src, ctrl);
+        uint64_t routers;
+        thread_local std::vector<uint32_t> path;
+        if (topology_ == NoCTopology::CUSTOM && pathRouters_(src, dst, path)) {
+            routers = path.size();
+            for (uint32_t r : path) {
+                int lv = (r < routerLevel_.size()) ? routerLevel_[r] : -1;
+                if (lv >= 0 && lv <= 6) stats_.level_packet_traversals[lv]++;
+            }
+        } else if (topology_ == NoCTopology::BUS || topology_ == NoCTopology::CROSSBAR) {
+            routers = 1;      // one arbiter / one crossbar, hop count is 1
+        } else {
+            routers = (uint64_t)hops + 1;
+        }
+        stats_.total_hops += hops;
+        stats_.total_flits += flits;
+        stats_.total_router_traversals += routers * flits;
+        if (ctrl) stats_.control_packets++; else stats_.data_packets++;
+        stats_.buffer_reads += routers * flits;
+        stats_.buffer_writes += routers * flits;
+        stats_.crossbar_traversals += routers * flits;
+        stats_.arbiter_events += routers;          // one allocation per packet per router
+        stats_.link_traversals += (uint64_t)hops * flits;
+    }
+
+#ifdef HAVE_GARNET
+    /* 1.11.92 (F4): fold each router's cumulative counters into its ROI
+     * total. Caller holds garnetLock_. A counter that went DOWN was reset
+     * underneath us: count from zero. */
+    static void harvestOne_(double now, double& seen, uint64_t& tot) {
+        double d = now - seen;
+        if (d < 0.0) d = now;
+        tot += (uint64_t)(d + 0.5);
+        seen = now;
+    }
+    void harvestRouterCountersLocked_() {
+        if (!garnetInitialized_ || !garnetNet_) return;
+        const int n = garnetNet_->getNumRouters();
+        if ((int)rtrXbarSeen_.size() != n) {
+            rtrXbarSeen_.assign(n, 0.0); rtrBufRdSeen_.assign(n, 0.0);
+            rtrBufWrSeen_.assign(n, 0.0);
+            rtrXbarTot_.assign(n, 0); rtrBufRdTot_.assign(n, 0);
+            rtrBufWrTot_.assign(n, 0);
+        }
+        for (int i = 0; i < n; i++) {
+            gem5::ruby::garnet::Router* r = garnetNet_->getRouterAt(i);
+            if (!r) continue;
+            harvestOne_(r->getCrossbarActivityCount(), rtrXbarSeen_[i], rtrXbarTot_[i]);
+            harvestOne_(r->getBufferReadCount(),  rtrBufRdSeen_[i], rtrBufRdTot_[i]);
+            harvestOne_(r->getBufferWriteCount(), rtrBufWrSeen_[i], rtrBufWrTot_[i]);
+        }
+    }
+    void resnapRouterCountersLocked_() {
+        if (!garnetInitialized_ || !garnetNet_) return;
+        const int n = garnetNet_->getNumRouters();
+        if ((int)rtrXbarSeen_.size() != n) return;
+        for (int i = 0; i < n; i++) {
+            gem5::ruby::garnet::Router* r = garnetNet_->getRouterAt(i);
+            if (!r) continue;
+            rtrXbarSeen_[i]  = r->getCrossbarActivityCount();
+            rtrBufRdSeen_[i] = r->getBufferReadCount();
+            rtrBufWrSeen_[i] = r->getBufferWriteCount();
+        }
+    }
+#endif
+
     // ── Topology-specific hop count functions ────────────────
 
     uint32_t getHopCount(uint32_t src, uint32_t dst) const {
@@ -1673,7 +2088,50 @@ private:
                 iss >> ep >> rt;
                 if (epToRouter_.size() <= ep) epToRouter_.resize(ep + 1, UINT32_MAX);
                 epToRouter_[ep] = rt;
+                /* 1.11.92 (F2): the port width Garnet flitises at (0 = the
+                 * global flit width, as in TopologyBuilders::buildFromFile). */
+                long lat; uint32_t w = 0;
+                if (iss >> lat) { if (!(iss >> w)) w = 0; }
+                if (epWidth_.size() <= ep) epWidth_.resize(ep + 1, 0);
+                epWidth_[ep] = w;
+            } else if (token == "rlevel") {
+                // 1.11.92 (F4): "rlevel <router> <level> <branch 1|0>"
+                uint32_t r; int lv = -1, br = 0;
+                iss >> r >> lv >> br;
+                if (routerLevel_.size() <= r) {
+                    routerLevel_.resize(r + 1, -1);
+                    routerBranch_.resize(r + 1, 0);
+                }
+                routerLevel_[r] = lv;
+                routerBranch_[r] = (uint8_t)(br ? 1 : 0);
             }
+        }
+
+        /* 1.11.92 (F2/F4): the rooted-tree view for the per-packet path walk.
+         * Same test as TopologyBuilders::buildFromFile's tree detection: every
+         * router reachable from ROOT (0) and exactly routers-1 undirected
+         * edges (each "int" line is one direction). */
+        const size_t R = customAdj_.size();
+        routerParent_.assign(R, -1);
+        routerDepth_.assign(R, -1);
+        customIsTree_ = false;
+        if (R > 0) {
+            size_t directed = 0;
+            for (const auto& v : customAdj_) directed += v.size();
+            std::vector<uint32_t> q; q.push_back(0);
+            routerDepth_[0] = 0;
+            size_t head = 0, visited = 1;
+            while (head < q.size()) {
+                uint32_t u = q[head++];
+                for (uint32_t v : customAdj_[u]) {
+                    if (routerDepth_[v] != -1) continue;
+                    routerDepth_[v] = routerDepth_[u] + 1;
+                    routerParent_[v] = (int)u;
+                    visited++;
+                    q.push_back(v);
+                }
+            }
+            customIsTree_ = (visited == R) && (directed == (R - 1) * 2);
         }
     }
 
@@ -1721,15 +2179,9 @@ private:
 
         uint32_t latency = baseLat + contentionCycles;
 
-        // Update stats
-        stats_.total_hops += hops;
+        // Update stats (1.11.92 F2: true flits and router traversals)
         stats_.total_latency += latency;
-        stats_.total_flits += 1;
-        stats_.buffer_reads += hops;
-        stats_.buffer_writes += hops;
-        stats_.crossbar_traversals += hops;
-        stats_.arbiter_events += hops;
-        stats_.link_traversals += hops;
+        countPacket_(src, dst, hops, false);
 
         return latency;
     }
@@ -1786,16 +2238,10 @@ private:
             latCycles = getAnalyticalLatency(src, dst);
         }
 
-        // Update stats
+        // Update stats (1.11.92 F2: true flits and router traversals)
         uint32_t hops = getHopCount(src, dst);
-        stats_.total_hops += hops;
         stats_.total_latency += latCycles;
-        stats_.total_flits += 1;
-        stats_.buffer_reads += hops;
-        stats_.buffer_writes += hops;
-        stats_.crossbar_traversals += hops;
-        stats_.arbiter_events += hops;
-        stats_.link_traversals += hops;
+        countPacket_(src, dst, hops, false);
 
         return latCycles;
 #else

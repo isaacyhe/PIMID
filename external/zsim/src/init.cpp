@@ -477,7 +477,26 @@ static void InitSystem(Config& config) {
         uint32_t routerLat = config.get<uint32_t>("sys.network.routerLatency", 1);
         uint32_t linkLat = config.get<uint32_t>("sys.network.linkLatency", 1);
         bool cycleAccurate = config.get<bool>("sys.network.cycleAccurate", false);
+        /* 1.11.92 (F9): the clock the network's cycles are ticked in.
+         * The replay injects each record at the PE cycle it was stamped with
+         * and advances Garnet one cycle per tick, so Garnet's cycles ARE the
+         * device PE's cycles. In device scope that is sys.frequency. In
+         * system scope sys.frequency is the REFERENCE (max over nodes, the
+         * host) while the device PEs count in their own clock (main.cpp:
+         * "the clock difference is a downstream wall-clock effect (cycles /
+         * node_freq)") -- so labelling the network with zinfo->freqMHz handed
+         * McPAT the host clock as the device fabric's clockrate, and the
+         * power model's duty conversion (net_cycles = device cycles x
+         * fabric MHz / device MHz) then divided each level's duty by the
+         * host/device ratio (4x on the shipped 2000/500 co-sim). The device
+         * clock is the one the hierarchy block already carries for exactly
+         * this reason (nocBandwidthFreqMHz); 0 = not system scope. The value
+         * is a label here: Garnet's own timing is in cycles and unchanged. */
         double clockMhz = static_cast<double>(zinfo->freqMHz);
+        {
+            uint32_t devMhz = config.get<uint32_t>("sys.hierarchy.nocBandwidthFreqMHz", 0);
+            if (devMhz > 0) clockMhz = static_cast<double>(devMhz);
+        }
 
         // New multi-topology parameters
         string topoStr = config.get<const char*>("sys.network.topology", "MESH_2D");

@@ -94,6 +94,8 @@ class GarnetNetwork : public Network
         return m_vnet_type[vnet];
     }
     int getNumRouters();
+    // PIMID 1.11.92 (F4): per-router access for the activity counters.
+    Router* getRouterAt(int i) { return m_routers[i]; }
     int get_router_id(int ni, int vnet);
 
     // Diagnostic: dump every blocked (SA-requesting) input VC and what it is
