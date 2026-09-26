@@ -35,6 +35,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <cmath>
+#include <string>
 
 Router::Router(
     double flit_size_,
@@ -278,15 +279,40 @@ void Router::buffer_stats()
   buffer.power.readOp  = buff.power.readOp;
   buffer.power.writeOp = buffer.power.readOp; //FIXME
   buffer.area = buff.area;
-  // Sanitize area if NaN (CACTI 7 edge case with small router buffers)
+  {
+    /* PIMID 1.11.90: gate fault injection (see pimid_fault in McPAT's
+     * basic_components.h; CACTI does not link that file, so it is read
+     * here directly). Unset, nothing changes. */
+    const char* f = std::getenv("PIMID_MCPAT_FAULT");
+    if (f && std::string(f) == "bufarea") {
+      std::cerr << "[inject] PIMID_MCPAT_FAULT=bufarea: injecting a"
+                   " non-finite value at this site (gate only)" << std::endl;
+      buffer.area.w = NAN;
+    }
+  }
+  /* PIMID 1.11.90: the AREA gets the same rule as the energy above. This
+   * used to substitute the bare cells (cell pitch x rows x columns, no
+   * decoder, no sense amplifier, no periphery) whenever the Mat's area came
+   * back non-finite -- a different answer, printed under the Mat's name, 30
+   * lines below the refusal that 1.11.87 wrote for the energy. It REFUSES
+   * now, naming the node and the geometry. Nothing measured reaches it: the
+   * Mat's area converges wherever its energy does (22, 32, 65 nm). */
   if (!std::isfinite(buffer.area.w) || !std::isfinite(buffer.area.h) ||
       !std::isfinite(buffer.area.get_area())) {
-    double cell_w = dyn_p.cell.w;
-    double cell_h = dyn_p.cell.h;
-    int cols = (int)flit_size * (int)vc_count;
-    int rows = (int)vc_buffer_size;
-    buffer.area.w = cell_w * cols;
-    buffer.area.h = cell_h * rows;
+    std::cerr << "[cacti] FATAL: the router input-buffer Mat returned a"
+                 " non-finite AREA (w " << buffer.area.w << " um, h "
+              << buffer.area.h << " um) at " << g_ip->F_sz_nm << " nm for a "
+              << (int)vc_buffer_size << " x "
+              << ((int)flit_size*(int)vc_count) << " buffer ("
+              << (int)vc_count << " VCs x " << (int)flit_size << " b). This"
+                 " build used to substitute the bare cell array (no decoder,"
+                 " sense amplifier or periphery), which is a different answer"
+                 " from the Mat's; no area is emitted for this level instead."
+                 " Options: use a node at which the Mat converges, reduce"
+                 " noc.vcs_per_vnet or noc.buffers_per_vc, or run"
+                 " noc.model: analytical, which does not price a router."
+              << std::endl;
+    std::exit(2);
   }
 }
 

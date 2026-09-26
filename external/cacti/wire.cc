@@ -54,7 +54,7 @@ Wire::Wire(
     try {
       Wire winit;
     } catch (...) {
-      // Wire init failed — leave this wire with zero power
+      // Wire init failed -- leave this wire with zero power
       return;
     }
   }

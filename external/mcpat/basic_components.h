@@ -35,6 +35,7 @@
 #include "XML_Parse.h"
 #include "parameter.h"
 #include <vector>
+#include <string>
 
 const double cdb_overhead = 1.1;
 
@@ -132,6 +133,37 @@ double longer_channel_device_reduction(
 
 double power_gating_leakage_reduction(
 		bool retain_state=false);
+
+/* PIMID 1.11.90: THE SUBSTITUTION LEDGER.
+ *
+ * Four places in this fork replace a number CACTI or McPAT could not produce
+ * with one it did not: the ArrayST power sanitiser (NaN/inf/negative -> 0,
+ * and an array CACTI found no organisation for left at zero power and area),
+ * the router sanitiser in noc.cc, the interconnect early returns (a link at
+ * zero power), and the long-channel / power-gating reduction factors below.
+ * They used to do it in silence. Each now prints one stderr line the first
+ * time a given structure is substituted and adds to a per-kind count. The
+ * counts travel back to PIMID in the forked child's result blob, and PIMID
+ * REFUSES the run when any is non-zero (PIMID_ALLOW_ARRAY_CLAMP=1 lets it
+ * continue, printing the counts). Counting is per event; printing is once
+ * per key, so a structure built once per core does not flood the log. */
+enum PimidSubstKind {
+	PIMID_SUBST_ARRAY     = 0,  // ArrayST power clamp / no CACTI solution
+	PIMID_SUBST_NOC       = 1,  // router power sanitised (noc.cc)
+	PIMID_SUBST_LINK      = 2,  // interconnect left at zero power
+	PIMID_SUBST_REDUCTION = 3,  // long-channel / power-gating factor
+	PIMID_SUBST_KINDS     = 4
+};
+void pimid_note_substitution(int kind, const std::string& key,
+                             const std::string& line);
+int  pimid_substitution_count(int kind);
+void pimid_reset_substitutions();
+/* PIMID 1.11.90: GATE FAULT INJECTION. True when the environment variable
+ * PIMID_MCPAT_FAULT names `site` (array, router, link, reduction, extract,
+ * noclevel, bufarea); prints one "[inject]" line the first time. It exists
+ * so each refusal above has a deterministic FIRES arm in the release gate;
+ * unset, it is a getenv() and a string compare, and changes nothing. */
+bool pimid_fault(const char* site);
 
 class CoreDynParam {
 public:

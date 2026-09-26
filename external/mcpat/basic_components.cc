@@ -33,6 +33,10 @@
 #include <iostream>
 #include <assert.h>
 #include <cmath>
+#include <cstdlib>
+#include <set>
+#include <sstream>
+#include <string>
 
 double longer_channel_device_reduction(
 		enum Device_ty device_ty,
@@ -80,8 +84,21 @@ double longer_channel_device_reduction(
 		exit(0);
 	}
 
-	if (std::isnan(long_channel_device_reduction) || std::isinf(long_channel_device_reduction))
+	/* PIMID 1.11.90: a non-finite factor is still replaced by 1.0 (no
+	 * reduction) so the build can finish and say what happened, but it is
+	 * no longer silent: it is printed and counted, and PIMID refuses the
+	 * run (see the substitution ledger in basic_components.h). */
+	if (std::isnan(long_channel_device_reduction) || std::isinf(long_channel_device_reduction)) {
+		std::ostringstream os;
+		os << "[mcpat] WARNING: long-channel leakage reduction for device class "
+		   << (int)device_ty << " was " << long_channel_device_reduction
+		   << " (g_tp.peri_global.long_channel_leakage_reduction = "
+		   << g_tp.peri_global.long_channel_leakage_reduction
+		   << "), replaced by 1.0 (no reduction)";
+		pimid_note_substitution(PIMID_SUBST_REDUCTION,
+		                        "lc" + std::to_string((int)device_ty), os.str());
 		long_channel_device_reduction = 1.0;
+	}
 	return long_channel_device_reduction;
 }
 
@@ -101,15 +118,68 @@ double power_gating_leakage_reduction(
 	}
 	else
 	{
+		/* PIMID 1.11.90: `!(Vdd > 0)` so a NaN rail fails the test too. */
 		if (g_tp.peri_global.Vdd > 0)
 			powergating_leakage_reduction = g_tp.peri_global.Vcc_min/g_tp.peri_global.Vdd;
-		else
+		else {
+			std::ostringstream os;
+			os << "[mcpat] WARNING: power-gating leakage reduction has no rail:"
+			      " g_tp.peri_global.Vdd = " << g_tp.peri_global.Vdd
+			   << " (Vcc_min " << g_tp.peri_global.Vcc_min
+			   << "), replaced by 0 (gated leakage priced at zero)";
+			pimid_note_substitution(PIMID_SUBST_REDUCTION, "pg_vdd", os.str());
 			powergating_leakage_reduction = 0;
+		}
 	}
 
-	if (std::isnan(powergating_leakage_reduction) || std::isinf(powergating_leakage_reduction))
+	if (pimid_fault("reduction")) powergating_leakage_reduction = NAN;
+	if (std::isnan(powergating_leakage_reduction) || std::isinf(powergating_leakage_reduction)) {
+		std::ostringstream os;
+		os << "[mcpat] WARNING: power-gating leakage reduction was "
+		   << powergating_leakage_reduction << " (Vcc_min "
+		   << g_tp.peri_global.Vcc_min << " / Vdd " << g_tp.peri_global.Vdd
+		   << "), replaced by 0 (gated leakage priced at zero)";
+		pimid_note_substitution(PIMID_SUBST_REDUCTION, "pg_nan", os.str());
 		powergating_leakage_reduction = 0;
+	}
 	return powergating_leakage_reduction;
+}
+
+/* PIMID 1.11.90: the substitution ledger (declared in basic_components.h).
+ * The forked McPAT child is single-threaded; plain statics suffice. */
+static int pimid_subst_counts[PIMID_SUBST_KINDS] = {0, 0, 0, 0};
+
+void pimid_note_substitution(int kind, const std::string& key,
+                             const std::string& line)
+{
+	static std::set<std::string> printed;
+	if (kind < 0 || kind >= PIMID_SUBST_KINDS) kind = PIMID_SUBST_ARRAY;
+	pimid_subst_counts[kind]++;
+	if (printed.insert(std::to_string(kind) + "|" + key).second)
+		std::cerr << line << std::endl;
+}
+
+int pimid_substitution_count(int kind)
+{
+	if (kind < 0 || kind >= PIMID_SUBST_KINDS) return 0;
+	return pimid_subst_counts[kind];
+}
+
+bool pimid_fault(const char* site)
+{
+	static std::set<std::string> announced;
+	const char* f = std::getenv("PIMID_MCPAT_FAULT");
+	if (!f || std::string(f) != site) return false;
+	if (announced.insert(site).second)
+		std::cerr << "[inject] PIMID_MCPAT_FAULT=" << site
+		          << ": injecting a non-finite value at this site (gate only)"
+		          << std::endl;
+	return true;
+}
+
+void pimid_reset_substitutions()
+{
+	for (int i = 0; i < PIMID_SUBST_KINDS; i++) pimid_subst_counts[i] = 0;
 }
 
 statsComponents operator+(const statsComponents & x, const statsComponents & y)

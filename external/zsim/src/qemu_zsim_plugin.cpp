@@ -3806,3 +3806,14 @@ int qemu_plugin_install(qemu_plugin_id_t id,
 
     return 0;
 }
+
+/* PIMID 1.11.90: component version stamp. The loader in src/main.cpp reads
+ * the "@(#)PIMID_COMPONENT" string from this file and refuses a component
+ * whose version differs from the binary's (see locatePimidComponent). */
+#ifndef PIMID_VERSION
+#error "PIMID_VERSION must be defined for the component version stamp"
+#endif
+extern "C" __attribute__((visibility("default"), used))
+const char zsim_qemu_component_stamp[] = "@(#)PIMID_COMPONENT libzsim_qemu.so " PIMID_VERSION;
+extern "C" __attribute__((visibility("default")))
+const char* zsim_qemu_component_version(void) { return PIMID_VERSION; }

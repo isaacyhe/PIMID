@@ -91,7 +91,7 @@ pim:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `pim.pe.type` | string | `"in_order_core"` | PE core type. See [PE Types](#pe-types). |
-| `pim.pe.core_type` | string | — | Alias for `pim.pe.type`. |
+| `pim.pe.core_type` | string | - | Alias for `pim.pe.type`. |
 | `pim.pe.count` | int | `4` | Number of processing elements. |
 | `pim.pe.frequency_mhz` | int | `2000` | PE clock frequency in MHz. Overrides `system.frequency_mhz`. |
 
@@ -152,8 +152,8 @@ pim:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `pim.mapping.mode` | string | `"uniform"` | Mapping mode: `uniform` (auto-computed) or `explicit` (user-specified table). |
-| `pim.mapping.pes_per_mem_org` | int | `0` | M:1 mapping — M PEs share each memory org. Mutually exclusive with `mem_orgs_per_pe`. |
-| `pim.mapping.mem_orgs_per_pe` | int | `0` | 1:N mapping — each PE covers N memory orgs. Mutually exclusive with `pes_per_mem_org`. |
+| `pim.mapping.pes_per_mem_org` | int | `0` | M:1 mapping -- M PEs share each memory org. Mutually exclusive with `mem_orgs_per_pe`. |
+| `pim.mapping.mem_orgs_per_pe` | int | `0` | 1:N mapping -- each PE covers N memory orgs. Mutually exclusive with `pes_per_mem_org`. |
 | `pim.mapping.map` | list | `[]` | Explicit mapping (mode=`explicit`). Each entry: `{pe: <id>, mem_orgs: [<ids>]}`. |
 
 If neither `pes_per_mem_org` nor `mem_orgs_per_pe` is set, PIMID auto-derives a 1:N mapping.
@@ -286,9 +286,9 @@ memory:
 | `memory.controller.ramulator_config` | string | `""` | Path to custom Ramulator2 YAML config. Overrides auto-generated config. |
 
 **Auto-derivation rules** (when `type: auto`):
-- DRAM technologies → `ramulator` (cycle-accurate Ramulator2)
-- SRAM → `simple` (fixed latency from CACTI)
-- NVM (STT-MRAM, PCM, ReRAM) → `simple` (fixed latency from NVSim)
+- DRAM technologies -> `ramulator` (cycle-accurate Ramulator2)
+- SRAM -> `simple` (fixed latency from CACTI)
+- NVM (STT-MRAM, PCM, ReRAM) -> `simple` (fixed latency from NVSim)
 - In-order/out-of-order cores auto-upgrade a `simple` controller to `weavesimple`
 
 ---
@@ -416,7 +416,7 @@ Valid level names: `subarray`, `bank`, `bank_group`, `chip`, `rank`, `channel`, 
 | `noc.levels.<level>.topology` | string | `""` | Override topology for this level. |
 | `noc.levels.<level>.router_latency` | int | `-1` | Router latency in cycles. |
 | `noc.levels.<level>.router_pipeline` | string/int | `-1` | Router pipeline: `"full"` (0), `"reduced"` (1), `"simple"` (2), `"minimal"` (3). |
-| `noc.levels.<level>.router_bypass` | bool | — | Enable router bypass. |
+| `noc.levels.<level>.router_bypass` | bool | - | Enable router bypass. |
 | `noc.levels.<level>.virtual_networks` | int | `-1` | Virtual networks. |
 | `noc.levels.<level>.virtual_channels_per_vn` | int | `-1` | VCs per virtual network. |
 | `noc.levels.<level>.input_buffer_depth` | int | `-1` | Input buffer depth. |
@@ -615,7 +615,7 @@ time; `in_order_core` issue width defaults to 2, env-tunable via
 | `num_alus` | int | Number of ALUs. |
 | `num_muls` | int | Number of multipliers. |
 | `num_fpus` | int | Number of FPUs. |
-| `device_type` | int | McPAT device type parameter. |
+| `device_type` | int | McPAT device corner: 0 (hp), 1 (lstp), 2 (lop). Anything else is refused at config load (1.11.90); CACTI's lp-dram column is reached through `power.device_corner` on a DRAM-periphery placement, not through this key. |
 | `longer_channel_device` | int | 0=short channel, 1=long channel. |
 | `number_hardware_threads` | int | Hardware threads per core. |
 | `interconnect_projection_type` | int | NoC projection type. |
@@ -646,8 +646,8 @@ power:
 | `power.pcie.base_latency_ns` | double | `500.0` | Per-transaction overhead (ns). |
 | `power.pcie.bandwidth_GBs` | double | `63.0` | Peak bandwidth (GB/s). |
 | `power.pcie.num_lanes` | int | `16` | Number of PCIe lanes. |
-| `power.pcie.num_units` | int | `1` | Number of PCIe units. |
-| `power.pcie.num_channels` | int | `16` | Number of channels. |
+| `power.pcie.num_units` | int | `1` | Number of PCIe units. NOT READ in system scope (the link count comes from the declared links). |
+| `power.pcie.num_channels` | int | `16` | Number of channels. NOT READ when `num_lanes` > 0 (the lane count is used). |
 | `power.pcie.duty_cycle` | double | `0.01` | PCIe duty cycle (0-1). |
 | `power.pcie.total_load_perc` | double | `0.01` | Total load percentage (0-1). |
 
@@ -698,7 +698,7 @@ system:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.hosts[].name` | string | — | Host node name (required). |
+| `system.hosts[].name` | string | - | Host node name (required). |
 | `system.hosts[].core_type` | string | `"ooo_core"` | Host core type. |
 | `system.hosts[].num_cores` | int | `4` | Number of host cores. |
 | `system.hosts[].frequency_mhz` | double | `3000.0` | Host frequency. |
@@ -710,7 +710,7 @@ system:
 | `system.hosts[].cache.l1i_kb` | int | `32` | Host L1I size. |
 | `system.hosts[].cache.l2_kb` | int | `256` | Host L2 size. |
 | `system.hosts[].cache.l3_kb` | int | `0` | Host L3 size; `0` disables the L3. |
-| `system.hosts[].workload` | map | — | Per-host workload (binary, args, env). Inherits top-level workload if empty. |
+| `system.hosts[].workload` | map | - | Per-host workload (binary, args, env). Inherits top-level workload if empty. |
 
 #### Host Memory Path (co-sim)
 
@@ -788,19 +788,19 @@ system:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.devices[].name` | string | — | Device name (required). |
+| `system.devices[].name` | string | - | Device name (required). |
 | `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). |
-| `system.devices[].attachment` | string | `"pcie_gen4"` | Interconnect: `pcie_gen4`, `pcie_gen5`, `cxl_2_0`, `cxl_3_0`, `interposer`. |
+| `system.devices[].attachment` | string | `"external"` | Today the code distinguishes only `internal` from anything else (external); the link class is set by `system.network.links[].type` / `power.link.link_type`, not here. |
 | `system.devices[].pe_type` | string | `"alu_core"` | PE core type (compute devices only). |
 | `system.devices[].num_pes` | int | `0` | Number of PEs (compute devices only). |
 | `system.devices[].frequency_mhz` | int | `1000` | Device frequency. |
 | `system.devices[].tech_node_nm` | int | `22` | Device technology node. |
-| `system.devices[].memory` | map | — | Device memory config (`technology`, etc.). |
+| `system.devices[].memory` | map | - | Device memory config (`technology`, etc.). |
 | `system.devices[].is_default_mem` | bool | `true` | `true`: this PIM device IS the host's main memory (host tech = device tech by construction). `false`: accelerator-side memory only -- the host MUST supply a `host.mem` block (else config error). |
-| `system.devices[].pim` | map | — | Device PIM config (`placement`, `mc`, `mapping`). |
-| `system.devices[].noc` | map | — | Parsed but currently inert (reserved). |
-| `system.devices[].cache` | map | — | Device cache config. |
-| `system.devices[].workload` | map | — | Per-device workload. Inherits top-level if empty. |
+| `system.devices[].pim` | map | - | Device PIM config (`placement`, `pe`, `mc`). `mapping` is NOT READ here. |
+| `system.devices[].noc` | map | - | Device NoC: `model` (`analytical` or `detailed`, as the top-level `noc.model`; anything else is refused) and `topology` are used; `pg` sets NoC power gating. |
+| `system.devices[].cache` | map | - | Device cache config. |
+| `system.devices[].workload` | map | - | Per-device workload. Inherits top-level if empty. |
 
 ### Host-Device Bridge (co-sim)
 
@@ -973,13 +973,18 @@ tier the technology does not have is refused.
 | `BANK_GROUP` | L2 | PE at bank group level |
 | `CHIP` | L3 | PE at chip/die level |
 | `RANK` | L4 | PE at rank level |
-| `HOST_MC` | — | PE shares host memory controller (no PE-MC needed) |
+| `CHANNEL` | L5 | PE at channel level (aggregation tier; on-die for the channel-centric LPDDR/GDDR/HBM families) |
+| `LOGIC_DIE` | L6 | PE on the logic/base die (HBM) |
+| `HOST_MC` | - | PE shares host memory controller (no PE-MC needed) |
+
+Values are case-exact. Since 1.11.90 any other value (including lowercase
+`bank`) is refused at config load; it used to run `BANK` in silence.
 
 ### Network Models
 
 | Value | Description |
 |-------|-------------|
-| `analytical` | Closed-form per-access timing: `t_eff = max((L + W_q)/M, P*D/c)` — hop-count unloaded latency `L`, M/D/1 contention `W_q`, memory-level parallelism `M` (`noc.mlp`). |
+| `analytical` | Closed-form per-access timing: `t_eff = max((L + W_q)/M, P*D/c)` -- hop-count unloaded latency `L`, M/D/1 contention `W_q`, memory-level parallelism `M` (`noc.mlp`). |
 | `detailed` | Cycle-accurate Garnet simulation. |
 
 No other values are accepted (legacy names `simple`, `md1`, `calibrated`, `calqueue`, `curve`, `injector`, `parallel` were removed).

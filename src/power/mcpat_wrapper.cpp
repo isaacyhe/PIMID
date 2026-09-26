@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <cstdint>
 #include <cerrno>
 #include <fcntl.h>
@@ -924,6 +925,12 @@ struct ResultBlob {
      * the model object, and its standard output is sent to the null device on
      * purpose, so the split has to travel back the same way the areas do. */
     double core_ifu_w, core_lsu_w, core_mmu_w, core_exu_w, core_pipe_w, core_undiff_w;
+    /* 1.11.90: the McPAT fork's substitution ledger (basic_components.h),
+     * one count per kind: array power clamps and unsolved arrays, router
+     * sanitiser clamps, links left at zero power, non-finite reduction
+     * factors. The child cannot refuse on its own behalf without losing the
+     * count, so it carries them back and the PARENT refuses. */
+    int subst_counts[4];
     // After this struct, num_noc_levels * sizeof(PowerMetrics) bytes follow.
 };
 constexpr McPATWrapper::ComponentType kComponentOrder[ResultBlob::kNumComponents] = {
@@ -939,7 +946,7 @@ constexpr McPATWrapper::ComponentType kComponentOrder[ResultBlob::kNumComponents
 /* 1.11.57 (latent C012): the blob's format stamp. Bump it whenever the layout
  * of ResultBlob changes, so a file written by a different build is rejected
  * rather than reinterpreted. */
-constexpr uint64_t kResultBlobMagic = 0x50494D4944425031ULL;  // "PIMIDBP1"
+constexpr uint64_t kResultBlobMagic = 0x50494D4944425032ULL;  // "PIMIDBP2" (1.11.90: +subst_counts)
 
 /* FNV-1a over raw bytes. Not a cryptographic hash and does not need to be:
  * its job is to make two DIFFERENT input sets collide with negligible
@@ -1204,6 +1211,7 @@ void McPATWrapper::computePower() {
         // atexit if CACTI calls exit() during the new Processor() ctor).
         setenv("PIMID_MCPAT_CHILD", "1", 1);
         try {
+            pimid_reset_substitutions();   // 1.11.90: this child's ledger only
             runMcPAT();
             extractResults();
 
@@ -1232,6 +1240,9 @@ void McPATWrapper::computePower() {
             blob.pcie_area_mm2   = mcpat_pcie_area_mm2_;
             blob.total_area_mm2  = mcpat_total_area_mm2_;
             blob.num_noc_levels  = static_cast<int>(noc_level_power_.size());
+            static_assert(PIMID_SUBST_KINDS == 4, "ResultBlob::subst_counts size");
+            for (int k = 0; k < PIMID_SUBST_KINDS; k++)
+                blob.subst_counts[k] = pimid_substitution_count(k);
             blob.core_ifu_w = blob.core_lsu_w = blob.core_mmu_w = 0.0;
             blob.core_exu_w = blob.core_pipe_w = blob.core_undiff_w = 0.0;
             if (!mcpat_processor_->cores.empty()) {
@@ -1274,20 +1285,29 @@ void McPATWrapper::computePower() {
                                            faW, fdW, flW, fgW);
                     (void)faW; (void)fgW;
                 }
-                auto wf = [&](const Component* p) -> double {
+                auto wf = [&](const Component* p, const char* label) -> double {
                     if (!p) return 0.0;
                     double dyn = p->rt_power.readOp.dynamic / execT;  // 1.11.18: J -> W
                     double leak = p->rt_power.readOp.leakage;
-                    if (!std::isfinite(dyn)) dyn = 0.0;
-                    if (!std::isfinite(leak)) leak = 0.0;
+                    /* 1.11.90: REFUSE, do not zero. A non-finite block made
+                     * the printed split silently lose that block. */
+                    if (!std::isfinite(dyn) || !std::isfinite(leak)) {
+                        throw std::runtime_error(
+                            "FATAL: McPAT produced a non-finite value for the "
+                            "core sub-block '" + std::string(label) + "' (runtime dynamic "
+                            + std::to_string(dyn) + " W, leakage "
+                            + std::to_string(leak) + " W). This build used to "
+                            "print it as 0 in the core breakdown; power was "
+                            "asked for and not produced, so the run stops.");
+                    }
                     return dyn * fdW + leak * flW;
                 };
-                blob.core_ifu_w    = wf(c0.ifu);
-                blob.core_lsu_w    = wf(c0.lsu);
-                blob.core_mmu_w    = wf(c0.mmu);
-                blob.core_exu_w    = wf(c0.exu);
-                blob.core_pipe_w   = wf(c0.corepipe);
-                blob.core_undiff_w = wf(c0.undiffCore);
+                blob.core_ifu_w    = wf(c0.ifu, "ifu");
+                blob.core_lsu_w    = wf(c0.lsu, "lsu");
+                blob.core_mmu_w    = wf(c0.mmu, "mmu");
+                blob.core_exu_w    = wf(c0.exu, "exu");
+                blob.core_pipe_w   = wf(c0.corepipe, "corepipe");
+                blob.core_undiff_w = wf(c0.undiffCore, "undiffCore");
             }
 
             std::fwrite(&blob, sizeof(blob), 1, f);
@@ -1374,6 +1394,46 @@ void McPATWrapper::computePower() {
                       (unsigned long long)blob.fingerprint,
                       (unsigned long long)fingerprint);
         throw std::runtime_error(detail);
+    }
+    /* 1.11.90: THE SUBSTITUTION LEDGER, checked in the parent. Every place
+     * the McPAT fork replaced a number it could not produce (an ArrayST
+     * power field clamped to 0 or an array CACTI found no organisation for,
+     * a router field sanitised, a link left at zero power, a non-finite
+     * reduction factor) printed a "[mcpat] WARNING" line naming it in the
+     * child and counted it. Any count refuses the run: power was asked for
+     * and part of it was not produced. PIMID_ALLOW_ARRAY_CLAMP=1 is the
+     * stated escape for a user who wants the report anyway; the counts are
+     * then printed so the log carries them. */
+    {
+        const int na = blob.subst_counts[PIMID_SUBST_ARRAY];
+        const int nn = blob.subst_counts[PIMID_SUBST_NOC];
+        const int nl = blob.subst_counts[PIMID_SUBST_LINK];
+        const int nr = blob.subst_counts[PIMID_SUBST_REDUCTION];
+        if (na + nn + nl + nr > 0) {
+            char counts[256];
+            std::snprintf(counts, sizeof(counts),
+                          "%d array clamp(s) or unsolved array(s), %d router "
+                          "field(s) sanitised, %d link(s) left at zero power, "
+                          "%d non-finite reduction factor(s)",
+                          na, nn, nl, nr);
+            const char* allow = std::getenv("PIMID_ALLOW_ARRAY_CLAMP");
+            if (allow && std::string(allow) == "1") {
+                std::cerr << "[McPATWrapper] WARNING: PIMID_ALLOW_ARRAY_CLAMP=1:"
+                             " reporting power although McPAT substituted "
+                          << counts << " (each named on a [mcpat] WARNING line"
+                             " above). Those structures are priced at zero or"
+                             " at a stand-in, not by the model." << std::endl;
+            } else {
+                std::fclose(f);
+                std::remove(blob_path);
+                throw std::runtime_error(
+                    std::string("McPAT substituted numbers it could not "
+                    "produce: ") + counts + " (each named on a [mcpat] "
+                    "WARNING line above). Options: change the geometry or "
+                    "the node named there, or set PIMID_ALLOW_ARRAY_CLAMP=1 "
+                    "to report anyway with the counts printed.");
+            }
+        }
     }
     component_power_.clear();
     for (int i = 0; i < ResultBlob::kNumComponents; i++) {
@@ -1489,21 +1549,50 @@ void McPATWrapper::extractResults() {
     // Extract real results from McPAT Processor object
     bool long_channel = (config_.longer_channel_device != 0);
 
+    /* 1.11.90: a NON-FINITE PROCESSOR-LEVEL AGGREGATE REFUSES. These reads
+     * used to be `isfinite(v) ? v : 0.0`, so one NaN router or block silently
+     * zeroed a whole component's dynamic or leakage, and the run reported
+     * the remainder as the total. The rule since 1.11.88 is that power was
+     * asked for and not produced: the run stops. extractResults runs in the
+     * forked child; the throw reaches the child's catch (which prints this
+     * text on stderr) and the parent's caller turns the failed child into the
+     * 1.11.52 FATAL with rc 3.
+     *
+     * Only a component the user DESCRIBED is checked (componentIsDescribed):
+     * an undescribed positional stub is excluded from every total, peak and
+     * breakdown, so it is zeroed outright rather than read. */
+    auto refuseNonFinite = [](const char* comp, const char* field, double v) {
+        if (std::isfinite(v)) return;
+        throw std::runtime_error(
+            std::string("FATAL: McPAT produced a non-finite ") + field
+            + " (" + std::to_string(v) + ") for the " + comp + " component."
+            " This build used to replace it with 0 and report the rest as the"
+            " total; power was asked for and not produced, so the run stops."
+            " Any [mcpat] or [cacti] WARNING line above names the structure.");
+    };
     // Helper lambda to extract power from a McPAT Component
-    auto extractComponent = [long_channel](const Component& comp) -> PowerMetrics {
+    auto extractComponent = [long_channel, &refuseNonFinite](
+            const Component& comp, const char* cname, bool described) -> PowerMetrics {
         PowerMetrics pm;
+        if (!described) return pm;   // 1.11.90: excluded from every total
         double dyn = comp.rt_power.readOp.dynamic;
-        pm.runtime_dynamic = (std::isfinite(dyn)) ? dyn : 0.0;
+        if (pimid_fault("extract")) dyn = NAN;   // 1.11.90 gate injection
+        refuseNonFinite(cname, "runtime dynamic power", dyn);
+        pm.runtime_dynamic = dyn;
         double sub = long_channel
             ? comp.power.readOp.longer_channel_leakage
             : comp.power.readOp.leakage;
         double gate = comp.power.readOp.gate_leakage;
-        pm.subthreshold_leakage = (std::isfinite(sub)) ? sub : 0.0;   // 1.11.4: guarded like the peak path
-        pm.gate_leakage         = (std::isfinite(gate)) ? gate : 0.0;
+        refuseNonFinite(cname, long_channel ? "long-channel subthreshold leakage"
+                                            : "subthreshold leakage", sub);
+        refuseNonFinite(cname, "gate leakage", gate);
+        pm.subthreshold_leakage = sub;
+        pm.gate_leakage         = gate;
         double pgl = long_channel
             ? comp.power.readOp.power_gated_with_long_channel_leakage
             : comp.power.readOp.power_gated_leakage;                   // 1.11.8
-        pm.power_gated_leakage = (std::isfinite(pgl)) ? pgl : 0.0;
+        refuseNonFinite(cname, "power-gated leakage", pgl);
+        pm.power_gated_leakage = pgl;
         pm.total_leakage = pm.subthreshold_leakage + pm.gate_leakage;
         pm.total_dynamic = pm.runtime_dynamic;
         pm.total_power = pm.total_dynamic + pm.total_leakage;
@@ -1511,18 +1600,23 @@ void McPATWrapper::extractResults() {
     };
 
     // Core (includes L1 caches in McPAT's model)
-    component_power_[ComponentType::CORE] = extractComponent(mcpat_processor_->core);
+    component_power_[ComponentType::CORE] = extractComponent(
+        mcpat_processor_->core, "core", componentIsDescribed(ComponentType::CORE));
     // L1 is embedded in core -- zero out separate L1 to avoid double-counting
     component_power_[ComponentType::L1_CACHE] = PowerMetrics();
 
     // L2
-    component_power_[ComponentType::L2_CACHE] = extractComponent(mcpat_processor_->l2);
+    component_power_[ComponentType::L2_CACHE] = extractComponent(
+        mcpat_processor_->l2, "L2", componentIsDescribed(ComponentType::L2_CACHE));
 
     // L3
-    component_power_[ComponentType::L3_CACHE] = extractComponent(mcpat_processor_->l3);
+    component_power_[ComponentType::L3_CACHE] = extractComponent(
+        mcpat_processor_->l3, "L3", componentIsDescribed(ComponentType::L3_CACHE));
 
     // Memory Controller
-    component_power_[ComponentType::MEMORY_CONTROLLER] = extractComponent(mcpat_processor_->mcs);
+    component_power_[ComponentType::MEMORY_CONTROLLER] = extractComponent(
+        mcpat_processor_->mcs, "memory controller",
+        componentIsDescribed(ComponentType::MEMORY_CONTROLLER));
 
     // NoC -- use Processor-level aggregate (already normalized energy->Watts)
     // The per-NoC nocs[i]->rt_power stores raw energy; Processor multiplies
@@ -1532,21 +1626,37 @@ void McPATWrapper::extractResults() {
         // Per-level breakdown: divide each nocs[i] energy by executionTime
         for (int i = 0; i < mcpat_processor_->numNOC; i++) {
             double execTime = mcpat_processor_->nocs[i]->nocdynp.executionTime;
-            if (execTime <= 0) execTime = 1.0;
+            const std::string lvl = "NoC level " + std::to_string(i);
+            if (pimid_fault("noclevel")) execTime = 0.0;   // 1.11.90 gate injection
+            /* 1.11.90: a non-positive execution time used to become 1.0 s,
+             * which prints this level's Joules as Watts. Refused, as is a
+             * non-finite energy or leakage (the leakage was unguarded). */
+            if (!(execTime > 0.0)) {
+                throw std::runtime_error(
+                    "FATAL: " + lvl + " has execution time "
+                    + std::to_string(execTime) + " s, so its energy cannot be"
+                    " turned into power. This build used to divide by 1.0 s"
+                    " and print Joules as Watts. The run's cycle count or"
+                    " clock did not reach this NoC level.");
+            }
             PowerMetrics level_pm;
             double rawDyn = mcpat_processor_->nocs[i]->rt_power.readOp.dynamic;
-            level_pm.runtime_dynamic = (std::isfinite(rawDyn)) ? rawDyn / execTime : 0.0;
+            refuseNonFinite(lvl.c_str(), "runtime dynamic energy", rawDyn);
+            level_pm.runtime_dynamic = rawDyn / execTime;
             level_pm.subthreshold_leakage = long_channel
                 ? mcpat_processor_->nocs[i]->power.readOp.longer_channel_leakage
                 : mcpat_processor_->nocs[i]->power.readOp.leakage;
             level_pm.gate_leakage = mcpat_processor_->nocs[i]->power.readOp.gate_leakage;
+            refuseNonFinite(lvl.c_str(), "subthreshold leakage", level_pm.subthreshold_leakage);
+            refuseNonFinite(lvl.c_str(), "gate leakage", level_pm.gate_leakage);
             level_pm.total_leakage = level_pm.subthreshold_leakage + level_pm.gate_leakage;
             level_pm.total_dynamic = level_pm.runtime_dynamic;
             level_pm.total_power = level_pm.total_dynamic + level_pm.total_leakage;
             noc_level_power_.push_back(level_pm);
         }
         // Aggregate: use Processor's pre-computed noc (already in Watts)
-        component_power_[ComponentType::NOC] = extractComponent(mcpat_processor_->noc);
+        component_power_[ComponentType::NOC] = extractComponent(
+            mcpat_processor_->noc, "NoC", componentIsDescribed(ComponentType::NOC));
     } else {
         component_power_[ComponentType::NOC] = PowerMetrics();
     }
@@ -1557,7 +1667,9 @@ void McPATWrapper::extractResults() {
          * not the raw controller object -- the Processor multiplies by
          * number_units x clockRate during aggregation, and reading the raw
          * object under-reported dynamic by exactly that factor. */
-        component_power_[ComponentType::PCIE] = extractComponent(mcpat_processor_->pcies);
+        component_power_[ComponentType::PCIE] = extractComponent(
+            mcpat_processor_->pcies, "PCIe link controller",
+            componentIsDescribed(ComponentType::PCIE));
     }
 
     // Store areas from McPAT (um^2 -> mm^2)
@@ -1685,16 +1797,22 @@ void McPATWrapper::extractResults() {
     // This is the maximum power assuming all units active at peak frequency,
     // as opposed to rt_power.readOp.dynamic which is scaled by runtime activity.
     bool long_channel_peak = long_channel;
-    auto peakDynamic = [](const Component& comp) -> double {
+    /* 1.11.90: refuse a non-finite peak read, as the runtime reads above
+     * (every call below is already gated on componentIsDescribed). */
+    auto peakDynamic = [&refuseNonFinite](const Component& comp, const char* cname) -> double {
         double d = comp.power.readOp.dynamic;
-        return (std::isfinite(d)) ? d : 0.0;
+        refuseNonFinite(cname, "peak dynamic power", d);
+        return d;
     };
-    auto peakLeakage = [long_channel_peak](const Component& comp) -> double {
+    auto peakLeakage = [long_channel_peak, &refuseNonFinite](const Component& comp,
+                                                             const char* cname) -> double {
         double sub = long_channel_peak
             ? comp.power.readOp.longer_channel_leakage
             : comp.power.readOp.leakage;
         double gate = comp.power.readOp.gate_leakage;
-        return ((std::isfinite(sub)) ? sub : 0.0) + ((std::isfinite(gate)) ? gate : 0.0);
+        refuseNonFinite(cname, "peak subthreshold leakage", sub);
+        refuseNonFinite(cname, "peak gate leakage", gate);
+        return sub + gate;
     };
 
     double peak_dyn = 0.0;
@@ -1704,8 +1822,8 @@ void McPATWrapper::extractResults() {
         // share carries the same DRAM-periphery factors as the runtime
         // metrics -- same values, same 80C-row derivation, same plain-leakage
         // rebase (no long-channel stacking) as the block above.
-        double core_pd = peakDynamic(mcpat_processor_->core);
-        double core_pl = peakLeakage(mcpat_processor_->core);
+        double core_pd = peakDynamic(mcpat_processor_->core, "core");
+        double core_pl = peakLeakage(mcpat_processor_->core, "core");
         // 1.11.12: peak reads the same family-priced structures; no rescale.
         peak_dyn += core_pd;
         peak_leak += core_pl;
@@ -1725,24 +1843,24 @@ void McPATWrapper::extractResults() {
      * mostly leakage -- but it is the difference between a total that sums its
      * parts and one that does not. */
     if (componentIsDescribed(ComponentType::L2_CACHE)) {
-        peak_dyn += peakDynamic(mcpat_processor_->l2);
-        peak_leak += peakLeakage(mcpat_processor_->l2);
+        peak_dyn += peakDynamic(mcpat_processor_->l2, "L2");
+        peak_leak += peakLeakage(mcpat_processor_->l2, "L2");
     }
     if (componentIsDescribed(ComponentType::L3_CACHE)) {
-        peak_dyn += peakDynamic(mcpat_processor_->l3);
-        peak_leak += peakLeakage(mcpat_processor_->l3);
+        peak_dyn += peakDynamic(mcpat_processor_->l3, "L3");
+        peak_leak += peakLeakage(mcpat_processor_->l3, "L3");
     }
     if (componentIsDescribed(ComponentType::MEMORY_CONTROLLER)) {
-        peak_dyn += peakDynamic(mcpat_processor_->mcs);
-        peak_leak += peakLeakage(mcpat_processor_->mcs);
+        peak_dyn += peakDynamic(mcpat_processor_->mcs, "memory controller");
+        peak_leak += peakLeakage(mcpat_processor_->mcs, "memory controller");
     }
     if (componentIsDescribed(ComponentType::NOC)) {
-        peak_dyn += peakDynamic(mcpat_processor_->noc);
-        peak_leak += peakLeakage(mcpat_processor_->noc);
+        peak_dyn += peakDynamic(mcpat_processor_->noc, "NoC");
+        peak_leak += peakLeakage(mcpat_processor_->noc, "NoC");
     }
     if (mcpat_processor_->pcie && componentIsDescribed(ComponentType::PCIE)) {
-        peak_dyn += peakDynamic(mcpat_processor_->pcies);   // 1.11.7: aggregated
-        peak_leak += peakLeakage(mcpat_processor_->pcies);
+        peak_dyn += peakDynamic(mcpat_processor_->pcies, "PCIe link controller");   // 1.11.7: aggregated
+        peak_leak += peakLeakage(mcpat_processor_->pcies, "PCIe link controller");
     }
     peak_power_ = peak_dyn + peak_leak;
 }

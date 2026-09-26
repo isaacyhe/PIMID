@@ -7,6 +7,186 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.90 -- a number the tool could not produce was still substituted in silence
+
+Found by a read-only audit of the tree (2026-09-26) for the one class the
+project refuses everywhere else: a value replaced, clamped or defaulted
+without a word. None of the sites below fires on any corpus config (every
+smoke log is clean), so no corpus number moves. The point is that none of
+them can fire silently in the future. Plus one found by the fleet smoke the
+same day (part C).
+
+**(A) The power path.** Seven substitutions between McPAT/CACTI and the
+report:
+- `extractResults()` read every Processor-level aggregate as
+  `isfinite(v) ? v : 0.0`, so one NaN router or block zeroed a whole
+  component's dynamic or leakage and the rest was reported as the total. The
+  runtime, peak and core-breakdown reads now REFUSE a non-finite value,
+  naming the component and the field (the forked child prints the FATAL; the
+  run stops with rc 3, the 1.11.88 rule). An undescribed positional stub is
+  zeroed outright rather than read: it is excluded from every total. The
+  per-level NoC read divided by 1.0 s when the execution time was not
+  positive, printing Joules as Watts, and its leakage was unguarded: both
+  refuse now.
+- McPAT's ArrayST sanitiser clamped every NaN/inf/negative power field to 0,
+  and an array CACTI found no organisation for was left at zero power and
+  area; the router sanitiser in noc.cc did the same to router fields; the
+  interconnect returned early at zero power (catch(...) twice, and an
+  upstream assert(power > 0) turned into a return that also skipped the
+  circuit-switching scaling, the long-channel leakage and the power-gating
+  endpoints -- and `x <= 0` let a NaN through); the long-channel and
+  power-gating reduction factors replaced a NaN (or a zero rail) by 1.0 or 0.
+  Each now prints one `[mcpat] WARNING` line naming the structure and the
+  field the first time, and counts it in a substitution ledger
+  (basic_components.h). The counts travel back to the parent in the fork's
+  result blob (format stamp PIMIDBP2), and the parent REFUSES the run (rc 3)
+  when any is non-zero, unless `PIMID_ALLOW_ARRAY_CLAMP=1`, which reports
+  anyway and prints the counts.
+- The router buffer's AREA fallback (bare cells, no periphery) when the
+  Mat's area is non-finite -- 30 lines below the 1.11.87 energy refusal --
+  now refuses the same way, naming the node and the geometry.
+- `power.mcpat_overrides.device_type` accepted 3 (lp-dram) and 4
+  (comm-dram), which at 22 nm price the logic at Vdd 0. It is refused at
+  config load unless it is 0 (hp), 1 (lstp) or 2 (lop); the lp-dram column is
+  reached through `power.device_corner` on a DRAM-periphery placement, as
+  before.
+- The 1.11.81 router tripwire text still said the buffer solve was broken
+  and reached DDR3 alone. It now describes the 1.11.87 state: the buffer
+  converges at every node measured, and the tripwire is a cross-check that
+  would fire only on a new imbalance.
+- Five PIMID-added comments carried em-dashes; ASCII now, as are the
+  other files this release touches (README.md, docs/yaml_reference.md,
+  qemu_trace_plugin.c: dashes, arrows and the README tree drawing).
+For the gate, `PIMID_MCPAT_FAULT=<site>` (array, router, link, reduction,
+extract, noclevel, bufarea) injects a non-finite value at that site and says
+so on an `[inject]` line; unset, nothing changes.
+
+**(B) Config loading.** Five silences in the YAML loader:
+- yaml-cpp's `as<T>(fallback)` returns the fallback whenever the conversion
+  fails, so a present key of the wrong type ran the default under the user's
+  setting (`pe.count: sixteen`, `ddr5_speed_grade: DDR5-3200`,
+  `temperature_c: 97.0`, `max_instructions: 1e9`, an empty value), and `0`/`1`
+  were not booleans (`floating_point: 0` stayed true). All 142 such reads now
+  go through `yamlInt` / `yamlI64` / `yamlU32` / `yamlDouble` / `yamlBool`,
+  each with its own default and key path: an ABSENT key takes the default
+  exactly as before; a PRESENT key that does not convert is refused with rc 2
+  naming the path, the literal text and the type expected; booleans accept
+  0/1. The conversion is yaml-cpp's own, so every value that converted before
+  converts to the same number. `pim.pe.frequency_mhz` (read without a
+  fallback, so it already refused on `500.0` with a line/column message) now
+  names the key too.
+- `pim.placement.level`: an unknown or lowercase word ran BANK. Refused, with
+  the list (SUBARRAY/SUBBANK/MAT, BANK, BANK_GROUP, CHIP, RANK, CHANNEL,
+  LOGIC_DIE, HOST_MC); lowercase is refused, not upper-cased, like every
+  other enum here.
+- Twelve enum knobs that took any word, siblings of 1.11.85's three:
+  `pim.mc.placement`, `pim.mapping.mode`, `noc.ring_direction`,
+  `noc.bridges.*.model`, `system.devices[].type`, `system.coherence.mode`,
+  `system.network.model`, `system.network.links[].type`,
+  `power.link.link_type` (and `power.pcie.*`), `power.link.model`,
+  `system.devices[].noc.model` and `workload.type`. Each refuses an unknown
+  word at load, rc 2, with the accepted list. `noc.bridges.*.model:
+  analytical`, documented as an alias of simple, fell through to AUTO; it is
+  now the alias the documentation says.
+- `scope: cosim` parsed a `system:` block's hosts and devices and then
+  replaced them with one host and one device synthesized from top-level keys
+  (host 4 cores at 3000 MHz unless `host:` says otherwise). With declared
+  nodes it is refused (use `scope: system`); without, the legacy synthesis
+  stays and prints a NOTE naming what it built.
+- Precedence: `system.frequency_mhz` (parsed later) beat
+  `pim.pe.frequency_mhz`, and the YAML beat `--scope` and `--power-report`,
+  each against the documentation. The code now follows the documentation --
+  the PE key sets the PE clock, the command line wins -- with a NOTE when two
+  given values differ.
+docs/yaml_reference.md: CHANNEL and LOGIC_DIE are in the placement table;
+`devices[].noc` is no longer called inert (model and topology are used);
+`attachment` distinguishes only `internal` from anything else;
+`devices[].pim.mapping`, `power.pcie.num_channels` (when `num_lanes` > 0) and
+`power.pcie.num_units` (system scope) are marked NOT READ; `device_type`
+lists its three values.
+
+**(C) Shared objects from another build were loaded in silence.** Found by
+the fleet smoke: `findPimidMpiLib()` anchored on `getPimidRoot()`, which
+strips the executable's directory at "/build"; a binary run from a directory
+without "/build" in its path fell through to `./libpimid_mpi.so` and
+`./build/libpimid_mpi.so` relative to the CWD, and the repo root's stale
+build/ tree (its pimid reports 1.6.4) supplied the MPI shim to a 1.11.88
+binary and plugin: MPI rows with cycles NA, one rank hung for 50 minutes.
+`findQemuPlugin()` had the same shape. Now (1) each of `libpimid_mpi.so`,
+`libzsim_qemu.so`, `libpimid_trace.so` and `libpimid_plugin.so` carries a
+version stamp (`@(#)PIMID_COMPONENT <name> <version>` and an exported
+`<component>_component_version()`); the loader reads the stamp from the
+candidate file -- not by dlopen, which would run the MPI shim's
+`__libc_start_main` interposer and the QEMU plugin's constructors inside
+pimid -- and REFUSES (rc 2) a candidate whose version differs or that has
+none, naming its path and both versions; (2) the search is beside the binary
+(and its `external/zsim/` for the QEMU plugins), then `$PIMID_ROOT/build` if
+PIMID_ROOT is set, and nothing else; not found is a FATAL listing every path
+tried; (3) every component prints `[load] <name>: <path> (<version>)` once,
+in both scopes (system scope printed no plugin line before). The linked
+`libpimid_plugin.so` is checked from the path the dynamic linker mapped.
+`--check-components` runs the same lookup and exits, without simulating.
+
+DATA IMPACT: none on any corpus config: every substitution and silence above
+is now a refusal; measured by loading all 370 fleet configs rc 0 (280 device
+scope, 90 system scope), their `--print-mem-info` output byte-identical to
+1.11.89 apart from the tree path. The one behaviour change a valid config
+can see is `noc.bridges.*.model: analytical` (now simple, as documented;
+used by no corpus config), and a run's log gains the four `[load]` lines.
+
+Gate 1199A, with arm A0 re-evaluated as 1199B: A0 demanded total power
+identical to 1.11.89's on a full run, whose cycle count jitters (0.23% here),
+so the time-divided dynamic term moved 0.25% while leakage and area were
+identical to the digit; 1199B holds leakage and area exact and the dynamic
+term and cycles within 1%, and expects the two [load] lines an OpenMP run
+prints rather than three. The injected-link arm was re-evaluated as 1199C:
+the injected NaN propagates into the core component's total, so the child's
+own non-finite guard refuses first (exit 21 in the child, rc 3) before the
+parent's substitution count is read; the arm expected only the parent's
+message, and either is the refusal. Gate 1199A. Each refusal needs a config that TRIGGERS it (rc 2 or 3, named
+message; OLD accepts it) and the corpus must load unchanged:
+- A1-A5, A7 (power path): the device-scope smoke shape with
+  `PIMID_MCPAT_FAULT` = `extract` (`FATAL: McPAT produced a non-finite
+  runtime dynamic power`), `noclevel` (`FATAL: NoC level 0 has execution
+  time 0`), `array` (`[mcpat] WARNING: array` ... `clamped to 0`), `router`
+  (`[mcpat] WARNING: router`), `link` (`[mcpat] WARNING: link`),
+  `reduction` (`[mcpat] WARNING: power-gating leakage reduction was nan`) --
+  each rc 3 with `McPAT substituted numbers it could not produce` for the
+  four ledger sites -- and `bufarea` (`[cacti] FATAL: the router
+  input-buffer Mat returned a non-finite AREA`, rc 3); the `array` shape
+  again with `PIMID_ALLOW_ARRAY_CLAMP=1` completes, printing
+  `PIMID_ALLOW_ARRAY_CLAMP=1: reporting power although`.
+- A6: `power.mcpat_overrides.device_type: 3`, rc 2,
+  `device_type = 3 is not a device corner`.
+- B1: `pim.pe.frequency_mhz: 500.0` (rc 2, `pim.pe.frequency_mhz = '500.0'
+  is not an integer`), `pim.pe.count: sixteen`, `simulation.max_instructions:
+  1e9`, `power.temperature_c: 97.0`, `memory.dram.ddr5_speed_grade:
+  DDR5-3200`, `cache.l2.enabled: maybe`, `cache.l2.size_kb:` (empty); and the
+  FIRES side of 0/1: `pe: { type: null_core, floating_point: 0 }` is refused
+  by the existing null_core rule (OLD read 0 as the default true and
+  accepted it).
+- B2: `level: bank` and `level: BANKK`, rc 2, `is not a placement tier`.
+- B3: each of the twelve knobs with a misspelt word, rc 2, `is not a value
+  this build has`; `noc.bridges.*.model: analytical` loads.
+- B4: a system-scope corpus config with `scope: cosim`, rc 2, `scope: cosim
+  with a system: block`; a device config with `scope: cosim` prints `the
+  nodes were SYNTHESIZED from top-level keys`.
+- B5: `system.frequency_mhz: 1000` beside `pim.pe.frequency_mhz: 500`
+  prints `the PE clock is 500 MHz`; `--scope device` on a YAML saying
+  `system` and `--power-report summary` on one saying `verbose` print
+  `the command line wins`.
+- C: a copy of the binary alone in a directory, PIMID_ROOT unset,
+  `--check-components`: rc 2, `libpimid_mpi.so not found`; with the repo
+  root's pre-1.11.90 `build/libpimid_mpi.so` beside it: rc 2, `version NONE
+  (no version stamp`; with a 1.11.90 shim whose stamp is edited to 1.11.91:
+  rc 2, `is version 1.11.91, this binary is 1.11.90`; an old
+  libpimid_plugin.so preloaded: rc 2; the build tree itself: rc 0 and four
+  `[load]` lines.
+- Parity: `--print-mem-info` on all 370 fleet configs rc 0 and identical to
+  1.11.89 (all seven technologies, device and system shapes), and one full
+  device-scope run whose power is identical to 1.11.89's -- the run that
+  also shows no `[mcpat] WARNING` fires on a supported configuration.
+
 ## 1.11.89 -- system scope priced a different memory from device scope, and every scope priced the setup
 
 Found by a read-only audit of the system-scope power path

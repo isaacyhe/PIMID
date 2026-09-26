@@ -410,3 +410,14 @@ std::shared_ptr<IPlugin> PluginConfig::create() const {
 
 } // namespace plugin
 } // namespace pimid
+
+/* PIMID 1.11.90: component version stamp. The loader in src/main.cpp reads
+ * the "@(#)PIMID_COMPONENT" string from this file and refuses a component
+ * whose version differs from the binary's (see locatePimidComponent). */
+#ifndef PIMID_VERSION
+#error "PIMID_VERSION must be defined for the component version stamp"
+#endif
+extern "C" __attribute__((visibility("default"), used))
+const char pimid_plugin_component_stamp[] = "@(#)PIMID_COMPONENT libpimid_plugin.so " PIMID_VERSION;
+extern "C" __attribute__((visibility("default")))
+const char* pimid_plugin_component_version(void) { return PIMID_VERSION; }

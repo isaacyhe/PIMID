@@ -2,7 +2,7 @@
  * QEMU TCG Plugin for PIMID Trace Generation
  *
  * A lightweight, pure-C plugin that generates PIMID-format binary traces
- * from QEMU user-mode emulation. No ZSim dependency — outputs the same
+ * from QEMU user-mode emulation. No ZSim dependency -- outputs the same
  * 48-byte TraceEvent format used by --method trace replay.
  *
  * Usage:
@@ -40,7 +40,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define EVT_COMPUTE_INT 0x0030
 #define EVT_BARRIER     0x0040
 
-/* 48-byte trace event — matches pimid::trace::TraceEvent exactly */
+/* 48-byte trace event -- matches pimid::trace::TraceEvent exactly */
 typedef struct {
     uint64_t cycle;       /* monotonic instruction counter as proxy */
     uint64_t address;     /* virtual address */
@@ -86,7 +86,7 @@ static TraceEvent *write_buf;
 static uint32_t buf_pos;
 static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* ROI state — set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
+/* ROI state -- set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
 static _Atomic bool in_roi = true;            /* true = record; default on for non-ROI workloads */
 static _Atomic uint64_t roi_transition_count; /* number of ROI begin/end transitions */
 
@@ -108,7 +108,7 @@ enum { DOMAIN_HOST = 0, DOMAIN_DEVICE = 1 };
 static _Atomic int thread_domain[MAX_VCPUS];   /* default HOST */
 static _Atomic uint64_t offload_count;
 
-/* Per-vCPU pending magic op from mov $imm, %rcx — persists across TB
+/* Per-vCPU pending magic op from mov $imm, %rcx -- persists across TB
  * boundaries.  This handles the rare case where mov and xchg are in different
  * TBs (e.g., page boundary between them).  Per-vCPU to avoid races when
  * multiple vCPUs translate TBs concurrently under MTTCG. */
@@ -140,7 +140,7 @@ static void emit_event(const TraceEvent *evt) {
 /* ---- QEMU Callbacks ---- */
 
 /**
- * Memory access callback — emits MEM_READ or MEM_WRITE events.
+ * Memory access callback -- emits MEM_READ or MEM_WRITE events.
  */
 static void mem_cb(unsigned int vcpu_index,
                    qemu_plugin_meminfo_t info,
@@ -166,7 +166,7 @@ static void mem_cb(unsigned int vcpu_index,
 }
 
 /**
- * Per-instruction execution callback — counts instructions.
+ * Per-instruction execution callback -- counts instructions.
  * Called on the first instruction of each translation block.
  */
 static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
@@ -182,7 +182,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
 }
 
 /**
- * Syscall callback — emit BARRIER events for thread-creating syscalls.
+ * Syscall callback -- emit BARRIER events for thread-creating syscalls.
  * clone/fork/vfork (syscall numbers 56, 57, 58 on x86_64).
  */
 static void syscall_cb(qemu_plugin_id_t id,
@@ -205,7 +205,7 @@ static void syscall_cb(qemu_plugin_id_t id,
 }
 
 /**
- * Magic instruction callback — dispatches ZSim magic ops detected at
+ * Magic instruction callback -- dispatches ZSim magic ops detected at
  * translation time.  The opcode (from the preceding mov $imm, %rcx) is
  * passed as userdata.  Only ROI_BEGIN/ROI_END are handled; other magic
  * ops are filtered out at translation time.
@@ -261,7 +261,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
 }
 
 /**
- * Execution callback for mov $imm, %rcx at end of a TB — stores the opcode
+ * Execution callback for mov $imm, %rcx at end of a TB -- stores the opcode
  * into the per-vCPU pending slot so the next TB's xchg can consume it.
  */
 static void mov_magic_exec_cb(unsigned int vcpu_index, void *userdata) {
@@ -324,7 +324,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
 }
 
 /**
- * Translation block callback — instruments each TB with:
+ * Translation block callback -- instruments each TB with:
  *   1. An instruction count callback on the first instruction
  *   2. Memory callbacks on each instruction
  */
@@ -332,7 +332,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
     size_t n_insns = qemu_plugin_tb_n_insns(tb);
     bool insn_count_registered = false;
 
-    /* Track in-TB mov $imm, %rcx → xchg %rcx, %rcx pairs.
+    /* Track in-TB mov $imm, %rcx -> xchg %rcx, %rcx pairs.
      * prev_magic_op is local (no cross-vCPU race).  Cross-TB communication
      * is deferred to execution time via per-vCPU pending_magic_op[]. */
     uint64_t prev_magic_op = 0;
@@ -352,13 +352,13 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
                     || prev_magic_op == ZSIM_MAGIC_OP_ROI_END
                     || prev_magic_op == ZSIM_MAGIC_OP_WORK_BEGIN
                     || prev_magic_op == ZSIM_MAGIC_OP_WORK_END) {
-                /* In-TB case: mov+xchg in same TB — opcode known at
+                /* In-TB case: mov+xchg in same TB -- opcode known at
                  * translation time, pass directly via userdata */
                 qemu_plugin_register_vcpu_insn_exec_cb(
                     insn, magic_insn_exec_cb, QEMU_PLUGIN_CB_NO_REGS,
                     (void *)(uintptr_t)prev_magic_op);
             } else {
-                /* Cross-TB case: no preceding mov in this TB — check
+                /* Cross-TB case: no preceding mov in this TB -- check
                  * per-vCPU pending slot at execution time */
                 qemu_plugin_register_vcpu_insn_exec_cb(
                     insn, xchg_pending_exec_cb, QEMU_PLUGIN_CB_NO_REGS,
@@ -371,9 +371,9 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
 
         /* Check if this instruction is mov $imm, %rcx/%ecx (magic op setup).
          * Three possible encodings:
-         *   b9 xx xx xx xx          — mov $imm32, %ecx  (5 bytes)
-         *   48 c7 c1 xx xx xx xx   — mov $imm32, %rcx  (7 bytes)
-         *   48 b9 xx*8             — movabs $imm64, %rcx (10 bytes) */
+         *   b9 xx xx xx xx          -- mov $imm32, %ecx  (5 bytes)
+         *   48 c7 c1 xx xx xx xx   -- mov $imm32, %rcx  (7 bytes)
+         *   48 b9 xx*8             -- movabs $imm64, %rcx (10 bytes) */
         prev_magic_op = 0;
         last_magic_mov_insn = NULL;
         if (insn_sz == 5 && bytes[0] == 0xb9) {
@@ -416,7 +416,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
 }
 
 /**
- * Plugin exit — flush remaining events, emit final COMPUTE_INT summary,
+ * Plugin exit -- flush remaining events, emit final COMPUTE_INT summary,
  * write header, and close file.
  */
 static void plugin_exit(qemu_plugin_id_t id, void *userdata) {
@@ -578,3 +578,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
     return 0;
 }
+
+/* PIMID 1.11.90: component version stamp. The loader in src/main.cpp reads
+ * the "@(#)PIMID_COMPONENT" string from this file and refuses a component
+ * whose version differs from the binary's (see locatePimidComponent). */
+#ifndef PIMID_VERSION
+#error "PIMID_VERSION must be defined for the component version stamp"
+#endif
+__attribute__((visibility("default"), used))
+const char pimid_trace_component_stamp[] = "@(#)PIMID_COMPONENT libpimid_trace.so " PIMID_VERSION;
+__attribute__((visibility("default")))
+const char* pimid_trace_component_version(void) { return PIMID_VERSION; }

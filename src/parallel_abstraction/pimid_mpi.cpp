@@ -1255,3 +1255,14 @@ extern "C" int __libc_start_main(int (*main_fn)(int, char**, char**), int argc,
     }
     return real(main_fn, argc, argv, init_fn, fini_fn, rtld_fini, stack_end);
 }
+
+/* PIMID 1.11.90: component version stamp. The loader in src/main.cpp reads
+ * the "@(#)PIMID_COMPONENT" string from this file and refuses a component
+ * whose version differs from the binary's (see locatePimidComponent). */
+#ifndef PIMID_VERSION
+#error "PIMID_VERSION must be defined for the component version stamp"
+#endif
+extern "C" __attribute__((visibility("default"), used))
+const char pimid_mpi_component_stamp[] = "@(#)PIMID_COMPONENT libpimid_mpi.so " PIMID_VERSION;
+extern "C" __attribute__((visibility("default")))
+const char* pimid_mpi_component_version(void) { return PIMID_VERSION; }

@@ -34,6 +34,8 @@
 #include "wire.h"
 #include <assert.h>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include "globalvar.h"
 
 interconnect::interconnect(
@@ -77,7 +79,14 @@ interconnect::interconnect(
   try {
     local_result = init_interface(&l_ip);
   } catch (...) {
-    // Wire/CACTI init failed for this technology — leave power at zero
+    /* Wire/CACTI init failed for this technology -- power stays at zero.
+     * PIMID 1.11.90: no longer silent. Printed, counted in the substitution
+     * ledger (basic_components.h), refused by PIMID unless
+     * PIMID_ALLOW_ARRAY_CLAMP=1. */
+    pimid_note_substitution(PIMID_SUBST_LINK, name,
+        "[mcpat] WARNING: link " + name + " (" + std::to_string(data_width)
+        + " b, " + std::to_string(length) + " um): CACTI interface init threw,"
+        " left at 0 power and 0 area");
     return;
   }
 
@@ -146,7 +155,12 @@ interconnect::interconnect(
 	  }
   }
   } catch (...) {
-    // Wire construction failed — leave power at zero
+    /* Wire construction failed -- power stays at zero. PIMID 1.11.90:
+     * printed and counted, as above. */
+    pimid_note_substitution(PIMID_SUBST_LINK, name,
+        "[mcpat] WARNING: link " + name + " (" + std::to_string(data_width)
+        + " b, " + std::to_string(length) + " um): wire construction threw,"
+        " left at 0 power");
     return;
   }
 
@@ -160,9 +174,34 @@ interconnect::interconnect(
   if (latency_overflow==true)
   		cout<< "Warning: "<< name <<" wire structure cannot satisfy latency constraint." << endl;
 
-  // Skip assertions — power may be zero if Wire/CACTI failed for this technology
-  if (power.readOp.dynamic <= 0 || power.readOp.leakage <= 0 || power.readOp.gate_leakage <= 0)
+  /* Upstream asserted all three > 0 here; this fork returned early instead,
+   * which also skips the sckRation scaling, the long-channel leakage and the
+   * power-gating endpoints below -- a link at zero (or partial) power with
+   * no message. PIMID 1.11.90: `!(x > 0)` so a NaN fails the test too, and
+   * the early return is printed and counted in the substitution ledger
+   * (basic_components.h); PIMID refuses the run unless
+   * PIMID_ALLOW_ARRAY_CLAMP=1. A link with no bits or no length is exempt
+   * only when all three are exactly zero: zero is then the computed answer
+   * for a wire that does not exist, not a substitution. */
+  if (pimid_fault("link")) power.readOp.dynamic = NAN;
+  if (!(power.readOp.dynamic > 0) || !(power.readOp.leakage > 0) || !(power.readOp.gate_leakage > 0))
+  {
+      const bool absent = (data_width <= 0 || length <= 0) &&
+                          power.readOp.dynamic == 0 &&
+                          power.readOp.leakage == 0 &&
+                          power.readOp.gate_leakage == 0;
+      if (!absent) {
+          std::ostringstream os;
+          os << "[mcpat] WARNING: link " << name << " (" << data_width
+             << " b, " << length << " um) priced at dynamic "
+             << power.readOp.dynamic << ", leakage " << power.readOp.leakage
+             << ", gate leakage " << power.readOp.gate_leakage
+             << " -- not all positive; the circuit-switching, long-channel"
+                " and power-gating scaling were skipped";
+          pimid_note_substitution(PIMID_SUBST_LINK, name, os.str());
+      }
       return;
+  }
 
   double long_channel_device_reduction = longer_channel_device_reduction(device_ty,core_ty);
   double pg_reduction = power_gating_leakage_reduction(false);//

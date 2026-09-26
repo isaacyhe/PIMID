@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.11.89-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.11.90-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -18,37 +18,37 @@ McPAT, and Garnet for timing, power, and area.
 
 ## Features
 
-- **11 memory technologies** — 7 DRAM (DDR3/4/5, LPDDR5, GDDR6, HBM2, HBM3),
-  SRAM, 3 NVM (STT-MRAM, PCM, ReRAM) → [docs/memory.md](docs/memory.md)
-- **5 PE core models** — `alu_core`, `simple_core`, `in_order_core`,
-  `ooo_core`, `null_core` → [docs/cores.md](docs/cores.md)
-- **2 network models** — `detailed` (cycle-accurate Garnet over sparse
+- **11 memory technologies** -- 7 DRAM (DDR3/4/5, LPDDR5, GDDR6, HBM2, HBM3),
+  SRAM, 3 NVM (STT-MRAM, PCM, ReRAM) -> [docs/memory.md](docs/memory.md)
+- **5 PE core models** -- `alu_core`, `simple_core`, `in_order_core`,
+  `ooo_core`, `null_core` -> [docs/cores.md](docs/cores.md)
+- **2 network models** -- `detailed` (cycle-accurate Garnet over sparse
   placement-driven DRAM trees; ONE logical network across OpenMP threads AND
   MPI ranks; the default) and `analytical` (closed-form hop + M/D/1 + MLP)
-  over 8 topologies → [docs/network.md](docs/network.md)
-- **Per-technology PE placement** — subarray → bank → bank-group →
-  rank/channel → logic-die ladders (tech-specific; only HBM reaches the logic
-  die) → [docs/memory.md](docs/memory.md)
-- **Host-device co-simulation** — offload over interposer / CXL / PCIe /
-  NVLink-class links → [docs/cosim.md](docs/cosim.md)
-- **4 simulation methods** — `exec`, `trace-gen`, `trace`, `synthetic`
-  → [docs/architecture.md](docs/architecture.md)
+  over 8 topologies -> [docs/network.md](docs/network.md)
+- **Per-technology PE placement** -- subarray -> bank -> bank-group ->
+  rank/channel -> logic-die ladders (tech-specific; only HBM reaches the logic
+  die) -> [docs/memory.md](docs/memory.md)
+- **Host-device co-simulation** -- offload over interposer / CXL / PCIe /
+  NVLink-class links -> [docs/cosim.md](docs/cosim.md)
+- **4 simulation methods** -- `exec`, `trace-gen`, `trace`, `synthetic`
+  -> [docs/architecture.md](docs/architecture.md)
 - **48 benchmarks** across 7 suites; any of them runs in co-sim (no
-  co-sim-specific workloads) → [docs/benchmarks.md](docs/benchmarks.md)
-- **Power/area** via McPAT → [docs/power.md](docs/power.md)
+  co-sim-specific workloads) -> [docs/benchmarks.md](docs/benchmarks.md)
+- **Power/area** via McPAT -> [docs/power.md](docs/power.md)
 
 ## Project layout
 
 ```
 pimid/
-├── src/  include/        simulator core (ZSim integration, models, config)
-├── external/             bundled backends: zsim, qemu, ramulator, cacti,
-│                         nvsim, mcpat, garnet
-├── benchmarks/           48-benchmark suite + cosim/ + host/ kernels
-├── examples/             runnable example configs (techs, cores, topologies,
-│                         placements, cosim) + integration/ extension demo
-├── docs/                 full documentation (see below)
-└── CMakeLists.txt  LICENSE  README.md
+|-- src/  include/        simulator core (ZSim integration, models, config)
+|-- external/             bundled backends: zsim, qemu, ramulator, cacti,
+|                         nvsim, mcpat, garnet
+|-- benchmarks/           48-benchmark suite + cosim/ + host/ kernels
+|-- examples/             runnable example configs (techs, cores, topologies,
+|                         placements, cosim) + integration/ extension demo
+|-- docs/                 full documentation (see below)
+`-- CMakeLists.txt  LICENSE  README.md
 ```
 
 ## Build
@@ -59,7 +59,7 @@ mkdir -p build && cd build && cmake .. && make -j$(nproc)
 make -C ../benchmarks all
 ```
 
-QEMU with TCG plugins is required for execution-driven mode — build it once
+QEMU with TCG plugins is required for execution-driven mode -- build it once
 into `external/qemu/build/` ([docs/build.md](docs/build.md)).
 Or skip building entirely:
 
@@ -151,7 +151,7 @@ also cite its paper:
 | CACTI-IO | off-chip DRAM interface: termination, PHY, IO area | [Jouppi et al., ICCAD 2012](https://doi.org/10.1145/2429384.2429504) | ships inside CACTI 7 (`external/cacti/extio*`) |
 | CACTI-P | power gating / sleep-transistor and retention (Vcc_min) model | [Li et al., ICCAD 2011](https://doi.org/10.1109/ICCAD.2011.6105405) | grafted into `external/cacti` (the 6.5-P fields McPAT consumes) |
 | CACTI-D | DRAM cell/device technology (`comm-dram`, `lp-dram`) and DRAM arrays | [Thoziyoor et al., ISCA 2008](https://doi.org/10.1109/ISCA.2008.16) | ships inside CACTI 7 (`external/cacti`, dram cell/device paths) |
-| CACTI-3DD | 3D-stacked DRAM + TSV model — present and compiled, **not yet invoked** (see [docs/sources.md](docs/sources.md)) | [Chen et al., DATE 2012](https://doi.org/10.1109/DATE.2012.6176428) | ships inside CACTI 7 (`external/cacti/TSV.cc`) |
+| CACTI-3DD | 3D-stacked DRAM + TSV model -- present and compiled, **not yet invoked** (see [docs/sources.md](docs/sources.md)) | [Chen et al., DATE 2012](https://doi.org/10.1109/DATE.2012.6176428) | ships inside CACTI 7 (`external/cacti/TSV.cc`) |
 | NVSim | STT-MRAM, PCM, ReRAM arrays | [Dong et al., IEEE TCAD 2012](https://doi.org/10.1109/TCAD.2012.2185930) | [SEAL-UCSB/NVSim](https://github.com/SEAL-UCSB/NVSim) |
 | Garnet | cycle-accurate in-memory network | [Agarwal et al., ISPASS 2009](https://doi.org/10.1109/ISPASS.2009.4919636) | [gem5/gem5](https://github.com/gem5/gem5) |
 | McPAT | power and area | [Li et al., MICRO 2009](https://doi.org/10.1145/1669112.1669172) | [HewlettPackard/mcpat](https://github.com/HewlettPackard/mcpat) |

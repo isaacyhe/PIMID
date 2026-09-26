@@ -39,32 +39,58 @@
 #include <cmath>
 #include <assert.h>
 #include <stdexcept>
+#include <sstream>
+#include <string>
 #include "globalvar.h"
 
 using namespace std;
 
-// Sanitize a single double: clamp NaN, infinity, and negative values to 0.
-static inline double sanitize(double v) {
-	if (std::isnan(v) || std::isinf(v) || v < 0) return 0;
+/* PIMID 1.11.90: the sanitiser still clamps a NaN, infinite or negative
+ * power field to 0 so the McPAT build can finish, but it is no longer
+ * silent. Each pass over an array records how many fields it clamped and
+ * the first one; report_array_clamp() prints one line per array and adds to
+ * the substitution ledger (basic_components.h), and PIMID refuses the run
+ * unless PIMID_ALLOW_ARRAY_CLAMP=1. */
+struct ArrayClampNote {
+	int n;
+	std::string field;
+	double value;
+	ArrayClampNote() : n(0), value(0) {}
+};
+
+static inline double sanitize(double v, const std::string& field, ArrayClampNote &cn) {
+	if (std::isnan(v) || std::isinf(v) || v < 0) {
+		if (cn.n++ == 0) { cn.field = field; cn.value = v; }
+		return 0;
+	}
 	return v;
 }
 
 // Sanitize all fields of a powerComponents struct.
-static void sanitize_power_components(powerComponents &pc) {
-	pc.dynamic    = sanitize(pc.dynamic);
-	pc.leakage    = sanitize(pc.leakage);
-	pc.gate_leakage = sanitize(pc.gate_leakage);
-	pc.short_circuit = sanitize(pc.short_circuit);
-	pc.longer_channel_leakage = sanitize(pc.longer_channel_leakage);
-	pc.power_gated_leakage = sanitize(pc.power_gated_leakage);
-	pc.power_gated_with_long_channel_leakage = sanitize(pc.power_gated_with_long_channel_leakage);
+static void sanitize_power_components(powerComponents &pc, const std::string& p, ArrayClampNote &cn) {
+	pc.dynamic    = sanitize(pc.dynamic, p + ".dynamic", cn);
+	pc.leakage    = sanitize(pc.leakage, p + ".leakage", cn);
+	pc.gate_leakage = sanitize(pc.gate_leakage, p + ".gate_leakage", cn);
+	pc.short_circuit = sanitize(pc.short_circuit, p + ".short_circuit", cn);
+	pc.longer_channel_leakage = sanitize(pc.longer_channel_leakage, p + ".longer_channel_leakage", cn);
+	pc.power_gated_leakage = sanitize(pc.power_gated_leakage, p + ".power_gated_leakage", cn);
+	pc.power_gated_with_long_channel_leakage = sanitize(pc.power_gated_with_long_channel_leakage, p + ".power_gated_with_long_channel_leakage", cn);
 }
 
 // Sanitize all fields of a powerDef struct.
-static void sanitize_power_def(powerDef &pd) {
-	sanitize_power_components(pd.readOp);
-	sanitize_power_components(pd.writeOp);
-	sanitize_power_components(pd.searchOp);
+static void sanitize_power_def(powerDef &pd, const std::string& part, ArrayClampNote &cn) {
+	sanitize_power_components(pd.readOp, part + ".readOp", cn);
+	sanitize_power_components(pd.writeOp, part + ".writeOp", cn);
+	sanitize_power_components(pd.searchOp, part + ".searchOp", cn);
+}
+
+static void report_array_clamp(const std::string& name, const ArrayClampNote &cn) {
+	if (cn.n == 0) return;
+	std::ostringstream os;
+	os << "[mcpat] WARNING: array " << name << " " << cn.field << " was "
+	   << cn.value << ", clamped to 0 (CACTI solve failure or degenerate geometry)";
+	if (cn.n > 1) os << " [+" << (cn.n - 1) << " more field(s) of this array clamped]";
+	pimid_note_substitution(PIMID_SUBST_ARRAY, name, os.str());
 }
 
 ArrayST::ArrayST(const InputParameter *configure_interface,
@@ -133,7 +159,17 @@ void ArrayST::optimize_array()
 	compute_base_power();
 
 	if (!local_result.valid && local_result.cycle_time <= 0) {
-		// CACTI couldn't model this structure — leave local_result zeroed/invalid
+		/* CACTI couldn't model this structure -- local_result stays
+		 * zeroed/invalid, so the array carries zero power and zero area.
+		 * PIMID 1.11.90: say so and count it (the substitution ledger); PIMID
+		 * refuses the run unless PIMID_ALLOW_ARRAY_CLAMP=1. */
+		std::ostringstream os;
+		os << "[mcpat] WARNING: array " << name << " has no CACTI solution"
+		      " (cycle_time " << local_result.cycle_time << ", cache_sz "
+		   << l_ip.cache_sz << " B, line " << l_ip.line_sz << " B, assoc "
+		   << l_ip.assoc << "), left at 0 power and 0 area (CACTI solve"
+		      " failure or degenerate geometry)";
+		pimid_note_substitution(PIMID_SUBST_ARRAY, name, os.str());
 		return;
 	}
 
@@ -335,11 +371,16 @@ void ArrayST::optimize_array()
 
 	// Sanitize all power values to catch NaN/infinity from CACTI edge cases
 	// (e.g., zero-sized buffers clamped to 64B, uninitialized technology parameters).
-	sanitize_power_def(local_result.power);
-	if (local_result.data_array2)
-		sanitize_power_def(local_result.data_array2->power);
-	if (!(l_ip.pure_cam || l_ip.pure_ram || l_ip.fully_assoc) && l_ip.is_cache && local_result.tag_array2)
-		sanitize_power_def(local_result.tag_array2->power);
+	if (pimid_fault("array")) local_result.power.readOp.leakage = NAN;
+	{
+		ArrayClampNote cn;
+		sanitize_power_def(local_result.power, "power", cn);
+		if (local_result.data_array2)
+			sanitize_power_def(local_result.data_array2->power, "data_array.power", cn);
+		if (!(l_ip.pure_cam || l_ip.pure_ram || l_ip.fully_assoc) && l_ip.is_cache && local_result.tag_array2)
+			sanitize_power_def(local_result.tag_array2->power, "tag_array.power", cn);
+		report_array_clamp(name, cn);
+	}
 
 }
 
@@ -386,11 +427,15 @@ void ArrayST::leakage_feedback(double temperature)//TODO: add the code to proces
   }
 
   // Sanitize after leakage feedback recalculation
-  sanitize_power_def(local_result.power);
-  if (local_result.data_array2)
-    sanitize_power_def(local_result.data_array2->power);
-  if (!(l_ip.pure_cam || l_ip.pure_ram || l_ip.fully_assoc) && l_ip.is_cache && local_result.tag_array2)
-    sanitize_power_def(local_result.tag_array2->power);
+  {
+    ArrayClampNote cn;
+    sanitize_power_def(local_result.power, "power", cn);
+    if (local_result.data_array2)
+      sanitize_power_def(local_result.data_array2->power, "data_array.power", cn);
+    if (!(l_ip.pure_cam || l_ip.pure_ram || l_ip.fully_assoc) && l_ip.is_cache && local_result.tag_array2)
+      sanitize_power_def(local_result.tag_array2->power, "tag_array.power", cn);
+    report_array_clamp(name, cn);
+  }
 }
 
 ArrayST:: ~ArrayST()
