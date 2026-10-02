@@ -118,6 +118,24 @@ RamulatorWrapper::~RamulatorWrapper() {
  * agree exactly. */
 namespace {
 
+/* 1.11.96 (x09-6 / H01): the channel_width the generated Ramulator config
+ * carries per impl and the column bytes it implies (prefetch x width / 8).
+ * Prefetch per impl: DDR3 8, DDR4 8, DDR5 16, LPDDR5 8, GDDR6 8, HBM2 2, HBM3 2
+ * (external/ramulator/src/dram/impl/*.cpp m_internal_prefetch_size). */
+static int ramulatorChannelWidthBits(const std::string& dram_impl) {
+    if (dram_impl == "DDR3" || dram_impl == "DDR4") return 64;    // 8 x 64 / 8 = 64 B: the 64-bit DDR channel's BL8
+    if (dram_impl == "DDR5") return 32;                           // 16 x 32 / 8 = 64 B: the 32-bit sub-channel's BL16
+    if (dram_impl == "LPDDR5" || dram_impl == "GDDR6") return 32; // 8 x 32 / 8 = 32 B: a 16-bit channel's BL16
+    if (dram_impl == "HBM2") return 128;                          // 2 x 128 / 8 = 32 B: a 64-bit pseudo-channel's BL4
+    if (dram_impl == "HBM3") return 256;                          // 2 x 256 / 8 = 64 B: a 64-bit pseudo-channel's BL8 (a mapper quantity)
+    return 64;
+}
+static int ramulatorPrefetch(const std::string& dram_impl) {
+    if (dram_impl == "DDR5") return 16;
+    if (dram_impl == "HBM2" || dram_impl == "HBM3") return 2;
+    return 8;
+}
+
 int presetWidthBits(const std::string& device_width, int fallback) {
     if (device_width == "x4")  return 4;
     if (device_width == "x8")  return 8;
@@ -1396,8 +1414,27 @@ void RamulatorWrapper::parseConfiguration() {
              * instantiated -- until the shape check needed to. Same value as
              * main.cpp so the two emitters describe one part. */
             const std::string rfm = (dram_impl == "DDR5") ? "\n    RFM:\n      BRC: 2" : "";
+            /* 1.11.96 (review x09-ramulator-specs-6): THE MAPPER'S COLUMN
+             * GRANULARITY IS THE BURST. Ramulator's linear mappers take one
+             * column address per tx_bytes = internal_prefetch x channel_width
+             * / 8, and every impl defaults channel_width (64, DDR5/LPDDR5 32)
+             * when the config omits it -- which this config did. HBM2 at the
+             * default 64 made a 16 B column against its 32 B BL2 x 128-bit
+             * burst (two Ramulator columns per burst, the row span halved);
+             * GDDR6 x16 at 64 made a 64 B column against its 32 B BL16 burst.
+             * The width written here makes prefetch x width / 8 equal the
+             * bytes one burst moves under the access-path rule the array
+             * energy and the controller's column-command count use
+             * (getBurstsPerAccess): DDR3/DDR4 64-bit BL8 = 64 B (prefetch 8:
+             * 64); DDR5 32-bit sub-channel BL16 = 64 B (prefetch 16: 32);
+             * LPDDR5 x16 BL16 = 32 B (prefetch 8: 32); GDDR6 x16 BL16 = 32 B
+             * (prefetch 8: 32); HBM2 128-bit legacy BL2 = 32 B (prefetch 2:
+             * 128); HBM3 64-bit pseudo-channel BL8 = 64 B (prefetch 2: 256 --
+             * a mapper quantity, the column IS the whole 64 B burst). */
+            const std::string cw = std::to_string(ramulatorChannelWidthBits(dram_impl));
             return "Frontend:\n  impl: GEM5\n\nMemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n"
                    "  DRAM:\n    impl: " + dram_impl + "\n    org:\n      preset: " + org_preset +
+                   "\n      channel_width: " + cw +
                    "\n    timing:\n      preset: " + timing_preset + rfm +
                    "\n  Controller:\n    impl: Generic\n    Scheduler:\n      impl: FRFCFS\n"
                    "    RefreshManager:\n      impl: AllBank\n"
@@ -3353,3 +3390,13 @@ const pimid::memory::DRAMArchitectureV2* RamulatorWrapper::getDRAMArchitecture()
 }
 
 } // namespace pimid
+
+/* 1.11.96: see the header; the helpers live in this file's anonymous namespace. */
+namespace pimid {
+int RamulatorWrapper::ramulatorColumnBytes(const std::string& dram_impl) {
+    return ramulatorPrefetch(dram_impl) * ramulatorChannelWidthBits(dram_impl) / 8;
+}
+int RamulatorWrapper::ramulatorChannelWidthBitsFor(const std::string& dram_impl) {
+    return ramulatorChannelWidthBits(dram_impl);
+}
+}  // namespace pimid

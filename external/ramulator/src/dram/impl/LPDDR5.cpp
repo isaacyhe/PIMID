@@ -592,17 +592,17 @@ class LPDDR5 : public IDRAM, public Implementation {
 
       // Rank Actions
       m_actions[m_levels["rank"]][m_commands["PREA"]] = Lambdas::Action::Rank::PREab<LPDDR5>;
-      m_actions[m_levels["rank"]][m_commands["CASRD"]] = [] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timings["nCL"] + m_timings["nBL16"] + 1; 
+      m_actions[m_levels["rank"]][m_commands["CASRD"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
+        node->m_final_synced_cycle = clk + m_timing_vals("nCL") + m_timing_vals("nBL16") + 1;   /* PIMID 1.11.96 (review x09-ramulator-specs-7): the VALUES, not the ImplDef indices (nCL index 2, nBL16 index 1 were being added) */ 
       };
-      m_actions[m_levels["rank"]][m_commands["CASWR"]] = [] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timings["nCWL"] + m_timings["nBL16"] + 1; 
+      m_actions[m_levels["rank"]][m_commands["CASWR"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
+        node->m_final_synced_cycle = clk + m_timing_vals("nCWL") + m_timing_vals("nBL16") + 1;   /* PIMID 1.11.96 (x09-7) */ 
       };
-      m_actions[m_levels["rank"]][m_commands["RD16"]] = [] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timings["nCL"] + m_timings["nBL16"]; 
+      m_actions[m_levels["rank"]][m_commands["RD16"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
+        node->m_final_synced_cycle = clk + m_timing_vals("nCL") + m_timing_vals("nBL16");   /* PIMID 1.11.96 (x09-7) */ 
       };
-      m_actions[m_levels["rank"]][m_commands["WR16"]] = [] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timings["nCWL"] + m_timings["nBL16"]; 
+      m_actions[m_levels["rank"]][m_commands["WR16"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
+        node->m_final_synced_cycle = clk + m_timing_vals("nCWL") + m_timing_vals("nBL16");   /* PIMID 1.11.96 (x09-7) */ 
       };
       // Bank actions
       m_actions[m_levels["bank"]][m_commands["ACT-1"]] = [] (Node* node, int cmd, int target_id, Clk_t clk) {
@@ -648,7 +648,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           case m_states["Closed"]: return m_commands["ACT-1"];
           case m_states["Pre-Opened"]: return m_commands["ACT-2"];
           case m_states["Opened"]: {
-            if (node->m_row_state.find(0) != node->m_row_state.end()) {
+            if (node->m_row_state.find(addr_vec[m_levels["row"]]) != node->m_row_state.end()) {   /* PIMID 1.11.96 (review C5): the REQUEST's row, not row 0 */
               Node* rank = node->m_parent_node->m_parent_node;
               if (rank->m_final_synced_cycle < clk) {
                 return m_commands["CASRD"];
@@ -670,7 +670,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           case m_states["Closed"]: return m_commands["ACT-1"];
           case m_states["Pre-Opened"]: return m_commands["ACT-2"];
           case m_states["Opened"]: {
-            if (node->m_row_state.find(0) != node->m_row_state.end()) {
+            if (node->m_row_state.find(addr_vec[m_levels["row"]]) != node->m_row_state.end()) {   /* PIMID 1.11.96 (review C5): the REQUEST's row, not row 0 */
               Node* rank = node->m_parent_node->m_parent_node;
               if (rank->m_final_synced_cycle < clk) {
                 return m_commands["CASWR"];

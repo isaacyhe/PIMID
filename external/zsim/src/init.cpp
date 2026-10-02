@@ -393,7 +393,9 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
     } else if (type == "Ramulator") {
         string ramCfg = config.get<const char*>("sys.mem.configFile");
         uint64_t cpuFreqHz = 1000000ULL * frequency;
-        mem = new RamulatorMemory(ramCfg, cpuFreqHz, latency, domain, name);
+        RamulatorMemory* rmem = new RamulatorMemory(ramCfg, cpuFreqHz, latency, domain, name);
+        rmem->setBurstsPerLine(config.get<uint32_t>("sys.mem.burstsPerLine", 1));   // 1.11.96 (H01/H02)
+        mem = rmem;
     } else {
         panic("Invalid memory controller type %s", type.c_str());
     }
@@ -1279,6 +1281,7 @@ static void InitSystem(Config& config) {
                     uint32_t domain = d * zinfo->numDomains / numDevices;
                     RamulatorMemory* rmc = new RamulatorMemory(ramCfg, cpuFreqHz, devLat, domain, mcName);
                     rmc->setPGDevice(true);   // 1.11.18: device-side PG tracker
+                    rmc->setBurstsPerLine(config.get<uint32_t>((devPrefix + ".burstsPerLine").c_str(), 1));   // 1.11.96 (H01/H02)
                     mc = rmc;
                 } else if (devType == "WeaveSimple") {
                     uint32_t bw = config.get<uint32_t>((devPrefix + ".bandwidth").c_str(), 12800);

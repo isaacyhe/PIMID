@@ -399,7 +399,13 @@ class GDDR6 : public IDRAM, public Implementation {
         { 28 },  // x16
       };
 
-      if (dq_id != -1 && rate_id != -1) {
+      /* PIMID 1.11.96 (review x09-ramulator-specs-10): the per-width table
+       * above, marked "update these values" by its authors, OVERWROTE the
+       * timing preset's own nRRDS/nRRDL/nFAW (the shipped 1350 mV x16 row
+       * carried nRRDS 7, the table wrote 5). The preset row is the sourced
+       * value (1.11.63/1.11.66 transcription); the table stays for reference
+       * and is no longer applied. */
+      if (false && dq_id != -1 && rate_id != -1) {
         m_timing_vals("nRRDS") = nRRDS_TABLE[dq_id][rate_id];
         m_timing_vals("nRRDL") = nRRDL_TABLE[dq_id][rate_id];
         m_timing_vals("nFAW")  = nFAW_TABLE [dq_id][rate_id];
@@ -546,8 +552,11 @@ class GDDR6 : public IDRAM, public Implementation {
           /// RAS <-> RAS
           {.level = "channel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
           {.level = "channel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nFAW"), .window = 4},       
-          {.level = "channel", .preceding = {"ACT"}, .following = {"PRE"}, .latency = V("nRAS")},          
-          {.level = "channel", .preceding = {"PRE"}, .following = {"ACT"}, .latency = V("nRP")},          
+          /* PIMID 1.11.96 (review H03): tRAS and tRP are BANK constraints (JESD250D: ACT-to-PRE and PRE-to-ACT of the same
+           * bank), as DDR4.cpp states them; at "channel" level they serialised every bank's activate behind every other's
+           * precharge, 1.92x on random traffic. */
+          {.level = "bank", .preceding = {"ACT"}, .following = {"PRE"}, .latency = V("nRAS")},          
+          {.level = "bank", .preceding = {"PRE"}, .following = {"ACT"}, .latency = V("nRP")},          
           /// RAS <-> REF
           {.level = "channel", .preceding = {"ACT"}, .following = {"REFab"}, .latency = V("nRC")},          
           {.level = "channel", .preceding = {"PRE"}, .following = {"REFab"}, .latency = V("nRP")},          

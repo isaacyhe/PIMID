@@ -26,6 +26,9 @@ class RamulatorAccEvent : public TimingEvent {
         RamulatorMemory* mem;
         bool write;
         Address addr;
+    public:
+        uint32_t remaining = 1;   /* 1.11.96 (H01/H02): column commands still in flight for this line */
+    private:
 
     public:
         uint64_t sCycle;
@@ -38,6 +41,7 @@ class RamulatorAccEvent : public TimingEvent {
 
         void simulate(uint64_t startCycle) {
             sCycle = startCycle;
+            if (getenv("PIMID_DEBUG_RAMULATOR")) { static int n = 0; if (n++ < 12) fprintf(stderr, "[ramdbg] simulate: startCycle=%lu minStart=%lu write=%d addr=0x%lx\n", (unsigned long)startCycle, (unsigned long)getMinStartCycle(), (int)write, (unsigned long)addr); }
             mem->enqueue(this, startCycle);
         }
 };
@@ -59,6 +63,16 @@ RamulatorMemory::RamulatorMemory(const std::string& configFile,
 
     ramulatorFE->connect_memory_system(ramulatorSys);
     ramulatorSys->connect_frontend(ramulatorFE);
+
+    /* 1.11.96 (review C7): clock the device from its preset, not the core. */
+    {
+        dramTckNs_ = ramulatorSys->get_tCK();   // ns, from the preset's tCK_ps
+        const double corePeriodNs = (cpuFreqHz > 0) ? 1e9 / (double)cpuFreqHz : 0.0;
+        if (dramTckNs_ > 0.0 && corePeriodNs > 0.0) dramTicksPerCoreCycle_ = corePeriodNs / dramTckNs_;
+        else panic("RamulatorMemory %s: no DRAM clock (tCK %.3f ns, core %.3f ns); the memory system must report its tCK", _name.c_str(), dramTckNs_, corePeriodNs);
+        info("[mem] %s: Ramulator clocked at tCK %.4f ns = %.4f DRAM cycles per core cycle (core %.1f MHz) [1.11.96 C7]",
+             _name.c_str(), dramTckNs_, dramTicksPerCoreCycle_, (double)cpuFreqHz / 1e6);
+    }
 
     /* 1.11.91 (audit R8-7): does the device keep the bank-open sums? */
     {
@@ -130,6 +144,17 @@ uint64_t RamulatorMemory::access(MemReq& req) {
 
     uint64_t respCycle = req.cycle + minLatency;
     assert(respCycle > req.cycle);
+    if (getenv("PIMID_DEBUG_RAMULATOR")) { static int n = 0; if (n++ < 12) fprintf(stderr, "[ramdbg] access: req.cycle=%lu resp=%lu type=%d src=%u recorder=%d curCycle=%lu\n", (unsigned long)req.cycle, (unsigned long)respCycle, (int)req.type, req.srcId, zinfo->eventRecorders[req.srcId] ? 1 : 0, (unsigned long)curCycle); }
+
+    /* 1.11.96 (review H12): COUNT here, once per request, for every
+     * requester. The counts used to be taken in the completion callback,
+     * which only a core with an event recorder (the timing cores) ever
+     * reaches: simple_core and the ALU element are bound-only, so their
+     * traffic through this controller was reported as zero reads and zero
+     * writes. Latency sums stay in the callback (they need the completion). */
+    if (req.type != PUTS) {
+        if (req.type == PUTX) profWrites.inc(); else profReads.inc();
+    }
 
     if ((req.type != PUTS) && zinfo->eventRecorders[req.srcId]) {
         Address addr = req.lineAddr << lineBits;
@@ -144,7 +169,10 @@ uint64_t RamulatorMemory::access(MemReq& req) {
 }
 
 uint32_t RamulatorMemory::tick(uint64_t cycle) {
-    ramulatorSys->tick();
+    if (getenv("PIMID_DEBUG_RAMULATOR")) { static int n = 0; if (n++ < 4 || (cycle % 1000000) == 0) fprintf(stderr, "[ramdbg] tick: weave cycle=%lu curCycle=%lu\n", (unsigned long)cycle, (unsigned long)curCycle); }
+    /* 1.11.96 (C7): advance the device by its own clock; the fraction carries. */
+    dramTickAcc_ += dramTicksPerCoreCycle_;
+    while (dramTickAcc_ >= 1.0) { ramulatorSys->tick(); dramTickAcc_ -= 1.0; }
     curCycle++;
     /* 1.11.91 (audit R8-7): mirror the device's cumulative sums into the two
      * Counters. set() keeps the raw count; the 1.11.90 roi_begin rebase
@@ -167,11 +195,18 @@ void RamulatorMemory::enqueue(RamulatorAccEvent* ev, uint64_t cycle) {
         this->completionCallback(ev);
     };
 
-    bool accepted = ramulatorFE->receive_external_requests(typeId, addr, 0, callback);
-    if (!accepted) {
-        // Ramulator queue full — retry next cycle via re-enqueue
-        // For simplicity, spin-retry: hold the event and try again on next tick
-        // This matches how gem5 retries when the port is busy
+    /* 1.11.96 (H01/H02): one column command per burst of the line; the line
+     * completes when the last one does. The burst addresses are consecutive
+     * 64 B / burstsPerLine_ steps inside the line (same row, next column). */
+    ev->remaining = burstsPerLine_;
+    const uint64_t step = (uint64_t)zinfo->lineSize / (uint64_t)burstsPerLine_;
+    for (uint32_t b = 0; b < burstsPerLine_; ++b) {
+        bool accepted = ramulatorFE->receive_external_requests(typeId, addr + b * step, 0, callback);
+        if (!accepted) {
+            // Ramulator queue full -- retry next cycle via re-enqueue
+            // For simplicity, spin-retry: hold the event and try again on next tick
+            // This matches how gem5 retries when the port is busy
+        }
     }
 
     inflightRequests.insert(std::pair<uint64_t, RamulatorAccEvent*>(ev->getAddr(), ev));
@@ -181,18 +216,24 @@ void RamulatorMemory::enqueue(RamulatorAccEvent* ev, uint64_t cycle) {
 void RamulatorMemory::completionCallback(RamulatorAccEvent* ev) {
     auto it = inflightRequests.find(ev->getAddr());
     if (it == inflightRequests.end()) panic("Ramulator completion callback: request not found in inflight map");
+    if (ev->remaining > 1) { ev->remaining--; return; }   /* 1.11.96 (H01/H02): wait for the line's last column command */
 
     uint32_t lat = curCycle + 1 - ev->sCycle;
     if (ev->isWrite()) {
-        profWrites.inc();
-        profTotalWrLat.inc(lat);
+        profTotalWrLat.inc(lat);    /* 1.11.96 (H12): the count is taken in access() */
     } else {
-        profReads.inc();
         profTotalRdLat.inc(lat);
     }
 
     ev->release();
-    ev->done(curCycle + 1);
+    /* 1.11.96 (C7): the weave completion never precedes the bound-phase
+     * estimate (sCycle + minLatency), which the core already advanced by;
+     * an earlier completion fails zsim's startCycle >= minStartCycle check
+     * at a fast core clock. */
+    uint64_t doneCycle = curCycle + 1;
+    if (doneCycle < ev->sCycle + minLatency) doneCycle = ev->sCycle + minLatency;
+    if (getenv("PIMID_DEBUG_RAMULATOR")) { static int n = 0; if (n++ < 12) fprintf(stderr, "[ramdbg] complete: sCycle=%lu curCycle=%lu doneCycle=%lu lat=%u write=%d\n", (unsigned long)ev->sCycle, (unsigned long)curCycle, (unsigned long)doneCycle, lat, (int)ev->isWrite()); }
+    ev->done(doneCycle);
     inflightRequests.erase(it);
 }
 

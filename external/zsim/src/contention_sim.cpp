@@ -24,6 +24,7 @@
  */
 
 #include "contention_sim.h"
+#include <execinfo.h>
 #include <pthread.h>
 #include <algorithm>
 #include <queue>
@@ -195,6 +196,12 @@ void ContentionSim::enqueue(TimingEvent* ev, uint64_t cycle) {
     //clock). The PrioQueue's feMap is built to park far-future events, so this
     //is legal simulation state -- keep the tripwire, but wide enough for real
     //slow-core drift while still catching wraparound garbage instantly.
+    if (unlikely(cycle >= lastLimit + 1000000000UL)) {   /* PIMID 1.11.96 diagnostic: name the event before the tripwire fires */
+        fprintf(stderr, "[csim] far-future event: cycle %lu lastLimit %lu domain %d minStartCycle %lu preDelay %u postDelay %u state %d curCycle(domain) %lu\n",
+                (unsigned long)cycle, (unsigned long)lastLimit, ev->domain, (unsigned long)ev->minStartCycle, ev->preDelay, ev->postDelay, (int)ev->state,
+                (unsigned long)domains[ev->domain].curCycle);
+        void* frames[32]; int nf = backtrace(frames, 32); backtrace_symbols_fd(frames, nf, 2);
+    }
     assert_msg(cycle < lastLimit + 1000000000UL, "Queued event too far into the future, cycle %ld lastLimit %ld", cycle, lastLimit);
 
     assert_msg(cycle >= domains[ev->domain].curCycle, "Queued event goes back in time, cycle %ld curCycle %ld", cycle, domains[ev->domain].curCycle);

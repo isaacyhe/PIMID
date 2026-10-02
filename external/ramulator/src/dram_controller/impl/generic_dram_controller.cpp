@@ -209,7 +209,14 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
             req_it->depart = m_clk + m_dram->m_read_latency;
             pending.push_back(*req_it);
           } else if (req_it->type_id == Request::Type::Write) {
-            // TODO: Add code to update statistics
+            /* PIMID 1.11.96 (review H12): a write COMPLETES when its WR command issues (the data is accepted by the device
+             * after nCWL + nBL, which the next command's constraints already enforce). Ramulator2 shipped this branch as a
+             * TODO, so an external requester never heard of its writes: the zsim controller held every write event forever
+             * and reported zero writes. The callback carries the departure clock like a read's. */
+            req_it->depart = m_clk + m_dram->m_read_latency;   /* write data phase: CWL + BL, the same order as the read latency this device reports */
+            if (req_it->callback) {
+              req_it->callback(*req_it);
+            }
           }
           buffer->remove(req_it);
         } else {

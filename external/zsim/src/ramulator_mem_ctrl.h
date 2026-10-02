@@ -40,6 +40,16 @@ class RamulatorMemory : public MemObject {
         Counter profBankOpenCycles;
         Counter profBankOpenWindow;
         bool bankOpenTracked = false;
+        /* 1.11.96 (review C7): the device runs on ITS clock. tick() is called
+         * once per CORE cycle; the controller used to advance Ramulator once
+         * per call, so a 500 MHz element saw a DRAM 2.4x slower than its
+         * preset and a 2 GHz host one 1.25x faster (DDR4-2400 CK = 1.2 GHz).
+         * dramTicksPerCoreCycle_ = core period / tCK (from the memory system's
+         * own get_tCK), accumulated fractionally. */
+        double dramTicksPerCoreCycle_ = 1.0;
+        double dramTickAcc_ = 0.0;
+        double dramTckNs_ = 0.0;
+        uint32_t burstsPerLine_ = 1;
         PAD();
 
     public:
@@ -59,6 +69,15 @@ class RamulatorMemory : public MemObject {
          * flag says which tracker this instance owns (device MCs are built
          * by the SystemRouter block; the global one is the host's). */
         void setPGDevice(bool isDevice) { pgIsDevice = isDevice; }
+        /* 1.11.96 (review H01/H02): column commands per cache line. A 64 B
+         * line is ONE column command on a 64-bit DDR channel (BL8) but TWO on
+         * a 16-bit GDDR6/LPDDR5 channel (BL16 = 32 B) and on an HBM
+         * pseudo-channel (64 bits x BL4 = 32 B); the controller used to send
+         * one request per line and so credited those parts with twice their
+         * channel bandwidth. The emitter derives the count from the same
+         * access-path rule the array energy uses (RamulatorWrapper::
+         * getBurstsPerAccess) and writes sys.mem[.deviceN].burstsPerLine. */
+        void setBurstsPerLine(uint32_t n) { burstsPerLine_ = (n < 1) ? 1 : n; }
         uint32_t tick(uint64_t cycle);
         void enqueue(RamulatorAccEvent* ev, uint64_t cycle);
 

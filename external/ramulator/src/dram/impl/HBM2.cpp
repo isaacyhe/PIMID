@@ -101,7 +101,7 @@ class HBM2 : public IDRAM, public Implementation {
        *   nRTW  10 -> 17 (Table 68 NOTE 23 p.112 closed form with this
        *     row's RL 20 / WL 10 / BL4, tDQSS(min) -0.2 tCK, tDQSCK(max)
        *     3.5 ns, tDQSQ(max) 71 ps at 2.4 Gbps = 13.82 ns -> 17 nCK.
-       *     INERT: populate_timingcons never reads nRTW -- its live RD->WR
+       *     LIVE since PIMID 1.11.96 (x09-11): populate_timingcons reads nRTW; until then its live RD->WR
        *     rule is nCL + nBL + 2 - nCWL -- kept correct for the
        *     completeness check's sake.)
        *   nRREFD 8 -> 10. UNIT ERROR: Table 68 p.110 gives tRREFD = 8 ns;
@@ -513,7 +513,7 @@ class HBM2 : public IDRAM, public Implementation {
           {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"RD", "RDA"}, .latency = V("nCCDS")},
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"WR", "WRA"}, .latency = V("nCCDS")},
           /// RD <-> WR, Minimum Read to Write, Assuming tWPRE = 1 tCK                          
-          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nCL") + V("nBL") + 2 - V("nCWL")},
+          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nRTW")},   /* PIMID 1.11.96 (review x09-ramulator-specs-11): the row's derived nRTW (JESD235D Table 68 note 23 closed form, 17 nCK at 2.4 Gbps) instead of nCL + nBL + 2 - nCWL (14), which the file itself marked INERT */
           /// WR <-> RD, Minimum Read after Write
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTRS")},
           /// CAS <-> PREab

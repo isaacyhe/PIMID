@@ -7,6 +7,95 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.96 -- the controller ran on the core's clock, lost its writes, and sent one column command for every line
+
+CONTROLLER RELEASE, part 1 of R3 (`_1166audit/MANIFEST_1.11.94plus.md`; sweep-94
+rulings 4 (c) and 14 (c), review C5, C7, H01-H03, H12, H18, H32, x09-6/7/10/11).
+This part fixes the Ramulator2 device model and the zsim controller that
+fronts it, and prices the controller from the DRAM preset. Numbers move on
+every cell with a priced memory controller (McPAT MC clock, rate and width)
+and on every run that builds the live controller (HOST_MC placement, system
+devices of type Ramulator); the device-loop wiring itself (ruling 4 (c)) is
+part 2 (see OPEN).
+
+**(1) The device runs on its own clock (review C7).** zsim's RamulatorMemory
+advanced Ramulator once per CORE cycle: a 500 MHz element saw a DRAM 2.4x
+slower than its preset, a 2 GHz host one 1.25x faster. The controller now
+reads the memory system's tCK and advances the device by core period / tCK
+per core cycle with a fractional carry (DDR4-2400 at 500 MHz: 2.401 DRAM
+cycles per core cycle, printed once per controller). A weave completion is
+clamped to the bound-phase estimate (sCycle + minLatency).
+
+**(2) Writes complete (review H12).** Ramulator2's generic controller shipped
+the write-completion branch as a TODO, so an external requester never heard
+of its writes: the zsim controller held every write event forever and
+reported zero writes. The controller now calls the write's callback when its
+WR command issues (depart = issue + the device's data phase). Reads and
+writes are COUNTED at access(), once per request, for every requester: the
+counts used to be taken in the completion callback, which only a core with
+an event recorder reaches, so simple_core and the ALU element reported zero
+traffic through the controller (probe: simple_core gemv 256 on DDR4 HOST_MC,
+828 reads and 1 write where 1.11.95 reported 0/0).
+
+**(3) One column command per BURST (review H01/H02, x09-6).** The controller
+sent one Ramulator request per 64 B line; a 16-bit GDDR6/LPDDR5 channel
+(BL16 = 32 B) and an HBM2 pseudo-channel (BL4 x 64 bits = 32 B) move 32 B per
+column command and were credited with twice their bandwidth. The emitter now
+writes `burstsPerLine` = line / the column the Ramulator model simulates
+(prefetch x channel_width / 8: DDR3/4/5 and HBM3 64 B, so 1; LPDDR5, GDDR6
+and HBM2 32 B, so 2) and the controller issues that many consecutive column
+commands per line, completing on the last. (For HBM2 the array energy's
+access-path rule prices a 128-bit legacy-mode burst while Ramulator simulates
+64-bit pseudo-channels; the controller follows the simulated device. That
+split is recorded as open.) The Ramulator config now carries `channel_width` so
+the mapper's column granularity (prefetch x width / 8) IS the burst: the
+impls' defaults made HBM2 a 16 B column (half its 32 B burst) and GDDR6 a
+64 B one (twice its 32 B burst).
+
+**(4) Device timing transcriptions (review C5, H03, x09-7/10/11).** LPDDR5's
+RD16/WR16 row-hit check tested row 0 instead of the request's row (a channel
+deadlock, "Failed to send refresh!") and its WCK-sync windows added the
+ImplDef INDICES of nCL/nCWL/nBL16 (2, 1) instead of their values; GDDR6
+enforced tRAS/tRP at channel level (every bank's activate behind every
+other's precharge, 1.92x on random traffic) and a per-width table marked
+"update these values" overwrote the preset's own nRRDS/nRRDL/nFAW; HBM2's
+live RD->WR rule was nCL + nBL + 2 - nCWL (14 nCK) while the row's derived
+nRTW (17) was marked INERT. All four now state what the row says.
+
+**(5) The controller McPAT prices is the preset's (ruling 14 (c), H18, H32).**
+MC clock = the DRAM preset's CK (1e6 / tCK_ps) x `pim.mc.clock_gear` (1 =
+on-die, 2 = a gear-2 controller; anything else refuses) at every pricing
+site -- it was the PE clock / 2 everywhere, 250 MHz for a 500 MHz element
+against an HBM3 interface at 1.6 GHz. The peak transfer rate is written in
+MB/s (DQ rate x channel bits / 8; the table wrote the MT/s figure into
+McPAT's MB/s field for every technology, and is deleted), the bus width and
+ranks come from the preset, and the controller count is the one the pricing
+site built (one was always priced). A non-DRAM memory keeps core clock / 2
+and its computed array bandwidth, stated as an assumption.
+
+DATA IMPACT: McPAT controller dynamic/area move on every cell with a priced
+MC (ruling 14 (c) estimated x3.2..x9.6 on device cells). Runs that build the
+live controller (HOST_MC placement; no corpus cell today) move on (1)-(4).
+GDDR6 cells move on the preset's nRRDS (7, was 5 from the table).
+
+OPEN (part 2, 1.11.97): ruling 4 (c) itself -- Ramulator2 in the DEVICE
+timing loop, replacing the PE memory interface's M/D/1 service model for
+DRAM accesses, with the bank-open tracker, refresh and the measured
+controller background (row 28) live, the queue at the target bank (x04-8),
+shared open-row state (x04-10) and the IDD3N basis of the active background
+(x08-1). The ALU element and simple_core are bound-only (no event recorder),
+so the live controller cannot time them through the weave phase; the design
+(epoch replay for every core type, weave-only for timing cores, or
+synchronous stepping) is the user's call, recorded in `_1166audit/r1/R3_PLAN.md`.
+The weave assertion on in_order HOST_MC runs ("Queued event too far into the
+future", present in 1.11.95) is root-caused: the in-order core leaves a
+barrier at its issue cursor, which can sit behind its last recorded memory
+response, and the recorder's taper gets a negative delay that the 32-bit
+postDelay wraps to ~2^32 cycles; a bound-only memory never exposes it (the
+cursor and the response coincide), the live controller does. The fix (leave
+no earlier than the last response; a delay that does not fit 32 bits fails
+loudly) ships with part 2.
+
 ## 1.11.95 -- the cache search was unconstrained, the bank rule asked CACTI for what it cannot build, and McPAT priced a hierarchy nobody configured
 
 CACHE RELEASE (R2 of `_1166audit/MANIFEST_1.11.94plus.md`; sweep-94 ruling 25,

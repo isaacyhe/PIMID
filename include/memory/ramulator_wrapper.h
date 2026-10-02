@@ -414,6 +414,17 @@ public:
     int getBeatsPerBurst() const;
     int getDevicesPerAccess() const;
     int getBurstsPerAccess() const;
+    /* 1.11.96 (review H01/H02, x09-6): the bytes ONE Ramulator column command
+     * moves for this technology = the impl's internal prefetch x the
+     * channel_width the generated config carries / 8 (DDR3/DDR4 64, DDR5 64,
+     * LPDDR5 32, GDDR6 32, HBM2 32 -- a pseudo-channel BL4 at 64 bits, which
+     * is what the Ramulator HBM2 model simulates; the array energy's
+     * 128-bit legacy-mode path is a separate rule -- HBM3 64). The controller
+     * issues lineSize / this many column commands per cache line. */
+    static int ramulatorColumnBytes(const std::string& dram_impl);
+    /* 1.11.96 (x09-6): the channel_width (bits) the generated Ramulator config
+     * carries for an impl; the zsim-side emitter (main.cpp) writes the same. */
+    static int ramulatorChannelWidthBitsFor(const std::string& dram_impl);
     double getAccessBurstNs() const;
     std::string describeAccessPath() const;
     std::string getAccessPathLabel() const;   // "32-bit sub-channel / 8-bit device"

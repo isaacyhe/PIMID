@@ -2009,6 +2009,7 @@ struct UnifiedConfig {
     // PE-MI distributed memory interface config
     bool pe_mc_enabled = false;             // true when pim.mc section present in YAML
     std::string pe_mc_type = "simple";     // always "simple" (M/D/1 always active)
+    int mc_clock_gear = 1;                 // 1.11.96 (sweep-94 ruling 14 (c)): pim.mc.clock_gear, MC clock = preset CK x gear (1 = on-die, 2 = gear-2 controller)
     int pes_per_mc = 1;                     // PEs sharing each MI (0 = host MC mode)
     bool pes_per_mc_user_set = false;       // true when user explicitly set pes_per_mc
     int pe_mc_local_latency = -1;           // -1 = auto from technology
@@ -6811,8 +6812,26 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
  */
 static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string& tech) {
     std::string tmpCfg = "/tmp/pimid_ramulator_" + std::to_string(getpid()) + ".yaml";
+    std::ostringstream buf;
+    writeRamulatorConfigYaml(buf, tech, config.dram_device_width, config);
+    std::string y = buf.str();
+    /* 1.11.96 (review x09-ramulator-specs-6): the zsim controller's device
+     * must map columns at the burst, like the oracle's config
+     * (RamulatorWrapper::makeConfig): write channel_width under org from the
+     * one table both emitters share. Without it every impl fell back to its
+     * own default (64; DDR5/LPDDR5 32), which made HBM2 a 16 B column and
+     * GDDR6 a 64 B one. */
+    const size_t ip = y.find("    impl: ");
+    const size_t op = y.find("\n    org:\n      preset: ");
+    if (ip != std::string::npos && op != std::string::npos) {
+        const size_t ie = y.find('\n', ip);
+        const std::string impl = y.substr(ip + 10, ie - (ip + 10));
+        const size_t pe = y.find('\n', op + 1 + std::string("    org:\n      preset: ").size());
+        if (pe != std::string::npos)
+            y.insert(pe, "\n      channel_width: " + std::to_string(pimid::RamulatorWrapper::ramulatorChannelWidthBitsFor(impl)));
+    }
     std::ofstream ofs(tmpCfg);
-    writeRamulatorConfigYaml(ofs, tech, config.dram_device_width, config);
+    ofs << y;
     ofs.close();
     config.ramulator_config_file = tmpCfg;
 }
@@ -6824,7 +6843,21 @@ static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string
  * @param config UnifiedConfig with controller parameters
  * @param mem_latency Latency in cycles (used for MD1/Simple/Ramulator only)
  */
-static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int mem_latency) {
+/* 1.11.96 (review H01/H02): column commands per cache line, from the access-path
+ * rule the array energy uses (RamulatorWrapper::getBurstsPerAccess). */
+static int dramBurstsPerLine(const std::string& tech, const UnifiedConfig& config) {
+    const std::string t = canonicalMemTech(tech);
+    if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) return 1;
+    /* The column the Ramulator model simulates (prefetch x channel_width / 8, the
+     * same map the generated config carries), not the array energy's access
+     * path: for HBM2 the two differ (the energy rule prices the 128-bit
+     * legacy-mode burst, Ramulator simulates 64-bit pseudo-channels, 32 B per
+     * column), and the controller must issue what the simulated device takes. */
+    const int col = pimid::RamulatorWrapper::ramulatorColumnBytes(t);
+    return std::max(1, config.cache_line_size / std::max(1, col));
+}
+
+static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int mem_latency, const std::string& mem_tech) {
     std::string ct = config.zsim_mem_controller_type;
     int bound_lat = (config.weave_bound_latency >= 0) ? config.weave_bound_latency : mem_latency;
 
@@ -6833,6 +6866,7 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
         out << "        type = \"Ramulator\";\n";
         out << "        configFile = \"" << config.ramulator_config_file << "\";\n";
         out << "        latency = " << mem_latency << ";\n";
+        out << "        burstsPerLine = " << dramBurstsPerLine(mem_tech, config) << ";\n";   // 1.11.96 (H01/H02)
         out << "    };\n";
     } else if (ct == "weavesimple") {
         out << "    mem = {\n";
@@ -7249,36 +7283,64 @@ static int validateTechNodeNm(int requested_nm, const char* site) {
     std::exit(1);
 }
 
+/* 1.11.96 (sweep-94 ruling 14 (c), review H18/H32): the controller McPAT
+ * prices is described from the DRAM preset the run simulates -- the DQ rate
+ * (MT/s) x the channel width (bits) / 8 = the peak transfer rate in MB/s,
+ * which is the unit McPAT's `peak_transfer_rate` takes (its Xeon reference
+ * says 6400 for DDR3-1600 on 32 bits... the table that stood here wrote the
+ * MT/s figure into a MB/s field for every technology), the width from the
+ * same access-path rule the array energy uses, the ranks per channel from the
+ * organisation preset, and the controller count the pricing site built. A
+ * non-DRAM memory (SRAM, NVM) has no preset: its controller runs at the
+ * array's own bandwidth (banks x line / access time, the run's computed
+ * md1 bandwidth) on a 64-bit path, one rank. */
 static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
-    const std::string& tech, int num_mcs)
+    const std::string& tech, int num_mcs, const UnifiedConfig& config)
 {
     pimid::McPATWrapper::MCTechParams p;
     p.number_mcs = std::max(1, num_mcs);
-
-    if (tech == "DDR3") {
-        p.peak_transfer_rate = 1600; p.databus_width = 64; p.number_ranks = 2;
-    } else if (tech == "DDR4") {
-        /* 1.11.57 (latent B044): the "DRAM" spelling is gone from this row and
-         * the 1.11.51 (L76) note above it is withdrawn. That note said "DRAM"
-         * was an ACCEPTED CANONICAL TECHNOLOGY; it is not -- canonicalMemTech()
-         * resolves the generic alias to DDR4 and every consumer sees only
-         * generation names. The row is unchanged for real DDR4. */
-        p.peak_transfer_rate = 3200; p.databus_width = 64; p.number_ranks = 2;
-    } else if (tech == "DDR5") {
-        p.peak_transfer_rate = 4800; p.databus_width = 64; p.number_ranks = 2;
-    } else if (tech == "LPDDR5") {
-        p.peak_transfer_rate = 6400; p.databus_width = 32; p.number_ranks = 1;
-    } else if (tech == "GDDR6") {
-        p.peak_transfer_rate = 4000; p.databus_width = 32; p.number_ranks = 1;
-    } else if (tech == "HBM2") {
-        p.peak_transfer_rate = 2400; p.databus_width = 128; p.number_ranks = 1;
-    } else if (tech == "HBM3") {
-        p.peak_transfer_rate = 6400; p.databus_width = 128; p.number_ranks = 1;
+    const std::string t = canonicalMemTech(tech);
+    if (pimid::isDRAM(pimid::parseMemoryTechnology(t))) {
+        try {
+            pimid::RamulatorWrapper w("", t);
+            applyDramKnobs(w, config);
+            w.initialize();
+            const auto& tim = w.getPresetTiming();
+            const int bits = std::max(8, w.getChannelDataBits());
+            if (tim.rate_mtps <= 0) throw std::runtime_error("the timing preset carries no DQ rate");
+            p.peak_transfer_rate = static_cast<int>(std::llround((double)tim.rate_mtps * bits / 8.0));   // MB/s
+            p.databus_width = bits;
+            p.number_ranks = std::max(1, (int)w.getRanksPerChannel());
+        } catch (const std::exception& e) {
+            refuseWithoutDramOracle(t, e.what(), "the memory controller McPAT prices");
+        }
     } else {
-        // SRAM / NVM -- simple controller
-        p.peak_transfer_rate = 1600; p.databus_width = 64; p.number_ranks = 1;
+        p.peak_transfer_rate = (config.md1_bandwidth_mbs > 0) ? config.md1_bandwidth_mbs : 1600;
+        p.databus_width = 64; p.number_ranks = 1;
     }
     return p;
+}
+
+/* 1.11.96 (ruling 14 (c)): the controller clock McPAT prices = the DRAM
+ * preset's CK (1e6 / tCK_ps MHz) x pim.mc.clock_gear. It was the PE clock / 2
+ * at every site, which priced a 500 MHz element's controller at 250 MHz
+ * against an HBM3 interface clocked at 1.6 GHz. A non-DRAM memory has no
+ * CK; its controller keeps the core clock / 2 (stated: an assumption the
+ * array models do not source). */
+static double mcClockMHzForMcPAT(const std::string& tech, const UnifiedConfig& config, double core_mhz) {
+    const std::string t = canonicalMemTech(tech);
+    if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) return core_mhz / 2.0;
+    try {
+        pimid::RamulatorWrapper w("", t);
+        applyDramKnobs(w, config);
+        w.initialize();
+        const auto& tim = w.getPresetTiming();
+        if (tim.tCK_ps <= 0) throw std::runtime_error("the timing preset carries no tCK");
+        return 1e6 / (double)tim.tCK_ps * (double)config.mc_clock_gear;
+    } catch (const std::exception& e) {
+        refuseWithoutDramOracle(t, e.what(), "the memory controller clock McPAT prices");
+    }
+    return core_mhz / 2.0;   // not reached
 }
 
 /**
@@ -8877,7 +8939,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     } else {
         mcfg.num_memory_controllers = 1;
     }
-    mcfg.mc_clock_mhz = config.frequency_mhz / 2.0;
+    mcfg.mc_clock_mhz = mcClockMHzForMcPAT(config.memory_tech, config, config.frequency_mhz);   // 1.11.96 (14c): preset CK x gear
     // The in-memory NoC (DRAM datapath hierarchy) is a property of the memory
     // organization, not the PE count: it exists whenever the hierarchy is enabled,
     // even for a single PE. Gating on num_pes>1 alone dropped the ~4.6W NoC leakage
@@ -9050,7 +9112,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     else mcpat.setMemControllerAccesses(zsim_stats.mem_rd, zsim_stats.mem_wr);
 
     // MC technology params
-    McPAT::MCTechParams mc_tech = getMCTechParamsForMcPAT(config.memory_tech, 1);
+    McPAT::MCTechParams mc_tech = getMCTechParamsForMcPAT(config.memory_tech, mcfg.num_memory_controllers, config);   // 1.11.96 (14c/H18/H32)
     auto it_ptr = overrides.find("mc.peak_transfer_rate");
     if (it_ptr != overrides.end()) mc_tech.peak_transfer_rate = static_cast<int>(it_ptr->second);
     auto it_dbw = overrides.find("mc.databus_width");
@@ -9275,8 +9337,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
          * file (mcfg.mc_clock_mhz = frequency/2 at both other sites). The
          * literal 1200 had no source and no print, so a host at any clock
          * was priced with a 1.2 GHz controller. */
-        host_cfg.mc_clock_mhz = (host_clk_mhz > 0.0 ? host_clk_mhz
-                                                    : config.frequency_mhz) / 2.0;
+        host_cfg.mc_clock_mhz = mcClockMHzForMcPAT((host_node && !host_node->memory_tech.empty()) ? host_node->memory_tech : config.host_memory_tech,
+                                                   config, (host_clk_mhz > 0.0 ? host_clk_mhz : config.frequency_mhz));   // 1.11.96 (14c): the host memory's preset CK x gear
         host_cfg.has_noc = false;
         /* 1.11.57 (audit round 3, A006): state the metal stack.
          *
@@ -9375,7 +9437,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             const std::string& hmt =
                 (host_node && !host_node->memory_tech.empty()) ? host_node->memory_tech
                                                                : config.host_memory_tech;
-            host_mcpat.setMCTechParams(getMCTechParamsForMcPAT(hmt, 1));
+            host_mcpat.setMCTechParams(getMCTechParamsForMcPAT(hmt, host_cfg.num_memory_controllers, config));   // 1.11.96
         }
 
         // PCIe for host-device transfers (configurable via power.pcie YAML)
@@ -11435,7 +11497,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         } else {
             mcfg.num_memory_controllers = 1;
         }
-        mcfg.mc_clock_mhz = node.frequency_mhz / 2.0;
+        mcfg.mc_clock_mhz = mcClockMHzForMcPAT(node.memory_tech, config, node.frequency_mhz);   // 1.11.96 (14c)
 
         // NoC (for device nodes with PEs)
         if (node.role == UnifiedConfig::SystemNode::DEVICE && node.num_pes > 1) {
@@ -12146,7 +12208,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                        * so it could not print. */
                       << "  (measured, per-node)"
                       << std::endl;
-            mcpat.setMCTechParams(getMCTechParamsForMcPAT(node.memory_tech, 1));
+            mcpat.setMCTechParams(getMCTechParamsForMcPAT(node.memory_tech, mcfg.num_memory_controllers, config));   // 1.11.96
 
             mcpat.computePower();
             {
@@ -12888,7 +12950,7 @@ public:
             cfg << "\n";
         }
 
-        emitZSimMemBlock(cfg, config_, mem_latency);
+        emitZSimMemBlock(cfg, config_, mem_latency, config_.memory_tech);
         cfg << "\n";
 
         // Configure Garnet-based network for all topologies
@@ -13795,6 +13857,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             cfg << "            latency = " << mem_latency << ";\n";
             cfg << "            networkNodeId = " << node.node_network_id << ";\n";
             cfg << "            bandwidth = " << md1_bw << ";\n";
+            if (mc_type == "Ramulator") cfg << "            burstsPerLine = " << dramBurstsPerLine(node.memory_tech, config) << ";\n";   // 1.11.96 (H01/H02)
             cfg << "        };\n";
             dev_idx++;
         }
@@ -13827,7 +13890,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                                                          config.temperature_k,
                                                          config.cache_line_size);
                 mem_latency = std::max(1, mem_latency);
-                emitZSimMemBlock(cfg, config, mem_latency);
+                emitZSimMemBlock(cfg, config, mem_latency, node.memory_tech);   // 1.11.96
                 cfg << "\n";
                 break;
             }
@@ -14780,6 +14843,11 @@ int main(int argc, char** argv) {
                     config.pg_mc = yamlBool(yaml_cfg["pim"]["mc"]["pg"], config.pg_mc, "pim.mc.pg");  // 1.11.8
                     config.pe_mc_enabled = true;
                     auto mc = yaml_cfg["pim"]["mc"];
+                    config.mc_clock_gear = yamlInt(mc["clock_gear"], config.mc_clock_gear, "pim.mc.clock_gear");   // 1.11.96 (14c)
+                    if (config.mc_clock_gear != 1 && config.mc_clock_gear != 2) {
+                        std::cerr << "Error: pim.mc.clock_gear = " << config.mc_clock_gear << "; the controller clock is the DRAM preset's CK x 1 (on-die) or x 2 (a gear-2 controller)." << std::endl;
+                        return 1;
+                    }
                     config.pe_mc_type = mc["type"].as<std::string>(config.pe_mc_type);
                     /* 1.9.35: the key reads as a choice but there is exactly one
                      * implementation. The old SimplePEMemoryController and
