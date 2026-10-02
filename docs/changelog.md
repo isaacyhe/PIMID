@@ -7,6 +7,170 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.94 -- the values leave the code: part records, refusals for every placeholder, and the knobs the rulings asked for
+
+PARITY RELEASE (the first of the manifest `_1166audit/MANIFEST_1.11.94plus.md`,
+built from the 2026-09-27..10-03 rulings in `_1166audit/sweep94/rulings/RULINGS.md`
+and `_1166audit/review93/rulings/RULINGS.md`). Rule: this release MOVES values
+and adds refusals and knobs; it moves NO number on the default configuration.
+Every knob added here carries today's value as its default; defaults change in
+the fidelity release (R5). Gate 1203A/B asserts parity against 1.11.93 on every
+gate shape, plus a FIRES arm per fix. Parity means: total area, total leakage
+and the set of per-core instruction counts identical, and cycles, DRAM read
+energy, NoC dynamic and total dynamic inside the simulator's own run-to-run
+spread, which the gate measured (job 392510: the OpenMP workers land on the
+PEs in a different order each run, so on gemv in_order 256 even the SAME
+binary moves cycles 0.7%, NoC dynamic 12%, read energy 0.7%, and one worker's
+instruction count by 837; on stream 40000 cycles move 0.6%). The 1203A arms
+that asked for EXACT cycles were mis-specified and re-evaluated as 1203B.
+
+**(1) Parameter records, step 1 of the two-step migration (ruling 13a/16/22).**
+`params/dram/<tech>.yaml`, one record per DRAM technology: part, vendor,
+generation, feature size F, cell factor (6 F^2), measured full-die density and
+its source, organisation and timing preset names, channels, and for HBM the
+stack height and die capacity, plus the refresh ladder. The loader
+(`src/params/part_records.cpp`) reads the record at config load for every DRAM
+technology a run names and CROSS-CHECKS each field against the code tables
+that still carry the same values; a missing record, a missing field or any
+disagreement refuses the run (`[params] FATAL`). The record is found under
+`PIMID_PARAMS` or the tree the binary was built from (`PIMID_PARAMS_DIR`,
+like CACTI's tables). Nothing priced reads the record yet: the cross-check is
+the proof that file == code; step 2 (R7) deletes the code tables. The per-class
+feature size moved beside the generation table it indexes
+(`CACTIWrapper::generationFeatureNm`). Generation labels now name the density
+part (DDR4/LPDDR5/GDDR6/HBM3 1z, HBM2 2x; sweep-94 row 13, sourced in the
+code comment) and the pitch note prints the implied array efficiency
+(6 F^2 x density) as a self-check.
+
+**(2) Measured or refuse: the placeholders are gone.**
+- Cache latency (row 1): CACTI's access time, else the user's `latency_ns`
+  (now also per node in system scope: `system.hosts[]/devices[].cache.*_latency_ns`),
+  else a refusal naming the cache and the geometry. The written-down
+  4/3/12/20 cycles are deleted. System-scope cache cycles are converted at the
+  OWNING node's clock (review H24), not the host's.
+- Bandwidth (ruling 2b): always computed -- DRAM from the preset, SRAM/NVM from
+  banks x line / the array's EXACT access time (the rounded-cycle round trip is
+  gone); when the array model cannot build the array the run refuses
+  (`[bw] FATAL`); the only override is a bandwidth in bytes per second,
+  labelled as the user's. `--print-mem-info` no longer swallows the Ramulator
+  exception; it prints NOT COMPUTABLE with the reason.
+- Array geometry (row 3): the nineteen literal fallbacks in the architecture
+  extractor (subarray shapes, bank counts, chip sizes, DRAM bus widths, a
+  DDR4-2400 clock for any technology) refuse instead (`[extract] FATAL`),
+  naming the tool, the field and the inputs that change it. Two of them fired
+  on the default SRAM unit the moment the literals were gone, and both were
+  the harness, not the tool: CACTI computes the subarray rows and columns for
+  every array but exported them only inside its 3D-memory block
+  (`external/cacti/Ucache.cc`), so a 2D SRAM read uninitialised memory (rows 1,
+  columns 0; the old code then wrote 256) -- the export now runs for every
+  array (the 64 KB unit: 16 rows x 2048 columns per subarray); and the SRAM
+  inner-bank residual was taken against the sum of the very components it
+  subtracted, plus a 0.15 ns "typical" column mux, so it was negative by
+  construction and 0.2/0.3/0.15 ns were written in -- the column mux is now
+  CACTI's sense-amp mux decoder delay and the residual is taken against
+  CACTI's full access time. Both fields are printed, not consumed: the
+  "Inner-bank datapath latency" line now reads the array access time
+  (2.44 ns on the unit, was 1.63); no priced number moves.
+- Instruction mix (row 21): a census that disagrees with retirement by more than
+  5% refuses; the 87.5/12.5 fallback fractions are deleted.
+- Guest exit status (found by gate 1203C): the plugin ended QEMU with status 0
+  whatever the workload exited with, and the simulator parsed and priced the
+  whole run "regardless of guest exit code", so a kernel that REFUSED at data
+  preparation (exit 1, no ROI) came back as a completed, priced cell. The plugin
+  now carries the exit_group status and a non-zero status refuses the run
+  (`[workload] FATAL`, rc 3) in both scopes.
+- Fabric names (review H06 rule, M-16): a Garnet endpoint name that is purely
+  numeric binds to its own id and an unknown name refuses, behind
+  `PIMID_NOC_STRICT_NODE_NAMES=1` in this release (default off: it moves the
+  MPI cells; R5 flips it with H06).
+- Garnet routing (H33): a direction routing that names a port a router lacks is
+  refused at build time, and at config load a DRAM device with a user-set
+  non-TABLE routing, or TORUS_2D with TABLE, is refused.
+
+**(3) Dead code out** (rows 21, 23, 24, 25, 28): `power_model_manager.*` (never
+instantiated; unsourced 80/20 and 90/10 splits), `src/network/garnet_detailed.cpp`
+(an unreferenced reimplementation; the detailed fabric is the extracted gem5
+Garnet), the five caller-less capability flag functions, the PCM 50/50
+SET/RESET mean field, the subarray "no remote access" claim (the model routes
+remote through the tree).
+
+**(4) Knobs added, today's values as defaults.** `power.periphery_device`
+(hp|lstp|lop|comm-dram: the CACTI column of the DRAM-periphery LEAKAGE ratio;
+default comm-dram, lstp in R5; area and dynamic factors keep the comm-dram
+geometry), `cache.pg` (shared caches gate on their own flag; unset follows
+`pim.pe.pg`), `pim.pe.arch_int_regs` / `arch_fp_regs` (32/32 today; x86-64's
+16/16 in R5), `noc.header_bits` (data message = line x 8 + header; 576 for 64 B
+lines), `memory.bank_kb` (the SRAM/NVM characterisation unit; capacity = banks
+x bank size), `simulation.det_epoch_phases`, `simulation.mpi_contention_points`
+(formerly environment-only), and `power.interconnect_projection: aggressive`
+now prints once that it prices ITRS-target wires. Link header bytes are
+derived from the link class (row 6; -1 = unset, so an interposer's 0 is a real
+value and never becomes a PCIe 20).
+
+**(5) HOST_MC is the top rung** (review H17, user: "isn't host mc also a level
+of placements?"). Placement HOST_MC is rung 7 with its own latency, the
+host-path split (fabric + coherence + controller pipeline + PHY) at the device
+clock; `levelLatency7`/`bridgeLatency6` are emitted and zsim's arrays grew by
+one. The -1 sentinel that zsim read as 0xFFFFFFFF and used as a signed index is
+gone; a placement above 7 is refused.
+
+**(6) Parity fixes with FIRES arms** (details and arms in `_1166audit/r1/*.notes.md`):
+ALU compute and access costs keep a fractional carry across blocks (H04;
+defaults are integer products, bit-identical); every thread migrates at ROI
+start in co-sim (H11); empty channels at or above the channel tier get an
+endpoint, folded channels are counted at the root (H13/H15); the tree counts
+DISTINCT PE homes (H14); the system-trace path prices the device over its own
+wall clock and feeds McPAT the device subset (H21/H22); a decoupled host memory
+is populated from its own technology (H23); the synthetic probe feeds router
+flit traversals (H25, `SyntheticResult::routerFlitTraversals`); GDDR6 honours
+`device_width: x8` (H27; an unset width keeps x16, the transcription's and the
+2026-08-22 ruling's default, where the DDR families' x8 fallback would have
+instantiated a different device from the one transcribed); the MPI shim decodes MPICH datatype handles (size in
+bits 8-15; unknown handles refuse) (H29); RING's shortest path uses the ring's
+router count (H34); TORUS_2D gets dateline VC classes on both dimensions and
+refuses fewer than 2 VCs per vnet (H35); the synthetic path hands Garnet the
+Garnet link latency, not the analytical RES-scaled one (H40); McPAT's
+interconnect honours its wire-type argument (R3208; every caller passes
+Global); the NVSim disk cache writes full precision with a format marker (old
+six-digit entries are still read as written, so the corpus's warm entries do
+not move; `PIMID_NVSIM_CACHE_REQUIRE_FULL=1` recomputes them); the idle-gap
+threshold rounds instead of truncating; `nvsim_warm` builds again (H48); the
+CACTI ED^2 comment states what the setting is.
+
+**(7) Benchmarks** (`_1166audit/r1/A_bench.notes.md`): barnes refits its root
+box each step, scales masses by 1/N and refuses on pool exhaustion (C1; the
+large size ran out of stack); fmm reinserts split particles into the correct
+child with a growable list at the depth limit and its header says what it
+computes (C2); `pimid_devorg_alloc` maps exactly the span with MAP_NORESERVE
+(H41); EVERY devorg kernel refuses when a PE's need exceeds its slot, naming
+the largest size that fits (H44/H45; previously silent spill or segfault);
+bfs_mpi's candidate buffer is sized by its bound (H43); backprop's hidden layer
+is 16 as in Rodinia (H46); the five suite runners no longer pass `--output`
+(H42); the 88 SPLASH-3/Rodinia configs say `analytical` (H47).
+
+DATA IMPACT (default configuration): none by construction; gate 1203D proves
+it to the simulator's run-to-run noise (above). One observation stays OPEN:
+on SRAM stream 20000 (16 PEs) the master PE's critical path is 6.6% longer
+on 1.11.94 in 2 of 2 runs than on 1.11.93 in 3 of 3 (512k vs 475-481k
+cycles). The difference is 819 instructions and 332 remote accesses on the
+master, a spin path at a synchronisation point that the SAME 1.11.93 binary
+takes in 1 of 3 runs at size 1000 (491k vs 435k cycles); every other PE, the
+area, the leakage and the fabric are identical. It is thread-timing, not a
+priced model, but five samples cannot say whether 1.11.94 biases it; R5
+re-measures it with ten runs per binary. Two corpus-visible consequences that are REFUSALS, not number changes: the
+40 SRAM/PCM/STT-MRAM/ReRAM corpus cells (and bfs_mpi on LPDDR5) refuse at data
+prep because their per-PE working set exceeds the unit slot (ruling H44/H45:
+the SRAM/NVM corpus rows need sizes that fit, a corpus re-plan); and
+`BENCH_CHECKSUM` of the MPI kernels now prints its real value (the post-ROI
+double reduction was sized at 4 B). The prep buffer's guest virtual address
+changes (period-aligned, units unchanged).
+
+OPEN, deferred to the manifest's later releases: the lstp default, 16/16
+registers, the data-prep knob design, flit width wired to the key, multicast,
+the strict-name and uncounted-probe flags on by default, recomputing old NVSim
+cache entries, TORUS_2D with TABLE (refused), docs for the CUSTOM topology
+endpoint format and the ring/torus routing text.
+
 ## 1.11.93 -- every PE clocked a full pipeline, and the activity was divided by the PE count
 
 Found by a read-only audit of the PE core power path (2026-09-26): the

@@ -98,6 +98,26 @@ class RoutingUnit
                           int inport,
                           PortDirection inport_dirn);
 
+    // 1.11.94 (x03-garnet-custom-3, ruling H33): the direction XY, DOR or
+    // SHORTEST picks at router my_id for a packet bound to router dest_id.
+    // A pure function of the ids and the grid, shared by the per-hop routing
+    // below and by GarnetNetwork::validateDirectionRouting(), which walks
+    // every (router, destination) pair at setup and refuses a routing that
+    // names a port some router lacks. Returns "" for any other algorithm.
+    // num_rows/num_cols are the grid (XY, DOR); num_routers and
+    // ring_cw_only describe the ring (SHORTEST).
+    static PortDirection directionFor(int routing_algorithm,
+                                      int my_id, int dest_id,
+                                      int num_rows, int num_cols,
+                                      int num_routers, bool ring_cw_only);
+
+    // 1.11.94 (H33): non-inserting port lookup. hasOutDirection() answers;
+    // outportForDirection() refuses (fatal, naming router, direction and
+    // topology) when the router has no port by that name.
+    bool hasOutDirection(const PortDirection& dirn) const
+    { return m_outports_dirn2idx.count(dirn) != 0; }
+    int outportForDirection(const PortDirection& dirn, int dest_id);
+
     // Returns true if vnet is present in the vector
     // of vnets or if the vector supports all vnets.
     bool supportsVnet(int vnet, std::vector<int> sVnets);

@@ -1,0 +1,19 @@
+# PIMID shipped part record -- DDR4
+# 1.11.94: ONE record per part; every field required; provenance beside the value.
+# Step 1 of the parameter-file migration: the loader cross-checks each field against
+# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# To model another part: copy this file, change every field with its own source,
+# and point PIMID_PARAMS at the directory holding it. Partial records are refused.
+technology: DDR4
+part: "D1z 8 Gb DDR4 (density part); timing/energy row MT40A Rev B x8-2400"
+vendor: "SK hynix (density) / Micron (IDD row)"
+generation: "1z"            # vendor generation label of the DENSITY part (sweep-94 row 13)
+feature_nm: 15.5                  # mid-value of the published range for this generation
+cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline pitch 2 F)
+density_mb_per_mm2: 37.888  # measured FULL-DIE density, user capacity basis (D11)
+density_source: "SK hynix D1z DDR4, 0.296 Gb/mm^2 (SemiAnalysis / TechInsights) x 128"
+organization_preset: "DDR4_8Gb_x8"   # Ramulator org preset the run instantiates (default knobs)
+timing_preset: "DDR4_2400R"         # Ramulator timing preset (default knobs)
+channels: 1                   # channels the preset instantiates
+refresh_ladder:                    # JEDEC JESD79-4 extended temperature range: 2x refresh above 85 C
+  - { above_c: 85.0, factor: 0.5 }

@@ -304,14 +304,49 @@ static uint64_t contend_reserve(int dst_pe, uint64_t send_time, uint64_t dur) {
 
 /* ---- Helpers ---- */
 
+/* 1.11.94 (H29 s09-mpi-api-1): decode the datatype handles the workloads
+ * actually pass. The shim is LD_PRELOADed under binaries built with the system
+ * MPI (the shipped *_mpi kernels are MPICH builds: reduction_mpi passes
+ * 0x4c00080b for MPI_DOUBLE), but this function only knew the private handles
+ * 1..9 of include/parallel_abstraction/pimid_mpi.h and sized everything else
+ * at 4 bytes: MPI_DOUBLE moved half its data, an MPI_CHAR receive wrote 4x
+ * its buffer, and the NoC packet count of double traffic was halved.
+ *
+ * MPICH builtin datatype handle layout (mpi.h of MPICH 4, and
+ * MPIR_Datatype_get_basic_size in MPICH's mpir_datatype.h):
+ *   bits 30-31  handle kind, 01 = builtin
+ *   bits 26-29  object kind, 0011 = datatype      -> (h & 0xfc000000) == 0x4c000000
+ *   bits  8-15  the type's size in bytes          -> (h >> 8) & 0xff
+ *   bits  0-7   index within the builtin table
+ * e.g. MPI_CHAR 0x4c000101 -> 1, MPI_INT 0x4c000405 -> 4, MPI_FLOAT
+ * 0x4c00040a -> 4, MPI_DOUBLE 0x4c00080b -> 8, MPI_LONG 0x4c000807 -> 8.
+ * A builtin of size 0 (MPI_LB/MPI_UB markers) carries no data and is refused.
+ *
+ * Anything else -- an OpenMPI pointer handle, a derived/pair MPICH type
+ * (MPI_FLOAT_INT 0x8c000000), MPI_DATATYPE_NULL -- is REFUSED: a guessed size
+ * corrupts memory and misprices traffic, so the run stops and names the
+ * handle. The private table stays for workloads built against pimid_mpi.h.
+ * Corpus parity: the in-ROI traffic of the shipped kernels is MPI_INT and
+ * MPI_FLOAT, 4 bytes under both the old default and this decode. */
 static size_t dtype_size(MPI_Datatype dt) {
     switch (dt) {
         case MPI_CHAR: case MPI_BYTE: return 1;
         case MPI_INT: case MPI_UNSIGNED: case MPI_FLOAT: return 4;
         case MPI_DOUBLE: case MPI_LONG: case MPI_UNSIGNED_LONG:
         case MPI_LONG_LONG: return 8;
-        default: return 4;
+        default: break;
     }
+    const uint32_t h = (uint32_t)dt;
+    if ((h & 0xfc000000u) == 0x4c000000u) {
+        const size_t sz = (size_t)((h >> 8) & 0xffu);
+        if (sz > 0) return sz;
+    }
+    fprintf(stderr, "[pimid_mpi] FATAL: MPI datatype handle 0x%08x is not a "
+            "type the shim can size (it decodes MPICH builtin datatypes and "
+            "the pimid_mpi.h handles 1..9; derived, pair, marker and OpenMPI "
+            "types are not supported). Use a builtin MPICH datatype, or "
+            "build the workload against MPICH.\n", (unsigned)h);
+    abort();
 }
 
 /* Open/close the comm window. Outside instrumentation these are NOPs. */

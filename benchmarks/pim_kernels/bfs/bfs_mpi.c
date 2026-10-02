@@ -1,4 +1,4 @@
-/* bfs_mpi.c — Breadth-First Search on random graph (adjacency list via CSR)
+/* bfs_mpi.c -- Breadth-First Search on random graph (adjacency list via CSR)
  * MPI parallelization. All ranks share full graph and dist[]. Frontier
  * expansion is split across ranks; Allgatherv collects candidates, then
  * all ranks perform identical dedup to maintain consistent state.
@@ -36,6 +36,13 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     return def;
 }
 
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the full replicated
+ * [row_ptr V+1][col_idx V*deg][dist V] every rank slots. */
+static size_t bfs_mpi_need(long v, const void* c) {
+    int deg = *(const int*)c;
+    return ((size_t)(v + 1) + (size_t)v * (size_t)deg + (size_t)v) * sizeof(int);
+}
+
 int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
 
@@ -64,7 +71,16 @@ int main(int argc, char* argv[]) {
     int* col_idx = (int*)malloc(total_edges * sizeof(int));
     int* dist = (int*)malloc(V * sizeof(int));
     int* frontier = (int*)malloc(V * sizeof(int));
-    int* candidates = (int*)malloc(V * sizeof(int));
+    /* 1.11.94 (b01-pim-kernels-3, ruling H43): a rank appends every unvisited
+     * neighbour of its frontier share without deduplicating, so ncand reaches
+     * my_count*deg <= ceil(V/nprocs)*deg, which exceeds V when nprocs < deg
+     * (1 rank at 512/8 peaked at 788 > 512: heap overflow). Sized by that
+     * bound, never below the old V, so runs with nprocs >= deg keep the same
+     * allocation and the ROI is unchanged (a local visited-bitmap dedup would
+     * add work to the ROI of every cell). */
+    size_t cand_cap = (size_t)((V + nprocs - 1) / nprocs) * (size_t)deg;
+    if (cand_cap < (size_t)V) cand_cap = (size_t)V;
+    int* candidates = (int*)malloc(cand_cap * sizeof(int));
     int* all_candidates = (int*)malloc(V * deg * sizeof(int));
     int* recvcounts = (int*)malloc(nprocs * sizeof(int));
     int* displs = (int*)malloc(nprocs * sizeof(int));
@@ -99,10 +115,20 @@ int main(int argc, char* argv[]) {
     int* ci = col_idx;
     int* ds = dist;
     if (prep) {
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+         * is refused; it used to fall back to host layout in silence. */
+        slot_bytes = pimid_devorg_slot_bytes(&dev);
+        if (need > slot_bytes) {
+            char who[32];
+            snprintf(who, sizeof who, "rank %d: ", rank);
+            pimid_devorg_report_slot_refusal(who, "bfs", &dev, need, slot_bytes, "--vertices",
+                pimid_devorg_largest_fit(bfs_mpi_need, &deg, V, slot_bytes));
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         dbuf = (int*)pimid_devorg_alloc(&dev, &slot_bytes);
-        if (!dbuf || need > slot_bytes) {
-            fprintf(stderr, "rank %d: devorg: per-PE need %zu > slot %zu (or alloc "
-                    "fail); running host-layout (no prep)\n", rank, need, slot_bytes);
+        if (!dbuf) {
+            fprintf(stderr, "rank %d: devorg: alloc of the device buffer failed; "
+                    "running host-layout (no prep)\n", rank);
             prep = 0;
         }
     }

@@ -24,7 +24,11 @@ for yaml in "$SCRIPT_DIR"/configs/*.yaml; do
     fi
     echo -n "RUN  $name... "
     outdir=$(mktemp -d /tmp/pimid_npb_XXXXXX)
-    if $PIMID_BIN --method exec --config "$yaml" --output "$outdir" --no-power 2>&1 | tail -1 | grep -q "DONE\|complete"; then
+    # 1.11.94 (b03-suites-b-1, ruling H42): pimid has no --output option; it
+    # rejected the flag ('Unknown option: --output', rc=1), so every run failed.
+    # pimid's own exit status decides PASS; its output goes to $outdir.
+    if $PIMID_BIN --method exec --config "$yaml" --no-power \
+        >"$outdir/stdout.log" 2>"$outdir/stderr.log"; then
         echo "PASS"
         PASS=$((PASS + 1))
     else

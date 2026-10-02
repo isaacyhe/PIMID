@@ -73,8 +73,6 @@ public:
     bool supportsAnalogCompute() const;
 
     // PIM support queries
-    bool supportsBankPIM() const;
-    bool supportsMatPIM() const;
 
 private:
     // ReRAM-specific configuration

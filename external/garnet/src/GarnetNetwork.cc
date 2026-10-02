@@ -31,7 +31,10 @@
 
 #include "GarnetNetwork.hh"
 
+#include <array>
 #include <cassert>
+#include <string>
+#include <vector>
 
 #include "gem5_compat/base/cast.hh"
 #include "gem5_compat/base/compiler.hh"
@@ -147,6 +150,21 @@ GarnetNetwork::init()
         m_num_rows = -1;
         m_num_cols = -1;
     }
+
+    // 1.11.94 (x03-garnet-custom-2): a ring whose routers have no "West"
+    // outport is the unidirectional ring; SHORTEST then goes clockwise.
+    m_ring_cw_only = true;
+    for (auto* r : m_routers) {
+        for (int o = 0; o < r->get_num_outports(); o++) {
+            if (r->getOutportDirection(o) == "West") {
+                m_ring_cw_only = false;
+                break;
+            }
+        }
+        if (!m_ring_cw_only) break;
+    }
+
+    validateDirectionRouting();
 
     // FaultModel: declare each router to the fault model
     if (isFaultModelEnabled()) {
@@ -376,6 +394,89 @@ GarnetNetwork::makeInternalLink(SwitchID src, SwitchID dest, BasicLink* link,
                         routing_table_entry,
                         link->get_weight(), credit_link,
                         m_routers[dest]->get_vc_per_vnet());
+    }
+}
+
+// 1.11.94 (x03-garnet-custom-3, ruling H33): build-time check for the
+// direction-based routings. XY, DOR and SHORTEST choose an output by port
+// NAME (East/West/North/South) as a pure function of (current router,
+// destination router), so walking every (source, destination) pair over the
+// topology's links visits every decision any packet can ever take. The
+// walk refuses (fatal, naming topology, routing, router and direction) when
+// a router lacks the chosen port -- the case that used to eject the packet
+// at the wrong NI through map operator[] -> port 0 -- and when a walk does
+// not reach its destination within one visit per router (a routing that
+// loops on this topology). XY and DOR also need the rows x cols grid; a
+// topology built without one (num_rows <= 0, e.g. the CUSTOM DRAM tree
+// after a user-set noc.routing XY) is refused before the walk. TABLE,
+// CUSTOM, DIRECT and NCA use the routing table and are not checked here.
+// On a configuration that routes correctly the walk changes no state.
+void
+GarnetNetwork::validateDirectionRouting()
+{
+    int alg = m_routing_algorithm;
+    if (alg != XY_ && alg != DOR_ && alg != SHORTEST_)
+        return;
+    const char* rname = (alg == XY_) ? "XY" : (alg == DOR_) ? "DOR"
+                                                             : "SHORTEST";
+    int R = (int)m_routers.size();
+    std::string tname = getTopologyName();
+
+    if (alg == XY_ || alg == DOR_) {
+        if (m_num_rows <= 0 || m_num_cols <= 0 ||
+            m_num_rows * m_num_cols != R) {
+            fatal("[Garnet] routing %s needs a rows x cols router grid, but "
+                  "topology %s has %d routers and no grid (num_rows=%d). "
+                  "Use routing TABLE for this topology.",
+                  rname, tname.c_str(), R, m_num_rows);
+        }
+    }
+    if (R <= 1)
+        return;
+
+    // next[r][k]: router reached from r through its port named kDir[k]
+    // (-1: no such port). Later links overwrite earlier ones, as
+    // RoutingUnit::addOutDirection does for a repeated name.
+    static const char* kDir[4] = {"East", "West", "North", "South"};
+    std::vector<std::array<int, 4>> next(R, {{-1, -1, -1, -1}});
+    for (auto* l : m_topology_ptr->getInternalLinks()) {
+        const std::string& d = l->getSrcOutport();
+        for (int k = 0; k < 4; k++) {
+            if (d == kDir[k] && (int)l->getSrcNode() < R)
+                next[l->getSrcNode()][k] = (int)l->getDstNode();
+        }
+    }
+
+    for (int src = 0; src < R; src++) {
+        for (int dst = 0; dst < R; dst++) {
+            if (src == dst) continue;
+            int cur = src;
+            int steps = 0;
+            while (cur != dst) {
+                PortDirection dirn = RoutingUnit::directionFor(
+                    alg, cur, dst, m_num_rows, m_num_cols, R,
+                    m_ring_cw_only);
+                int k = -1;
+                for (int j = 0; j < 4; j++)
+                    if (dirn == kDir[j]) k = j;
+                if (k < 0 || next[cur][k] < 0) {
+                    fatal("[Garnet] routing %s is refused on topology %s: "
+                          "router %d has no '%s' output port, which %s needs "
+                          "on the path from router %d to router %d. Use "
+                          "routing TABLE for this topology.",
+                          rname, tname.c_str(), cur, dirn.c_str(), rname,
+                          src, dst);
+                }
+                cur = next[cur][k];
+                if (++steps > R) {
+                    fatal("[Garnet] routing %s is refused on topology %s: "
+                          "the path from router %d to router %d does not "
+                          "reach its destination within %d hops. Use routing "
+                          "TABLE for this topology.",
+                          rname, tname.c_str(), src, dst, R);
+                }
+            }
+        }
     }
 }
 

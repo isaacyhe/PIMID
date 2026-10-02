@@ -618,15 +618,7 @@ double PCMModel::getInnerBankReadLatency() const {
     return pcm_arch_->timing.inner_bank.getTotalReadLatency();
 }
 
-bool PCMModel::supportsBankPIM() const {
-    if (!pcm_arch_) return false;
-    return pcm_arch_->isSuitableForPIM();
-}
 
-bool PCMModel::supportsMatPIM() const {
-    // PCM supports mat-level PIM, but ONLY for read-heavy workloads
-    return true;
-}
 
 //=============================================================================
 // NVSim Integration (NEW!)

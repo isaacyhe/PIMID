@@ -58,8 +58,6 @@ public:
     double getInnerBankDatapathLatency() const;  // Total inner-bank datapath
 
     // PIM support queries
-    bool supportsBankPIM() const;
-    bool supportsSubbankPIM() const;
 
 private:
     // SRAM-specific configuration

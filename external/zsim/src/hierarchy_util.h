@@ -135,11 +135,15 @@ static inline int computeLCA(const HierPos& a, const HierPos& b) {
  */
 static inline uint64_t computeHierTraversal(
         uint32_t src_unit, uint32_t dst_unit,
-        const uint32_t levelLatency[7], const uint32_t bridgeLatency[6],
+        const uint32_t levelLatency[8], const uint32_t bridgeLatency[7],
         uint32_t placement, uint32_t sa_per_bank,
         uint32_t banks_per_bg, uint32_t bg_per_chip,
         uint32_t chips_per_rank = 1, uint32_t ranks_per_channel = 1) {
     if (src_unit == dst_unit) return 0;
+    /* 1.11.94 (H17): HOST_MC (rung 7) has no tree below it in this walk -- the
+     * PE sits beside the host controller and every unit is reached through the
+     * channel once, at the host-path latency. No negative index can arise. */
+    if (placement >= 7) return levelLatency[7];
 
     HierPos src = unitToHierPos(src_unit, placement, sa_per_bank, banks_per_bg,
                                  bg_per_chip, chips_per_rank, ranks_per_channel);
@@ -172,11 +176,12 @@ static inline uint64_t computeHierTraversal(
  * (2 x (lca - placement)); 0 and no visits for src == dst, which does not
  * traverse, exactly as computeHierTraversal charges it nothing. */
 static inline uint32_t hierTraversalLevels(
-        uint32_t src_unit, uint32_t dst_unit, uint32_t perLevel[7],
+        uint32_t src_unit, uint32_t dst_unit, uint32_t perLevel[8],
         uint32_t placement, uint32_t sa_per_bank,
         uint32_t banks_per_bg, uint32_t bg_per_chip,
         uint32_t chips_per_rank = 1, uint32_t ranks_per_channel = 1) {
-    for (int l = 0; l < 7; l++) perLevel[l] = 0;
+    for (int l = 0; l < 8; l++) perLevel[l] = 0;
+    if (placement >= 7) { perLevel[7] = 1; return 1; }   // 1.11.94 (H17): one host-path crossing, one link
     if (src_unit == dst_unit) return 0;
     HierPos src = unitToHierPos(src_unit, placement, sa_per_bank, banks_per_bg,
                                  bg_per_chip, chips_per_rank, ranks_per_channel);
@@ -223,7 +228,7 @@ static inline uint32_t peToHomeUnit(uint32_t pe_id,
  */
 static inline uint64_t computePEtoPELatency(
         uint32_t src_pe, uint32_t dst_pe,
-        const uint32_t levelLatency[7], const uint32_t bridgeLatency[6],
+        const uint32_t levelLatency[8], const uint32_t bridgeLatency[7],
         uint32_t placement, uint32_t sa_per_bank,
         uint32_t banks_per_bg, uint32_t bg_per_chip,
         const uint32_t* mapOffsets = nullptr,

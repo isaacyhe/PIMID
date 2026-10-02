@@ -209,8 +209,12 @@ PEAddressConstraints PEPlacementManager::calculateAddressConstraints(
             constraints.accessible_size_bytes = SUBARRAY_SIZE;
             constraints.accessible_limit = constraints.accessible_base +
                                           constraints.accessible_size_bytes;
-            constraints.can_access_remote = false;
-            constraints.remote_access_penalty = 0;  // Not allowed
+            /* 1.11.94 (sweep-94 row 28 / R3287): a subarray-placed PE DOES reach
+             * remote units -- through the tier tree at the tree's cost, which is
+             * the locked ladder's meaning and what the PE memory interface
+             * models. The old "not allowed" here was a claim nothing enforced. */
+            constraints.can_access_remote = true;
+            constraints.remote_access_penalty = 0;  // the tree cost is charged by the interface, not here
             break;
 
         case PEPlacementLevel::BANK:

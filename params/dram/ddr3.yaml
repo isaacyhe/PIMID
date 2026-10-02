@@ -1,0 +1,19 @@
+# PIMID shipped part record -- DDR3
+# 1.11.94: ONE record per part; every field required; provenance beside the value.
+# Step 1 of the parameter-file migration: the loader cross-checks each field against
+# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# To model another part: copy this file, change every field with its own source,
+# and point PIMID_PARAMS at the directory holding it. Partial records are refused.
+technology: DDR3
+part: "H5TQ4G83xFR-class 23 nm 4 Gb DDR3L (density part: ISSCC 2012 paper 2.3)"
+vendor: "SK hynix"
+generation: "3x/2x"            # vendor generation label of the DENSITY part (sweep-94 row 13)
+feature_nm: 25.0                  # mid-value of the published range for this generation
+cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline pitch 2 F)
+density_mb_per_mm2: 16.569579288025892  # measured FULL-DIE density, user capacity basis (D11)
+density_source: "SK hynix 23 nm 4 Gb DDR3 SDRAM, 30.9 mm^2 die (ISSCC 2012 paper 2.3, 6F2 open-bitline): 4 Gb / 30.9 mm^2 x 128"
+organization_preset: "DDR3_8Gb_x8"   # Ramulator org preset the run instantiates (default knobs)
+timing_preset: "DDR3_1600H"         # Ramulator timing preset (default knobs)
+channels: 1                   # channels the preset instantiates
+refresh_ladder:                    # JEDEC JESD79-3 extended temperature range: 2x refresh (tREFI/2) above 85 C
+  - { above_c: 85.0, factor: 0.5 }

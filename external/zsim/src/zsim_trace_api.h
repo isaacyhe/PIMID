@@ -8,6 +8,7 @@ int zsim_trace_run(const char* cfgPath, const char* tracePath, const char* outpu
 #ifdef __cplusplus
 struct SyntheticTrafficResult {
     uint64_t totalPackets = 0;
+    uint64_t routerFlitTraversals = 0;   // 1.11.94 (H25): measured router flit traversals, post-warmup
     uint64_t totalLatency = 0;
     double avgLatency = 0.0;
     double throughput = 0.0;

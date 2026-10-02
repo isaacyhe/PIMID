@@ -522,6 +522,16 @@ bool calculate_time(
 
     ptr_array->precharge_delay = uca->precharge_delay;
 
+    /* PIMID 1.11.94: the subarray geometry is exported for EVERY array.
+     * DynamicParameter computes num_r_subarray / num_c_subarray for the data
+     * and tag arrays of every organisation (parameter.cc), but this function
+     * copied them into the result only inside the is_3d_mem block below, so a
+     * 2D SRAM or cache read whatever memory the mem_array held (rows 1, cols
+     * 0 on the 64 KB unit). The two lines moved out of that block; nothing
+     * else in the block was touched. */
+    ptr_array->num_row_subarray = dyn_p.num_r_subarray;
+    ptr_array->num_col_subarray = dyn_p.num_c_subarray;
+
     if(g_ip->is_3d_mem)
     {
     	//CACTI3DD
@@ -542,10 +552,6 @@ bool calculate_time(
     	ptr_array->read_power = uca->read_power;
     	ptr_array->write_power = uca->write_power;
     	ptr_array->peak_read_power = uca->read_energy/((g_ip->burst_depth)/(g_ip->sys_freq_MHz*1e6)/2);
-
-    	ptr_array->num_row_subarray = dyn_p.num_r_subarray;
-    	ptr_array->num_col_subarray = dyn_p.num_c_subarray;
-
 
     	ptr_array->delay_TSV_tot = uca->delay_TSV_tot;
     	ptr_array->area_TSV_tot = uca->area_TSV_tot;

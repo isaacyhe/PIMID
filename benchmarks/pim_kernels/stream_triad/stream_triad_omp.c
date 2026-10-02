@@ -1,4 +1,4 @@
-/* stream_triad_omp.c — STREAM Triad: a[i] = b[i] + scalar * c[i]
+/* stream_triad_omp.c -- STREAM Triad: a[i] = b[i] + scalar * c[i]
  * OpenMP parallel version.
  *
  * Device-organization aware (PIMID): the simulator prices each PE access by
@@ -21,6 +21,13 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of the prep layout
+ * [a chunk][b chunk][c chunk] for size N on P PEs (chunk = ceil(N/P)). */
+static size_t stream_triad_omp_need(long n, const void* ctx) {
+    long P = *(const int*)ctx;
+    return 3u * (size_t)((n + P - 1) / P) * sizeof(float);
 }
 
 int main(int argc, char* argv[]) {
@@ -50,7 +57,15 @@ int main(int argc, char* argv[]) {
          * chunk of b + c into PE pe's own unit slot; a's chunk is written there
          * by the ROI. Slot layout: [a chunk][b chunk][c chunk]. */
         omp_set_num_threads(P);
-        size_t slot_bytes;
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): refuse when PE pe's three
+         * chunks do not fit its slot (c overlapped PE pe+1's a before). */
+        size_t slot_bytes = pimid_devorg_slot_bytes(&dev);
+        size_t need = stream_triad_omp_need(N, &P);
+        if (need > slot_bytes) {
+            pimid_devorg_report_slot_refusal("", "stream_triad", &dev, need, slot_bytes, "--size",
+                pimid_devorg_largest_fit(stream_triad_omp_need, &P, N, slot_bytes));
+            return 1;
+        }
         float* dbuf = (float*)pimid_devorg_alloc(&dev, &slot_bytes);
         if (!dbuf) { fprintf(stderr, "devorg alloc failed\n"); return 1; }
         for (int pe = 0; pe < P; pe++) {

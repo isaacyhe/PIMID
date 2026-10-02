@@ -1,0 +1,22 @@
+# PIMID shipped part record -- HBM3
+# 1.11.94: ONE record per part; every field required; provenance beside the value.
+# Step 1 of the parameter-file migration: the loader cross-checks each field against
+# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# To model another part: copy this file, change every field with its own source,
+# and point PIMID_PARAMS at the directory holding it. Partial records are refused.
+technology: HBM3
+part: "H5VG7HMD83X020R D1z 16 Gb HBM3 core die (density part); IDD row derived from the HBM2 measurement"
+vendor: "SK hynix"
+generation: "1z"            # vendor generation label of the DENSITY part (sweep-94 row 13)
+feature_nm: 15.5                  # mid-value of the published range for this generation
+cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline pitch 2 F)
+density_mb_per_mm2: 20.48  # measured FULL-DIE density, user capacity basis (D11)
+density_source: "SK hynix HBM3 D1z 16 Gb core die, 0.16 Gb/mm^2 (SemiAnalysis; TechInsights floorplan analysis of H5VG7HMD83X020R) x 128"
+organization_preset: "HBM3_4Gb"   # Ramulator org preset the run instantiates (default knobs)
+timing_preset: "HBM3_6.4Gbps"         # Ramulator timing preset (default knobs)
+channels: 16                   # channels the preset instantiates per stack
+stack_dies: 8                 # core dies per stack = max(JEDEC floor, channels/2) today (ruling 16: becomes the record's fact)
+die_capacity_gb: 8.0           # = preset MB/channel x channels x 8 / dies (NOTE ruling 16: the density part is a 16 Gb die; the user decides the record's part)
+refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-95 C, 4x above 95 C (Xilinx PG276, Intel UG-20031; JESD238 refresh modes)
+  - { above_c: 85.0, factor: 0.5 }
+  - { above_c: 95.0, factor: 0.25 }

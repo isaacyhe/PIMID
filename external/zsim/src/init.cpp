@@ -561,6 +561,12 @@ static void InitSystem(Config& config) {
     zinfo->hierarchy.enabled = config.exists("sys.hierarchy");
     if (zinfo->hierarchy.enabled) {
         zinfo->hierarchy.placementLevel = config.get<uint32_t>("sys.hierarchy.placementLevel", 1);
+        /* 1.11.94 (review H17): HOST_MC is rung 7; anything above is not a tier
+         * this build knows (the old -1 sentinel arrived here as 0xFFFFFFFF and
+         * indexed the latency arrays at -1). */
+        if (zinfo->hierarchy.placementLevel > 7)
+            panic("sys.hierarchy.placementLevel = %u is not a placement tier (0..6 are the memory tiers, 7 is HOST_MC)",
+                  zinfo->hierarchy.placementLevel);
         zinfo->hierarchy.subarraysPerBank = config.get<uint32_t>("sys.hierarchy.subarraysPerBank", 4);
         zinfo->hierarchy.banksPerBG = config.get<uint32_t>("sys.hierarchy.banksPerBG", 4);
         zinfo->hierarchy.bgPerChip = config.get<uint32_t>("sys.hierarchy.bgPerChip", 4);
@@ -576,15 +582,15 @@ static void InitSystem(Config& config) {
         // use the global sys.frequency. In system-scope co-sim PIMID emits the
         // DEVICE node frequency here so device contention is not host-clocked.
         zinfo->hierarchy.nocBandwidthFreqMHz = config.get<uint32_t>("sys.hierarchy.nocBandwidthFreqMHz", 0);
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {   // 1.11.94 (H17): rung 7 = HOST_MC
             char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.levelLatency%d", i);
             zinfo->hierarchy.levelLatency[i] = config.get<uint32_t>(key, 0);
         }
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 7; i++) {
             char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.bridgeLatency%d", i);
             zinfo->hierarchy.bridgeLatency[i] = config.get<uint32_t>(key, 0);
         }
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 7; i++) {
             char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.bridgeModel%d", i);
             const char* bm = config.get<const char*>(key, "auto");
             // Map string to enum: 0=auto, 1=simple, 2=md1, 3=detailed

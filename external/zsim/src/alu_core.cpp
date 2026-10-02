@@ -144,7 +144,13 @@ inline void ALUCore::bbl(BblInfo* bblInfo) {
     // one step regardless of width, like a full-width ALU. So bit_serial = false
     // leaves compute cost independent of operand_width (backward-compatible).
     uint64_t steps = bitSerial ? (uint64_t)std::max(operandWidth, 1) : 1ull;
-    curCycle += (uint64_t)(bblInfo->instrs * computeFactor * steps / throughputFactor);
+    /* 1.11.94 (H04 x05-zsim-cores-2): carry the fraction across blocks
+     * (chargeCompute in alu_core.h) instead of truncating per block. On the
+     * defaults (computeFactor 1.0, throughputFactor 1.0, steps 1 or the
+     * integer operandWidth) the product is an exact integer in double, the
+     * carry stays exactly 0.0, floor() returns the product itself, and the
+     * charged cycles are the same integer as the old truncation. */
+    curCycle += chargeCompute(bblInfo->instrs * computeFactor * steps / throughputFactor);
 }
 
 // Static callback functions for Pin instrumentation
@@ -175,10 +181,10 @@ void ALUCore::LoadFunc(THREADID tid, ADDRINT addr) {
     Address lineAddr = addr >> lineBits;
     if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
         // No MI, DMA window, or local address: direct array access cost
-        core->curCycle += (uint64_t)(core->accessFactor);
+        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
     } else {
         // Remote: PE overhead + hierarchy traversal via MI
-        core->curCycle += (uint64_t)(core->accessFactor);
+        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
         MESIState state = I;
         MemReq req = {lineAddr, GETS, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
         core->curCycle = core->mi_->access(req);
@@ -189,9 +195,9 @@ void ALUCore::StoreFunc(THREADID tid, ADDRINT addr) {
     ALUCore* core = static_cast<ALUCore*>(cores[tid]);
     Address lineAddr = addr >> lineBits;
     if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
-        core->curCycle += (uint64_t)(core->accessFactor);
+        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
     } else {
-        core->curCycle += (uint64_t)(core->accessFactor);
+        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
         MESIState state = I;
         MemReq req = {lineAddr, GETX, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
         core->curCycle = core->mi_->access(req);
@@ -203,9 +209,9 @@ void ALUCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred) {
         ALUCore* core = static_cast<ALUCore*>(cores[tid]);
         Address lineAddr = addr >> lineBits;
         if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
-            core->curCycle += (uint64_t)(core->accessFactor);
+            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
         } else {
-            core->curCycle += (uint64_t)(core->accessFactor);
+            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
             MESIState state = I;
             MemReq req = {lineAddr, GETS, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
             core->curCycle = core->mi_->access(req);
@@ -218,9 +224,9 @@ void ALUCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred) {
         ALUCore* core = static_cast<ALUCore*>(cores[tid]);
         Address lineAddr = addr >> lineBits;
         if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
-            core->curCycle += (uint64_t)(core->accessFactor);
+            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
         } else {
-            core->curCycle += (uint64_t)(core->accessFactor);
+            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
             MESIState state = I;
             MemReq req = {lineAddr, GETX, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
             core->curCycle = core->mi_->access(req);

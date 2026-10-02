@@ -729,7 +729,7 @@ public:
              * network statistics the detailed path fills. Post-ROI accesses
              * are not counted, as on the detailed path. */
             if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
-                uint32_t perLevel[7];
+                uint32_t perLevel[8];   // 1.11.94 (H17): one more rung (HOST_MC)
                 uint32_t links = hierTraversalLevels(
                     myUnit, targetUnit, perLevel,
                     zinfo->hierarchy.placementLevel, zinfo->hierarchy.subarraysPerBank,

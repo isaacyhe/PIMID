@@ -18,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "gem5_compat/base/trace.hh"
 #include "BusArbiter.hh"
 #include "RingRouter.hh"
 #include "TreeRouter.hh"
@@ -183,13 +184,46 @@ TopologyBuilders::buildMesh(uint32_t rows, uint32_t cols,
                             Cycles link_latency, Cycles router_latency,
                             uint32_t width)
 {
+    return buildMeshImpl(rows, cols, num_endpoints, vcs_per_vnet, virt_nets,
+                         link_latency, router_latency, width, false);
+}
+
+TopologyResult
+TopologyBuilders::buildMeshImpl(uint32_t rows, uint32_t cols,
+                                uint32_t num_endpoints,
+                                uint32_t vcs_per_vnet, uint32_t virt_nets,
+                                Cycles link_latency, Cycles router_latency,
+                                uint32_t width, bool torus_routers)
+{
     uint32_t num_routers = rows * cols;
     TopologyResult result;
     result.topology = new Topology(num_routers);
+    result.topology->setName(torus_routers ? "TORUS_2D" : "MESH_2D");
 
     for (uint32_t i = 0; i < num_routers; i++) {
-        result.routers.push_back(
-            makeRouter(i, vcs_per_vnet, virt_nets, router_latency, width));
+        if (!torus_routers) {
+            result.routers.push_back(
+                makeRouter(i, vcs_per_vnet, virt_nets, router_latency, width));
+            continue;
+        }
+        // 1.11.94 (H35): torus router = RingRouter with one dateline per
+        // dimension on its wrap link (the link buildTorus adds from the last
+        // column/row back to the first) and a class reset on the X->Y turn.
+        GarnetRouterParams rp;
+        rp.name = "torus_router" + std::to_string(i);
+        rp.router_id = i;
+        rp.vcs_per_vnet = vcs_per_vnet;
+        rp.virt_nets = virt_nets;
+        rp.latency = router_latency;
+        rp.width = width;
+        RingRouter* rr = new RingRouter(rp);
+        uint32_t r = i / cols, c = i % cols;
+        if (c == cols - 1) rr->addDatelineDirection("East");
+        if (c == 0)        rr->addDatelineDirection("West");
+        if (r == rows - 1) rr->addDatelineDirection("North");
+        if (r == 0)        rr->addDatelineDirection("South");
+        rr->setDimensionReset(true);
+        result.routers.push_back(rr);
     }
 
     uint32_t ext_id = 0;
@@ -258,8 +292,19 @@ TopologyBuilders::buildTorus(uint32_t rows, uint32_t cols,
                              Cycles link_latency, Cycles router_latency,
                              uint32_t width)
 {
-    TopologyResult result = buildMesh(rows, cols, num_endpoints,
-        vcs_per_vnet, virt_nets, link_latency, router_latency, width);
+    // 1.11.94 (x03-garnet-custom-1, ruling H35): the torus used to be the
+    // plain-router mesh plus wrap links, so DOR over the wrap links closed a
+    // cyclic channel dependency on every row and column ring with nothing to
+    // break it (an 8x8 tornado with 4 packets per node delivered 0/256). The
+    // routers are now dateline-aware (RingRouter, see buildMeshImpl), which
+    // needs two VC classes per vnet, i.e. at least 2 VCs per vnet.
+    if (vcs_per_vnet < 2) {
+        fatal("TORUS_2D needs vcs_per_vnet >= 2 (one VC per dateline class "
+              "on each wrap ring); got %u. Set noc.vcs_per_vnet to 2 or more.",
+              (unsigned)vcs_per_vnet);
+    }
+    TopologyResult result = buildMeshImpl(rows, cols, num_endpoints,
+        vcs_per_vnet, virt_nets, link_latency, router_latency, width, true);
 
     uint32_t int_id = result.int_links.size();
 
@@ -317,6 +362,7 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
 {
     TopologyResult result;
     result.topology = new Topology(ring_size);
+    result.topology->setName(unidirectional ? "RING (unidirectional)" : "RING");
 
     if (unidirectional) {
         // ── Unidirectional ring: standard routers, CW links only ──
@@ -434,6 +480,7 @@ TopologyBuilders::buildCrossbar(uint32_t num_endpoints,
     // Unlike the BusArbiter (1 grant/cycle), the standard Router crossbar switch
     // allows multiple non-conflicting transfers per cycle.
     result.topology = new Topology(1);
+    result.topology->setName("CROSSBAR");
 
     result.routers.push_back(
         makeRouter(0, vcs_per_vnet, virt_nets, router_latency, width));
@@ -479,6 +526,7 @@ TopologyBuilders::buildFatTree(uint32_t num_endpoints, uint32_t arity,
 
     TopologyResult result;
     result.topology = new Topology(total_routers);
+    result.topology->setName("FAT_TREE");
 
     for (uint32_t i = 0; i < total_routers; i++) {
         result.routers.push_back(
@@ -537,6 +585,7 @@ TopologyBuilders::buildBus(uint32_t num_endpoints,
 {
     TopologyResult result;
     result.topology = new Topology(1);
+    result.topology->setName("BUS");
 
     // Central arbiter — shared bus, not a crossbar
     GarnetRouterParams rp;
@@ -581,6 +630,7 @@ TopologyBuilders::buildHTree(uint32_t num_endpoints,
 
     TopologyResult result;
     result.topology = new Topology(total_routers);
+    result.topology->setName("H_TREE");
 
     for (uint32_t i = 0; i < total_routers; i++) {
         result.routers.push_back(
@@ -758,6 +808,8 @@ TopologyBuilders::buildFromFile(const std::string& filename,
 
     TopologyResult result;
     result.topology = new Topology(num_routers);
+    // 1.11.94 (x03-garnet-custom-3): name used in routing refusals only.
+    result.topology->setName("CUSTOM (" + filename + ")");
 
     for (uint32_t i = 0; i < num_routers; i++) {
         if (is_tree) {

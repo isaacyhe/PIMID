@@ -1,4 +1,4 @@
-/* stream_triad_mpi.c — STREAM Triad: a[i] = b[i] + scalar * c[i]
+/* stream_triad_mpi.c -- STREAM Triad: a[i] = b[i] + scalar * c[i]
  * MPI domain decomposition. Each rank processes N/nprocs elements.
  *
  * Device-organization aware (PIMID), mirroring stream_triad_omp.c: the
@@ -20,6 +20,13 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the largest rank share
+ * [a][b][c] chunks, chunk = ceil(N/nprocs). */
+static size_t stream_triad_mpi_need(long n, const void* c) {
+    long np = *(const int*)c;
+    return 3ull * (size_t)((n + np - 1) / np) * sizeof(float);
 }
 
 int main(int argc, char* argv[]) {
@@ -69,10 +76,20 @@ int main(int argc, char* argv[]) {
     float* dbuf = NULL;
     float* ape = NULL, *bpe = NULL, *cpe = NULL;
     if (prep) {
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+         * is refused; it used to fall back to host layout in silence. */
+        slot_bytes = pimid_devorg_slot_bytes(&dev);
+        if (need > slot_bytes) {
+            char who[32];
+            snprintf(who, sizeof who, "rank %d: ", rank);
+            pimid_devorg_report_slot_refusal(who, "stream_triad", &dev, need, slot_bytes, "--size",
+                pimid_devorg_largest_fit(stream_triad_mpi_need, &nprocs, N, slot_bytes));
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         dbuf = (float*)pimid_devorg_alloc(&dev, &slot_bytes);
-        if (!dbuf || need > slot_bytes) {
-            fprintf(stderr, "rank %d: devorg: per-PE need %zu > slot %zu (or alloc "
-                    "fail); running host-layout (no prep)\n", rank, need, slot_bytes);
+        if (!dbuf) {
+            fprintf(stderr, "rank %d: devorg: alloc of the device buffer failed; "
+                    "running host-layout (no prep)\n", rank);
             prep = 0;
         }
     }

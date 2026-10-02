@@ -82,10 +82,13 @@ int main(int argc, char** argv) {
                      type, argv[2], argv[3], argv[4], corner, temp_k);
         return 1;
     }
-    std::printf("[nvsim_warm] t%d c%s n%s w%s dc%d t%d: read=%.6e s  subarray=%.6e s  "
+    /* 1.11.94 (review H48 s06-nvsim-cacti-cache-2): getSubarrayLatency() was
+     * removed in 1.11.74 (the NVM tier below the bank is the MAT); print the
+     * accessors that exist. */
+    std::printf("[nvsim_warm] t%d c%s n%s w%s dc%d t%d: read=%.6e s  "
                 "mat=%.6e s  leak=%.4f mW\n",
                 type, argv[2], argv[3], argv[4], corner, temp_k,
-                w.getReadLatency(), w.getSubarrayLatency(), w.getMatLatency(),
+                w.getReadLatency(), w.getMatLatency(),
                 w.getLeakagePower());
     return 0;
 }

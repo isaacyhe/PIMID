@@ -3,6 +3,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>      // 1.11.94 (l04-robustness-security-15): full-precision store
+#include <cstdlib>
 #include <cmath>
 #include <cctype>       // 1.11.57 (latent D027): cell-file name sanitising
 #include <cstring>
@@ -604,6 +606,48 @@ namespace {
             }
         }
 
+        /* 1.11.94 (l04-robustness-security-15): THE VALUE FORMAT IS READ.
+         * nvsimDiskStore used to stream the doubles at the default ostream
+         * precision (6 significant digits), so a warm run priced every NVSim
+         * quantity with values rounded at ~1e-6 relative while the cold run
+         * that wrote them used the full-precision result (read_latency_s
+         * 3.297734e-09 stored as 3.29773e-09). Entries written from 1.11.94
+         * carry <value_format>g17</value_format> and 17 significant digits,
+         * which round-trips every double exactly, so warm == cold.
+         *
+         * An entry WITHOUT the marker was written at 6 digits. It is read
+         * exactly as before (R1 parity: the corpus' PCM/ReRAM/STT-MRAM cells
+         * load such entries from the shipped cache, and recharacterizing them
+         * would move their numbers) and the load says so in one line, so the
+         * two formats are never mixed silently. PIMID_NVSIM_CACHE_REQUIRE_FULL=1
+         * treats such an entry as a miss instead: it is recharacterized and
+         * rewritten at full precision. An unknown marker is refused. */
+        {
+            std::string fmt;
+            if (getStr("value_format", fmt)) {
+                if (fmt != "g17") {
+                    std::cerr << "[NVSimWrapper] REFUSING cached characterization "
+                              << path << ": unknown <value_format> \"" << fmt
+                              << "\". Recharacterizing." << std::endl;
+                    return false;
+                }
+            } else {
+                const char* req = getenv("PIMID_NVSIM_CACHE_REQUIRE_FULL");
+                if (req && req[0] && req[0] != '0') {
+                    std::cout << "[NVSimWrapper] cached characterization " << path
+                              << " stores 6-significant-digit values (pre-1.11.94"
+                                 " format); PIMID_NVSIM_CACHE_REQUIRE_FULL is set,"
+                                 " so it is recharacterized at full precision"
+                              << std::endl;
+                    return false;
+                }
+                std::cout << "[NVSimWrapper] cached characterization " << path
+                          << " stores 6-significant-digit values (pre-1.11.94"
+                             " format); delete it, or set"
+                             " PIMID_NVSIM_CACHE_REQUIRE_FULL=1, to recharacterize"
+                             " at full precision" << std::endl;
+            }
+        }
         const bool core = get("read_latency_s", v.read_latency_s)
             && get("write_latency_s", v.write_latency_s)
             && get("read_energy_nj", v.read_energy_nj)
@@ -649,8 +693,14 @@ namespace {
          * 1.11.57 to close a finding about staleness, but it was written only
          * into the manifest and read by nothing, so it could not refuse a
          * single entry. Written here, it is checked by nvsimDiskLoad(). */
+        /* 1.11.94 (l04-robustness-security-15): 17 significant digits
+         * round-trip every IEEE double through std::stod exactly, so a warm
+         * run reads back the very values the cold run computed. The marker
+         * tells nvsimDiskLoad which format it is reading. */
+        f << std::setprecision(17);
         f << "<nvsim_characterization>\n"
           << "  <tool_version>" << pimid::cache::toolVersion() << "</tool_version>\n"
+          << "  <value_format>g17</value_format>\n"
           << "  <nvm_type>" << k.nvm_type << "</nvm_type>\n"
           << "  <capacity_bytes>" << k.capacity_bytes << "</capacity_bytes>\n"
           << "  <process_node_nm>" << k.process_node_nm << "</process_node_nm>\n"

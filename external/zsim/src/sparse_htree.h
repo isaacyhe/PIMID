@@ -108,7 +108,14 @@ struct SparseHTree {
      * (a PE sits AT its organisation) plus every organisation behind an abstract
      * endpoint. Must equal the memory's total organisation count. */
     long coveredOrgs() const {
-        long n = numPEs;
+        /* 1.11.94 (H14 m02-main-1576-3440-1): one organisation per DISTINCT
+         * PE home, not per PE. PEs that share a home organisation land on the
+         * same leaf router (peOfLeaf has one entry per leaf), and counting
+         * numPEs counted that organisation once per PE, so 8 PEs on 4
+         * organisations "covered" 8 and the coverage gate in main.cpp exited.
+         * When every PE has its own home (every corpus cell) the two counts
+         * are equal. */
+        long n = (long)peOfLeaf.size();
         for (const auto& kv : coverageOf) n += kv.second;
         return n;
     }
@@ -131,7 +138,12 @@ struct SparseHTree {
             parent = it->second;
         }
         auto p = peOfLeaf.find(parent);   // full path live -> a PE leaf
-        return (p != peOfLeaf.end()) ? p->second : -1;
+        if (p != peOfLeaf.end()) return p->second;
+        /* 1.11.94 (H13 x02-zsim-garnet-htree-2): a full path can also end on
+         * a materialised channel router that hosts no PE (a placement at or
+         * above the channel tier); its own aggregated endpoint serves it. */
+        auto a = abstractOf.find(parent);
+        return (a != abstractOf.end()) ? a->second : -1;
     }
 };
 
@@ -179,7 +191,15 @@ inline int rootFanout(int peLevel, int N,
     /* If the channel count is already folded below, the id space spans one
      * channel and the root is single-child. Detect that rather than assume it:
      * a folded technology has its channel count equal to a lower fan-out. */
-    if (declared > 1 && (long)CpR == declared) return 1;
+    /* 1.11.94 (H13 x02-zsim-garnet-htree-2 / H15): ...but only while the
+     * placement sits BELOW the folded channel tier. At CHANNEL (5) or
+     * LOGIC_DIE (6) decompose() yields the unit id itself as the root's child
+     * coordinate, and that id spans the channels (slots = channel count), so
+     * the root really has `declared` children. Returning 1 there made the
+     * root's live-vs-fanout test blind: HBM3 with 4 PEs at CHANNEL or
+     * LOGIC_DIE built a tree over 4 of 16 channels and the coverage gate
+     * exited 2. Unfolded parts (declared == 1) are unchanged. */
+    if (declared > 1 && (long)CpR == declared && peLevel < 5) return 1;
     return (int)(declared > 0 ? declared : 1);
 }
 
@@ -300,6 +320,14 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
      * every endpoint sits inside exactly one channel. */
     {
         int chLevel = channelBearingLevel(N, CpR);
+        /* 1.11.94 (H13 / H15): at CHANNEL or LOGIC_DIE placement the tree's
+         * channel routers are the root's children (level 5) whatever the
+         * technology folds: decompose() returns the unit id, which IS the
+         * channel, as the only coordinate. The folded chip-slot tier (3) does
+         * not exist in such a tree, so materialising at chLevel found no
+         * parent router and the empty channels were never built. Below the
+         * channel tier (peLevel < 5) the level is unchanged. */
+        if (t.peLevel >= 5) chLevel = 5;
         std::vector<std::pair<int,std::string>> toScan;  // (router id, key prefix)
         for (auto& kv : t.routerOf) toScan.push_back({ kv.second, kv.first });
         for (auto& rk : toScan) {
@@ -327,12 +355,39 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
     // Abstract endpoints: a router at level L (> peLevel) whose live-child count is
     // below its fan-out has empty children -> one abstract endpoint, hung on it via
     // the child link layer. Deterministic order = router id.
+    /* 1.11.94 (H13 x02-zsim-garnet-htree-2 / H15): THE EMPTY-REGION RULE AT
+     * THE PE'S OWN LEVEL TOO. The routers of the placement level are the
+     * leaves (level min(peLevel,5): decompose() puts a LOGIC_DIE unit on a
+     * level-5 router). A leaf router that hosts no PE exists only when the
+     * channel pass above materialised it -- an empty channel at a placement
+     * at or above the channel tier (HBM2/HBM3/GDDR6 CHIP, any CHANNEL or
+     * LOGIC_DIE). It used to be skipped by the `level <= peLevel` test, so
+     * those channels had a router and no endpoint: endpointForUnit() returned
+     * -1 for them and the coverage gate exited 2 (HBM3 4 PEs at LOGIC_DIE:
+     * 4 of 16). Such a router now carries ONE aggregated endpoint covering
+     * its own organisation (1), hung on an L0 link exactly as a PE in that
+     * slot would be, so an empty channel and a PE channel are priced the same
+     * up to the router. Routers BELOW the leaf level (the chip routers a
+     * folded RANK placement materialises under its leaf) stay endpoint-free:
+     * below the placement level is the memory model's. On every tree that
+     * passed the coverage gate before, no such leaf existed, so nothing
+     * changes there. */
+    const int leafLevel = t.peLevel < 5 ? t.peLevel : 5;
     int nextEndpoint = t.numPEs;
     for (auto& kv : info) {
         int rid = kv.first;
         int level = kv.second.first;
         int live = (int)kv.second.second.size();
-        if (level <= t.peLevel) continue;             // leaf level: below = Ramulator
+        if (level == leafLevel && rid != 0 && live == 0 &&
+                t.peOfLeaf.find(rid) == t.peOfLeaf.end()) {
+            int abst = nextEndpoint++;
+            t.abstractOf[rid] = abst;
+            t.coverageOf[abst] = 1;                   // the router's own organisation
+            t.frontsLevel[abst] = level;
+            t.extLinks.push_back({ abst, rid, layerW[0], layerLat[0] });
+            continue;
+        }
+        if (level <= leafLevel) continue;             // leaf level: below = Ramulator
         int fanout = (level == 6)
                    ? rootFanout(t.peLevel, N, SA, BpBG, BGpC, CpR, RpCh)
                    : childFanout(level, N, SA, BpBG, BGpC, CpR, RpCh);

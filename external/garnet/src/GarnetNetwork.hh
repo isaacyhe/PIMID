@@ -82,6 +82,14 @@ class GarnetNetwork : public Network
     uint32_t getBuffersPerCtrlVC() { return m_buffers_per_ctrl_vc; }
     int getRoutingAlgorithm() const { return m_routing_algorithm; }
 
+    // 1.11.94 (x03-garnet-custom-3 / -2): the builder's topology name (for
+    // refusals), and whether the ring has clockwise ports only (no router
+    // has a "West" outport; set in init(), read by SHORTEST).
+    std::string getTopologyName() const {
+        return m_topology_ptr ? m_topology_ptr->name() : std::string("unknown");
+    }
+    bool isRingClockwiseOnly() const { return m_ring_cw_only; }
+
     bool isFaultModelEnabled() const { return m_enable_fault_model; }
     FaultModel* fault_model;
 
@@ -183,6 +191,11 @@ class GarnetNetwork : public Network
     uint32_t m_buffers_per_data_vc;
     int m_routing_algorithm;
     bool m_enable_fault_model;
+    bool m_ring_cw_only = false;
+
+    // 1.11.94 (H33): refuse XY/DOR/SHORTEST on a topology where some hop
+    // would need a port the router does not have. Called from init().
+    void validateDirectionRouting();
 
     // Statistical variables
     statistics::Vector m_packets_received;

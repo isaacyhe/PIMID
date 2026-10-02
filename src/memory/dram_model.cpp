@@ -789,20 +789,7 @@ double DRAMModel::getInnerBankDatapathDelay() const {
     return dram_arch_->timing.inner_bank.getTotalInnerBankDelay();
 }
 
-bool DRAMModel::supportsBankPIM() const {
-    // Bank-level PIM is supported but limited by bank serialization
-    // Check if architecture indicates reasonable bank bandwidth
-    if (!dram_arch_) return false;
-    // 1.11.57 (audit C003): derived on read from the serialization width and
-    // the core clock, so this test follows a speed-bin change like everything
-    // else on that rung.
-    return dram_arch_->getBankEffectiveBW() > 0.5;  // > 0.5 GB/s
-}
 
-bool DRAMModel::supportsSubarrayPIM() const {
-    // Subarray-level PIM is always supported (direct row buffer access)
-    return true;
-}
 
 
 /* 1.11.24: the memory plugin contract. DRAM is the DRAM-like case: it has

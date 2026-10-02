@@ -1,4 +1,4 @@
-/* histogram_mpi.c — Histogram construction: random scatter into bins
+/* histogram_mpi.c -- Histogram construction: random scatter into bins
  * MPI domain decomposition. Each rank processes N/nprocs data elements
  * into a local histogram, then MPI_Reduce sums all local histograms.
  *
@@ -28,6 +28,14 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the largest rank share
+ * (rank 0 holds ceil(N/nprocs)) for [chunk][local hist]. */
+typedef struct { int nprocs; int nbins; } histogram_mpi_ctx;
+static size_t histogram_mpi_need(long n, const void* c) {
+    const histogram_mpi_ctx* x = (const histogram_mpi_ctx*)c;
+    return ((size_t)((n + x->nprocs - 1) / x->nprocs) + (size_t)x->nbins) * sizeof(int);
 }
 
 int main(int argc, char* argv[]) {
@@ -86,14 +94,25 @@ int main(int argc, char* argv[]) {
      * double-shift these prepped slots. */
     int prep = pimid_devorg_needs_prep(&dev);
     size_t need = ((size_t)local_n + (size_t)nbins) * sizeof(int);
+    histogram_mpi_ctx need_ctx = { nprocs, nbins };
     size_t slot_bytes = 0;
     int* dbuf = NULL;
     int* dpe = NULL, *hpe = NULL;
     if (prep) {
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+         * is refused; it used to fall back to host layout in silence. */
+        slot_bytes = pimid_devorg_slot_bytes(&dev);
+        if (need > slot_bytes) {
+            char who[32];
+            snprintf(who, sizeof who, "rank %d: ", rank);
+            pimid_devorg_report_slot_refusal(who, "histogram", &dev, need, slot_bytes, "--size",
+                pimid_devorg_largest_fit(histogram_mpi_need, &need_ctx, N, slot_bytes));
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         dbuf = (int*)pimid_devorg_alloc(&dev, &slot_bytes);
-        if (!dbuf || need > slot_bytes) {
-            fprintf(stderr, "rank %d: devorg: per-PE need %zu > slot %zu (or alloc "
-                    "fail); running host-layout (no prep)\n", rank, need, slot_bytes);
+        if (!dbuf) {
+            fprintf(stderr, "rank %d: devorg: alloc of the device buffer failed; "
+                    "running host-layout (no prep)\n", rank);
             prep = 0;
         }
     }

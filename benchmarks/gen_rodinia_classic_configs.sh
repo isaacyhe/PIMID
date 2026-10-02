@@ -45,6 +45,9 @@ write_rodinia() {
         fi
     done
 
+    # 1.11.94 (b02-suites-a-1, ruling H47): noc.model is analytical. The
+    # loader accepts only analytical | detailed and refused 'simple' (rc=1),
+    # so none of the 40 Rodinia configs could load.
     cat > "$file" <<EOF
 scope: device
 workload:
@@ -65,7 +68,7 @@ memory:
   technology: SRAM
 noc:
   topology: MESH_2D
-  model: simple
+  model: analytical
 simulation:
   max_instructions: ${max_instrs}
 EOF

@@ -65,8 +65,6 @@ public:
     double getInnerBankWriteLatency() const;  // Total write path (MTJ switching!)
 
     // PIM support queries
-    bool supportsBankPIM() const;
-    bool supportsMatPIM() const;
 
 private:
     // STT-MRAM-specific configuration

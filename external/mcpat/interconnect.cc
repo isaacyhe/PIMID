@@ -73,7 +73,13 @@ interconnect::interconnect(
   deviceType(dt)
 {
 
-  wt = Global;
+  /* 1.11.94 (R3208, sweep94 ruling 28(a)): the wire type is the caller's
+   * argument. The body used to overwrite it with `wt = Global;`, so a
+   * caller asking for Semi-global or Low-swing wires got Global ones and
+   * nothing said so. Every caller in this tree (core.cc bypass buses, 18
+   * calls with 12 arguments; noc.cc link_bus, 10 arguments) stops before the
+   * wire_model parameter and so passes its default, Global -- the value
+   * the overwrite forced -- so no priced number moves. */
   l_ip=*configure_interface;
 
   try {

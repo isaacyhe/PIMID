@@ -1,7 +1,18 @@
-/* fmm.c -- Fast Multipole Method (2D, simplified monopole)
- * SPLASH-3 style: pthreads parallel. Build quadtree from particles,
- * compute multipole expansions bottom-up, translate multipole->local for
- * well-separated cells top-down, evaluate local + direct near-field. */
+/* fmm.c -- 2D quadtree tree-walk force kernel (SPLASH-3 "fmm" slot).
+ *
+ * 1.11.94 (b02-suites-a-2, ruling C2): this is NOT a fast multipole method.
+ * There are no multipole or local expansions, no M2M/M2L/L2L translations
+ * and no per-particle direct near field. What it does:
+ *   - builds a quadtree (leaf capacity MAX_PARTICLES, depth limit MAX_DEPTH;
+ *     a leaf at the depth limit keeps every particle it receives),
+ *   - computes each cell's total mass and centre of mass bottom-up,
+ *   - for each particle (pthreads, static partition) walks the tree from the
+ *     root: a cell that passes the opening test (size / r < THETA) or is a
+ *     leaf contributes as a point mass at its centre of mass, otherwise the
+ *     walk descends into its children. A particle's own leaf is included as
+ *     a point mass like any other leaf.
+ * It is a Barnes-Hut-style tree walk that stops at leaf level; the name is
+ * kept because the suite and its configs are keyed on it. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,10 +49,10 @@ typedef struct QNode {
     double cx, cy, size; /* center and half-size */
     double mp_mass;      /* monopole: total mass */
     double mp_x, mp_y;   /* center of mass */
-    double local_fx, local_fy; /* local expansion (force contribution) */
     int children[4];     /* indices into node pool (-1 = none) */
     int* plist;          /* particle indices (leaf only) */
     int pcount;          /* number of particles */
+    int pcap;            /* plist capacity (ints) */
     int is_leaf;
 } QNode;
 
@@ -57,7 +68,12 @@ static int alloc_node(double cx, double cy, double sz) {
     pthread_mutex_lock(&node_lock);
     if (node_count >= node_cap) {
         node_cap *= 2;
-        nodes = (QNode*)realloc(nodes, (size_t)node_cap * sizeof(QNode));
+        QNode* p = (QNode*)realloc(nodes, (size_t)node_cap * sizeof(QNode));
+        if (!p) {
+            fprintf(stderr, "fmm: node pool growth to %d nodes failed\n", node_cap);
+            exit(1);
+        }
+        nodes = p;
     }
     idx = node_count++;
     pthread_mutex_unlock(&node_lock);
@@ -67,55 +83,77 @@ static int alloc_node(double cx, double cy, double sz) {
     nodes[idx].mp_mass = 0;
     nodes[idx].mp_x = 0;
     nodes[idx].mp_y = 0;
-    nodes[idx].local_fx = 0;
-    nodes[idx].local_fy = 0;
     nodes[idx].children[0] = nodes[idx].children[1] = -1;
     nodes[idx].children[2] = nodes[idx].children[3] = -1;
     nodes[idx].plist = NULL;
     nodes[idx].pcount = 0;
+    nodes[idx].pcap = 0;
     nodes[idx].is_leaf = 1;
     return idx;
 }
 
-/* Insert particle into tree (serial, during build phase) */
-static void tree_insert(int ni, int pi, int depth) {
+/* 1.11.94 (b02-suites-a-2, ruling C2): growable leaf list. A leaf at the
+ * depth limit keeps every particle it is given, so nothing is dropped. */
+static void plist_push(int ni, int pi) {
     QNode* n = &nodes[ni];
-    if (n->is_leaf && n->pcount < MAX_PARTICLES) {
-        if (!n->plist)
-            n->plist = (int*)malloc(MAX_PARTICLES * sizeof(int));
-        n->plist[n->pcount++] = pi;
-        return;
+    if (n->pcount == n->pcap) {
+        int cap = n->pcap ? 2 * n->pcap : MAX_PARTICLES;
+        int* p = (int*)realloc(n->plist, (size_t)cap * sizeof(int));
+        if (!p) {
+            fprintf(stderr, "fmm: leaf particle list growth to %d entries failed\n", cap);
+            exit(1);
+        }
+        n->plist = p;
+        n->pcap = cap;
     }
-    if (n->is_leaf) {
-        /* Subdivide */
-        n->is_leaf = 0;
-        double hs = n->size * 0.5;
-        double offsets[4][2] = {{-hs, -hs}, {hs, -hs}, {-hs, hs}, {hs, hs}};
-        for (int c = 0; c < 4; c++)
-            n->children[c] = alloc_node(n->cx + offsets[c][0],
-                                         n->cy + offsets[c][1], hs);
-        /* Re-insert existing particles */
-        for (int i = 0; i < n->pcount; i++)
-            tree_insert(ni, n->plist[i], depth + 1);
-        n->pcount = 0;
-        free(n->plist);
-        n->plist = NULL;
-    }
-    /* Insert into correct child */
-    double px = particles[pi].x;
-    double py = particles[pi].y;
-    int q = (px >= n->cx ? 1 : 0) + (py >= n->cy ? 2 : 0);
-    if (n->children[q] >= 0 && depth < MAX_DEPTH)
-        tree_insert(n->children[q], pi, depth + 1);
-    else {
-        /* Fallback: store in this node if max depth */
-        if (!n->plist)
-            n->plist = (int*)malloc(MAX_PARTICLES * 2 * sizeof(int));
-        n->plist[n->pcount++] = pi;
-    }
+    n->plist[n->pcount++] = pi;
 }
 
-/* Compute monopole expansions bottom-up */
+static int child_quadrant(int ni, int pi) {
+    const QNode* n = &nodes[ni];
+    return (particles[pi].x >= n->cx ? 1 : 0) + (particles[pi].y >= n->cy ? 2 : 0);
+}
+
+/* Insert particle into tree (serial, during build phase). The root is depth 0.
+ *
+ * 1.11.94 (b02-suites-a-2, ruling C2): a full leaf above the depth limit
+ * splits and each of its particles is reinserted into the CHILD that contains
+ * it, at the child's depth. Before this, the particles were reinserted into
+ * the splitting node itself at depth+1; at the depth limit that reached a
+ * fallback which appended to the very list being walked (a 32-int buffer):
+ * heap overflow and an endless loop on fmm_large (N=65536, SIGSEGV rc=139),
+ * and fallback particles on internal nodes were ignored by the force walk.
+ * Node pointers are re-taken after alloc_node(), which may realloc the pool. */
+static void tree_insert(int ni, int pi, int depth) {
+    if (nodes[ni].is_leaf) {
+        if (nodes[ni].pcount < MAX_PARTICLES || depth >= MAX_DEPTH) {
+            plist_push(ni, pi);
+            return;
+        }
+        /* Subdivide: detach the old list first, so nothing is appended to a
+         * list while it is being walked. */
+        int* old = nodes[ni].plist;
+        int cnt = nodes[ni].pcount;
+        nodes[ni].plist = NULL;
+        nodes[ni].pcount = 0;
+        nodes[ni].pcap = 0;
+        nodes[ni].is_leaf = 0;
+        double hs = nodes[ni].size * 0.5;
+        double offsets[4][2] = {{-hs, -hs}, {hs, -hs}, {-hs, hs}, {hs, hs}};
+        for (int c = 0; c < 4; c++) {
+            int k = alloc_node(nodes[ni].cx + offsets[c][0],
+                               nodes[ni].cy + offsets[c][1], hs);
+            nodes[ni].children[c] = k;
+        }
+        for (int i = 0; i < cnt; i++)
+            tree_insert(nodes[ni].children[child_quadrant(ni, old[i])], old[i], depth + 1);
+        free(old);
+    }
+    /* Internal node: all four children exist. */
+    tree_insert(nodes[ni].children[child_quadrant(ni, pi)], pi, depth + 1);
+}
+
+/* Compute each cell's total mass and centre of mass bottom-up */
 static void compute_multipoles(int ni) {
     QNode* n = &nodes[ni];
     if (n->is_leaf) {
@@ -146,7 +184,7 @@ static void compute_multipoles(int ni) {
     n->mp_y = (tm > 0) ? ty / tm : n->cy;
 }
 
-/* Evaluate: for each particle, walk tree (Barnes-Hut style with FMM spirit) */
+/* Evaluate: for each particle, walk the tree (Barnes-Hut style) */
 static void eval_force(int ni, int pi) {
     QNode* n = &nodes[ni];
     if (n->mp_mass < 1e-15) return;
@@ -154,7 +192,7 @@ static void eval_force(int ni, int pi) {
     double dy = particles[pi].y - n->mp_y;
     double r2 = dx * dx + dy * dy + 1e-10;
     double r = sqrt(r2);
-    /* Well-separated test: use multipole if cell is far enough */
+    /* Opening test: a far cell, or a leaf, acts as its point mass */
     if (n->is_leaf || (n->size / r < THETA)) {
         double f = -particles[pi].mass * n->mp_mass / (r2 * r);
         particles[pi].fx += f * dx;

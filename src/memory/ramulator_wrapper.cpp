@@ -1484,7 +1484,7 @@ void RamulatorWrapper::parseConfiguration() {
              * below. Named to match what the run really writes for the timing
              * model (main.cpp's GDDR6 emission), so that if this path is ever
              * made live it selects a preset that exists. */
-            config_yaml_ = makeConfig("GDDR6", "GDDR6_8Gb_x16", "GDDR6_2000_1350mV_double");
+            config_yaml_ = makeConfig("GDDR6", ("GDDR6_8Gb_x" + std::to_string(presetWidthBits(device_width_, 16))).c_str(), "GDDR6_2000_1350mV_double");   // 1.11.94 (H27): the width suffix the DDR families got in 1.11.66; the unset default is x16 (the transcription above and the 2026-08-22 GDDR6 16-DQ ruling), not the DDR families' x8
             /* GDDR6 is a dual-channel part: two 16-bit fully independent
              * channels per device (JESD250D sec 2.2 p.3, Table 19 p.18,
              * Table 80 p.177). channels_ = 1 here used to contradict that spec

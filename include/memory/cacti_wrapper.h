@@ -197,6 +197,9 @@ public:
     static double vendorArrayFraction(const std::string& tech);
     static int    generationTableNm(const std::string& tech);
     static const char* generationClass(const std::string& tech);
+    /* 1.11.94: the generation's feature size F in nm (moved from main.cpp so the
+     * part-record cross-check and the pitch note read ONE table). */
+    static double generationFeatureNm(const std::string& cls);
     /* 1.11.51 (L87): the vendor JEDEC anchor as a METHOD, so no caller
      * re-implements the arithmetic. Returns (chip_bytes -> MB) / density
      * (MB/mm^2) = mm^2/die, or 0 when the technology has no density row.
@@ -232,7 +235,8 @@ public:
     double getWordlineDelay() const;          // Wordline activation delay
     double getBitlineDelay() const;           // Bitline sensing delay
     double getSenseAmpDelay() const;          // Sense amplifier delay
-    double getSubarrayOutputDelay() const;    // Subarray output driver delay
+    double getSubarrayOutputDelay() const;
+    double getColumnMuxDelay() const;      // 1.11.94: bit-mux + sense-amp mux decoders (data_array2), the column-select path    // Subarray output driver delay
     double getHtreeDelay() const;             // H-tree interconnect delay
 
     // Subarray organization

@@ -209,6 +209,121 @@ RoutingUnit::outportCompute(RouteInfo route, int inport,
     return outport;
 }
 
+// 1.11.94 (x03-garnet-custom-3, ruling H33): routing algorithm name for
+// messages.
+static const char*
+routingName(int a)
+{
+    switch (a) {
+        case TABLE_:    return "TABLE";
+        case XY_:       return "XY";
+        case CUSTOM_:   return "CUSTOM";
+        case DOR_:      return "DOR";
+        case SHORTEST_: return "SHORTEST";
+        case DIRECT_:   return "DIRECT";
+        case NCA_:      return "NCA";
+        default:        return "UNKNOWN";
+    }
+}
+
+// 1.11.94 (H33): the three direction-based algorithms ended with
+// m_outports_dirn2idx[dirn], a std::map operator[] that INSERTS a missing
+// key with value 0 and returns it. Outport 0 is the first external (Local)
+// port, so a packet at a router without that direction was ejected to
+// whichever NI sits there (DDR4 CUSTOM tree + XY: every packet 0->1..12
+// came out at node 0). The only guard was assert(num_rows > 0), compiled
+// out with -DNDEBUG. The lookup no longer inserts and a miss is fatal;
+// GarnetNetwork::validateDirectionRouting() refuses the configuration at
+// setup so the runtime fatal is a backstop that should never fire. When the
+// port exists the returned index is the one operator[] returned, so every
+// configuration that routed correctly before routes identically now.
+int
+RoutingUnit::outportForDirection(const PortDirection& dirn, int dest_id)
+{
+    auto it = m_outports_dirn2idx.find(dirn);
+    if (it == m_outports_dirn2idx.end()) {
+        GarnetNetwork* net = m_router->get_net_ptr();
+        fatal("[Garnet] routing %s at router %d of topology %s chose output "
+              "direction '%s' toward router %d, but router %d has no '%s' "
+              "port. Use routing TABLE for this topology.",
+              routingName(net->getRoutingAlgorithm()), m_router->get_id(),
+              net->getTopologyName().c_str(), dirn.c_str(), dest_id,
+              m_router->get_id(), dirn.c_str());
+    }
+    return it->second;
+}
+
+PortDirection
+RoutingUnit::directionFor(int routing_algorithm, int my_id, int dest_id,
+                          int num_rows, int num_cols, int num_routers,
+                          bool ring_cw_only)
+{
+    switch (routing_algorithm) {
+    case XY_: {
+        // XY routing on a mesh (unchanged arithmetic).
+        int my_x = my_id % num_cols;
+        int my_y = my_id / num_cols;
+        int dest_x = dest_id % num_cols;
+        int dest_y = dest_id / num_cols;
+        int x_hops = abs(dest_x - my_x);
+        int y_hops = abs(dest_y - my_y);
+        bool x_dirn = (dest_x >= my_x);
+        bool y_dirn = (dest_y >= my_y);
+        if (x_hops > 0)
+            return x_dirn ? "East" : "West";
+        if (y_hops > 0)
+            return y_dirn ? "North" : "South";
+        panic("x_hops == y_hops == 0");
+    }
+    case DOR_: {
+        // DOR for torus: like XY but picks the shorter direction per
+        // dimension (wrap-around). Unchanged arithmetic.
+        int my_x = my_id % num_cols;
+        int my_y = my_id / num_cols;
+        int dest_x = dest_id % num_cols;
+        int dest_y = dest_id / num_cols;
+        int dx = dest_x - my_x;
+        int dy = dest_y - my_y;
+        int abs_dx = (dx >= 0) ? dx : -dx;
+        int abs_dy = (dy >= 0) ? dy : -dy;
+        if (abs_dx > 0) {
+            if (abs_dx <= num_cols - abs_dx)
+                return (dx > 0) ? "East" : "West";
+            return (dx > 0) ? "West" : "East";
+        }
+        if (abs_dy > 0) {
+            if (abs_dy <= num_rows - abs_dy)
+                return (dy > 0) ? "North" : "South";
+            return (dy > 0) ? "South" : "North";
+        }
+        panic("DOR: src == dst should not reach here");
+    }
+    case SHORTEST_: {
+        // 1.11.94 (x03-garnet-custom-2, ruling H34): the ring size used to
+        // be getNumRows()*getNumCols(), which GarnetNetwork sets to -1 * -1
+        // = 1 for every non-grid topology, so cw_dist = ccw_dist = 0 and
+        // every packet went clockwise (8-node ring: 0->7 crossed 8 routers
+        // instead of 2). The ring size is now the number of routers the
+        // ring builder made (buildRing: one router per ring position, ids
+        // 0..N-1 in clockwise order), and the shorter direction is taken,
+        // ties clockwise. zsim getRingHops counts min(d, N-d) over the same
+        // N (numNodes_ = ring_size), so timing and energy now describe the
+        // same route. A unidirectional ring has no West port anywhere
+        // (ring_cw_only): clockwise is then the only, and so the shortest,
+        // direction, matching getRingHops' (dst-src+N)%N for that ring.
+        if (ring_cw_only)
+            return "East";
+        int cw_dist = ((dest_id - my_id) % num_routers + num_routers) %
+                      num_routers;
+        int ccw_dist = ((my_id - dest_id) % num_routers + num_routers) %
+                       num_routers;
+        return (cw_dist <= ccw_dist) ? "East" : "West";
+    }
+    default:
+        return "";
+    }
+}
+
 // XY routing implemented using port directions
 // Only for reference purpose in a Mesh
 // By default Garnet uses the routing table
@@ -217,55 +332,22 @@ RoutingUnit::outportComputeXY(RouteInfo route,
                               int inport,
                               PortDirection inport_dirn)
 {
-    PortDirection outport_dirn = "Unknown";
+    GarnetNetwork* net = m_router->get_net_ptr();
+    PortDirection outport_dirn = directionFor(XY_, m_router->get_id(),
+        route.dest_router, net->getNumRows(), net->getNumCols(),
+        net->getNumRouters(), net->isRingClockwiseOnly());
 
-    [[maybe_unused]] int num_rows = m_router->get_net_ptr()->getNumRows();
-    int num_cols = m_router->get_net_ptr()->getNumCols();
-    assert(num_rows > 0 && num_cols > 0);
+    // Reference-only inport checks (compiled out in Release).
+    if (outport_dirn == "East")
+        assert(inport_dirn == "Local" || inport_dirn == "West");
+    else if (outport_dirn == "West")
+        assert(inport_dirn == "Local" || inport_dirn == "East");
+    else if (outport_dirn == "North")
+        assert(inport_dirn != "North");
+    else if (outport_dirn == "South")
+        assert(inport_dirn != "South");
 
-    int my_id = m_router->get_id();
-    int my_x = my_id % num_cols;
-    int my_y = my_id / num_cols;
-
-    int dest_id = route.dest_router;
-    int dest_x = dest_id % num_cols;
-    int dest_y = dest_id / num_cols;
-
-    int x_hops = abs(dest_x - my_x);
-    int y_hops = abs(dest_y - my_y);
-
-    bool x_dirn = (dest_x >= my_x);
-    bool y_dirn = (dest_y >= my_y);
-
-    // already checked that in outportCompute() function
-    assert(!(x_hops == 0 && y_hops == 0));
-
-    if (x_hops > 0) {
-        if (x_dirn) {
-            assert(inport_dirn == "Local" || inport_dirn == "West");
-            outport_dirn = "East";
-        } else {
-            assert(inport_dirn == "Local" || inport_dirn == "East");
-            outport_dirn = "West";
-        }
-    } else if (y_hops > 0) {
-        if (y_dirn) {
-            // "Local" or "South" or "West" or "East"
-            assert(inport_dirn != "North");
-            outport_dirn = "North";
-        } else {
-            // "Local" or "North" or "West" or "East"
-            assert(inport_dirn != "South");
-            outport_dirn = "South";
-        }
-    } else {
-        // x_hops == 0 and y_hops == 0
-        // this is not possible
-        // already checked that in outportCompute() function
-        panic("x_hops == y_hops == 0");
-    }
-
-    return m_outports_dirn2idx[outport_dirn];
+    return outportForDirection(outport_dirn, route.dest_router);
 }
 
 // User extension point. Defaults to TABLE routing.
@@ -285,49 +367,11 @@ RoutingUnit::outportComputeDOR(RouteInfo route,
                                int inport,
                                PortDirection inport_dirn)
 {
-    PortDirection outport_dirn = "Unknown";
-
-    int num_rows = m_router->get_net_ptr()->getNumRows();
-    int num_cols = m_router->get_net_ptr()->getNumCols();
-    assert(num_rows > 0 && num_cols > 0);
-
-    int my_id = m_router->get_id();
-    int my_x = my_id % num_cols;
-    int my_y = my_id / num_cols;
-
-    int dest_id = route.dest_router;
-    int dest_x = dest_id % num_cols;
-    int dest_y = dest_id / num_cols;
-
-    // Compute shortest distance in each dimension with wrap-around
-    int dx = dest_x - my_x;
-    int dy = dest_y - my_y;
-
-    // Wrap-around: pick shorter direction
-    int abs_dx = (dx >= 0) ? dx : -dx;
-    int abs_dy = (dy >= 0) ? dy : -dy;
-
-    // Dimension-order: route X first, then Y
-    if (abs_dx > 0) {
-        // Check if wrap-around is shorter
-        if (abs_dx <= num_cols - abs_dx) {
-            // Normal direction is shorter or equal
-            outport_dirn = (dx > 0) ? "East" : "West";
-        } else {
-            // Wrap-around is shorter
-            outport_dirn = (dx > 0) ? "West" : "East";
-        }
-    } else if (abs_dy > 0) {
-        if (abs_dy <= num_rows - abs_dy) {
-            outport_dirn = (dy > 0) ? "North" : "South";
-        } else {
-            outport_dirn = (dy > 0) ? "South" : "North";
-        }
-    } else {
-        panic("DOR: src == dst should not reach here");
-    }
-
-    return m_outports_dirn2idx[outport_dirn];
+    GarnetNetwork* net = m_router->get_net_ptr();
+    PortDirection outport_dirn = directionFor(DOR_, m_router->get_id(),
+        route.dest_router, net->getNumRows(), net->getNumCols(),
+        net->getNumRouters(), net->isRingClockwiseOnly());
+    return outportForDirection(outport_dirn, route.dest_router);
 }
 
 // SHORTEST routing for ring: pick CW or CCW based on shorter distance
@@ -336,18 +380,11 @@ RoutingUnit::outportComputeShortest(RouteInfo route,
                                     int inport,
                                     PortDirection inport_dirn)
 {
-    int num_routers = m_router->get_net_ptr()->getNumRows() *
-                      m_router->get_net_ptr()->getNumCols();
-    int my_id = m_router->get_id();
-    int dest_id = route.dest_router;
-
-    // CW distance (East direction)
-    int cw_dist = (dest_id - my_id + num_routers) % num_routers;
-    // CCW distance (West direction)
-    int ccw_dist = (my_id - dest_id + num_routers) % num_routers;
-
-    PortDirection outport_dirn = (cw_dist <= ccw_dist) ? "East" : "West";
-    return m_outports_dirn2idx[outport_dirn];
+    GarnetNetwork* net = m_router->get_net_ptr();
+    PortDirection outport_dirn = directionFor(SHORTEST_, m_router->get_id(),
+        route.dest_router, net->getNumRows(), net->getNumCols(),
+        net->getNumRouters(), net->isRingClockwiseOnly());
+    return outportForDirection(outport_dirn, route.dest_router);
 }
 
 // DIRECT routing for crossbar/bus: single-hop via routing table

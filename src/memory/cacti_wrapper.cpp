@@ -280,7 +280,7 @@ InputParameter* CACTIWrapper::createCACTIInput(const SRAMConfig& config) {
     input->cycle_time_dev = 100000;
     input->area_dev = 100000;
 
-    // ED optimization (2 = use weight and deviate)
+    // 1.11.94 (review C4 comment fix): ed = 2 selects ED^2 in CACTI (io.cc), its shipped cache.cfg setting; 0 is weight/deviate
     input->ed = 2;
 
     // NUCA parameters (not used for simple cache)
@@ -515,7 +515,7 @@ double CACTIWrapper::vendorArrayFraction(const std::string& tech) {
  * pair was printed as though it described two independent facts: a per-
  * technology generation class -- 1x, 1y, 1y/1z, 1a, 1a/1b -- next to a CACTI
  * table nm. It does not. CACTI carries DRAM columns at 32 nm and 22 nm and
- * nothing between, so every generation from DDR4's 1x through HBM3's 1a/1b is
+ * nothing between, so every generation from 2x through 1a is
  * characterized from the SAME 22 nm table; only DDR3 lands anywhere else. A
  * log line reading "class 1a ... factors from CACTI 22nm hp/comm-dram columns"
  * therefore asserts a distinct process that the run does not have: DDR5 "1a"
@@ -543,7 +543,7 @@ int CACTIWrapper::generationTableNm(const std::string& tech) {
     static std::set<std::string> announced_techs;
     if (announced_techs.insert(tech).second) {
         std::cerr << "[dram] NOTE: CACTI's DRAM columns exist at 32 nm and "
-                     "22 nm only. Every generation class from 1x to 1a/1b is "
+                     "22 nm only. Every generation class from 1x to 1a is "
                      "characterized from the SAME 22 nm table (DDR3's 3x/2x "
                      "from the 32 nm one), so a printed generation class names "
                      "the die generation the vendor sells, NOT a node this run "
@@ -557,14 +557,51 @@ int CACTIWrapper::generationTableNm(const std::string& tech) {
  * generation's own feature size (2F array pitch); NOT a distinct simulated
  * node -- see generationTableNm() above. */
 const char* CACTIWrapper::generationClass(const std::string& tech) {
+    /* 1.11.94 (sweep-94 row 13, user "check and fix" 2026-09-28): the label
+     * names the generation of THE SAME PART whose measured density prices the
+     * die (vendorDieDensity above) -- one part per technology, two facts from
+     * it. Five rows had drifted: the density part and the class label came
+     * from different generations, so the printed "2F array pitch" described a
+     * die the area model was not using. The 6F^2 x density cross-check
+     * (implied array efficiency) is printed beside the pitch note so a future
+     * drift shows up in the log instead of staying latent.
+     *   DDR3   SK hynix 23 nm 4 Gb (ISSCC 2012 2.3)        -> 3x/2x (unchanged)
+     *   DDR4   SK hynix D1z (SemiAnalysis/TechInsights)    -> 1z   (was 1x)
+     *   DDR5   Micron D1a 8 Gb (TechInsights)              -> 1a   (unchanged)
+     *   LPDDR5 Samsung D1z 16 Gb (TechInsights)            -> 1z   (was 1a)
+     *   GDDR6  Samsung K4Z80165BC D1z (TechInsights)       -> 1z   (was 1y/1z)
+     *   HBM2   Samsung 20 nm core die (Sohn, ISSCC 2016)   -> 2x   (was 1y)
+     *   HBM3   SK hynix H5VG7HMD83X020R D1z 16 Gb          -> 1z   (was 1a/1b)
+     *          (TechInsights floorplan analysis; the SemiAnalysis 0.16 Gb/mm^2
+     *          row is this part; Samsung's HBM3, JSSC 2023 "third generation
+     *          of the 10 nm class", is 1z as well)
+     * F per class is dramGenFeatureNm() in main.cpp (report-only: the pitch
+     * factor applied to PE area is the FIMDRAM silicon bound, not F). */
     if (tech == "DDR3")   return "3x/2x";
-    if (tech == "DDR4")   return "1x";
+    if (tech == "DDR4")   return "1z";
     if (tech == "DDR5")   return "1a";
-    if (tech == "LPDDR5") return "1a";
-    if (tech == "GDDR6")  return "1y/1z";
-    if (tech == "HBM2")   return "1y";
-    if (tech == "HBM3")   return "1a/1b";
+    if (tech == "LPDDR5") return "1z";
+    if (tech == "GDDR6")  return "1z";
+    if (tech == "HBM2")   return "2x";
+    if (tech == "HBM3")   return "1z";
     return "1x";
+}
+
+double CACTIWrapper::generationFeatureNm(const std::string& cls) {
+    /* Mid-values of the published ranges per vendor generation label; the
+     * 2x class is Samsung's 20 nm HBM2 core die (1.11.94, sweep-94 row 13).
+     * Report-only today (the PE pitch factor is the FIMDRAM silicon bound);
+     * becomes an input when a pitch-matching model lands. */
+    if (cls == "2x")    return 20.0;
+    if (cls == "3x/2x") return 25.0;
+    if (cls == "1x")    return 19.0;
+    if (cls == "1y")    return 17.5;
+    if (cls == "1y/1z") return 16.5;
+    if (cls == "1z")    return 15.5;
+    if (cls == "1a")    return 14.0;
+    if (cls == "1a/1b") return 13.25;
+    if (cls == "1b")    return 12.5;
+    return 0.0;
 }
 
 double CACTIWrapper::vendorAnchorAreaMM2(const std::string& tech,
@@ -743,6 +780,15 @@ double CACTIWrapper::getSenseAmpDelay() const {
 double CACTIWrapper::getSubarrayOutputDelay() const {
     if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
     return cacti_result_->data_array2->delay_subarray_output_driver;
+}
+
+/* 1.11.94: the column-select path CACTI prices for every array: mem_array's
+ * delay_senseamp_mux_decoder, which Ucache.cc fills from the bit-line mux and
+ * sense-amp mux decoder paths of the chosen solution. The SRAM extractor used
+ * to write 0.15 ns here as "typical". */
+double CACTIWrapper::getColumnMuxDelay() const {
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0.0;
+    return cacti_result_->data_array2->delay_senseamp_mux_decoder;
 }
 
 double CACTIWrapper::getHtreeDelay() const {

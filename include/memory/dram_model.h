@@ -66,8 +66,6 @@ public:
     double getInnerBankDatapathDelay() const;
 
     // PIM support queries
-    bool supportsBankPIM() const;
-    bool supportsSubarrayPIM() const;
 
     // Get architecture specification
     const memory::DRAMArchitectureV2* getDRAMArchitecture() const { return dram_arch_.get(); }

@@ -1,0 +1,19 @@
+# PIMID shipped part record -- GDDR6
+# 1.11.94: ONE record per part; every field required; provenance beside the value.
+# Step 1 of the parameter-file migration: the loader cross-checks each field against
+# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# To model another part: copy this file, change every field with its own source,
+# and point PIMID_PARAMS at the directory holding it. Partial records are refused.
+technology: GDDR6
+part: "K4Z80165BC 8 Gb GDDR6 (density part); IDD row Samsung K4Z80325BC per channel"
+vendor: "Samsung"
+generation: "1z"            # vendor generation label of the DENSITY part (sweep-94 row 13)
+feature_nm: 15.5                  # mid-value of the published range for this generation
+cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline pitch 2 F)
+density_mb_per_mm2: 27.653254118282472  # measured FULL-DIE density, user capacity basis (D11)
+density_source: "Samsung K4Z80165BC D1z 8 Gb GDDR6, 8 Gb / 37.03 mm^2 whole die (TechInsights floorplan) x 128"
+organization_preset: "GDDR6_8Gb_x16"   # Ramulator org preset the run instantiates (default knobs)
+timing_preset: "GDDR6_2000_1350mV_double"         # Ramulator timing preset (default knobs)
+channels: 2                   # channels the preset instantiates
+refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one step modelled)
+  - { above_c: 85.0, factor: 0.5 }

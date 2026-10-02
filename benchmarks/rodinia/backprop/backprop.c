@@ -1,6 +1,8 @@
 /* backprop.c -- Neural network backpropagation (1 hidden layer)
  * Forward pass (sigmoid activation) then backward pass with weight update.
- * OpenMP parallel on input-to-hidden matmul and weight updates. */
+ * OpenMP parallel on input-to-hidden matmul and weight updates.
+ * Layer sizes follow Rodinia backprop: --input input units, 16 hidden units,
+ * 1 output unit (bpnn_create(layer_size, 16, 1)). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +12,11 @@
 
 #define DEFAULT_INPUT 16384
 #define LEARNING_RATE 0.3
+/* 1.11.94 (b02-suites-a-4, ruling H46): Rodinia's backprop has a fixed 16
+ * hidden units. This port used n_input/16, so w_ih grew as n_input^2/16:
+ * 32 GiB at the large tier (--input 262144, malloc failed) and an int index
+ * i*n_hidden+j that overflowed past INT_MAX. */
+#define N_HIDDEN      16
 
 static uint32_t bench_rand(uint32_t* s) {
     *s = *s * 1103515245 + 12345;
@@ -28,13 +35,17 @@ static double sigmoid(double x) {
 
 int main(int argc, char* argv[]) {
     int n_input  = parse_int_arg(argc, argv, "--input", DEFAULT_INPUT);
-    int n_hidden = n_input / 16;
+    int n_hidden = N_HIDDEN;
     int n_output = 1;
 
-    if (n_hidden < 1) n_hidden = 1;
+    if (n_input < 1) {
+        fprintf(stderr, "backprop: --input must be >= 1 (got %d)\n", n_input);
+        return 1;
+    }
 
     /* Allocate arrays */
-    double* input       = (double*)malloc(n_input * sizeof(double));
+    /* index arithmetic below is size_t (1.11.94, ruling H46) */
+    double* input       = (double*)malloc((size_t)n_input * sizeof(double));
     double* hidden      = (double*)malloc(n_hidden * sizeof(double));
     double* output      = (double*)malloc(n_output * sizeof(double));
     double* w_ih        = (double*)malloc((size_t)n_input * n_hidden * sizeof(double));  /* input-to-hidden weights */
@@ -75,7 +86,7 @@ int main(int argc, char* argv[]) {
     for (int j = 0; j < n_hidden; j++) {
         double sum = hidden_bias[j];
         for (int i = 0; i < n_input; i++) {
-            sum += input[i] * w_ih[i * n_hidden + j];
+            sum += input[i] * w_ih[(size_t)i * n_hidden + j];
         }
         hidden[j] = sigmoid(sum);
     }
@@ -84,7 +95,7 @@ int main(int argc, char* argv[]) {
     for (int k = 0; k < n_output; k++) {
         double sum = output_bias[k];
         for (int j = 0; j < n_hidden; j++) {
-            sum += hidden[j] * w_ho[j * n_output + k];
+            sum += hidden[j] * w_ho[(size_t)j * n_output + k];
         }
         output[k] = sigmoid(sum);
     }
@@ -100,7 +111,7 @@ int main(int argc, char* argv[]) {
     for (int j = 0; j < n_hidden; j++) {
         double sum = 0.0;
         for (int k = 0; k < n_output; k++) {
-            sum += output_delta[k] * w_ho[j * n_output + k];
+            sum += output_delta[k] * w_ho[(size_t)j * n_output + k];
         }
         hidden_delta[j] = hidden[j] * (1.0 - hidden[j]) * sum;
     }
@@ -108,7 +119,7 @@ int main(int argc, char* argv[]) {
     /* Update hidden-to-output weights */
     for (int j = 0; j < n_hidden; j++) {
         for (int k = 0; k < n_output; k++) {
-            w_ho[j * n_output + k] += LEARNING_RATE * output_delta[k] * hidden[j];
+            w_ho[(size_t)j * n_output + k] += LEARNING_RATE * output_delta[k] * hidden[j];
         }
     }
     for (int k = 0; k < n_output; k++) {
@@ -119,7 +130,7 @@ int main(int argc, char* argv[]) {
     #pragma omp parallel for
     for (int i = 0; i < n_input; i++) {
         for (int j = 0; j < n_hidden; j++) {
-            w_ih[i * n_hidden + j] += LEARNING_RATE * hidden_delta[j] * input[i];
+            w_ih[(size_t)i * n_hidden + j] += LEARNING_RATE * hidden_delta[j] * input[i];
         }
     }
     #pragma omp parallel for

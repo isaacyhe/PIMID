@@ -2,7 +2,8 @@
  *
  * Octree-based gravitational N-body: build octree from particle positions,
  * compute forces via tree traversal (theta=0.5 opening criterion), update
- * velocities and positions for a few timesteps.
+ * velocities and positions for a few timesteps. The root cell is refitted to
+ * the bodies' bounding cube every step and the total mass is 1, as in SPLASH-2.
  * Pointer-chase tree traversal (irregular, cache-unfriendly).
  *
  * Compile: g++ -std=c++11 -O2 -Wall -I<hooks-path> -lpthread -lm barnes.c -o barnes
@@ -23,6 +24,11 @@
 #define THETA           0.5
 #define SOFTENING       0.01
 #define MAX_NODES       (DEFAULT_SIZE * 40)
+/* 1.11.94 (b02-suites-a-3, ruling C1): depth bound for insert_body. The root
+ * is refitted to the bodies every step, so a depth this large is reached only
+ * when two bodies coincide to within 2^-MAX_TREE_DEPTH of the root side; the
+ * build then refuses instead of recursing until the stack overflows. */
+#define MAX_TREE_DEPTH  128
 
 /* ------------------------------------------------------------------ */
 /*  Arg parser                                                         */
@@ -103,7 +109,20 @@ static void child_origin(octree_node_t* n, int oct, double* cx, double* cy, doub
     *cz = n->oz + ((oct & 4) ? hs : 0);
 }
 
-static void insert_body(int node_idx, int bi) {
+/* 1.11.94 (b02-suites-a-3, ruling C1): a full node pool or an unbounded
+ * subdivision is a refusal, not a silent drop. Before this, alloc_node()
+ * returning -1 dropped the body from the tree without a word, and bodies that
+ * had left the fixed root cell recursed until the stack overflowed
+ * (barnes_large, N=16384: SIGSEGV rc=139). */
+static void tree_refuse(const char* what, int bi) {
+    fprintf(stderr, "barnes: octree build refused: %s (body %d, N=%d, "
+            "nodes %d of %d)\n", what, bi, N, node_count, max_nodes);
+    exit(1);
+}
+
+static void insert_body(int node_idx, int bi, int depth) {
+    if (depth > MAX_TREE_DEPTH)
+        tree_refuse("subdivision deeper than MAX_TREE_DEPTH (coincident bodies)", bi);
     octree_node_t* n = &nodes[node_idx];
     if (n->is_leaf && n->body_index == -1) {
         /* Empty leaf: just place body here */
@@ -120,10 +139,10 @@ static void insert_body(int node_idx, int bi) {
         double cx, cy, cz;
         child_origin(n, oc, &cx, &cy, &cz);
         int child = alloc_node(cx, cy, cz, n->size * 0.5);
-        if (child < 0) return;
+        if (child < 0) tree_refuse("node pool exhausted", old_bi);
         n = &nodes[node_idx]; /* pool might have moved */
         n->children[oc] = child;
-        insert_body(child, old_bi);
+        insert_body(child, old_bi, depth + 1);
     }
     /* Internal node: insert into correct octant */
     n = &nodes[node_idx];
@@ -132,11 +151,11 @@ static void insert_body(int node_idx, int bi) {
         double cx, cy, cz;
         child_origin(n, oc, &cx, &cy, &cz);
         int child = alloc_node(cx, cy, cz, n->size * 0.5);
-        if (child < 0) return;
+        if (child < 0) tree_refuse("node pool exhausted", bi);
         n = &nodes[node_idx];
         n->children[oc] = child;
     }
-    insert_body(n->children[oc], bi);
+    insert_body(n->children[oc], bi, depth + 1);
 }
 
 static void compute_com(int node_idx) {
@@ -162,6 +181,35 @@ static void compute_com(int node_idx) {
     }
     if (mt > 0) { n->cx = mx / mt; n->cy = my / mt; n->cz = mz / mt; }
     n->total_mass = mt;
+}
+
+/* 1.11.94 (b02-suites-a-3, ruling C1): the root cell is the bodies' bounding
+ * cube, refitted every timestep, as SPLASH-2 barnes does (setbound(): min/max
+ * over all bodies, side = largest extent, root slightly larger so a body on the
+ * max face still falls inside). The old root was fixed at [-0.5,1.5]^3; at
+ * N=16384 15645 of 16384 bodies had left it after one step, so the tree held
+ * bodies in cells that did not contain them. */
+static int alloc_root(void) {
+    double lo[3] = { bodies[0].x, bodies[0].y, bodies[0].z };
+    double hi[3] = { lo[0], lo[1], lo[2] };
+    for (int i = 1; i < N; i++) {
+        double p[3] = { bodies[i].x, bodies[i].y, bodies[i].z };
+        for (int k = 0; k < 3; k++) {
+            if (p[k] < lo[k]) lo[k] = p[k];
+            if (p[k] > hi[k]) hi[k] = p[k];
+        }
+    }
+    double side = 0;
+    for (int k = 0; k < 3; k++)
+        if (hi[k] - lo[k] > side) side = hi[k] - lo[k];
+    if (side <= 0) side = 1.0;   /* N == 1: any cube contains the body */
+    side *= 1.00002;              /* SPLASH-2 setbound() margin */
+    double ox = 0.5 * (lo[0] + hi[0]) - 0.5 * side;
+    double oy = 0.5 * (lo[1] + hi[1]) - 0.5 * side;
+    double oz = 0.5 * (lo[2] + hi[2]) - 0.5 * side;
+    int root = alloc_node(ox, oy, oz, side);
+    if (root < 0) tree_refuse("node pool exhausted", 0);
+    return root;
 }
 
 /* ------------------------------------------------------------------ */
@@ -222,9 +270,21 @@ int main(int argc, char** argv) {
     N = parse_int_arg(argc, argv, "--size", DEFAULT_SIZE);
     num_threads = parse_int_arg(argc, argv, "--threads", DEFAULT_THREADS);
 
+    if (N < 1 || num_threads < 1) {
+        fprintf(stderr, "barnes: --size and --threads must be >= 1 (got %d, %d)\n",
+                N, num_threads);
+        return 1;
+    }
     printf("Barnes-Hut N-body -- N=%d, threads=%d, timesteps=%d\n", N, num_threads, TIMESTEPS);
 
     max_nodes = N * 40;
+    /* 1.11.94 (b02-suites-a-3): gate injection hook. Random inputs never fill
+     * a 40*N pool once the root is refitted, so the refusal path is exercised
+     * by shrinking the pool: PIMID_BARNES_POOL_FAULT=<nodes>. */
+    {
+        const char* e = getenv("PIMID_BARNES_POOL_FAULT");
+        if (e && atoi(e) > 0) max_nodes = atoi(e);
+    }
     bodies = (body_t*)calloc((size_t)N, sizeof(body_t));
     nodes = (octree_node_t*)malloc((size_t)max_nodes * sizeof(octree_node_t));
     if (!bodies || !nodes) { fprintf(stderr, "malloc failed\n"); return 1; }
@@ -236,7 +296,20 @@ int main(int argc, char** argv) {
         bodies[i].y = (double)bench_rand(&seed) / 32768.0;
         bodies[i].z = (double)bench_rand(&seed) / 32768.0;
         bodies[i].vx = bodies[i].vy = bodies[i].vz = 0;
-        bodies[i].mass = 1.0;
+        /* 1.11.94 (b02-suites-a-3, ruling C1): total mass 1 (each body
+         * 1/N), as SPLASH-2's Plummer model normalises it. With mass 1.0 each
+         * and G = 1, accelerations grew with N and the system flew apart
+         * within one DT at the large size. */
+        bodies[i].mass = 1.0 / (double)N;
+    }
+
+    /* 1.11.94 (b02-suites-a-3): gate injection hook for the depth refusal:
+     * PIMID_BARNES_COINCIDE_FAULT=1 puts body 1 on body 0. */
+    {
+        const char* e = getenv("PIMID_BARNES_COINCIDE_FAULT");
+        if (e && atoi(e) > 0 && N > 1) {
+            bodies[1].x = bodies[0].x; bodies[1].y = bodies[0].y; bodies[1].z = bodies[0].z;
+        }
     }
 
     pthread_t* threads = (pthread_t*)malloc((size_t)num_threads * sizeof(pthread_t));
@@ -248,9 +321,9 @@ int main(int argc, char** argv) {
     for (int step = 0; step < TIMESTEPS; step++) {
         /* Build octree (serial) */
         node_count = 0;
-        int root = alloc_node(-0.5, -0.5, -0.5, 2.0); /* covers [-.5, 1.5] */
+        int root = alloc_root();   /* bounding cube of the bodies, this step */
         for (int i = 0; i < N; i++)
-            insert_body(root, i);
+            insert_body(root, i, 0);
         compute_com(root);
 
         /* Compute forces (parallel) */

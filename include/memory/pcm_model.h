@@ -70,9 +70,6 @@ public:
     double getInnerBankReadLatency() const;
 
     // PIM support queries
-    bool supportsBankPIM() const;
-    bool supportsMatPIM() const;
-    bool isReadOnlyPIM() const { return true; }  // Only read-heavy workloads!
 
 private:
     // PCM-specific configuration

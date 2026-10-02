@@ -201,6 +201,8 @@ public:
      * All false => XML and results identical to 1.11.7 (gate invariant). */
     struct PGSpec {
         bool pg_core = false, pg_noc = false, pg_mc = false;
+        /* 1.11.94 (sweep-94 row 20): the shared caches' own flag; when unset they follow pg_core (today's wiring). */
+        bool pg_cache_set = false, pg_cache = false;
         double r_core = 0.0, r_noc = 0.0, r_mc = 0.0;
         /* 1.11.18 (audit go-through): the SHARED caches gate on their own
          * no-access signal, not on core retirement -- spec #84 says so, and
@@ -373,6 +375,8 @@ public:
                                // spans command-driven to fully programmable, and
                                // gates which kernels can run at all
         int issue_width;
+        int periphery_leakage_device = 4;
+        int arch_int_regs = 32, arch_fp_regs = 32;   // 1.11.94 (row 20 (a)): McPAT architectural register files   // 1.11.94 (item 1 knob): CACTI column for the DRAM-periphery leakage ratio (4 = comm-dram)
         int num_alus;
         int num_muls;
         int num_fpus;

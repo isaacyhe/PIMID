@@ -474,8 +474,48 @@ public:
         nodeMap_[name] = nodeId;
     }
 
+    /* 1.11.94 (M-16 x02-zsim-garnet-htree-5): strict endpoint naming,
+     * selected by PIMID_NOC_STRICT_NODE_NAMES=1 (default OFF = the 1.11.93
+     * binding, because the strict binding moves numbers -- see below).
+     *
+     * The plugin prices every MPI message with getRTT(to_string(src_pe),
+     * to_string(dst_pe)). A purely numeric name ("3") has no '-'/'_' and fell
+     * to nextFreeNodeId(), so PE ids were bound to nodes in the order ranks
+     * first communicated (getRTT("3","0") on an empty map bound 3 -> node 0
+     * and 0 -> node 1). Strict mode binds a numeric name to its own id
+     * (refusing an id outside the network) and REFUSES an unknown name with
+     * no numeric index instead of handing it an arbitrary free node.
+     *
+     * Why it is OFF by default (R1 parity): the corpus' thread-MPI cells
+     * (165 MPI configs with noc.model detailed, 20 analytical) price every
+     * message through these numeric names, so binding them to their own ids
+     * changes the probed RTT whenever first-contact order differed from PE
+     * order; and co-sim host caches resolve non-numeric parents ("host-xbar",
+     * "mem-splitter") on the device network, which strict mode refuses until
+     * H06 detaches the host caches from it (main.cpp/init.cpp, R5). */
+    static bool strictNodeNames() {
+        static const bool on = [] {
+            const char* e = getenv("PIMID_NOC_STRICT_NODE_NAMES");
+            return e && e[0] && e[0] != '0';
+        }();
+        return on;
+    }
+
     void autoRegisterNode(const char* name) {
         std::string s(name);
+        if (strictNodeNames()) {
+            bool allDigits = !s.empty() &&
+                s.find_first_not_of("0123456789") == std::string::npos;
+            if (allDigits) {
+                unsigned long id = std::stoul(s);
+                if (numNodes_ > 0 && id >= numNodes_)
+                    panic("[GarnetNetwork] endpoint '%s' names node %lu but the "
+                          "network has %u nodes; size the NoC to cover every PE "
+                          "id that communicates", name, id, numNodes_);
+                registerNode(name, (uint32_t)id);   // a PE id IS its node
+                return;
+            }
+        }
         // Accept '-' or '_' before a numeric node index (e.g. "l1d-3", "mem_12").
         size_t pos = s.find_last_of("-_");
         if (pos != std::string::npos) {
@@ -485,6 +525,11 @@ public:
                 return;
             } catch (const std::exception&) { /* non-numeric -> fall through */ }
         }
+        if (strictNodeNames())
+            panic("[GarnetNetwork] endpoint '%s' is not registered and carries "
+                  "no node index; it would have been bound to an arbitrary free "
+                  "node. Register it at its node (registerNode) or keep it off "
+                  "this network", name);
         // Non-numeric name (e.g. "pe-mc-splitter"): assign the next FREE node id.
         // The old hash%%N could silently alias two distinct endpoints onto one
         // node; sequential free assignment guarantees a unique, valid mapping.
@@ -522,6 +567,50 @@ public:
 
         stats_.total_packets++;
         return rtt;
+    }
+
+    /* 1.11.94 (M-16 x02-zsim-garnet-htree-9): an RTT PROBE for traffic that
+     * is already recorded elsewhere. The thread-MPI detailed path puts each
+     * message's packets into the batch replay (recordBatchAccess) and then
+     * asks getRTT for the latency; on a cycle-accurate network that query
+     * injects one more packet, after a full reset, and counts it through
+     * countPacket_, stats_.total_packets/total_latency and the routers'
+     * measured crossbar/buffer counters -- so each message was counted once
+     * by the replay and once more per send AND per receive probe.
+     *
+     * With PIMID_NOC_PROBE_UNCOUNTED=1 the probe returns the same zero-load
+     * latency (same reset, same injection, same drain) but counts nothing:
+     * no countPacket_, no total_packets/total_latency, and the routers'
+     * counters are re-snapped after the probe so its traversals are not
+     * harvested. Default OFF = the 1.11.93 behaviour: removing the phantom
+     * packets moves the NoC counters and NoC energy of every corpus MPI cell
+     * with noc.model detailed (165 configs), which is an R5 default change. */
+    static bool probeUncounted() {
+        static const bool on = [] {
+            const char* e = getenv("PIMID_NOC_PROBE_UNCOUNTED");
+            return e && e[0] && e[0] != '0';
+        }();
+        return on;
+    }
+
+    uint32_t getRTTProbe(const char* src, const char* dst) {
+        if (!probeUncounted() || !cycleAccurate_) return getRTT(src, dst);
+        if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
+        if (nodeMap_.find(dst) == nodeMap_.end()) autoRegisterNode(dst);
+        uint32_t srcId = nodeMap_[src];
+        uint32_t dstId = nodeMap_[dst];
+#ifdef HAVE_GARNET
+        /* Serialised with the batch replay: the probe resets the network and
+         * re-snaps the router counters, which must not interleave with a
+         * drain that is accumulating real traffic. */
+        futex_lock(&garnetLock_);
+        uint32_t latency = getCycleAccurateLatency(srcId, dstId, false);
+        resnapRouterCountersLocked_();
+        futex_unlock(&garnetLock_);
+#else
+        uint32_t latency = getAnalyticalLatency(srcId, dstId, false);
+#endif
+        return 2 * latency;
     }
 
     // ── Phase-sync injection/dequeue interface ─────────────────
@@ -1246,7 +1335,7 @@ public:
      * it -- the same links + 1 as the detailed path). Flits per packet are
      * the message at this network's flit width, as on the detailed path.
      * Lock-free: PE-MI threads call it concurrently. */
-    void recordTierWalk(const uint32_t perLevel[7], uint32_t links,
+    void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94 (H17): rung 7 = HOST_MC, no on-die router (not counted below)
                         bool ctrl = false) {
         const uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
         const uint32_t bits = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
@@ -1460,6 +1549,20 @@ public:
         uint32_t flitSizeBits = 128;
         double clockMhz = 1000.0;
         double injectionRate = 0.0;
+
+        /* 1.11.94 (H25 support): router flit traversals MEASURED over the
+         * post-warmup window -- the sum over every router of the change in
+         * its crossbar activity count (Router::getCrossbarActivityCount, one
+         * per flit through the switch), the same per-router counter the exec
+         * path harvests into measured_crossbar_flits / level_flit_traversals
+         * since 1.11.92 (F4). totalPackets counts delivered PACKETS; a packet
+         * of k flits crossing h routers is k*h traversals, so this is the
+         * quantity a router energy model is driven by. The window opens when
+         * the last warmup packet is delivered (at the start when there is no
+         * warmup) and closes when the drain loop exits; flits of packets in
+         * flight at the opening are counted from that point on. 0 when the
+         * network was not built. */
+        uint64_t routerFlitTraversals = 0;
     };
 
 #ifdef HAVE_GARNET
@@ -1513,6 +1616,10 @@ public:
 
         double avgInterval = 1.0 / injectionRate;
         double uniformRange = avgInterval * 2.0;  // uniform [0, 2*mean] for mean=avgInterval
+
+        /* 1.11.94 (H25 support): crossbar-traversal baseline for the
+         * post-warmup window (see SyntheticResult::routerFlitTraversals). */
+        double xbarAtWindowOpen = (warmupPackets <= 0) ? sumRouterXbar_() : -1.0;
 
         gem5::curTickRef() = 0;
 
@@ -1724,6 +1831,8 @@ public:
 
                         if (warmupDelivered < (uint64_t)warmupPackets) {
                             warmupDelivered++;
+                            if (warmupDelivered == (uint64_t)warmupPackets)
+                                xbarAtWindowOpen = sumRouterXbar_();   // 1.11.94 (H25)
                         } else {
                             delivered++;
                             totalLat += lat;
@@ -1782,6 +1891,10 @@ public:
         result.flitSizeBits = flitSizeBits_;
         result.clockMhz = clockMhz_;
         result.injectionRate = injectionRate;
+        if (xbarAtWindowOpen >= 0.0) {   // 1.11.94 (H25): window opened
+            double d = sumRouterXbar_() - xbarAtWindowOpen;
+            result.routerFlitTraversals = d > 0.0 ? (uint64_t)(d + 0.5) : 0;
+        }
 
         info("[SyntheticTraffic] Results:");
         info("  Delivered:  %lu / %lu packets", delivered, numPackets);
@@ -1900,6 +2013,19 @@ private:
             harvestOne_(r->getBufferReadCount(),  rtrBufRdSeen_[i], rtrBufRdTot_[i]);
             harvestOne_(r->getBufferWriteCount(), rtrBufWrSeen_[i], rtrBufWrTot_[i]);
         }
+    }
+    /* 1.11.94 (H25 support): the routers' cumulative crossbar activity
+     * (flits switched), summed -- the counter harvestRouterCountersLocked_
+     * folds into rtrXbarTot_. Read-only. */
+    double sumRouterXbar_() const {
+        if (!garnetInitialized_ || !garnetNet_) return 0.0;
+        double s = 0.0;
+        const int n = garnetNet_->getNumRouters();
+        for (int i = 0; i < n; i++) {
+            gem5::ruby::garnet::Router* r = garnetNet_->getRouterAt(i);
+            if (r) s += r->getCrossbarActivityCount();
+        }
+        return s;
     }
     void resnapRouterCountersLocked_() {
         if (!garnetInitialized_ || !garnetNet_) return;
@@ -2159,7 +2285,7 @@ private:
 
     // ── Simple model latency (hop count + M/D/1 queuing) ─────
 
-    uint32_t getAnalyticalLatency(uint32_t src, uint32_t dst) {
+    uint32_t getAnalyticalLatency(uint32_t src, uint32_t dst, bool count = true) {
         if (src == dst) return 0;
 
         uint32_t hops = getHopCount(src, dst);
@@ -2179,16 +2305,19 @@ private:
 
         uint32_t latency = baseLat + contentionCycles;
 
-        // Update stats (1.11.92 F2: true flits and router traversals)
-        stats_.total_latency += latency;
-        countPacket_(src, dst, hops, false);
+        // Update stats (1.11.92 F2: true flits and router traversals).
+        // 1.11.94 (htree-9): an uncounted probe skips them.
+        if (count) {
+            stats_.total_latency += latency;
+            countPacket_(src, dst, hops, false);
+        }
 
         return latency;
     }
 
     // ── Cycle-accurate latency (Garnet bridge) ─────────────
 
-    uint32_t getCycleAccurateLatency(uint32_t src, uint32_t dst) {
+    uint32_t getCycleAccurateLatency(uint32_t src, uint32_t dst, bool count = true) {
 #ifdef HAVE_GARNET
         if (!garnetInitialized_) {
             initGarnetNetwork();
@@ -2196,7 +2325,7 @@ private:
 
         if (src == dst) return 0;
         if (src >= numNodes_ || dst >= numNodes_) {
-            return getAnalyticalLatency(src, dst);
+            return getAnalyticalLatency(src, dst, count);
         }
 
         // Full network reset before each packet injection.
@@ -2235,17 +2364,20 @@ private:
         } else {
             warn("[GarnetNetwork] Drain timeout src=%d dst=%d",
                  src, dst);
-            latCycles = getAnalyticalLatency(src, dst);
+            latCycles = getAnalyticalLatency(src, dst, count);
         }
 
-        // Update stats (1.11.92 F2: true flits and router traversals)
-        uint32_t hops = getHopCount(src, dst);
-        stats_.total_latency += latCycles;
-        countPacket_(src, dst, hops, false);
+        // Update stats (1.11.92 F2: true flits and router traversals).
+        // 1.11.94 (htree-9): an uncounted probe skips them.
+        if (count) {
+            uint32_t hops = getHopCount(src, dst);
+            stats_.total_latency += latCycles;
+            countPacket_(src, dst, hops, false);
+        }
 
         return latCycles;
 #else
-        return getAnalyticalLatency(src, dst);
+        return getAnalyticalLatency(src, dst, count);
 #endif
     }
 

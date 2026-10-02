@@ -46,6 +46,16 @@ RingRouter::init()
     m_round_robin_inport.resize(m_num_outports, 0);
     m_port_requests.resize(m_num_inports, -1);
     m_vc_winners.resize(m_num_inports, -1);
+
+    // 1.11.94 (H35): resolve dateline directions to outport indices.
+    for (int o = 0; o < m_num_outports; o++) {
+        PortDirection d = getOutportDirection(o);
+        for (const auto& dd : m_dateline_dirns) {
+            if (d == dd && !isDatelineCrossing(o)) {
+                m_dateline_outports.push_back(o);
+            }
+        }
+    }
 }
 
 void
@@ -114,6 +124,41 @@ RingRouter::getClassRange(int vnet, int vc_class,
         lo = base + half;
         hi = base + m_vc_per_vnet;
     }
+}
+
+// 1.11.94 (H35): X = East/West, Y = North/South, -1 = anything else
+// (Local, tree ports).
+int
+RingRouter::dimensionOf(const PortDirection& dirn)
+{
+    if (dirn == "East" || dirn == "West") return 0;
+    if (dirn == "North" || dirn == "South") return 1;
+    return -1;
+}
+
+// Target VC class for a head flit going inport/invc -> outport.
+//   - crossing a dateline: class 1
+//   - NI-injected (Local inport): class 0
+//   - torus only (m_dimension_reset): turning from one dimension onto the
+//     other: class 0 (a new ring, entered before its dateline)
+//   - otherwise: stay in the current class
+// Without m_dimension_reset this is exactly the rule RING has always used
+// (the first two and the last branch), so RING allocation is unchanged.
+int
+RingRouter::targetClass(int inport, int invc, int outport)
+{
+    if (isDatelineCrossing(outport))
+        return 1;
+    PortDirection in_dirn = getInputUnit(inport)->get_direction();
+    if (in_dirn == "Local")
+        return 0;
+    if (m_dimension_reset) {
+        int din = dimensionOf(in_dirn);
+        int dout = dimensionOf(getOutportDirection(outport));
+        if (din >= 0 && dout >= 0 && din != dout)
+            return 0;
+    }
+    return vcClassOf(invc);
 }
 
 // ─── SA-I: per-input VC selection (standard round-robin) ─────
@@ -233,18 +278,8 @@ RingRouter::vc_allocate(int outport, int inport, int invc)
     auto output_unit = getOutputUnit(outport);
     auto input_unit = getInputUnit(inport);
 
-    // Determine the target VC class
-    int target_class;
-    if (isDatelineCrossing(outport)) {
-        // Must promote to class 1
-        target_class = 1;
-    } else if (input_unit->get_direction() == "Local") {
-        // NI-injected: force class 0 (packets must start pre-dateline)
-        target_class = 0;
-    } else {
-        // Stay in current class
-        target_class = vcClassOf(invc);
-    }
+    // Determine the target VC class (1.11.94 H35: one rule, targetClass)
+    int target_class = targetClass(inport, invc, outport);
 
     int lo, hi;
     getClassRange(vnet, target_class, lo, hi);
@@ -267,14 +302,7 @@ RingRouter::send_allowed(int inport, int invc, int outport, int outvc)
 
     if (!has_outvc) {
         // HEAD flit needs a new VC — determine target class
-        int target_class;
-        if (isDatelineCrossing(outport)) {
-            target_class = 1;
-        } else if (input_unit->get_direction() == "Local") {
-            target_class = 0;
-        } else {
-            target_class = vcClassOf(invc);
-        }
+        int target_class = targetClass(inport, invc, outport);
 
         int lo, hi;
         getClassRange(vnet, target_class, lo, hi);

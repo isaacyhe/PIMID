@@ -1,4 +1,4 @@
-/* stencil_2d_omp.c — 2D 5-point Jacobi stencil (nearest-neighbor average)
+/* stencil_2d_omp.c -- 2D 5-point Jacobi stencil (nearest-neighbor average)
  * OpenMP parallel version. Grid is N*N, runs for iter iterations.
  *
  * Device-organization aware (PIMID): the simulator prices each PE access by
@@ -24,6 +24,12 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     return def;
 }
 
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of [cur][next]. */
+static size_t stencil_2d_omp_need(long n, const void* c) {
+    long P = *(const int*)c;
+    return 2ull * (size_t)((n + P - 1) / P) * (size_t)n * sizeof(float);
+}
+
 int main(int argc, char* argv[]) {
     int N = parse_int_arg(argc, argv, "--size", DEFAULT_SIZE);
     int iters = parse_int_arg(argc, argv, "--iters", DEFAULT_ITERS);
@@ -44,10 +50,18 @@ int main(int argc, char* argv[]) {
     size_t slot_bytes = 0;
     char* base = NULL;
     if (prep) {
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+         * is refused; it used to fall back to host layout in silence. */
+        slot_bytes = pimid_devorg_slot_bytes(&dev);
+        if (need > slot_bytes) {
+            pimid_devorg_report_slot_refusal("", "stencil_2d", &dev, need, slot_bytes, "--size",
+                pimid_devorg_largest_fit(stencil_2d_omp_need, &P, N, slot_bytes));
+            return 1;
+        }
         base = (char*)pimid_devorg_alloc(&dev, &slot_bytes);
-        if (!base || need > slot_bytes) {
-            fprintf(stderr, "devorg: per-PE need %zu > slot %zu (or alloc fail); "
-                            "running host-layout (no prep)\n", need, slot_bytes);
+        if (!base) {
+            fprintf(stderr, "devorg: alloc of the device buffer failed; "
+                            "running host-layout (no prep)\n");
             prep = 0;
         }
     }

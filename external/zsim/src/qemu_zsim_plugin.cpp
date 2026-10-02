@@ -541,6 +541,20 @@ static bool g_cosim_trace = false;
  * to device PEs rather than host cores. */
 static std::atomic<bool> g_in_device_region{false};
 
+/* 1.11.94 (H11 x01-qemu-zsim-plugin-3): true between a non-thread-MPI co-sim
+ * ROI_BEGIN offload (cosimRoiBeginOffload) and its ROI_END. A thread's domain
+ * was fixed at birth from g_in_device_region, and ROI_BEGIN moved only the
+ * caller, so OpenMP pool workers created by a parallel region BEFORE
+ * zsim_roi_begin() (babelstream init, NPB cg/mg/ft, streamcluster) kept the
+ * host mask and ran the offloaded kernel on host cores. While this flag is
+ * set, every thread of the process that is still DOMAIN_HOST migrates itself
+ * to the device domain at its next BBL (insn_exec_cb). The migration has to
+ * be performed by the thread itself: sched->leave/finish detach the CALLING
+ * thread's core, and another thread may be mid-BBL on that core, so the
+ * opener cannot detach its peers. Scoped to the ROI window (not WORK
+ * regions), matching the ruling. */
+static std::atomic<bool> g_roi_offload_window{false};
+
 /* Per-vCPU pending magic op from mov $imm, %rcx -- persists across TB
  * boundaries.  This handles the rare case where mov and xchg are in different
  * TBs (e.g., page boundary between them).  Per-vCPU to avoid races when
@@ -988,6 +1002,14 @@ static void dumpTerminationStats() {
     }
 }
 
+/* 1.11.94: the guest's exit status. The exit/exit_group syscall hook below
+ * stores the status the workload exited with; SimEnd() hands it to the host
+ * as QEMU's own exit code. It was always 0, so a workload that REFUSED at
+ * data preparation (pimid_devorg: PREP REFUSED, exit 1) or failed an
+ * assertion came back to the simulator as a completed run, which then parsed
+ * and priced the whole run as a measurement. */
+static int g_guest_exit_status = 0;
+
 void SimEnd() {
     dumpApproxProfile();
     if (zinfo && zinfo->garnetNetwork) zinfo->garnetNetwork->dumpInjectionCensus();
@@ -1034,7 +1056,7 @@ void SimEnd() {
     /* Terminate the process.  Background threads (contention sim, scheduler
      * watchdog) won't exit on their own, same as the original ZSim behaviour.
      * Use _exit() rather than exit() to avoid re-entering atexit/plugin_exit. */
-    _exit(0);
+    _exit(g_guest_exit_status & 0xff);
 }
 
 /* ---- Thread management ---- */
@@ -1377,6 +1399,24 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
      * domain at birth the way OMP workers forked inside the ROI do. It
      * migrates ITSELF here, at its first BBL after the window opens.
      * Deterministic under the serial weave. */
+    /* 1.11.94 (H11 x01-qemu-zsim-plugin-3): the lazy migrate-in also runs
+     * outside thread-MPI, for any thread alive when the ROI window opened
+     * (g_roi_offload_window). An OpenMP worker does not pay its own
+     * flush+launch: the offload is one kernel launch, charged once on the
+     * opener in cosimRoiBeginOffload; and it is not counted in
+     * g_deviceWorkers, which only the thread-MPI tail logic reads (OMP
+     * workers born inside the window are not counted either). */
+    if (unlikely(!g_mpi_thread_mode && g_roi_offload_window.load(std::memory_order_acquire) &&
+                 g_cosim_mode && !g_cosim_no_offload &&
+                 g_in_device_region.load(std::memory_order_acquire) &&
+                 thread_domain[tid].load() == DOMAIN_HOST)) {
+        {
+            std::lock_guard<std::mutex> mig(g_migrateMutex);
+            detachThreadForMigration(tid, DOMAIN_DEVICE);
+        }
+        ensureThreadInit(tid);  // device mask; may block: OUTSIDE the lock
+        info("Thread %d: ROI window migrate-in (co-sim thread born before roi_begin)", tid);
+    }
     if (unlikely(g_mpi_thread_mode && g_cosim_mode && !g_cosim_no_offload &&
                  g_in_device_region.load(std::memory_order_acquire) &&
                  thread_domain[tid].load() == DOMAIN_HOST)) {
@@ -1936,8 +1976,12 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             for (uint32_t p = 0; p < numPackets; p++)
                 gn->recordBatchAccess(srcNode, dstNode, stamp + p);
             /* Deterministic pricing: static analytic RTT only (the EWMA
-             * read is wall-order-dependent; see pe_memory_interface). */
-            uint32_t rtt = gn->getRTT(
+             * read is wall-order-dependent; see pe_memory_interface).
+             * 1.11.94 (x02-zsim-garnet-htree-9): this is a PROBE -- the
+             * message is already counted by the replay above. getRTTProbe
+             * counts nothing under PIMID_NOC_PROBE_UNCOUNTED=1 and is
+             * getRTT otherwise (the 1.11.93 default). */
+            uint32_t rtt = gn->getRTTProbe(
                 std::to_string(params.src_pe).c_str(),
                 std::to_string(params.dst_pe).c_str());
             nocLat = rtt + (uint32_t)((params.msg_size / 64) * 2);
@@ -2584,6 +2628,8 @@ static void cosimRoiBeginOffload(uint32_t tid) {
         g_deviceWorkers.fetch_add(1);
     }
     g_roiClosing.store(false);
+    if (!g_mpi_thread_mode)
+        g_roi_offload_window.store(true, std::memory_order_release);   // 1.11.94 (H11)
     ++offload_count;
     if (thread_initialized[tid]) {
         uint32_t cid = cids[tid];
@@ -2703,6 +2749,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         // global phase clock and host cycles absorb the device execution.
         if (g_cosim_mode && !g_cosim_no_offload && tid < MAX_THREADS) {
             g_in_device_region.store(false);
+            g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94 (H11)
             if (g_mpi_thread_mode) {
                 /* 1.8.7: the MPI opener (rank 0) is a PE-resident rank exactly
                  * like the others -- NO migration (removes even 1.8.6's residual
@@ -3000,6 +3047,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
     } else if (opcode == ZSIM_MAGIC_OP_ROI_END) {
         if (g_cosim_mode && !g_cosim_no_offload && tid < MAX_THREADS) {
             g_in_device_region.store(false);
+            g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94 (H11)
             if (g_mpi_thread_mode) {
                 /* 1.8.7: the MPI opener (rank 0) is a PE-resident rank exactly
                  * like the others -- NO migration (removes even 1.8.6's residual
@@ -3444,6 +3492,9 @@ static void syscall_cb(qemu_plugin_id_t id,
             /* main thread: fall through to terminate the whole simulation */
         case 231: /* exit_group -- whole process */
             info("Caught exit syscall (%ld), terminating simulation", (long)num);
+            g_guest_exit_status = (int)(a1 & 0xff);   /* 1.11.94: carried to the host by SimEnd() */
+            if (g_guest_exit_status != 0)
+                info("Guest exit status %d: the workload did not complete normally", g_guest_exit_status);
             zinfo->sched->leave(procIdx, tid, cid);
             SimEnd();
             break;  /* not reached */

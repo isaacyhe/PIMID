@@ -88,6 +88,15 @@ public:
         Cycles link_latency, Cycles router_latency, uint32_t width);
 
 private:
+    // 1.11.94 (H35): the mesh body, shared by MESH_2D and TORUS_2D. With
+    // torus_routers the routers are dateline-aware RingRouters; without it
+    // they are the plain makeRouter routers MESH_2D has always used.
+    static TopologyResult buildMeshImpl(
+        uint32_t rows, uint32_t cols, uint32_t num_endpoints,
+        uint32_t vcs_per_vnet, uint32_t virt_nets,
+        Cycles link_latency, Cycles router_latency, uint32_t width,
+        bool torus_routers);
+
     // Helper: create a single Router with default params
     static Router* makeRouter(uint32_t id, uint32_t vcs_per_vnet,
                               uint32_t virt_nets, Cycles latency,

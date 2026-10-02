@@ -1,4 +1,4 @@
-/* gemv_omp.c — General Matrix-Vector Multiply: y = A * x
+/* gemv_omp.c -- General Matrix-Vector Multiply: y = A * x
  * OpenMP parallel version. A is N*N, x and y are N-vectors.
  *
  * Device-organization aware (PIMID): the simulator prices each PE access by
@@ -21,6 +21,14 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of the prep layout
+ * [A rows][x] for size N on P PEs (largest share = ceil(N/P) rows). */
+static size_t gemv_omp_need(long n, const void* ctx) {
+    long P = *(const int*)ctx;
+    size_t rows = (size_t)((n + P - 1) / P);
+    return (rows * (size_t)n + (size_t)n) * sizeof(float);
 }
 
 int main(int argc, char* argv[]) {
@@ -47,7 +55,15 @@ int main(int argc, char* argv[]) {
          * Relocate PE pe's rows of A + a private copy of x into PE pe's own unit
          * slot, so the ROI's reads are LOCAL. Slot layout: [A rows][x]. */
         omp_set_num_threads(P);
-        size_t slot_bytes;
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): refuse when PE pe's rows + x
+         * do not fit its slot (they spilled into the next PE's slot before). */
+        size_t slot_bytes = pimid_devorg_slot_bytes(&dev);
+        size_t need = gemv_omp_need(N, &P);
+        if (need > slot_bytes) {
+            pimid_devorg_report_slot_refusal("", "gemv", &dev, need, slot_bytes, "--size",
+                pimid_devorg_largest_fit(gemv_omp_need, &P, N, slot_bytes));
+            return 1;
+        }
         float* Adev = (float*)pimid_devorg_alloc(&dev, &slot_bytes);
         if (!Adev) { fprintf(stderr, "devorg alloc failed\n"); return 1; }
         size_t slot_floats = slot_bytes / sizeof(float);

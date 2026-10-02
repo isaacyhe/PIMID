@@ -31,8 +31,10 @@
 #define PIMID_DEVORG_H_
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #define PIMID_PAGE_BYTES 4096u
 
@@ -147,23 +149,80 @@ static inline size_t pimid_devorg_slot_bytes(const pimid_devorg_t* d) {
 }
 
 /* Allocate a device buffer of num_pes PE-local slots whose byte 0 maps to unit 0,
- * so slot i maps to PE i's units. Over-allocates one org "period" and rounds the
- * usable base up to a period boundary (period = totalUnits*pagesPerUnit*4096); the
- * guest virtual address the simulator sees is that aligned base, so
- * unit(base) = (base/4096 / pagesPerUnit) % totalUnits == 0. Works for any
- * totalUnits (no power-of-two requirement). The raw allocation is intentionally
- * not returned/freed -- benchmark processes are short-lived. Returns NULL on OOM.
- * *slot_bytes_out gets the per-slot span. */
+ * so slot i maps to PE i's units. The guest virtual address the simulator sees
+ * is the returned base, aligned to one org "period" (period =
+ * totalUnits*pagesPerUnit*4096), so unit(base) = (base/4096 / pagesPerUnit) %
+ * totalUnits == 0. Works for any totalUnits (no power-of-two requirement).
+ * The mapping is intentionally not returned/freed -- benchmark processes are
+ * short-lived. Returns NULL when the mapping fails. *slot_bytes_out gets the
+ * per-slot span.
+ *
+ * 1.11.94 (b01-pim-kernels-6, ruling H41): exact sizing with MAP_NORESERVE.
+ * Before this the buffer was malloc(slot*num_pes + period + 4 KiB): about twice
+ * the device's address span (DDR4 BANK 8 PEs 16 GiB, DDR5 32 GiB, HBM2 64 GiB,
+ * HBM3 256 GiB), committed under heuristic overcommit, so it failed on any host
+ * whose RAM+swap was smaller and the kernels lost their prep (or exited). Now
+ * one anonymous MAP_NORESERVE mapping of span + period is reserved (no commit
+ * charge), the base is aligned up to a period boundary, and the head before the
+ * base and the tail after base + span are unmapped. What stays mapped is exactly
+ * span = slot*num_pes bytes; pages are committed only when touched. */
 static inline void* pimid_devorg_alloc(const pimid_devorg_t* d, size_t* slot_bytes_out) {
     size_t slot = pimid_devorg_slot_bytes(d);
     size_t period = (size_t)d->total_units * (size_t)d->pages_per_unit * PIMID_PAGE_BYTES;
-    size_t total = slot * (size_t)d->num_pes;
-    char* raw = (char*)malloc(total + period + PIMID_PAGE_BYTES);
+    size_t span = slot * (size_t)d->num_pes;
     if (slot_bytes_out) *slot_bytes_out = slot;
-    if (!raw) return NULL;
-    uintptr_t addr = (uintptr_t)raw;
+    if (slot == 0 || span / slot != (size_t)d->num_pes) return NULL;   /* overflow */
+    if (span > SIZE_MAX - period) return NULL;                         /* overflow */
+    size_t len = span + period;   /* worst-case slack to reach a period boundary */
+    void* m = mmap(NULL, len, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (m == MAP_FAILED) return NULL;
+    uintptr_t addr = (uintptr_t)m;
     uintptr_t aligned = ((addr + period - 1) / period) * period;  /* -> page maps to unit 0 */
+    size_t head = (size_t)(aligned - addr);       /* multiple of 4096: mmap and period are */
+    size_t tail = len - head - span;
+    if (head) munmap(m, head);
+    if (tail) munmap((char*)aligned + span, tail);
     return (void*)aligned;
+}
+
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a PE's prepared working set
+ * must fit the PE's slot. A kernel whose per-PE need exceeds slot_bytes would
+ * spill into the next PE's slot (gemv_omp / stream_triad_omp: overlapping
+ * slots, wrong results, heap overflow) or, in the kernels that checked, fall
+ * back to host layout in silence, so the cell measured something other than
+ * the prepared kernel. Every devorg kernel now refuses instead: it prints the
+ * need, the slot and the largest size argument that fits, and exits non-zero.
+ *
+ * need_fn(size, ctx) is the kernel's per-PE need (largest share) as a function
+ * of its size argument; it must be non-decreasing in size. */
+typedef size_t (*pimid_devorg_need_fn)(long size, const void* ctx);
+
+/* Largest size in [0, size] whose need fits slot (0 when none does). */
+static inline long pimid_devorg_largest_fit(pimid_devorg_need_fn fn, const void* ctx,
+                                            long size, size_t slot) {
+    long lo = 0, hi = size;          /* fn(hi) > slot is the caller's premise */
+    while (hi - lo > 1) {
+        long mid = lo + (hi - lo) / 2;
+        if (fn(mid, ctx) <= slot) lo = mid; else hi = mid;
+    }
+    return lo;
+}
+
+/* Print the refusal (one line). The caller then exits non-zero (OMP/serial:
+ * return 1; MPI: MPI_Abort). who is "" or e.g. "rank 3: ". */
+static inline void pimid_devorg_report_slot_refusal(const char* who, const char* kernel,
+                                                    const pimid_devorg_t* d,
+                                                    size_t need, size_t slot,
+                                                    const char* size_flag, long fit) {
+    fprintf(stderr, "%spimid_devorg: PREP REFUSED: kernel=%s level=%s pes=%d per-PE "
+            "need %zu B > slot %zu B (%llu unit(s) x %llu pages x 4096 B); ",
+            who, kernel, pimid_devorg_level_name(d->level), d->num_pes, need, slot,
+            (unsigned long long)d->units_per_pe, (unsigned long long)d->pages_per_unit);
+    if (fit > 0)
+        fprintf(stderr, "%s %ld is the largest that fits this geometry\n", size_flag, fit);
+    else
+        fprintf(stderr, "no %s fits this geometry\n", size_flag);
 }
 
 /* Byte pointer to PE i's slot within a pimid_devorg_alloc buffer. */

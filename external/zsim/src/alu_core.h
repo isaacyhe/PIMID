@@ -37,6 +37,7 @@
 // When a PEMemoryInterface is wired (mi_ != nullptr), remote memory accesses
 // traverse the in-memory network hierarchy for realistic NoC latency.
 
+#include <cmath>
 #include "core.h"
 #include "memory_hierarchy.h"
 #include "pad.h"
@@ -80,6 +81,29 @@ class ALUCore : public Core {
         // PE memory interface (nullptr = simple model only, no hierarchy)
         PEMemoryInterface* mi_;
         uint32_t srcId_;           // global core index for MemReq.srcId
+        /* 1.11.94 (H04 x05-zsim-cores-2): fractional carries. The compute
+         * cost instrs*computeFactor*steps/throughputFactor and the per-access
+         * accessFactor are real-valued; each used to be truncated to an
+         * integer per charge with no remainder kept, so a block (or access)
+         * costing below one cycle was free (lanes 8 / throughput_factor 8
+         * with 5-instruction blocks charged 0 against the documented 0.625
+         * per block). The whole-cycle part is charged now and the remainder
+         * in [0,1) carries to the next charge. Separate carries for compute
+         * and access so each documented formula holds on its own. */
+        double computeCarry_ = 0.0;
+        double accessCarry_  = 0.0;
+        inline uint64_t chargeCompute(double cyc) {
+            double acc = computeCarry_ + cyc;
+            double whole = std::floor(acc);
+            computeCarry_ = acc - whole;
+            return (uint64_t)whole;
+        }
+        inline uint64_t chargeAccess() {
+            double acc = accessCarry_ + accessFactor;
+            double whole = std::floor(acc);
+            accessCarry_ = acc - whole;
+            return (uint64_t)whole;
+        }
         volatile bool dmaWindow_ = false;  // staging memcpy in flight: its bulk
                                            // cost is charged on the link, so the
                                            // copy loop charges flat accessFactor

@@ -569,15 +569,7 @@ double STTMRAMModel::getInnerBankWriteLatency() const {
     return mram_arch_->timing.inner_bank.getTotalWriteLatency();
 }
 
-bool STTMRAMModel::supportsBankPIM() const {
-    if (!mram_arch_) return false;
-    return mram_arch_->isSuitableForPIM();
-}
 
-bool STTMRAMModel::supportsMatPIM() const {
-    // STT-MRAM supports mat-level PIM (fast reads, persistent state)
-    return true;
-}
 
 
 /* 1.11.24: STTMRAMModel under the plugin contract. NVM is not DRAM-like: mat,

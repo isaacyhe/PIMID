@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.11.93 LANGUAGES CXX)
+project(PIMID VERSION 1.11.94 LANGUAGES CXX)
 
 # The reported version is taken FROM the project version, so the two cannot
 # drift apart again (see release 1.10.2).
@@ -158,6 +158,7 @@ set(PIMID_SOURCES
     src/memory/reram_model.cpp
     src/memory/ramulator_wrapper.cpp
     src/memory/cacti_wrapper.cpp
+    src/params/part_records.cpp
     src/memory/nvsim_wrapper.cpp
 
     # PIM extensions
@@ -198,7 +199,6 @@ set(PIMID_SOURCES
 
     # Network - NEW PATHS
     src/network/network_model.cpp
-    src/network/garnet_detailed.cpp
     src/network/garnet_wrapper.cpp
 
     # Power - NEW PATHS
@@ -206,7 +206,6 @@ set(PIMID_SOURCES
     src/power/mcpat_model.cpp
     src/power/mcpat_wrapper.cpp
     src/power/cacti_io_wrapper.cpp   # 1.11.40: CACTI-IO harness (audit E19/link scope)
-    src/power/power_model_manager.cpp
 
     # Model registry - NEW PATH
     src/model_registry.cpp
@@ -265,6 +264,11 @@ if(HAVE_CACTI7)
     target_compile_definitions(pimid_lib PRIVATE
         CACTI_DATA_DIR="${PROJECT_SOURCE_DIR}/external/cacti")
 endif()
+
+# 1.11.94: shipped parameter records (params/), located like CACTI's tables:
+# compiled-in source path, overridable at run time with PIMID_PARAMS.
+target_compile_definitions(pimid_lib PRIVATE
+    PIMID_PARAMS_DIR="${PROJECT_SOURCE_DIR}/params")
 
 if(HAVE_NVSIM)
     target_link_libraries(pimid_lib nvsim_ns)  # Namespaced NVSim library

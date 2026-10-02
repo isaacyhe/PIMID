@@ -30,12 +30,36 @@
 #include "memory/dram_architecture_v2.h"
 
 #include <memory>
+#include <cstdlib>
+#include <iostream>
 #include <string>
 #include <cmath>
 #include <iostream>   // 1.11.57 (latent D061): refusals are announced, not silent
 
 namespace pimid {
 namespace memory {
+
+/* 1.11.94 (sweep-94 row 3, user ruling 2026-10-01): the geometry of an array
+ * is what the tool BUILT. When CACTI or NVSim reports zero for a field, it did
+ * not build that level, and there is nothing to compute from: the run refuses,
+ * naming the tool, the field and the geometry asked for. The nineteen literal
+ * fallbacks that used to stand in (1/1/4/512/256 subarray shapes, 64/32/16
+ * banks, 8/16/2 MB chips, 64/8/64/64-bit DRAM buses, a DDR4-2400 clock for
+ * any technology) are gone. Freedom lives at the INPUTS to the tool (capacity,
+ * banks, associativity, line, node, subarray height) or in a complete user
+ * part record; single-field patches of a tool-built result are not allowed.
+ * Exits directly so that no caller's catch block can turn this into a
+ * silent substitution. */
+[[noreturn]] inline void refuseGeometry(const char* tool, const char* field,
+                                        const std::string& geometry, const char* inputs) {
+    std::cerr << "\n[extract] FATAL: " << tool << " reported no " << field << " for "
+              << geometry << ".\n"
+                 "  The tier ladder and the array model need that value, and the simulator no "
+                 "longer substitutes a literal for it (1.11.94). Change the array's inputs ("
+              << inputs << ") to a geometry the tool builds, or supply a complete part record."
+              << std::endl;
+    std::exit(2);
+}
 
 //=============================================================================
 // SRAM Architecture Extraction from CACTI 7.0
@@ -83,8 +107,10 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     uint32_t mats_per_subbank = cacti_wrapper.getActiveMatsPerAccess();
     uint32_t subbanks_per_bank = cacti_wrapper.getSubbanksPerBank();
 
-    arch->organization.subbanks_per_bank = subbanks_per_bank > 0 ? subbanks_per_bank : 1;
-    arch->organization.mats_per_subbank = mats_per_subbank > 0 ? mats_per_subbank : 1;
+    if (subbanks_per_bank == 0) refuseGeometry("CACTI", "subbank count per bank", "the SRAM bank", "capacity, banks, line size, node");
+    if (mats_per_subbank == 0) refuseGeometry("CACTI", "mat count per subbank", "the SRAM bank", "capacity, banks, line size, node");
+    arch->organization.subbanks_per_bank = subbanks_per_bank;
+    arch->organization.mats_per_subbank = mats_per_subbank;
 
     // Mat grid: one row of mats per subbank, the subbanks stacked
     arch->organization.mats_per_bank_rows = arch->organization.subbanks_per_bank;
@@ -99,15 +125,16 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->organization.mat_size_kb = arch->organization.bank_size_kb /
                                       arch->organization.getMatsPerBank();
 
-    arch->organization.subarrays_per_mat = subarrays_per_mat > 0 ? subarrays_per_mat : 4;
+    if (subarrays_per_mat == 0) refuseGeometry("CACTI", "subarray count per mat", "the SRAM bank", "capacity, banks, line size, node");
+    arch->organization.subarrays_per_mat = subarrays_per_mat;
     arch->organization.subarray_size_kb = arch->organization.mat_size_kb /
                                            arch->organization.subarrays_per_mat;
 
     arch->organization.rows_per_subarray = cacti_wrapper.getSubarrayRows();
     arch->organization.cols_per_subarray = cacti_wrapper.getSubarrayCols();
 
-    if (arch->organization.rows_per_subarray == 0) arch->organization.rows_per_subarray = 512;
-    if (arch->organization.cols_per_subarray == 0) arch->organization.cols_per_subarray = 256;
+    if (arch->organization.rows_per_subarray == 0) refuseGeometry("CACTI", "rows per subarray", "the SRAM bank", "capacity, banks, line size, node");
+    if (arch->organization.cols_per_subarray == 0) refuseGeometry("CACTI", "columns per subarray", "the SRAM bank", "capacity, banks, line size, node");
 
     // ===== TIMING (from CACTI 7.0 extraction) =====
     arch->timing.clock_freq_ghz = clock_freq_ghz;
@@ -168,7 +195,7 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->timing.inner_bank.wordline_ns = cacti_wrapper.getWordlineDelay() * 1e9;
     arch->timing.inner_bank.bitline_ns = cacti_wrapper.getBitlineDelay() * 1e9;
     arch->timing.inner_bank.sense_amp_ns = cacti_wrapper.getSenseAmpDelay() * 1e9;
-    arch->timing.inner_bank.column_mux_ns = 0.15;  // Not directly available, use typical
+    arch->timing.inner_bank.column_mux_ns = cacti_wrapper.getColumnMuxDelay() * 1e9;   // 1.11.94: CACTI's mux decoders (was the literal 0.15 ns)
     arch->timing.inner_bank.subarray_output_drv_ns = cacti_wrapper.getSubarrayOutputDelay() * 1e9;
 
     // H-tree delay (split into horizontal/vertical)
@@ -176,8 +203,16 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->timing.inner_bank.htree_horizontal_ns = htree_total / 2.0;
     arch->timing.inner_bank.htree_vertical_ns = htree_total / 2.0;
 
-    // Local/global I/O (estimate from total)
-    double remaining = arch->timing.subbank_access_ns -
+    /* 1.11.94: the residual is taken against CACTI's FULL access time (the
+     * bank figure), which is the number that contains the route-to-bank and
+     * I/O stages. It used to be taken against subbank_access_ns, which is the
+     * sum of the very components subtracted here, so it was negative by
+     * construction (by the literal column mux plus the H-tree) and three more
+     * literals (0.2/0.3/0.15 ns) were then written in. The 0.4/0.4/0.2 split
+     * of the residual over local I/O, global I/O and the bank output driver
+     * is an assumption, stamped INFERRED below; these fields are printed,
+     * not consumed by the timing or energy models. */
+    double remaining = arch->timing.bank_access_ns -
                        arch->timing.inner_bank.getRowPath() -
                        arch->timing.inner_bank.getColumnPath() -
                        htree_total;
@@ -185,9 +220,11 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->timing.inner_bank.global_io_ns = remaining * 0.4;
     arch->timing.inner_bank.bank_output_drv_ns = remaining * 0.2;
 
-    if (arch->timing.inner_bank.local_io_ns < 0) arch->timing.inner_bank.local_io_ns = 0.2;
-    if (arch->timing.inner_bank.global_io_ns < 0) arch->timing.inner_bank.global_io_ns = 0.3;
-    if (arch->timing.inner_bank.bank_output_drv_ns < 0) arch->timing.inner_bank.bank_output_drv_ns = 0.15;
+    /* A negative residual means the extracted components exceed CACTI's own
+     * total: an inconsistent extraction, refused rather than patched. */
+    if (remaining < 0.0)
+        refuseGeometry("CACTI", "consistent timing breakdown (the component delays exceed its access time)",
+                       "the SRAM bank", "capacity, banks, line size, node");
 
     /* 1.11.23: see the STT-MRAM block -- the component delays are tool-read,
      * the local/global I/O and output-driver terms are not, so the block is
@@ -254,7 +291,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
 
     // ===== ORGANIZATION =====
     int num_banks = nvsim_wrapper.getNumBanks();
-    if (num_banks == 0) num_banks = 64;  // Default
+    if (num_banks == 0) refuseGeometry("NVSim", "bank count", "the STT-MRAM array", "capacity, banks, word width, node");
     arch->organization.banks_per_chip = num_banks;
 
     // Estimate grid organization (approximate square)
@@ -263,7 +300,8 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->organization.bank_cols = num_banks / arch->organization.bank_rows;
 
     size_t chip_mb = config.capacity_bytes / (1024 * 1024);
-    arch->organization.chip_size_mb = chip_mb > 0 ? chip_mb : 8;
+    if (chip_mb == 0) refuseGeometry("the configuration", "a capacity of at least 1 MB", "the STT-MRAM array", "capacity");
+    arch->organization.chip_size_mb = chip_mb;
     arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
 
     /* 1.11.73: the tier below the bank is NVSim's MAT (numRowMat x
@@ -280,9 +318,9 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->organization.bitlines_per_subarray = nvsim_wrapper.getSubarrayCols();
 
     if (arch->organization.wordlines_per_subarray == 0)
-        arch->organization.wordlines_per_subarray = 512;
+        refuseGeometry("NVSim", "wordlines per subarray", "the STT-MRAM array", "capacity, banks, word width, node");
     if (arch->organization.bitlines_per_subarray == 0)
-        arch->organization.bitlines_per_subarray = 256;
+        refuseGeometry("NVSim", "bitlines per subarray", "the STT-MRAM array", "capacity, banks, word width, node");
 
     // ===== TIMING (EXTRACTED from NVSim!) =====
     arch->timing.clock_freq_ghz = clock_freq_ghz;
@@ -406,7 +444,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
 
     // Per-byte energy
     double bytes_per_access = config.word_width_bits / 8.0;
-    if (bytes_per_access <= 0) bytes_per_access = 8.0;
+    if (bytes_per_access <= 0) refuseGeometry("the configuration", "a word width", "the STT-MRAM array", "word width");
     arch->energy.read_energy_per_byte = arch->energy.bank_read_energy_pJ / bytes_per_access;
     arch->energy.write_energy_per_byte = arch->energy.bank_write_energy_pJ / bytes_per_access;
 
@@ -576,7 +614,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
 
     // ===== ORGANIZATION =====
     int num_banks = nvsim_wrapper.getNumBanks();
-    if (num_banks == 0) num_banks = 32;  // PCM default
+    if (num_banks == 0) refuseGeometry("NVSim", "bank count", "the PCM array", "capacity, banks, word width, node");
     arch->organization.banks_per_chip = num_banks;
 
     // Estimate grid organization
@@ -585,7 +623,8 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->organization.bank_cols = num_banks / arch->organization.bank_rows;
 
     size_t chip_mb = config.capacity_bytes / (1024 * 1024);
-    arch->organization.chip_size_mb = chip_mb > 0 ? chip_mb : 16;
+    if (chip_mb == 0) refuseGeometry("the configuration", "a capacity of at least 1 MB", "the PCM array", "capacity");
+    arch->organization.chip_size_mb = chip_mb;
     arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
 
     /* 1.11.73: NVSim's mat count, cached; 0 = UNKNOWN from an older cache
@@ -598,8 +637,8 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->organization.wordlines_per_mat = nvsim_wrapper.getSubarrayRows();
     arch->organization.bitlines_per_mat = nvsim_wrapper.getSubarrayCols();
 
-    if (arch->organization.wordlines_per_mat == 0) arch->organization.wordlines_per_mat = 1024;
-    if (arch->organization.bitlines_per_mat == 0) arch->organization.bitlines_per_mat = 1024;
+    if (arch->organization.wordlines_per_mat == 0) refuseGeometry("NVSim", "wordlines per mat", "the PCM array", "capacity, banks, word width, node");
+    if (arch->organization.bitlines_per_mat == 0) refuseGeometry("NVSim", "bitlines per mat", "the PCM array", "capacity, banks, word width, node");
 
     // ===== TIMING (EXTRACTED from NVSim!) =====
     arch->timing.clock_freq_ghz = clock_freq_ghz;
@@ -766,7 +805,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
 
     // Per-byte energy
     double bytes_per_access = config.word_width_bits / 8.0;
-    if (bytes_per_access <= 0) bytes_per_access = 8.0;
+    if (bytes_per_access <= 0) refuseGeometry("the configuration", "a word width", "the STT-MRAM array", "word width");
     arch->energy.read_energy_per_byte = arch->energy.bank_read_energy_pJ / bytes_per_access;
     /* Average of SET and RESET for write energy -- an EQUAL-WEIGHT mean over a
      * mix nothing in this tree measures, and it inherits the asserted 0.55
@@ -779,8 +818,10 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
      * directly now. The field stays because it is part of the PCMArchitecture
      * description; anyone who picks it up should know it is a mean over an
      * unmeasured mix, not a characterization. */
-    arch->energy.write_energy_per_byte = (arch->energy.bank_set_energy_pJ * 0.5 +
-                                           arch->energy.bank_reset_energy_pJ * 0.5) / bytes_per_access;
+    /* 1.11.94 (sweep-94 row 24 / R1967): the 50/50 SET/RESET mean is gone --
+     * nothing read it (PCMModel charges the SET energy directly since 1.11.60)
+     * and it was a mean over an unmeasured mix. The field stays unset (0). */
+    arch->energy.write_energy_per_byte = 0.0;
 
     // Leakage
     /* 1.11.57 (latent D059): no second division -- getSenseAmpLeakage() is
@@ -881,7 +922,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
 
     // ===== ORGANIZATION =====
     int num_banks = nvsim_wrapper.getNumBanks();
-    if (num_banks == 0) num_banks = 16;  // ReRAM default
+    if (num_banks == 0) refuseGeometry("NVSim", "bank count", "the ReRAM array", "capacity, banks, word width, node");
     arch->organization.banks_per_chip = num_banks;
 
     // Estimate grid organization
@@ -890,7 +931,8 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->organization.bank_cols = num_banks / arch->organization.bank_rows;
 
     size_t chip_mb = config.capacity_bytes / (1024 * 1024);
-    arch->organization.chip_size_mb = chip_mb > 0 ? chip_mb : 2;
+    if (chip_mb == 0) refuseGeometry("the configuration", "a capacity of at least 1 MB", "the ReRAM array", "capacity");
+    arch->organization.chip_size_mb = chip_mb;
     arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
 
     /* 1.11.73: the tier below the bank is NVSim's MAT (numRowMat x
@@ -907,8 +949,8 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->organization.crossbar_rows = nvsim_wrapper.getSubarrayRows();
     arch->organization.crossbar_cols = nvsim_wrapper.getSubarrayCols();
 
-    if (arch->organization.crossbar_rows == 0) arch->organization.crossbar_rows = 256;
-    if (arch->organization.crossbar_cols == 0) arch->organization.crossbar_cols = 256;
+    if (arch->organization.crossbar_rows == 0) refuseGeometry("NVSim", "crossbar rows", "the ReRAM array", "capacity, banks, word width, node");
+    if (arch->organization.crossbar_cols == 0) refuseGeometry("NVSim", "crossbar columns", "the ReRAM array", "capacity, banks, word width, node");
 
     // ===== TIMING (EXTRACTED from NVSim!) =====
     arch->timing.clock_freq_ghz = clock_freq_ghz;
@@ -1037,7 +1079,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
 
     // Per-byte energy
     double bytes_per_access = config.word_width_bits / 8.0;
-    if (bytes_per_access <= 0) bytes_per_access = 8.0;
+    if (bytes_per_access <= 0) refuseGeometry("the configuration", "a word width", "the STT-MRAM array", "word width");
     arch->energy.read_energy_per_byte = arch->energy.bank_read_energy_pJ / bytes_per_access;
     arch->energy.write_energy_per_byte = arch->energy.bank_write_energy_pJ / bytes_per_access;
 
@@ -1178,23 +1220,20 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
      * mis-stamps corrected beside it: a value presented as extracted from a
      * tool that was never asked. The VALUE is unchanged; only the claim is. */
     int prefetch_bits = ramulator_wrapper.getSubarrayPortBits();
-    bool prefetch_sourced = (prefetch_bits > 0);
-    if (!prefetch_sourced) prefetch_bits = 64;
+    const bool prefetch_sourced = (prefetch_bits > 0);
+    if (!prefetch_sourced) refuseGeometry("the DRAM architecture object", "a GSA datapath width", "the DRAM subarray tier", "technology, device width");
     arch->datapath.prefetch_datapath_bits = {
         prefetch_bits,
         VerificationStatus::INFERRED,
-        prefetch_sourced
-            ? "The architecture object's GSA datapath width (getSubarrayPortBits); "
-              "NOT a Ramulator prefetch setting -- no prefetch configuration is "
-              "consulted on this path"
-            : "ASSERTED 64 bits: the architecture object reported no GSA datapath "
-              "width and no prefetch configuration is consulted here",
+        "The architecture object's GSA datapath width (getSubarrayPortBits); "
+        "NOT a Ramulator prefetch setting -- no prefetch configuration is "
+        "consulted on this path (1.11.94: a missing width refuses, no 64-bit stand-in)",
         "Prefetch buffer width (GSA-derived)"
     };
 
     // Bank serialization (critical for PIM!)
     int bank_bits = ramulator_wrapper.getBankPortBits();
-    if (bank_bits <= 0) bank_bits = 8;  // Conservative default
+    if (bank_bits <= 0) refuseGeometry("the DRAM architecture object", "a bank port width", "the DRAM bank tier", "technology, device width");
     arch->datapath.bank_serialization_bits = {
         bank_bits,
         VerificationStatus::INFERRED,
@@ -1233,7 +1272,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
 
     // Rank databus
     int rank_bits = ramulator_wrapper.getRankDataBits();
-    if (rank_bits <= 0) rank_bits = 64;
+    if (rank_bits <= 0) refuseGeometry("the DRAM architecture object", "a rank data-bus width", "the DRAM rank tier", "technology, device width");
     arch->datapath.rank_databus_bits = {
         rank_bits,
         VerificationStatus::VERIFIED,
@@ -1255,7 +1294,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
 
     // Channel databus
     int channel_bits = ramulator_wrapper.getChannelDataBits();
-    if (channel_bits <= 0) channel_bits = 64;
+    if (channel_bits <= 0) refuseGeometry("the DRAM architecture object", "a channel data-bus width", "the DRAM channel tier", "technology, device width");
     arch->datapath.channel_databus_bits = {
         channel_bits,
         VerificationStatus::VERIFIED,
@@ -1270,8 +1309,10 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
         arch->timing.clock_freq_mhz = existing_arch->timing.clock_freq_mhz;
         arch->timing.data_rate_mtps = existing_arch->timing.data_rate_mtps;
     } else {
-        arch->timing.clock_freq_mhz = 1200.0;  // Default DDR4-2400
-        arch->timing.data_rate_mtps = 2400.0;
+        /* 1.11.94: since 1.11.56 the architecture object is the authority for
+         * the clock and the rate; a run reaching here without one used to be
+         * stamped DDR4-2400 whatever its technology. Refuse instead. */
+        refuseGeometry("the DRAM architecture object", "a clock and data rate", "the DRAM technology", "technology, device width");
     }
 
     // JEDEC timing parameters from Ramulator

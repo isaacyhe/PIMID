@@ -66,7 +66,10 @@ run_one() {
     outdir=$(mktemp -d /tmp/pimid_parsec_XXXXXX)
 
     local rc=0
-    if $PIMID_BIN --method "$METHOD" --config "$yaml" --output "$outdir" --no-power \
+    # 1.11.94 (b03-suites-b-1, ruling H42): pimid has no --output option; it
+    # rejected the flag ('Unknown option: --output', rc=1), so every run failed.
+    # pimid's own exit status decides PASS; its output goes to $outdir.
+    if $PIMID_BIN --method "$METHOD" --config "$yaml" --no-power \
         >"$outdir/stdout.log" 2>"$outdir/stderr.log"; then
         echo "$(green PASS)"
         PASS=$((PASS + 1))

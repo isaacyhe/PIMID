@@ -571,15 +571,7 @@ bool ReRAMModel::supportsAnalogCompute() const {
     return reram_arch_->hasAnalogCompute();
 }
 
-bool ReRAMModel::supportsBankPIM() const {
-    if (!reram_arch_) return false;
-    return reram_arch_->isSuitableForPIM();
-}
 
-bool ReRAMModel::supportsMatPIM() const {
-    // ReRAM supports mat-level PIM, especially for analog compute!
-    return true;
-}
 
 //=============================================================================
 // NVSim Integration (NEW!)

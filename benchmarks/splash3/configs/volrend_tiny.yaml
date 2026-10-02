@@ -15,6 +15,6 @@ memory:
   technology: SRAM
 noc:
   topology: MESH_2D
-  model: simple
+  model: analytical
 simulation:
   max_instructions: 1000000

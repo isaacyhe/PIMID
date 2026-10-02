@@ -254,11 +254,18 @@ struct GlobSimInfo {
         // standalone device-scope result. 0 => fall back to zinfo->freqMHz
         // (legacy / non-system paths where freqMHz already IS the device clock).
         uint32_t nocBandwidthFreqMHz = 0;
-        uint32_t levelLatency[7] = {};
-        uint32_t bridgeLatency[6] = {};
+        /* 1.11.94 (review H17, user: "isn't host mc also a level of placements?"):
+         * HOST_MC is the TOP RUNG, index 7 -- the PE beside the host memory
+         * controller reaches the DRAM through the channel the way the host does.
+         * levelLatency[7] carries the host-path split (fabric + coherence +
+         * controller pipeline + PHY); bridgeLatency[6] joins rung 6 to it. The
+         * old -1 sentinel, read as 0xFFFFFFFF and then used as a signed index,
+         * is gone: zsim refuses a placement above 7. */
+        uint32_t levelLatency[8] = {};
+        uint32_t bridgeLatency[7] = {};
         // Bridge model strings: "auto", "simple", "md1", "detailed"
         // Stored as uint32_t enum: 0=auto, 1=simple, 2=md1, 3=detailed
-        uint32_t bridgeModel[6] = {};  // 0=auto (default)
+        uint32_t bridgeModel[7] = {};  // 0=auto (default); 1.11.94: 7 boundaries incl. system->HOST_MC
 
         // Distributed PE-MI fields
         uint32_t totalUnits = 128;        // total units at placement level

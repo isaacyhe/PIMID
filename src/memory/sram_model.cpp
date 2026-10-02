@@ -448,15 +448,7 @@ double SRAMModel::getInnerBankDatapathLatency() const {
     return sram_arch_->timing.inner_bank.getTotalInnerBank();
 }
 
-bool SRAMModel::supportsBankPIM() const {
-    // SRAM supports bank-level PIM
-    return true;
-}
 
-bool SRAMModel::supportsSubbankPIM() const {
-    // SRAM supports subbank-level PIM (fast local operations)
-    return true;
-}
 
 
 /* 1.11.24: SRAM is NOT DRAM-like -- no bank groups, no ranks, no channels.

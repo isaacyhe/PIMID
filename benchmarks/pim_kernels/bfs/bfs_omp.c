@@ -1,4 +1,4 @@
-/* bfs_omp.c — Breadth-First Search on random graph (adjacency list via CSR)
+/* bfs_omp.c -- Breadth-First Search on random graph (adjacency list via CSR)
  * OpenMP parallel version. Parallel frontier expansion with atomic dist update.
  *
  * Device-organization aware (PIMID): the simulator prices each PE access by
@@ -28,6 +28,14 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of [row][col][dist]. */
+typedef struct { int P; int deg; } bfs_omp_ctx;
+static size_t bfs_omp_need(long v, const void* c) {
+    const bfs_omp_ctx* x = (const bfs_omp_ctx*)c;
+    size_t vpp = (size_t)((v + x->P - 1) / x->P);
+    return ((vpp + 1) + vpp * (size_t)x->deg + vpp) * sizeof(int);
 }
 
 int main(int argc, char* argv[]) {
@@ -65,14 +73,23 @@ int main(int argc, char* argv[]) {
     int vpp = (V + P - 1) / P;                 /* vertices per PE */
     size_t need = ((size_t)(vpp + 1) + (size_t)vpp * deg + (size_t)vpp)
                   * sizeof(int);               /* [row][col][dist] per slot */
+    bfs_omp_ctx need_ctx = { P, deg };
 
     size_t slot_bytes = 0;
     char* base = NULL;
     if (prep) {
+        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+         * is refused; it used to fall back to host layout in silence. */
+        slot_bytes = pimid_devorg_slot_bytes(&dev);
+        if (need > slot_bytes) {
+            pimid_devorg_report_slot_refusal("", "bfs", &dev, need, slot_bytes, "--vertices",
+                pimid_devorg_largest_fit(bfs_omp_need, &need_ctx, V, slot_bytes));
+            return 1;
+        }
         base = (char*)pimid_devorg_alloc(&dev, &slot_bytes);
-        if (!base || need > slot_bytes) {
-            fprintf(stderr, "devorg: per-PE need %zu > slot %zu (or alloc fail); "
-                            "running host-layout (no prep)\n", need, slot_bytes);
+        if (!base) {
+            fprintf(stderr, "devorg: alloc of the device buffer failed; "
+                            "running host-layout (no prep)\n");
             prep = 0;
         }
     }

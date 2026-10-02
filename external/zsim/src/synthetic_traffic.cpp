@@ -59,6 +59,7 @@ int zsim_synthetic_traffic_ex(const char* topology, const char* routing,
 
     if (outResult) {
         outResult->totalPackets = result.totalPackets;
+        outResult->routerFlitTraversals = result.routerFlitTraversals;   // 1.11.94 (H25)
         outResult->totalLatency = result.totalLatency;
         outResult->avgLatency = result.avgLatency;
         outResult->throughput = result.throughput;

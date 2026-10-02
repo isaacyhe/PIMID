@@ -400,7 +400,8 @@ static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1
 static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
                                 int baseline_device, int temp_k,
                                 double& fa, double& fd, double& fl,
-                                double& fg) {   // 1.11.54 (E004): gate-leakage ratio
+                                double& fg,     // 1.11.54 (E004): gate-leakage ratio
+                                int leakage_device = 4) {   // 1.11.94 (item 1): column for fl/fg; 4 = comm-dram
     double lp_d[5], cg_d[5], cf_d[5], vd_d[5], io_d[5];   // DRAM table
     double lp_l[5], cg_l[5], cf_l[5], vd_l[5], io_l[5];   // logic table
     if (!cactiRow(dram_table_nm, "-l_phy", lp_d) ||
@@ -413,6 +414,7 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
         !cactiRow(logic_node_nm, "-Vdd", vd_l)) return false;
     if (baseline_device < 0 || baseline_device > 4) return false;
     const int B = baseline_device, CD = 4;
+    const int LD = (leakage_device >= 0 && leakage_device <= 4) ? leakage_device : CD;   // 1.11.94: leakage column (area/dynamic keep comm-dram)
     if (!(vd_l[B] > 0.0) || !(lp_l[B] > 0.0)) return false;   // column unpopulated
     if (!(vd_d[CD] > 0.0) || !(lp_d[CD] > 0.0)) return false;
 
@@ -441,7 +443,9 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
     if (!cactiRow(dram_table_nm, "-I_off_n", io_d, t_row)) return false;
     if (!cactiRow(logic_node_nm, "-I_off_n", io_l, t_row)) return false;
     if (!(io_l[B] > 0.0)) return false;
-    fl = (io_d[CD] / io_l[B]) * vr;
+    if (!(io_d[LD] > 0.0) || !(vd_d[LD] > 0.0)) return false;   // 1.11.94: an unpopulated column refuses
+    const double vr_l = vd_d[LD] / vd_l[B];
+    fl = (io_d[LD] / io_l[B]) * vr_l;
     /* 1.11.54 (audit E004): GATE leakage gets its OWN ratio. The transform
      * scaled gate leakage by fl -- a SUBTHRESHOLD ratio derived from the
      * I_off_n rows -- but gate leakage is oxide tunnelling, which McPAT
@@ -455,8 +459,8 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
     double ig_d[5], ig_l[5];
     if (cactiRow(dram_table_nm, "-I_g_on_n", ig_d, t_row) &&
         cactiRow(logic_node_nm, "-I_g_on_n", ig_l, t_row) &&
-        ig_l[B] > 0.0 && ig_d[CD] > 0.0) {
-        fg = (ig_d[CD] / ig_l[B]) * vr;
+        ig_l[B] > 0.0 && ig_d[LD] > 0.0) {
+        fg = (ig_d[LD] / ig_l[B]) * vr_l;
     } else {
         /* MEASURED 1.11.54: CACTI tabulates NO gate-leakage current for the
          * DRAM device columns -- I_g_on_n is 0 for both lp-dram and comm-dram
@@ -493,9 +497,10 @@ bool McPATWrapper::periphFactorsFor(int dram_table_nm, int logic_node_nm,
 static void periphFamilyFactorsCfg(int table_nm, int logic_node_nm,
                                    int baseline_device, int temp_k,
                                    double& fa, double& fd, double& fl,
-                                   double& fg) {   // 1.11.54 (E004)
+                                   double& fg,     // 1.11.54 (E004)
+                                   int leakage_device = 4) {   // 1.11.94 (item 1)
     if (!periphFamilyFactors(table_nm, logic_node_nm, baseline_device,
-                             temp_k, fa, fd, fl, fg)) {
+                             temp_k, fa, fd, fl, fg, leakage_device)) {
         std::cerr << "[power] FATAL: cannot derive the DRAM-periphery factors"
                   << " (comm-dram from " << table_nm << "nm.dat / baseline"
                   << " device " << baseline_device << " from "
@@ -1117,6 +1122,8 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.dram_periph_table_nm);
     f(static_cast<int>(config_.mc_phy_tier));
     f(config_.device_type);       f(config_.longer_channel_device);
+    f(config_.periphery_leakage_device);   // 1.11.94: part of the priced identity
+    f(config_.arch_int_regs);     f(config_.arch_fp_regs);
     f(config_.number_hardware_threads);
     f(config_.interconnect_projection_type);
     /* Only an externally supplied XML is an INPUT; a generated one is an
@@ -1368,7 +1375,8 @@ void McPATWrapper::computePower() {
                                            config_.tech_node_nm,
                                            config_.device_type,
                                            config_.temperature_k,
-                                           faW, fdW, flW, fgW);
+                                           faW, fdW, flW, fgW,
+                                           config_.periphery_leakage_device);   // 1.11.94
                     (void)faW; (void)fgW;
                 }
                 auto wf = [&](const Component* p, const char* label) -> double {
@@ -1905,8 +1913,9 @@ void McPATWrapper::extractResults() {
         const double r_sc = pg_spec_.have_shared_cache ? pg_spec_.r_shared_cache
                                                        : pg_spec_.r_core;
         if (pg_spec_.pg_core) applyPG(ComponentType::CORE, pg_spec_.r_core);
-        if (pg_spec_.pg_core) applyPG(ComponentType::L2_CACHE, r_sc);
-        if (pg_spec_.pg_core) applyPG(ComponentType::L3_CACHE, r_sc);
+        const bool pg_cache = pg_spec_.pg_cache_set ? pg_spec_.pg_cache : pg_spec_.pg_core;   // 1.11.94 (row 20)
+        if (pg_cache) applyPG(ComponentType::L2_CACHE, r_sc);
+        if (pg_cache) applyPG(ComponentType::L3_CACHE, r_sc);
         if (pg_spec_.pg_noc) {
             double s = applyPG(ComponentType::NOC, pg_spec_.r_noc);
             /* 1.11.16: the per-level NoC breakdown must ride the same scale
@@ -2628,7 +2637,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         double fg = 1.0;   // 1.11.54 (E004): gate-leakage ratio, emitted below
         periphFamilyFactorsCfg(config_.dram_periph_table_nm,
                                config_.tech_node_nm, config_.device_type,
-                               config_.temperature_k, fa, fd, fl, fg);
+                               config_.temperature_k, fa, fd, fl, fg,
+                               config_.periphery_leakage_device);   // 1.11.94 (item 1 knob)
         double pitch = (config_.subarray_pitch_factor > 0.0)
                            ? config_.subarray_pitch_factor : 1.0;
         xml << "    <param name=\"dram_periph_family\" value=\"1\"/>\n";
@@ -2795,8 +2805,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <param name=\"instruction_window_size\" value=\"" << inst_window_size << "\"/>\n";
         xml << "      <param name=\"fp_instruction_window_size\" value=\"" << fp_inst_window_size << "\"/>\n";
         xml << "      <param name=\"ROB_size\" value=\"" << rob_size << "\"/>\n";
-        xml << "      <param name=\"archi_Regs_IRF_size\" value=\"32\"/>\n";
-        xml << "      <param name=\"archi_Regs_FRF_size\" value=\"32\"/>\n";
+        xml << "      <param name=\"archi_Regs_IRF_size\" value=\"" << config_.arch_int_regs << "\"/>\n";   // 1.11.94 (row 20 (a))
+        xml << "      <param name=\"archi_Regs_FRF_size\" value=\"" << config_.arch_fp_regs << "\"/>\n";
         xml << "      <param name=\"phy_Regs_IRF_size\" value=\"" << phy_regs_irf << "\"/>\n";
         xml << "      <param name=\"phy_Regs_FRF_size\" value=\"" << phy_regs_frf << "\"/>\n";
         xml << "      <param name=\"rename_scheme\" value=\"" << rename_scheme << "\"/>\n";
@@ -2990,13 +3000,19 @@ std::string McPATWrapper::generateXMLConfig() const {
                 }
             }
             if (!census_ok) {
-                /* Full fraction fallback: the BRANCH class reverts too -- a
-                 * census that disagrees with retirement by >5% is not trusted
-                 * for any of its classes. */
-                br_all  = pre_br;
-                nonbr        = inst_all - br_all;
-                int_all = pre_int;
-                fp_all  = pre_fp;
+                /* 1.11.94 (sweep-94 row 21, user: "measured or refuse"): a census
+                 * that disagrees with retirement by more than 5% is a broken
+                 * measurement, and the 87.5/12.5 fractions it used to fall back
+                 * to describe no workload of ours. Refuse, naming the deficit. */
+                std::cerr << "\n[Activity] FATAL: the instruction-mix census covers "
+                          << classified << " of " << inst_all << " retired instructions (all cores); "
+                          << (inst_all - classified) << " are in NO class, above the 5% tolerance. "
+                             "The mix prices every ALU/FPU/predictor access, and the run no longer "
+                             "substitutes documented fractions for a measurement it cannot trust (1.11.94). "
+                             "This is a timing-model census defect for this workload; report it with the "
+                             "zsim.out of this run." << std::endl;
+                (void)pre_br; (void)pre_int; (void)pre_fp;
+                std::exit(2);
             } else if (mi + mf > nonbr) {
                 /* More classified instructions than retired ones means the two
                  * counters are on different bases -- the 1.9.28/1.11.9 defect

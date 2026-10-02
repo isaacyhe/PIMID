@@ -11,6 +11,16 @@
  *
  * The dateline cut is between node (N-1) and node 0.  Each RingRouter
  * is told which of its outports (if any) crosses the dateline.
+ *
+ * 1.11.94 (x03-garnet-custom-1, ruling H35): the same router also builds
+ * TORUS_2D. A torus under dimension-order routing is one ring per row
+ * (East/West) and one ring per column (North/South), each with its own
+ * dateline on its wrap link. With setDimensionReset(true) a head flit that
+ * turns from the X rings onto the Y rings restarts in class 0: DOR never
+ * turns back from Y to X, so the X->Y dependency is acyclic and each ring
+ * only needs its own dateline (Dally and Towles, "Principles and Practices
+ * of Interconnection Networks", sec. 14.2, dateline per dimension). The RING
+ * topology does not set the flag, so its allocation is unchanged.
  */
 
 #ifndef __MEM_RUBY_NETWORK_GARNET_0_RINGROUTER_HH__
@@ -38,6 +48,16 @@ class RingRouter : public Router {
     // Called by TopologyBuilders::buildRing() after link creation.
     void addDatelineOutport(int outport) { m_dateline_outports.push_back(outport); }
 
+    // 1.11.94 (H35): mark the outport(s) named `dirn` as crossing the
+    // dateline. Resolved to outport indices in init(), once the links exist,
+    // so the builder does not have to predict port numbering.
+    void addDatelineDirection(const PortDirection& dirn)
+    { m_dateline_dirns.push_back(dirn); }
+
+    // 1.11.94 (H35): restart in class 0 when a head flit changes dimension
+    // (East/West <-> North/South). Set by the TORUS_2D builder only.
+    void setDimensionReset(bool on) { m_dimension_reset = on; }
+
   private:
     // SA-I: per-input VC selection (standard)
     void arbitrate_inports();
@@ -57,8 +77,14 @@ class RingRouter : public Router {
     void getClassRange(int vnet, int vc_class,      // [lo, hi)
                        int &lo, int &hi) const;
 
+    // 1.11.94 (H35): the VC class a head flit must be allocated in.
+    int targetClass(int inport, int invc, int outport);
+    static int dimensionOf(const PortDirection& dirn);
+
     // Which outports cross the dateline (typically 1 or 2: CW and/or CCW)
     std::vector<int> m_dateline_outports;
+    std::vector<PortDirection> m_dateline_dirns;
+    bool m_dimension_reset = false;
 
     // Per-input request state (SA-I → SA-II)
     std::vector<int> m_port_requests;
