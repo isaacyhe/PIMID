@@ -405,6 +405,17 @@ public:
         uint64_t l1d_size_bytes;
         uint64_t l2_size_bytes;
         uint64_t l3_size_bytes;
+        /* 1.11.95 (review l03-config-flow-9, R2): the geometry McPAT prices
+         * each level with -- associativity, line, bank count and hit latency
+         * (cycles at the core clock) -- from the cache record, the config and
+         * the same CACTI query the timing model uses. Until 1.11.94 the XML
+         * carried literals (8/8/16 ways, 64 B, 1/8/16 banks, 3/23/23 cycles)
+         * whatever the run built. The defaults below ARE those literals, so a
+         * caller that does not fill them prices as before. */
+        int l1i_ways = 8, l1d_ways = 8, l2_ways = 8, l3_ways = 16;
+        int cache_line_bytes = 64;
+        int l1i_banks = 1, l1d_banks = 1, l2_banks = 8, l3_banks = 16;
+        int l1i_latency_cycles = 3, l1d_latency_cycles = 3, l2_latency_cycles = 23, l3_latency_cycles = 23;
 
         // Memory parameters
         int num_memory_controllers;

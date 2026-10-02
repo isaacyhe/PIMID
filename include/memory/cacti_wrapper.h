@@ -116,6 +116,27 @@ public:
         int obj_func_leakage_power;
         int obj_func_cycle_time;
         int obj_func_area;
+        /* 1.11.95 (sweep-94 row 25 (a), review C4): CACTI's design-space
+         * search is configured the way CACTI ships it (cache.cfg): the
+         * objective 0:0:0:100:0, the DEVIATION vector 20:100000:100000:
+         * 100000:100000 (a candidate may be at most 20% slower than the
+         * fastest one; the other four are unconstrained) and the ED^2
+         * optimisation. The wrapper used to hard-code every deviation to
+         * 100000, so a search that optimised cycle time alone could pick a
+         * design with any access time: a 1 MB single-bank array came back at
+         * 56 ns. Every field below starts from CACTIWrapper::search(), the
+         * process-wide defaults the config sets (cache.cacti.*), so every
+         * query in the run (device arrays, cache latencies, McPAT's own are
+         * separate) searches the same way. */
+        int dev_delay, dev_dynamic_power, dev_leakage_power, dev_cycle_time, dev_area;
+        int ed_mode;                 // 0 = weighted/deviate only, 1 = ED, 2 = ED^2 (CACTI io.cc)
+        /* 1.11.95 (row 25 (b)): CACTI's own power-gating model, EXPOSED
+         * (cache.cacti.power_gating.*), default off as CACTI ships it. When
+         * any of these is on, PIMID's residency-based array gating
+         * (memory.array_pg, 1.11.41) must be off for the same array so the
+         * leakage is not reduced twice; main.cpp refuses the combination. */
+        bool pg_array, pg_bitline_floating, pg_wl, pg_cl, pg_interconnect;
+        double pg_perf_loss;         // CACTI "-Power Gating Performance Loss", shipped 0.01
 
         // Default constructor with sensible defaults
         SRAMConfig()
@@ -141,13 +162,31 @@ public:
             , memory_tech("")       // 1.11.14: empty = not a calibrated DRAM query
             , specific_tag(false)
             , tag_width_bits(0)
-            , obj_func_delay(0)
-            , obj_func_dynamic_power(0)
-            , obj_func_leakage_power(0)
-            , obj_func_cycle_time(100)  // Optimize for cycle time by default
-            , obj_func_area(0)
+            , obj_func_delay(search().obj[0])
+            , obj_func_dynamic_power(search().obj[1])
+            , obj_func_leakage_power(search().obj[2])
+            , obj_func_cycle_time(search().obj[3])   // CACTI cache.cfg: 0:0:0:100:0
+            , obj_func_area(search().obj[4])
+            , dev_delay(search().dev[0]), dev_dynamic_power(search().dev[1]), dev_leakage_power(search().dev[2])
+            , dev_cycle_time(search().dev[3]), dev_area(search().dev[4])
+            , ed_mode(search().ed)
+            , pg_array(search().pg[0]), pg_bitline_floating(search().pg[1]), pg_wl(search().pg[2])
+            , pg_cl(search().pg[3]), pg_interconnect(search().pg[4]), pg_perf_loss(search().pg_perf_loss)
         {}
     };
+
+    /* 1.11.95: the process-wide search settings every SRAMConfig starts
+     * from. The values are CACTI's shipped cache.cfg; the config may replace
+     * them (cache.cacti.objective / deviate / optimize / power_gating). */
+    struct SearchDefaults {
+        int obj[5] = {0, 0, 0, 100, 0};
+        int dev[5] = {20, 100000, 100000, 100000, 100000};
+        int ed = 2;
+        bool pg[5] = {false, false, false, false, false};   // array, bitline floating, wordline, columnline, interconnect
+        double pg_perf_loss = 0.01;
+        bool user_set = false;
+    };
+    static SearchDefaults& search();
 
     explicit CACTIWrapper(const SRAMConfig& config);
     ~CACTIWrapper();

@@ -171,3 +171,73 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
 
 } // namespace params
 } // namespace pimid
+
+
+/* ---- 1.11.95: cache part record ---------------------------------------- */
+namespace pimid { namespace params {
+
+const CacheLevelRecord& CacheRecord::level(const std::string& name) const {
+    if (name == "l1d") return l1d;
+    if (name == "l1i") return l1i;
+    if (name == "l2") return l2;
+    return l3;
+}
+
+int cacheBanksSlice(int size_kb, int slice_mb) {
+    const int slice_kb = std::max(1, slice_mb) * 1024;
+    return std::max(1, std::min(32, size_kb / slice_kb));
+}
+
+static bool loadCacheLevel(const YAML::Node& n, const std::string& name, CacheLevelRecord& out,
+                           const std::string& file, std::string& error) {
+    if (!n || !n.IsMap()) { error = "cache record " + file + ": level '" + name + "' is missing"; return false; }
+    for (const char* f : {"ways", "line_bytes", "banks"}) {
+        if (!n[f]) { error = "cache record " + file + ": level '" + name + "' lacks '" + f + "'"; return false; }
+    }
+    out.ways = n["ways"].as<int>(-1);
+    out.line_bytes = n["line_bytes"].as<int>(-1);
+    const std::string b = n["banks"].as<std::string>("");
+    if (b == "slice") out.banks = -1;
+    else {
+        try { out.banks = std::stoi(b); } catch (...) { out.banks = 0; }
+        if (out.banks < 1 || out.banks > 32) {
+            error = "cache record " + file + ": level '" + name + "' banks '" + b + "' is not 'slice' or an integer in CACTI's range 1..32";
+            return false;
+        }
+    }
+    if (out.ways < 1 || out.ways > 64) { error = "cache record " + file + ": level '" + name + "' ways " + std::to_string(out.ways) + " outside 1..64"; return false; }
+    if (out.line_bytes != 32 && out.line_bytes != 64 && out.line_bytes != 128) { error = "cache record " + file + ": level '" + name + "' line_bytes " + std::to_string(out.line_bytes) + " is not 32, 64 or 128"; return false; }
+    return true;
+}
+
+bool loadCacheRecord(CacheRecord& out, std::string& error) {
+    out = CacheRecord();
+    out.file = paramsDir() + "/cache/default.yaml";
+    std::ifstream probe(out.file);
+    if (!probe.good()) {
+        error = "cache record " + out.file + " is missing. The simulator ships params/cache/default.yaml; set PIMID_PARAMS to a directory that holds cache/default.yaml.";
+        return false;
+    }
+    YAML::Node n;
+    try { n = YAML::LoadFile(out.file); } catch (const std::exception& e) { error = "cache record " + out.file + ": " + e.what(); return false; }
+    if (!n["record"] || !n["slice_mb"] || !n["levels"]) { error = "cache record " + out.file + " lacks 'record', 'slice_mb' or 'levels'"; return false; }
+    out.record = n["record"].as<std::string>("");
+    out.slice_mb = n["slice_mb"].as<int>(0);
+    if (out.slice_mb < 1 || out.slice_mb > 64) { error = "cache record " + out.file + ": slice_mb " + std::to_string(out.slice_mb) + " outside 1..64"; return false; }
+    return loadCacheLevel(n["levels"]["l1d"], "l1d", out.l1d, out.file, error) &&
+           loadCacheLevel(n["levels"]["l1i"], "l1i", out.l1i, out.file, error) &&
+           loadCacheLevel(n["levels"]["l2"], "l2", out.l2, out.file, error) &&
+           loadCacheLevel(n["levels"]["l3"], "l3", out.l3, out.file, error);
+}
+
+std::string describeCacheRecord(const CacheRecord& rec) {
+    std::ostringstream o;
+    auto lv = [&](const char* nm, const CacheLevelRecord& l) {
+        o << nm << " " << l.ways << "-way " << l.line_bytes << " B " << (l.banks > 0 ? std::to_string(l.banks) + " banks" : "slice-rule banks");
+    };
+    o << "[params] cache record " << rec.file << ": " << rec.record << " (slice " << rec.slice_mb << " MB; ";
+    lv("L1D", rec.l1d); o << "; "; lv("L1I", rec.l1i); o << "; "; lv("L2", rec.l2); o << "; "; lv("L3", rec.l3); o << ")";
+    return o.str();
+}
+
+}}  // namespace pimid::params

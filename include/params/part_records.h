@@ -61,6 +61,22 @@ bool crossCheckDramPartRecord(const DramPartRecord& rec, std::vector<std::string
  * in the record file and the code comments). */
 std::string describeDramPartRecord(const DramPartRecord& rec);
 
+/* 1.11.95: the cache part record (params/cache/default.yaml): the geometry
+ * every cache level is built and priced with. banks < 0 = the slice rule. */
+struct CacheLevelRecord { int ways = -1; int line_bytes = -1; int banks = -1; };
+struct CacheRecord {
+    std::string file, record;
+    int slice_mb = 2;
+    CacheLevelRecord l1d, l1i, l2, l3;
+    const CacheLevelRecord& level(const std::string& name) const;   // "l1d" | "l1i" | "l2" | "l3"
+};
+/* Loads params/cache/default.yaml (PIMID_PARAMS honoured); false + error on a
+ * missing file or field, or a value outside its range. */
+bool loadCacheRecord(CacheRecord& out, std::string& error);
+/* The slice rule: clamp(size_kb / (slice_mb * 1024), 1, 32). */
+int cacheBanksSlice(int size_kb, int slice_mb);
+std::string describeCacheRecord(const CacheRecord& rec);
+
 } // namespace params
 } // namespace pimid
 

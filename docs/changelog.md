@@ -7,6 +7,72 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.95 -- the cache search was unconstrained, the bank rule asked CACTI for what it cannot build, and McPAT priced a hierarchy nobody configured
+
+CACHE RELEASE (R2 of `_1166audit/MANIFEST_1.11.94plus.md`; sweep-94 ruling 25,
+review C4, R2 "c with b", l03-config-flow-9). Numbers MOVE on every cell with a
+cache (the 110 cached device cells, the 90 system hosts) and on every SRAM
+device cell; DRAM-only ALU cells do not move (gate 1204A).
+
+**(1) CACTI's design-space search is CACTI's own (row 25 (a), C4).** The
+wrapper hard-coded every deviation to 100000 while optimising cycle time
+alone, so CACTI could return the fastest-cycling design whatever its access
+time: a 1 MB single-bank array came back at 56 ns, the 32 MB L3 at 51 ns on
+123 mm^2. The search now runs as CACTI ships it in `cache.cfg`: objective
+0:0:0:100:0, deviation 20:100000:100000:100000:100000 (a candidate may be at
+most 20% slower than the fastest), ED^2. Measured at 22 nm: the 64 KB SRAM
+unit 2.44 -> 0.77 ns (23 mW); 1 MB x 1 bank 0.86 ns; 32 MB x 16 banks 2.82 ns,
+38.5 mm^2, 400 mW. The search is a knob, `cache.cacti.objective` /
+`.deviate` (five integers in CACTI's order) / `.optimize` (ED2 | ED | NONE),
+printed once per run with its provenance (`[cacti] search: ...`).
+
+**(2) The bank rule (review R2, "c with b").** One bank per 64 KB asked CACTI
+for 512 banks on a 32 MB L3 (its range is 1..32) and every system cell fell
+back to a written-down 20 cycles. The bank count is now a field of the cache
+record (3): an integer, or `slice`, the slice rule banks = clamp(size /
+slice_mb, 1, 32) with slice_mb = 2 (a 32 MB LLC is 16 slices of 2 MB; L1 and
+L2 at or under one slice are one bank). `cache.<level>.banks` and, per node,
+`cache.<level>_banks` override it; every count is checked against CACTI's
+range and refused outside it. The stock co-sim configuration's 32 MB L3 is
+PRICED again (16 banks, 2.8 ns) instead of refusing (1.11.94) or substituting
+(1.11.93).
+
+**(3) The cache part record** `params/cache/default.yaml` (ruling 13-style,
+loaded after the DRAM records, refused when missing or malformed): per level
+the ways, the line and the bank field. Ways default from the record where the
+config does not set them: L1D 8, L1I 4, L2 8, L3 16. The device-scope zsim
+config built a 16-way L2 while McPAT priced it 8-way; one set now (the L2 the
+device builds is 8-way, which moves its hit rate and latency). The record's
+line must equal `system.cache_line_size`.
+
+**(4) McPAT prices the hierarchy the run built (l03-config-flow-9).** The XML
+carried literals for every level (8/8/16 ways, 64 B, 1/8/16 banks, 3/23/23
+cycles) whatever the configuration said. It now carries the ways, line, bank
+count and the hit latency (cycles at the core clock) from the same CACTI query
+the timing model uses, at all three pricing sites (device, dual-McPAT host,
+system node).
+
+**(5) CACTI's power-gating model, exposed (row 25 (b)).**
+`cache.cacti.power_gating.{array, bitline_floating, wordline, columnline,
+interconnect, perf_loss}` reach CACTI's own flags (off as shipped). Any of
+them together with `memory.array_pg` (PIMID's residency gating of the same
+array, 1.11.41) refuses: one leakage is not reduced twice; the search line
+says which model gates.
+
+DATA IMPACT: SRAM device cells: the unit's access time 2.44 -> 0.77 ns moves
+every SRAM timing and energy figure. Cached device cells (in_order / ooo /
+simple), measured on the HBM3 gemv 256 shape at 500 MHz: L1D 2 -> 1 cycle,
+L1I 2 -> 1, L2 4 -> 1 cycle and 16 -> 8 ways (CACTI's ~1.1 ns for a 2 MB
+array is one cycle at a 500 MHz element; the banner prints the cycles and
+the source). System hosts at 2 GHz: the 32 MB L3 priced from CACTI instead
+of 20 cycles; L1/L2 from the constrained search. McPAT cache power and area
+follow the real geometry on every cached cell. Gate 1204A/B: the search
+knob's effect is invisible at 500 MHz elements (every cache rounds to one
+2 ns cycle) and was proved at 4 GHz, where the shipped search gives
+L1D/L1I/L2 2/2/4 cycles and an unconstrained delay-only objective 2/1/3.
+OPEN: the SRAM stream 20000 master-PE observation of 1.11.94 is re-measured
+in R5.
+
 ## 1.11.94 -- the values leave the code: part records, refusals for every placeholder, and the knobs the rulings asked for
 
 PARITY RELEASE (the first of the manifest `_1166audit/MANIFEST_1.11.94plus.md`,

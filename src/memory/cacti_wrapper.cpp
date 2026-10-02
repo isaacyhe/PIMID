@@ -23,6 +23,12 @@ namespace pimid {
 // CACTIWrapper Implementation (WITH CACTI)
 //=============================================================================
 
+/* 1.11.95: process-wide CACTI search settings (see the header). */
+CACTIWrapper::SearchDefaults& CACTIWrapper::search() {
+    static SearchDefaults d;
+    return d;
+}
+
 CACTIWrapper::CACTIWrapper(const SRAMConfig& config)
     : config_(config)
     , cacti_result_(nullptr)
@@ -273,15 +279,26 @@ InputParameter* CACTIWrapper::createCACTIInput(const SRAMConfig& config) {
     input->cycle_time_wt = config.obj_func_cycle_time;
     input->area_wt = config.obj_func_area;
 
-    // Deviation weights
-    input->delay_dev = 100000;
-    input->dynamic_power_dev = 100000;
-    input->leakage_power_dev = 100000;
-    input->cycle_time_dev = 100000;
-    input->area_dev = 100000;
+    // Deviation vector (1.11.95: CACTI's shipped 20:100000:100000:100000:100000 by default; see SRAMConfig)
+    input->delay_dev = config.dev_delay;
+    input->dynamic_power_dev = config.dev_dynamic_power;
+    input->leakage_power_dev = config.dev_leakage_power;
+    input->cycle_time_dev = config.dev_cycle_time;
+    input->area_dev = config.dev_area;
 
     // 1.11.94 (review C4 comment fix): ed = 2 selects ED^2 in CACTI (io.cc), its shipped cache.cfg setting; 0 is weight/deviate
-    input->ed = 2;
+    input->ed = config.ed_mode;
+
+    /* 1.11.95 (row 25 (b)): CACTI's power-gating model, off unless the config
+     * turns a component on. power_gating is CACTI's master flag (any gated
+     * component); perfloss its performance-loss budget. */
+    input->array_power_gated = config.pg_array;
+    input->bitline_floating = config.pg_bitline_floating;
+    input->wl_power_gated = config.pg_wl;
+    input->cl_power_gated = config.pg_cl;
+    input->interconect_power_gated = config.pg_interconnect;
+    input->power_gating = config.pg_array || config.pg_bitline_floating || config.pg_wl || config.pg_cl || config.pg_interconnect;
+    input->perfloss = config.pg_perf_loss;
 
     // NUCA parameters (not used for simple cache)
     input->nuca = 0;

@@ -3248,7 +3248,8 @@ std::string McPATWrapper::generateXMLConfig() const {
             uint64_t l1i_misses_all = l1i_read_misses_;
             xml << "      <component id=\"system.core" << i << ".icache\" name=\"icache\">\n";
             xml << "        <param name=\"icache_config\" value=\"" << config_.l1i_size_bytes
-                << ",64,8,1,1,3,64,0\"/>\n";
+                << "," << config_.cache_line_bytes << "," << config_.l1i_ways << "," << config_.l1i_banks
+                << ",1," << config_.l1i_latency_cycles << ",64,0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,0\"/>\n";
             xml << "        <stat name=\"read_accesses\" value=\"" << l1i_reads_all << "\"/>\n";
             xml << "        <stat name=\"read_misses\" value=\"" << l1i_misses_all << "\"/>\n";
@@ -3262,7 +3263,8 @@ std::string McPATWrapper::generateXMLConfig() const {
             uint64_t l1d_wmisses_all = l1d_write_misses_;
             xml << "      <component id=\"system.core" << i << ".dcache\" name=\"dcache\">\n";
             xml << "        <param name=\"dcache_config\" value=\"" << config_.l1d_size_bytes
-                << ",64,8,1,1,3,64,0\"/>\n";
+                << "," << config_.cache_line_bytes << "," << config_.l1d_ways << "," << config_.l1d_banks
+                << ",1," << config_.l1d_latency_cycles << ",64,0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
             xml << "        <stat name=\"read_accesses\" value=\"" << l1d_reads_all << "\"/>\n";
             xml << "        <stat name=\"write_accesses\" value=\"" << l1d_writes_all << "\"/>\n";
@@ -3349,7 +3351,8 @@ std::string McPATWrapper::generateXMLConfig() const {
             uint64_t l2_wmisses_per = l2_write_misses_ / nl2;
             xml << "    <component id=\"system.L2" << i << "\" name=\"L2" << i << "\">\n";
             xml << "      <param name=\"L2_config\" value=\"" << config_.l2_size_bytes
-                << ",64,8,8,8,23,64,1\"/>\n";
+                << "," << config_.cache_line_bytes << "," << config_.l2_ways << "," << config_.l2_banks
+                << ",8," << config_.l2_latency_cycles << ",64,1\"/>\n";   /* 1.11.95: assoc/banks/latency from the run */
             xml << "      <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
             xml << "      <param name=\"clockrate\" value=\"" << static_cast<int>(config_.core_clock_mhz) << "\"/>\n";
             xml << "      <param name=\"ports\" value=\"1,1,1\"/>\n";
@@ -3396,7 +3399,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         // "32-byte" array and CACTI's ArrayST::error_checking() rejected the geometry
         // (the standalone-L3 failure that forced host LLC to be literature-anchored).
         xml << "      <param name=\"L3_config\" value=\"" << config_.l3_size_bytes
-            << ",64,16,16,16,23,64,1\"/>\n";
+            << "," << config_.cache_line_bytes << "," << config_.l3_ways << "," << config_.l3_banks
+            << ",16," << config_.l3_latency_cycles << ",64,1\"/>\n";   /* 1.11.95: assoc/banks/latency from the run */
         xml << "      <param name=\"clockrate\" value=\"" << static_cast<int>(config_.core_clock_mhz) << "\"/>\n";
         xml << "      <param name=\"ports\" value=\"1,1,1\"/>\n";
         xml << "      <param name=\"device_type\" value=\"" << config_.device_type << "\"/>\n";  /* 1.11.49 (L69) */

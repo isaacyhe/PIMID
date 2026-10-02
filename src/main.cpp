@@ -415,10 +415,45 @@ static int validateTechNodeNm(int node_nm, const char* what);  // 1.11.17: singl
  * access time when CACTI prices the array; the user's latency (override_ns > 0,
  * reported as the user's) when given; otherwise the run REFUSES, naming the
  * cache, the geometry CACTI rejected and the key that supplies a latency. */
+static pimid::params::CacheRecord g_cache_rec;      // 1.11.95: loaded by applyCacheRecord() right after config load
+static bool g_cache_rec_loaded = false;
+
+/* 1.11.95 (review R2 "c with b"): the bank count a cache is characterised
+ * with. A user count (cache.<level>.banks, per node cache.<level>_banks) or
+ * the record's integer is taken as given; the record's "slice" selects the
+ * slice rule, banks = clamp(size / slice_mb, 1, 32) (a 32 MB LLC = 16 slices
+ * of 2 MB; everything at or under one slice is one bank). Every count is
+ * checked against CACTI's range (1..32) and refused outside it. The old rule
+ * (one bank per 64 KB) asked CACTI for 512 banks on a 32 MB L3 and the
+ * run fell back to a written-down 20 cycles on every system cell. */
+static int resolveCacheBanks(int size_kb, int banks_override, const char* level, const char* what) {
+    int banks = banks_override;
+    const char* src = "the user's";
+    if (banks <= 0 && g_cache_rec_loaded) {
+        const auto& lv = g_cache_rec.level(level);
+        if (lv.banks > 0) { banks = lv.banks; src = "the cache record's"; }
+        else { banks = pimid::params::cacheBanksSlice(size_kb, g_cache_rec.slice_mb); src = "the slice rule's"; }
+    }
+    if (banks <= 0) banks = pimid::params::cacheBanksSlice(size_kb, 2);
+    if (banks < 1 || banks > 32) {
+        std::cerr << "\n[cache] FATAL: " << what << " (" << size_kb << " KB) would be characterised with " << banks
+                  << " banks (" << src << " count), outside CACTI's range 1..32. Use cache.<level>.banks in 1..32 or the record's slice rule." << std::endl;
+        std::exit(2);
+    }
+    return banks;
+}
+static const char* cacheLevelOf(const char* what) {   // "L1D" / "host L2" / "<node> L3" -> record level name
+    std::string w(what);
+    if (w.size() >= 3 && w.compare(w.size() - 3, 3, "L1D") == 0) return "l1d";
+    if (w.size() >= 3 && w.compare(w.size() - 3, 3, "L1I") == 0) return "l1i";
+    if (w.size() >= 2 && w.compare(w.size() - 2, 2, "L2") == 0) return "l2";
+    return "l3";
+}
+
 static int getCacheLatencyCycles(int size_kb, int ways, int line_size,
                                   double frequency_mhz, int tech_node_nm,
                                   const char* what, const char* override_key,
-                                  double override_ns = -1.0) {
+                                  double override_ns = -1.0, int banks_override = -1) {
     if (override_ns > 0.0) {
         int cycles = static_cast<int>(std::round(override_ns * frequency_mhz / 1000.0));
         return std::max(1, cycles);
@@ -432,8 +467,7 @@ static int getCacheLatencyCycles(int size_kb, int ways, int line_size,
     cfg.capacity_bytes = static_cast<uint64_t>(size_kb) * 1024;
     cfg.associativity = ways;
     cfg.line_size = line_size;
-    // Scale banks with cache size: 1 bank per 64KB (L1=1, 2MB L2=32)
-    cfg.banks = std::max(1, size_kb / 64);
+    cfg.banks = resolveCacheBanks(size_kb, banks_override, cacheLevelOf(what), what);   // 1.11.95: record / slice rule / user, in CACTI's range
     cfg.is_cache = true;
     cfg.tech_node_nm = cacti_tech;
 
@@ -1800,6 +1834,9 @@ struct UnifiedConfig {
     bool enable_l3;
     int l3_size_kb;
     int l3_ways;
+    /* 1.11.95 (review R2 "c with b"): bank counts per level; -1 = the cache
+     * record's field (an integer or the slice rule). cache.<level>.banks. */
+    int l1d_banks = -1, l1i_banks = -1, l2_banks = -1, l3_banks = -1;
 
     // Cache timing/energy/power overrides (mirrors MemoryParams pattern)
     struct CacheParams {
@@ -2238,8 +2275,9 @@ struct UnifiedConfig {
         /* 1.11.94 (row 1): the node's own cache latencies in ns; <= 0 = CACTI. */
         double l1d_latency_ns = -1.0, l1i_latency_ns = -1.0, l2_latency_ns = -1.0, l3_latency_ns = -1.0;
         bool enable_l2 = true, enable_l3 = false;
-        int l2_ways = 8, l3_ways = 16;
-        int l1d_ways = 8, l1i_ways = 4;
+        int l2_ways = -1, l3_ways = -1;      // 1.11.95: -1 = the cache record's ways
+        int l1d_ways = -1, l1i_ways = -1;
+        int l1d_banks = -1, l1i_banks = -1, l2_banks = -1, l3_banks = -1;   // 1.11.95: cache.<level>_banks; -1 = record/slice rule
 
         // Memory
         std::string memory_tech = "DDR4";
@@ -2426,16 +2464,16 @@ struct UnifiedConfig {
         cache_line_size(64),
         tech_node_nm(22),
         l1d_size_kb(32),
-        l1d_ways(8),
+        l1d_ways(-1),        // 1.11.95: -1 = the cache record's ways (params/cache/default.yaml); cache.<level>.ways overrides
         l1i_size_kb(16),
-        l1i_ways(4),
+        l1i_ways(-1),
         l2_size_kb(2048),
-        l2_ways(16),
+        l2_ways(-1),         // was 16 in the device-scope zsim config while McPAT priced 8-way: one set now (the record's 8)
         enable_l2(true),
         l2_count(1),
         enable_l3(false),
         l3_size_kb(4096),
-        l3_ways(16),
+        l3_ways(-1),
         noc_topology("MESH_2D"),
         noc_router_latency(1),
         noc_link_latency(1),
@@ -2735,6 +2773,46 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
         if (!default_knobs) std::cout << " [preset names not compared: the run's DDR5 grade / device width select other presets]";
         std::cout << std::endl;
     }
+    return 0;
+}
+
+/* 1.11.95: load params/cache/default.yaml and apply it: every level whose
+ * ways the config did not set takes the record's; the line size must agree
+ * with system.cache_line_size (one line everywhere); user bank counts are
+ * range-checked. The record is the one coherent set the simulator builds
+ * (zsim) and prices (McPAT) the hierarchy with. */
+static int applyCacheRecord(UnifiedConfig& config) {
+    std::string err;
+    if (!pimid::params::loadCacheRecord(g_cache_rec, err)) { std::cerr << "[params] FATAL: " << err << std::endl; return 1; }
+    g_cache_rec_loaded = true;
+    const pimid::params::CacheLevelRecord* lv[4] = {&g_cache_rec.l1d, &g_cache_rec.l1i, &g_cache_rec.l2, &g_cache_rec.l3};
+    for (int i = 0; i < 4; ++i) {
+        if (lv[i]->line_bytes != config.cache_line_size) {
+            std::cerr << "[params] FATAL: cache record " << g_cache_rec.file << " says " << lv[i]->line_bytes
+                      << " B lines but system.cache_line_size is " << config.cache_line_size
+                      << "; the simulator builds one line size. Change one of them." << std::endl;
+            return 1;
+        }
+    }
+    auto apply = [&](int& ways, int banks, const pimid::params::CacheLevelRecord& r, const std::string& key) {
+        if (ways <= 0) ways = r.ways;
+        if (banks != -1 && (banks < 1 || banks > 32)) {
+            std::cerr << "[params] FATAL: " << key << " = " << banks << " is outside CACTI's bank range 1..32." << std::endl;
+            return false;
+        }
+        return true;
+    };
+    if (!apply(config.l1d_ways, config.l1d_banks, g_cache_rec.l1d, "cache.l1d.banks")) return 1;
+    if (!apply(config.l1i_ways, config.l1i_banks, g_cache_rec.l1i, "cache.l1i.banks")) return 1;
+    if (!apply(config.l2_ways, config.l2_banks, g_cache_rec.l2, "cache.l2.banks")) return 1;
+    if (!apply(config.l3_ways, config.l3_banks, g_cache_rec.l3, "cache.l3.banks")) return 1;
+    for (auto& n : config.system_nodes) {
+        if (!apply(n.l1d_ways, n.l1d_banks, g_cache_rec.l1d, n.name + ".cache.l1d_banks")) return 1;
+        if (!apply(n.l1i_ways, n.l1i_banks, g_cache_rec.l1i, n.name + ".cache.l1i_banks")) return 1;
+        if (!apply(n.l2_ways, n.l2_banks, g_cache_rec.l2, n.name + ".cache.l2_banks")) return 1;
+        if (!apply(n.l3_ways, n.l3_banks, g_cache_rec.l3, n.name + ".cache.l3_banks")) return 1;
+    }
+    std::cout << pimid::params::describeCacheRecord(g_cache_rec) << std::endl;
     return 0;
 }
 
@@ -8749,6 +8827,17 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         mcfg.l1d_size_bytes = config.l1d_size_kb * 1024ULL;
         mcfg.l2_size_bytes = config.enable_l2 ? config.l2_size_kb * 1024ULL : 0;
         mcfg.l3_size_bytes = config.enable_l3 ? config.l3_size_kb * 1024ULL : 0;
+        /* 1.11.95 (l03/R2): the geometry and hit latency the timing model built, to McPAT. */
+        mcfg.cache_line_bytes = config.cache_line_size;
+        mcfg.l1i_ways = config.l1i_ways; mcfg.l1d_ways = config.l1d_ways; mcfg.l2_ways = config.l2_ways; mcfg.l3_ways = config.l3_ways;
+        mcfg.l1i_banks = resolveCacheBanks(config.l1i_size_kb, config.l1i_banks, "l1i", "L1I");
+        mcfg.l1i_latency_cycles = getCacheLatencyCycles(config.l1i_size_kb, config.l1i_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1I", "cache.l1i.latency_ns", config.l1i_params.latency_ns, config.l1i_banks);
+        mcfg.l1d_banks = resolveCacheBanks(config.l1d_size_kb, config.l1d_banks, "l1d", "L1D");
+        mcfg.l1d_latency_cycles = getCacheLatencyCycles(config.l1d_size_kb, config.l1d_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1D", "cache.l1d.latency_ns", config.l1d_params.latency_ns, config.l1d_banks);
+        if (config.enable_l2) { mcfg.l2_banks = resolveCacheBanks(config.l2_size_kb, config.l2_banks, "l2", "L2");
+            mcfg.l2_latency_cycles = getCacheLatencyCycles(config.l2_size_kb, config.l2_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns", config.l2_params.latency_ns, config.l2_banks); }
+        if (config.enable_l3) { mcfg.l3_banks = resolveCacheBanks(config.l3_size_kb, config.l3_banks, "l3", "L3");
+            mcfg.l3_latency_cycles = getCacheLatencyCycles(config.l3_size_kb, config.l3_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns", config.l3_params.latency_ns, config.l3_banks); }
     }
     /* 1.11.93 (F1): the L2s the device-scope zsim config BUILDS
      * (`caches = cache.l2.count`, default 1 shared by every PE; see the cfg
@@ -9160,6 +9249,24 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         host_cfg.l1d_size_bytes = (host_node ? host_node->l1d_kb : config.host_l1d_kb) * 1024;
         host_cfg.l2_size_bytes  = (host_node ? host_node->l2_kb  : config.host_l2_kb)  * 1024;
         host_cfg.l3_size_bytes  = (host_node ? host_node->l3_kb  : config.host_l3_kb)  * 1024;
+        {   /* 1.11.95 (l03/R2): the host's cache geometry and CACTI hit latencies, to McPAT. */
+            const int htech = host_node ? host_node->tech_node_nm : ((config.host_tech_node_nm >= 0) ? config.host_tech_node_nm : config.tech_node_nm);
+            auto hw = [&](int node_ways, const pimid::params::CacheLevelRecord& r) { return (host_node && node_ways > 0) ? node_ways : r.ways; };
+            host_cfg.cache_line_bytes = config.cache_line_size;
+            host_cfg.l1i_ways = hw(host_node ? host_node->l1i_ways : -1, g_cache_rec.l1i);
+            host_cfg.l1d_ways = hw(host_node ? host_node->l1d_ways : -1, g_cache_rec.l1d);
+            host_cfg.l2_ways  = hw(host_node ? host_node->l2_ways  : -1, g_cache_rec.l2);
+            host_cfg.l3_ways  = hw(host_node ? host_node->l3_ways  : -1, g_cache_rec.l3);
+            const int hl1i_kb = host_cfg.l1i_size_bytes / 1024, hl1d_kb = host_cfg.l1d_size_bytes / 1024, hl2_kb = host_cfg.l2_size_bytes / 1024, hl3_kb = host_cfg.l3_size_bytes / 1024;
+            if (hl1i_kb > 0) { host_cfg.l1i_banks = resolveCacheBanks(hl1i_kb, host_node ? host_node->l1i_banks : -1, "l1i", "host L1I");
+                host_cfg.l1i_latency_cycles = getCacheLatencyCycles(hl1i_kb, host_cfg.l1i_ways, config.cache_line_size, host_clk_mhz, htech, "host L1I", "system.hosts[].cache.l1i_latency_ns", host_node ? host_node->l1i_latency_ns : -1.0, host_node ? host_node->l1i_banks : -1); }
+            if (hl1d_kb > 0) { host_cfg.l1d_banks = resolveCacheBanks(hl1d_kb, host_node ? host_node->l1d_banks : -1, "l1d", "host L1D");
+                host_cfg.l1d_latency_cycles = getCacheLatencyCycles(hl1d_kb, host_cfg.l1d_ways, config.cache_line_size, host_clk_mhz, htech, "host L1D", "system.hosts[].cache.l1d_latency_ns", host_node ? host_node->l1d_latency_ns : -1.0, host_node ? host_node->l1d_banks : -1); }
+            if (hl2_kb > 0) { host_cfg.l2_banks = resolveCacheBanks(hl2_kb, host_node ? host_node->l2_banks : -1, "l2", "host L2");
+                host_cfg.l2_latency_cycles = getCacheLatencyCycles(hl2_kb, host_cfg.l2_ways, config.cache_line_size, host_clk_mhz, htech, "host L2", "system.hosts[].cache.l2_latency_ns", host_node ? host_node->l2_latency_ns : -1.0, host_node ? host_node->l2_banks : -1); }
+            if (hl3_kb > 0) { host_cfg.l3_banks = resolveCacheBanks(hl3_kb, host_node ? host_node->l3_banks : -1, "l3", "host L3");
+                host_cfg.l3_latency_cycles = getCacheLatencyCycles(hl3_kb, host_cfg.l3_ways, config.cache_line_size, host_clk_mhz, htech, "host L3", "system.hosts[].cache.l3_latency_ns", host_node ? host_node->l3_latency_ns : -1.0, host_node ? host_node->l3_banks : -1); }
+        }
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per host
          * core (`<node>_l2 { caches = node.num_cores }`). */
         host_cfg.l2_instances = std::max(1, host_cfg.num_cores);
@@ -11286,6 +11393,18 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             mcfg.l1d_size_bytes = node.l1d_kb * 1024ULL;
             mcfg.l2_size_bytes = node.enable_l2 ? node.l2_kb * 1024ULL : 0;
             mcfg.l3_size_bytes = node.enable_l3 ? node.l3_kb * 1024ULL : 0;
+            /* 1.11.95 (l03/R2): the node's cache geometry and CACTI hit latencies, to McPAT. */
+            const double nfreq = (node.frequency_mhz > 0.0) ? node.frequency_mhz : config.frequency_mhz;
+            mcfg.cache_line_bytes = config.cache_line_size;
+            mcfg.l1i_ways = node.l1i_ways; mcfg.l1d_ways = node.l1d_ways; mcfg.l2_ways = node.l2_ways; mcfg.l3_ways = node.l3_ways;
+            if (node.l1i_kb > 0) { mcfg.l1i_banks = resolveCacheBanks(node.l1i_kb, node.l1i_banks, "l1i", (node.name + " L1I").c_str());
+                mcfg.l1i_latency_cycles = getCacheLatencyCycles(node.l1i_kb, node.l1i_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L1I").c_str(), "cache.l1i_latency_ns", node.l1i_latency_ns, node.l1i_banks); }
+            if (node.l1d_kb > 0) { mcfg.l1d_banks = resolveCacheBanks(node.l1d_kb, node.l1d_banks, "l1d", (node.name + " L1D").c_str());
+                mcfg.l1d_latency_cycles = getCacheLatencyCycles(node.l1d_kb, node.l1d_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L1D").c_str(), "cache.l1d_latency_ns", node.l1d_latency_ns, node.l1d_banks); }
+            if (node.enable_l2 && node.l2_kb > 0) { mcfg.l2_banks = resolveCacheBanks(node.l2_kb, node.l2_banks, "l2", (node.name + " L2").c_str());
+                mcfg.l2_latency_cycles = getCacheLatencyCycles(node.l2_kb, node.l2_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L2").c_str(), "cache.l2_latency_ns", node.l2_latency_ns, node.l2_banks); }
+            if (node.enable_l3 && node.l3_kb > 0) { mcfg.l3_banks = resolveCacheBanks(node.l3_kb, node.l3_banks, "l3", (node.name + " L3").c_str());
+                mcfg.l3_latency_cycles = getCacheLatencyCycles(node.l3_kb, node.l3_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L3").c_str(), "cache.l3_latency_ns", node.l3_latency_ns, node.l3_banks); }
         }
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per core of
          * the node (`<node>_l2 { caches = node.num_cores }`). */
@@ -12673,15 +12792,15 @@ public:
                     config_.l3_params.latency_ns * config_.frequency_mhz / 1000.0));
         } else {
             l1d_latency = getCacheLatencyCycles(config_.l1d_size_kb, config_.l1d_ways,
-                                                 config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L1D", "cache.l1d.latency_ns");
+                                                 config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L1D", "cache.l1d.latency_ns", -1.0, config_.l1d_banks);
             l1i_latency = getCacheLatencyCycles(config_.l1i_size_kb, config_.l1i_ways,
-                                                 config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L1I", "cache.l1i.latency_ns");
+                                                 config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L1I", "cache.l1i.latency_ns", -1.0, config_.l1i_banks);
             if (config_.enable_l2)
                 l2_latency = getCacheLatencyCycles(config_.l2_size_kb, config_.l2_ways,
-                                                    config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L2", "cache.l2.latency_ns");
+                                                    config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L2", "cache.l2.latency_ns", -1.0, config_.l2_banks);
             if (config_.enable_l3)
                 l3_latency = getCacheLatencyCycles(config_.l3_size_kb, config_.l3_ways,
-                                                    config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L3", "cache.l3.latency_ns");
+                                                    config_.cache_line_size, config_.frequency_mhz, config_.tech_node_nm, "L3", "cache.l3.latency_ns", -1.0, config_.l3_banks);
         }
         l1d_latency = std::max(1, l1d_latency);
         l1i_latency = std::max(1, l1i_latency);
@@ -13495,9 +13614,9 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             const double node_freq = (node.frequency_mhz > 0.0) ? node.frequency_mhz : ref_freq;
             const std::string npre = "system." + std::string(node.role == UnifiedConfig::SystemNode::HOST ? "hosts" : "devices") + "[" + node.name + "].cache.";
             int l1d_lat = getCacheLatencyCycles(node.l1d_kb, node.l1d_ways, config.cache_line_size,
-                                                 node_freq, node.tech_node_nm, (node.name + " L1D").c_str(), (npre + "l1d_latency_ns").c_str(), node.l1d_latency_ns);
+                                                 node_freq, node.tech_node_nm, (node.name + " L1D").c_str(), (npre + "l1d_latency_ns").c_str(), node.l1d_latency_ns, node.l1d_banks);
             int l1i_lat = getCacheLatencyCycles(node.l1i_kb, node.l1i_ways, config.cache_line_size,
-                                                 node_freq, node.tech_node_nm, (node.name + " L1I").c_str(), (npre + "l1i_latency_ns").c_str(), node.l1i_latency_ns);
+                                                 node_freq, node.tech_node_nm, (node.name + " L1I").c_str(), (npre + "l1i_latency_ns").c_str(), node.l1i_latency_ns, node.l1i_banks);
             l1d_lat = std::max(1, l1d_lat);
             l1i_lat = std::max(1, l1i_lat);
 
@@ -13517,7 +13636,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
 
             if (node.l2_kb > 0) {
                 int l2_lat = getCacheLatencyCycles(node.l2_kb, node.l2_ways, config.cache_line_size,
-                                                    node_freq, node.tech_node_nm, (node.name + " L2").c_str(), (npre + "l2_latency_ns").c_str(), node.l2_latency_ns);
+                                                    node_freq, node.tech_node_nm, (node.name + " L2").c_str(), (npre + "l2_latency_ns").c_str(), node.l2_latency_ns, node.l2_banks);
                 l2_lat = std::max(1, l2_lat);
                 cfg << "        " << node.name << "_l2 = {\n";
                 cfg << "            caches = " << node.num_cores << ";\n";
@@ -13530,7 +13649,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
 
             if (node.l3_kb > 0) {
                 int l3_lat = getCacheLatencyCycles(node.l3_kb, node.l3_ways, config.cache_line_size,
-                                                    node_freq, node.tech_node_nm, (node.name + " L3").c_str(), (npre + "l3_latency_ns").c_str(), node.l3_latency_ns);
+                                                    node_freq, node.tech_node_nm, (node.name + " L3").c_str(), (npre + "l3_latency_ns").c_str(), node.l3_latency_ns, node.l3_banks);
                 l3_lat = std::max(1, l3_lat);
                 std::string parent = (node.l2_kb > 0) ? (node.name + "_l2") : (node.name + "_l1i|" + node.name + "_l1d");
                 cfg << "        " << node.name << "_l3 = {\n";
@@ -14786,10 +14905,12 @@ int main(int argc, char** argv) {
                 if (yaml_cfg["cache"]["l1d"]) {
                     config.l1d_size_kb = yamlInt(yaml_cfg["cache"]["l1d"]["size_kb"], config.l1d_size_kb, "cache.l1d.size_kb");
                     config.l1d_ways = yamlInt(yaml_cfg["cache"]["l1d"]["ways"], config.l1d_ways, "cache.l1d.ways");
+                    config.l1d_banks = yamlInt(yaml_cfg["cache"]["l1d"]["banks"], config.l1d_banks, "cache.l1d.banks");   // 1.11.95
                 }
                 if (yaml_cfg["cache"]["l1i"]) {
                     config.l1i_size_kb = yamlInt(yaml_cfg["cache"]["l1i"]["size_kb"], config.l1i_size_kb, "cache.l1i.size_kb");
                     config.l1i_ways = yamlInt(yaml_cfg["cache"]["l1i"]["ways"], config.l1i_ways, "cache.l1i.ways");
+                    config.l1i_banks = yamlInt(yaml_cfg["cache"]["l1i"]["banks"], config.l1i_banks, "cache.l1i.banks");   // 1.11.95
                 }
                 if (yaml_cfg["cache"]["l2"]) {
                     config.enable_l2 = yamlBool(yaml_cfg["cache"]["l2"]["enabled"], config.enable_l2, "cache.l2.enabled");
@@ -14797,12 +14918,14 @@ int main(int argc, char** argv) {
                     config.pg_cache = yamlBool(yaml_cfg["cache"]["pg"], false, "cache.pg") ? 1 : 0;
                     config.l2_size_kb = yamlInt(yaml_cfg["cache"]["l2"]["size_kb"], config.l2_size_kb, "cache.l2.size_kb");
                     config.l2_ways = yamlInt(yaml_cfg["cache"]["l2"]["ways"], config.l2_ways, "cache.l2.ways");
+                    config.l2_banks = yamlInt(yaml_cfg["cache"]["l2"]["banks"], config.l2_banks, "cache.l2.banks");   // 1.11.95
                     config.l2_count = yamlInt(yaml_cfg["cache"]["l2"]["count"], config.l2_count, "cache.l2.count");
                 }
                 if (yaml_cfg["cache"]["l3"]) {
                     config.enable_l3 = yamlBool(yaml_cfg["cache"]["l3"]["enabled"], config.enable_l3, "cache.l3.enabled");
                     config.l3_size_kb = yamlInt(yaml_cfg["cache"]["l3"]["size_kb"], config.l3_size_kb, "cache.l3.size_kb");
                     config.l3_ways = yamlInt(yaml_cfg["cache"]["l3"]["ways"], config.l3_ways, "cache.l3.ways");
+                    config.l3_banks = yamlInt(yaml_cfg["cache"]["l3"]["banks"], config.l3_banks, "cache.l3.banks");   // 1.11.95
                 }
 
                 // Parse cache timing/energy/power overrides
@@ -15602,6 +15725,48 @@ int main(int argc, char** argv) {
                 else { std::cerr << "Error: power.periphery_device '" << pd << "' is not a CACTI device column; valid: hp, lstp, lop, comm-dram (lp-dram is unpopulated at 22 nm)." << std::endl; return 1; }
                 std::cout << "  [power] DRAM-periphery leakage column: " << pd << " (power.periphery_device, user's choice)" << std::endl;
             }
+            /* 1.11.95 (sweep-94 row 25 (a)/(b), review C4): CACTI's design-space
+             * search and its power-gating model, as knobs. The defaults are
+             * CACTI's shipped cache.cfg (objective 0:0:0:100:0, deviation
+             * 20:100000:100000:100000:100000, ED^2, no gating). */
+            if (yaml_cfg["cache"] && yaml_cfg["cache"]["cacti"]) {
+                auto& sd = pimid::CACTIWrapper::search();
+                auto cn = yaml_cfg["cache"]["cacti"];
+                auto parse5 = [&](const YAML::Node& n, int* out, const char* key) -> int {
+                    if (!n) return 0;
+                    std::string v = n.as<std::string>(""); int vals[5]; int k = 0; size_t pos = 0;
+                    while (k < 5 && pos <= v.size()) { size_t e = v.find(':', pos); std::string t = v.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
+                        try { vals[k++] = std::stoi(t); } catch (...) { break; } if (e == std::string::npos) break; pos = e + 1; }
+                    if (k != 5) { std::cerr << "Error: " << key << " = '" << v << "' must be five integers d:dp:lp:ct:a (CACTI cache.cfg order: delay, dynamic power, leakage power, cycle time, area)." << std::endl; return 1; }
+                    for (int q = 0; q < 5; ++q) out[q] = vals[q];
+                    sd.user_set = true; return 0; };
+                if (parse5(cn["objective"], sd.obj, "cache.cacti.objective") == 1) return 1;
+                if (parse5(cn["deviate"], sd.dev, "cache.cacti.deviate") == 1) return 1;
+                if (cn["optimize"]) {
+                    std::string o = cn["optimize"].as<std::string>("ED2");
+                    if (o == "ED2" || o == "ED^2") sd.ed = 2; else if (o == "ED") sd.ed = 1; else if (o == "NONE") sd.ed = 0;
+                    else { std::cerr << "Error: cache.cacti.optimize '" << o << "' is not ED2, ED or NONE." << std::endl; return 1; }
+                    sd.user_set = true;
+                }
+                if (cn["power_gating"]) {
+                    auto pg = cn["power_gating"];
+                    const char* keys[5] = {"array", "bitline_floating", "wordline", "columnline", "interconnect"};
+                    for (int q = 0; q < 5; ++q) if (pg[keys[q]]) { sd.pg[q] = pg[keys[q]].as<bool>(false); sd.user_set = true; }
+                    if (pg["perf_loss"]) { sd.pg_perf_loss = pg["perf_loss"].as<double>(0.01); sd.user_set = true; }
+                }
+                const bool any_pg = sd.pg[0] || sd.pg[1] || sd.pg[2] || sd.pg[3] || sd.pg[4];
+                if (any_pg && config.mem_array_pg) {
+                    std::cerr << "Error: cache.cacti.power_gating.* and memory.array_pg both gate the same array's leakage (CACTI's gating model inside the characterisation, PIMID's residency-based gating outside it); one leakage cannot be reduced twice. Turn one of them off." << std::endl;
+                    return 1;
+                }
+                std::cout << "  [cacti] search: objective " << sd.obj[0] << ":" << sd.obj[1] << ":" << sd.obj[2] << ":" << sd.obj[3] << ":" << sd.obj[4]
+                          << ", deviate " << sd.dev[0] << ":" << sd.dev[1] << ":" << sd.dev[2] << ":" << sd.dev[3] << ":" << sd.dev[4]
+                          << ", optimize " << (sd.ed == 2 ? "ED^2" : sd.ed == 1 ? "ED" : "NONE")
+                          << (any_pg ? ", CACTI power gating ON (PIMID residency gating off for the array)" : ", no CACTI power gating")
+                          << " (cache.cacti.*, user's choice)" << std::endl;
+            } else {
+                std::cout << "  [cacti] search: objective 0:0:0:100:0, deviate 20:100000:100000:100000:100000, ED^2, no power gating (CACTI's shipped cache.cfg; cache.cacti.* overrides)" << std::endl;
+            }
             if (yaml_cfg["power"] && yaml_cfg["power"]["interconnect_projection"]) {
                 std::string ip =
                     yaml_cfg["power"]["interconnect_projection"].as<std::string>("conservative");
@@ -15900,6 +16065,12 @@ int main(int argc, char** argv) {
                             node.l1i_latency_ns = yamlDouble(h["cache"]["l1i_latency_ns"], node.l1i_latency_ns, hpath + ".cache.l1i_latency_ns");
                             node.l2_latency_ns = yamlDouble(h["cache"]["l2_latency_ns"], node.l2_latency_ns, hpath + ".cache.l2_latency_ns");
                             node.l3_latency_ns = yamlDouble(h["cache"]["l3_latency_ns"], node.l3_latency_ns, hpath + ".cache.l3_latency_ns");
+                            for (const char* lv : {"l1d", "l1i", "l2", "l3"}) {   // 1.11.95: per-node ways / banks (record otherwise)
+                                int* w = (!strcmp(lv, "l1d")) ? &node.l1d_ways : (!strcmp(lv, "l1i")) ? &node.l1i_ways : (!strcmp(lv, "l2")) ? &node.l2_ways : &node.l3_ways;
+                                int* b = (!strcmp(lv, "l1d")) ? &node.l1d_banks : (!strcmp(lv, "l1i")) ? &node.l1i_banks : (!strcmp(lv, "l2")) ? &node.l2_banks : &node.l3_banks;
+                                *w = yamlInt(h["cache"][std::string(lv) + "_ways"], *w, hpath + ".cache." + lv + "_ways");
+                                *b = yamlInt(h["cache"][std::string(lv) + "_banks"], *b, hpath + ".cache." + lv + "_banks");
+                            }
                         }
                         if (h["memory"]) {
                             node.memory_tech = canonicalMemTech(
@@ -16121,6 +16292,12 @@ int main(int argc, char** argv) {
                             node.l1i_latency_ns = yamlDouble(d["cache"]["l1i_latency_ns"], node.l1i_latency_ns, dpath + ".cache.l1i_latency_ns");
                             node.l2_latency_ns = yamlDouble(d["cache"]["l2_latency_ns"], node.l2_latency_ns, dpath + ".cache.l2_latency_ns");
                             node.l3_latency_ns = yamlDouble(d["cache"]["l3_latency_ns"], node.l3_latency_ns, dpath + ".cache.l3_latency_ns");
+                            for (const char* lv : {"l1d", "l1i", "l2", "l3"}) {   // 1.11.95: per-node ways / banks (record otherwise)
+                                int* w = (!strcmp(lv, "l1d")) ? &node.l1d_ways : (!strcmp(lv, "l1i")) ? &node.l1i_ways : (!strcmp(lv, "l2")) ? &node.l2_ways : &node.l3_ways;
+                                int* b = (!strcmp(lv, "l1d")) ? &node.l1d_banks : (!strcmp(lv, "l1i")) ? &node.l1i_banks : (!strcmp(lv, "l2")) ? &node.l2_banks : &node.l3_banks;
+                                *w = yamlInt(d["cache"][std::string(lv) + "_ways"], *w, dpath + ".cache." + lv + "_ways");
+                                *b = yamlInt(d["cache"][std::string(lv) + "_banks"], *b, dpath + ".cache." + lv + "_banks");
+                            }
                         }
 
                         if (d["workload"]) {
@@ -16383,6 +16560,7 @@ int main(int argc, char** argv) {
      * "SRAM M/D/1 cap" line on a co-simulation with no SRAM anywhere. The
      * adoption block calls this itself, once the technology is real. */
     if (checkDramPartRecords(config) != 0) return 1;   // 1.11.94: part records (step 1)
+    if (applyCacheRecord(config) != 0) return 1;       // 1.11.95: the cache record (ways / line / banks)
     /* 1.11.94 (review H33-H35 follow-up): a DRAM device's fabric is the CUSTOM
      * tree and routes by TABLE; a user-set direction routing on it used to be
      * refused only inside Garnet at init. A torus routed by TABLE deadlocks
@@ -17241,15 +17419,15 @@ int main(int argc, char** argv) {
                             config.l3_params.latency_ns * config.frequency_mhz / 1000.0)));
                 } else {
                     disp_l1d = getCacheLatencyCycles(config.l1d_size_kb, config.l1d_ways,
-                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1D", "cache.l1d.latency_ns");
+                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1D", "cache.l1d.latency_ns", -1.0, config.l1d_banks);
                     disp_l1i = getCacheLatencyCycles(config.l1i_size_kb, config.l1i_ways,
-                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1I", "cache.l1i.latency_ns");
+                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1I", "cache.l1i.latency_ns", -1.0, config.l1i_banks);
                     if (config.enable_l2)
                         disp_l2 = getCacheLatencyCycles(config.l2_size_kb, config.l2_ways,
-                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns");
+                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns", -1.0, config.l2_banks);
                     if (config.enable_l3)
                         disp_l3 = getCacheLatencyCycles(config.l3_size_kb, config.l3_ways,
-                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns");
+                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns", -1.0, config.l3_banks);
                     /* 1.11.57 (latent B020): the banner claimed CACTI for
                      * these numbers whatever happened inside the query. If
                      * any of them is a substituted literal, say so here --
@@ -17819,15 +17997,15 @@ int main(int argc, char** argv) {
                             config.l3_params.latency_ns * config.frequency_mhz / 1000.0)));
                 } else {
                     disp_l1d = getCacheLatencyCycles(config.l1d_size_kb, config.l1d_ways,
-                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1D", "cache.l1d.latency_ns");
+                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1D", "cache.l1d.latency_ns", -1.0, config.l1d_banks);
                     disp_l1i = getCacheLatencyCycles(config.l1i_size_kb, config.l1i_ways,
-                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1I", "cache.l1i.latency_ns");
+                                                      config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L1I", "cache.l1i.latency_ns", -1.0, config.l1i_banks);
                     if (config.enable_l2)
                         disp_l2 = getCacheLatencyCycles(config.l2_size_kb, config.l2_ways,
-                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns");
+                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns", -1.0, config.l2_banks);
                     if (config.enable_l3)
                         disp_l3 = getCacheLatencyCycles(config.l3_size_kb, config.l3_ways,
-                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns");
+                                                         config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns", -1.0, config.l3_banks);
                     /* 1.11.57 (latent B020): the banner claimed CACTI for
                      * these numbers whatever happened inside the query. If
                      * any of them is a substituted literal, say so here --

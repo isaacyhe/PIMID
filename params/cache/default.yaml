@@ -1,0 +1,23 @@
+# PIMID cache part record (1.11.95, sweep-94 rulings: review R2 "c with b", l03-config-flow-9).
+# One coherent set for the cache hierarchy the simulator builds and prices: the
+# geometry fields every level is characterised with (CACTI for latency, McPAT's
+# embedded CACTI for power/area). cache.<level>.ways / .banks and
+# system.hosts[]/devices[].cache.<level>_banks in a config replace a field for
+# that run and are reported as the user's numbers.
+#
+# ways: the associativities the simulator has always built (zsim) and priced
+#   (McPAT literals through 1.11.94): L1D 8, L1I 4, L2 8, L3 16. The device-scope
+#   zsim config carried a 16-way L2 while McPAT priced it 8-way; one set now.
+# line_bytes: 64 everywhere (system.cache_line_size is the simulator-wide line).
+# banks: "slice" = the slice rule, banks = clamp(size / slice_mb, 1, 32):
+#   an LLC is built as slices of slice_mb each (2 MB: the Intel server LLC slice
+#   since Sandy Bridge, which CACTI's 32-bank limit accommodates up to 64 MB);
+#   L1/L2 at <= 2 MB are one bank. An integer here fixes the count instead.
+#   Every count is checked against CACTI's range (1..32) and refused outside it.
+record: pimid cache hierarchy default
+slice_mb: 2
+levels:
+  l1d: { ways: 8,  line_bytes: 64, banks: slice }
+  l1i: { ways: 4,  line_bytes: 64, banks: slice }
+  l2:  { ways: 8,  line_bytes: 64, banks: slice }
+  l3:  { ways: 16, line_bytes: 64, banks: slice }
