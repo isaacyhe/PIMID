@@ -7,6 +7,28 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.99 -- the out-of-order core charges the L1 latency the configuration describes
+
+DEFAULT-CHANGE release (user ruling "yes" 2026-10-04, the open item of 1.11.97
+(24)): the out-of-order core's L1D hit latency is the configured one -- the
+CACTI-derived value of the cache record, or the `cache.l1d` override -- the
+same value the in-order core charges since 1.11.97. Through 1.11.98 the core
+added the literal `L1D_LAT` 4 to every load and store (zsim's Westmere-era
+constant, "fixed, and FilterCache does not include L1 delay"), 4 cycles at any
+clock, while the in-order core charged the array's 1 cycle at 500 MHz. The six
+sites (dispatch loads and stores, the drain, the commit-time replays) read
+`FilterCache::getHitLatency()`. The L1I fetch is unchanged on both cores: a hit
+returns the line's availability and the fetch latency is hidden by the
+pipeline (stated, not changed). Nothing else moves: one value, one release,
+as the parity rule asks.
+
+DATA IMPACT: every out-of-order cell (device and co-sim host). HBM3 gemv 256
+at 500 MHz on the gate shape: L1D 4 -> 1 cycle per load.
+
+OPEN (unchanged from 1.11.98): the epoch replay is not applied to MPI
+workloads; by the user's decision of 2026-10-04 it stays so through the corpus
+re-sim and is taken up after the CAL submission.
+
 ## 1.11.98 -- the controller serves every element: the device's DRAM requests are replayed through Ramulator2 per epoch
 
 CONTROLLER RELEASE, part 2 (R3 of `_1166audit/MANIFEST_1.11.94plus.md`; sweep-94

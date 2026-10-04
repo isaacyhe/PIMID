@@ -51,7 +51,15 @@
 #define ISSUE_STAGE 7
 #define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
 
-#define L1D_LAT 4  // fixed, and FilterCache does not include L1 delay
+/* 1.11.99 (user ruling 2026-10-04): the L1D hit latency the out-of-order core
+ * adds on top of the filter cache's availability cycle is the CONFIGURED one
+ * (FilterCache::getHitLatency: the CACTI-derived value, or the cache
+ * override), as the in-order core charges since 1.11.97. Through 1.11.98 it
+ * was the literal L1D_LAT 4 ("fixed, and FilterCache does not include L1
+ * delay"), 4 cycles at every clock while the in-order core charged 1 at 500
+ * MHz for the same array; the L1I fetch stays as it was on both cores (a hit
+ * returns the line's availability, the fetch latency hidden by the
+ * pipeline). */
 /* 1.11.97 (R2355 (b)): FETCH_BYTES_PER_CYCLE 16 is gone; its only use (the
  * wrong-path throughput step) reads the core record's ooo.fetch_width_bytes
  * (fetchBytesPerCycle, ooo_core.h). The record carries the 16 and why. */
@@ -403,7 +411,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                         else { addr = (Address)-1L; memMismatchLoads++; }
                         uint64_t reqSatisfiedCycle = dispatchCycle;
                         if (addr != ((Address)-1L)) {
-                            reqSatisfiedCycle = l1d->load(addr, dispatchCycle) + L1D_LAT;
+                            reqSatisfiedCycle = l1d->load(addr, dispatchCycle) + l1d->getHitLatency();
                             cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
                         }
 
@@ -434,7 +442,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                         else { addr = (Address)-1L; memMismatchStores++; }
                         uint64_t reqSatisfiedCycle = dispatchCycle;
                         if (addr != ((Address)-1L)) {
-                            reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + L1D_LAT;
+                            reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + l1d->getHitLatency();
                             cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
                             fwdArray[(addr>>2) & (FWD_ENTRIES-1)].set(addr, reqSatisfiedCycle);
                         }
@@ -478,7 +486,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
             Address a = loadAddrs[loadIdx++];
             if (repBbl) repDrainedLoads++; else memMismatchLoads++;
             if (a != (Address)-1L) {
-                uint64_t r = l1d->load(a, drainCycle) + L1D_LAT;
+                uint64_t r = l1d->load(a, drainCycle) + l1d->getHitLatency();
                 cRec.record(curCycle, drainCycle, r);
                 lastCommitCycle = MAX(lastCommitCycle, r);
             }
@@ -487,7 +495,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
             Address a = storeAddrs[storeIdx++];
             if (repBbl) repDrainedStores++; else memMismatchStores++;
             if (a != (Address)-1L) {
-                uint64_t r = l1d->store(a, drainCycle) + L1D_LAT;
+                uint64_t r = l1d->store(a, drainCycle) + l1d->getHitLatency();
                 cRec.record(curCycle, drainCycle, r);
                 lastCommitCycle = MAX(lastCommitCycle, r);
             }
@@ -505,14 +513,14 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         for (uint32_t i = 0; i < cappedLoads; i++) {
             Address addr = loadAddrs[i];
             if (addr != (Address)-1L) {
-                uint64_t respCycle = l1d->load(addr, commitCycle) + L1D_LAT;
+                uint64_t respCycle = l1d->load(addr, commitCycle) + l1d->getHitLatency();
                 cRec.record(curCycle, commitCycle, respCycle);
                 commitCycle = MAX(commitCycle, respCycle);
             }
         }
         for (uint32_t i = 0; i < cappedStores; i++) {
             Address addr = storeAddrs[i];
-            uint64_t respCycle = l1d->store(addr, commitCycle) + L1D_LAT;
+            uint64_t respCycle = l1d->store(addr, commitCycle) + l1d->getHitLatency();
             cRec.record(curCycle, commitCycle, respCycle);
             commitCycle = MAX(commitCycle, respCycle);
         }
