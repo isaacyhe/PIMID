@@ -217,16 +217,16 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zrr)>* roiRasStat = new LambdaStat<decltype(zrr)>(zrr);
     roiRasStat->init("roiRasReturns", "Returns resolved against the RAS (ROI)");
     coreStat->append(roiRasStat);
-    /* 1.11.97 (R2476): measured predictor table writes (value-changing
+    /* 1.11.97 (R2476) / 1.11.98 (ruling (a)): measured predictor table writes (one per update,
      * updates, BranchPredictorPAg::predict), ROI-windowed -- McPAT's
      * level-1 / level-2 local predictor write counts. */
     auto zbh = [this]() -> uint64_t { return branchPred.histWrites - roiBaseBpHist; };
     LambdaStat<decltype(zbh)>* roiBpHistStat = new LambdaStat<decltype(zbh)>(zbh);
-    roiBpHistStat->init("roiBpHistWrites", "Branch-history table writes that changed an entry (ROI)");
+    roiBpHistStat->init("roiBpHistWrites", "Branch-history table writes, one per resolved branch (ROI)");
     coreStat->append(roiBpHistStat);
     auto zbp = [this]() -> uint64_t { return branchPred.phtWrites - roiBaseBpPht; };
     LambdaStat<decltype(zbp)>* roiBpPhtStat = new LambdaStat<decltype(zbp)>(zbp);
-    roiBpPhtStat->init("roiBpPhtWrites", "Predictor counter-table writes that changed a counter (ROI)");
+    roiBpPhtStat->init("roiBpPhtWrites", "Predictor counter-table writes, one per resolved branch (ROI)");
     coreStat->append(roiBpPhtStat);
 
 #ifdef OOO_STALL_STATS

@@ -24,11 +24,16 @@
 #     Cortex-A53-class short in-order pipelines (~8 cycles). Unchanged value.
 #     McPAT's in-order pipeline depth is this value (main.cpp
 #     inorderTimingPipelineDepth()).
-#   resteer_penalty_cycles: 4. A BTB/RAS target resteer is charged at DECODE
-#     depth (sweep-94 R2313 (b)): the redirect enters behind decode, so the
-#     refill is the fetch-to-decode depth. By the same convention that gives
-#     7 = ISSUE_STAGE above, this is DECODE_STAGE = 4. Through 1.11.96 every
-#     BTB/RAS miss charged the full 7.
+#   resteer_penalty_cycles: 4. The DECODE-depth resteer (sweep-94 R2313 (b),
+#     refined by the user ruling (a) of 2026-10-03): charged when a TAKEN
+#     DIRECT branch (jcc taken, call rel) misses the BTB -- the decoder
+#     computes the target from the instruction and redirects fetch behind
+#     decode, so the refill is the fetch-to-decode depth; by the convention
+#     that gives 7 = ISSUE_STAGE above, DECODE_STAGE = 4. An indirect jmp/call
+#     or return whose target the BTB/RAS missed is resolved only at EXECUTE
+#     and charges mispredict_penalty_cycles (1.11.98; 1.11.97 charged the
+#     resteer for those, 1.11.96 the full 7 for every miss and nothing for a
+#     direct-branch BTB miss, which it did not look up).
 #   retire_width: issue. InOrderCore issues and commits on one cursor
 #     (in_order_core.h: "curCycle ... in-order issue/commit cursor"); it
 #     retires exactly what it issued, so its retire width IS its issue width

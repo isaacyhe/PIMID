@@ -55,6 +55,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #include "stats.h"
 #include "cache.h"   // 1.11.40 (N7): zsimAllCaches; 1.11.57 (D001-D003): flushDirtyLines
 #include "zsim.h"
+#include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
 #include "ooo_core.h"     // CtrlFlowKind codes for the branch/indirect feed
 #include "x86_decoder.h"  // minimal x86-64 decoder -> DynUops for the real OOO path
 
@@ -321,6 +322,7 @@ static inline void snapshotRoiBaseCyc() {
  * like markRoiBegin (re-snapshots the current instant). Prints what it
  * dropped, once per call, so a log shows the window it reports. */
 static void roiRebaseTrafficCounters(const char* where) {
+    if (zinfo && zinfo->dramReplay) zinfo->dramReplay->markRoi();   // 1.11.98 (gate 1208A): the replay's statistics window opens with the traffic counters'
     if (!zinfo) return;
     uint64_t pre_mem = 0;
     uint32_t groups = 0;
@@ -1035,6 +1037,7 @@ static void dumpTerminationStats() {
     info("Dumping termination stats");
     zinfo->trigger = 20000;
     for (StatsBackend* backend : *(zinfo->statsBackends)) {
+        if (zinfo->dramReplay) zinfo->dramReplay->finalize();   // 1.11.98 (ruling 4 (c)): replay the tail, fold the controller totals
         backend->dump(false);
     }
 

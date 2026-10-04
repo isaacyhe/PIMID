@@ -184,6 +184,7 @@ struct GlobSimInfo {
 
     // Garnet network for device NoC simulation (PIMID integration)
     GarnetNetwork* garnetNetwork;
+    class DramEpochReplay* dramReplay;   // 1.11.98 (ruling 4 (c)): the device DRAM controller, replayed per epoch (nullptr = off)
 
     /* 1.11.90: the stat subtrees whose counters are TRAFFIC and must be
      * rebased at roi_begin (cache groups, "mem", "pe_mem"). Core groups are
@@ -378,6 +379,10 @@ struct GlobSimInfo {
         //   (inflates DRAM/H-tree). Drop remoteLat for non-grid; keep it for
         //   grid (where detailed > analytical and the memory term helps).
         uint32_t nocCurveIsGrid = 1;
+        /* 1.11.98 (ruling 4 (c)): 1 = the device's DRAM requests are replayed
+         * through Ramulator2 per epoch and the interfaces price the previous
+         * epoch's measured service latency (see dram_epoch_replay.h). */
+        uint32_t dramEpochReplay = 0;
 
         // Flattened mapping (shared-memory safe, no pointers)
         // peMemMapOffsets[pe] = start index in peMemMapData for PE pe

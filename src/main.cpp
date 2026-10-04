@@ -888,7 +888,22 @@ struct ZSimParsedOutput {
      * placement actually kept its accesses local. */
     /* 1.11.52 (audit D003): MEASURED row-buffer behaviour from the PE-MI. */
     uint64_t row_hits = 0, row_misses = 0;
+    /* 1.11.98 (ruling 4 (c)): the replayed controller's own row behaviour and
+     * refresh count (Ramulator2 owns the banks); preferred over the
+     * interfaces' private open-row registers when present. */
+    uint64_t ctrl_row_hits = 0, ctrl_row_misses = 0, ctrl_row_conflicts = 0, ctrl_refreshes = 0, ctrl_requests = 0;
+    uint64_t ctrl_ticks = 0, ctrl_idle_ticks = 0;   // 1.11.98 (row 28): replayed DRAM cycles, and those with nothing in flight
+    bool ctrlRowMeasured() const { return (ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts) > 0; }
     double rowMissFraction() const {
+        /* 1.11.98 (ruling 4 (c)): the replayed controller's row behaviour when
+         * the run had one -- a conflict (another row open) and a miss (bank
+         * closed) both open a new row, so both count against the activate
+         * share; the interfaces' private registers only when there is no
+         * controller. */
+        if (ctrlRowMeasured()) {
+            uint64_t n = ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts;
+            return static_cast<double>(ctrl_row_misses + ctrl_row_conflicts) / static_cast<double>(n);
+        }
         uint64_t n = row_hits + row_misses;
         return (n > 0) ? static_cast<double>(row_misses) / static_cast<double>(n)
                        : -1.0;   // <0 = the run carried no row measurement
@@ -1314,6 +1329,18 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 scope_indent = indent;
                 cache_group = cg;
                 continue;
+            } else if (key == "dramReplay") {
+                /* 1.11.98 (ruling 4 (c), gate 1208A): the replayed device
+                 * controller's group. Its counters (ctrlRowHits/Misses/
+                 * Conflicts, ctrlRefreshes, ctrlTicks, ctrlIdleTicks,
+                 * ctrlRequests) are parsed in the memory scope; none of its
+                 * names collide with an interface's (rd, wr, rowHits...).
+                 * Read at root scope they were ignored, and every consumer
+                 * (activate share, measured background, idle line) fell back. */
+                scope = Scope::MEM;
+                scope_indent = indent;
+                cache_group = CoreGroup::DEVICE;
+                continue;
             } else if (key.substr(0, 4) == "mem-" || key.substr(0, 4) == "mem_"
                        || key.substr(0, 6) == "pe-mc-" || key.substr(0, 6) == "pe-mi-") {
                 scope = Scope::MEM;
@@ -1549,6 +1576,13 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 }
                 if (key == "rowHits")   { out.row_hits += val; }
                 else if (key == "rowMisses") { out.row_misses += val; }
+                else if (key == "ctrlRowHits")      { out.ctrl_row_hits += val; }        // 1.11.98 (4c)
+                else if (key == "ctrlRowMisses")    { out.ctrl_row_misses += val; }
+                else if (key == "ctrlRowConflicts") { out.ctrl_row_conflicts += val; }
+                else if (key == "ctrlRefreshes")    { out.ctrl_refreshes += val; }
+                else if (key == "ctrlTicks")        { out.ctrl_ticks += val; }
+                else if (key == "ctrlIdleTicks")    { out.ctrl_idle_ticks += val; }
+                else if (key == "ctrlRequests")     { out.ctrl_requests += val; }
                 else if (key == "localAcc")  { out.pemi_local_acc += val; }
                 else if (key == "remoteAcc") { out.pemi_remote_acc += val; }
                 if (key == "rd") { out.mem_rd += val; if (cgrp) cgrp->mem_rd += val; }
@@ -2045,6 +2079,7 @@ struct UnifiedConfig {
     bool pe_mc_enabled = false;             // true when pim.mc section present in YAML
     std::string pe_mc_type = "simple";     // always "simple" (M/D/1 always active)
     int mc_clock_gear = 1;                 // 1.11.96 (sweep-94 ruling 14 (c)): pim.mc.clock_gear, MC clock = preset CK x gear (1 = on-die, 2 = gear-2 controller)
+    bool mc_epoch_replay = true;           // 1.11.98 (sweep-94 ruling 4 (c)): device DRAM requests replayed through Ramulator2 per epoch; pim.mc.epoch_replay false = analytical service only
     int pes_per_mc = 1;                     // PEs sharing each MI (0 = host MC mode)
     bool pes_per_mc_user_set = false;       // true when user explicitly set pes_per_mc
     int pe_mc_local_latency = -1;           // -1 = auto from technology
@@ -2921,6 +2956,23 @@ static int decoupledHostChannels(const std::string& tech, const UnifiedConfig& c
     } catch (const std::exception& e) {
         refuseWithoutDramOracle(tech, e.what(), "the host memory's channel count (its die population)");
     }
+}
+
+/* 1.11.98 (gate 1208A): the host-side memory controllers a run builds -- one
+ * Ramulator2 instance per channel of the technology when the host memory is
+ * timed by Ramulator (the generated YAML describes one channel), one
+ * otherwise. Every reporting site and McPAT (H32: number_mcs = the built
+ * count) ask here. */
+static int hostMemControllerCount(const std::string& tech, const UnifiedConfig& config) {
+    if (config.zsim_mem_controller_type != "ramulator") return 1;
+    const std::string t = canonicalMemTech(tech);
+    if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) return 1;
+    static std::map<std::string, int> cache;   // the preset's channel count does not change within a run
+    auto it = cache.find(t);
+    if (it != cache.end()) return it->second;
+    const int n = decoupledHostChannels(t, config);
+    cache[t] = n;
+    return n;
 }
 
 static void getMemControllerConfig(UnifiedConfig& config) {
@@ -3960,7 +4012,7 @@ static double deviceCycleClockMHz(const UnifiedConfig& config) {
  * site asks here now, so a fourth cannot invent a fourth answer. */
 static int peMemoryInterfaceCount(const UnifiedConfig& config) {
     if (!(config.pe_mc_enabled && config.pes_per_mc > 0))
-        return 1;                       // HOST_MC mode: the single host controller
+        return hostMemControllerCount(config.memory_tech, config);   // HOST_MC mode: the host controllers the run builds (1.11.98: one per channel)
     return std::max(1, config.num_pes / config.pes_per_mc);
 }
 
@@ -6036,6 +6088,7 @@ static void emitZSimPcieBlock(std::ostream& out, const UnifiedConfig& config,
     out << "    };\n";
 }
 
+static int dramBurstsPerLine(const std::string& tech, const UnifiedConfig& config);   // 1.11.98: defined with the mem block
 static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& config,
                                    double device_bw_freq_mhz = 0.0,
                                    double sys_freq_mhz = 0.0) {
@@ -6063,6 +6116,32 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     // a writer. The plugin still receives the key it has always received.
     out << "        channelsPerSystem = 1;\n";
     out << "        dramChannels = " << config.hierarchy_dram_channels << ";\n";
+    /* 1.11.98 (sweep-94 ruling 4 (c)): the live controller serves every element
+     * type by epoch replay (dram_epoch_replay.h). On for DRAM technologies
+     * unless pim.mc.epoch_replay is false; the Ramulator YAML is the one the
+     * mem block names. */
+    {
+        /* 1.11.98 (gate 1208A): not under MPI. The replay stamps requests on
+         * the global phase clock, which under thread-MPI keeps advancing
+         * while ranks sit parked in their waits (the wall-clock-pumped floor
+         * of the 1.6 notes): the probe's 4-rank stencil replayed 317 M DRAM
+         * cycles inside a ROI worth ~6 M. Thread-MPI device cells keep the
+         * deterministic epoch-frozen M/D/1 service until the replay stamps on
+         * the per-rank ROI clock with the consistent cut the NoC uses. */
+        const bool mpi_workload = (config.workload_type == "mpi");
+        const bool replay_on = config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator"
+                               && !config.ramulator_config_file.empty() && !mpi_workload;
+        out << "        dramEpochReplay = " << (replay_on ? 1 : 0) << ";\n";
+        if (replay_on) {
+            /* the replay's own Ramulator config and column commands per line:
+             * in system scope sys.mem describes the HOST's memory */
+            out << "        dramReplayConfigFile = \"" << config.ramulator_config_file << "\";\n";
+            out << "        dramReplayBurstsPerLine = " << dramBurstsPerLine(config.memory_tech, config) << ";\n";
+        }
+        std::cout << "  [mem] device DRAM controller: " << (replay_on ? "Ramulator2 EPOCH REPLAY (ruling 4 (c)): every interface's requests replayed per epoch, the previous epoch's measured service latency priced"
+                                                                        : (mpi_workload && config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator") ? "analytical service: the epoch replay is not applied to MPI workloads yet (its stamp axis under thread-MPI; 1.11.98 OPEN)"
+                                                                        : (config.mc_epoch_replay ? "analytical service (no Ramulator preset for this technology)" : "analytical service (pim.mc.epoch_replay: false)")) << std::endl;
+    }
     out << "        nocAggBandwidthMBs = " << config.hierarchy_agg_bandwidth_mbs << ";\n";
     out << "        dqTurnNsX100 = " << config.hierarchy_dq_turn_ns_x100 << ";\n";
     /* 1.11.11 (#113): the element's FP capability and the cost of not having
@@ -7182,6 +7261,13 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
         out << "        configFile = \"" << config.ramulator_config_file << "\";\n";
         out << "        latency = " << mem_latency << ";\n";
         out << "        burstsPerLine = " << dramBurstsPerLine(mem_tech, config) << ";\n";   // 1.11.96 (H01/H02)
+        /* 1.11.98 (gate 1208A): ONE controller per channel. The generated
+         * Ramulator YAML describes one channel (one controller per channel),
+         * and sys.mem.controllers defaulted to 1, so a HOST_MC placement or a
+         * co-sim host modelled one channel of a multi-channel memory (HBM3: 1
+         * of 16; DDR5: 1 of 2 sub-channels). zsim interleaves lines across
+         * the controllers (SplitAddrMemory: line % N, the address compacted). */
+        out << "        controllers = " << hostMemControllerCount(mem_tech, config) << ";\n";
         out << "    };\n";
     } else if (ct == "weavesimple") {
         out << "    mem = {\n";
@@ -9335,7 +9421,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         mcfg.num_memory_controllers =
             std::max(1, config.num_pes / config.pes_per_mc);
     } else {
-        mcfg.num_memory_controllers = 1;
+        mcfg.num_memory_controllers = peMemoryInterfaceCount(config);   // 1.11.98: HOST_MC builds one controller per channel (H32: the built count)
     }
     mcfg.mc_clock_mhz = mcClockMHzForMcPAT(config.memory_tech, config, config.frequency_mhz);   // 1.11.96 (14c): preset CK x gear
     // The in-memory NoC (DRAM datapath hierarchy) is a property of the memory
@@ -9455,6 +9541,18 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * (the pipeline duty); F6: the ROI-windowed BTB and RAS activity. */
     mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(0));
     mcpat.setMeasuredControlFlow(zsim_stats.indirBranches, zsim_stats.rasReturns);
+    /* 1.11.98 (sweep-94 row 28, user ruling (c)): when the run MEASURED its
+     * controller (epoch replay: refresh commands and idle cycles counted, PHY
+     * static from the IO model, printed in the memory report), McPAT's
+     * 10%-of-peak-every-cycle controller background is switched off; the
+     * convention stays, stated, for a run without a measured controller. */
+    {
+        const bool measured = zsim_stats.ctrlRowMeasured() && zsim_stats.ctrl_ticks > 0;
+        mcpat.setMCBackgroundFraction(measured ? 0.0 : 0.1);
+        std::cout << "  [power] memory-controller background: " << (measured
+            ? "MEASURED (ruling (c)): refresh commands and idle cycles from the replayed controller, PHY static from the IO model; McPAT's 10%-of-peak convention OFF"
+            : "McPAT convention, 10% of peak dynamic power every cycle (no measured controller in this run)") << std::endl;
+    }
     /* 1.9.33: subtract injected timing charges -- see the parser note. */
     if (zsim_stats.syntheticInstrs > 0 && instrs > zsim_stats.syntheticInstrs)
         instrs -= zsim_stats.syntheticInstrs;
@@ -9734,7 +9832,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per host
          * core (`<node>_l2 { caches = node.num_cores }`). */
         host_cfg.l2_instances = std::max(1, host_cfg.num_cores);
-        host_cfg.num_memory_controllers = 1;
+        host_cfg.num_memory_controllers = hostMemControllerCount(host_node ? host_node->memory_tech : config.memory_tech, config);   // 1.11.98 (H32): the built count, one per channel
         /* 1.11.52 (audit A011): DERIVED, like every other MC clock in this
          * file (mcfg.mc_clock_mhz = frequency/2 at both other sites). The
          * literal 1200 had no source and no print, so a host at any clock
@@ -9933,7 +10031,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             {
                 const double rmf = zsim_stats.rowMissFraction();
                 ram_oracle.setRowMissFraction(rmf);
-                if (rmf >= 0.0)
+                if (rmf >= 0.0 && zsim_stats.ctrlRowMeasured())
+                    std::cout << "  [mem] row-buffer miss fraction MEASURED by the replayed controller (Ramulator2, ruling 4 (c)) "
+                              << rmf << " (" << zsim_stats.ctrl_row_misses << " misses + " << zsim_stats.ctrl_row_conflicts << " conflicts of "
+                              << (zsim_stats.ctrl_row_hits + zsim_stats.ctrl_row_misses + zsim_stats.ctrl_row_conflicts)
+                              << " requests opened a new row; " << zsim_stats.ctrl_refreshes << " refresh commands); it weights the "
+                                 "activate/precharge share of array energy"
+                              << std::endl;
+                else if (rmf >= 0.0)
                     std::cout << "  [mem] row-buffer miss fraction MEASURED "
                               << rmf << " (" << zsim_stats.row_misses << " of "
                               << (zsim_stats.row_hits + zsim_stats.row_misses)
@@ -10128,6 +10233,24 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             /* 1.11.20 (D13): scaled to the same population as the background
              * beside it, so the two lines are the same memory system. */
             double ref_energy = ram_oracle.getRefreshPowerMW() * bg_units;
+            /* 1.11.98 (sweep-94 row 28, user ruling (c)): with the controller
+             * replayed, the refresh commands are COUNTED. Energy per command
+             * per unit = vdd x (IDD5 - IDD3N) x tRFC (the same datasheet row
+             * the duty above uses); the units behind one command = the
+             * population per rank (bg_units over ranks x channels); the rate
+             * is quoted over the replayed DRAM time. The datasheet duty stays
+             * printed beside it as the cross-check. */
+            double ref_energy_measured_mw = -1.0, ref_rate_measured_per_us = -1.0;
+            if (zsim_stats.ctrl_refreshes > 0 && zsim_stats.ctrl_ticks > 0 && ram_oracle.getTckNs() > 0.0) {
+                const double span_ns = (double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs();
+                const int rc = std::max(1, config.hierarchy_ranks_per_channel) * std::max(1, config.hierarchy_dram_channels);
+                const double units_per_cmd = (bg_units > 0) ? (double)bg_units / (double)rc : 1.0;
+                const double e_nj = (double)zsim_stats.ctrl_refreshes * ram_oracle.getRefreshEnergyPerCommandNJ() * std::max(1.0, units_per_cmd);
+                ref_energy_measured_mw = e_nj / span_ns * 1000.0;   // nJ/ns = W
+                ref_rate_measured_per_us = (double)zsim_stats.ctrl_refreshes / (span_ns / 1000.0);
+                ref_energy = ref_energy_measured_mw;
+            }
+            const double phy_static_mw = ram_oracle.getInterfacePhyStaticMW();   // 1.11.98 (row 28)
             double leakage_mw = bg_power_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0);   // 1.11.91: + the VPP rail
 
             double total_rd_nj = rd_energy * zsim_stats.mem_rd;
@@ -10234,9 +10357,23 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             if (stack_mw >= 0.0)   // 1.11.91 (item 12)
                 std::cout << " +stack=" << stack_mw << " mW (per-stack floor, included in Background)";
             std::cout << std::endl;
-            std::cout << "    of which refresh: " << ref_energy
-                      << " mW (a component of Background, not an addition to it;"
-                         " quoted at the IDD3N baseline)" << std::endl;
+            if (ref_energy_measured_mw >= 0.0)
+                std::cout << "    of which refresh: " << ref_energy
+                          << " mW MEASURED (ruling (c)): " << zsim_stats.ctrl_refreshes
+                          << " refresh commands over " << std::setprecision(1) << ((double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs() / 1000.0)
+                          << " us of replayed DRAM time (" << std::setprecision(3) << ref_rate_measured_per_us << " per us) x "
+                          << ram_oracle.getRefreshEnergyPerCommandNJ() << " nJ per command per unit (vdd x (IDD5 - IDD3N) x tRFC);"
+                             " datasheet duty would give " << ram_oracle.getRefreshPowerMW() * bg_units << " mW (a component of Background, not an addition)" << std::endl;
+            else
+                std::cout << "    of which refresh: " << ref_energy
+                          << " mW (a component of Background, not an addition to it;"
+                             " quoted at the IDD3N baseline)" << std::endl;
+            if (zsim_stats.ctrl_ticks > 0)
+                std::cout << "    controller:       idle " << std::setprecision(1) << (100.0 * (double)zsim_stats.ctrl_idle_ticks / (double)zsim_stats.ctrl_ticks)
+                          << "% of " << zsim_stats.ctrl_ticks << " replayed DRAM cycles (nothing in flight; row 28 MEASURED); PHY static "
+                          << std::setprecision(3) << phy_static_mw << " mW from the IO model"
+                          << (phy_static_mw > 0.0 ? " (the controller-side background McPAT's 10%-of-peak convention stood in for; McPAT's term is OFF in this run)" : " (no exact IO map for this technology: 0)")
+                          << std::endl;
             std::cout << "    leakage:          " << leakage_mw
                       << " mW (Background + ipp: the same standby current, named the way the "
                          "logic-side report names it -- not a further term)"
@@ -15267,6 +15404,7 @@ int main(int argc, char** argv) {
                     config.pe_mc_enabled = true;
                     auto mc = yaml_cfg["pim"]["mc"];
                     config.mc_clock_gear = yamlInt(mc["clock_gear"], config.mc_clock_gear, "pim.mc.clock_gear");   // 1.11.96 (14c)
+                    config.mc_epoch_replay = yamlBool(mc["epoch_replay"], config.mc_epoch_replay, "pim.mc.epoch_replay");   // 1.11.98 (4c)
                     if (config.mc_clock_gear != 1 && config.mc_clock_gear != 2) {
                         std::cerr << "Error: pim.mc.clock_gear = " << config.mc_clock_gear << "; the controller clock is the DRAM preset's CK x 1 (on-die) or x 2 (a gear-2 controller)." << std::endl;
                         return 1;

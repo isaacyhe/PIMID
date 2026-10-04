@@ -99,6 +99,7 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
     // Indirect control flow (BTB + RAS; IndirectPredictor default-constructs).
     indirMispredPend = false;
     indirBranches = indirMispreds = rasReturns = rasMispreds = 0;
+    directResteerPend = false; directBranches = btbMisses = 0; branchTarget = 0;   // 1.11.98
 }
 
 uint64_t InOrderCore::getPhaseCycles() const {
@@ -196,6 +197,13 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     ProxyStat* rasMispredsStat = new ProxyStat();
     rasMispredsStat->init("rasMispreds", "Return-target mispredictions (RAS miss) [whole run]", &rasMispreds);
     coreStat->append(rasMispredsStat);
+    /* 1.11.98 (user ruling (a)): direct branches through the BTB. */
+    ProxyStat* directBranchesStat = new ProxyStat();
+    directBranchesStat->init("directBranches", "Taken direct branches (jcc taken, call rel) looked up in the BTB [whole run]", &directBranches);
+    coreStat->append(directBranchesStat);
+    ProxyStat* btbMissesStat = new ProxyStat();
+    btbMissesStat->init("btbMisses", "Direct-branch BTB misses (decode-depth resteer unless the direction already mispredicted) [whole run]", &btbMisses);
+    coreStat->append(btbMissesStat);
     /* 1.11.93 (F6): ROI-windowed twins of indirBranches/rasReturns -- the
      * BTB and RAS activity the power model prices. */
     auto zib = [this]() -> uint64_t { return indirBranches - roiBaseIndir; };
@@ -206,16 +214,20 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zrr)>* roiRasStat = new LambdaStat<decltype(zrr)>(zrr);
     roiRasStat->init("roiRasReturns", "Returns resolved against the RAS (ROI)");
     coreStat->append(roiRasStat);
-    /* 1.11.97 (R2476): measured predictor table writes (value-changing
+    auto zbm = [this]() -> uint64_t { return btbMisses - roiBaseBtbMiss; };
+    LambdaStat<decltype(zbm)>* roiBtbMissStat = new LambdaStat<decltype(zbm)>(zbm);
+    roiBtbMissStat->init("roiBtbMisses", "Direct-branch BTB misses (ROI)");
+    coreStat->append(roiBtbMissStat);
+    /* 1.11.97 (R2476) / 1.11.98 (ruling (a)): measured predictor table writes (one per update,
      * updates, BranchPredictorPAg::predict in ooo_core.h), ROI-windowed --
      * McPAT's level-1 / level-2 local predictor write counts. */
     auto zbh = [this]() -> uint64_t { return branchPred.histWrites - roiBaseBpHist; };
     LambdaStat<decltype(zbh)>* roiBpHistStat = new LambdaStat<decltype(zbh)>(zbh);
-    roiBpHistStat->init("roiBpHistWrites", "Branch-history table writes that changed an entry (ROI)");
+    roiBpHistStat->init("roiBpHistWrites", "Branch-history table writes, one per resolved branch (ROI)");
     coreStat->append(roiBpHistStat);
     auto zbp = [this]() -> uint64_t { return branchPred.phtWrites - roiBaseBpPht; };
     LambdaStat<decltype(zbp)>* roiBpPhtStat = new LambdaStat<decltype(zbp)>(zbp);
-    roiBpPhtStat->init("roiBpPhtWrites", "Predictor counter-table writes that changed a counter (ROI)");
+    roiBpPhtStat->init("roiBpPhtWrites", "Predictor counter-table writes, one per resolved branch (ROI)");
     coreStat->append(roiBpPhtStat);
 
     parentStat->append(coreStat);
@@ -227,8 +239,9 @@ void InOrderCore::contextSwitch(int32_t gid) {
         // Do not simulate the lingering previous BBL across a context switch.
         prevBbl = nullptr;
         loads = stores = 0;
-        branchPc = 0;
+        branchPc = 0; branchTarget = 0;
         indirMispredPend = false;
+        directResteerPend = false;   // 1.11.98
         drainPipeline();  // scheduler boundary: no overlap across a switch
         l1i->contextSwitch();
         l1d->contextSwitch();
@@ -488,7 +501,18 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
     // lands after the BBL drains (curCycle is at last completion here).
     if (branchPc) {
         branches++;
-        if (!branchPred.predict(branchPc, branchTaken)) {
+        const bool dirOk = branchPred.predict(branchPc, branchTaken);
+        /* 1.11.98 (user ruling (a)): a TAKEN direct branch also needs its
+         * target from the BTB at fetch. The lookup trains the BTB either way;
+         * a miss is charged the decode-depth resteer ONLY when the direction
+         * was predicted right -- a direction mispredict already flushes and
+         * refills at execute depth, which subsumes the shorter resteer. */
+        if (branchTaken && branchTarget) {
+            directBranches++;
+            const bool btbHit = indirPred.indirect(branchPc, branchTarget);
+            if (!btbHit) { btbMisses++; if (dirOk) directResteerPend = true; }
+        }
+        if (!dirOk) {
             mispredBranches++;
             mispredStallCycles += mispredPenalty;
             // A mispredict FLUSHES the front-end: the redirect cannot begin
@@ -497,16 +521,30 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
             // fall-through boundaries do not (cross-BBL overlap flows on).
             drainPipeline();
             curCycle += mispredPenalty;
+            directResteerPend = false;   // subsumed by the execute-depth flush
         }
-        branchPc = 0;
+        branchPc = 0; branchTarget = 0;
     }
 
     // Indirect jmp/call/ret target misprediction (BTB/RAS miss, armed by
     // ctrlFlow for the terminator of `sim`): same flush semantics as a
     // conditional mispredict, but the DECODE-depth bubble (1.11.97, R2313
     // (b): resteerPenalty; through 1.11.96 the execute-depth mispredPenalty).
+    /* 1.11.98 (user ruling (a)): an indirect jmp/call/ret target is known only
+     * when the branch EXECUTES, so its miss is the execute-depth flush/refill
+     * bubble (1.11.97 charged the decode-depth resteer here). */
     if (indirMispredPend) {
         indirMispredPend = false;
+        directResteerPend = false;
+        mispredStallCycles += mispredPenalty;
+        drainPipeline();
+        curCycle += mispredPenalty;
+    }
+    /* A direct branch (taken jcc, call rel) whose target the BTB did not have:
+     * the decoder computes the target and redirects fetch -- the DECODE-depth
+     * resteer bubble (the resteerPenalty of R2313 (b)). */
+    if (directResteerPend) {
+        directResteerPend = false;
         mispredStallCycles += resteerPenalty;
         drainPipeline();
         curCycle += resteerPenalty;
@@ -553,9 +591,10 @@ void InOrderCore::PredStoreAndRecordFunc(THREADID tid, ADDRINT addr, BOOL pred) 
 
 /* ---- Branch feed (plugin calls this right before bblPtr; see plugin gate) ---- */
 
-void InOrderCore::branch(Address pc, bool taken) {
+void InOrderCore::branch(Address pc, bool taken, Address takenTarget) {
     branchPc = pc;
     branchTaken = taken;
+    branchTarget = takenTarget;   // 1.11.98: the BTB lookup for a taken direct branch
 }
 
 /* Indirect control-flow resolution (kind >= CF_IND_JMP, see CtrlFlowKind in
@@ -566,7 +605,12 @@ void InOrderCore::branch(Address pc, bool taken) {
 void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address retAddr) {
     switch (kind) {
         case CF_DIR_CALL:
-            indirPred.push(retAddr);  /* direct call: target always predicted */
+            /* 1.11.98 (user ruling (a)): a direct call's target is in the
+             * instruction, computed at decode -- fetch needs the BTB to follow
+             * it earlier; a BTB miss resteers at decode depth. */
+            directBranches++;
+            if (!indirPred.indirect(pc, target)) { btbMisses++; directResteerPend = true; }
+            indirPred.push(retAddr);
             break;
         case CF_IND_CALL:
             indirBranches++;
@@ -590,6 +634,6 @@ void InOrderCore::BranchFunc(THREADID tid, ADDRINT pc, BOOL taken, ADDRINT taken
     // taken <= 1: conditional direction feed (wrong-path fetches not modeled).
     // taken >= 2: CtrlFlowKind for indirect jmp/call/ret and direct-call RAS
     // pushes (takenNpc = resolved target, notTakenNpc = call fall-through).
-    if (taken <= CF_COND_T) core->branch(pc, taken != 0);
+    if (taken <= CF_COND_T) core->branch(pc, taken != 0, takenNpc);   // 1.11.98: + the taken target
     else core->ctrlFlow((uint32_t)taken, pc, takenNpc, notTakenNpc);
 }

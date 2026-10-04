@@ -26,6 +26,7 @@
 #include "memory_hierarchy.h"
 #include "hierarchy_util.h"
 #include "sparse_htree.h"
+#include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
 #include "pimid_noc_shm.h"
 #include <cstdlib>
 #include "pad.h"
@@ -557,7 +558,8 @@ public:
         bool wantLocal = zinfo->garnetNetwork && zinfo->garnetNetwork->isCycleAccurate()
                          ? false : isLocal(targetUnit);
         if (wantLocal) {
-            uint32_t lat = localAccessLatency(req) + localLinkLat_;
+            bool byReplay = false;
+            uint32_t lat = localAccessLatency(req, &byReplay) + localLinkLat_;
 
             // DRAM channel bandwidth bottleneck (accuracy fix): even a "local"
             // bank access consumes the shared DRAM channel's DQ bandwidth. In
@@ -568,7 +570,7 @@ public:
                 GarnetNetwork* gnLocal = zinfo->garnetNetwork;
                 if (gnLocal && gnLocal->isCycleAccurate() &&
                     zinfo->hierarchy.nocAggBandwidthMBs > 0) {
-                    lat += channelBandwidthWait(req.srcId, req.cycle);
+                    if (!byReplay) lat += channelBandwidthWait(req.srcId, req.cycle);
                 }
             }
 
@@ -595,7 +597,8 @@ public:
         } else {
             // Remote: route through network to destination MI
             uint32_t myUnit = representativeUnit();
-            uint32_t remoteLat = localAccessLatency(req);
+            bool byReplay = false;
+            uint32_t remoteLat = localAccessLatency(req, &byReplay);
 
             GarnetNetwork* gn = zinfo->garnetNetwork;
             if (gn && gn->isCycleAccurate()) {
@@ -613,7 +616,7 @@ public:
                     // Degenerate: the tree has no PEs (no placement) -> nothing to
                     // route to. Price as plain Ramulator DRAM (no Garnet traversal).
                     uint32_t lat = remoteLat + 2 * localLinkLat_;
-                    if (zinfo->hierarchy.nocAggBandwidthMBs > 0) lat += channelBandwidthWait(req.srcId, req.cycle);
+                    if (zinfo->hierarchy.nocAggBandwidthMBs > 0) if (!byReplay) lat += channelBandwidthWait(req.srcId, req.cycle);
                     // E16: no traversal happens here (see the comment above), so
                     // the fabric is marked only for the MC hop, as in the local
                     // path -- not by falling through to the routed-path marker.
@@ -766,7 +769,7 @@ public:
                 // per-MI BW. Add a shared M/D/c channel-BW queueing wait so
                 // effective aggregate DRAM BW is capped at the datasheet value.
                 if (zinfo->hierarchy.nocAggBandwidthMBs > 0) {
-                    totalLat += channelBandwidthWait(req.srcId, req.cycle);
+                    if (!byReplay) totalLat += channelBandwidthWait(req.srcId, req.cycle);
                 }
                 // Standalone MC: extra core → MC node hop on top of routing.
                 if (zinfo->hierarchy.mcStandalone) {
@@ -1152,8 +1155,40 @@ protected:
         return (uint32_t)(wait + 0.5);
     }
 
-    uint32_t localAccessLatency(MemReq& req) {
+    /* 1.11.98 (ruling 4 (c)): the device time of an access. With the epoch
+     * replay armed every access is recorded for the controller and priced at
+     * the previous epoch's replayed service latency of THIS interface (device
+     * time including the controller's queueing, row behaviour, refresh and
+     * turnaround); the analytical service below serves only the bootstrap
+     * (no replayed epoch yet). byReplay tells the caller to skip the
+     * analytical channel wait, which the controller already contains. */
+    uint32_t localAccessLatency(MemReq& req, bool* byReplay = nullptr) {
         uint32_t result;
+        if (byReplay) *byReplay = false;
+        if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay) {
+            uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
+            if (E < 1) E = 1;
+            uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
+            uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
+            uint64_t curEpoch = rel / E;
+            const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+            /* 1.11.98 (gate 1208A): the TARGET bank -- the unit the address
+             * belongs to, and the bank slot and row the interface's own row
+             * model gives it (the same stripe arithmetic as noteRowAccess). */
+            const uint32_t unit = addrToUnit(req.lineAddr);
+            uint32_t slot = 0; uint64_t row;
+            if (rowStrideBytes_ > 0) {
+                const uint64_t stripe = (uint64_t)(req.lineAddr << 6) / rowStrideBytes_;
+                slot = (uint32_t)(stripe % rowSlotsPerUnit_);
+                row = stripe / rowSlotsPerUnit_;
+            } else {
+                row = (uint64_t)(req.lineAddr << 6) / 1024;   // no row model armed: 1 KB rows, stated
+            }
+            zinfo->dramReplay->record(curEpoch, phaseStamp(req.cycle), unit, slot, row, req.lineAddr, isWrite, mcId_);
+            uint32_t v = zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
+            zinfo->dramReplay->notePriced(v > 0);
+            if (v > 0) { if (byReplay) *byReplay = true; return v; }
+        }
         if (mpiThreadDetPricing() && !sharedNoc() && maxRequestsPerCycle_ > 0.0 &&
             zinfo->hierarchy.mpiNocBaselined) {
             // 1.9.0 thread-MPI: DETERMINISTIC epoch-frozen M/D/1 device time (E2).

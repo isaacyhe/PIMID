@@ -139,8 +139,10 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   (join/phase/context-switch). Branch modeling matches `ooo_core`: a 2-level PAg
   predictor for conditional direction plus a 512-entry BTB (indirect jmp/call
   targets) and 16-entry return-address stack, all fed with real outcomes. A
-  conditional mispredict charges the execute-depth flush bubble and a BTB/RAS
-  target miss the shorter decode-depth resteer bubble (1.11.97; 7 and 4 cycles
+  conditional mispredict and an indirect jmp/call or return target miss charge
+  the execute-depth flush bubble (the target is known only at execute); a taken
+  direct branch (jcc, call rel) that misses the BTB charges the shorter
+  decode-depth resteer bubble (1.11.98 ruling (a); 7 and 4 cycles
   from the core record `params/core/default.yaml`, set per run with
   `core.in_order.mispredict_penalty_cycles` / `core.in_order.resteer_penalty_cycles`;
   env overrides `PIMID_INORDER_MISPRED_PENALTY` / `PIMID_INORDER_RESTEER_PENALTY`;

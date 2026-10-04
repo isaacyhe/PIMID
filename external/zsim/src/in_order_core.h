@@ -168,11 +168,16 @@ class InOrderCore : public Core {
         BranchPredictorPAg<11, 18, 14> branchPred;
         Address branchPc;        // 0 if the BBL being simulated did not end in a jcc
         bool branchTaken;
+        Address branchTarget;    // 1.11.98: the taken target (for the direct-branch BTB lookup)
         /* 1.11.97 (R2313 (b)): TWO penalties (core record params/core/
          * default.yaml, in_order.*; zsim keys mispredPenalty / resteerPenalty,
-         * required). mispredPenalty: conditional direction mispredict,
-         * resolved at EXECUTE -- the fetch-to-issue refill. resteerPenalty:
-         * BTB/RAS target resteer, charged at DECODE depth -- shorter. */
+         * required). 1.11.98 (user ruling (a) 2026-10-03, refining R2313):
+         * mispredPenalty is charged for everything resolved at EXECUTE -- a
+         * conditional direction mispredict AND an indirect jmp/call or return
+         * target miss (their target is known only when they execute);
+         * resteerPenalty, the DECODE-depth bubble, is charged only for a
+         * DIRECT branch whose target the BTB did not have: the decoder
+         * computes the target and redirects fetch behind it. */
         uint32_t mispredPenalty; // execute-depth flush/refill bubble (cycles)
         uint32_t resteerPenalty; // decode-depth resteer bubble (cycles)
         uint64_t branches;           // resolved conditional branches fed to the predictor
@@ -185,7 +190,10 @@ class InOrderCore : public Core {
         // through 1.11.96 it charged the conditional mispredPenalty).
         // Gated by PIMID_INORDER_NOBRANCH like all branch modeling.
         IndirectPredictor<9, 16> indirPred;
-        bool indirMispredPend;
+        bool indirMispredPend;      // an indirect/RAS target miss: execute-depth bubble (1.11.98)
+        bool directResteerPend;     // 1.11.98: a direct-branch BTB miss: decode-depth resteer
+        uint64_t directBranches;    // 1.11.98: taken direct branches (jcc taken, call rel) looked up in the BTB
+        uint64_t btbMisses;         // 1.11.98: of those, BTB misses (decode-depth resteer unless the direction already mispredicted)
         uint64_t indirBranches;
         uint64_t indirMispreds;
         uint64_t rasReturns;
@@ -210,6 +218,7 @@ class InOrderCore : public Core {
          * the 1.9.28 base-mismatch defect. */
         uint64_t roiBaseIndir    = 0;
         uint64_t roiBaseRas      = 0;
+        uint64_t roiBaseBtbMiss  = 0;   // 1.11.98: direct-branch BTB misses
         uint64_t roiBaseBpHist   = 0;   // 1.11.97 (R2476): predictor table writes
         uint64_t roiBaseBpPht    = 0;
         uint64_t roiBaseCycle  = 0;
@@ -258,7 +267,7 @@ class InOrderCore : public Core {
             roiBaseInstrs = instrs; roiBaseCycle = getCycles();  // adjusted clock: pre-ROI phantom excluded
             roiBaseUops = uops; roiBaseBbls = bbls;              // 1.9.33
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
-            roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
+            roiBaseIndir = indirBranches; roiBaseRas = rasReturns; roiBaseBtbMiss = btbMisses;   // 1.11.93 (F6)
             roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10
@@ -332,7 +341,7 @@ class InOrderCore : public Core {
 
         // Records the resolved direction of the branch terminating the BBL that
         // is about to be simulated (the plugin calls this right before bblPtr).
-        inline void branch(Address pc, bool taken);
+        inline void branch(Address pc, bool taken, Address takenTarget);   // 1.11.98: + the taken target for the BTB
 
         // Indirect control-flow resolution (kind >= CF_IND_JMP, CtrlFlowKind in
         // ooo_core.h): BTB/RAS query+update; arms the mispredict bubble.

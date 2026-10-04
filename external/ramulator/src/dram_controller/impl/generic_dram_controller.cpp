@@ -257,6 +257,11 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
      * @details
      * 
      */
+    void pimid_ctrl_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& refreshes) const override {   // PIMID 1.11.98
+      hits += s_row_hits; misses += s_row_misses; conflicts += s_row_conflicts;
+      if (m_refresh) refreshes += m_refresh->pimid_num_refresh();
+    }
+
     void update_request_stats(ReqBuffer::iterator& req)
     {
       req->is_stat_updated = true;

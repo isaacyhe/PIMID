@@ -195,6 +195,11 @@ int main(int argc, char* argv[]) {
     }
 
     if (rank == 0) zsim_roi_end();
+    /* 1.11.98 (user ruling 2026-10-03): the closing barrier every other MPI
+     * kernel has. The device-scope ROI ends when the LAST rank arrives here
+     * (the last-rank rule of 1.11.97); without it bfs froze its statistics
+     * at guest exit, inside rank 0's post-ROI visited-count loop. */
+    MPI_Barrier(MPI_COMM_WORLD);
 
     /* Gather this rank's dist back to host layout for the (untimed) check. */
     if (prep)

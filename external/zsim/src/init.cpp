@@ -43,6 +43,7 @@ using namespace std;
 #include "core.h"
 #include "debug_zsim.h"
 #include "pe_memory_interface.h"
+#include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
 #include "ramulator_mem_ctrl.h"
 #include "event_queue.h"
 #include "filter_cache.h"
@@ -596,6 +597,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.ranksPerChannel = config.get<uint32_t>("sys.hierarchy.ranksPerChannel", 1);
         zinfo->hierarchy.channelsPerSystem = config.get<uint32_t>("sys.hierarchy.channelsPerSystem", 1);
         zinfo->hierarchy.dramChannels = config.get<uint32_t>("sys.hierarchy.dramChannels", 1);
+        zinfo->hierarchy.dramEpochReplay = config.get<uint32_t>("sys.hierarchy.dramEpochReplay", 0);   // 1.11.98 (ruling 4 (c))
         zinfo->hierarchy.nocAggBandwidthMBs = config.get<uint64_t>("sys.hierarchy.nocAggBandwidthMBs", 0);
         zinfo->hierarchy.dqTurnNsX100 = config.get<uint32_t>("sys.hierarchy.dqTurnNsX100", 0);
         zinfo->hierarchy.fpEmulCycles = config.get<uint32_t>("sys.hierarchy.fpEmulCycles", 0);  // 1.11.11
@@ -1210,6 +1212,23 @@ static void InitSystem(Config& config) {
         for (uint32_t i = 0; i < mcCount; i++)
             rawMIs[i] = static_cast<PEMemoryInterface*>(mems[i]);
 
+        /* 1.11.98 (sweep-94 ruling 4 (c)): ONE Ramulator2 instance per device
+         * replays every interface's DRAM requests at the epoch boundary; the
+         * interfaces price the previous epoch's measured service latency.
+         * Built from the same Ramulator YAML the oracle and the HOST_MC
+         * controller use (sys.mem.configFile), at the element clock the
+         * interfaces stamp on. */
+        if (zinfo->hierarchy.dramEpochReplay) {
+            /* 1.11.98 (gate 1208A): the replay's own keys; in system scope
+             * sys.mem describes the HOST's memory, not the device's. */
+            std::string replayCfg = config.get<const char*>("sys.hierarchy.dramReplayConfigFile", "");
+            if (replayCfg.empty()) replayCfg = config.get<const char*>("sys.mem.configFile", "");
+            if (replayCfg.empty()) panic("sys.hierarchy.dramEpochReplay = 1 needs sys.hierarchy.dramReplayConfigFile (the device's Ramulator2 YAML)");
+            uint32_t bursts = config.get<uint32_t>("sys.hierarchy.dramReplayBurstsPerLine", config.get<uint32_t>("sys.mem.burstsPerLine", 1));
+            uint32_t lineBits = 0; while ((1u << lineBits) < zinfo->lineSize) lineBits++;
+            zinfo->dramReplay = new DramEpochReplay(replayCfg, (uint64_t)peMiFreqMHz * 1000000ull, mcCount, bursts, lineBits, "dramReplay");
+        }
+
         if (cosimMode) {
             // Co-sim: the PE-MIs serve the device PEs directly (mi_ wiring
             // below); the cache hierarchy's memory side belongs to the HOST,
@@ -1752,6 +1771,7 @@ static void InitSystem(Config& config) {
     //Initialize event recorders
     //for (uint32_t i = 0; i < zinfo->numCores; i++) eventRecorders[i] = new EventRecorder();
 
+    if (zinfo->dramReplay) zinfo->dramReplay->initStats(zinfo->rootStat);   // 1.11.98 (ruling 4 (c))
     AggregateStat* memStat = new AggregateStat(true);
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);

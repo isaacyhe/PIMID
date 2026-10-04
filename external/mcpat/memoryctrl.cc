@@ -168,7 +168,7 @@ void MCBackend::computeEnergy(bool is_tdp)
     {
     	rt_power.readOp.dynamic	= (stats_t.readAc.access + stats_t.writeAc.access)*mcp.llcBlockSize*8.0/mcp.dataBusWidth*power_t.readOp.dynamic;
     	rt_power = rt_power + power_t*pppm_lkg;
-    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*0.1*mcp.clockRate*mcp.num_mcs*mcp.executionTime;
+    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     	//Assume 10% of peak power is consumed by routine job including memory refreshing and scrubbing
     }
 }
@@ -341,7 +341,7 @@ void MCPHY::computeEnergy(bool is_tdp)
 //    						stats_t.writeAc.access*power_t.readOp.dynamic);
 
     	rt_power.readOp.dynamic=power_t.readOp.dynamic*(stats_t.readAc.access + stats_t.writeAc.access)*(mcp.llcBlockSize)*8/1e9/mcp.executionTime*(mcp.executionTime);
-    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*0.1*mcp.clockRate*mcp.num_mcs*mcp.executionTime;
+    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     }
 }
 
@@ -518,7 +518,7 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
     	        (frontendBuffer->local_result.power +
     	        		readBuffer->local_result.power +
     	        		writeBuffer->local_result.power)*pppm_lkg;
-    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*0.1*mcp.clockRate*mcp.num_mcs*mcp.executionTime;
+    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     }
 }
 
@@ -825,6 +825,7 @@ void MemoryController::set_mc_param()
 		mcp.LVDS = XML->sys.mc.LVDS;
 		mcp.type = XML->sys.mc.type;
 		mcp.withPHY = XML->sys.mc.withPHY;
+		mcp.background_fraction = XML->sys.mc.background_fraction;   /* PIMID 1.11.98 (row 28, ruling (c)) */
 		mcp.phy_class = XML->sys.mc.phy_class;   // PIMID 1.11.19 (D2/D3)
 
 		if ( XML->sys.mc.vdd>0)

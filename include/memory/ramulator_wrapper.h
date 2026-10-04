@@ -324,6 +324,9 @@ public:
     void setTerminationOverridePJPerBit(double v) { energy_term_override_pJ_per_bit_ = v; }
     double getBackgroundPowerMW() const;     // per-unit active standby + refresh
     double getRefreshPowerMW() const;        // per-unit refresh component only
+    double getRefreshEnergyPerCommandNJ() const;   // 1.11.98 (row 28, ruling (c)): vdd x (IDD5 - IDD3N) x tRFC per unit per REF command
+    double getTckNs() const;                       // 1.11.98: the preset's clock period
+    double getInterfacePhyStaticMW() const;        // 1.11.98 (row 28, ruling (c)): CACTI-IO PHY static power of the channel interface (0 = no exact map)
     /* 1.11.20 (D13+D15): the memory system's background. Population-scaled
      * (one DDR chip / one HBM channel is the IDD unit) and state-aware
      * (IDD3N busy, IDD2N idle, IDD2P idle-with-pg). device_width is the

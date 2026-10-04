@@ -503,6 +503,7 @@ typedef struct{
 	double peak_transfer_rate;
 	int number_mcs;
 	bool withPHY;
+	double background_fraction;   /* PIMID 1.11.98 (row 28): the routine-job share of peak dynamic power per cycle; McPAT's 0.1 unless the run measures it */
 	int type;
 
 	//FCParam

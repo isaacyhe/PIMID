@@ -52,8 +52,9 @@ class BranchPredictorPAg {
         uint8_t pht[1 << LB];
 
     public:
-        /* PIMID 1.11.97 (R2476): value-changing table writes, whole run
-         * (the cores rebase them at roi_begin, like every activity count). */
+        /* PIMID 1.11.97 (R2476) / 1.11.98 (user ruling (a) 2026-10-03): table
+         * WRITES, one per update to each table, whole run (the cores rebase
+         * them at roi_begin, like every activity count). */
         uint64_t histWrites = 0;   // level-1 history table (bhsr)
         uint64_t phtWrites = 0;    // level-2 2-bit counter table (pht)
 
@@ -96,17 +97,21 @@ class BranchPredictorPAg {
             // info("BP Pred: 0x%lx bshr[%d]=%x taken=%d pht=%d pred=%d", branchPc, bhsrIdx, phtIdx, taken, pht[phtIdx], pred);
 
             // Update
-            /* PIMID 1.11.97 (R2476): count the table WRITES that change a
-             * stored value -- what McPAT's estimate ("10% of BR will flip
-             * internal bits", mcpat core.cc) stands in for. A saturated
-             * counter that stays saturated, or a history that shifts in the
-             * bit it shifted out, is not a write. Level 1 = the history
-             * table (bhsr), level 2 = the 2-bit counter table (pht). The
-             * prediction and the update are unchanged. */
+            /* PIMID 1.11.97 (R2476): count the table WRITES McPAT prices
+             * (its estimate was mispredicts + "10% of BR will flip internal
+             * bits", mcpat core.cc). 1.11.98 (user ruling (a) 2026-10-03):
+             * EVERY update is a write to each table -- McPAT prices the
+             * history and counter tables as arrays with an energy per write
+             * access, and the write enable is asserted on every update
+             * whether or not the stored value changes (1.11.97 counted only
+             * value-changing updates, which undercounted saturated counters
+             * and repeating histories). Level 1 = the history table (bhsr),
+             * level 2 = the 2-bit counter table (pht). The prediction and
+             * the update are unchanged. */
             const uint8_t newPht = taken? (pred? 3 : (pht[phtIdx]+1)) : (pred? (pht[phtIdx]-1) : 0); //2-bit saturating counter
             const uint32_t newBhsr = ((bhsr[bhsrIdx] << 1) & histMask ) | (taken? 1: 0); //we apply phtMask here, dependence is further away
-            if (newPht != pht[phtIdx]) phtWrites++;
-            if (newBhsr != bhsr[bhsrIdx]) histWrites++;
+            phtWrites++;
+            histWrites++;
             pht[phtIdx] = newPht;
             bhsr[bhsrIdx] = newBhsr;
 

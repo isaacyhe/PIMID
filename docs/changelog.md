@@ -7,6 +7,180 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.98 -- the controller serves every element: the device's DRAM requests are replayed through Ramulator2 per epoch
+
+CONTROLLER RELEASE, part 2 (R3 of `_1166audit/MANIFEST_1.11.94plus.md`; sweep-94
+ruling 4 (c), decided by the user on 2026-10-03 for epoch replay; row 28; review
+x04-8, x04-10). Numbers move on every device DRAM cell of every element type.
+
+**(1) Epoch replay (ruling 4 (c)).** 1.11.96 put Ramulator2 in the timing loop
+for the weave cores through their event recorders. The bound-only ALU and simple
+elements have no weave phase, so their memory side stayed on the interface's
+analytical service: zero-load latency plus an M/D/1 wait plus a private
+open-row register per unit. Now every device DRAM request of an epoch --
+(phase stamp, address, read/write, interface) -- is replayed through ONE
+Ramulator2 instance per device (`external/zsim/src/dram_epoch_replay.{h,cpp}`,
+built from the same preset YAML the oracle and the HOST_MC controller use, at
+the element clock) at the epoch boundary, in stamp order; the per-interface
+mean service latency the controller measures prices the NEXT epoch's accesses
+of that interface, with the one-epoch lag the deterministic-epoch M/D/1
+already had (`epochFrozenScalar` discipline; epoch = `detEpochPhases` phases
+on the `numPhases` axis). The replay input is sorted by (stamp, interface,
+address, type), so the thread arrival order inside an epoch cannot change it;
+the instance persists across epochs, so bank state and the refresh schedule
+carry over; a full controller queue makes the request wait at the door (the
+queueing this is here to measure). Priced by the replay, an access skips the
+analytical channel wait (the controller contains it). The first epoch is the
+bootstrap (analytical service; counted as `bootstrap` against `priced`).
+The queue at the target bank (x04-8) and the shared open-row state (x04-10)
+are the controller's by construction.
+
+**(2) Measured, exported.** The replay exports requests, epochs, reads, writes,
+the latency sum, unserved requests at the drain bound (must be 0), and the
+controller's own totals parsed from Ramulator2's statistics: row hits, misses,
+conflicts, and the refresh commands issued (`ctrlRefreshes`, a counter added to
+the all-bank refresh scheduler; row 28's measured background). The array
+energy's activate share now takes the controller's row behaviour (misses and
+conflicts both open a row) when the run had one; the interfaces' private
+registers only otherwise, and the line says which.
+
+**(3) The knob.** `pim.mc.epoch_replay` (default true for DRAM technologies;
+false keeps the analytical service and the device config says so); the zsim
+side receives `sys.hierarchy.dramEpochReplay`.
+
+DATA IMPACT: every OpenMP/serial device DRAM cell (device time from the
+replayed controller from the second ROI epoch on; array energy's activate
+share from the controller's row behaviour); every HOST_MC and co-sim host
+cell (one controller per channel); every GDDR6/HBM2/HBM3 cell timed by
+Ramulator (refresh); in-order cells (resteer depth), every cell with a branch
+predictor (predictor writes), bfs MPI cells (closing barrier). Measured on
+the gate shapes (1208C): HBM3 ALU stream 40000 338 k -> 419 k cycles (+24%:
+each element streams three arrays through its own bank, 78% row conflicts,
+which the analytical service could not see); HBM3 in-order gemv 256 85.2 k
+-> 84.4 k; controller dynamic power on that shape 1.148 W (McPAT's 10%
+convention) -> 0.002 W measured.
+
+**(4) The controller background is measured (sweep-94 row 28, user ruling
+(c) 2026-10-03).** McPAT charged the memory controller 10% of its peak dynamic
+power every cycle "for routine jobs including refreshing and scrubbing"
+(memoryctrl.cc, three sites). The fork now reads that share as the XML
+parameter `background_fraction` (default 0.1, McPAT's convention, stated in
+the run); a run whose controller was replayed sets it to 0 and reports the
+measured terms instead: the refresh commands the controller issued, priced
+at vdd x (IDD5 - IDD3N) x tRFC per command per unit (the same datasheet row
+the refresh duty used; the duty figure stays printed as the cross-check),
+the fraction of replayed DRAM cycles with nothing in flight (`ctrlIdleTicks`
+over `ctrlTicks`), and the PHY's static power from the CACTI-IO evaluation
+the interface energy comes from (`getInterfacePhyStaticMW`; 0 where the
+technology has no exact IO map, said so).
+
+**(5) Where the resteer is charged (user ruling (a) 2026-10-03, refining
+sweep-94 R2313 (b)).** 1.11.97 charged the decode-depth resteer for every
+indirect jmp/call and return target miss. Their target is known only when the
+branch executes, so the in-order core now charges those the execute-depth
+mispredict bubble; the decode-depth resteer is charged where it belongs, a
+TAKEN DIRECT branch (jcc taken, call rel) whose target the BTB did not have:
+the decoder computes it from the instruction and redirects fetch behind
+decode. Direct branches now go through the same 512-entry BTB as the
+indirect ones (`directBranches`, `btbMisses`, `roiBtbMisses` exported); a
+direction mispredict subsumes the resteer of the same branch.
+
+**(7) Every predictor update is a write (user ruling (a) 2026-10-03,
+refining sweep-94 R2476).** 1.11.97 counted only the predictor-table updates
+that changed a stored value. McPAT prices the history and counter tables as
+arrays with an energy per write access, and a predictor asserts the write
+enable on every update, so both cores now count one history-table write and
+one counter-table write per resolved branch; the ROI twins
+`roiBpHistWrites` / `roiBpPhtWrites` equal the ROI's resolved branches.
+
+**(6) bfs closes its ROI (user ruling (a) 2026-10-03).** `bfs_mpi.c` and
+`benchmarks/host/bfs/bfs_message_passing.c` gain the closing MPI_Barrier
+after roi_end that the other twelve MPI kernels have, and both guest
+binaries are rebuilt; the device-scope ROI of bfs ends at the last rank's
+arrival (1.11.97 rule) instead of at guest exit inside rank 0's post-ROI
+visited-count loop.
+
+**(8) Found by gate 1208A, and fixed before shipping.**
+- *Ramulator never refreshed GDDR6, HBM2 or HBM3.* The all-bank refresh
+  manager looped over `get_level_size("rank")`, which is -1 for a model with
+  no rank level; those three declare REFab at channel scope and have no rank,
+  so not one refresh was issued and no tRFC ever blocked a bank, in every
+  PIMID timing path that uses Ramulator for them (the oracle, the host-side
+  controller of 1.11.96, the replay). The manager now sends REFab at the
+  scope the model declares for the command (channel: one per channel per
+  tREFI; rank or pseudo-channel: one per instance); DDR3/4/5 and LPDDR5,
+  which declare rank scope, are unchanged. Measured: HBM3 110,048 refreshes
+  over 42.9 M DRAM cycles on 16 channels = one per channel per 6240 cycles.
+- *The replay modelled one channel.* The device's Ramulator YAML is written
+  for one controller per channel; the replay instance used it as is, so the
+  whole device's traffic went to channel 0, on banks picked by address bits.
+  The replay now sets the device's channel count and the hierarchy's ranks,
+  uses the ChRaBaRoCo mapper, and composes each request's address so it
+  decodes to its TARGET bank: channel and bank from the unit the interface
+  maps the address to (HBM: the chip is the channel; DDR: chips of a rank
+  work in lock step) plus the bank slot inside the unit, row from the
+  interface's own row model (the stripe arithmetic of noteRowAccess). The
+  run prints the organisation and any bank-count mismatch with the PIMID
+  hierarchy (none on the seven parts); `ctrlChannelsUsed` and
+  `ctrlMaxChannelPermille` report the spread.
+- *The controller statistics were the whole run.* The replay replays every
+  request, including the master thread's pre-ROI initialisation, and its
+  counters were never rebased; the activate share, idle fraction and refresh
+  rate were priced from initialisation traffic (1.2 M replayed requests
+  against 83 k interface accesses in the ROI). The replay now opens its
+  window where the traffic counters are rebased (1.11.90), replays the pre-ROI
+  requests at that point so the bank state carries on, stops recording at
+  termination, and reports every counter for the ROI only.
+- *The main program never read the replay's counters.* The stats parser
+  gives the memory scope only to groups named mem-/pe-mc-/pe-mi-, so
+  `dramReplay` was read at root scope and every consumer fell back; it is
+  now a device memory scope (no counter name collides).
+- *Counters added every dump.* The replay's finalize ran at each statistics
+  dump and added the cumulative controller totals (4.9 M row hits for 1.3 M
+  requests); the counters are now set. The controller totals come from a
+  small accessor added to the Ramulator fork (`pimid_ctrl_totals`, through
+  the controller and the refresh manager) instead of parsing Ramulator's
+  printed statistics.
+- *The host-side controller modelled one channel too.* `sys.mem.controllers`
+  defaulted to 1, so a HOST_MC placement or a co-sim host built one
+  Ramulator instance from the one-channel YAML (HBM3: 1 of 16 channels; DDR5:
+  1 of 2 sub-channels). The memory block now declares one controller per
+  channel of its technology (zsim interleaves lines across them), and McPAT
+  prices the built count at both sites (H32).
+- *LPDDR5 under a controller crashed.* LPDDR5 activates in two steps and
+  holds a bank "Pre-Opened" between them; it borrowed the generic row-hit and
+  row-open checks, which call std::exit on that state. It now has its own:
+  a request to the row being activated is a hit (as on the DDR models whose
+  ACT opens the row at once) and a pre-opened bank is open for the conflict
+  test. The exit had also deadlocked PIMID (the exit handler's statistics
+  dump waited on the replay lock the exiting thread held); finalize now
+  waits with a timeout.
+- *The replay priced almost nothing inside the ROI* (gate 1208B: 8 of
+  142,725 accesses). The ROI snapshot restarts epoch numbering at 0, and the
+  table of replayed epochs was pruned by evicting its SMALLEST keys, so the
+  stale pre-ROI epochs (larger numbers) survived and every new ROI epoch was
+  evicted as soon as it was stored. The table is now cleared when the window
+  opens and pruned by distance from the current epoch; an interface with no
+  access in the previous epoch keeps its last replayed latency instead of
+  falling back to the analytical service. Measured: 135,362 of 142,725 ROI
+  accesses replay-priced (the rest are the first ROI epoch).
+- *Co-sim could not arm the replay.* In system scope `sys.mem` describes the
+  host's memory; the replay looked there for the device's Ramulator config
+  and refused. The hierarchy block now names the replay's own config and
+  column commands per line (`dramReplayConfigFile`,
+  `dramReplayBurstsPerLine`).
+
+OPEN: MPI workloads do not use the replay yet: it stamps requests on the
+global phase clock, which under thread-MPI keeps advancing while ranks are
+parked (a 4-rank stencil replayed 317 M DRAM cycles inside a ROI worth ~6 M);
+thread-MPI device cells keep the deterministic epoch-frozen M/D/1 service,
+and the run says so, until the replay stamps on the per-rank ROI clock with
+the consistent cut the NoC uses. The HOST_MC path keeps the weave controller;
+a run with both would price the weave cores' HOST_MC traffic twice and is
+refused by configuration (HOST_MC placement has no device interfaces). The
+out-of-order core's L1 hit latency is still the hard-coded 4 cycles (L1D_LAT)
+while the in-order core charges the configured CACTI latency: a user ruling.
+
 ## 1.11.97 -- the analytical fabric priced a machine nobody built and walked a placement nobody used; the cores dropped their message charges, the scratchpad was a cache, and the DRAM leaked at the wrong corner
 
 FABRIC + TIMING/ENERGY FIDELITY RELEASE (R4 and R5 of

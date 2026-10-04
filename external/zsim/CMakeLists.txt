@@ -95,6 +95,7 @@ set(ZSIM_SIM_SRCS
 
     # Memory controllers
     src/ramulator_mem_ctrl.cpp
+    src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
 
     # QEMU-specific replacements
     src/decoder_simple.cpp      # replaces decoder.cpp (no XED)
@@ -164,6 +165,8 @@ if(TARGET ramulator)
     target_compile_definitions(zsim_qemu PRIVATE _WITH_RAMULATOR_)
     set_source_files_properties(src/ramulator_mem_ctrl.cpp PROPERTIES
         COMPILE_FLAGS "-std=c++20")
+    set_source_files_properties(src/dram_epoch_replay.cpp PROPERTIES
+        COMPILE_FLAGS "-std=c++20")
     target_include_directories(zsim_qemu PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../ramulator/src)
 endif()
@@ -228,6 +231,7 @@ set(ZSIM_SIM_SRCS_TRACE
 
     # Memory controllers
     src/ramulator_mem_ctrl.cpp
+    src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
 
     # Shared replacements (no Pin/XED)
     src/decoder_simple.cpp

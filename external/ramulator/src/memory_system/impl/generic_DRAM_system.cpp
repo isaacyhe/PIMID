@@ -88,6 +88,12 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       return true;
     }
 
+    bool pimid_ctrl_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& refreshes) override {   // PIMID 1.11.98
+      hits = misses = conflicts = refreshes = 0;
+      for (auto controller : m_controllers) controller->pimid_ctrl_totals(hits, misses, conflicts, refreshes);
+      return true;
+    }
+
     float get_tCK() override {
       return m_dram->m_timing_vals("tCK_ps") / 1000.0f;
     }

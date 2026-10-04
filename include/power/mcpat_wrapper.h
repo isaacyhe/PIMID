@@ -484,6 +484,13 @@ public:
          * a different backend curve entirely. */
         enum class MCPhyTier { NONE, INTERPOSER, OFFCHIP };
         MCPhyTier mc_phy_tier = MCPhyTier::OFFCHIP;
+        /* 1.11.98 (sweep-94 row 28, ruling (c)): McPAT's controller background
+         * -- 10% of peak dynamic power every cycle "for routine jobs including
+         * refreshing and scrubbing" (memoryctrl.cc) -- is a stated convention.
+         * When the run MEASURES its controller (epoch replay: refresh commands
+         * counted, idle cycles counted, PHY static from the IO model) the
+         * fraction is 0 and the measured terms are reported beside it. */
+        double mc_background_fraction = 0.1;
 
         // McPAT system-level parameters (exposed for architecture exploration)
         /* CACTI device corner. 0=HP, 1=LSTP, 2=LOP, 3=LP-DRAM, 4=COMM-DRAM.
@@ -551,6 +558,7 @@ public:
     void reconfigure(const SystemConfig& config);
 
     // Set runtime statistics (needed for dynamic power calculation)
+    void setMCBackgroundFraction(double f) { config_.mc_background_fraction = f; }   // 1.11.98 (row 28, ruling (c))
     void setTotalCycles(uint64_t cycles);
     /* 1.11.93 (F3): setBusyCycles() is GONE. Every caller passed the total
      * cycle count, so busy/total -- McPAT's pipeline_duty_cycle, defined as

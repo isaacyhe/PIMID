@@ -76,6 +76,12 @@ class IMemorySystem : public TopLevel<IMemorySystem> {
      * them; the caller then exports nothing. */
     virtual bool pimid_bank_open_totals(uint64_t& /*unit_cycles*/,
                                         uint64_t& /*open_unit_cycles*/) { return false; };
+
+    /* PIMID 1.11.98 (ruling 4 (c), row 28): row hits / misses / conflicts and
+     * refresh commands summed over every controller, cumulative. false when
+     * the memory system does not keep them. */
+    virtual bool pimid_ctrl_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,
+                                   uint64_t& /*conflicts*/, uint64_t& /*refreshes*/) { return false; };
 };
 
 }        // namespace Ramulator

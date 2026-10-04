@@ -44,6 +44,13 @@ class IDRAMController : public Clocked<IDRAMController> {
      */
     virtual bool priority_send(Request& req) = 0;
 
+    /* PIMID 1.11.98 (ruling 4 (c), row 28): this controller's cumulative row
+     * hits, misses (bank closed) and conflicts (another row open) and the
+     * refresh commands its refresh manager issued. Added to the totals; a
+     * controller that does not keep them adds nothing. */
+    virtual void pimid_ctrl_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,
+                                   uint64_t& /*conflicts*/, uint64_t& /*refreshes*/) const {}
+
     /**
      * @brief       Ticks the memory controller.
      * 

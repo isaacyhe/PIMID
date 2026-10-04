@@ -2299,6 +2299,19 @@ double RamulatorWrapper::getInterfaceDynamicEnergyNJ() const {
     return (non_term > 0.0) ? non_term * 512.0 / 1000.0 : 0.0;
 }
 
+/* 1.11.98 (sweep-94 row 28, user ruling (c)): the PHY's STATIC power from
+ * the same CACTI-IO evaluation the interface energy comes from -- the
+ * controller-side background that McPAT's 10%-of-peak convention stood in
+ * for. Exact maps only, as the energy accessor. */
+double RamulatorWrapper::getInterfacePhyStaticMW() const {
+    const double rate = modelledRateMTs();
+    const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
+    if (rate <= 0.0 || ndq <= 0) return 0.0;
+    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0);
+    if (!io.valid || !io.exact_map) return 0.0;
+    return (io.phy_static_power_mw > 0.0) ? io.phy_static_power_mw : 0.0;
+}
+
 double RamulatorWrapper::getInterfaceAreaMM2() const {
     /* 1.11.40: IO area, wired in at 1.11.58 (see the D011 note above).
      *
@@ -2359,6 +2372,19 @@ double RamulatorWrapper::getRefreshTempFactor() const {
 
 double RamulatorWrapper::getRefreshPowerMW() const {
     return Ramulator::pimid_energy::refreshMW(energyKey(), temperature_k_);   // 1.11.65 (temp), 1.11.66 (grade key)
+}
+/* 1.11.98 (sweep-94 row 28, user ruling (c) 2026-10-03): the energy of ONE
+ * refresh command on one IDD-bearing unit, from the same datasheet row the
+ * refresh duty uses: vdd x (IDD5 - IDD3N) x tRFC. mW x ns = pJ -> nJ. With the
+ * controller replayed per epoch (ruling 4 (c)) the refresh commands are
+ * COUNTED, and the refresh energy is count x this, instead of the duty
+ * tRFC/tREFI assumed always on. */
+double RamulatorWrapper::getRefreshEnergyPerCommandNJ() const {
+    Ramulator::pimid_energy::IDDSpec s = Ramulator::pimid_energy::iddFor(energyKey(), temperature_k_);
+    return s.vdd * (s.idd5 - s.idd3n) * s.trfc_ns / 1000.0;
+}
+double RamulatorWrapper::getTckNs() const {
+    return (dram_arch_ && dram_arch_->timing.clock_freq_mhz > 0.0) ? 1000.0 / dram_arch_->timing.clock_freq_mhz : 0.0;
 }
 double RamulatorWrapper::getBackgroundPowerMW() const {
     return Ramulator::pimid_energy::backgroundMW(energyKey(), temperature_k_);   // 1.11.65 (temp), 1.11.66 (grade key)

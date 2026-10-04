@@ -244,6 +244,7 @@ public:
     double frontend_duty_cycle, duty_cycle, perc_load;
     double executionTime, reads, writes;
     bool   LVDS, withPHY;
+    double background_fraction;   /* PIMID 1.11.98 (row 28) */
 	/* PIMID 1.11.19 (user decision D2/D3): the PHY INTERFACE CLASS, split
 	 * from the backend cost model. The backend now always uses the full-MC
 	 * (Cadence) fit so every placement is priced on one basis; only the

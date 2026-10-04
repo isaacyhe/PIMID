@@ -1161,6 +1161,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
 
     // --- setter state: memory-controller technology ---
     f(mc_tech_.peak_transfer_rate);  f(mc_tech_.databus_width);
+    f(config_.mc_background_fraction);   // 1.11.98 (row 28)
     f(mc_tech_.number_ranks);        f(mc_tech_.number_mcs);
     f(mc_tech_.memory_channels_per_mc);
     f(mc_tech_.req_window_size_per_channel);
@@ -3665,6 +3666,7 @@ std::string McPATWrapper::generateXMLConfig() const {
     /* 1.11.19: the interface tier (see the type comment above). */
     xml << "      <param name=\"withPHY\" value=\""
         << (config_.mc_phy_tier == SystemConfig::MCPhyTier::NONE ? 0 : 1) << "\"/>\n";
+    xml << "      <param name=\"background_fraction\" value=\"" << config_.mc_background_fraction << "\"/>\n";   /* 1.11.98 (row 28, ruling (c)): 0 when the controller is measured */
     xml << "      <param name=\"phy_class\" value=\""
         << (config_.mc_phy_tier == SystemConfig::MCPhyTier::INTERPOSER ? 1 : 0) << "\"/>\n";
     /* 1.11.19 (user decision D10): state the interface class explicitly
