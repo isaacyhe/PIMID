@@ -28,8 +28,8 @@ workload binary
 | Method | Description | Requires |
 |---|---|---|
 | `exec` | Execution-driven cycle-accurate (QEMU + ZSim) | plugin-capable `qemu-x86_64`, workload binary |
-| `trace-gen` | Record an instruction trace for later replay | same as exec |
-| `trace` | Replay a recorded trace through the models (no QEMU) | trace file |
+| `trace-gen` | Record a trace for later replay: every memory access, every executed basic block (address, count, size, domain), the ROI markers, offload brackets and barriers, plus the blocks' instruction bytes in `<trace>.blocks` (1.11.100) | same as exec |
+| `trace` | Replay a recorded trace through the models (no QEMU): blocks decoded with the execution path's decoder, each block's terminator classified and its outcome fed to the core's predictors as the execution plugin feeds it, the DRAM controller replay folded at the end as there, every thread joined to its core with the phase ended only when every joined core has crossed it (the scheduler barrier's condition, driven by one host thread), roi_begin rebases every counter and roi_end freezes them, device-domain events run on the device cores, barriers go through the phase barrier (1.11.100) | trace file (+ `.blocks`) |
 | `synthetic` | Garnet synthetic traffic injection (no workload at all) | nothing |
 
 ## Scopes

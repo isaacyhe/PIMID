@@ -7,6 +7,153 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.100 -- the trace replays what ran: every basic block, its branches, the ROI, the offload domain, the syscalls and the controller
+
+TRACE REPLAY release (R6 of `_1166audit/MANIFEST_1.11.94plus.md`; review C6
+(x07-trace-driver-1, user "aa" 2026-10-02) and H36-H39 (user "a" 2026-10-02)).
+No corpus cell uses `--method trace`; nothing in the execution path moves.
+
+**(1) Compute per basic block, decoded (C6, H37).** The trace generator
+(`qemu_trace_plugin.c`) emitted one COMPUTE event per vcpu at exit with the
+whole instruction count, so the replay handed the in-order and out-of-order
+cores one synthetic block of N instructions at the very end and they
+simulated none of the run's control flow. It now emits one COMPUTE event per
+EXECUTED block (address, instruction count, byte size, domain flag) from a
+per-block execution callback, and writes each translated block's instruction
+bytes to a side file `<trace>.blocks`. The replay (`zsim_trace_driver.cpp`)
+decodes those bytes once per block address with `x86dec::createDecodedBblInfo`,
+the decoder the execution path runs, and feeds the cores the real instruction
+stream; a block the side file lacks is a synthetic block of the event's count
+and size, and the run says how many of each. `PIMID_TRACE_NO_DECODE=1` forces
+synthetic blocks (the pre-1.11.100 fidelity, for comparison).
+
+**(2) ROI markers (H36).** ROI_BEGIN / ROI_END events (0x0080 / 0x0081) are
+written from both magic-op entry points, inside the recorded window. The
+replay's roi_begin does what the execution path's does: every core's
+baseline, the power-gating window, the traffic-counter groups, the fabric's
+drain and rebase, and the controller replay's window; roi_end ends the
+simulation and the statistics freeze there. Before, the replay never rebased
+(whole-run counters) and ran to the end of the file.
+
+**(3) The offload domain (H38).** The replay builds the host and device core
+masks as the execution plugin does (ALU and null cores are device elements)
+and runs a thread on the device mask while its events carry the device
+flag, migrating it the way `migrateThreadToDomain` does (leave, finish,
+restart). In device scope the ROI is the offload boundary; in system scope
+the WORK_BEGIN/WORK_END brackets are.
+
+**(4) Barriers (H39) -- and the crash every decoded-core replay died of.**
+In this trace format a BARRIER event is a thread-creating syscall
+(clone/fork/vfork, the generator's syscall hook); the execution path leaves
+the core around a syscall and joins again after it. The driver called the
+scheduler's sync -- the phase barrier -- on the event instead, forcing a
+phase end at whatever cycle the core had reached. The next phase start then
+found a RUNNING core behind the phase end (`core_recorder.cpp` cSimStart) and
+every in-order and out-of-order replay segfaulted there, on 1.11.99 as well
+(the simple core, which does not record, survived). The thread now leaves its
+core at the event and its next event joins it again, as the execution path
+does; the run reports how many left and how many had no core bound.
+
+**(5) Reporting.** The replay's termination dump writes the full statistics
+(zsim.out) as the execution path does, so the same parser reads both; the
+summary adds the decoded/synthetic block split, the ROI markers seen and the
+domain migrations.
+
+**(6) Found by the R6 probe, in the shipped 1.11.98 path: the DRAM read and
+write counts were undercounted wherever the epoch replay priced an access.**
+The interface counted rd/wr at the end of `localAccessLatency`, which a
+replay-priced access never reached (the 1.11.98 hook returns early); on the
+gemv probe exec reported 1,259 DRAM reads for 8,297 L2 misses, and the
+energy model's per-access read/write totals shrank with them. The counts are
+taken before the hook now. Every device cell priced by the replay in 1.11.98
+and 1.11.99 carried the undercount (the row behaviour, latency and
+controller figures were unaffected: the replay recorded every access).
+
+**(7) The branch feed (H40).** The replay fed no branch outcome to any
+core: the in-order and out-of-order predictors, BTB and RAS saw nothing
+(every branch counter zero in a replay, populated in the execution of the
+same program), so no misprediction was ever charged and the predictor
+energy counted no writes. The driver now classifies each decoded block's
+terminator from its last instruction's bytes exactly as the execution
+plugin classifies a translation block (conditional jcc rel8/rel32; direct
+call E8; indirect call FF /2,/3; indirect jmp FF /4,/5; ret C3/C2; a direct
+jmp has a fixed target and no feed), resolves the outcome from the next
+block's start address, and feeds it through the core's branch hook BEFORE
+that block's bbl(), under the same gates (an out-of-order or in-order core
+bound to the thread; the PIMID_OOO_NOBRANCH / PIMID_INORDER_NOBRANCH escapes).
+The run reports how many directions and control transfers it fed.
+
+**(8) The ROI instruction count is exact (H40).** The generator counts the
+instructions between the ROI markers in file order under its write lock (a
+COMPUTE event's count), writes the total into the trace header's metadata
+(`roi_insns:`), and the generator's summary prints it (the plugin's own exit
+lines go through QEMU's plugin log, silent without `-d plugin`). The replay
+counts the same way over the same file and prints both with an equal / NOT
+EQUAL verdict; the cores' retired ROI instructions equal that count because
+blocks are now keyed by (address, instruction count): a block translated
+again with another length is another block, so the replay retires exactly
+what the trace recorded instead of the first translation's count.
+
+**(9) The controller replay's fold (H41).** The trace path armed the DRAM
+epoch replay and replayed the pre-ROI epochs at roi_begin, but never ran
+its finalize before the statistics dump, so the ROI's own epochs were never
+replayed: the dramReplay group reported zero requests and zero epochs for
+every trace replay while the execution of the same program reported ten
+thousand. The driver's termination dump now folds the controller as the
+execution plugin's does.
+
+**(10) The phase barrier (H42).** The driver ran one thread at a time:
+at every switch it left the previous thread's core, and the single active
+core ended the phase when it crossed the phase end, so every other core
+lost the rest of the phase it had not reached and started the next one
+behind. On the 16-thread probe this charged the in-order replay 10% more
+cycles than execution with identical stall counts; with one thread the
+replay matched execution to 0.001% (533,206 vs 533,203 cycles). The driver
+now keeps every thread joined to its core, parks a thread whose core
+crosses the phase end (its later events are deferred) and ends the phase
+itself when every joined thread is parked -- the scheduler barrier's own
+condition -- with the simulator's end-of-phase actions and phase counters
+as `Scheduler::callback` runs them. A thread with no event for 262,144
+events of the others is blocked (a futex wait) and leaves its core, as
+under the execution path's watchdog; an ROI marker is a cut in file order
+(everything read before it runs first), so the ROI counts stay exact. The
+emitted scheduler parallelism for the trace method is above any thread
+count (the openmp default is the PE count): a scheduler that let fewer
+threads run would park the next join in a wait no one wakes. The run
+reports the phases it ended, the events deferred and the idle leaves. The
+branch feed (7) is applied after the join for the same reason: a core
+unbound by the driver's own switch is not a leave of the program (fed
+before it, 39% of the ROI's branches never reached the predictor).
+
+**(11) System scope (H43).** Trace generation is a QEMU run of the
+workload with the trace plugin, the same in every scope, but system scope
+refused it ("supported methods: exec, trace"); it is routed to the same
+generator now. In the replay the ROI opens the device window as the
+execution co-simulation opens it (`cosimRoiBeginOffload`: the opener's
+domain flips to the device at roi_begin and threads spawned inside inherit
+it; `PIMID_COSIM_NO_OFFLOAD` keeps the host, as there); the WORK brackets
+flag their events in the trace itself. OPEN: the co-simulation's coherence
+flush, kernel launch and boundary transfer charges at the offload are not
+replayed; the replay's host-side ROI energy is short of them.
+
+DATA IMPACT: every OpenMP/serial device DRAM cell's reported rd/wr and the
+DRAM access energy derived from them (1.11.98/1.11.99 undercounted). The
+trace path itself moves no corpus cell. Gate 1210A: trace-gen -> replay
+against exec on the three decoded core types, device and system scope; the
+replay is deterministic (two replays of one trace are identical), its ROI
+instruction count equals the generator's exactly, its branch feed and
+controller replay fire, and cycles and DRAM accesses sit within the measured
+bands. Measured on the 16-PE HBM3 gemv probe (device scope, 500 MHz,
+2026-10-04): execution itself varies run to run (OpenMP spin waits; three
+runs per core) by 4.1% / 1.6% / 0.4% in cycles and 4.5% / 1.2% / 7.4% in
+DRAM reads for the simple / in-order / out-of-order cores; the final
+replay against one execution came to 0.991 / 1.018 / 1.000 of its cycles
+and 0.977 / 1.056 / 0.995 of its DRAM accesses, with 1437 vs 1523 in-order
+and 1601 vs 1509 out-of-order mispredictions. The gate bands are +/-10%
+(simple, in-order), +/-5% (out-of-order), +/-12% on accesses and
+controller requests, +/-15% in system scope. With one PE the replay
+matches execution to 0.01% on every core (no thread interleaving).
+
 ## 1.11.99 -- the out-of-order core charges the L1 latency the configuration describes
 
 DEFAULT-CHANGE release (user ruling "yes" 2026-10-04, the open item of 1.11.97

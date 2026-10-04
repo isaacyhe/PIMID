@@ -1165,6 +1165,21 @@ protected:
     uint32_t localAccessLatency(MemReq& req, bool* byReplay = nullptr) {
         uint32_t result;
         if (byReplay) *byReplay = false;
+        /* 1.11.97 (review H07): the rd/wr stats follow the same rule as the
+         * access classification -- a cached element's GETX is a read
+         * (ownership fetch; the array write is its later PUTX), the cacheless
+         * element's GETX is its store (getxIsStore_). PUTS never reaches this
+         * point. 1.11.100 (gate 1210A): counted HERE, before the epoch replay
+         * hook below returns -- 1.11.98/1.11.99 counted at the end of this
+         * function, which a replay-priced access never reached, so every
+         * device cell priced by the replay under-reported its DRAM reads and
+         * writes (and the energy model's rd/wr with them: 1,259 reads for
+         * 8,297 L2 misses on the gemv probe). */
+        if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
+            profWrites_.inc();
+        } else {
+            profReads_.inc();
+        }
         if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay) {
             uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
             if (E < 1) E = 1;
@@ -1257,18 +1272,6 @@ protected:
 
             curPhaseAccesses_++;
             result = curLatency_;
-        }
-
-        /* 1.11.97 (review H07): the rd/wr stats follow the same rule as the
-         * access classification above -- a cached element's GETX is a read
-         * (ownership fetch; the array write is its later PUTX), the cacheless
-         * element's GETX is its store (getxIsStore_). Until now every GETX
-         * counted as a write here, so a cached element's miss stream was
-         * reported as writes. PUTS never reaches this point. */
-        if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
-            profWrites_.inc();
-        } else {
-            profReads_.inc();
         }
 
         return result;

@@ -13525,6 +13525,11 @@ public:
         int parallelism = (config_.workload_type == "openmp" &&
                            config_.sim_parallel)
                           ? config_.num_pes : 1;
+        /* 1.11.100 (H42): the trace replay keeps every thread joined to its
+         * core and ends the phases itself from one host thread; a scheduler
+         * that let only `parallelism` threads run would park the next join
+         * in a wait no one wakes. Any value above the thread count does. */
+        if (config_.method == "trace") parallelism = 1024;
         cfg << "    parallelism = " << parallelism << ";\n";
         cfg << "    printHierarchy = true;\n";
         cfg << "    aslr = false;\n";
@@ -18017,7 +18022,11 @@ int main(int argc, char** argv) {
     // Run appropriate simulator based on method and scope
     bool success = false;
 
-    if (config.scope == "device") {
+    /* 1.11.100 (H43): trace generation is a QEMU run of the workload with the
+     * trace plugin, the same in every scope; system scope replays the trace
+     * it generates (the ROI opens the device window there as the execution
+     * co-simulation opens it). */
+    if (config.scope == "device" || config.method == "trace-gen") {
         // Device-only simulation (PIM only)
         if (config.method == "trace") {
             // -- Trace Replay (ZSim cycle-accurate) --
@@ -18581,6 +18590,19 @@ int main(int argc, char** argv) {
                             std::cout << "Trace file: " << config.trace_file << std::endl;
                             std::cout << "  Size: " << file_size << " bytes" << std::endl;
                             std::cout << "  Approx events: " << approx_events << std::endl;
+                            /* 1.11.100 (H40): the plugin's exit summary goes through QEMU's
+                             * plugin log (silent without -d plugin); the ROI instruction count
+                             * it writes into the header's metadata is read back here. */
+                            {
+                                std::ifstream tf(config.trace_file, std::ios::binary);
+                                std::string meta(512, '\0');
+                                if (tf && tf.seekg(64) && tf.read(&meta[0], 512)) {
+                                    size_t k = meta.find("roi_insns: ");
+                                    if (k != std::string::npos)
+                                        std::cout << "  ROI instructions: " << std::strtoull(meta.c_str() + k + 11, nullptr, 10)
+                                                  << " (the blocks' instruction counts between the ROI markers, file order)" << std::endl;
+                                }
+                            }
                         }
                     }
 
@@ -19662,7 +19684,7 @@ int main(int argc, char** argv) {
             success = (trace_result == 0);
         } else {
             std::cerr << "Error: system scope does not support " << config.method << " method" << std::endl;
-            std::cerr << "Supported methods for system scope: exec, trace" << std::endl;
+            std::cerr << "Supported methods for system scope: exec, trace, trace-gen" << std::endl;
             return 1;
         }
     }

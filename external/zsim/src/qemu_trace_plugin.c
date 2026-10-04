@@ -99,6 +99,11 @@ static _Atomic uint64_t roi_transition_count; /* number of ROI begin/end transit
 /* Co-simulation event types (must match trace_format.h) */
 #define EVT_OFFLOAD_START   0x0070
 #define EVT_OFFLOAD_END     0x0071
+/* PIMID 1.11.100 (review H36): the ROI markers, written so the replay can
+ * rebase its counters at roi_begin and freeze them at roi_end as the
+ * execution path does. */
+#define EVT_ROI_BEGIN       0x0080
+#define EVT_ROI_END         0x0081
 
 /* Co-simulation domain flag (must match trace_format.h) */
 #define FLAG_DEVICE_DOMAIN  0x0020
@@ -107,6 +112,58 @@ static _Atomic uint64_t roi_transition_count; /* number of ROI begin/end transit
 enum { DOMAIN_HOST = 0, DOMAIN_DEVICE = 1 };
 static _Atomic int thread_domain[MAX_VCPUS];   /* default HOST */
 static _Atomic uint64_t offload_count;
+
+/* PIMID 1.11.100 (review C6 / H37): one COMPUTE event per EXECUTED basic
+ * block, carrying the block's address, instruction count and byte size, and
+ * a side file "<output>.blocks" with each translated block's instruction
+ * bytes so the replay can decode them with the same decoder the execution
+ * path uses (x86_decoder.h) -- the in-order and out-of-order cores then
+ * simulate the real instruction stream instead of one synthetic block per
+ * vcpu at exit. Block records are written at translation; a block can be
+ * translated more than once (the replay keeps the first). */
+typedef struct {
+    uint64_t vaddr;
+    uint32_t n_insns;
+    uint32_t bytes;
+} TbRec;
+static void emit_event(const TraceEvent *evt);   /* defined below */
+static FILE *blocks_file;
+static uint64_t blocks_written;
+static pthread_mutex_t blocks_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t compute_events;
+
+/* PIMID 1.11.100 (review H36): the ROI marker goes into the trace, inside
+ * the recorded window on both sides (begin after opening, end before
+ * closing), from both magic-op entry points. */
+static void emit_roi_event(unsigned int vcpu_index, uint64_t op) {
+    uint32_t idx = vcpu_index < MAX_VCPUS ? vcpu_index : 0;
+    if (op == ZSIM_MAGIC_OP_ROI_BEGIN) atomic_store(&in_roi, true);
+    TraceEvent evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.cycle = insn_count[idx];
+    evt.pe_id = vcpu_index;
+    evt.event_type = (op == ZSIM_MAGIC_OP_ROI_BEGIN) ? EVT_ROI_BEGIN : EVT_ROI_END;
+    if (atomic_load(&thread_domain[idx]) == DOMAIN_DEVICE) evt.flags |= FLAG_DEVICE_DOMAIN;
+    emit_event(&evt);
+    if (op == ZSIM_MAGIC_OP_ROI_END) atomic_store(&in_roi, false);
+}
+
+static void tb_exec_cb(unsigned int vcpu_index, void *userdata) {
+    if (!in_roi) return;
+    const TbRec *rec = (const TbRec *)userdata;
+    uint32_t idx = vcpu_index < MAX_VCPUS ? vcpu_index : 0;
+    TraceEvent evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.cycle = insn_count[idx];
+    evt.address = rec->vaddr;
+    evt.aux_data = rec->n_insns;
+    evt.size = rec->bytes;
+    evt.pe_id = vcpu_index;
+    evt.event_type = EVT_COMPUTE_INT;
+    if (atomic_load(&thread_domain[idx]) == DOMAIN_DEVICE) evt.flags |= FLAG_DEVICE_DOMAIN;
+    emit_event(&evt);
+    compute_events++;
+}
 
 /* Per-vCPU pending magic op from mov $imm, %rcx -- persists across TB
  * boundaries.  This handles the rare case where mov and xchg are in different
@@ -123,10 +180,19 @@ static void flush_buffer(void) {
     }
 }
 
+/* PIMID 1.11.100 (H40): the instructions between the ROI markers, counted in
+ * FILE ORDER under the write lock (a COMPUTE event's aux_data is its block's
+ * instruction count), so the replay's own count over the same file matches
+ * it exactly; printed at exit. */
+static bool roi_open_in_file;
+static uint64_t roi_insns_in_file;
 static void emit_event(const TraceEvent *evt) {
     pthread_mutex_lock(&write_lock);
     write_buf[buf_pos++] = *evt;
     total_events++;
+    if (evt->event_type == EVT_ROI_BEGIN) roi_open_in_file = true;
+    else if (evt->event_type == EVT_ROI_END) roi_open_in_file = false;
+    else if (evt->event_type == EVT_COMPUTE_INT && roi_open_in_file) roi_insns_in_file += evt->aux_data;
     last_cycle_val = evt->cycle;
     if (total_events == 1) {
         first_cycle_val = evt->cycle;
@@ -214,10 +280,8 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint64_t op = (uint64_t)(uintptr_t)userdata;
     uint32_t idx = vcpu_index < MAX_VCPUS ? vcpu_index : 0;
 
-    if (op == ZSIM_MAGIC_OP_ROI_BEGIN) {
-        atomic_store(&in_roi, true);
-    } else if (op == ZSIM_MAGIC_OP_ROI_END) {
-        atomic_store(&in_roi, false);
+    if (op == ZSIM_MAGIC_OP_ROI_BEGIN || op == ZSIM_MAGIC_OP_ROI_END) {
+        emit_roi_event(vcpu_index, op);   /* PIMID 1.11.100 (H36) */
     } else if (op == ZSIM_MAGIC_OP_WORK_BEGIN) {
         atomic_store(&thread_domain[idx], DOMAIN_DEVICE);
         uint64_t cnt = atomic_fetch_add(&offload_count, 1) + 1;
@@ -279,10 +343,8 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
     (void)userdata;
     if (vcpu_index >= MAX_VCPUS) return;
     uint64_t op = atomic_exchange(&pending_magic_op[vcpu_index], 0);
-    if (op == ZSIM_MAGIC_OP_ROI_BEGIN) {
-        atomic_store(&in_roi, true);
-    } else if (op == ZSIM_MAGIC_OP_ROI_END) {
-        atomic_store(&in_roi, false);
+    if (op == ZSIM_MAGIC_OP_ROI_BEGIN || op == ZSIM_MAGIC_OP_ROI_END) {
+        emit_roi_event(vcpu_index, op);   /* PIMID 1.11.100 (H36) */
     } else if (op == ZSIM_MAGIC_OP_WORK_BEGIN) {
         atomic_store(&thread_domain[vcpu_index], DOMAIN_DEVICE);
         uint64_t cnt = atomic_fetch_add(&offload_count, 1) + 1;
@@ -331,7 +393,39 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
 static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
     size_t n_insns = qemu_plugin_tb_n_insns(tb);
     bool insn_count_registered = false;
-
+    /* PIMID 1.11.100 (C6 / H37): the block's record for the per-execution
+     * COMPUTE event, and its instruction bytes for the side file. */
+    {
+        TbRec *rec = (TbRec *)calloc(1, sizeof(TbRec));   /* lives as long as the plugin */
+        rec->vaddr = qemu_plugin_tb_vaddr(tb);
+        rec->n_insns = (uint32_t)n_insns;
+        uint32_t total = 0;
+        uint8_t lens[1024];
+        uint8_t data[1024][16];
+        size_t cap = n_insns < 1024 ? n_insns : 1024;
+        for (size_t i = 0; i < cap; i++) {
+            struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
+            size_t sz = qemu_plugin_insn_size(insn);
+            total += (uint32_t)sz;
+            if (sz > 16) sz = 16;
+            lens[i] = (uint8_t)sz;
+            memset(data[i], 0, 16);
+            qemu_plugin_insn_data(insn, data[i], sz);
+        }
+        rec->bytes = total;
+        if (blocks_file && cap > 0) {
+            pthread_mutex_lock(&blocks_lock);
+            uint32_t n32 = (uint32_t)cap;
+            fwrite(&rec->vaddr, 8, 1, blocks_file);
+            fwrite(&n32, 4, 1, blocks_file);
+            fwrite(&total, 4, 1, blocks_file);
+            fwrite(lens, 1, cap, blocks_file);
+            fwrite(data, 16, cap, blocks_file);
+            blocks_written++;
+            pthread_mutex_unlock(&blocks_lock);
+        }
+        qemu_plugin_register_vcpu_tb_exec_cb(tb, tb_exec_cb, QEMU_PLUGIN_CB_NO_REGS, rec);
+    }
     /* Track in-TB mov $imm, %rcx -> xchg %rcx, %rcx pairs.
      * prev_magic_op is local (no cross-vCPU race).  Cross-TB communication
      * is deferred to execution time via per-vCPU pending_magic_op[]. */
@@ -421,21 +515,20 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
  */
 static void plugin_exit(qemu_plugin_id_t id, void *userdata) {
     (void)userdata;
-    /* Emit a final COMPUTE_INT event summarizing total instructions per vcpu */
-    for (uint32_t v = 0; v <= max_vcpu_seen && v < MAX_VCPUS; v++) {
-        if (insn_count[v] > 0) {
-            TraceEvent evt;
-            memset(&evt, 0, sizeof(evt));
-            evt.cycle = insn_count[v];
-            evt.pe_id = v;
-            evt.aux_data = insn_count[v];
-            evt.event_type = EVT_COMPUTE_INT;
-            emit_event(&evt);
-        }
-    }
-
-    /* Flush write buffer */
+    /* PIMID 1.11.100 (C6): no summary COMPUTE at exit -- every executed block
+     * was emitted during the run (tb_exec_cb); the per-vcpu instruction
+     * counts go into the metadata below. */
     flush_buffer();
+    if (blocks_file) {
+        pthread_mutex_lock(&blocks_lock);
+        fclose(blocks_file);
+        blocks_file = NULL;
+        pthread_mutex_unlock(&blocks_lock);
+        char bmsg[256];
+        snprintf(bmsg, sizeof(bmsg), "PIMID trace: %lu block records (instruction bytes) written to %s.blocks; %lu COMPUTE events\n",
+                 (unsigned long)blocks_written, output_path, (unsigned long)compute_events);
+        qemu_plugin_outs(bmsg);
+    }
 
     if (!trace_file) return;
 
@@ -452,10 +545,12 @@ static void plugin_exit(qemu_plugin_id_t id, void *userdata) {
         "timestamp: %s\n"
         "workload: qemu-user-mode\n"
         "num_events: %lu\n"
-        "num_pes: %u\n",
+        "num_pes: %u\n"
+        "roi_insns: %lu\n",
         time_str,
         (unsigned long)total_events,
-        max_vcpu_seen + 1);
+        max_vcpu_seen + 1,
+        (unsigned long)roi_insns_in_file);   /* PIMID 1.11.100 (H40): the replay and the generator's summary read it back */
 
     /* Rewrite the header at the beginning of the file */
     TraceHeader hdr;
@@ -482,6 +577,10 @@ static void plugin_exit(qemu_plugin_id_t id, void *userdata) {
     snprintf(msg, sizeof(msg),
              "PIMID trace: %lu events written to %s\n",
              (unsigned long)total_events, output_path);
+    qemu_plugin_outs(msg);
+    snprintf(msg, sizeof(msg),
+             "PIMID trace: ROI instructions %lu (the blocks' instruction counts between the ROI markers, file order)\n",
+             (unsigned long)roi_insns_in_file);   /* PIMID 1.11.100 (H40) */
     qemu_plugin_outs(msg);
 
     if (roi_transition_count > 0) {
@@ -542,6 +641,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
     /* Open trace file and write placeholder header (will be rewritten at exit) */
     trace_file = fopen(output_path, "wb");
+    {   /* PIMID 1.11.100 (C6 / H37): the instruction-bytes side file */
+        size_t bl = strlen(output_path) + 8;
+        char *bpath = (char *)malloc(bl);
+        snprintf(bpath, bl, "%s.blocks", output_path);
+        blocks_file = fopen(bpath, "wb");
+        if (!blocks_file) qemu_plugin_outs("WARNING: pimid_trace could not open the .blocks side file; the replay will use synthetic blocks\n");
+        free(bpath);
+    }
     if (!trace_file) {
         char msg[256];
         snprintf(msg, sizeof(msg),
