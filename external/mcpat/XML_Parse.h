@@ -213,6 +213,12 @@ typedef struct{
 	double fp_instructions;
 	double branch_instructions;
 	double branch_mispredictions;
+	/* PIMID 1.11.97 (R2476): MEASURED predictor table writes (value-changing
+	 * updates counted by the timing core): level-1 local history table and
+	 * level-2 local counter table. -1 = absent; the runtime path then keeps
+	 * the upstream estimate (mispredictions + 10% of branches). */
+	double predictor_l1_writes;
+	double predictor_l2_writes;
 	double committed_instructions;
 	double committed_int_instructions;
 	double committed_fp_instructions;

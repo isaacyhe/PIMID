@@ -1,0 +1,75 @@
+# PIMID core part record (1.11.97, sweep-94 rulings 27 and 28: R2313 (b),
+# R2355 (b), R2537, R2476). One coherent set for the two decoded timing cores
+# zsim runs (InOrderCore, OOOCore): the front-end penalties they charge, the
+# wrong-path fetch they model, and the retire width McPAT prices. Fields are
+# keyed per core type because the two cores differ. A config's
+#   core.in_order.mispredict_penalty_cycles / core.in_order.resteer_penalty_cycles
+#   core.ooo.mispredict_penalty_cycles      / core.ooo.fetch_width_bytes
+# replaces a field for that run (every core of that type, host and device) and
+# is reported as the user's number. The environment variables
+# PIMID_INORDER_MISPRED_PENALTY / PIMID_INORDER_RESTEER_PENALTY still override
+# the in-order values inside the core (sensitivity studies), as before.
+#
+# Stage numbers used below are the ones zsim's OOOCore defines
+# (external/zsim/src/ooo_core.cpp:49-52, "more or less matched to Westmere"):
+#   FETCH_STAGE 1, DECODE_STAGE 4, ISSUE_STAGE 7, DISPATCH_STAGE 13.
+#
+# in_order
+#   mispredict_penalty_cycles: 7. A conditional direction mispredict is known
+#     only when the branch EXECUTES (in_order_core.cpp: "In-order cores resolve
+#     the branch at execute"); the refill bubble is the fetch-to-issue depth.
+#     InOrderCore defines no stage list of its own; it has always charged 7 =
+#     ISSUE_STAGE, the OOO model's fetch-to-issue depth (in_order_core.cpp
+#     ctor comment, through 1.11.96: "mispredPenalty = 7"), cross-read against
+#     Cortex-A53-class short in-order pipelines (~8 cycles). Unchanged value.
+#     McPAT's in-order pipeline depth is this value (main.cpp
+#     inorderTimingPipelineDepth()).
+#   resteer_penalty_cycles: 4. A BTB/RAS target resteer is charged at DECODE
+#     depth (sweep-94 R2313 (b)): the redirect enters behind decode, so the
+#     refill is the fetch-to-decode depth. By the same convention that gives
+#     7 = ISSUE_STAGE above, this is DECODE_STAGE = 4. Through 1.11.96 every
+#     BTB/RAS miss charged the full 7.
+#   retire_width: issue. InOrderCore issues and commits on one cursor
+#     (in_order_core.h: "curCycle ... in-order issue/commit cursor"); it
+#     retires exactly what it issued, so its retire width IS its issue width
+#     (pim.pe.issue_width, resolved as main.cpp inorderTimingIssueWidth()).
+#     Only "issue" is accepted: an integer would price a retire limit the
+#     timing core does not have.
+#   (no fetch_width: the in-order core models no wrong-path fetch --
+#    in_order_core.cpp BranchFunc: "wrong-path fetches not modeled".)
+#
+# ooo
+#   mispredict_penalty_cycles: 17. OOOCore charges a mispredict by resolution
+#     time (fetch restarts at lastCommitCycle), not by a fixed bubble; this
+#     value sets only HOW FAR the wrong path is fetched (below). 17 is the
+#     "typical branch mispred penalty of 17 cycles" the wrong-path comment in
+#     ooo_core.cpp states for the Westmere-matched pipeline (Nehalem/Westmere
+#     measured penalty >= 17 cycles, A. Fog, "The microarchitecture of Intel,
+#     AMD and VIA CPUs", Nehalem chapter).
+#   fetch_width_bytes: 16. BYTES per cycle, not instructions or lines: x86
+#     instructions are variable-length and zsim fetches in 16-byte-wide
+#     accesses (ooo_core.cpp FETCH_BYTES_PER_CYCLE 16, "The Nehalem frontend
+#     fetches instructions in 16-byte-wide accesses").
+#   wrong-path fetch depth (DERIVED, R2355 (b), not a field):
+#     lines = ceil(mispredict_penalty_cycles x fetch_width_bytes / line size)
+#           = ceil(17 x 16 / 64) = ceil(4.25) = 5 lines at 64 B.
+#     Through 1.11.96 the depth was the literal 5*64/lineSize (5 lines at
+#     64 B: a backpressured IQ + uop queue + IW bound). At the 64 B line every
+#     shipped config uses, the derived depth equals the old one; at 32 B it is
+#     9 (was 10), at 128 B it is 3 (was 2).
+#   retire_width: 4. OOOCore retires through ReorderBuffer<128, 4> (the
+#     second template argument is the retire width, ooo_core.h rob). It is a
+#     compile-time constant of the timing core, so the record must equal it;
+#     the loader refuses any other value. McPAT's commit_width reads this
+#     field (was commit_width = issue_width).
+#   (no resteer_penalty_cycles: OOOCore charges an indirect/RAS miss by
+#    resolution time too -- fetchCycle = max(fetchCycle, lastCommitCycle).)
+record: pimid core default
+in_order:
+  mispredict_penalty_cycles: 7
+  resteer_penalty_cycles: 4
+  retire_width: issue
+ooo:
+  mispredict_penalty_cycles: 17
+  fetch_width_bytes: 16
+  retire_width: 4

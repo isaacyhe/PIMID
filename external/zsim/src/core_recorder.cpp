@@ -38,7 +38,11 @@ class TimingCoreEvent : public TimingEvent {
 
     public:
         //NOTE: Only the first TimingCoreEvent after a thread join needs to be in a domain, hence the default parameter. Because these are inherently sequential and have a fixed delay, subsequent events can inherit the parent's domain, reducing domain xings and improving slack and performance
-        TimingCoreEvent(uint64_t _delay, uint64_t _origStartCycle, CoreRecorder* _cRec, int32_t domain = -1) : TimingEvent(0, _delay, domain), origStartCycle(_origStartCycle), cRec(_cRec) {}
+        /* 1.11.97: the 32-bit postDelay cannot carry a 64-bit delay; a delay that
+         * does not fit is a bookkeeping error (a cursor behind its last
+         * response), and it fails HERE instead of as a 2^32-cycle event. */
+        static uint32_t checkedDelay(uint64_t d) { if (unlikely(d > 0xFFFFFFFFULL)) panic("TimingCoreEvent: delay %lu does not fit 32 bits (a core cursor behind its last response)", (unsigned long)d); return (uint32_t)d; }
+        TimingCoreEvent(uint64_t _delay, uint64_t _origStartCycle, CoreRecorder* _cRec, int32_t domain = -1) : TimingEvent(0, checkedDelay(_delay), domain), origStartCycle(_origStartCycle), cRec(_cRec) {}
 
         void simulate(uint64_t _startCycle) {
             startCycle = _startCycle;
@@ -105,6 +109,18 @@ void CoreRecorder::notifyLeave(uint64_t curCycle) {
     assert(prevRespEvent);
     //Taper off the event
     // Cover delay to curCycle
+    /* PIMID 1.11.96 (review C7, the weave assertion): a core cannot leave
+     * before its last recorded memory response. The in-order core's issue
+     * cursor can sit behind the response cycle of its last access (a miss
+     * whose response outran the front-end), and a barrier/futex leave taken
+     * at that cursor handed this taper a NEGATIVE delay, which the 32-bit
+     * postDelay wrapped to ~2^32: "Queued event too far into the future".
+     * The leave is taken at the response cycle; the core clamps its own
+     * cursor the same way (InOrderCore::leave), this is the recorder's guard. */
+    if (unlikely(curCycle < prevRespCycle)) {
+        if (joinqDbg()) fprintf(stderr, "[JOINQ %s] notifyLeave curCycle=%lu < prevRespCycle=%lu: leaving at the response cycle\n", name.c_str(), (unsigned long)curCycle, (unsigned long)prevRespCycle);
+        curCycle = prevRespCycle;
+    }
     uint64_t delay = curCycle - prevRespCycle;
     TimingCoreEvent* ev = new (eventRecorder) TimingCoreEvent(delay, prevRespCycle-gapCycles, this);
     ev->setMinStartCycle(prevRespCycle);
@@ -136,6 +152,8 @@ void CoreRecorder::recordAccess(uint64_t startCycle) {
 
     if (IsGet(tr.type)) {
         uint64_t delay = tr.reqCycle - prevRespCycle;
+        if (unlikely((int64_t)delay < 0 || tr.reqCycle < startCycle || startCycle < prevRespCycle))
+            fprintf(stderr, "[JOINQ %s] NEGATIVE delay at recordAccess(GET): startCycle=%lu reqCycle=%lu respCycle=%lu prevRespCycle=%lu state=%d addr=0x%lx\n", name.c_str(), (unsigned long)startCycle, (unsigned long)tr.reqCycle, (unsigned long)tr.respCycle, (unsigned long)prevRespCycle, state, (unsigned long)tr.addr);
         TimingEvent* ev = new (eventRecorder) TimingCoreEvent(delay, prevRespCycle - gapCycles, this);
         ev->setMinStartCycle(prevRespCycle);
         prevRespEvent->addChild(ev, eventRecorder)->addChild(tr.startEvent, eventRecorder);
@@ -145,6 +163,8 @@ void CoreRecorder::recordAccess(uint64_t startCycle) {
     } else {
         assert(IsPut(tr.type));
         // Link previous response and this req directly (don't even create a new event)
+        if (unlikely(tr.reqCycle < prevRespCycle))
+            fprintf(stderr, "[JOINQ %s] NEGATIVE delay at recordAccess(PUT): startCycle=%lu reqCycle=%lu respCycle=%lu prevRespCycle=%lu state=%d addr=0x%lx\n", name.c_str(), (unsigned long)startCycle, (unsigned long)tr.reqCycle, (unsigned long)tr.respCycle, (unsigned long)prevRespCycle, state, (unsigned long)tr.addr);
         DelayEvent* dr = new (eventRecorder) DelayEvent(tr.reqCycle - prevRespCycle);
         dr->setMinStartCycle(prevRespCycle);
         prevRespEvent->addChild(dr, eventRecorder)->addChild(tr.startEvent, eventRecorder);

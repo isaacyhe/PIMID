@@ -1502,7 +1502,7 @@ void RamulatorWrapper::parseConfiguration() {
                 const std::string op = std::string(ddr5_grade_mtps_ == 3200 ? "DDR5_8Gb" : "DDR5_16Gb") + wsuf;
                 config_yaml_ = makeConfig("DDR5", op.c_str(), tp);
             }
-            channels_ = 1; ranks_per_channel_ = 1;
+            channels_ = 2; ranks_per_channel_ = 1;   /* 1.11.97 (review R1, user (b)): the DIMM channel is two independent 32-bit sub-channels (JESD79-5B 2.1); the preset simulates BOTH, as the part record names them */
             sayPresetRate("DDR5", preset_timing_.preset_name.c_str(), ddr5_grade_mtps_);
         } else if (dt == "LPDDR5") {
             config_yaml_ = makeConfig("LPDDR5", "LPDDR5_8Gb_x16", "LPDDR5_6400");

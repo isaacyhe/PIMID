@@ -1454,13 +1454,21 @@ double InternalDRAMNetwork::getBridgeLatencyNs(int boundary, uint64_t data_bytes
      * faster than the slower of the two. The old form added a BEAT COUNT
      * taken at the narrower width straight into a cycle total, with no
      * clock attached to either side. */
-    double bits = static_cast<double>(data_bytes) * 8.0;
-    double ser_lo_ns = std::ceil(bits / lower_w) / f_lo;
-    double ser_hi_ns = std::ceil(bits / upper_w) / f_hi;
-    double ser_ns = std::max(ser_lo_ns, ser_hi_ns);
+    /* 1.11.97 (review H26, ruling 7 (c) release): THE PAYLOAD IS SERIALISED
+     * ONCE PER TIER. computeHierTraversal charges, for every tier a traversal
+     * crosses, getTransferLatencyNs(tier) -- which already serialises the
+     * line at that tier's width -- AND this bridge at each tier boundary,
+     * which serialised the same line again at the narrower of the two
+     * adjacent widths: a 64 B line crossing from a 256-bit to a 64-bit tier
+     * paid the 64-bit serialisation twice (the bridge's ser_ns and the upper
+     * tier's own). The bridge is the router pipeline on the ingress clock
+     * plus its fixed crossing latency; the width change is what the two
+     * tiers' own serialisation terms express. lower_w / upper_w / f_hi stay
+     * as the bridge's description (printed), no longer a charge. */
+    (void)data_bytes; (void)lower_w; (void)upper_w; (void)f_hi;
 
     // The router sits on the ingress side, so its pipeline ticks at f_lo.
-    return per_hop_router / f_lo + base_ns + ser_ns;
+    return per_hop_router / f_lo + base_ns;
 }
 
 void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],

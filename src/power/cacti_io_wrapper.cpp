@@ -650,8 +650,12 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
              * source for them. The `source` string below names the split so
              * a reader is not told "ELECTRICALS INJECTED" about a result
              * that is partly the neighbour's. */
-            iop.rtt2_dq_read  = el.rtt_rd;
-            iop.rtt2_dq_write = el.rtt_wr;
+            /* 1.11.97 (review s02-power-other-1): a point-to-point DQ has ONE
+             * terminating device. extio sums 1/rtt1 + 1/rtt2; injecting the
+             * same RTT into rtt2 added a second terminating DRAM and doubled
+             * the charged termination current. The far end is open. */
+            iop.rtt2_dq_read  = 1e12;
+            iop.rtt2_dq_write = 1e12;
             iop.recomputeSwing();
         }
         Extio io(&iop);

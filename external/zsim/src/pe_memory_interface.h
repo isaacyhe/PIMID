@@ -104,6 +104,7 @@ protected:
      * uses the measured fraction (and refuses to invent one when this was
      * never armed, i.e. dramRowBytes == 0). */
     Counter profRowHits_;
+    Counter profPairSampled_, profPairFallback_;   // 1.11.97 (H09)
     Counter profRowMisses_;
     /* 1.11.57 (audit D006, D007, D008): one open-row register per BANK, sized
      * ONCE at construction, indexed by a row number computed on the RANK's
@@ -113,6 +114,10 @@ protected:
     std::vector<uint64_t> lastRow_;
     uint64_t rowStrideBytes_ = 0;     // system bytes one ACT makes resident
     uint32_t rowSlotsPerUnit_ = 1;    // independent open rows inside one unit
+    bool getxIsStore_ = false;        // 1.11.97 (H07): the cacheless ALU element issues GETX for stores
+  public:
+    void setGetxIsStore(bool v) { getxIsStore_ = v; }
+  private:
 
 public:
     // Contiguous coverage
@@ -207,6 +212,34 @@ public:
     // only if the tree has no PEs at all. Delegates to the shared tree so both
     // sides agree.
     static int unitToEndpoint(uint32_t unit) { return tree().endpointForUnit(unit); }
+
+    /* 1.11.97 (ruling 7 (c); gate 1206B P2): the per-access walk over the BUILT
+     * tree -- see pimid_htree::TreeWalker. The walker is built once from the
+     * shared tree (same call_once discipline as tree()). Returns false when the
+     * tree cannot place the pair (no PEs, HOST_MC placement, unknown endpoint):
+     * the caller keeps the arithmetic walk of hierarchy_util.h. */
+    static const pimid_htree::TreeWalker& walker() {
+        static pimid_htree::TreeWalker w;
+        static std::once_flag once;
+        std::call_once(once, [] { w.build(tree()); });
+        return w;
+    }
+    static bool treeWalk(int srcEp, int dstEp, uint32_t perLevel[8], uint32_t* links, uint64_t* cost) {
+        if (zinfo->hierarchy.placementLevel >= 7) return false;   // HOST_MC: no tree below the element
+        const pimid_htree::SparseHTree& t = tree();
+        if (t.numPEs <= 0 || srcEp < 0 || dstEp < 0) return false;
+        const pimid_htree::TreeWalker& w = walker();
+        if (!w.built) return false;
+        uint64_t c = 0;
+        uint32_t l = w.walk(t, srcEp, dstEp, perLevel, zinfo->hierarchy.levelLatency,
+                            zinfo->hierarchy.bridgeLatency, &c);
+        bool visited = false;
+        for (int i = 0; i < 7; i++) if (perLevel[i]) { visited = true; break; }
+        if (!visited) return false;
+        if (links) *links = l;
+        if (cost) *cost = c;
+        return true;
+    }
 
     // Replay timestamp for the SINGLE-PROCESS (OMP/device) batch: per-core
     // curCycle values are PRIVATE work clocks with no cross-thread sync (an
@@ -464,8 +497,18 @@ public:
     };
 
     uint64_t access(MemReq& req) override {
-        if (req.type == GETS) DqMix::reads.fetch_add(1, std::memory_order_relaxed);
-        else                  DqMix::writes.fetch_add(1, std::memory_order_relaxed);
+        /* 1.11.97 (review H07): a CLEAN eviction (PUTS) moves no data to the
+         * array and is not an access: it returns at once, uncounted. For a
+         * cache-based element a GETX is a read (the line is fetched for
+         * ownership; the write to the array is the later PUTX); the cacheless
+         * ALU element issues GETX for its stores (getxIsStore_, set by the
+         * element wiring in init.cpp), where it IS the write. Until now every
+         * PUTS was an access and every GETX a write, so a cached element's
+         * read stream was priced with the row-miss and energy of writes. */
+        if (req.type == PUTS) { *req.state = I; return req.cycle; }
+        const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+        if (isWrite) DqMix::writes.fetch_add(1, std::memory_order_relaxed);
+        else         DqMix::reads.fetch_add(1, std::memory_order_relaxed);
         /* 1.11.8 PG residency: every device memory access rides the device MC
          * path, so devMC[0] is marked here, unconditionally, and that is
          * correct -- there is no path out of access() that skips the memory
@@ -686,7 +729,29 @@ public:
                             ? 0
                             : epochFrozenNocLat(gn, sn, req.cycle, req.srcId);
                     } else {
-                        garnetLat = gn->getBatchAvgLatency();
+                        /* 1.11.97 (review H09 / x02-7): THIS PAIR's measured latency,
+                         * not the batch-wide mean -- a near unit and a far one used
+                         * to cost the same. A pair with no sample yet takes the
+                         * ladder cost of its tree distance (the analytical tier
+                         * walk), never the global average. */
+                        garnetLat = gn->getPairLatency(srcNode, dstNode);
+                        if (garnetLat == 0) {
+                            /* 1.11.97 (H09 + ruling 7 (c)): the unsampled pair's ladder
+                             * cost is its distance on the BUILT tree. */
+                            {
+                                uint32_t pl[8]; uint64_t wc = 0;
+                                if (treeWalk((int)mcId_, dstEp, pl, nullptr, &wc)) garnetLat = (uint32_t)wc;
+                                else garnetLat = (uint32_t)computeHierTraversal(
+                                    myUnit, targetUnit,
+                                    zinfo->hierarchy.levelLatency, zinfo->hierarchy.bridgeLatency,
+                                    zinfo->hierarchy.placementLevel, zinfo->hierarchy.subarraysPerBank,
+                                    zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
+                                    zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
+                            }
+                            profPairFallback_.inc();
+                        } else {
+                            profPairSampled_.inc();
+                        }
                     }
                     networkLat = (garnetLat > 0)
                         ? 2 * garnetLat
@@ -728,18 +793,32 @@ public:
              * accesses. The same walk, counted per tier, into the same
              * network statistics the detailed path fills. Post-ROI accesses
              * are not counted, as on the detailed path. */
-            if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
-                uint32_t perLevel[8];   // 1.11.94 (H17): one more rung (HOST_MC)
-                uint32_t links = hierTraversalLevels(
+            /* 1.11.97 (ruling 7 (c); gate 1206B P2): the walk is over the BUILT
+             * tree -- source = this element's endpoint (mcId_, as on the
+             * detailed path), destination = the endpoint the target unit routes
+             * to (endpointForUnit, the same map Garnet's packets follow). The
+             * routers it visits per tier are what the power model prices and
+             * its tier+bridge cost is the latency charged. The arithmetic walk
+             * of hierarchy_util.h placed element i at unit i, which is not where
+             * the tree builder put it, so on HBM3 at BANK it sent every remote
+             * access through a chip-level LCA and none through the rank router
+             * Garnet measured one crossing per packet on. It stays only as the
+             * fallback for a run with no tree (HOST_MC placement, no PEs). */
+            uint32_t perLevel[8];   // 1.11.94 (H17): one more rung (HOST_MC)
+            uint32_t links = 0; uint64_t walkCost = 0;
+            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost);
+            if (!fromTree)
+                links = hierTraversalLevels(
                     myUnit, targetUnit, perLevel,
                     zinfo->hierarchy.placementLevel, zinfo->hierarchy.subarraysPerBank,
                     zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
+            if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
                 if (myUnit != targetUnit)
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links);
             }
-            // hierLat = per-tier hop-based latency through LCA path (no double-counting)
-            uint32_t hierLat = (uint32_t)computeHierTraversal(
+            // hierLat = per-tier hop-based latency through the LCA path (no double-counting)
+            uint32_t hierLat = fromTree ? (uint32_t)walkCost : (uint32_t)computeHierTraversal(
                 myUnit, targetUnit,
                 zinfo->hierarchy.levelLatency, zinfo->hierarchy.bridgeLatency,
                 zinfo->hierarchy.placementLevel, zinfo->hierarchy.subarraysPerBank,
@@ -799,9 +878,16 @@ public:
                 double overlapped = (double)(L + nocContentionLat) / (double)M;
                 double bwFloor = 0.0;
                 if (zinfo->hierarchy.nocAggBandwidthMBs > 0) {
-                    uint32_t lvl_ = zinfo->hierarchy.placementLevel;
-                    uint32_t bwmul_ = (lvl_ == 0) ? 4u : ((lvl_ == 1 || lvl_ == 2) ? 2u : 1u);
-                    double aggBps = (double)zinfo->hierarchy.nocAggBandwidthMBs * 1e6 * bwmul_;
+                    /* 1.11.97 (ruling 26): the floor is the physical rate the P
+                     * elements can draw: the channel aggregate, capped by P x the
+                     * placement tier's rung bandwidth (width x clock) -- no
+                     * placement gradient literal. */
+                    double aggBps = (double)zinfo->hierarchy.nocAggBandwidthMBs * 1e6;
+                    if (zinfo->hierarchy.tierBandwidthMBs > 0) {
+                        double P_ = (double)((zinfo->numCores > 0) ? zinfo->numCores : 1);
+                        double tierBps = (double)zinfo->hierarchy.tierBandwidthMBs * 1e6 * P_;
+                        if (tierBps < aggBps) aggBps = tierBps;
+                    }
                     // Convert at the DEVICE clock, not the global (host) clock:
                     // in system-scope co-sim sys.frequency = max = host, so using
                     // zinfo->freqMHz here would scale the device's bandwidth floor
@@ -942,6 +1028,9 @@ public:
          * register per placement unit could support; the model now holds one
          * per BANK inside the unit, which is what the part does. */
         profRowHits_.init("rowHits", "Accesses hitting the bank's open row (measured)");
+        profPairSampled_.init("pairSampled", "Detailed-fabric accesses priced at their own source-destination pair's measured latency (1.11.97 H09)");
+        profPairFallback_.init("pairFallback", "Detailed-fabric accesses priced at the ladder cost of their tree distance (no pair sample yet)");
+        s->append(&profPairSampled_); s->append(&profPairFallback_);   /* same aggregate as the row counters: the mem group must stay regular for the HDF5 backend */
         s->append(&profRowHits_);
         profRowMisses_.init("rowMisses", "Accesses opening a different row (measured)");
         s->append(&profRowMisses_);
@@ -993,9 +1082,18 @@ protected:
     // epoch-frozen (thread-MPI) path use one identical formula.
     static uint32_t channelWaitFromRate(double aggArrivalRate) {
         uint64_t aggMBs = zinfo->hierarchy.nocAggBandwidthMBs;
-        {
-            uint32_t lvl = zinfo->hierarchy.placementLevel;
-            aggMBs *= (lvl == 0) ? 4u : ((lvl == 1 || lvl == 2) ? 2u : 1u);
+        /* 1.11.97 (ruling 26, gate 1207B): the service rate the shared-channel
+         * queue sees is the physical rate the P elements can draw -- the channel
+         * aggregate, capped by P x the placement tier's rung bandwidth (width x
+         * clock from the ladder), the same rule as the bandwidth floor. This
+         * site still multiplied the aggregate by a placement gradient (x4 at
+         * subarray, x2 at bank / bank-group, x1 above), the literal ruling 26
+         * retired from init.cpp and the floor; it survived here because the
+         * formula was extracted verbatim before the ruling. */
+        if (zinfo->hierarchy.tierBandwidthMBs > 0) {
+            uint64_t P = (zinfo->numCores > 0) ? zinfo->numCores : 1;
+            uint64_t tierAgg = (uint64_t)zinfo->hierarchy.tierBandwidthMBs * P;
+            if (tierAgg < aggMBs) aggMBs = tierAgg;
         }
         {
             const char* e = getenv("PIMID_NOC_AGGBW_MBS");
@@ -1126,13 +1224,16 @@ protected:
             result = curLatency_;
         }
 
-        // Cacheless PEs issue stores as GETX and never emit a PUTX writeback,
-        // so at this interface GETX IS the memory write. PUTS (clean wback)
-        // is not a real access and counts as neither.
-        if (req.type == GETS) {
-            profReads_.inc();
-        } else if (req.type != PUTS) {
+        /* 1.11.97 (review H07): the rd/wr stats follow the same rule as the
+         * access classification above -- a cached element's GETX is a read
+         * (ownership fetch; the array write is its later PUTX), the cacheless
+         * element's GETX is its store (getxIsStore_). Until now every GETX
+         * counted as a write here, so a cached element's miss stream was
+         * reported as writes. PUTS never reaches this point. */
+        if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
             profWrites_.inc();
+        } else {
+            profReads_.inc();
         }
 
         return result;
@@ -1322,7 +1423,12 @@ protected:
             case 3: slots = bpg * bgc; break;              // chip
             case 4: slots = bpg * bgc; break;              // rank (chips lock-step)
             case 5: slots = bpg * bgc * rpc; break;        // channel
-            case 6: slots = bpg * bgc * rpc * chn; break;  // logic die: all channels (D005)
+            /* 1.11.97 (review x04-zsim-memory-if-6): at LOGIC_DIE a unit is one
+             * channel-sized region when the tree carries one unit per channel
+             * (totalUnits_ == channels): its open-row registers are one
+             * channel's banks, not every channel's. A single all-channel unit
+             * keeps the whole stack's banks (D005). */
+            case 6: slots = (totalUnits_ >= chn && chn > 1) ? bpg * bgc * rpc : bpg * bgc * rpc * chn; break;
             default: slots = bpg * bgc * rpc; break;       // unknown: channel tier
         }
         if (slots == 0) slots = 1;

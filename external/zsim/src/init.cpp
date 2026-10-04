@@ -52,6 +52,24 @@ using namespace std;
 #include "locks.h"
 #include "log.h"
 #include "mem_ctrls.h"
+
+/* 1.11.97 (review H08): routes a request to the requester's home memory
+ * interface (core id / elements per MI); the address is passed as is. */
+class HomeRoutedMemory : public MemObject {
+    private:
+        const g_vector<MemObject*> mems;
+        const uint32_t pesPerMc;
+        g_string name;
+    public:
+        HomeRoutedMemory(const g_vector<MemObject*>& _mems, uint32_t _pesPerMc, const char* _name)
+            : mems(_mems), pesPerMc(_pesPerMc ? _pesPerMc : 1), name(_name) {}
+        uint64_t access(MemReq& req) {
+            uint32_t mi = (req.srcId / pesPerMc) % (uint32_t)mems.size();
+            return mems[mi]->access(req);
+        }
+        const char* getName() { return name.c_str(); }
+        void initStats(AggregateStat* parentStat) { for (auto m : mems) m->initStats(parentStat); }
+};
 #include "network.h"
 #include "garnet_network.h"
 #include "null_core.h"
@@ -332,6 +350,7 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         if (type != "Simple") panic("Terminal cache %s can only have type == Simple", name.c_str());
         if (arrayType != "SetAssoc" || hashType != "None" || replType != "LRU") panic("Invalid FilterCache config %s", name.c_str());
         cache = new FilterCache(numSets, numLines, cc, array, rp, accLat, invLat, name);
+        static_cast<FilterCache*>(cache)->setHitLatency(latency);   // 1.11.97 (x05-5, gate 1207D): the configured L1 latency, for the core's load-use charge
     }
 
     /* 1.11.40 (audit N7): register every cache so the coherence flush can MEASURE
@@ -515,10 +534,11 @@ static void InitSystem(Config& config) {
         uint32_t dataMsgBits = config.get<uint32_t>("sys.network.dataMsgBits", 0);
         bool ringUnidirectional = config.get<bool>("sys.network.ringUnidirectional", false);
 
+        uint32_t flitSizeBits = config.get<uint32_t>("sys.network.flitSizeBits", 128);   // 1.11.97 (row 18): noc.flit_size_bits reaches the fork
         GarnetNetwork* garnet = new GarnetNetwork(
             topo, meshRows, meshCols, routerLat, linkLat,
             cycleAccurate, routing, vcsPerVnet, buffersPerVc,
-            clockMhz, 128, topoFile, routingTableFile,
+            clockMhz, flitSizeBits, topoFile, routingTableFile,
             controlMsgBits, dataMsgBits, ringUnidirectional);
         network = garnet;
         // Raise the gem5 deadlock-detector threshold. Under heavy halo-exchange
@@ -613,6 +633,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.pesPerMC = config.get<uint32_t>("sys.hierarchy.pesPerMC", 1);
         zinfo->hierarchy.localLatency = config.get<uint32_t>("sys.hierarchy.localLatency", 10);
         zinfo->hierarchy.defaultBandwidthMBs = config.get<uint64_t>("sys.hierarchy.defaultBandwidthMBs", 0);
+        zinfo->hierarchy.tierBandwidthMBs = config.get<uint64_t>("sys.hierarchy.tierBandwidthMBs", 0);   // 1.11.97 (ruling 26)
 
         // M:N PE-to-memory-org mapping
         zinfo->hierarchy.connectionMode = config.get<uint32_t>("sys.hierarchy.connectionMode", 0);
@@ -1133,11 +1154,10 @@ static void InitSystem(Config& config) {
             // bank >> channel DQ). Scale the local MI bandwidth by placement level
             // so a subarray-local access is the widest/fastest path, overcoming
             // its extra hops. subarray=4x, bank/bank-group=2x, coarser=1x.
-            {
-                uint32_t lvl = zinfo->hierarchy.placementLevel;
-                uint32_t bwmul = (lvl == 0) ? 4u : ((lvl == 1 || lvl == 2) ? 2u : 1u);
-                bw *= bwmul;
-            }
+            /* 1.11.97 (ruling 26): the per-interface bandwidth is the placement
+             * tier's rung (width x clock, from the sourced ladder), not the
+             * aggregate scaled by a x4/x2/x1 placement gradient. */
+            if (zinfo->hierarchy.tierBandwidthMBs > 0) bw = zinfo->hierarchy.tierBandwidthMBs;
 
             if (hasMapping) {
                 // MI-i owns the CONTIGUOUS org slice of the PEs assigned to it.
@@ -1197,10 +1217,16 @@ static void InitSystem(Config& config) {
             mems.clear();
             info("[ZSim] Co-sim: %u PE-MIs serve the device; host keeps its own MCs", mcCount);
         } else if (mcCount > 1) {
-            // Use SplitAddrMemory if multiple PE-MIs to fan out addresses
-            MemObject* splitter = new SplitAddrMemory(mems, "pe-mi-splitter");
+            /* 1.11.97 (review H08): a cache-based element's misses go to ITS
+             * OWN memory interface (the requester's home MI, by core id and
+             * elements per MI), with the address undivided -- the same
+             * routing the ALU element gets through mi_. The SplitAddrMemory
+             * that stood here fanned every address out by (line % N) and
+             * handed the MI line/N: 15 of 16 misses went to a foreign MI and
+             * the row model saw divided addresses. */
+            MemObject* home = new HomeRoutedMemory(mems, pesPerMC, "pe-mi-home");
             mems.resize(1);
-            mems[0] = splitter;
+            mems[0] = home;
         }
     }
 
@@ -1575,14 +1601,25 @@ static void InitSystem(Config& config) {
                         // In-order superscalar issue width (YAML pim.pe.issue_width;
                         // PIMID_INORDER_WIDTH env overrides inside the ctor). Default 2.
                         uint32_t issueWidth = config.get<uint32_t>(prefix + "issueWidth", 2);
-                        InOrderCore* tcore = new (&inOrderCores[j]) InOrderCore(ic, dc, domain, name, issueWidth);
+                        /* 1.11.97 (R2313 (b)): the two front-end penalties of the
+                         * core record (params/core/default.yaml, in_order.*),
+                         * emitted by PIMID. REQUIRED keys: no value lives here. */
+                        uint32_t mispredPenalty = config.get<uint32_t>(prefix + "mispredPenalty");
+                        uint32_t resteerPenalty = config.get<uint32_t>(prefix + "resteerPenalty");
+                        InOrderCore* tcore = new (&inOrderCores[j]) InOrderCore(ic, dc, domain, name, issueWidth,
+                                                                                mispredPenalty, resteerPenalty);
                         tcore->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.43 (E23)
                         zinfo->eventRecorders[coreIdx] = tcore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);
                         core = tcore;
                     } else {
                         assert(type == "OOO" || type == "OoO");
-                        OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, name);
+                        /* 1.11.97 (R2355 (b)): the wrong-path fetch depth is
+                         * derived from the core record's ooo.mispredict_penalty_cycles
+                         * x ooo.fetch_width_bytes, emitted by PIMID. REQUIRED keys. */
+                        uint32_t oooMispredPenalty = config.get<uint32_t>(prefix + "mispredPenalty");
+                        uint32_t oooFetchBytes = config.get<uint32_t>(prefix + "fetchBytesPerCycle");
+                        OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, name, oooMispredPenalty, oooFetchBytes);
                         ocore->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.47 (L203)
                         zinfo->eventRecorders[coreIdx] = ocore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);
@@ -1644,7 +1681,7 @@ static void InitSystem(Config& config) {
                                                   ? rawMIs.size() / n : 1;
                             miIdx = (miIdx + r * misPerRank) % rawMIs.size();
                         }
-                        if (miIdx < rawMIs.size()) mi = rawMIs[miIdx];
+                        if (miIdx < rawMIs.size()) { mi = rawMIs[miIdx]; mi->setGetxIsStore(true); }   // 1.11.97 (H07): the cacheless element's GETX is a store
                     }
                     ALUCore* acore = new (&aluCores[j]) ALUCore(name, computeFactor, accessFactor,
                                                              throughputFactor, operandWidth, energyFactor,

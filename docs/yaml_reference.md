@@ -67,7 +67,7 @@ workload:
 | `workload.args` | list | `[]` | Command-line arguments (YAML list of strings). CLI `--workload` args override. |
 | `workload.env` | map | `{}` | Environment variables injected into the workload process. |
 | `workload.type` | string | `"serial"` | Workload type: `serial`, `openmp`, or `mpi`. |
-| `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`). CLI `--mpi-ranks` overrides. |
+| `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
 
 ---
 

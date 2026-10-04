@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <unordered_map>
+#include <map>   // 1.11.97: barrier-generation table
 #include <mutex>
 
 /* QEMU plugin API (C interface) */
@@ -277,8 +278,22 @@ static uint64_t mpi_roi_base_cyc[MAX_THREADS] = {0};
  * the 1.8.7 tid/cid baseline correction to co-sim only. */
 static bool g_cosim_mode = false;
 
+/* 1.11.97 (gate 1207B, MPI barrier rendezvous): the GENERATION of the ROI
+ * clock baseline. Every snapshotRoiBaseCyc() moves roiRelCycles() to a new
+ * origin; a barrier release published on the previous origin must not be
+ * charged on the new one (see the MPI_ADVANCE handler). */
+static std::atomic<uint64_t> g_roiBaseGen{0};
+/* Per barrier generation k (the k-th MPI_TIME of every rank is the same
+ * barrier: the shim issues MPI_TIME only in MPI_Barrier's thread-mode path),
+ * the baseline generation in force at its FIRST arrival; and each rank's own
+ * count of MPI_TIME calls, i.e. the barrier generation it is in. */
+static std::map<uint64_t, uint64_t> g_barFirstBaseGen;
+static lock_t g_barGenLock = 0;
+static uint64_t g_rankBarGen[MAX_THREADS] = {0};
+
 /* Snapshot every core's ROI baseline cycle (call right after markRoiBegin). */
 static inline void snapshotRoiBaseCyc() {
+    g_roiBaseGen.fetch_add(1);   // 1.11.97: a new origin for roiRelCycles()
     uint64_t maxBase = 0;
     for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++)
         if (zinfo->cores[c]) {
@@ -467,6 +482,46 @@ static uint32_t g_mpi_rank_count = 1;
  * out-migration drains the population exactly as before (OMP unchanged). */
 static std::atomic<int> g_deviceWorkers{0};
 static std::atomic<bool> g_roiClosing{false};
+
+/* 1.11.97 (x01-qemu-zsim-plugin-5, ruled): the DEVICE-scope thread-MPI ROI
+ * ends at the LAST rank's roi_end, not the opener's.
+ *
+ * What it did before: every MPI kernel calls zsim_roi_begin/zsim_roi_end on
+ * rank 0 only (benchmarks/pim_kernels/x/x_mpi.c, benchmarks/host/x/
+ * x_message_passing.c), so g_roiRefCount is 1 and, outside co-sim, the
+ * opener's roi_end froze the stats and requested termination on the spot
+ * while ranks 1..N-1 were still in their compute (the serial weave keeps
+ * them within about a phase of rank 0, and unbalanced kernels -- bfs,
+ * spmv_csr -- much further). Co-sim with offload already waited: its
+ * window drains on g_deviceWorkers at the closing barrier (above).
+ *
+ * The workloads do not mark ranks 1..N-1's ends; the closing MPI_Barrier
+ * that follows rank 0's roi_end in 12 of the 14 MPI kernels is where every
+ * rank's kernel ends in its own program order. In thread mode the barrier
+ * first issues MPI_TIME at the rank's ARRIVAL (before it parks in the
+ * frozen-clock wait), so arrivals are counted there: when the N-th arrival
+ * of a barrier generation lands and the opener's roi_end has already
+ * happened (it precedes the opener's own arrival in program order, so it
+ * cannot be missed), every rank has finished its kernel and every core
+ * still shows its own arrival clock. That instant is the end of the device
+ * ROI: the span is the last rank's end, and no rank's cycles include the
+ * barrier wait. A barrier generation cannot start counting before the
+ * previous one completes (a rank re-enters only after the release), so the
+ * counter is reset at each N-th arrival.
+ *
+ * Kernels with no barrier after roi_end (bfs_mpi.c, bfs_message_passing.c)
+ * never complete a closing generation; they fall back to the guest-exit dump
+ * (plugin_exit), the same documented fallback the co-sim window uses, and
+ * their stats then include the post-ROI tail. Ranks between their MPI_TIME
+ * op and their COMM_BEGIN park at the freeze retire a few transport
+ * instructions inside the window (mutex lock), a wall-order residue of tens
+ * of instructions. */
+static std::atomic<bool>     g_devRoiClosing{false};
+static std::atomic<uint32_t> g_devBarArrivals{0};
+static std::atomic<bool>     g_devRoiFrozen{false};
+static inline bool devScopeLastRankRule() {
+    return g_mpi_thread_mode && !g_cosim_mode && g_mpi_rank_count > 1;
+}
 
 /* 1.8.7 fully device-resident co-sim MPI ranks (ZERO migrations).
  *
@@ -1870,6 +1925,47 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     if (op == ZSIM_MAGIC_OP_MPI_TIME) {
         gp->sim_now = roiRelCycles(tid);
         gp->sim_now_freq_mhz = coreFreqMHzFor(tid);
+        /* 1.11.97 (gate 1207B): record which barrier generation this arrival
+         * belongs to and the ROI-clock origin in force at that generation's
+         * first arrival (MPI_ADVANCE checks it). */
+        if (tid < MAX_THREADS) {
+            const uint64_t k = ++g_rankBarGen[tid];
+            futex_lock(&g_barGenLock);
+            if (g_barFirstBaseGen.find(k) == g_barFirstBaseGen.end())
+                g_barFirstBaseGen[k] = g_roiBaseGen.load();
+            futex_unlock(&g_barGenLock);
+        }
+        if (getenv("PIMID_DEBUG_RDV")) {   /* diagnostic: the clock axis of a barrier arrival */
+            static std::atomic<int> nT{0};
+            if (nT.fetch_add(1) < 400) {
+                uint32_t cid = (tid < MAX_THREADS) ? cids[tid] : tid;
+                uint64_t raw = cores[tid] ? cores[tid]->getCycles() : 0;
+                info("[rdvdbg] TIME tid=%u cid=%u raw=%lu base[tid]=%lu base[cid]=%lu roiBase=%lu roiRel=%lu",
+                     tid, cid, (unsigned long)raw, (unsigned long)mpi_roi_base_cyc[tid],
+                     (unsigned long)((cid < MAX_THREADS) ? mpi_roi_base_cyc[cid] : 0),
+                     (unsigned long)zinfo->hierarchy.mpiNocRoiBase, (unsigned long)gp->sim_now);
+            }
+        }
+        /* 1.11.97 (x01-qemu-zsim-plugin-5): MPI_TIME is the thread-mode
+         * barrier's ARRIVAL op. Device scope counts arrivals per barrier
+         * generation; the N-th arrival of the first generation completed
+         * after the opener's roi_end is the last rank's roi_end, and the
+         * stats freeze there (see g_devRoiClosing). */
+        if (devScopeLastRankRule()) {
+            uint32_t n = g_devBarArrivals.fetch_add(1) + 1;
+            if (n >= g_mpi_rank_count) {
+                g_devBarArrivals.store(0);   // generation complete
+                if (g_devRoiClosing.load() && !g_devRoiFrozen.exchange(true)) {
+                    info("Thread %d: device-scope ROI end at the last rank's arrival "
+                         "(%u ranks) [1.11.97]", tid, g_mpi_rank_count);
+                    if (tid < MAX_THREADS && cids[tid] < MAX_THREADS)
+                        g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
+                    in_roi.store(false);
+                    dumpTerminationStats();
+                    zinfo->terminationConditionMet = true;
+                }
+            }
+        }
         return;
     }
     if (op == ZSIM_MAGIC_OP_MPI_ADVANCE) {
@@ -1878,6 +1974,52 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                                            coreFreqMHzFor(tid));
         uint64_t cur = roiRelCycles(tid);
         Core* cc = cores[tid];
+        /* 1.11.97 (gate 1207B, root cause of the MPI cycle inflation): the
+         * shim publishes every rank's arrival (MPI_TIME = roiRelCycles), takes
+         * the max as the release, and each rank then ADVANCEs to it. The ROI
+         * clock origin can move in between: the ENTRY barrier synthesizes the
+         * ROI baseline in the BARRIER op that follows the first rank's
+         * ADVANCE (H10 "the entry barrier rebases as designed"), and rank 0's
+         * roi_begin re-baselines every core right after. A rank whose ADVANCE
+         * comes after such a re-baseline compared a release on the OLD origin
+         * (rank 0's whole pre-ROI preparation, 105 M cycles on the ALU gate
+         * shape) with its clock on the NEW origin, and was charged the
+         * preparation inside the ROI -- rank 0 included, advancing to its own
+         * arrival; the offset then leaked into every rank (ALU stencil 4-rank:
+         * 1.0 M -> 106 M cycles; which rank re-baselined first is schedule-
+         * dependent, so the damage varied run to run). A release is therefore
+         * charged only when the origin is the one in force at its barrier
+         * generation's first arrival; otherwise it is DISCARDED (the wait it
+         * describes is pre-ROI, before the new origin). Also discarded: a
+         * thread without a valid core, and anything after termination. */
+        bool staleAxis = false;
+        if (tid < MAX_THREADS) {
+            const uint64_t k = g_rankBarGen[tid];
+            futex_lock(&g_barGenLock);
+            auto it = g_barFirstBaseGen.find(k);
+            staleAxis = (it == g_barFirstBaseGen.end()) || (it->second != g_roiBaseGen.load());
+            while (!g_barFirstBaseGen.empty() && g_barFirstBaseGen.begin()->first + 64 < k)
+                g_barFirstBaseGen.erase(g_barFirstBaseGen.begin());
+            futex_unlock(&g_barGenLock);
+        }
+        const uint32_t advCid = (tid < MAX_THREADS) ? cids[tid] : tid;
+        const bool noCore = (advCid >= zinfo->numCores) || zinfo->terminationConditionMet;
+        if (getenv("PIMID_DEBUG_RDV") && (staleAxis || noCore)) {
+            static std::atomic<int> nD{0};
+            if (nD.fetch_add(1) < 64)
+                info("[rdvdbg] ADVANCE tid=%u DISCARDED (%s): release=%lu cur=%lu", tid,
+                     staleAxis ? "ROI clock re-baselined since the barrier's first arrival" : "no core / terminated",
+                     (unsigned long)target, (unsigned long)cur);
+        }
+        if (staleAxis || noCore) return;
+        if (getenv("PIMID_DEBUG_RDV")) {   /* diagnostic: what the barrier release charges */
+            static std::atomic<int> nA{0};
+            if (nA.fetch_add(1) < 400) {
+                uint32_t cid = (tid < MAX_THREADS) ? cids[tid] : tid;
+                info("[rdvdbg] ADVANCE tid=%u cid=%u release=%lu cur=%lu delta=%ld",
+                     tid, cid, (unsigned long)target, (unsigned long)cur, (long)(target - cur));
+            }
+        }
         if (cc && target > cur) {
             uint64_t delta = target - cur;
             cc->addDelay((uint32_t)std::min<uint64_t>(delta, 0xFFFFFFFFull));
@@ -1898,17 +2040,11 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
      * ALL ranks report kernel-relative, workload-scaling cycles/instrs. Each MPI
      * rank is its own process, so mpi_roi_baselined is per-rank; rank 0 sets it
      * in the roi_begin handler and is therefore left untouched here. */
-    if (!mpi_roi_baselined) {
-        mpi_roi_baselined = true;
-        for (uint32_t c = 0; c < zinfo->numCores; c++)
-            if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
-        zinfo->pgres.markRoi(zinfo->numPhases, zinfo->globPhaseCycles);   // 1.11.18: PG residency window
-        snapshotRoiBaseCyc();
-        if (getenv("PIMID_DEBUG_RDV"))
-            info("Thread %d: synthesized per-rank ROI baseline at first MPI %s "
-                 "(cyc=%lu)", tid, isRecv ? "RECV" : "SEND",
-                 (unsigned long)(cores[tid] ? cores[tid]->getCycles() : 0));
-    }
+    /* 1.11.97 (review H10): a communication call NEVER baselines the ROI.
+     * This block synthesised a per-rank baseline at the first SEND/RECV, so
+     * ranks 1..N-1 of gemv_mpi counted their data preparation as ROI work.
+     * roi_begin (every rank calls it; in thread mode it sweeps all cores) and
+     * the entry barrier's rebase are the two designed baselines. */
 
     /* SEND: publish the current simulated time so the sender can stamp the
      * outgoing message with its send-time (read back by libpimid_mpi), plus
@@ -1953,7 +2089,34 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             zinfo->hierarchy.ranksPerChannel);
     }
 
-    /* 2. NoC latency (if Garnet is available) */
+    /* 2. NoC latency (if Garnet is available)
+     *
+     * 1.11.97 (x01-qemu-zsim-plugin-6, ruled): ONE MESSAGE IS INJECTED ONCE,
+     * BY ITS SENDER. Both libpimid_mpi timing ops reach this point for every
+     * message -- MPI_SEND from the sending rank, MPI_RECV from the receiving
+     * rank -- and both used to put the message's ceil(size/64) packets on the
+     * device NoC (thread mode: recordBatchAccess into the batch replay;
+     * process mode: live accessNetwork). Every MPI message was therefore
+     * charged twice: twice the packets, flits, router traversals and NoC
+     * energy. Physically the bytes cross the fabric once, launched by the
+     * sender's NI, so the sender injects; the receiver only PRICES the same
+     * path to place its rendezvous arrival (send_time + contend_wait + hier
+     * + noc) and injects nothing. The shared shm log below was already
+     * sender-only (one publication per message); this makes the device NoC
+     * agree with it.
+     *   thread mode (detailed): the receiver skips recordBatchAccess and
+     *     keeps the deterministic RTT probe, the same pricing the sender
+     *     uses, so its arrival time is unchanged. Its probe is forced
+     *     uncounted; the SENDER's probe still follows the htree-9 knob
+     *     PIMID_NOC_PROBE_UNCOUNTED (counted by default).
+     *   analytic NoC: the receiver reads the sender-cached getRTT value
+     *     through getRTTAnalyticUncounted (same RTT, no packet counted).
+     *   process mode (detailed, live): the receiver prices each packet with
+     *     the uncounted analytic one-way latency instead of a live
+     *     injection; its rank-local network carries only what that rank
+     *     sent. Its arrival is now zero-contention analytic where it used to
+     *     be its own (second) live injection. Process mode is the per-rank
+     *     trace-gen path only; thread mode is the exec-method MPI model. */
     uint32_t nocLat = 0;
     if (zinfo->garnetNetwork) {
         GarnetNetwork* gn = zinfo->garnetNetwork;
@@ -1973,17 +2136,20 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             uint64_t coreCyc = cores[tid] ? cores[tid]->getCycles() : 0;
             uint64_t stamp = (uint64_t)zinfo->numPhases * pl + (coreCyc % pl);
             uint32_t numPackets = std::max(1u, (uint32_t)((params.msg_size + 63) / 64));
-            for (uint32_t p = 0; p < numPackets; p++)
-                gn->recordBatchAccess(srcNode, dstNode, stamp + p);
+            if (!isRecv)   // 1.11.97 (plugin-6): sender-side injection only
+                for (uint32_t p = 0; p < numPackets; p++)
+                    gn->recordBatchAccess(srcNode, dstNode, stamp + p);
             /* Deterministic pricing: static analytic RTT only (the EWMA
              * read is wall-order-dependent; see pe_memory_interface).
              * 1.11.94 (x02-zsim-garnet-htree-9): this is a PROBE -- the
              * message is already counted by the replay above. getRTTProbe
              * counts nothing under PIMID_NOC_PROBE_UNCOUNTED=1 and is
              * getRTT otherwise (the 1.11.93 default). */
+            /* 1.11.97 (plugin-6): the receiver's probe is always uncounted. */
             uint32_t rtt = gn->getRTTProbe(
                 std::to_string(params.src_pe).c_str(),
-                std::to_string(params.dst_pe).c_str());
+                std::to_string(params.dst_pe).c_str(),
+                /*uncounted=*/isRecv);
             nocLat = rtt + (uint32_t)((params.msg_size / 64) * 2);
         } else if (gn->isCycleAccurate()) {
             /* One shared cycle-accurate Garnet network for all PEs/ranks. */
@@ -1995,16 +2161,25 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             uint32_t numPackets = std::max(1u, (uint32_t)((params.msg_size + 63) / 64));
             uint32_t totalOneWay = 0;
             for (uint32_t p = 0; p < numPackets; p++) {
-                uint32_t oneWay = anet->accessNetwork(srcNode, dstNode,
-                                                     issueTime + totalOneWay);
+                /* 1.11.97 (plugin-6): the receiver prices, it does not inject. */
+                uint32_t oneWay = isRecv
+                    ? anet->analyticalOneWayUncounted(srcNode, dstNode)
+                    : anet->accessNetwork(srcNode, dstNode,
+                                          issueTime + totalOneWay);
                 totalOneWay += oneWay;
             }
             nocLat = 2 * totalOneWay;  /* RTT */
         } else {
-            /* Simple mode: analytical RTT with message size scaling */
-            nocLat = gn->getRTT(
-                std::to_string(params.src_pe).c_str(),
-                std::to_string(params.dst_pe).c_str());
+            /* Simple mode: analytical RTT with message size scaling.
+             * 1.11.97 (plugin-6): getRTT counts one packet per call, so the
+             * receiver reads the sender-cached RTT uncounted instead. */
+            nocLat = isRecv
+                ? gn->getRTTAnalyticUncounted(
+                      std::to_string(params.src_pe).c_str(),
+                      std::to_string(params.dst_pe).c_str())
+                : gn->getRTT(
+                      std::to_string(params.src_pe).c_str(),
+                      std::to_string(params.dst_pe).c_str());
             if (params.msg_size > 64) {
                 nocLat += (uint32_t)((params.msg_size / 64) * 2);
             }
@@ -2132,7 +2307,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
  * Check if a magic op code is an MPI op.
  */
 static inline bool isMpiMagicOp(uint64_t op) {
-    return op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_CONTEND;
+    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_ADVANCE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */;
 }
 
 /**
@@ -2690,8 +2865,37 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 cid < zinfo->numCores && zinfo->cores[cid])
                 zinfo->cores[cid]->markRoiBegin();
             if (prev == 0) {
+                /* 1.11.97 (review H10, refined by gate 1207D): did the ENTRY
+                 * barrier already rebase every core? In all thirteen MPI
+                 * kernels the first MPI_Barrier is the line before rank 0's
+                 * zsim_roi_begin(), after the data preparation, so the
+                 * barrier's synthesized baseline IS the kernel entry of every
+                 * rank (H10: "the entry barrier rebases as designed"). Sweeping
+                 * every core again here caught ranks 1..N-1 at whatever point
+                 * of their kernel they had reached when rank 0 got here -- the
+                 * 1.6 jitter the comment above warns about -- and dropped those
+                 * instructions (gemv_mpi per-rank ROI instructions max/min
+                 * 1.015 / 1.087 / 1.199 across three runs; rank 0 exact). The
+                 * sweep, the clock snapshot and the traffic rebase therefore
+                 * run here only when no barrier has rebased yet (a kernel
+                 * with no entry barrier); otherwise rank 0 alone re-baselines
+                 * its own core (above). */
+                const bool barrierBaselined = mpi_roi_baselined;
                 in_roi.store(true);
                 mpi_roi_baselined = true;
+                if (barrierBaselined) {
+                    info("[roi] thread-MPI roi_begin after the entry barrier's baseline: rank %u re-baselined its own core; "
+                         "the other ranks keep their kernel-entry baseline (1.11.97, H10 refined)", tid);
+                    cosimRoiBeginOffload(tid);
+                    return;
+                }
+                /* 1.11.97 (review H10): no barrier has rebased: the first
+                 * roi_begin in thread mode baselines EVERY core, not only the
+                 * calling rank's: the other ranks are threads of this process
+                 * and would otherwise keep their pre-ROI (data preparation)
+                 * cycles in the window. */
+                for (uint32_t c = 0; c < zinfo->numCores; c++)
+                    if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
                 /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
@@ -2811,6 +3015,16 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * its barrier arrival, handleMpiMagicOp) freezes stats;
                  * freezing here at the opener's roi_end would truncate
                  * every other rank's compute tail. */
+                return;
+            }
+            if (devScopeLastRankRule()) {
+                /* 1.11.97 (x01-qemu-zsim-plugin-5): device scope, same
+                 * reason. The opener's roi_end only marks the ROI as
+                 * closing; the N-th arrival at the next barrier (MPI_TIME
+                 * handler) freezes the stats. See g_devRoiClosing. */
+                g_devRoiClosing.store(true);
+                info("Thread %d: ROI end (device-scope MPI opener): closing, "
+                     "stats freeze at the last rank's barrier arrival [1.11.97]", tid);
                 return;
             }
             // This rank finished its ROI -> EXITED, so the epoch cut advances over
@@ -2994,8 +3208,22 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                 cid < zinfo->numCores && zinfo->cores[cid])
                 zinfo->cores[cid]->markRoiBegin();
             if (prev == 0) {
+                /* 1.11.97 (H10 refined, gate 1207D): the same rule as the
+                 * other magic-op entry point -- when the entry barrier has
+                 * already rebased every core at kernel entry, rank 0 keeps its
+                 * own re-baseline (above) and nothing else is re-snapshotted;
+                 * otherwise every core is baselined here (H10). */
+                const bool barrierBaselined = mpi_roi_baselined;
                 in_roi.store(true);
                 mpi_roi_baselined = true;
+                if (barrierBaselined) {
+                    info("[roi] thread-MPI roi_begin after the entry barrier's baseline: rank %u re-baselined its own core; "
+                         "the other ranks keep their kernel-entry baseline (1.11.97, H10 refined)", tid);
+                    cosimRoiBeginOffload(tid);
+                    return;
+                }
+                for (uint32_t c = 0; c < zinfo->numCores; c++)
+                    if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();   // 1.11.97 (H10): no barrier has rebased
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
                 /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
@@ -3109,6 +3337,16 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * its barrier arrival, handleMpiMagicOp) freezes stats;
                  * freezing here at the opener's roi_end would truncate
                  * every other rank's compute tail. */
+                return;
+            }
+            if (devScopeLastRankRule()) {
+                /* 1.11.97 (x01-qemu-zsim-plugin-5): device scope, same
+                 * reason. The opener's roi_end only marks the ROI as
+                 * closing; the N-th arrival at the next barrier (MPI_TIME
+                 * handler) freezes the stats. See g_devRoiClosing. */
+                g_devRoiClosing.store(true);
+                info("Thread %d: ROI end (device-scope MPI opener): closing, "
+                     "stats freeze at the last rank's barrier arrival [1.11.97]", tid);
                 return;
             }
             // This rank finished its ROI -> EXITED, so the epoch cut advances over

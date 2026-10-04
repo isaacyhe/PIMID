@@ -90,10 +90,13 @@ class FilterCache;
  * branch's real direction (from the next TB's address) and feeds it via
  * BranchFunc, exactly as for the OOO core. The in-order core runs the SAME
  * BranchPredictorPAg<11,18,14> predictor as OOOCore; on a mispredict it charges
- * a fixed front-end flush/refill bubble (default 7 cycles ~= the OOO model's
- * fetch-to-issue depth, ISSUE_STAGE; typical of short in-order pipelines such
- * as Cortex-A53's ~8-cycle mispredict penalty). Overridable via
- * PIMID_INORDER_MISPRED_PENALTY; disable the whole feed with
+ * a fixed front-end flush/refill bubble. 1.11.97 (R2313 (b)): two bubbles,
+ * both from the core record (params/core/default.yaml, derivations there):
+ * a conditional direction mispredict charges the EXECUTE-depth
+ * mispredPenalty (record 7 = ISSUE_STAGE, the fetch-to-issue refill); a
+ * BTB/RAS target resteer charges the DECODE-depth resteerPenalty (record
+ * 4 = DECODE_STAGE). Overridable via PIMID_INORDER_MISPRED_PENALTY and
+ * PIMID_INORDER_RESTEER_PENALTY; disable the whole feed with
  * PIMID_INORDER_NOBRANCH=1 (mirrors PIMID_OOO_NOBRANCH).
  */
 class InOrderCore : public Core {
@@ -165,15 +168,22 @@ class InOrderCore : public Core {
         BranchPredictorPAg<11, 18, 14> branchPred;
         Address branchPc;        // 0 if the BBL being simulated did not end in a jcc
         bool branchTaken;
-        uint32_t mispredPenalty; // front-end flush/refill bubble (cycles)
+        /* 1.11.97 (R2313 (b)): TWO penalties (core record params/core/
+         * default.yaml, in_order.*; zsim keys mispredPenalty / resteerPenalty,
+         * required). mispredPenalty: conditional direction mispredict,
+         * resolved at EXECUTE -- the fetch-to-issue refill. resteerPenalty:
+         * BTB/RAS target resteer, charged at DECODE depth -- shorter. */
+        uint32_t mispredPenalty; // execute-depth flush/refill bubble (cycles)
+        uint32_t resteerPenalty; // decode-depth resteer bubble (cycles)
         uint64_t branches;           // resolved conditional branches fed to the predictor
         uint64_t mispredBranches;    // mispredicted branches
         uint64_t mispredStallCycles; // total cycles charged for mispredict bubbles
 
         // Indirect control-flow prediction: same minimal structures as OOOCore
         // (direct-mapped PC-tagged 512-entry BTB + 16-entry RAS). A wrong
-        // target charges the same mispredPenalty bubble as a conditional
-        // mispredict. Gated by PIMID_INORDER_NOBRANCH like all branch modeling.
+        // target charges the decode-depth resteerPenalty bubble (1.11.97;
+        // through 1.11.96 it charged the conditional mispredPenalty).
+        // Gated by PIMID_INORDER_NOBRANCH like all branch modeling.
         IndirectPredictor<9, 16> indirPred;
         bool indirMispredPend;
         uint64_t indirBranches;
@@ -200,6 +210,8 @@ class InOrderCore : public Core {
          * the 1.9.28 base-mismatch defect. */
         uint64_t roiBaseIndir    = 0;
         uint64_t roiBaseRas      = 0;
+        uint64_t roiBaseBpHist   = 0;   // 1.11.97 (R2476): predictor table writes
+        uint64_t roiBaseBpPht    = 0;
         uint64_t roiBaseCycle  = 0;
         uint64_t roiBaseCCycles = 0;   // 1.11.17: contention-cycle ROI base (parity with OOO 1.11.9)
 
@@ -207,8 +219,11 @@ class InOrderCore : public Core {
         // _issueWidth: in-order superscalar issue width (YAML pim.pe.issue_width,
         // plumbed via the ZSim config key issueWidth; default 2). Precedence:
         // PIMID_INORDER_WIDTH env var (if set) > YAML/ctor value > default 2.
+        // _mispredPenalty / _resteerPenalty (1.11.97): the core record's
+        // in_order.mispredict_penalty_cycles / resteer_penalty_cycles (zsim
+        // keys mispredPenalty / resteerPenalty, required; no default here).
         InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t domain, g_string& _name,
-                    uint32_t _issueWidth = 2);
+                    uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty);
         void initStats(AggregateStat* parentStat);
 
         uint64_t getInstrs() const {return instrs;}
@@ -229,6 +244,12 @@ class InOrderCore : public Core {
         void contextSwitch(int32_t gid);
         virtual void join();
         virtual void leave();
+        /* 1.11.97 (review H05): an MPI message charge stalls the issue cursor.
+         * Core::addDelay() was the empty default here, so every MPI_CONTEND /
+         * MPI_ADVANCE charge on an in-order element was dropped; the ALU and
+         * simple cores had always advanced. memRespCycle is untouched: a
+         * response already in flight still arrives when it arrives. */
+        void addDelay(uint32_t cycles) override { curCycle += cycles; }
 
         InstrFuncPtrs GetFuncPtrs();
 
@@ -238,6 +259,7 @@ class InOrderCore : public Core {
             roiBaseUops = uops; roiBaseBbls = bbls;              // 1.9.33
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
+            roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10
         }

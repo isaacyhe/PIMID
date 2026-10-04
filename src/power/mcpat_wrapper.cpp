@@ -232,6 +232,15 @@ void McPATWrapper::setMeasuredCoreActivity(uint64_t uops, uint64_t branches,
     power_computed_ = false;
 }
 
+void McPATWrapper::setMeasuredPredictorWrites(uint64_t history_writes,
+                                              uint64_t counter_writes,
+                                              bool present) {
+    meas_bp_hist_writes_ = history_writes;   // 1.11.97 (R2476)
+    meas_bp_pht_writes_  = counter_writes;
+    meas_bp_writes_present_ = present;
+    power_computed_ = false;
+}
+
 void McPATWrapper::setL1IAccesses(uint64_t reads, uint64_t read_misses) {
     l1i_reads_ = reads;
     l1i_read_misses_ = read_misses;
@@ -1140,6 +1149,8 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(meas_indir_);     f(meas_ras_);
     f(config_.l2_instances);  f(config_.has_branch_predictor);
     f(meas_uops_);      f(meas_branches_); f(meas_mispred_);
+    f(meas_bp_hist_writes_); f(meas_bp_pht_writes_); f(meas_bp_writes_present_);   // 1.11.97 (R2476)
+    f(config_.commit_width);                                                       // 1.11.97 (R2537)
     f(meas_int_);       f(meas_mul_);      f(meas_fp_);
     f(meas_ld_);        f(meas_st_);       f(meas_mix_br_);
     f(l1i_reads_);      f(l1i_read_misses_);
@@ -2792,7 +2803,12 @@ std::string McPATWrapper::generateXMLConfig() const {
         if (is_ooo) {
             xml << "      <param name=\"fp_issue_width\" value=\"" << fp_issue_width << "\"/>\n";
         }
-        xml << "      <param name=\"commit_width\" value=\"" << issue_width << "\"/>\n";
+        /* 1.11.97 (R2537): the timing core's retire width from the core
+         * record (SystemConfig::commit_width); -1 = the issue width above
+         * (in_order retires what it issues; ALU/simple are not described
+         * by the record). Was commit_width = issue_width unconditionally. */
+        const int commit_width = (config_.commit_width > 0) ? config_.commit_width : issue_width;
+        xml << "      <param name=\"commit_width\" value=\"" << commit_width << "\"/>\n";
         xml << "      <param name=\"pipelines_per_core\" value=\"1,1\"/>\n";
         xml << "      <param name=\"pipeline_depth\" value=\"" << pipeline_depth << ","
             << pipeline_depth << "\"/>\n";
@@ -3060,6 +3076,22 @@ std::string McPATWrapper::generateXMLConfig() const {
         if (mispred_all > br_pred) mispred_all = br_pred;
         xml << "      <stat name=\"branch_instructions\" value=\"" << br_pred << "\"/>\n";
         xml << "      <stat name=\"branch_mispredictions\" value=\"" << mispred_all << "\"/>\n";
+        /* 1.11.97 (R2476): predictor WRITES MEASURED. McPAT's runtime path
+         * writes each predictor table "branch_mispredictions + 0.1 x
+         * branch_instructions" times (core.cc BranchPredictor::computeEnergy,
+         * "10% of BR will flip internal bits") -- an estimate of the updates
+         * that change a stored value. zsim now counts exactly those updates
+         * (BranchPredictorPAg::predict, ooo_core.h): history-register writes
+         * for the level-1 table (2048 x 18 bits) and 2-bit counter writes for
+         * the level-2 table (16384 x 2 bits), ROI-windowed, all cores, the
+         * same base as branch_instructions above. The fork reads them as
+         * predictor_l1_writes / predictor_l2_writes (XML_Parse, fork
+         * 1.11.97) and keeps its estimate only when they are absent: a core
+         * without a predictor, or a dump without the counters. */
+        if (has_bp && meas_bp_writes_present_) {
+            xml << "      <stat name=\"predictor_l1_writes\" value=\"" << meas_bp_hist_writes_ << "\"/>\n";
+            xml << "      <stat name=\"predictor_l2_writes\" value=\"" << meas_bp_pht_writes_ << "\"/>\n";
+        }
         /* 1.11.47 (FIX-PRE-FLEET L200): mixLd/mixSt were measured, parsed,
          * stored -- and never used; loads/stores stayed hardcoded 20%/10%.
          * Measured values now reach McPAT, UNSOURCED fractions only as the
@@ -3452,7 +3484,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"input_ports\" value=\"" << lvl.input_ports << "\"/>\n";
             xml << "      <param name=\"output_ports\" value=\"" << lvl.output_ports << "\"/>\n";
             xml << "      <param name=\"virtual_channel_per_port\" value=\""
-                << std::max(1, config_.noc_vcs_per_vnet) << "\"/>\n";
+                << std::max(1, (lvl.vcs_per_port > 0) ? lvl.vcs_per_port : config_.noc_vcs_per_vnet) << "\"/>\n";   /* 1.11.97 (H31): vnets x VCs the fabric built */
             /* 1.11.93: the depth Garnet BUILT (lvl.vc_buffer_entries: the
              * configured noc.buffers_per_vc raised to one whole data packet,
              * 5 at 576 b / 128 b), which is the buffer the simulation ran on;

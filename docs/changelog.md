@@ -7,6 +7,283 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.97 -- the analytical fabric priced a machine nobody built and walked a placement nobody used; the cores dropped their message charges, the scratchpad was a cache, and the DRAM leaked at the wrong corner
+
+FABRIC + TIMING/ENERGY FIDELITY RELEASE (R4 and R5 of
+`_1166audit/MANIFEST_1.11.94plus.md`, merged into one release by the user on
+2026-10-03 so the fabric gap found by the R4 gate is fixed, not shipped;
+sweep-94 rulings 7 (c), 12 (c), 18, 19, 20, 26, 27, 28; review C3, H05, H07,
+H08, H09, H10, H16, H19, H20, H26, H28, H30, H31, R1, R4, s02, x01-5, x01-6,
+x01-10, x02-7, x04-6, x05-5, m01) plus, from R3 part 2, the in-order core's
+weave fix (C7). Numbers move on every device cell:
+the analytical cells (fabric priced from the built tree, hop and base
+latency from the tier walk, bridges charged once, the placement gradient
+gone) and the detailed cells (per-pair latency, per-class routers, per-tier
+widths, VCs per port, the 16 MiB HBM unit). Gate 1206A compares the analytical
+and detailed models on the same shapes, as ruling 7 asks.
+
+**(1) One census, every run (C3).** The sparse placement tree is built for the
+analytical model too (`analyticalTreeCensus`, the same builder and the same
+PE homes the detailed path uses; no topology file, no Garnet) and the power
+model prices ITS branch routers, endpoints and ports. The org-count estimator
+that priced a 23x23 bus and a 12x12 bank-group mesh for a tree with one
+branch router (4.1x power, 73x area against the detailed model on identical
+traffic) is no longer reachable for a DRAM device with a hierarchy.
+
+**(2) The analytical model is derived from the ladder (ruling 7 (c)).** The
+H-tree hop cost no longer comes from a reference-clock formula (NET 2.0 GHz,
+FLIT 64 B, RES 10, REF_HOPS 8, hop-normalised by log2 of a channel's endpoint
+count) nor from REF_FREQ 2.4 GHz for the Garnet link latencies. The census
+walks every PE-to-endpoint pair of the built tree and takes the mean one-way
+cost (the tier latencies and bridges computeHierTraversal charges) as the
+analytical base latency, the mean link count as the hop count, and a Garnet
+link's latency is the device clock over the layer clock. Printed:
+`[htree] tier walk over N pairs ...` and `[noc] analytical base latency ...`.
+
+**(3) Hotspot derived (ruling 12 (c)).** The max-to-mean channel-load factor
+is walked on the built tree (HBM3 BANK, 16 elements: 1.29) and, for regular
+fabrics, taken from the channel-load analysis (mesh 3k/2(k+1), torus and ring
+1, bus/crossbar 1). The table (mesh 2.0, torus 3.5, tree 1.5) had the torus
+above the mesh.
+
+**(4) A crossing is charged once (H26).** The bridge between two tiers charged
+the router pipeline, its fixed latency AND a serialisation of the line at
+the narrower width, while both adjacent tiers already serialise the line at
+their own widths. The bridge keeps pipeline + fixed latency. HBM3 at
+500 MHz: bridges 6/5/5/5/5/5 -> 1/1/1/1/1/2 PE cycles.
+
+**(5) The placement gradient is the ladder (ruling 26).** The x4/x2/x1
+multiplier on the per-interface bandwidth and on the analytical bandwidth
+floor ("a finer placement sits on a wider datapath") is replaced by the
+placement tier's own rung (width x clock) from the sourced ladder, emitted as
+`tierBandwidthMBs` (HBM3 bank tier: 25600 MB/s); the floor is the channel
+aggregate capped at P x that rung.
+
+**(6) Per-pair latency on the detailed path (H09, x02-7).** Every remote
+access was priced at the batch-wide mean of the last Garnet replay, so a
+near unit and a far one cost the same. The replay now keeps a smoothed
+latency per source-destination pair; an access is priced at its own pair's,
+and a pair with no sample yet takes the ladder cost of its tree distance,
+never the global mean (counters `pairSampled` / `pairFallback`; the run
+prints the pair table's min/max/mean).
+
+**(7) The fabric McPAT prices is the one the run built (H19, H20, H31, row 18).**
+Each level is priced per ROUTER CLASS from the census's port-count histogram
+(each class at its own ports, traversals split by router count; endpoints as
+a 2-port interface class) instead of every node at the widest router; each
+tier at the link width the built tree carries (not the ladder's aggregate
+rung: an HBM chip tier at 1024 b vs 64 b per node); VCs per port = vnets x
+VCs per vnet (Garnet builds 2 vnets); and `noc.flit_size_bits` is a knob
+that reaches Garnet's flit and the topology clamp (default 128; a 512-bit
+flit lets a 512-bit rung run unclamped).
+
+**(8) One capacity, one unit count (H16).** The unit's contiguous block is the
+memory's capacity over the placement-level units the census counts (HBM3:
+8192 MB stack / 512 banks = 16 MiB), replacing a derivation that multiplied
+the channel count in twice for HBM/GDDR6 (an HBM3 bank modelled as 256 MiB).
+
+**(9) R3 part 2, first piece: the in-order core's weave assertion (C7).** The
+in-order core left a barrier at its issue cursor, which can sit behind its
+last recorded memory response; the recorder's taper got a negative delay
+that the 32-bit postDelay wrapped to ~2^32 cycles ("Queued event too far
+into the future"). The core leaves no earlier than its last response, the
+recorder clamps the same way, and a delay that does not fit 32 bits fails
+loudly. A bound-only memory never exposed it; the live controller did.
+
+**(10) The analytical fabric walked a placement nobody used (gate 1206B, arm
+P2).** The R4 gate compared the analytical and detailed fabric on one shape
+(HBM3, 16 elements at BANK, stream) and found the analytical NoC at 8x the
+detailed dynamic power, 3.3x at equal work, with 6.4x the leakage. The
+archived McPAT inputs of both runs (`_1166audit/r5probe`) showed two
+causes. First, the analytical per-access walk came from `hierarchy_util.h`'s
+digit arithmetic, which places element i at unit i (every element in one
+chip), while the tree builder spreads the elements over the channels and
+puts its one branch router at the rank tier: the arithmetic walk sent every
+remote access through a chip-level LCA and none through the rank router,
+where Garnet measured one crossing per packet. The analytical path now walks
+the BUILT tree per access (`pimid_htree::TreeWalker`: source endpoint ->
+router -> parents to the lowest common ancestor -> down to the destination
+endpoint's router, the endpoint `endpointForUnit` maps the target unit to,
+the same map Garnet's packets follow); the routers it visits per tier are
+what the power model prices and its tier-plus-bridge cost is the latency
+charged. The H09 fallback for an unsampled pair takes the same walk. The
+arithmetic walk survives only for a run with no tree (HOST_MC placement).
+Second, the 2-VC / 2-buffer fabric preset lived inside `dramHTreeBuilder`
+(the detailed path), so the analytical census priced the same tree with 8
+VCs per port against the detailed run's 4; the analytical census site now
+applies the same preset. The retired reference-clock constants (REF_FREQ
+2.4 GHz, NET 2.0 GHz, RES 10, REF_HOPS 8) were still described as live by
+three comments and the provenance row; they now state the tier walk.
+
+**(11) Message charges on the timing cores (H05).** `Core::addDelay` was
+empty on the in-order and out-of-order cores, so every MPI message charge
+on those elements vanished. The in-order core stalls its issue cursor, the
+out-of-order core stalls dispatch (`advance`), as the weave cores rewind.
+
+**(12) Clean evictions and ownership fetches (H07).** A PUTS moves no data and
+is no longer an access; a cached element's GETX is a read (the array write
+is the later PUTX); the cacheless ALU element's GETX is its store
+(`setGetxIsStore`, set by the wiring). Every PUTS had been an access and
+every GETX a write, so a cached element's read stream carried the row-miss
+and energy of writes.
+
+**(13) Home-routed memory (H08).** `HomeRoutedMemory` replaces the address
+splitter: a cache-based element's misses go to ITS memory interface
+(`srcId / pesPerMc`), not to an interface chosen by address bits, which
+had scattered one element's stream across every interface.
+
+**(14) ROI baseline and the last rank (H10, x01-5, x01-6, x01-10).** A
+communication call never baselines the ROI; the first thread-mode roi_begin
+sweeps every core. MPI_TIME and MPI_ADVANCE are dispatched. The device-scope
+MPI ROI ends when the LAST rank arrives at the closing barrier after the
+opener's roi_end (the opener's roi_end alone truncated the other ranks'
+compute tails; bfs has no closing barrier and keeps the guest-exit dump).
+MPI traffic is injected by the sender only; the receiver prices its arrival
+without a second packet (thread mode: an uncounted probe; process mode: the
+analytical one-way; analytic mode: the cached RTT).
+
+**(15) The in-order core's load-use latency (x05-5).** A filter-cache hit
+returns the line's availability, zero latency for a resident line; the
+destination register is now ready no earlier than the L1's own access
+latency (`FilterCache::getAccLat`), as the out-of-order core already
+charged.
+
+**(16) The scratchpad is a RAM (H28).** The element's SRAM scratchpad was
+timed and priced by CACTI as an 8-way, 8-bank cache with a tag array and a
+way mux the array does not have; it is a RAM with one bank per unit.
+
+**(17) Upgrade misses (m01).** `mGETXSM` (S->M) is a write miss in the zsim
+stats parser at L1D, L2 and L3; it had been dropped.
+
+**(18) Link class by attachment (R4).** The host-device link's energy class
+follows the DECLARED attachment: internally attached devices cross an
+interposer class; PCIe is priced only when declared (`pcie_link_type_user_set`).
+Every co-sim cell had priced a PCIe gen5 SerDes on an on-package device.
+
+**(19) Defaults that were the wrong corner (rulings 19, 20, R1, s02, x04-6,
+H30).** DRAM periphery leakage comes natively from CACTI's lstp column
+(`periphery_leakage_device = 1`; was comm-dram); the architectural register
+counts are the simulated x86-64's 16 + 16 (were 32/32); the DDR5 preset
+instantiates both 32-bit sub-channels (`params/dram/ddr5.yaml channels: 2`);
+a point-to-point DQ has one terminating device (rtt2 open, was a second DRAM
+doubling the termination); a LOGIC_DIE unit holds one channel's banks of open-
+row registers, not every channel's; the ALU element is priced with one FPU
+per lane when `pim.pe.floating_point` is true (set at the caller of
+`describeTimingCore`), zero when false.
+
+**(20) The core part record (rulings 27, 28).** `params/core/default.yaml`,
+loaded by `applyCoreRecord` as the cache record is, overridable under
+`core:` in the config, with a one-line provenance print. In-order: TWO
+penalties, mispredict at execute depth (7 = the fetch-to-issue depth, the
+old literal) and BTB/RAS resteer at decode depth (4; was 7); retire = issue
+width. Out-of-order: the wrong-path fetch depth is DERIVED, mispredict
+penalty (17 cycles, the depth the core's own comment states) x fetch width
+(16 B/cycle) / line size, replacing the literal 5 lines (same at 64 B);
+retire width 4 is cross-checked against the ROB template constant and any
+other value refuses. McPAT's commit width is the record's retire width (was
+the issue width). Predictor WRITES are MEASURED: zsim counts the history and
+counter-table updates that change an entry (`roiBpHistWrites`,
+`roiBpPhtWrites`), and the McPAT fork prices `predictor_l1_writes` /
+`predictor_l2_writes` from them instead of mispredicts + 10% of branches
+(falls back to McPAT's estimate when the counters are absent). The zsim keys
+`mispredPenalty`, `resteerPenalty`, `fetchBytesPerCycle` are REQUIRED: the
+cores hold no defaults. Two conventions the agent that implemented this
+flagged for the user: decode-depth resteer is realistic for direct-branch BTB
+misses, while indirect and RAS targets are only known at execute (ruled (b),
+implemented as ruled); a "write" is an update that changes the stored value,
+the McPAT convention, which undercounts a history register written on every
+resolved branch.
+
+**(22) Found by gate 1207A.** The memory interface's rd/wr statistics counted
+every GETX as a write while the access classification (12) called a cached
+element's GETX a read; both follow one rule now. The DDR5 two-sub-channel
+preset (19) made the placement tree cover 512 organisations against a
+256-organisation one-rank slot frame and the coverage check refused every
+DDR5 run (device loads, the NO_OFFLOAD DDR5 baselines); the frame now
+multiplies by the ranks and by the UNFOLDED channel count (HBM folds its
+channels into chips_per_rank and stays x1). The shared-channel queueing wait
+still scaled the channel aggregate by the x4/x2/x1 placement gradient ruling
+26 retired from the floor and the fabric; it now caps by P x the tier rung
+like the floor. The in-order gemv cycles fall
+about 7x against 1.11.96 on the gate shape; the gate localises it (fabric
+vs core) and the number is reported with the release.
+
+**(23) Found by gate 1207B: the MPI barrier release was charged on a moved
+clock.** 1.11.96 never dispatched MPI_TIME and MPI_ADVANCE (the plugin's MPI op
+range ended one op short), so the shim's thread-mode barrier rendezvous --
+every rank publishes its arrival, the maximum is the release, every rank
+advances to it -- was dead code and ranks never synchronised at barriers
+(x01-10, item (14)). Dispatching it exposed a clock-origin error. The ENTRY
+barrier synthesises the ROI baseline in the BARRIER op that follows the first
+rank's advance (H10: "the entry barrier rebases as designed"), and rank 0's
+roi_begin re-baselines every core right after; a rank advancing after either
+compared a release taken on the old origin -- rank 0's whole pre-ROI data
+preparation -- with its clock on the new one, and was charged the preparation
+inside the ROI, rank 0 included. On the gate's 4-rank stencil the ALU element
+went from 1.0 M to 106 M cycles, and the simple element gave 0.1 M or 6.1 M
+depending on which rank re-baselined first. A release is now charged only when
+the ROI clock origin (counted by `snapshotRoiBaseCyc`) is the one in force at
+the first arrival of its barrier generation (counted per rank from its
+MPI_TIME calls); otherwise it is discarded, since the wait it describes ends
+before the new origin. A release on a thread with no core, or after
+termination, is discarded too. `PIMID_DEBUG_RDV` prints every arrival, every
+charged release and every discarded one. Measured on the stencil shape: ALU
+1.05 M cycles (1.11.96: 0.95 M; the difference is the barrier wait now
+charged), repeatable to 0.1%; in_order 0.15 M, ooo 0.07 M, simple 0.11 M.
+The 1207A/B arms F11/F11b compared two inflated numbers with each other and
+passed; 1207C compares the ALU element with 1.11.96, repeats it, and checks
+H10 the way the ruling states it (gemv_mpi ranks 1..3 count 98-99 k ROI
+instructions like rank 0; 1.11.96 counted 224-256 k with the preparation).
+
+**(24) Found by gate 1207D: two R5 fixes that did not do what they said.**
+The in-order load-use charge (15) read the filter cache's access latency,
+which zsim sets to 0 on every terminal cache ("accLat is hidden by the
+pipeline"); the configured L1 latency survived only as the invalidation
+latency, so the charge added nothing, and an 8-cycle L1D moved in-order
+cycles by -0.4%. The filter cache now keeps the configured latency
+(CACTI-derived, or the cache override) as its hit latency, and the in-order
+core charges it on loads in the decoded and the synthetic path (the
+out-of-order core charges a hard-coded 4 cycles, L1D_LAT, which stays for a
+ruling). Measured: the 8-cycle L1D raises in-order gemv cycles 1.59x; at the
+CACTI 1 cycle the charge adds about 5%. And H10's roi_begin sweep (14)
+re-baselined every core at rank 0's roi_begin, after the entry barrier had
+already baselined them at kernel entry; ranks 1..N-1 lost whatever they had
+executed in between (gemv_mpi per-rank ROI instructions max/min 1.015,
+1.087, 1.199 across three runs), the jitter the 1.6 comment on that branch
+warns about. In all thirteen MPI kernels the first MPI_Barrier is the line
+before roi_begin, after the data preparation, so the sweep, the clock
+snapshot and the traffic rebase now run at roi_begin only when no barrier
+has rebased yet; otherwise rank 0 re-baselines its own core alone. Both
+magic-op entry points follow the rule. Measured: max/min 1.005, 1.005,
+1.002 across three runs.
+
+**(21) Documentation and probes.** `docs/architecture.md`, `docs/yaml_reference.md`
+and the three NO_OFFLOAD baseline examples now say the baseline team and rank
+count come from `host.num_cores` (the code already did; `num_pes` is inert
+there). `docs/cores.md` states both in-order penalties. The NVSim cache under
+`cache/nvsim` is untracked and no fleet script points at it, so the 1.11.94
+note's "shipped 6-digit entries" ship nothing; the fleet environment sets
+`PIMID_NVSIM_CACHE_REQUIRE_FULL=1`.
+
+DATA IMPACT: every device cell (fabric from the built tree on both paths,
+lstp leakage, FPU on ALU elements, LOGIC_DIE row slots) and every timing-core
+cell (message charges, load-use, clean evictions, home routing, penalties,
+predictor writes, registers), every DDR5 cell (two sub-channels), every
+DDR4/DDR5 cell (termination), every SRAM cell (RAM scratchpad), every MPI
+cell (sender-only injection, last-rank ROI), every co-sim cell (link class).
+Measured on the gate shapes in 1207A.
+
+OPEN: ruling 4 (c) (Ramulator in the device loop) awaits the design ruling;
+H19's endpoint class and the traversal split by router count are stated
+conventions; the analytical NI overhead (6 cycles: two NI pipeline stages
+and two external links, both directions) remains a stated constant; a
+device-scope run archives no McPAT input XML (the archive needs an output
+directory that only system scope sets, so the C014 warning never fires
+there); bfs_mpi and bfs_message_passing have no closing barrier after
+roi_end, so their device-scope ROI still ends at guest exit (adding the
+barrier means rebuilding the guest binaries: user ruling); the two core-
+record conventions above.
+
 ## 1.11.96 -- the controller ran on the core's clock, lost its writes, and sent one column command for every line
 
 CONTROLLER RELEASE, part 1 of R3 (`_1166audit/MANIFEST_1.11.94plus.md`; sweep-94

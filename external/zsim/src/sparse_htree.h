@@ -51,6 +51,47 @@ inline std::vector<long> decompose(uint64_t unit, int peLevel,
 
 struct Link { int a, b, w, lat; };
 
+struct SparseHTree;
+
+/* 1.11.97 (ruling 7 (c); gate 1206B arm P2): the per-access tier walk of the
+ * ANALYTICAL path, taken over the BUILT tree -- the same tree the detailed
+ * path routes on and the power model is priced from.
+ *
+ * Until now the analytical path walked an arithmetic hierarchy
+ * (hierarchy_util.h: unit id -> subarray/bank/bank-group/chip/rank/channel
+ * digits, lowest common ancestor by digit), which places PE i at unit i. The
+ * tree builder places PEs by the placement map (one per channel on an HBM
+ * stack, round-robin over the leaves), hangs an aggregated endpoint on the
+ * deepest live router of every empty region, and puts its one branch router
+ * at the rank tier. The two disagreed on where the traffic goes: on HBM3,
+ * 16 elements at BANK, the arithmetic walk put every remote access through
+ * a chip-level LCA and nothing through the rank router, while Garnet
+ * measured one rank-router crossing per packet (gate 1206B: analytical NoC
+ * dynamic 8x detailed; 3.3x at equal work). This walker follows the tree:
+ * endpoint -> its router -> parent pointers up to the lowest common ancestor
+ * -> down to the destination endpoint's router. It counts the routers it
+ * visits per tier (the quantity Garnet's crossbars count) and prices the
+ * path as censusSparseTree does for the hotspot and mean-cost walk: every
+ * router's tier latency plus the bridge at every tier boundary. */
+struct TreeWalker {
+    std::vector<int> parentOf;    // router -> parent router (-1 at ROOT)
+    std::vector<int> routerOfEp;  // endpoint -> the router it hangs on (-1 = none)
+    bool built = false;
+
+    void build(const SparseHTree& t);
+
+    /* Walk srcEp -> dstEp. perLevel[l] (l in 0..6) = routers of tier l the
+     * walk visits (the LCA once, every other router on the up and down
+     * paths once). Returns the number of router-to-router links. cost (if
+     * non-null) = sum of levelLat[tier] over the routers visited + sum of
+     * bridgeLat[min(tier_a, tier_b)] over the links crossed, in the caller's
+     * cycle unit. Returns 0 links and no visits when either endpoint is
+     * unknown (caller falls back to the arithmetic walk). srcEp == dstEp or
+     * both on one router: that router once, no links. */
+    uint32_t walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
+                  const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost) const;
+};
+
 struct SparseHTree {
     int numRouters = 1;           // ROOT=0 + internal routers
     int numPEs = 0;               // PE endpoints [0, numPEs)
@@ -429,6 +470,56 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
         }
     }
     return t;
+}
+
+
+inline void TreeWalker::build(const SparseHTree& t) {
+    parentOf.assign((size_t)std::max(1, t.numRouters), -1);
+    for (const auto& l : t.intLinks)
+        if (l.b >= 0 && l.b < (int)parentOf.size()) parentOf[(size_t)l.b] = l.a;   // a = parent, b = child
+    routerOfEp.assign((size_t)std::max(1, t.totalEndpoints()), -1);
+    for (const auto& e : t.extLinks)
+        if (e.a >= 0 && e.a < (int)routerOfEp.size()) routerOfEp[(size_t)e.a] = e.b;
+    built = true;
+}
+
+inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
+                                 const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost) const {
+    for (int l = 0; l < 8; l++) perLevel[l] = 0;
+    if (cost) *cost = 0;
+    if (!built || srcEp < 0 || dstEp < 0 ||
+        srcEp >= (int)routerOfEp.size() || dstEp >= (int)routerOfEp.size()) return 0;
+    const int rs = routerOfEp[(size_t)srcEp], rd = routerOfEp[(size_t)dstEp];
+    if (rs < 0 || rd < 0) return 0;
+    auto lvlOf = [&](int r) -> int {
+        return (r >= 0 && r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1;
+    };
+    auto visit = [&](int r) {
+        int lv = lvlOf(r);
+        if (lv >= 0 && lv <= 6) { perLevel[lv]++; if (cost && levelLat) *cost += levelLat[lv]; }
+    };
+    auto bridge = [&](int ra, int rb) {
+        int lb = std::min(lvlOf(ra), lvlOf(rb));
+        if (cost && bridgeLat && lb >= 0 && lb <= 5) *cost += bridgeLat[lb];
+    };
+    if (rs == rd) { visit(rs); return 0; }
+    int up[16], dn[16]; int nu = 0, nd = 0;
+    for (int r = rs; r >= 0 && nu < 16; r = parentOf[(size_t)r]) up[nu++] = r;
+    for (int r = rd; r >= 0 && nd < 16; r = parentOf[(size_t)r]) dn[nd++] = r;
+    int ui = -1, di = -1;
+    for (int i = 0; i < nu && ui < 0; ++i)
+        for (int j = 0; j < nd; ++j) if (up[i] == dn[j]) { ui = i; di = j; break; }
+    if (ui < 0) return 0;   // disconnected (cannot happen on a built tree)
+    uint32_t links = 0;
+    for (int i = 0; i <= ui; ++i) {           // up to and including the LCA
+        visit(up[i]);
+        if (i < ui) { bridge(up[i], up[i + 1]); links++; }
+    }
+    for (int i = di; i >= 1; --i) {           // down from the LCA (exclusive) to rd
+        visit(dn[i - 1]);
+        bridge(dn[i], dn[i - 1]); links++;
+    }
+    return links;
 }
 
 } // namespace pimid_htree

@@ -52,6 +52,11 @@ class BranchPredictorPAg {
         uint8_t pht[1 << LB];
 
     public:
+        /* PIMID 1.11.97 (R2476): value-changing table writes, whole run
+         * (the cores rebase them at roi_begin, like every activity count). */
+        uint64_t histWrites = 0;   // level-1 history table (bhsr)
+        uint64_t phtWrites = 0;    // level-2 2-bit counter table (pht)
+
         BranchPredictorPAg() {
             uint32_t numBhsrs = 1 << NB;
             uint32_t phtSize = 1 << LB;
@@ -91,8 +96,19 @@ class BranchPredictorPAg {
             // info("BP Pred: 0x%lx bshr[%d]=%x taken=%d pht=%d pred=%d", branchPc, bhsrIdx, phtIdx, taken, pht[phtIdx], pred);
 
             // Update
-            pht[phtIdx] = taken? (pred? 3 : (pht[phtIdx]+1)) : (pred? (pht[phtIdx]-1) : 0); //2-bit saturating counter
-            bhsr[bhsrIdx] = ((bhsr[bhsrIdx] << 1) & histMask ) | (taken? 1: 0); //we apply phtMask here, dependence is further away
+            /* PIMID 1.11.97 (R2476): count the table WRITES that change a
+             * stored value -- what McPAT's estimate ("10% of BR will flip
+             * internal bits", mcpat core.cc) stands in for. A saturated
+             * counter that stays saturated, or a history that shifts in the
+             * bit it shifted out, is not a write. Level 1 = the history
+             * table (bhsr), level 2 = the 2-bit counter table (pht). The
+             * prediction and the update are unchanged. */
+            const uint8_t newPht = taken? (pred? 3 : (pht[phtIdx]+1)) : (pred? (pht[phtIdx]-1) : 0); //2-bit saturating counter
+            const uint32_t newBhsr = ((bhsr[bhsrIdx] << 1) & histMask ) | (taken? 1: 0); //we apply phtMask here, dependence is further away
+            if (newPht != pht[phtIdx]) phtWrites++;
+            if (newBhsr != bhsr[bhsrIdx]) histWrites++;
+            pht[phtIdx] = newPht;
+            bhsr[bhsrIdx] = newBhsr;
 
             // info("BP Update: newPht=%d newBshr=%x", pht[phtIdx], bhsr[bhsrIdx]);
             return (taken == pred);
@@ -476,6 +492,17 @@ class OOOCore : public Core {
         // UPDATE: Now pht index is XOR-folded BSHR. This has 6656 bytes total -- not negligible, but not ridiculous.
         BranchPredictorPAg<11, 18, 14> branchPred;
 
+        /* PIMID 1.11.97 (R2355 (b)): wrong-path fetch depth DERIVED from the
+         * core record (params/core/default.yaml, ooo.*), emitted by PIMID as
+         * the required zsim keys mispredPenalty / fetchBytesPerCycle:
+         * wrongPathBytes = mispredict penalty (cycles) x fetch width (bytes
+         * per cycle); the line count is ceil(wrongPathBytes / lineSize). It
+         * replaces the literal 5*64/lineSize (5 lines at 64 B, equal at the
+         * record defaults 17 x 16 B). fetchBytesPerCycle also replaces the
+         * FETCH_BYTES_PER_CYCLE throughput step of that loop. */
+        uint32_t fetchBytesPerCycle;
+        uint32_t wrongPathBytes;
+
         Address branchPc;  //0 if last bbl was not a conditional branch
         bool branchTaken;
         Address branchTakenNpc;
@@ -572,6 +599,8 @@ class OOOCore : public Core {
         uint64_t roiBaseMispred  = 0;
         uint64_t roiBaseIndir    = 0;   // 1.11.93 (F6): see in_order_core.h
         uint64_t roiBaseRas      = 0;
+        uint64_t roiBaseBpHist   = 0;   // 1.11.97 (R2476): predictor table writes
+        uint64_t roiBaseBpPht    = 0;
 
 #ifdef OOO_STALL_STATS
         Counter profFetchStalls, profDecodeStalls, profIssueStalls;
@@ -592,7 +621,11 @@ class OOOCore : public Core {
         OOOCoreRecorder cRec;
 
     public:
-        OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name);
+        /* 1.11.97: _mispredPenalty / _fetchBytesPerCycle = the core record's
+         * ooo.mispredict_penalty_cycles / ooo.fetch_width_bytes (zsim keys
+         * mispredPenalty / fetchBytesPerCycle, required; no default here). */
+        OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
+                uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle);
 
         void initStats(AggregateStat* parentStat);
 
@@ -615,6 +648,10 @@ class OOOCore : public Core {
 
         virtual void join();
         virtual void leave();
+        /* 1.11.97 (review H05): an MPI message charge stalls dispatch -- the
+         * same rebase the weave end performs (advance), so the window and
+         * decode cursor move together. Was the empty default. */
+        void addDelay(uint32_t cycles) override;
 
         InstrFuncPtrs GetFuncPtrs();
 
@@ -634,6 +671,7 @@ class OOOCore : public Core {
             roiBaseUops = uops; roiBaseBbls = bbls;
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
+            roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
             roiBaseSyntheticInstrs = syntheticInstrs;  // 1.9.33
             /* 1.11.9 (audit): cCycles was "left absolute as diagnostic", but
              * the parser SUMS it with ROI-windowed cycles for

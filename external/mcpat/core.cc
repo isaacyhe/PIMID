@@ -1992,12 +1992,21 @@ void BranchPredictor::computeEnergy(bool is_tdp)
     	globalBPT->rtp_stats = globalBPT->stats_t;
     	}
 
+    	/* PIMID 1.11.97 (R2476): the local tables take the MEASURED write
+    	 * counts when the XML carries them (>= 0): the timing core counted
+    	 * every update that changed the level-1 history entry and the
+    	 * level-2 counter. The global table and the chooser (absent in
+    	 * PIMID's PAg description) keep the estimate above. */
+    	const double l1_w = (XML->sys.core[ithCore].predictor_l1_writes >= 0)
+    	                  ? XML->sys.core[ithCore].predictor_l1_writes : w_access;
+    	const double l2_w = (XML->sys.core[ithCore].predictor_l2_writes >= 0)
+    	                  ? XML->sys.core[ithCore].predictor_l2_writes : w_access;
     	L1_localBPT->stats_t.readAc.access  = r_access;
-    	L1_localBPT->stats_t.writeAc.access = w_access;
+    	L1_localBPT->stats_t.writeAc.access = l1_w;
     	L1_localBPT->rtp_stats = L1_localBPT->stats_t;
 
     	L2_localBPT->stats_t.readAc.access  = r_access;
-    	L2_localBPT->stats_t.writeAc.access = w_access;
+    	L2_localBPT->stats_t.writeAc.access = l2_w;
     	L2_localBPT->rtp_stats = L2_localBPT->stats_t;
 
     	if (chooser) {   /* PIMID 1.11.93 (F6): absent table */

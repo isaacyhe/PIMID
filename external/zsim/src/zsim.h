@@ -287,6 +287,7 @@ struct GlobSimInfo {
         uint32_t pesPerMC = 1;            // PEs sharing each MI
         uint32_t localLatency = 10;       // default PE-MI local access latency
         uint64_t defaultBandwidthMBs = 0; // default M/D/1 bandwidth (0 = auto)
+        uint64_t tierBandwidthMBs = 0;    // 1.11.97 (ruling 26): the placement tier's rung bandwidth (width x clock); 0 = none
 
         // M:N PE-to-memory-org mapping
         uint32_t connectionMode = 0;     // 0=SHARED_IO, 1=SEPARATE_ENDPOINTS

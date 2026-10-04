@@ -34,7 +34,7 @@
 //#define DEBUG_MSG(args...) info(args)
 
 InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain, g_string& _name,
-                         uint32_t _issueWidth)
+                         uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty)
     : Core(_name), l1i(_l1i), l1d(_l1d), instrs(0), uops(0), bbls(0),
       curCycle(0), cRec(_domain, _name) {
     /* 1.11.44 (user ruling): the legacy IPC=1 NODECODE path is DELETED. Its
@@ -67,18 +67,32 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
     repDrainedLoads = repDrainedStores = 0;
     phaseEndCycle = 0;
 
-    // Branch misprediction: front-end flush/refill bubble. Default 7 cycles ~=
-    // the OOO model's fetch-to-issue depth (ISSUE_STAGE), i.e. the redirect
-    // cost of a short in-order pipeline (Cortex-A53 class is ~8 cycles).
-    // Overridable via PIMID_INORDER_MISPRED_PENALTY for sensitivity studies.
-    // The whole feed is disabled by PIMID_INORDER_NOBRANCH=1 (plugin-side gate).
+    // Branch misprediction: front-end flush/refill bubbles.
+    /* 1.11.97 (R2313 (b)): the literal 7 is gone. Two penalties, passed in
+     * from the zsim config (keys mispredPenalty / resteerPenalty, emitted by
+     * PIMID from the core record params/core/default.yaml or the config's
+     * core.in_order.* keys; derivations in the record):
+     *   mispredPenalty  conditional direction mispredict, resolved at
+     *                   execute (record 7 = ISSUE_STAGE, fetch-to-issue);
+     *   resteerPenalty  BTB/RAS target resteer, decode depth (record 4 =
+     *                   DECODE_STAGE).
+     * Overridable via PIMID_INORDER_MISPRED_PENALTY (execute depth, as
+     * before) and PIMID_INORDER_RESTEER_PENALTY (decode depth) for
+     * sensitivity studies. The whole feed is disabled by
+     * PIMID_INORDER_NOBRANCH=1 (plugin-side gate). */
     branchPc = 0;
     branchTaken = false;
-    mispredPenalty = 7;
+    mispredPenalty = _mispredPenalty;
+    resteerPenalty = _resteerPenalty;
     const char* mp = getenv("PIMID_INORDER_MISPRED_PENALTY");
     if (mp) {
         int v = atoi(mp);
         if (v >= 0 && v <= 1000) mispredPenalty = (uint32_t)v;
+    }
+    const char* rp = getenv("PIMID_INORDER_RESTEER_PENALTY");
+    if (rp) {
+        int v = atoi(rp);
+        if (v >= 0 && v <= 1000) resteerPenalty = (uint32_t)v;
     }
     branches = mispredBranches = mispredStallCycles = 0;
 
@@ -192,6 +206,17 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zrr)>* roiRasStat = new LambdaStat<decltype(zrr)>(zrr);
     roiRasStat->init("roiRasReturns", "Returns resolved against the RAS (ROI)");
     coreStat->append(roiRasStat);
+    /* 1.11.97 (R2476): measured predictor table writes (value-changing
+     * updates, BranchPredictorPAg::predict in ooo_core.h), ROI-windowed --
+     * McPAT's level-1 / level-2 local predictor write counts. */
+    auto zbh = [this]() -> uint64_t { return branchPred.histWrites - roiBaseBpHist; };
+    LambdaStat<decltype(zbh)>* roiBpHistStat = new LambdaStat<decltype(zbh)>(zbh);
+    roiBpHistStat->init("roiBpHistWrites", "Branch-history table writes that changed an entry (ROI)");
+    coreStat->append(roiBpHistStat);
+    auto zbp = [this]() -> uint64_t { return branchPred.phtWrites - roiBaseBpPht; };
+    LambdaStat<decltype(zbp)>* roiBpPhtStat = new LambdaStat<decltype(zbp)>(zbp);
+    roiBpPhtStat->init("roiBpPhtWrites", "Predictor counter-table writes that changed a counter (ROI)");
+    coreStat->append(roiBpPhtStat);
 
     parentStat->append(coreStat);
 }
@@ -220,6 +245,13 @@ void InOrderCore::join() {
 
 void InOrderCore::leave() {
     drainPipeline();  // taper must cover all outstanding completions
+    /* 1.11.97 (review C7, the weave assertion): the thread leaves no earlier
+     * than its last memory response. memRespCycle is this core's serialization
+     * cursor for the accesses threaded through the weave; when the last
+     * response outran the issue cursor (a miss at a barrier), leaving at
+     * curCycle handed the recorder a taper that ended BEFORE its previous
+     * response, a negative delay the 32-bit postDelay wrapped to ~2^32. */
+    if (memRespCycle > curCycle) curCycle = memRespCycle;
     cRec.notifyLeave(curCycle);
 }
 
@@ -268,7 +300,7 @@ inline void InOrderCore::simulateSyntheticBbl(BblInfo* bblInfo) {
         uint64_t resp = l1d->load(addr, startCycle);
         cRec.record(startCycle);
         memRespCycle = resp;
-        commitCycle = resp;
+        commitCycle = MAX(resp, startCycle + (uint64_t)l1d->getHitLatency());   // 1.11.97 (x05-5): the L1 hit latency on the synthetic path too
     }
     for (uint32_t i = 0; i < stores && i < 256; i++) {
         Address addr = storeAddrs[i];
@@ -334,7 +366,11 @@ inline void InOrderCore::simulateDecodedBbl(BblInfo* bblInfo) {
                 uint64_t resp = l1d->load(addr, startCycle);
                 cRec.record(startCycle);
                 memRespCycle = resp;
-                done = resp;  // load-use latency gates the destination register
+                /* 1.11.97 (review x05-zsim-cores-5): a filter-cache hit returns the
+                 * line's availability, which for a resident line is the issue
+                 * cycle itself -- zero load-use latency. The destination is
+                 * ready no earlier than the L1's own access latency. */
+                done = MAX(resp, startCycle + (uint64_t)l1d->getHitLatency());   // 1207D: the configured L1 latency (accLat is 0 on terminal caches)
             } else {
                 done = iss;   // predicated / mismatched -> 0-cycle
             }
@@ -466,13 +502,14 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
     }
 
     // Indirect jmp/call/ret target misprediction (BTB/RAS miss, armed by
-    // ctrlFlow for the terminator of `sim`): same flush semantics + bubble as
-    // a conditional mispredict.
+    // ctrlFlow for the terminator of `sim`): same flush semantics as a
+    // conditional mispredict, but the DECODE-depth bubble (1.11.97, R2313
+    // (b): resteerPenalty; through 1.11.96 the execute-depth mispredPenalty).
     if (indirMispredPend) {
         indirMispredPend = false;
-        mispredStallCycles += mispredPenalty;
+        mispredStallCycles += resteerPenalty;
         drainPipeline();
-        curCycle += mispredPenalty;
+        curCycle += resteerPenalty;
     }
 
     loads = stores = 0;
@@ -523,8 +560,9 @@ void InOrderCore::branch(Address pc, bool taken) {
 
 /* Indirect control-flow resolution (kind >= CF_IND_JMP, see CtrlFlowKind in
  * ooo_core.h). target = resolved actual target (next TB start); retAddr = the
- * call's fall-through (calls only). Wrong prediction arms the mispredPenalty
- * bubble consumed after the terminator's BBL is simulated. */
+ * call's fall-through (calls only). Wrong prediction arms the resteerPenalty
+ * bubble (decode depth, 1.11.97; was mispredPenalty) consumed after the
+ * terminator's BBL is simulated. */
 void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address retAddr) {
     switch (kind) {
         case CF_DIR_CALL:

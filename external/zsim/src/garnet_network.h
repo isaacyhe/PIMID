@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -593,8 +594,12 @@ public:
         return on;
     }
 
-    uint32_t getRTTProbe(const char* src, const char* dst) {
-        if (!probeUncounted() || !cycleAccurate_) return getRTT(src, dst);
+    /* 1.11.97 (x01-qemu-zsim-plugin-6): `uncounted` forces the uncounted
+     * probe regardless of PIMID_NOC_PROBE_UNCOUNTED. The MPI receiver passes
+     * it: its message is injected by the sender alone, so its pricing probe
+     * must add no packet in either knob setting (same latency either way). */
+    uint32_t getRTTProbe(const char* src, const char* dst, bool uncounted = false) {
+        if ((!probeUncounted() && !uncounted) || !cycleAccurate_) return getRTT(src, dst);
         if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
         if (nodeMap_.find(dst) == nodeMap_.end()) autoRegisterNode(dst);
         uint32_t srcId = nodeMap_[src];
@@ -611,6 +616,22 @@ public:
         uint32_t latency = getAnalyticalLatency(srcId, dstId, false);
 #endif
         return 2 * latency;
+    }
+
+    /* 1.11.97 (x01-qemu-zsim-plugin-6): the analytic-model RTT for a message
+     * whose packets are counted elsewhere (by its sender), counting nothing.
+     * Same endpoint binding and same latency cache as getRTT, so the MPI
+     * receiver sees exactly the RTT its sender's getRTT priced and cached
+     * (the send op always precedes the matching receive op), without the
+     * total_packets++ / countPacket_ that getRTT adds. Analytic network only;
+     * a cycle-accurate network has getRTTProbe for this. */
+    uint32_t getRTTAnalyticUncounted(const char* src, const char* dst) {
+        if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
+        if (nodeMap_.find(dst) == nodeMap_.end()) autoRegisterNode(dst);
+        std::string key = std::string(src) + " " + dst;
+        auto it = latencyCache_.find(key);
+        if (it != latencyCache_.end()) return it->second;
+        return 2 * getAnalyticalLatency(nodeMap_[src], nodeMap_[dst], false);
     }
 
     // ── Phase-sync injection/dequeue interface ─────────────────
@@ -746,6 +767,19 @@ public:
     }
 
 public:
+    /* 1.11.97 (x01-qemu-zsim-plugin-6): the one-way latency of a src->dst
+     * packet priced by the hop + M/D/1 analytic model, counting NOTHING
+     * (no countPacket_, no total_packets/total_latency) and touching no
+     * Garnet state (no reset, no injection, no event processing). The
+     * process-mode MPI receiver uses it to price its rendezvous arrival
+     * without putting the message on the network a second time: the
+     * sender's injection is the message's only traffic. getRTTProbe is not
+     * usable there because a cycle-accurate probe resets the network, which
+     * would discard the in-flight state of the live accessNetwork path. */
+    uint32_t analyticalOneWayUncounted(uint32_t src, uint32_t dst) {
+        return getAnalyticalLatency(src, dst, false);
+    }
+
     // ── Phase-level batch: record all PE remote accesses with their
     //    real ZSim cycle timestamps, then replay through Garnet.
     /* 1.11.92 (F2): `ctrl` selects MessageSizeType::Control (control_msg_bits)
@@ -759,6 +793,12 @@ private:
     std::vector<BatchAccess> phaseBatch_;
     // Published rolling one-way avg latency (lock-free read by all PE threads).
     std::atomic<uint32_t> batchAvgLatency_{0};
+    /* 1.11.97 (review H09 / x02-7): per source-destination pair smoothed one-way
+     * latency (numNodes_ x numNodes_, 0 = no sample yet), published per batch
+     * the same way batchAvgLatency_ is; read lock-free by the PE interfaces. */
+    std::unique_ptr<std::atomic<uint32_t>[]> pairLat_;
+    uint32_t pairLatN_ = 0;
+    void ensurePairTable_() { if (!pairLat_ && numNodes_ > 0) { pairLatN_ = numNodes_; pairLat_.reset(new std::atomic<uint32_t>[(size_t)numNodes_ * numNodes_]); for (size_t i = 0; i < (size_t)numNodes_ * numNodes_; ++i) pairLat_[i].store(0, std::memory_order_relaxed); } }
     volatile uint64_t batchLastPhase_ = 0;
     lock_t batchLock_;
 
@@ -871,6 +911,11 @@ public:
      *  Lock-free read (atomic); safe to call from any PE thread every access. */
     uint32_t getBatchAvgLatency() const {
         return batchAvgLatency_.load(std::memory_order_relaxed);
+    }
+    /* 1.11.97 (H09): this pair's smoothed latency; 0 when no packet of this pair has been replayed yet. */
+    uint32_t getPairLatency(uint32_t src, uint32_t dst) const {
+        if (!pairLat_ || src >= pairLatN_ || dst >= pairLatN_) return 0;
+        return pairLat_[(size_t)src * pairLatN_ + dst].load(std::memory_order_relaxed);
     }
 
     // -- 1.9.0 epoch-frozen feedback API -------------------------------------
@@ -1063,6 +1108,8 @@ private:
         uint64_t tag = 1;
         std::unordered_map<uint64_t, uint64_t> tagToInjectTick;
         std::unordered_map<uint64_t, uint32_t> tagToSrc;  // epoch-dump attribution
+        std::unordered_map<uint64_t, uint32_t> tagToDst;  // 1.11.97 (H09): per-pair attribution
+        std::map<uint64_t, std::pair<uint64_t,uint32_t>> perPairLat;   // (src<<32|dst) -> {latSum, cnt}
         std::map<uint32_t, std::pair<uint64_t,uint32_t>> perSrcLat;  // src->{latSum,cnt}
         std::unordered_set<uint32_t> dstSet;
         uint32_t validCount = 0;
@@ -1115,6 +1162,7 @@ private:
                         msg, gem5::curTickRef(), uint64_t(1));
                     tagToInjectTick[tag] = gem5::curTickRef();
                     tagToSrc[tag] = acc.src;
+                    tagToDst[tag] = acc.dst;   // 1.11.97 (H09)
                     tag++;
                 }
                 nextInjectIdx++;
@@ -1139,6 +1187,11 @@ private:
                         if (st != tagToSrc.end()) {
                             auto& ps = perSrcLat[st->second];
                             ps.first += lat; ps.second += 1;
+                            auto dt = tagToDst.find(pktTag);   // 1.11.97 (H09)
+                            if (dt != tagToDst.end()) {
+                                auto& pp = perPairLat[((uint64_t)st->second << 32) | dt->second];
+                                pp.first += lat; pp.second += 1;
+                            }
                         }
                     }
                 }
@@ -1159,6 +1212,18 @@ private:
             uint32_t oldAvg = batchAvgLatency_.load(std::memory_order_relaxed);
             uint32_t next = (oldAvg == 0) ? newAvg : (oldAvg + newAvg) / 2;
             batchAvgLatency_.store(next, std::memory_order_relaxed);
+            /* 1.11.97 (H09): publish every sampled pair the same way. */
+            ensurePairTable_();
+            if (pairLat_) {
+                for (const auto& kv : perPairLat) {
+                    uint32_t ps = (uint32_t)(kv.first >> 32), pd = (uint32_t)(kv.first & 0xffffffffu);
+                    if (ps >= pairLatN_ || pd >= pairLatN_ || kv.second.second == 0) continue;
+                    uint32_t nv = (uint32_t)(kv.second.first / kv.second.second);
+                    auto& cell = pairLat_[(size_t)ps * pairLatN_ + pd];
+                    uint32_t ov = cell.load(std::memory_order_relaxed);
+                    cell.store((ov == 0) ? nv : (ov + nv) / 2, std::memory_order_relaxed);
+                }
+            }
             if (phaseNum <= 5 || phaseNum % 100 == 0) {
                 info("[GarnetBatch] phase=%lu batch=%u delivered=%u "
                      "avgLat=%u smooth=%u→%u ticks=%lu",
@@ -1459,6 +1524,11 @@ public:
         }
         if (stats_.total_packets > 0) {
             info("  Avg latency: %lu cycles", stats_.total_latency / stats_.total_packets);
+            if (pairLat_) {   /* 1.11.97 (H09): the per-pair table the pricing used */
+                uint32_t mn = 0, mx = 0; uint64_t sum = 0, n = 0;
+                for (size_t i = 0; i < (size_t)pairLatN_ * pairLatN_; ++i) { uint32_t v = pairLat_[i].load(std::memory_order_relaxed); if (!v) continue; if (!n || v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
+                info("  Per-pair latency (H09): %lu source-destination pairs sampled; min %u, max %u, mean %.1f cycles (unsampled pairs take the ladder cost of their distance)", (unsigned long)n, mn, mx, n ? (double)sum / n : 0.0);
+            }
         }
     }
 

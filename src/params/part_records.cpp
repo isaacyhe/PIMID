@@ -241,3 +241,83 @@ std::string describeCacheRecord(const CacheRecord& rec) {
 }
 
 }}  // namespace pimid::params
+
+
+/* ---- 1.11.97: core part record ----------------------------------------- */
+namespace pimid { namespace params {
+
+static bool coreInt(const YAML::Node& n, const std::string& type, const char* key, int lo, int hi,
+                    int& out, const std::string& file, std::string& error) {
+    if (!n[key]) { error = "core record " + file + ": '" + type + "' lacks '" + key + "'"; return false; }
+    try { out = n[key].as<int>(); }
+    catch (const std::exception&) {
+        error = "core record " + file + ": " + type + "." + key + " is not an integer"; return false;
+    }
+    if (out < lo || out > hi) {
+        error = "core record " + file + ": " + type + "." + key + " " + std::to_string(out) +
+                " outside " + std::to_string(lo) + ".." + std::to_string(hi);
+        return false;
+    }
+    return true;
+}
+
+bool loadCoreRecord(CoreRecord& out, std::string& error) {
+    out = CoreRecord();
+    out.file = paramsDir() + "/core/default.yaml";
+    std::ifstream probe(out.file);
+    if (!probe.good()) {
+        error = "core record " + out.file + " is missing. The simulator ships params/core/default.yaml; set PIMID_PARAMS to a directory that holds core/default.yaml.";
+        return false;
+    }
+    YAML::Node n;
+    try { n = YAML::LoadFile(out.file); } catch (const std::exception& e) { error = "core record " + out.file + ": " + e.what(); return false; }
+    if (!n["record"] || !n["in_order"] || !n["ooo"] || !n["in_order"].IsMap() || !n["ooo"].IsMap()) {
+        error = "core record " + out.file + " lacks 'record', 'in_order' or 'ooo'"; return false;
+    }
+    out.record = n["record"].as<std::string>("");
+    const YAML::Node io = n["in_order"], oo = n["ooo"];
+    /* Ranges: penalties 0..1000 = the range the in-order core has always
+     * accepted from PIMID_INORDER_MISPRED_PENALTY; fetch width 1..64 bytes
+     * (at most one 64 B line per cycle, so the wrong-path throughput step
+     * lineSize / fetch_width stays >= 1 cycle; checked against the run's
+     * line size at apply time). */
+    if (!coreInt(io, "in_order", "mispredict_penalty_cycles", 0, 1000, out.in_order.mispredict_penalty_cycles, out.file, error) ||
+        !coreInt(io, "in_order", "resteer_penalty_cycles", 0, 1000, out.in_order.resteer_penalty_cycles, out.file, error) ||
+        !coreInt(oo, "ooo", "mispredict_penalty_cycles", 0, 1000, out.ooo.mispredict_penalty_cycles, out.file, error) ||
+        !coreInt(oo, "ooo", "fetch_width_bytes", 1, 64, out.ooo.fetch_width_bytes, out.file, error) ||
+        !coreInt(oo, "ooo", "retire_width", 1, 64, out.ooo.retire_width, out.file, error))
+        return false;
+    if (!io["retire_width"] || io["retire_width"].as<std::string>("") != "issue") {
+        error = "core record " + out.file + ": in_order.retire_width must be 'issue' (InOrderCore issues and "
+                "commits on one cursor, so it retires exactly its issue width; an integer would price a retire "
+                "limit the timing core does not have)";
+        return false;
+    }
+    out.in_order.retire_width = -1;
+    if (out.in_order.resteer_penalty_cycles > out.in_order.mispredict_penalty_cycles) {
+        error = "core record " + out.file + ": in_order.resteer_penalty_cycles " + std::to_string(out.in_order.resteer_penalty_cycles) +
+                " exceeds mispredict_penalty_cycles " + std::to_string(out.in_order.mispredict_penalty_cycles) +
+                " (a decode-depth resteer cannot cost more than an execute-depth flush)";
+        return false;
+    }
+    if (out.ooo.retire_width != kOooRobRetireWidth) {
+        error = "core record " + out.file + ": ooo.retire_width " + std::to_string(out.ooo.retire_width) +
+                " is not the retire width zsim OOOCore is compiled with (" + std::to_string(kOooRobRetireWidth) +
+                ", ReorderBuffer<128, 4> in external/zsim/src/ooo_core.h); McPAT would price a commit width the "
+                "timing core does not simulate";
+        return false;
+    }
+    return true;
+}
+
+std::string describeCoreRecord(const CoreRecord& rec) {
+    std::ostringstream o;
+    o << "[params] core record " << rec.file << ": " << rec.record
+      << " (in_order: mispredict " << rec.in_order.mispredict_penalty_cycles << " cyc, resteer "
+      << rec.in_order.resteer_penalty_cycles << " cyc, retire = issue width; ooo: mispredict "
+      << rec.ooo.mispredict_penalty_cycles << " cyc, fetch " << rec.ooo.fetch_width_bytes
+      << " B/cyc, retire " << rec.ooo.retire_width << ")";
+    return o.str();
+}
+
+}}  // namespace pimid::params

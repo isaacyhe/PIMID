@@ -77,6 +77,31 @@ bool loadCacheRecord(CacheRecord& out, std::string& error);
 int cacheBanksSlice(int size_kb, int slice_mb);
 std::string describeCacheRecord(const CacheRecord& rec);
 
+/* 1.11.97: the core part record (params/core/default.yaml): the front-end
+ * penalties, wrong-path fetch width and retire width of the two decoded
+ * timing cores. A field a core type does not carry stays -1. For in_order,
+ * retire_width -1 means "issue" (retires what it issued). Derivations of
+ * every value are in the record file. */
+struct CoreTypeRecord {
+    int mispredict_penalty_cycles = -1;   // conditional mispredict, execute depth
+    int resteer_penalty_cycles = -1;      // BTB/RAS target resteer, decode depth (in_order)
+    int fetch_width_bytes = -1;           // wrong-path fetch bytes per cycle (ooo)
+    int retire_width = -1;                // commit width McPAT prices; in_order: -1 = issue width
+};
+struct CoreRecord {
+    std::string file, record;
+    CoreTypeRecord in_order, ooo;
+};
+/* Loads params/core/default.yaml (PIMID_PARAMS honoured); false + error on a
+ * missing file or field, a value outside its range, or an ooo retire_width
+ * that is not the timing core's compiled ROB retire width. */
+bool loadCoreRecord(CoreRecord& out, std::string& error);
+/* The ROB retire width zsim OOOCore is compiled with (ReorderBuffer<128, 4>,
+ * external/zsim/src/ooo_core.h). Restated here only to refuse a record that
+ * disagrees with the timing core; the template is the authority. */
+constexpr int kOooRobRetireWidth = 4;
+std::string describeCoreRecord(const CoreRecord& rec);
+
 } // namespace params
 } // namespace pimid
 

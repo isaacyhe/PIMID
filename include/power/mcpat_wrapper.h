@@ -107,6 +107,7 @@ public:
         int flit_bits;
         double clock_mhz;
         double chip_coverage;     // fraction of chip area
+        int vcs_per_port = 0;     // 1.11.97 (review H31): vnets x vcs_per_vnet of the built fabric; 0 = the configured vcs_per_vnet alone
         /* 1.11.50 (L74): does this fabric level sit on the DRAM die? The
          * DRAM-periphery family transform follows this per level instead of
          * blanketing every level in the run: subarray..chip fabrics are on
@@ -375,6 +376,13 @@ public:
                                // spans command-driven to fully programmable, and
                                // gates which kernels can run at all
         int issue_width;
+        /* 1.11.97 (R2537): McPAT's peak commit width. The timing core's
+         * retire width from the core record (params/core/default.yaml
+         * retire_width: ooo 4 = the ROB retire width; in_order "issue").
+         * -1 = the issue width McPAT is handed (in_order "issue", and the
+         * stage-less ALU / simple elements, which the record does not
+         * describe). Was commit_width = issue_width for every profile. */
+        int commit_width = -1;
         int periphery_leakage_device = 4;
         int arch_int_regs = 32, arch_fp_regs = 32;   // 1.11.94 (row 20 (a)): McPAT architectural register files   // 1.11.94 (item 1 knob): CACTI column for the DRAM-periphery leakage ratio (4 = comm-dram)
         int num_alus;
@@ -573,6 +581,15 @@ public:
      * term falls back to the previous fraction. */
     void setMeasuredCoreActivity(uint64_t uops, uint64_t branches,
                                  uint64_t mispredicted);
+    /* 1.11.97 (R2476): MEASURED branch-predictor table writes (ROI, all
+     * cores): zsim counts every predictor update that changes a stored value
+     * -- the per-branch history register (McPAT's L1 local table) and the
+     * 2-bit counter table (McPAT's L2 local table) separately. `present` is
+     * false when the dump carried no such counters (an older zsim); McPAT
+     * then keeps its own estimate (mispredicts + 10% of branches) and the
+     * XML says nothing new. */
+    void setMeasuredPredictorWrites(uint64_t history_writes, uint64_t counter_writes,
+                                    bool present);
 
     /* 1.11.10 (#112): the COUNTED instruction mix, classified by the decoder
      * (x86_decoder.h OpClass) rather than the documented 87.5/12.5 split that
@@ -671,6 +688,8 @@ private:
     uint64_t total_instructions_;
     std::vector<uint64_t> per_core_instrs_;      // 1.11.93 (F3)
     uint64_t meas_indir_ = 0, meas_ras_ = 0;     // 1.11.93 (F6), ROI-windowed
+    uint64_t meas_bp_hist_writes_ = 0, meas_bp_pht_writes_ = 0;   // 1.11.97 (R2476), ROI-windowed
+    bool meas_bp_writes_present_ = false;
     /* 1.11.93 (F3/F6): the issue width McPAT is handed (the peak IPC the
      * duty divides by) -- one owner for the XML and the printed duty. */
     int effectiveIssueWidth() const;

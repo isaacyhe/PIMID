@@ -76,7 +76,14 @@ void SRAMModel::initialize() {
         cacti_config.write_ports = sram_config_.write_ports;
         cacti_config.tech_node_nm = sram_config_.tech_node_nm;
         cacti_config.temperature = sram_config_.temperature_k;   // 1.11.52 (D055)
-        cacti_config.is_cache = true;
+        /* 1.11.97 (review H28): the element's scratchpad is a RAM, not a cache --
+         * no tag array, no associativity, one bank per unit (the per-bank unit
+         * is what this model characterises; the device's bank count scales it).
+         * It was timed and priced as an 8-way, 8-bank CACHE, a tag lookup and
+         * a way mux the array does not have. */
+        cacti_config.is_cache = false;
+        cacti_config.associativity = 1;
+        cacti_config.banks = 1;
         /* 1.11.57 (latent D047): THE ACCESS WIDTH REACHES CACTI NOW.
          * setAccessWidthBits() stored into access_width_bits_ and nothing in
          * this file ever read it, so the knob the plugin contract documents as

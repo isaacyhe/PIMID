@@ -117,7 +117,7 @@ runtime, so applying them unconditionally costs nothing.
 
 | variable | value | why |
 |---|---|---|
-| `OMP_NUM_THREADS` | PE count | Without it libgomp sizes its team from `omp_get_num_procs()`, which under user-mode emulation reports the **host machine's** core count. The team would then depend on which machine the job landed on. |
+| `OMP_NUM_THREADS` | PE count (`host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel) | Without it libgomp sizes its team from `omp_get_num_procs()`, which under user-mode emulation reports the **host machine's** core count. The team would then depend on which machine the job landed on. |
 | `OMP_DYNAMIC` | `FALSE` | Permits the runtime to resize the team at run time. With it enabled the team, and therefore the work each thread does, can differ between runs of the same binary. |
 | `OMP_WAIT_POLICY` | `PASSIVE` | Threads sleep at a barrier instead of spinning. A spinning thread executes instructions, and the simulator charges cycles for them -- so the reported time would include spinning whose duration the host kernel decides. |
 | `GOMP_SPINCOUNT` | `0` | Removes the residual spin before a thread sleeps, for the same reason. |

@@ -102,6 +102,18 @@ class FilterCache : public Cache {
             parentStat->append(cacheStat);
         }
 
+        /* 1.11.97 (review x05-zsim-cores-5, gate 1207D): the L1 HIT latency,
+         * for the in-order core's load-use charge. zsim builds every terminal
+         * cache with accLat = 0 (init.cpp: "terminal caches has no access
+         * latency b/c it is assumed accLat is hidden by the pipeline"), so a
+         * filter hit returns the line's availability -- zero latency -- and
+         * the configured latency survived only as the invalidation latency.
+         * The configured latency (CACTI-derived, or the cache.<level>
+         * override) is kept here for the core to charge. 1207D caught the
+         * first version reading accLat, which is 0: the charge was inert. */
+        uint32_t hitLat = 0;
+        void setHitLatency(uint32_t l) { hitLat = l; }
+        uint32_t getHitLatency() const { return hitLat; }
         inline uint64_t load(Address vAddr, uint64_t curCycle) {
             Address vLineAddr = vAddr >> lineBits;
             uint32_t idx = vLineAddr & setMask;

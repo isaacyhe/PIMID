@@ -52,11 +52,19 @@
 #define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
 
 #define L1D_LAT 4  // fixed, and FilterCache does not include L1 delay
-#define FETCH_BYTES_PER_CYCLE 16
+/* 1.11.97 (R2355 (b)): FETCH_BYTES_PER_CYCLE 16 is gone; its only use (the
+ * wrong-path throughput step) reads the core record's ooo.fetch_width_bytes
+ * (fetchBytesPerCycle, ooo_core.h). The record carries the 16 and why. */
 #define ISSUES_PER_CYCLE 4
 #define RF_READS_PER_CYCLE 3
 
-OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name) : Core(_name), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
+OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
+                 uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle) : Core(_name), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
+    /* 1.11.97 (R2355 (b)): the wrong-path depth, derived from the core
+     * record (see ooo_core.h). A zero fetch width cannot fetch; refuse. */
+    if (_fetchBytesPerCycle == 0) panic("%s: fetchBytesPerCycle must be >= 1 (core record ooo.fetch_width_bytes)", _name.c_str());
+    fetchBytesPerCycle = _fetchBytesPerCycle;
+    wrongPathBytes = _mispredPenalty * _fetchBytesPerCycle;
     decodeCycle = DECODE_STAGE;  // allow subtracting from it
     curCycle = 0;
     phaseEndCycle = zinfo->phaseLength;
@@ -209,6 +217,17 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zrr)>* roiRasStat = new LambdaStat<decltype(zrr)>(zrr);
     roiRasStat->init("roiRasReturns", "Returns resolved against the RAS (ROI)");
     coreStat->append(roiRasStat);
+    /* 1.11.97 (R2476): measured predictor table writes (value-changing
+     * updates, BranchPredictorPAg::predict), ROI-windowed -- McPAT's
+     * level-1 / level-2 local predictor write counts. */
+    auto zbh = [this]() -> uint64_t { return branchPred.histWrites - roiBaseBpHist; };
+    LambdaStat<decltype(zbh)>* roiBpHistStat = new LambdaStat<decltype(zbh)>(zbh);
+    roiBpHistStat->init("roiBpHistWrites", "Branch-history table writes that changed an entry (ROI)");
+    coreStat->append(roiBpHistStat);
+    auto zbp = [this]() -> uint64_t { return branchPred.phtWrites - roiBaseBpPht; };
+    LambdaStat<decltype(zbp)>* roiBpPhtStat = new LambdaStat<decltype(zbp)>(zbp);
+    roiBpPhtStat->init("roiBpPhtWrites", "Predictor counter-table writes that changed a counter (ROI)");
+    coreStat->append(roiBpPhtStat);
 
 #ifdef OOO_STALL_STATS
     profFetchStalls.init("fetchStalls",  "Fetch stalls");  coreStat->append(&profFetchStalls);
@@ -592,21 +611,30 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
          * bound, assume a completely backpressured IQ (18 instrs), uop queue
          * (28 uops), IW (36 uops), and 16B instr length predecoder buffer. At
          * ~3.5 bytes/instr, 1.2 uops/instr, this is about 5 64-byte lines.
+         *
+         * PIMID 1.11.97 (R2355 (b)): the bound is no longer that literal
+         * (5*64/lineSize). It is DERIVED: the bytes the front end fetches
+         * during one mispredict penalty, penalty cycles x fetch bytes per
+         * cycle, rounded up to whole lines (a partly-used line is still
+         * fetched) -- both from the core record (ooo.mispredict_penalty_cycles
+         * 17, ooo.fetch_width_bytes 16: ceil(272 / 64) = 5 lines, the old
+         * count at 64 B). The early exit at lastCommitCycle is unchanged.
          */
 
         // info("Mispredicted branch, %ld %ld %ld | %ld %ld", decodeCycle, curCycle, lastCommitCycle,
         //         lastCommitCycle-decodeCycle, lastCommitCycle-curCycle);
         Address wrongPathAddr = branchTaken? branchNotTakenNpc : branchTakenNpc;
         uint64_t reqCycle = fetchCycle;
-        for (uint32_t i = 0; i < 5*64/lineSize; i++) {
+        const uint32_t wrongPathLines = (wrongPathBytes + lineSize - 1) / lineSize;
+        for (uint32_t i = 0; i < wrongPathLines; i++) {
             uint64_t fetchLat = l1i->load(wrongPathAddr + lineSize*i, curCycle) - curCycle;
             cRec.record(curCycle, curCycle, curCycle + fetchLat);
             uint64_t respCycle = reqCycle + fetchLat;
             if (respCycle > lastCommitCycle) {
                 break;
             }
-            // Model fetch throughput limit
-            reqCycle = respCycle + lineSize/FETCH_BYTES_PER_CYCLE;
+            // Model fetch throughput limit (1.11.97: the record's fetch width)
+            reqCycle = respCycle + lineSize/fetchBytesPerCycle;
         }
 
         fetchCycle = lastCommitCycle;
@@ -674,6 +702,11 @@ void OOOCore::join() {
 void OOOCore::leave() {
     DEBUG_MSG("[%s] Leaving, curCycle %ld phaseEnd %ld", name.c_str(), curCycle, phaseEndCycle);
     cRec.notifyLeave(curCycle);
+}
+
+void OOOCore::addDelay(uint32_t cycles) {   /* 1.11.97 (H05) */
+    if (cycles == 0) return;
+    advance(curCycle + cycles);
 }
 
 void OOOCore::cSimStart() {

@@ -43,7 +43,7 @@ system:
       frequency_mhz: 2000
       tech_node_nm: 22
       pe_type: alu_core
-      num_pes: 8
+      num_pes: 8            # inert under NO_OFFLOAD: OMP team / MPI ranks = host num_cores
       pim:
         placement:
           level: BANK

@@ -138,10 +138,13 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   only at mispredict flushes and scheduler boundaries
   (join/phase/context-switch). Branch modeling matches `ooo_core`: a 2-level PAg
   predictor for conditional direction plus a 512-entry BTB (indirect jmp/call
-  targets) and 16-entry return-address stack, all fed with real outcomes; any
-  mispredict charges a 7-cycle front-end flush bubble (shallow in-order pipe;
-  override with `PIMID_INORDER_MISPRED_PENALTY`, disable all branch modeling
-  with `PIMID_INORDER_NOBRANCH=1`). (1.11.44: the legacy IPC = 1
+  targets) and 16-entry return-address stack, all fed with real outcomes. A
+  conditional mispredict charges the execute-depth flush bubble and a BTB/RAS
+  target miss the shorter decode-depth resteer bubble (1.11.97; 7 and 4 cycles
+  from the core record `params/core/default.yaml`, set per run with
+  `core.in_order.mispredict_penalty_cycles` / `core.in_order.resteer_penalty_cycles`;
+  env overrides `PIMID_INORDER_MISPRED_PENALTY` / `PIMID_INORDER_RESTEER_PENALTY`;
+  disable all branch modeling with `PIMID_INORDER_NOBRANCH=1`). (1.11.44: the legacy IPC = 1
   `PIMID_INORDER_NODECODE` escape hatch is REMOVED -- its A/B purpose ended
   with the 1.4.x validation, and release-vs-release builds are the baseline
   method. The in-order core has exactly one timing model.) The issue width is configurable via `pim.pe.issue_width`

@@ -417,6 +417,11 @@ static int validateTechNodeNm(int node_nm, const char* what);  // 1.11.17: singl
  * cache, the geometry CACTI rejected and the key that supplies a latency. */
 static pimid::params::CacheRecord g_cache_rec;      // 1.11.95: loaded by applyCacheRecord() right after config load
 static bool g_cache_rec_loaded = false;
+static pimid::params::CoreRecord g_core_rec;        // 1.11.97: loaded by applyCoreRecord() right after config load
+/* 1.11.97: the in-order execute-depth penalty in force for the run (record,
+ * else core.in_order.mispredict_penalty_cycles), set by applyCoreRecord().
+ * The power side's in-order pipeline depth reads it; -1 until applied. */
+static int g_inorder_mispredict_penalty = -1;
 
 /* 1.11.95 (review R2 "c with b"): the bank count a cache is characterised
  * with. A user count (cache.<level>.banks, per node cache.<level>_banks) or
@@ -934,6 +939,9 @@ struct ZSimParsedOutput {
         uint64_t mispredBranches = 0;   // of those, mispredicted
         uint64_t indirBranches = 0;     // indirect jmp/call resolutions
         uint64_t rasReturns = 0;        // returns resolved against the RAS
+        uint64_t bpHistWrites = 0;      // 1.11.97 (R2476): predictor history-table writes (ROI)
+        uint64_t bpPhtWrites = 0;       // 1.11.97 (R2476): predictor counter-table writes (ROI)
+        bool bpWritesPresent = false;   // the dump carried the counters
 
         uint64_t l1i_fhGETS = 0, l1i_hGETS = 0, l1i_mGETS = 0;
         uint64_t l1d_fhGETS = 0, l1d_hGETS = 0, l1d_mGETS = 0;
@@ -998,6 +1006,9 @@ struct ZSimParsedOutput {
     uint64_t mispredBranches = 0;   // of those, mispredicted
     uint64_t indirBranches = 0;     // indirect jmp/call resolutions (ROI, 1.11.93)
     uint64_t rasReturns = 0;        // returns resolved against the RAS (ROI, 1.11.93)
+    uint64_t bpHistWrites = 0;      // 1.11.97 (R2476): predictor history-table writes (ROI)
+    uint64_t bpPhtWrites = 0;       // 1.11.97 (R2476): predictor counter-table writes (ROI)
+    bool bpWritesPresent = false;   // the dump carried the counters (zsim 1.11.97+)
     /* 1.11.93 (F3/F4): ONE RECORD PER CORE, in dump order. `cycles` above is
      * the FIRST core's count and the device-scope pricing window used to be
      * exactly that -- core 0 can finish well before the slowest PE (a bfs
@@ -1443,6 +1454,15 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                     out.indirBranches += val; if (grp) grp->indirBranches += val;
                 } else if (key == "roiRasReturns") {
                     out.rasReturns += val; if (grp) grp->rasReturns += val;
+                } else if (key == "roiBpHistWrites") {
+                    /* 1.11.97 (R2476): measured predictor table writes
+                     * (zsim InOrderCore/OOOCore, ROI-windowed), summed like
+                     * branches -- McPAT's level-1 predictor writes. */
+                    out.bpHistWrites += val; out.bpWritesPresent = true;
+                    if (grp) { grp->bpHistWrites += val; grp->bpWritesPresent = true; }
+                } else if (key == "roiBpPhtWrites") {
+                    out.bpPhtWrites += val; out.bpWritesPresent = true;
+                    if (grp) { grp->bpPhtWrites += val; grp->bpWritesPresent = true; }
                 } else if (key == "pgActivePhases") {
                     /* 1.11.8: per-core PG residency, summed per group; each
                      * PE's own residency = its stat / phases, and the group
@@ -1479,6 +1499,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "fhGETX") { out.l1d_fhGETX += val; if (cgrp) cgrp->l1d_fhGETX += val; }
                 else if (key == "hGETX") { out.l1d_hGETX += val; if (cgrp) cgrp->l1d_hGETX += val; }
                 else if (key == "mGETXIM") { out.l1d_mGETXIM += val; if (cgrp) cgrp->l1d_mGETXIM += val; }
+                else if (key == "mGETXSM") { out.l1d_mGETXIM += val; if (cgrp) cgrp->l1d_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
             }
 
             // L1I scope
@@ -1494,6 +1515,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "mGETS") { out.l2_mGETS += val; if (cgrp) cgrp->l2_mGETS += val; }
                 else if (key == "hGETX") { out.l2_hGETX += val; if (cgrp) cgrp->l2_hGETX += val; }
                 else if (key == "mGETXIM") { out.l2_mGETXIM += val; if (cgrp) cgrp->l2_mGETXIM += val; }
+                else if (key == "mGETXSM") { out.l2_mGETXIM += val; if (cgrp) cgrp->l2_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
                 else if (key == "PUTS") out.l2_PUTS += val;
                 else if (key == "PUTX") out.l2_PUTX += val;
             }
@@ -1504,6 +1526,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "mGETS") { out.l3_mGETS += val; if (cgrp) cgrp->l3_mGETS += val; }
                 else if (key == "hGETX") { out.l3_hGETX += val; if (cgrp) cgrp->l3_hGETX += val; }
                 else if (key == "mGETXIM") { out.l3_mGETXIM += val; if (cgrp) cgrp->l3_mGETXIM += val; }
+                else if (key == "mGETXSM") { out.l3_mGETXIM += val; if (cgrp) cgrp->l3_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
             }
 
             // Memory controller scope. Both the host MC and the PE-MC export
@@ -1751,7 +1774,7 @@ struct UnifiedConfig {
      * corner for LPDDR5 periphery cannot be derived from tables that do not
      * contain them, so the request is refused there and says why. */
     std::string device_corner = "hp";   // power.device_corner: hp|lstp|lop
-    int periphery_leakage_device = 4;    // 1.11.94 (item 1): power.periphery_device, CACTI column the DRAM-periphery LEAKAGE ratio is taken from (4 = comm-dram, today's value; R5 moves the default to lstp)
+    int periphery_leakage_device = 1;   // 1.11.97 (sweep-94 row 19 / review item 1 (b)): DRAM periphery leakage natively in CACTI's lstp column (was comm-dram = 4);    // 1.11.94 (item 1): power.periphery_device, CACTI column the DRAM-periphery LEAKAGE ratio is taken from (4 = comm-dram, today's value; R5 moves the default to lstp)
     /* 1.11.30 (user ruling E5): ONE interconnect projection for the whole die.
      * CACTI was pinned to conservative and McPAT defaulted to aggressive, so
      * the same metal stack was modelled two ways -- arrays and caches lossier,
@@ -1770,7 +1793,7 @@ struct UnifiedConfig {
      * 0 = aggressive, 1 = conservative. */
     int interconnect_projection = 1;   // power.interconnect_projection
     int pg_cache = -1;                 // 1.11.94 (row 20): cache.pg, -1 = follow pim.pe.pg (today's wiring)
-    int arch_int_regs = 32, arch_fp_regs = 32;   // 1.11.94 (row 20 (a)): McPAT architectural register counts; today's 32/32 (x86-64 is 16/16, R5)
+    int arch_int_regs = 16, arch_fp_regs = 16;   // 1.11.97 (row 20 (a)): the simulated guest ISA is x86-64: 16 integer + 16 FP architectural registers (was 32/32);   // 1.11.94 (row 20 (a)): McPAT architectural register counts; today's 32/32 (x86-64 is 16/16, R5)
     /* 1.11.35 (user ruling E13): the LOGIC REFERENCE clock, a user setting.
      * The feasibility bound for a DRAM-periphery PE is calculated -- reference
      * divided by the CV/I delay ratio read from the CACTI columns -- but a
@@ -1814,6 +1837,16 @@ struct UnifiedConfig {
     // configs without the key are numerically unchanged. The env var
     // PIMID_INORDER_WIDTH, if set, overrides this inside the core.
     int    inorder_issue_width = 2;
+
+    /* 1.11.97 (sweep-94 rulings 27/28): the core part record's fields
+     * (params/core/default.yaml). -1 = take the record's value; the config
+     * keys core.in_order.* / core.ooo.* set them for the run (every core of
+     * that type, host and device). applyCoreRecord() resolves them before
+     * any zsim config is emitted. */
+    int    core_inorder_mispredict_penalty = -1;   // core.in_order.mispredict_penalty_cycles
+    int    core_inorder_resteer_penalty    = -1;   // core.in_order.resteer_penalty_cycles
+    int    core_ooo_mispredict_penalty     = -1;   // core.ooo.mispredict_penalty_cycles
+    int    core_ooo_fetch_width_bytes      = -1;   // core.ooo.fetch_width_bytes
 
     // System configuration
     int frequency_mhz;
@@ -1865,6 +1898,8 @@ struct UnifiedConfig {
     bool noc_cycle_accurate;
     std::string noc_routing;              // empty = default for topology
     int noc_vcs_per_vnet;
+    int noc_vnets = 2;          // 1.11.97 (H31): virtual networks the fabric builds (Garnet: read + write)
+    int noc_flit_size_bits_cfg = 128;   // 1.11.97 (sweep-94 row 18, class A): noc.flit_size_bits, the Garnet flit; ladder rungs run at their true width up to it
     int noc_buffers_per_vc;
     // 1.10.3: did the user actually ask for these, or are they carrying the
     // built-in default? The per-technology fabric defaults below must not
@@ -2062,6 +2097,11 @@ struct UnifiedConfig {
      * mesh router, not the HBM3 hub (17 ports) or a 3-port bank-group node.
      * -1 = no tree was built (or no router at that level). */
     int htree_level_max_ports[7] = {-1,-1,-1,-1,-1,-1,-1};
+    int htree_level_port_hist[7][17] = {};   // 1.11.97 (H19): branch routers per level by port count (ports 1..16; index 0 unused)
+    int htree_tier_width_bits[7] = {0,0,0,0,0,0,0};   // 1.11.97 (H20): the link width the built tree carries at each tier (the projection the detailed Garnet runs on)
+    int htree_hotspot_100 = 0;   // 1.11.97 (12c): max/mean link load of the built tree under uniform PE->endpoint traffic, x100; 0 = no tree
+    int htree_mean_one_way_latency = 0;   // 1.11.97 (7c): mean one-way tier-walk cost (PE cycles: levels + bridges) over uniform PE->endpoint pairs; 0 = no tree
+    int htree_mean_hops_100 = 0;          // 1.11.97 (7c): mean links per one-way walk x100
     int htree_endpoints      = -1;   // PE endpoints + aggregated-region endpoints
     int htree_abstract       = -1;   // of those, the aggregated regions
     // Derived: topology-aware NoC average one-way latency (cycles)
@@ -2199,6 +2239,7 @@ struct UnifiedConfig {
     // the user overrides them. "interposer" = 2.5D silicon interposer (UCIe-class
     // on-package: very high BW, low latency, ~no protocol/coherence overhead).
     std::string pcie_link_type = "pcie_gen5";
+    bool pcie_link_type_user_set = false;   // 1.11.97 (review R4): the link class follows the declared attachment unless the user names it
     int pcie_header_bytes = -1;            // 1.11.94 (row 6): -1 = derive from the link class; 0 is a real value (interposer)
     double pcie_coherence_extra_ns = 0.0;  // avg extra latency for coherent access
 
@@ -2817,6 +2858,54 @@ static int applyCacheRecord(UnifiedConfig& config) {
     return 0;
 }
 
+/* 1.11.97 (sweep-94 rulings 27/28): load params/core/default.yaml and apply
+ * it: every core field the config did not set (core.in_order.* /
+ * core.ooo.*) takes the record's. The resolved values are emitted into the
+ * zsim config (InOrder: mispredPenalty / resteerPenalty; OoO: mispredPenalty
+ * / fetchBytesPerCycle), where the cores read them as required keys, and
+ * the record's retire widths reach McPAT through describeTimingCore().
+ * Derivations live in the record file; this function holds mechanism only. */
+static int applyCoreRecord(UnifiedConfig& config) {
+    std::string err;
+    if (!pimid::params::loadCoreRecord(g_core_rec, err)) { std::cerr << "[params] FATAL: " << err << std::endl; return 1; }
+    const auto& io = g_core_rec.in_order;
+    const auto& oo = g_core_rec.ooo;
+    bool user = false;
+    auto take = [&](int& v, int rec, int lo, int hi, const char* key) {
+        if (v == -1) { v = rec; return true; }
+        user = true;
+        if (v < lo || v > hi) {
+            std::cerr << "[params] FATAL: " << key << " = " << v << " is outside " << lo << ".." << hi << "." << std::endl;
+            return false;
+        }
+        return true;
+    };
+    if (!take(config.core_inorder_mispredict_penalty, io.mispredict_penalty_cycles, 0, 1000, "core.in_order.mispredict_penalty_cycles") ||
+        !take(config.core_inorder_resteer_penalty, io.resteer_penalty_cycles, 0, 1000, "core.in_order.resteer_penalty_cycles") ||
+        !take(config.core_ooo_mispredict_penalty, oo.mispredict_penalty_cycles, 0, 1000, "core.ooo.mispredict_penalty_cycles") ||
+        !take(config.core_ooo_fetch_width_bytes, oo.fetch_width_bytes, 1, 64, "core.ooo.fetch_width_bytes"))
+        return 1;
+    if (config.core_inorder_resteer_penalty > config.core_inorder_mispredict_penalty) {
+        std::cerr << "[params] FATAL: in-order resteer penalty " << config.core_inorder_resteer_penalty
+                  << " exceeds the mispredict penalty " << config.core_inorder_mispredict_penalty
+                  << " (a decode-depth resteer cannot cost more than an execute-depth flush)." << std::endl;
+        return 1;
+    }
+    if (config.core_ooo_fetch_width_bytes > config.cache_line_size) {
+        std::cerr << "[params] FATAL: OOO fetch width " << config.core_ooo_fetch_width_bytes
+                  << " B/cycle exceeds the " << config.cache_line_size
+                  << " B line; the wrong-path fetch model steps at least one cycle per line." << std::endl;
+        return 1;
+    }
+    g_inorder_mispredict_penalty = config.core_inorder_mispredict_penalty;
+    std::cout << pimid::params::describeCoreRecord(g_core_rec);
+    if (user) std::cout << " [run uses core.* config values: in_order mispredict " << config.core_inorder_mispredict_penalty
+                        << " / resteer " << config.core_inorder_resteer_penalty << ", ooo mispredict "
+                        << config.core_ooo_mispredict_penalty << " / fetch " << config.core_ooo_fetch_width_bytes << " B (user's)]";
+    std::cout << std::endl;
+    return 0;
+}
+
 [[maybe_unused]] static double getHostPathAdderNs(const std::string& tech_in);   // 1.11.94 (H17): used by the HOST_MC rung
 static int headerBytesForLinkClass(const std::string& link_type);                // 1.11.94 (row 6)
 
@@ -3052,7 +3141,7 @@ static void validatePEMemMapping(const UnifiedConfig& config);
 static double avgHopsForTopology(const std::string& topology, int num_nodes, bool ring_unidir = false);
 static int bisectionLinksForTopology(const std::string& topology, int num_nodes, bool ring_unidir = false);
 static int totalChannelsForTopology(const std::string& topology, int num_nodes, bool ring_unidir = false);
-static double hotspotFactorForTopology(const std::string& topology);
+static double hotspotFactorForTopology(const std::string& topology, int num_nodes, int tree_hotspot_100);   // 1.11.97 (12c)
 static int topologyClassForTopology(const std::string& topology);
 
 /**
@@ -3094,12 +3183,14 @@ static int topologyClassForTopology(const std::string& topology);
  * wall of real DRAM -- while the N parallel channel subtrees supply the
  * concurrency that makes HBM3(16ch) > HBM2(8) > single-channel DDR.
  *
- * Per-link width/latency model (UNCHANGED):
- *   layer_BW_GBs = link_width_bits/8 * freq_GHz
- *   width(bits)  = clamp( round(128 * layer_BW_GBs / REF_BW), 1, 128 )   // occupancy = ceil(128/width)
- *   latency(cyc) = max(1, round(REF_FREQ / freq_GHz))                    // slower clock -> more latency
- *   REF_BW   = max layer BW across all techs = HBM3 L0 = 512/8*1.8 = 115.2 GB/s
- *   REF_FREQ = 2.4 GHz
+ * Per-link width/latency model (1.11.97, ruling 7(c): no reference clock,
+ * no reference bandwidth -- the ladder's own numbers):
+ *   width(bits)  = clamp( ladder width at the layer, 1, noc.flit_size_bits )
+ *   latency(cyc) = max(1, ceil( DEV_GHZ / layer freq_GHz ))              // device cycles per layer cycle
+ * Until 1.11.96 the width was normalised to the lineup's widest layer
+ * (REF_BW = HBM3 L0) and the latency quoted against a REF_FREQ of 2.4 GHz;
+ * both constants are retired (see the 7(c) note at the loop that fills
+ * layer_w / layer_lat).
  *
  * Each int edge is emitted in BOTH directions with identical lat/width.
  * Returns true on success.
@@ -3160,6 +3251,177 @@ static double referenceLayer0BandwidthGBs() {
     return cached;
 }
 
+
+/* 1.11.97 (review C3, ruling 7 (c)): THE CENSUS OF THE BUILT TREE, for every
+ * run. The power model prices branch routers, endpoints and port counts per
+ * level from this census; until 1.11.96 only the detailed path built the tree,
+ * so an analytical run priced an org-count fabric instead (phantom routers:
+ * 4.1x power / 73x area against the detailed model on identical traffic).
+ * The fabric exists whatever the timing fidelity; this is one census, two
+ * callers (dramHTreeBuilder for the detailed path, analyticalTreeCensus for
+ * the analytical one). */
+static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig& config, long covered, int pe_level) {
+    /* 1.10.5: record what was actually built, for the power model.
+     *
+     * Until now the power model described a different machine from the one
+     * the timing model routes on: a square mesh with one router per
+     * element. The tree is neither square nor one-per-element -- it is
+     * sparse, its router count follows elements x depth, and many of its
+     * routers are single-child pass-throughs that are wire, not logic.
+     *
+     * A pass-through is counted separately from a branch point because
+     * only a branch point arbitrates. Charging a router's crossbar and
+     * arbiter to a node that merely forwards would inflate fabric power by
+     * whatever fraction of the tree is degenerate -- which for a coarse
+     * placement is most of it. */
+    std::map<int,int> childrenOf;
+    for (const auto& l : tree.intLinks) childrenOf[l.a]++;
+    int branch = 0;
+    for (const auto& kv : childrenOf) if (kv.second >= 2) ++branch;
+    config.htree_all_routers    = tree.numRouters;
+    config.htree_branch_routers = branch;
+    for (int l = 0; l < 7; ++l) {
+        config.htree_level_branch[l]    = tree.branchAtLevel[l];
+        config.htree_level_endpoints[l] = tree.endpointsAtLevel[l];
+    }
+    config.htree_endpoints      = tree.totalEndpoints();
+    config.htree_abstract       = tree.numAbstract;
+    /* 1.11.92 (F6): ports per router = router children + parent link
+     * (every router but ROOT) + endpoints attached to it. */
+    {
+        std::map<int,int> epAt;
+        for (const auto& e : tree.extLinks) epAt[e.b]++;
+        for (int r = 0; r < tree.numRouters; ++r) {
+            int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+            if (lv < 0 || lv > 6) continue;
+            int ports = (childrenOf.count(r) ? childrenOf[r] : 0)
+                      + (r != 0 ? 1 : 0) + (epAt.count(r) ? epAt[r] : 0);
+            if (ports > config.htree_level_max_ports[lv])
+                config.htree_level_max_ports[lv] = ports;
+            /* 1.11.97 (review H19): the histogram the per-class pricing reads;
+             * only routers that ARBITRATE (>= 2 children) are router classes. */
+            if (childrenOf.count(r) && childrenOf[r] >= 2)
+                config.htree_level_port_hist[lv][std::min(16, std::max(1, ports))]++;
+        }
+    }
+    /* 1.11.97 (ruling 12 (c)): the max-to-mean link load of THIS tree under
+     * uniform traffic from every PE to every endpoint, walked link by link
+     * (parent pointers; up to the lowest common ancestor and down). Every
+     * internal link counts per direction; links no walk uses count as zero
+     * load in the mean (they exist and carry nothing). */
+    {
+        std::map<int,int> parentOf;
+        for (const auto& l : tree.intLinks) parentOf[l.b] = l.a;
+        std::map<int,int> routerOfEp;
+        for (const auto& e : tree.extLinks) routerOfEp[e.a] = e.b;
+        auto pathToRoot = [&](int r, std::vector<int>& out) { out.clear(); while (true) { out.push_back(r); auto it = parentOf.find(r); if (it == parentOf.end()) break; r = it->second; } };
+        std::map<std::pair<int,int>, long> load;   // (from,to) router pair, per direction
+        std::vector<int> up, dn;
+        const int nEp = tree.totalEndpoints();
+        for (int pe = 0; pe < tree.numPEs; ++pe) {
+            auto rs = routerOfEp.find(pe); if (rs == routerOfEp.end()) continue;
+            for (int ep = 0; ep < nEp; ++ep) {
+                if (ep == pe) continue;
+                auto rd = routerOfEp.find(ep); if (rd == routerOfEp.end()) continue;
+                if (rs->second == rd->second) continue;
+                pathToRoot(rs->second, up); pathToRoot(rd->second, dn);
+                std::set<int> onDn(dn.begin(), dn.end());
+                int lca = -1; size_t ui = 0;
+                for (; ui < up.size(); ++ui) if (onDn.count(up[ui])) { lca = up[ui]; break; }
+                if (lca < 0) continue;
+                for (size_t i = 0; i + 1 <= ui && i + 1 < up.size(); ++i) load[{up[i], up[i + 1]}]++;
+                size_t di = 0; for (; di < dn.size(); ++di) if (dn[di] == lca) break;
+                for (size_t i = di; i >= 1 && i < dn.size(); --i) { load[{dn[i], dn[i - 1]}]++; if (i == 1) break; }
+            }
+        }
+        /* 1.11.97 (ruling 7 (c)): the SAME walk gives the analytical model its
+         * base latency and hop count -- the mean one-way tier-walk cost
+         * (every router's tier latency on the path plus the bridge at every
+         * tier boundary, the quantities computeHierTraversal charges) and the
+         * mean number of links per pair -- instead of the reference-clock
+         * formula (REF_FREQ 2.4 GHz, NET 2.0 GHz, RES 10, REF_HOPS 8). */
+        {
+            double sumCost = 0.0; long sumLinks = 0, nPairs = 0;
+            for (int pe = 0; pe < tree.numPEs; ++pe) {
+                auto rs = routerOfEp.find(pe); if (rs == routerOfEp.end()) continue;
+                for (int ep = 0; ep < nEp; ++ep) {
+                    if (ep == pe) continue;
+                    auto rd = routerOfEp.find(ep); if (rd == routerOfEp.end()) continue;
+                    if (rs->second == rd->second) continue;
+                    pathToRoot(rs->second, up); pathToRoot(rd->second, dn);
+                    std::set<int> onDn(dn.begin(), dn.end());
+                    int lca = -1; size_t ui = 0;
+                    for (; ui < up.size(); ++ui) if (onDn.count(up[ui])) { lca = up[ui]; break; }
+                    if (lca < 0) continue;
+                    size_t di = 0; for (; di < dn.size(); ++di) if (dn[di] == lca) break;
+                    auto lvlOf = [&](int r) { return (r >= 0 && r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : 6; };
+                    double cost = 0.0; long links = 0;
+                    for (size_t i = 0; i <= ui; ++i) { int lv = lvlOf(up[i]); if (lv >= 0 && lv <= 6) cost += config.hierarchy_level_latency[lv]; if (i < ui) { int lb = std::min(lvlOf(up[i]), lvlOf(up[i + 1])); if (lb >= 0 && lb <= 5) cost += config.hierarchy_bridge_latency[lb]; links++; } }
+                    for (size_t i = di; i >= 1; --i) { int lv = lvlOf(dn[i - 1]); if (lv >= 0 && lv <= 6) cost += config.hierarchy_level_latency[lv]; int lb = std::min(lvlOf(dn[i]), lvlOf(dn[i - 1])); if (lb >= 0 && lb <= 5) cost += config.hierarchy_bridge_latency[lb]; links++; if (i == 1) break; }
+                    sumCost += cost; sumLinks += links; nPairs++;
+                }
+            }
+            if (nPairs > 0) {
+                config.htree_mean_one_way_latency = (int)std::lround(sumCost / (double)nPairs);
+                config.htree_mean_hops_100 = (int)std::lround(100.0 * (double)sumLinks / (double)nPairs);
+                std::cout << "[htree] tier walk over " << nPairs << " PE->endpoint pairs: mean one-way cost " << config.htree_mean_one_way_latency
+                          << " PE cycles (levels + bridges), mean " << config.htree_mean_hops_100 / 100.0 << " links (ruling 7 (c): the analytical base latency and hop count)" << std::endl;
+            }
+        }
+        long maxL = 0, sumL = 0; const long nLinks = 2L * (long)tree.intLinks.size();
+        for (const auto& kv : load) { if (kv.second > maxL) maxL = kv.second; sumL += kv.second; }
+        config.htree_hotspot_100 = (nLinks > 0 && sumL > 0) ? (int)std::lround(100.0 * (double)maxL / ((double)sumL / (double)nLinks)) : 100;
+        std::cout << "[htree] hotspot: max link load " << maxL << " vs mean " << ((nLinks > 0) ? (double)sumL / (double)nLinks : 0.0)
+                  << " over " << nLinks << " directed links -> factor " << config.htree_hotspot_100 / 100.0 << " (uniform PE->endpoint walk; ruling 12 (c))" << std::endl;
+    }
+    std::cout << "[htree] " << branch << " branch routers of "
+              << tree.numRouters << " (" << (tree.numRouters - branch)
+              << " pass-through), " << tree.totalEndpoints()
+              << " endpoints\n";
+
+    std::cout << "[htree] " << tree.numRouters << " routers, "
+              << tree.totalEndpoints() << " endpoints ("
+              << tree.numPEs << " PE + " << tree.numAbstract
+              << " aggregated), covering " << covered
+              << " organisations at level " << pe_level << std::endl;
+
+    /* 1.10: WHERE the aggregated endpoints sit, and how much each fronts.
+     *
+     * This decides whether the memory below them needs a network model at
+     * all. Everything under an aggregated endpoint is array, and the array's
+     * shared datapath -- bank conflicts, bus turnaround, the global dataline
+     * -- is already priced by the technology's own timing model. Adding a
+     * second, analytical network term over the same path would charge that
+     * contention twice.
+     *
+     * That reasoning holds only while the endpoint sits AT OR BELOW the
+     * channel, because the memory model works within a channel. An endpoint
+     * at rank or system level fronts a path that neither the network model
+     * nor the memory model covers, and that IS a gap rather than a
+     * duplication. Reported rather than assumed, because the level is
+     * emergent today -- it falls out of wherever the emptiness begins. */
+    static const char* lvl_name[] = { "subarray", "bank", "bankgroup",
+                                      "chip", "rank", "channel", "system" };
+    std::map<int,int>  per_level;
+    std::map<int,long> orgs_at_level;
+    for (const auto& kv : tree.frontsLevel) {
+        per_level[kv.second]++;
+        auto c = tree.coverageOf.find(kv.first);
+        if (c != tree.coverageOf.end()) orgs_at_level[kv.second] += c->second;
+    }
+    for (const auto& kv : per_level) {
+        int L = kv.first;
+        const char* nm = (L >= 0 && L <= 6) ? lvl_name[L] : "?";
+        std::cout << "[htree]   " << kv.second << " aggregated at " << nm
+                  << " level, fronting " << orgs_at_level[L] << " organisations"
+                  << (L > 5 ? "  <-- ABOVE CHANNEL: not covered by the memory "
+                              "model either; this path is priced by nothing"
+                            : "")
+                  << std::endl;
+    }
+}
+
+static double deviceCycleClockMHz(const UnifiedConfig& config);   // 1.11.97 (7c): the device clock the Garnet link latencies are quoted in
 
 static bool dramHTreeBuilder(const std::string& tech,
                              const std::string& outPath,
@@ -3369,15 +3631,17 @@ static bool dramHTreeBuilder(const std::string& tech,
         }
     }
 
-    /* 1.11.56 (audit B012): REF_BW is defined as "the widest layer bandwidth
-     * across all technologies = HBM3 L0", so ask the HBM3 architecture object
-     * for its L0 (GSA datapath) bandwidth rather than writing the product
-     * down. REF_FREQ has no such definition to derive from -- it is the
-     * reference clock the per-layer latency ladder is quoted against -- so it
-     * stays a stated constant and is declared as one in the provenance
-     * report. */
+    /* 1.11.56 (audit B012) derived REF_BW from the HBM3 architecture object
+     * and declared REF_FREQ a stated constant. 1.11.97 (ruling 7(c)) retired
+     * both: each layer is emitted at its own ladder width and at
+     * ceil(DEV_GHZ / layer GHz) device cycles, nothing is normalised to a
+     * reference. The provenance row that listed the constants now states the
+     * tier walk instead. */
     const double REF_BW   = referenceLayer0BandwidthGBs();
-    const double REF_FREQ = 2.4;    // GHz -- stated reference clock, not derived
+    /* 1.11.97 (ruling 7 (c)): a link's latency in Garnet cycles is the device
+     * clock over the layer clock -- one layer cycle, counted in the clock the
+     * fabric is simulated at -- not a 2.4 GHz reference nobody could derive. */
+    const double DEV_GHZ = deviceCycleClockMHz(config) / 1000.0;
 
     // Per-layer emitted link width (bits) and latency (cycles).
     // CONCURRENCY WEIGHTING: a bank-placed PE accesses exactly ONE channel, so
@@ -3413,15 +3677,26 @@ static bool dramHTreeBuilder(const std::string& tech,
     for (int i = 0; i < 4; ++i) {
         int w = L[i].width_bits;
         if (w < 1) w = 1;
-        if (w > 128) { w = 128; any_clamped = true; }
+        if (w > config.noc_flit_size_bits_cfg) { w = config.noc_flit_size_bits_cfg; any_clamped = true; }   // 1.11.97 (row 18): the clamp is the configured flit
         layer_w[i] = w;
-        long lat = std::lround(REF_FREQ / L[i].freq_ghz);
+        long lat = (L[i].freq_ghz > 0.0 && DEV_GHZ > 0.0) ? (long)std::ceil(DEV_GHZ / L[i].freq_ghz) : 1;   // 1.11.97 (7c)
         if (lat < 1) lat = 1;
         layer_lat[i] = (int)lat;
     }
+    /* 1.11.97 (review H20): the width the tree carries at each TIER, for the
+     * power model -- each level priced at the width Garnet built for it (the
+     * per-node link), not the ladder's aggregate rung (an HBM chip tier at
+     * 1024 b against 64 b per node). */
+    {
+        const int chanL_w = pimid_htree::channelBearingLevel(N, config.hierarchy_chips_per_rank);
+        for (int t = 0; t < 7; ++t) {
+            const int li = pimid_htree::layerForLevel(t, chanL_w);
+            config.htree_tier_width_bits[t] = (li >= 0 && li < 4) ? (int)L[li].width_bits : 0;
+        }
+    }
     if (any_clamped)
-        std::cout << "  [htree] one or more layer widths exceed Garnet's"
-                     " 128-bit flit bound and are clamped IN THE CONSUMER;"
+        std::cout << "  [htree] one or more layer widths exceed the " << config.noc_flit_size_bits_cfg
+                  << "-bit flit (noc.flit_size_bits) and are clamped IN THE CONSUMER;"
                      " the fabric description keeps the true widths\n";
 
     // -- SPARSE, PLACEMENT-DRIVEN H-TREE (regenerated per sim) ----------------
@@ -3474,90 +3749,7 @@ static bool dramHTreeBuilder(const std::string& tech,
                       << "nothing, or by something twice.\n";
             std::exit(2);
         }
-        /* 1.10.5: record what was actually built, for the power model.
-         *
-         * Until now the power model described a different machine from the one
-         * the timing model routes on: a square mesh with one router per
-         * element. The tree is neither square nor one-per-element -- it is
-         * sparse, its router count follows elements x depth, and many of its
-         * routers are single-child pass-throughs that are wire, not logic.
-         *
-         * A pass-through is counted separately from a branch point because
-         * only a branch point arbitrates. Charging a router's crossbar and
-         * arbiter to a node that merely forwards would inflate fabric power by
-         * whatever fraction of the tree is degenerate -- which for a coarse
-         * placement is most of it. */
-        std::map<int,int> childrenOf;
-        for (const auto& l : tree.intLinks) childrenOf[l.a]++;
-        int branch = 0;
-        for (const auto& kv : childrenOf) if (kv.second >= 2) ++branch;
-        config.htree_all_routers    = tree.numRouters;
-        config.htree_branch_routers = branch;
-        for (int l = 0; l < 7; ++l) {
-            config.htree_level_branch[l]    = tree.branchAtLevel[l];
-            config.htree_level_endpoints[l] = tree.endpointsAtLevel[l];
-        }
-        config.htree_endpoints      = tree.totalEndpoints();
-        config.htree_abstract       = tree.numAbstract;
-        /* 1.11.92 (F6): ports per router = router children + parent link
-         * (every router but ROOT) + endpoints attached to it. */
-        {
-            std::map<int,int> epAt;
-            for (const auto& e : tree.extLinks) epAt[e.b]++;
-            for (int r = 0; r < tree.numRouters; ++r) {
-                int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
-                if (lv < 0 || lv > 6) continue;
-                int ports = (childrenOf.count(r) ? childrenOf[r] : 0)
-                          + (r != 0 ? 1 : 0) + (epAt.count(r) ? epAt[r] : 0);
-                if (ports > config.htree_level_max_ports[lv])
-                    config.htree_level_max_ports[lv] = ports;
-            }
-        }
-        std::cout << "[htree] " << branch << " branch routers of "
-                  << tree.numRouters << " (" << (tree.numRouters - branch)
-                  << " pass-through), " << tree.totalEndpoints()
-                  << " endpoints\n";
-
-        std::cout << "[htree] " << tree.numRouters << " routers, "
-                  << tree.totalEndpoints() << " endpoints ("
-                  << tree.numPEs << " PE + " << tree.numAbstract
-                  << " aggregated), covering " << covered
-                  << " organisations at level " << pe_level << std::endl;
-
-        /* 1.10: WHERE the aggregated endpoints sit, and how much each fronts.
-         *
-         * This decides whether the memory below them needs a network model at
-         * all. Everything under an aggregated endpoint is array, and the array's
-         * shared datapath -- bank conflicts, bus turnaround, the global dataline
-         * -- is already priced by the technology's own timing model. Adding a
-         * second, analytical network term over the same path would charge that
-         * contention twice.
-         *
-         * That reasoning holds only while the endpoint sits AT OR BELOW the
-         * channel, because the memory model works within a channel. An endpoint
-         * at rank or system level fronts a path that neither the network model
-         * nor the memory model covers, and that IS a gap rather than a
-         * duplication. Reported rather than assumed, because the level is
-         * emergent today -- it falls out of wherever the emptiness begins. */
-        static const char* lvl_name[] = { "subarray", "bank", "bankgroup",
-                                          "chip", "rank", "channel", "system" };
-        std::map<int,int>  per_level;
-        std::map<int,long> orgs_at_level;
-        for (const auto& kv : tree.frontsLevel) {
-            per_level[kv.second]++;
-            auto c = tree.coverageOf.find(kv.first);
-            if (c != tree.coverageOf.end()) orgs_at_level[kv.second] += c->second;
-        }
-        for (const auto& kv : per_level) {
-            int L = kv.first;
-            const char* nm = (L >= 0 && L <= 6) ? lvl_name[L] : "?";
-            std::cout << "[htree]   " << kv.second << " aggregated at " << nm
-                      << " level, fronting " << orgs_at_level[L] << " organisations"
-                      << (L > 5 ? "  <-- ABOVE CHANNEL: not covered by the memory "
-                                  "model either; this path is priced by nothing"
-                                : "")
-                      << std::endl;
-        }
+        censusSparseTree(tree, config, covered, pe_level);
     }
 
     std::ofstream f(outPath);
@@ -3598,6 +3790,60 @@ static bool dramHTreeBuilder(const std::string& tech,
         }
     }
     f.close();
+    return true;
+}
+
+/* 1.11.97 (review C3): build the same sparse, placement-driven tree the
+ * detailed path builds -- from the same PE homes and organisation ladder --
+ * and take its census, WITHOUT emitting a topology file or any Garnet
+ * configuration: an analytical run routes by the tier walk, but the fabric it
+ * prices is the one that exists. The layer widths/latencies the builder
+ * stamps on links are not consumed by the census and are passed as 1. */
+static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config) {
+    const int num_pes = config.num_pes;
+    const int pe_level = config.pe_hierarchy_level;
+    if (pe_level < 0 || pe_level > 6) return false;
+    const int N = std::max(1, config.hierarchy_dram_channels);
+    std::vector<uint64_t> peHomes;
+    for (int pe = 0; pe < num_pes; ++pe) {
+        uint64_t home = (uint64_t)pe;
+        if (pe < (int)config.pe_mem_map.size() && !config.pe_mem_map[pe].mem_org_ids.empty())
+            home = (uint64_t)config.pe_mem_map[pe].mem_org_ids[0];
+        peHomes.push_back(home);
+    }
+    /* 1.11.97 (review H20): the tier widths the detailed path would build, from
+     * the same channel-anchored projection of the sourced ladder. */
+    {
+        const int chanL = pimid_htree::channelBearingLevel(N, config.hierarchy_chips_per_rank);
+        auto rungOfTreeTier = [&](int t) -> int { if (chanL == 3) return (t < 3) ? t : 5; return t; };
+        int Lw[4] = {0, 0, 0, 0};
+        for (int li = 3; li >= 1; --li) {
+            const int tier = chanL - (3 - li); if (tier < 0) break;
+            const int r = rungOfTreeTier(tier);
+            if (config.sourced_ladder_valid && config.sourced_ladder_w[r] > 0 && config.sourced_ladder_bw[r] > 0.0) Lw[li] = config.sourced_ladder_w[r];
+        }
+        {   double best_bw = -1.0; int best_w = 0;
+            for (int tier = 0; tier <= chanL - 3; ++tier) { const int r = rungOfTreeTier(tier);
+                if (config.sourced_ladder_valid && config.sourced_ladder_w[r] > 0 && config.sourced_ladder_bw[r] > 0.0 && (best_bw < 0.0 || config.sourced_ladder_bw[r] < best_bw)) { best_bw = config.sourced_ladder_bw[r]; best_w = config.sourced_ladder_w[r]; } }
+            if (best_w > 0) Lw[0] = best_w; }
+        for (int t = 0; t < 7; ++t) { const int li = pimid_htree::layerForLevel(t, chanL); config.htree_tier_width_bits[t] = (li >= 0 && li < 4) ? Lw[li] : 0; }
+    }
+    const int ones[4] = {1, 1, 1, 1};
+    pimid_htree::SparseHTree tree = pimid_htree::buildSparseHTree(
+        peHomes, pe_level, N,
+        config.subarrays_per_bank, config.hierarchy_banks_per_bg,
+        config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
+        config.hierarchy_ranks_per_channel, ones, ones);
+    const long covered = tree.coveredOrgs();
+    const long expected = (long)config.total_mem_orgs;
+    if (expected > 0 && covered != expected) {
+        std::cerr << "[htree] FATAL: the placement tree does not cover the configured memory (analytical census). "
+                     "It accounts for " << covered << " organisations at the placement level; the configuration describes "
+                  << expected << "." << std::endl;
+        std::exit(2);
+    }
+    std::cout << "  [htree] census for the ANALYTICAL fabric model (" << tech << "): the same tree the detailed path builds, priced, not routed" << std::endl;
+    censusSparseTree(tree, config, covered, pe_level);
     return true;
 }
 
@@ -3808,11 +4054,20 @@ static void reportStatedConstants(const UnifiedConfig& config) {
      * resolution and reference hop count run on BOTH paths -- the detailed
      * DRAM topology is emitted from the same builder -- so gating them on
      * !noc_cycle_accurate hid them from exactly the runs the corpus uses. */
-    rows.push_back({"H-tree scaling constants",
-                    "reference network clock 2.0 GHz, resolution 10, reference hops 8",
-                    "(none)",
-                    "the NoC link latency, and with it every hierarchy "
-                    "traversal, on the analytical AND detailed paths"});
+    /* 1.11.97 (ruling 7(c)): the reference-clock constants (network clock
+     * 2.0 GHz, resolution 10, reference hops 8, REF_FREQ 2.4 GHz) are retired.
+     * Both paths now take link latency from the ladder (ceil(device clock /
+     * layer clock) per layer) and the analytical hop cost from a tier walk
+     * over the built tree (censusSparseTree). The row stays so the report
+     * still answers "where does the analytical base latency come from". */
+    rows.push_back({"H-tree hop cost",
+                    "tier walk over the built tree: mean one-way router+bridge "
+                    "cost and mean links per pair (htree_mean_one_way_latency, "
+                    "htree_mean_hops_100); link latency per layer = ceil(device "
+                    "clock / layer clock)",
+                    "the part record's link ladder (width, clock per tier)",
+                    "the analytical base latency and hop count; the detailed "
+                    "path's per-layer link latency"});
     rows.push_back({"bank-group port width",
                     "the bank serialisation width x 2 (an interleaving assumption)",
                     "(none -- no architecture object carries this field)",
@@ -4441,6 +4696,21 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * organisation, mapped every element to org 0, and made pages_per_unit
      * the whole device in one contiguous block. */
     else if (pe_level == 6) slots = chans;
+    /* 1.11.97 (review R1, DDR5 two sub-channels): the frame must cover what
+     * the placement tree builds. The tree puts RpCh ranks under every channel
+     * and N channel subtrees under the root UNLESS the technology folds its
+     * channels into chips_per_rank (HBM2/HBM3: CpR == N, one live child, see
+     * sparse_htree.h rootFanout / channelBearingLevel). The one-rank frame
+     * above matched the tree while every DDR preset had one channel and one
+     * rank; with the DDR5 preset instantiating both 32-bit sub-channels the
+     * tree covered 512 organisations against a 256-organisation frame and
+     * the coverage check refused the run. Multiply by the ranks and by the
+     * UNFOLDED channel count only -- the HBM3 case Gate 1166B refused (512
+     * -> 8192) is the folded one, which stays x1. */
+    if (pe_level <= 3) {
+        const bool chan_folded = (chans > 1 && chips_per_rank == chans);
+        slots *= ranks_pc * (chan_folded ? 1 : chans);
+    }
 
     if (config.num_pes > slots) {
         std::cerr << "WARNING: " << config.num_pes << " PEs requested at "
@@ -5025,42 +5295,54 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
          * subarrays the height resolved to. Bank size comes from the DRAM
          * architecture object where there is one; SRAM/NVM keep the 64 KB
          * per-bank unit the latency and energy paths already use. */
+        /* 1.11.97 (review H16): ONE capacity, ONE unit count. The unit's
+         * contiguous block is the memory's capacity divided by the number of
+         * placement-level units the coverage tree accounts for -- the same
+         * total_mem_orgs the census and the PE map use. The previous
+         * derivation multiplied a per-subarray page count by (subarrays per
+         * bank x banks per group x groups per chip x chips per rank x ranks x
+         * channels) / total_mem_orgs, and for HBM/GDDR6 the channel factor
+         * entered twice (the architecture object's bank size is already the
+         * per-channel one), so an HBM3 bank was modelled as 256 MiB against
+         * its 16: a working set of hundreds of MB looked local. Capacity: the
+         * preset's device capacity (the chip for the DDR family, the whole
+         * stack for HBM) x chips per rank x ranks per channel x channels for
+         * the DDR family; the stack alone for HBM (its channels are inside
+         * the device capacity). SRAM/NVM: banks x the per-bank unit. */
         const int PAGE_BYTES = 4096;
-        uint64_t bank_bytes = 0;
+        uint64_t total_bytes = 0;
+        std::string cap_src;
         if (ladder_is_dram) {
             try {
                 pimid::RamulatorWrapper geo("", tech);
                 applyDramKnobs(geo, config);
                 geo.initialize();
-                bank_bytes = geo.getBankSizeMB() * 1024ULL * 1024ULL;
-            } catch (const std::exception&) { bank_bytes = 0; }
+                const uint64_t dev_mb = geo.getPresetDeviceCapacityMB();
+                const bool stacked = (geo.getPresetDiesPerStack() > 0);
+                if (dev_mb > 0) {
+                    if (stacked) {
+                        total_bytes = dev_mb * 1024ULL * 1024ULL;
+                        cap_src = "the preset's stack capacity (" + std::to_string(dev_mb) + " MB)";
+                    } else {
+                        const uint64_t chips = (uint64_t)std::max(1, config.hierarchy_chips_per_rank)
+                                             * (uint64_t)std::max(1, config.hierarchy_ranks_per_channel)
+                                             * (uint64_t)std::max(1, config.hierarchy_dram_channels);
+                        total_bytes = dev_mb * 1024ULL * 1024ULL * chips;
+                        cap_src = "the preset's device capacity (" + std::to_string(dev_mb) + " MB) x " + std::to_string(chips) + " device(s)";
+                    }
+                }
+            } catch (const std::exception&) { total_bytes = 0; }
         }
-        if (bank_bytes == 0) bank_bytes = g_bank_unit_bytes;   // SRAM/NVM per-bank unit (memory.bank_kb, 1.11.94)
-        int sa_per_bank = std::max(1, config.subarrays_per_bank);
-        uint64_t subarray_bytes = bank_bytes / static_cast<uint64_t>(sa_per_bank);
-        int subarray_pages = static_cast<int>(subarray_bytes / PAGE_BYTES);
-        if (subarray_pages < 1) subarray_pages = 1;   // subarray smaller than a page
-
-        /* 1.11.57 (audit round 3, B010): count subarrays over the SAME
-         * population that total_mem_orgs counts.
-         *
-         * total_subarrays is a one-rank, one-channel figure, and since
-         * 1.11.56 (B060) total_mem_orgs at RANK, CHANNEL or LOGIC_DIE
-         * placement counts ranks or channels across the whole device. Dividing
-         * the first by the second then gave each unit 1/ranks (or 1/channels)
-         * of the subarrays it actually owns, so pages_per_unit -- which is
-         * emitted as pagesPerUnit and passed to the benchmark as
-         * --pages-per-unit -- described a contiguous block covering a
-         * fraction of the memory. Both sides are now whole-device counts. */
-        int ranks_pc_pg = std::max(1, config.hierarchy_ranks_per_channel);
-        int chans_pg    = std::max(1, config.hierarchy_dram_channels);
-        long long total_subarrays = static_cast<long long>(config.subarrays_per_bank)
-                              * banks_per_bg * bg_per_chip * chips_per_rank
-                              * ranks_pc_pg * chans_pg;
-        long long spu = (config.total_mem_orgs > 0)
-                  ? (total_subarrays / config.total_mem_orgs) : 1;
-        if (spu < 1) spu = 1;
-        config.pages_per_unit = static_cast<int>(subarray_pages * spu);
+        if (total_bytes == 0) {
+            total_bytes = (uint64_t)std::max(1, config.num_banks) * g_bank_unit_bytes;   // SRAM/NVM per-bank unit (memory.bank_kb, 1.11.94)
+            cap_src = std::to_string(config.num_banks) + " bank(s) x the per-bank unit";
+        }
+        const long long units = (config.total_mem_orgs > 0) ? config.total_mem_orgs : 1;
+        uint64_t unit_bytes = total_bytes / (uint64_t)units;
+        if (unit_bytes < (uint64_t)PAGE_BYTES) unit_bytes = PAGE_BYTES;   // a unit smaller than a page still owns one page
+        config.pages_per_unit = static_cast<int>(unit_bytes / PAGE_BYTES);
+        std::cout << "  [placement] unit block " << unit_bytes / 1024 << " KB = " << cap_src << " / " << units
+                  << " unit(s) at " << config.placement_level << " (" << config.pages_per_unit << " pages; review H16)" << std::endl;
     }
 
     // Validate ports_per_bank
@@ -5418,6 +5700,23 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             // choice is left as-is. The physics-derived link latency below is only
             // applied when WE force the topology to H_TREE (i.e. the user did not
             // already pick H_TREE/CUSTOM), to preserve any user link tuning.
+            /* 1.11.97 (review C3): the analytical path takes the census of the fabric it prices. */
+            if (!detailed_dram && config.hierarchy_enabled && config.htree_branch_routers < 0 &&
+                pimid::isDRAM(pimid::parseMemoryTechnology(tech))) {
+                analyticalTreeCensus(tech, config);
+                /* 1.11.97 (gate 1206B P2): the SAME fabric description as the
+                 * detailed path -- 2 VCs per vnet (1 UP + 1 DOWN, the tree
+                 * routing's floor) and 2-deep buffers unless the user names
+                 * them. The detailed path sets these inside dramHTreeBuilder;
+                 * the analytical path kept the config default of 4 VCs, so
+                 * McPAT priced the analytical run's routers with 8 VCs per
+                 * port against the detailed run's 4 for the same built tree
+                 * (leakage 6.4x, energy per traversal 3.4x apart). */
+                if (!config.noc_vcs_user_set)     config.noc_vcs_per_vnet = 2;
+                if (!config.noc_buffers_user_set) config.noc_buffers_per_vc = 2;
+                if (config.noc_vcs_per_vnet < 2)  config.noc_vcs_per_vnet = 2;
+            }
+
             bool force_htree = (config.noc_topology != "H_TREE" &&
                                 config.noc_topology != "CUSTOM");
             if (force_htree && agg_mbs > 0.0) {
@@ -5432,55 +5731,17 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                 // ground truth (single-channel techs were unaffected: agg ==
                 // per-channel for c=1). Validated vs detailed at 4PE/size-1024:
                 // GDDR6/HBM2 went from 0.55-0.59x of detailed to within ~20%.
-                const double NET_GHz = 2.0;
-                const double FLIT_BYTES = 64.0;
-                double chan_mbs = (per_chan_mbs > 0.0) ? per_chan_mbs : agg_mbs;
-                double bytes_per_cycle = (chan_mbs * 1e6) / (NET_GHz * 1e9);
-                if (bytes_per_cycle > 0.0) {
-                    // RES scales sub-cycle differences into integer link latencies so
-                    // very-high-bandwidth techs (HBM2 vs HBM3) remain distinguishable,
-                    // and makes the (bandwidth-derived) network cost dominate the
-                    // per-access total so ordering follows effective bandwidth rather
-                    // than cell-access latency.
-                    const double RES = 10.0;
-                    double lat_cycles = RES * FLIT_BYTES / bytes_per_cycle;  // continuous
-
-                    // Hop-normalize: the bandwidth bottleneck cost must be independent
-                    // of how DEEP the H-tree is (i.e. of bank count). A technology with
-                    // few banks (shallow tree, e.g. LPDDR5) would otherwise traverse
-                    // fewer hops and appear faster than its bandwidth warrants. We scale
-                    // the per-hop link latency by REF_HOPS / actual_hops so that the
-                    // total network cost (link_latency x hops) reflects effective
-                    // bandwidth alone, not tree depth.
-                    // Depth = the PER-CHANNEL subtree: an access fans down one
-                    // channel's bank subtree (orgs/c leaves), so channel count
-                    // widens the tree without lengthening the path.
-                    const double REF_HOPS = 8.0;
-                    int endpoints = (config.total_mem_orgs > 1) ? config.total_mem_orgs : 2;
-                    int chan_eps = endpoints / std::max(1, num_chan);
-                    if (chan_eps < 2) chan_eps = 2;
-                    // Cap at 128: the detailed model's ground-truth replay
-                    // tree is fixed at 128 endpoints for every technology, so
-                    // the analytical depth normalization never assumes a tree
-                    // deeper than that reference. Only DDR5 (256 per-channel
-                    // endpoints) exceeds it -- DDR4 sits exactly at 128 and
-                    // every other tech is below. Lifts DDR5 from 0.65x of
-                    // detailed; all other techs provably unchanged.
-                    if (chan_eps > 128) chan_eps = 128;
-                    double actual_hops = std::ceil(std::log2((double)chan_eps));
-                    if (actual_hops < 1.0) actual_hops = 1.0;
-                    lat_cycles *= (REF_HOPS / actual_hops);
-
-                    int ll = static_cast<int>(std::lround(lat_cycles));
-                    if (ll < 1) ll = 1;
-                    if (getenv("PIMID_LL_DIAG")) {
-                        fprintf(stderr, "[LLDIAG] tech=%s agg_mbs=%.0f num_chan=%d "
-                                "per_chan_mbs=%.0f endpoints=%d chan_eps=%d hops=%.0f ll=%d\n",
-                                tech.c_str(), agg_mbs, num_chan, per_chan_mbs,
-                                endpoints, chan_eps, actual_hops, ll);
-                    }
-                    config.noc_link_latency = ll;
-                    config.noc_router_latency = 1;  // minimal router; link dominates
+                /* 1.11.97 (ruling 7 (c)): the analytical H-tree's hop cost no longer
+                 * comes from a reference-clock formula (NET 2.0 GHz, FLIT 64 B,
+                 * RES 10, REF_HOPS 8, hop-normalised by a log2 of the channel's
+                 * endpoint count). The base latency and hop count the analytical
+                 * model uses are taken from the tier walk over the BUILT tree
+                 * (censusSparseTree: mean one-way levels + bridges, mean links),
+                 * set below where the topology parameters are computed. The
+                 * per-link scalar stays 1: no hop in this model costs a
+                 * reference-clock quantity. */
+                config.noc_link_latency = 1;
+                config.noc_router_latency = 1;
 
                     // Remove the old per-tier analytical model: each tier hop costs
                     // the SAME physics-derived link latency (the H-tree edge
@@ -5527,7 +5788,6 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                      * noc_link_latency set above still applies to the flat
                      * fabric, which is the only thing this branch was reached
                      * for. */
-                }
             }
 
             /* 1.10.1: fabric-mismatch warning.
@@ -5567,7 +5827,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     int per_hop = config.noc_link_latency + config.noc_router_latency;
 
     // Flit/serialization: link_width = flit size, data_msg_bits = packet payload
-    int link_width_bits = 128;  // matches Garnet flit size (ni_flit_size * 8)
+    int link_width_bits = config.noc_flit_size_bits_cfg;  // 1.11.97 (row 18): the configured Garnet flit (ni_flit_size * 8)
     int data_msg_bits = config.noc_data_msg_bits > 0 ? config.noc_data_msg_bits
                       : config.cache_line_size * 8 + config.noc_header_bits;   // 1.11.94 (row 18): derived, 576 for 64 B lines
     int flits_per_packet = (data_msg_bits + link_width_bits - 1) / link_width_bits;
@@ -5582,6 +5842,18 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     config.noc_avg_one_way_latency = ni_overhead
                                    + static_cast<int>(std::ceil(avg_hops * per_hop))
                                    + (flits_per_packet > 1 ? flits_per_packet - 1 : 0);
+    /* 1.11.97 (ruling 7 (c)): on a tree whose census ran, the analytical base
+     * latency is the mean one-way tier walk over the built tree (levels and
+     * bridges, the same ladder the per-access charge uses) plus the NI
+     * overhead, and the hop count is the walk's mean link count; the
+     * per-topology closed forms above describe regular fabrics only. */
+    if (config.htree_mean_one_way_latency > 0 &&
+        (config.noc_topology == "H_TREE" || config.noc_topology == "CUSTOM" || config.noc_topology == "FAT_TREE")) {
+        config.noc_avg_one_way_latency = ni_overhead + config.htree_mean_one_way_latency;
+        avg_hops = config.htree_mean_hops_100 / 100.0;
+        std::cout << "  [noc] analytical base latency " << config.noc_avg_one_way_latency << " cycles = NI " << ni_overhead
+                  << " + tier walk " << config.htree_mean_one_way_latency << "; mean hops " << avg_hops << " (from the built tree, ruling 7 (c))" << std::endl;
+    }
 
     // Store topology-aware parameters for contention model
     config.noc_avg_hops_times_100 = static_cast<int>(avg_hops * 100.0 + 0.5);
@@ -5589,8 +5861,10 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     config.noc_bisection_links = bisectionLinksForTopology(config.noc_topology, noc_nodes, ru);
     config.noc_topology_class = topologyClassForTopology(config.noc_topology);
     config.noc_total_channels = totalChannelsForTopology(config.noc_topology, noc_nodes, ru);
-    double hotspot = hotspotFactorForTopology(config.noc_topology);
+    double hotspot = hotspotFactorForTopology(config.noc_topology, noc_nodes, config.htree_hotspot_100);   // 1.11.97 (12c): derived
     config.noc_hotspot_factor_100 = static_cast<int>(hotspot * 100.0 + 0.5);
+    std::cout << "  [noc] hotspot factor (max/mean channel load, uniform traffic) = " << hotspot
+              << (config.htree_hotspot_100 > 0 ? " (walked on the built tree)" : " (channel-load analysis for the topology)") << std::endl;
 }
 
 /**
@@ -6132,6 +6406,20 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         out << "        pesPerMC = " << config.pes_per_mc << ";\n";
         out << "        localLatency = " << local_latency << ";\n";
         out << "        defaultBandwidthMBs = " << bw_mbs << ";\n";
+        /* 1.11.97 (ruling 26): the bandwidth of the PLACEMENT TIER = the sourced
+         * ladder's rung at that level (width x clock), MB/s. It replaces the
+         * x4/x2/x1 placement gradient the PE interfaces multiplied onto the
+         * aggregate (a literal "finer placement sits on a wider datapath"). 0 =
+         * no sourced ladder: the interfaces keep the aggregate alone. */
+        {
+            int tier_mbs = 0;
+            const int rung = config.pe_hierarchy_level;
+            if (config.sourced_ladder_valid && rung >= 0 && rung <= 6 && config.sourced_ladder_bw[rung] > 0.0 &&
+                !(config.sourced_ladder_placeholder_mask & (1 << rung)))
+                tier_mbs = static_cast<int>(std::llround(config.sourced_ladder_bw[rung] * 1000.0));
+            out << "        tierBandwidthMBs = " << tier_mbs << ";\n";
+            if (tier_mbs > 0) std::cout << "  [pe-mi] placement tier bandwidth " << tier_mbs << " MB/s (sourced ladder rung " << rung << ": width x clock; ruling 26)" << std::endl;
+        }
 
         // Emit per-group overrides
         for (const auto& grp : config.pe_mc_group_overrides) {
@@ -6662,15 +6950,42 @@ static int totalChannelsForTopology(const std::string& topology, int num_nodes,
  * @brief Hotspot factor: ratio of max-loaded channel to average.
  * Accounts for non-uniform link loading per topology.
  */
-static double hotspotFactorForTopology(const std::string& topology) {
+/* 1.11.97 (sweep-94 ruling 12 (c)): the max-to-average channel-load factor is
+ * DERIVED per topology and node count from the standard channel-load
+ * analysis (Dally & Towles, Principles and Practices of Interconnection
+ * Networks, ch. 3/5, uniform traffic, dimension-order routing), not written
+ * down. The literals that stood here (mesh 2.0, torus 3.5, tree 1.5) had the
+ * torus ABOVE the mesh, which inverts the analysis: a torus's wrap-around
+ * links equalise the load (gamma_max = gamma_avg), a mesh concentrates it at
+ * the bisection.
+ *   bus / crossbar : one channel, factor 1.
+ *   ring (bidir)   : symmetric under uniform traffic, factor 1.
+ *   k x k mesh, DOR: gamma_max = k/4 (the centre bisection channel, per node
+ *                    injection); gamma_avg = N x H_avg / C with
+ *                    H_avg = 2 (k^2 - 1) / (3 k) and C = 4 k (k - 1)
+ *                    unidirectional channels -> (k + 1) / 6; the ratio is
+ *                    3 k / (2 (k + 1)): 1.2 at k = 4, 1.33 at k = 8, -> 1.5.
+ *   k x k torus    : gamma_max = k/8 = gamma_avg, factor 1.
+ *   trees          : computed on the BUILT tree (censusSparseTree: uniform
+ *                    PE-to-endpoint traffic walked link by link, max over
+ *                    mean), carried in config.htree_hotspot_100; this
+ *                    function returns 1 for a tree whose census has not run
+ *                    (the walk IS the derivation, there is no closed form for
+ *                    a sparse placement tree). */
+static double hotspotFactorForTopology(const std::string& topology, int num_nodes, int tree_hotspot_100) {
     std::string topo = topology;
     for (auto& c : topo) c = std::toupper(c);
 
     if (topo == "BUS" || topo == "CROSSBAR") return 1.0;
     if (topo == "RING") return 1.0;
-    if (topo == "MESH_2D" || topo == "MESH") return 2.0;
-    if (topo == "TORUS_2D" || topo == "TORUS") return 3.5;
-    if (topo == "FAT_TREE" || topo == "H_TREE") return 1.5;
+    if (topo == "MESH_2D" || topo == "MESH") {
+        double k = std::ceil(std::sqrt((double)std::max(1, num_nodes)));
+        if (k < 2.0) return 1.0;
+        return 3.0 * k / (2.0 * (k + 1.0));
+    }
+    if (topo == "TORUS_2D" || topo == "TORUS") return 1.0;
+    if (topo == "FAT_TREE" || topo == "H_TREE" || topo == "CUSTOM")
+        return (tree_hotspot_100 > 0) ? tree_hotspot_100 / 100.0 : 1.0;
     return 1.0;
 }
 
@@ -6970,6 +7285,7 @@ static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config)
     out << "        cycleAccurate = " << (config.noc_cycle_accurate ? "true" : "false") << ";\n";
     out << "        routing = \"" << effective_routing << "\";\n";
     out << "        vcsPerVnet = " << config.noc_vcs_per_vnet << ";\n";
+    out << "        flitSizeBits = " << config.noc_flit_size_bits_cfg << ";\n";   // 1.11.97 (row 18): the fork's flit, every topology
     out << "        buffersPerVc = " << config.noc_buffers_per_vc << ";\n";
     if (!config.noc_topology_file.empty()) {
         out << "        topologyFile = \"" << config.noc_topology_file << "\";\n";
@@ -7663,6 +7979,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             int rports = ports_from_tree ? config.htree_level_max_ports[lvl] : 5;
             nc.input_ports = (nc.type == 0) ? nodes : rports;
             nc.output_ports = (nc.type == 0) ? nodes : rports;
+            /* 1.11.97 (review H31): the VCs a port holds are vnets x VCs per vnet
+             * of the fabric the run built (Garnet: 2 vnets, read and write). */
+            nc.vcs_per_port = std::max(1, config.noc_vnets) * std::max(1, config.noc_vcs_per_vnet);
 
             /* 1.11.92 (F7): each level is priced at ITS OWN datapath width, from
              * the same ladder the "Hierarchy link ladder" line prints (after
@@ -7676,6 +7995,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             if (lvl < 7 && config.network_level_overrides[lvl].link_width_bits > 0) {
                 W = config.network_level_overrides[lvl].link_width_bits;
                 wsrc = "noc.levels override";
+            } else if (lvl < 7 && config.htree_tier_width_bits[lvl] > 0) {
+                /* 1.11.97 (review H20): the width the built tree carries at this
+                 * tier -- the per-node link Garnet runs on -- not the ladder's
+                 * aggregate rung (an HBM chip tier at 1024 b vs 64 b per node). */
+                W = config.htree_tier_width_bits[lvl];
+                wsrc = "the built tree's link width at this tier";
             } else if (config.sourced_ladder_valid &&
                        !(config.sourced_ladder_placeholder_mask & (1 << lvl)) &&
                        config.sourced_ladder_w[lvl] > 0) {
@@ -7813,6 +8138,48 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                           << ", nodes " << nodes << "." << std::endl;
             }
 
+            /* 1.11.97 (review H19): a level is priced per ROUTER CLASS. The census
+             * records how many branch routers of each port count the level
+             * built; each class is one McPAT NoC instance at its own port count
+             * (crossbar and allocator scale with it), with the level's measured
+             * traversals split in proportion to the class's router count. The
+             * endpoints attached at the level are network interfaces, not
+             * routers: they are priced as a 2-port class. Without a census the
+             * level stays one instance at the widest router's port count. */
+            {
+                int total_hist = 0;
+                if (lvl < 7) for (int pp = 1; pp <= 16; ++pp) total_hist += config.htree_level_port_hist[lvl][pp];
+                const int eps_here = (lvl < 7 && config.htree_level_branch[0] >= 0) ? config.htree_level_endpoints[lvl] : 0;
+                if (nc.type != 0 && total_hist + eps_here > 0 && config.htree_level_branch[0] >= 0) {
+                    const int class_nodes_total = total_hist + eps_here;
+                    const uint64_t acc_total = nc.total_accesses;
+                    uint64_t acc_given = 0; int emitted = 0;
+                    auto emitClass = [&](int ports, int count, const std::string& tag, bool last) {
+                        NoCLevel c = nc;
+                        c.name = nc.name + tag;
+                        c.input_ports = ports; c.output_ports = ports;
+                        exactRect(count, c.vertical_nodes, c.horizontal_nodes);
+                        c.total_accesses = last ? (acc_total - acc_given)
+                                                : (uint64_t)((double)acc_total * (double)count / (double)class_nodes_total + 0.5);
+                        acc_given += c.total_accesses;
+                        c.chip_coverage = nc.chip_coverage * (double)count / (double)class_nodes_total;
+                        levels.push_back(c);
+                        std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " class " << c.name << ": " << count
+                                  << " node(s) x " << ports << " ports, " << c.total_accesses << " traversals (H19)" << std::endl;
+                        emitted++;
+                    };
+                    int classes_left = (eps_here > 0 ? 1 : 0);
+                    for (int pp = 1; pp <= 16; ++pp) if (config.htree_level_port_hist[lvl][pp] > 0) classes_left++;
+                    for (int pp = 1; pp <= 16; ++pp) {
+                        const int cnt = config.htree_level_port_hist[lvl][pp];
+                        if (cnt <= 0) continue;
+                        classes_left--;
+                        emitClass(pp, cnt, "_r" + std::to_string(pp) + "p", classes_left == 0);
+                    }
+                    if (eps_here > 0) { classes_left--; emitClass(2, eps_here, "_ni", true); }
+                    continue;
+                }
+            }
             levels.push_back(nc);
         }
     } else {
@@ -8310,10 +8677,22 @@ static int inorderTimingIssueWidth(int configured, const char** src) {
  * (in_order_core.cpp:78-82) -- resolved here the same way. McPAT's embedded
  * undifferentiated-core fit (0.4109 x depth - 0.776, logic.cc) goes
  * negative below 2 stages, so a smaller override is priced at 2 and says so.
- * The power side used 14. */
+ * The power side used 14.
+ * 1.11.97 (R2313 (b)): the core charges TWO penalties now; the pipeline depth
+ * is the EXECUTE-depth one (a conditional mispredict refills fetch-to-issue),
+ * not the decode-depth resteer. Its value is the core record's
+ * in_order.mispredict_penalty_cycles or core.in_order.mispredict_penalty_cycles
+ * (g_inorder_mispredict_penalty, set by applyCoreRecord(); the literal 7 is
+ * gone), and the env override still wins, as inside the core. */
 static int inorderTimingPipelineDepth(const char** src) {
-    int d = 7;
-    const char* s = "zsim InOrderCore mispredPenalty (fetch-to-issue refill depth)";
+    if (g_inorder_mispredict_penalty < 0) {
+        std::cerr << "[params] FATAL: the in-order pipeline depth was asked for before the core record was applied." << std::endl;
+        std::exit(2);
+    }
+    int d = g_inorder_mispredict_penalty;
+    const char* s = "core record in_order.mispredict_penalty_cycles (execute-depth refill)";
+    if (d != g_core_rec.in_order.mispredict_penalty_cycles)
+        s = "core.in_order.mispredict_penalty_cycles (user's, execute-depth refill)";
     const char* env = getenv("PIMID_INORDER_MISPRED_PENALTY");
     if (env) {
         int v = atoi(env);
@@ -8324,7 +8703,7 @@ static int inorderTimingPipelineDepth(const char** src) {
     }
     if (d < 2) {
         d = 2;
-        s = "PIMID_INORDER_MISPRED_PENALTY below 2 -- priced at McPAT's 2-stage floor";
+        s = "in-order mispredict penalty below 2 -- priced at McPAT's 2-stage floor";
     }
     if (src) *src = s;
     return d;
@@ -8366,9 +8745,20 @@ static pimid::McPATWrapper::DeviceProfile describeTimingCore(
     using W = pimid::McPATWrapper;
     const std::string pfx = who.empty() ? std::string("  [power] ")
                                         : "  [power] " + who + ": ";
+    /* 1.11.97 (R2537): McPAT's commit width is the core record's retire
+     * width: ooo = ooo.retire_width (the ROB retire width, cross-checked by
+     * the loader); in_order = "issue" (-1: McPAT uses the issue width it is
+     * handed). The ALU and simple/null elements are not in the record and
+     * keep -1 (commit = issue, as before). */
+    mcfg.commit_width = -1;
     if (type == "ooo_core") {
+        if (g_core_rec.ooo.retire_width <= 0) {
+            std::cerr << "[params] FATAL: the OOO commit width was asked for before the core record was loaded." << std::endl;
+            std::exit(2);
+        }
         mcfg.pipeline_depth = 13;
         mcfg.issue_width = 4;
+        mcfg.commit_width = g_core_rec.ooo.retire_width;
         mcfg.num_alus = 4; mcfg.num_muls = 2; mcfg.num_fpus = 2;
         mcfg.has_branch_predictor = true;
         return W::DeviceProfile::OOO;
@@ -8376,7 +8766,7 @@ static pimid::McPATWrapper::DeviceProfile describeTimingCore(
     if (type == "alu_core" || type == "alu") {
         mcfg.pipeline_depth = 5;
         mcfg.issue_width = 1;
-        mcfg.num_alus = 1; mcfg.num_muls = 0; mcfg.num_fpus = 0;
+        mcfg.num_alus = 1; mcfg.num_muls = 0; mcfg.num_fpus = 0;   // 1.11.97 (H30): the caller sets one FPU per lane when pim.pe.floating_point is true
         mcfg.has_branch_predictor = false;
         return W::DeviceProfile::DEVICE_ALU;
     }
@@ -8843,6 +9233,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * on the wrapper below, after construction, from the same answer. */
     const McPAT::DeviceProfile dev_profile =
         describeTimingCore(mcfg, config.pe_type, config.inorder_issue_width, "");
+    /* 1.11.97 (review H30): the ALU element is priced with one FPU per lane
+     * when pim.pe.floating_point is true (its timing executes FP); it was
+     * priced without an FPU whatever the flag said. An explicit
+     * power.mcpat_overrides.num_fpus below still wins. */
+    if (dev_profile == McPAT::DeviceProfile::DEVICE_ALU && config.pe_has_fp) {
+        mcfg.num_fpus = std::max(1, config.pe_lanes);
+        std::cout << "  [power] ALU element: " << mcfg.num_fpus << " FPU(s), one per lane (pim.pe.floating_point=true; review H30)" << std::endl;
+    }
     /* 1.11.51 (L214): pim.pe.floating_point=false must remove the FPU from
      * the POWER model on every profile, not just on ALU (whose default
      * happens to be zero). Before this, an FPU-less OOO or in-order element
@@ -9082,10 +9480,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     if (sys_dev_subset) {
         std::cout << "  [power] device McPAT activity: the device node subset (system trace path)" << std::endl;
         mcpat.setMeasuredCoreActivity(D.uops, D.branches, D.mispredBranches);
+        mcpat.setMeasuredPredictorWrites(D.bpHistWrites, D.bpPhtWrites, D.bpWritesPresent);   // 1.11.97 (R2476)
         mcpat.setMeasuredMix(D.mix_int, D.mix_mul, D.mix_fp, D.mix_ld, D.mix_st, D.mix_br);
     } else {
     mcpat.setMeasuredCoreActivity(zsim_stats.uops, zsim_stats.branches,
                                   zsim_stats.mispredBranches);
+    /* 1.11.97 (R2476): measured predictor writes, same base as branches. */
+    mcpat.setMeasuredPredictorWrites(zsim_stats.bpHistWrites, zsim_stats.bpPhtWrites,
+                                     zsim_stats.bpWritesPresent);
     mcpat.setMeasuredMix(zsim_stats.mix_int, zsim_stats.mix_mul,
                          zsim_stats.mix_fp, zsim_stats.mix_ld, zsim_stats.mix_st,
                          zsim_stats.mix_br);  // 1.11.10/.15
@@ -9402,6 +9804,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             host_mcpat.setMemControllerAccesses(hgrp.mem_rd, hgrp.mem_wr);
             host_mcpat.setMeasuredCoreActivity(hgrp.uops, hgrp.branches,
                                                hgrp.mispredBranches);
+            host_mcpat.setMeasuredPredictorWrites(hgrp.bpHistWrites, hgrp.bpPhtWrites,
+                                                  hgrp.bpWritesPresent);   // 1.11.97 (R2476)
             host_mcpat.setMeasuredMix(hgrp.mix_int, hgrp.mix_mul, hgrp.mix_fp,
                                       hgrp.mix_ld, hgrp.mix_st, hgrp.mix_br);  // 1.11.10/.15
             /* 1.11.17: print the number McPAT is PRICED on (real_instrs =
@@ -12185,6 +12589,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                  * with the instruction count it describes. */
                 mcpat.setMeasuredCoreActivity(grp->uops, grp->branches,
                                               grp->mispredBranches);
+                mcpat.setMeasuredPredictorWrites(grp->bpHistWrites, grp->bpPhtWrites,
+                                                 grp->bpWritesPresent);   // 1.11.97 (R2476)
                 mcpat.setMeasuredMix(grp->mix_int, grp->mix_mul, grp->mix_fp,
                                      grp->mix_ld, grp->mix_st, grp->mix_br);  // 1.11.10/.15
             }
@@ -12907,6 +13313,13 @@ public:
                 // In-order superscalar issue width (YAML pim.pe.issue_width;
                 // default 2 == the core's historical hardcoded value).
                 cfg << "            issueWidth = " << config_.inorder_issue_width << ";\n";
+                // 1.11.97 (R2313 (b)): the core record's two penalties (applyCoreRecord()).
+                cfg << "            mispredPenalty = " << config_.core_inorder_mispredict_penalty << ";\n";
+                cfg << "            resteerPenalty = " << config_.core_inorder_resteer_penalty << ";\n";
+            } else if (core_type == "OoO") {
+                // 1.11.97 (R2355 (b)): wrong-path depth = penalty x fetch width (core record).
+                cfg << "            mispredPenalty = " << config_.core_ooo_mispredict_penalty << ";\n";
+                cfg << "            fetchBytesPerCycle = " << config_.core_ooo_fetch_width_bytes << ";\n";
             }
         }
         // Null cores: no per-core attributes beyond type + count
@@ -13643,8 +14056,17 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
              * in-order core; system scope did not, so pim.pe.issue_width was
              * inert in co-sim and every in-order PE kept the built-in dual
              * issue no matter what the config asked for. */
-            if (core_type == "InOrder")
+            if (core_type == "InOrder") {
                 cfg << "            issueWidth = " << node.inorder_issue_width << ";\n";
+                /* 1.11.97 (R2313 (b)): the core record's two penalties, the
+                 * same run-wide values the device-scope emitter writes. */
+                cfg << "            mispredPenalty = " << config.core_inorder_mispredict_penalty << ";\n";
+                cfg << "            resteerPenalty = " << config.core_inorder_resteer_penalty << ";\n";
+            } else if (core_type == "OoO") {
+                // 1.11.97 (R2355 (b)): wrong-path depth = penalty x fetch width (core record).
+                cfg << "            mispredPenalty = " << config.core_ooo_mispredict_penalty << ";\n";
+                cfg << "            fetchBytesPerCycle = " << config.core_ooo_fetch_width_bytes << ";\n";
+            }
         }
 
         cfg << "        };\n";
@@ -14466,12 +14888,13 @@ int main(int argc, char** argv) {
              * warn on valid keys, which is worse than the silence it replaces.
              * The nested case stays an open finding with a generator-side
              * key-set check recommended for the fleet (R6-7 in the round-6
-             * ledger). The fifteen names below are every section the parser
-             * reads, taken from the source (synthetic added 1.11.88); no config in this tree uses any
+             * ledger). The sixteen names below are every section the parser
+             * reads, taken from the source (synthetic added 1.11.88, core 1.11.97); no config in this tree uses any
              * other, and six of them cover every shipped and corpus config. */
             {
                 static const std::set<std::string> kKnownSections = {
-                    "cache", "description", "host", "memory", "method", "name",
+                    "cache", "core",   // 1.11.97: core part record overrides (core.in_order.*, core.ooo.*)
+                    "description", "host", "memory", "method", "name",
                     "noc", "pim", "power", "scope", "simulation", "system",
                     "synthetic",   // 1.11.88: documented (docs/network.md), read by --method synthetic; 1.11.76 left it out
                     "technology", "workload"
@@ -14956,6 +15379,21 @@ int main(int argc, char** argv) {
                 config.tech_node_nm = yaml_cfg["technology"]["node_nm"].as<int>();
             }
 
+            /* 1.11.97: core part record overrides (params/core/default.yaml
+             * holds the sourced defaults; applyCoreRecord() fills what is
+             * absent here and range-checks what is present). */
+            if (yaml_cfg["core"]) {
+                const YAML::Node c = yaml_cfg["core"];
+                if (c["in_order"]) {
+                    config.core_inorder_mispredict_penalty = yamlInt(c["in_order"]["mispredict_penalty_cycles"], config.core_inorder_mispredict_penalty, "core.in_order.mispredict_penalty_cycles");
+                    config.core_inorder_resteer_penalty = yamlInt(c["in_order"]["resteer_penalty_cycles"], config.core_inorder_resteer_penalty, "core.in_order.resteer_penalty_cycles");
+                }
+                if (c["ooo"]) {
+                    config.core_ooo_mispredict_penalty = yamlInt(c["ooo"]["mispredict_penalty_cycles"], config.core_ooo_mispredict_penalty, "core.ooo.mispredict_penalty_cycles");
+                    config.core_ooo_fetch_width_bytes = yamlInt(c["ooo"]["fetch_width_bytes"], config.core_ooo_fetch_width_bytes, "core.ooo.fetch_width_bytes");
+                }
+            }
+
             // Load cache configuration
             if (yaml_cfg["cache"]) {
                 // Characterization-cache warehouse settings (mode/dir). These feed
@@ -15162,18 +15600,20 @@ int main(int argc, char** argv) {
                  * harmless restatement of the fabric, and refused otherwise
                  * rather than silently not applying. Three shipped test configs
                  * declare 128 and keep working. */
+                /* 1.11.97 (sweep-94 row 18, user (a)): the flit width is a knob
+                 * and it REACHES Garnet (sys.network.flitSizeBits -> the fork's
+                 * ni_flit_size) and the topology emitter (a ladder rung runs at
+                 * its true width up to the flit; the clamp follows the knob, not
+                 * a literal 128). Default 128, Garnet's built-in flit. */
                 if (yaml_cfg["noc"]["flit_size_bits"]) {
                     int fsb = yaml_cfg["noc"]["flit_size_bits"].as<int>();
-                    if (fsb != 128) {
+                    if (fsb < 8 || fsb > 4096 || (fsb % 8) != 0) {
                         std::cerr << "Error: noc.flit_size_bits = " << fsb
-                                  << " is NOT IMPLEMENTED. Garnet's flit width "
-                                     "is fixed at 128 bits in this build, and "
-                                     "the key has never been read, so the run "
-                                     "would have used 128 without saying so. "
-                                     "Remove the key or set it to 128."
-                                  << std::endl;
+                                  << " must be a multiple of 8 bits between 8 and 4096 (Garnet's flit is sized in bytes)." << std::endl;
                         return 1;
                     }
+                    config.noc_flit_size_bits_cfg = fsb;
+                    std::cout << "  [noc] flit width " << fsb << " bits (noc.flit_size_bits, user's choice; the rung widths are clamped at the flit)" << std::endl;
                 }
                 config.noc_topology_file = yaml_cfg["noc"]["topology_file"].as<std::string>(config.noc_topology_file);
                 config.noc_routing_table_file = yaml_cfg["noc"]["routing_table_file"].as<std::string>(config.noc_routing_table_file);
@@ -16021,7 +16461,7 @@ int main(int argc, char** argv) {
                 config.pcie_bandwidth_GBs = yamlDouble(pc["bandwidth_GBs"], config.pcie_bandwidth_GBs, pc_path + ".bandwidth_GBs");
                 config.pcie_num_lanes = yamlInt(pc["num_lanes"], config.pcie_num_lanes, pc_path + ".num_lanes");
                 config.pcie_pj_per_bit_override = yamlDouble(pc["pj_per_bit_override"], config.pcie_pj_per_bit_override, pc_path + ".pj_per_bit_override");
-                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type);
+                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type); config.pcie_link_type_user_set = true;   // 1.11.97 (review R4)
                 config.pcie_model = pc["model"].as<std::string>(config.pcie_model);
                 if (config.pcie_model != "simple" && config.pcie_model != "md1" &&
                     config.pcie_model != "analytical" && config.pcie_model != "detailed")   // 1.11.90
@@ -16030,7 +16470,7 @@ int main(int argc, char** argv) {
                                "run simple");
                 if (config.pcie_model == "md1") config.pcie_model = "simple";  // backward compat
                 // Link technology + per-transaction overhead (tunable per link).
-                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type);
+                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type); config.pcie_link_type_user_set = true;   // 1.11.97 (review R4)
                 {   // 1.11.90: the link classes the power and timing tables price
                     static const std::set<std::string> kPowerLinkTypes = {
                         "pcie_gen3", "pcie_gen4", "pcie_gen5", "cxl_2_0", "cxl_3_0",
@@ -16629,6 +17069,24 @@ int main(int argc, char** argv) {
      * adoption block calls this itself, once the technology is real. */
     if (checkDramPartRecords(config) != 0) return 1;   // 1.11.94: part records (step 1)
     if (applyCacheRecord(config) != 0) return 1;       // 1.11.95: the cache record (ways / line / banks)
+    if (applyCoreRecord(config) != 0) return 1;        // 1.11.97: the core record (penalties / fetch / retire)
+    /* 1.11.97 (review R4 / m08-main-12671-14089-7, user "yes"): the host-device
+     * link's energy class follows the DECLARED attachment -- an internally
+     * attached device (on-package) crosses an interposer class, not a PCIe
+     * gen5 SerDes; PCIe is priced only when declared. Until now every co-sim
+     * cell priced the PCIe default on internally attached devices. */
+    if (config.scope == "system" && !config.pcie_link_type_user_set) {
+        bool any_dev = false, all_internal = true;
+        for (const auto& n : config.system_nodes) {
+            if (n.role != UnifiedConfig::SystemNode::DEVICE) continue;
+            any_dev = true;
+            if (n.attachment == UnifiedConfig::SystemNode::EXTERNAL) all_internal = false;
+        }
+        if (any_dev && all_internal && config.pcie_link_type.rfind("pcie", 0) == 0) {
+            config.pcie_link_type = "interposer";
+            std::cout << "  [link] host-device link class: interposer (every device is INTERNALLY attached; PCIe is priced only when declared; review R4)" << std::endl;
+        }
+    }
     /* 1.11.94 (review H33-H35 follow-up): a DRAM device's fabric is the CUSTOM
      * tree and routes by TABLE; a user-set direction routing on it used to be
      * refused only inside Garnet at init. A torus routed by TABLE deadlocks

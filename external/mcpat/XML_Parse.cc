@@ -262,6 +262,8 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"fp_instructions")==0) {sys.core[i].fp_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"branch_instructions")==0) {sys.core[i].branch_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"branch_mispredictions")==0) {sys.core[i].branch_mispredictions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
+							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"predictor_l1_writes")==0) {sys.core[i].predictor_l1_writes=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}   /* PIMID 1.11.97 (R2476) */
+							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"predictor_l2_writes")==0) {sys.core[i].predictor_l2_writes=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}   /* PIMID 1.11.97 (R2476) */
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"committed_instructions")==0) {sys.core[i].committed_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"committed_int_instructions")==0) {sys.core[i].committed_int_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"committed_fp_instructions")==0) {sys.core[i].committed_fp_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
@@ -1531,6 +1533,8 @@ void ParseXML::initialize() //Initialize all
 		sys.core[i].fp_instructions=1;
 		sys.core[i].branch_instructions=1;
 		sys.core[i].branch_mispredictions=1;
+		sys.core[i].predictor_l1_writes=-1;   /* PIMID 1.11.97 (R2476): -1 = not measured, upstream estimate */
+		sys.core[i].predictor_l2_writes=-1;
 		sys.core[i].committed_instructions=1;
 		sys.core[i].load_instructions=1;
 		sys.core[i].store_instructions=1;
