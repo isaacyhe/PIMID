@@ -7,6 +7,27 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.105 -- the IDD code tables are deleted; the part record is the source (IDD-RECORDS step 2)
+
+Step 2 of the IDD-RECORDS migration (ruling (a)). The energy layer's code
+tables -- the per-technology IDD rows (`iddTableFor`), the provenance
+classes, the IDD3N bank-state basis, the component factors, the termination
+electricals and the HBM VDDQ band -- are gone; every reader takes the part
+record's data from the registry the Ramulator wrapper fills at
+initialisation (`PartIddFacts`). A key with a grade suffix selects the
+record's row for that grade; a bare key takes the record's timing-preset
+grade; a technology with no registered record, or a grade the record has no
+row for, REFUSES (the 1.11.57 "unknown technology takes the DDR4 class"
+fallback of the IDD row is gone with the table). The LPDDR5X row, which no
+PIMID technology could select, is gone with the table too. The rows'
+derivation comments stay in the header verbatim, as comments, because they
+are the provenance of the record values; the former code lines are kept as
+marked comment lines. 1.11.104's cross-check is gone with the table it
+checked against. Every number is unchanged: the gate proves exact parity on
+every technology and DDR5 grade, and a record copy with one current changed
+now MOVES the priced number instead of being refused -- the record is the
+source.
+
 ## 1.11.104 -- the part's measured IDD data moves into the records, cross-checked against the code table (IDD-RECORDS step 1)
 
 Ruling IDD-RECORDS (a), user 2026-10-05, pulled before the fleet by the

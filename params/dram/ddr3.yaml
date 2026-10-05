@@ -1,5 +1,5 @@
 # PIMID shipped part record -- DDR3
-# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; since 1.11.105 (step 2) this record is the ONLY source of them (the code table is gone).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -21,7 +21,7 @@ channel_width_bits: 64   # 1.11.101 (step 2): JESD79-3F 2.x: a 64-bit data chann
 refresh_ladder:                    # JEDEC JESD79-3 extended temperature range: 2x refresh (tREFI/2) above 85 C
   - { above_c: 85.0, factor: 0.5 }
 
-# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+# ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
 idd:
   basis: "per device"
   channels_basis: 1

@@ -924,15 +924,14 @@ void RamulatorWrapper::initialize() {
         pf.termination.vddq = rec.termination.vddq; pf.termination.ron_rd = rec.termination.ron_rd; pf.termination.rtt_rd = rec.termination.rtt_rd;
         pf.termination.ron_wr = rec.termination.ron_wr; pf.termination.rtt_wr = rec.termination.rtt_wr;
         pf.iddq_band.valid = rec.iddq_band.valid; pf.iddq_band.lo_pj_bit = rec.iddq_band.lo; pf.iddq_band.hi_pj_bit = rec.iddq_band.hi;
+        pf.default_grade = gradeOfTimingName(rec.timing_preset);   // 1.11.105: the row a bare key takes (DDR5)
         pf.set = true;
-        const int nchk = Ramulator::pimid_energy::crossCheckPartIddFacts(dt, pf);
-        Ramulator::pimid_energy::setPartIddFacts(dt, pf);
+        Ramulator::pimid_energy::setPartIddFacts(dt, pf);   // 1.11.105 (IDD-RECORDS step 2): the record is the source
         {
             static std::set<std::string> said;
             if (said.insert(dt).second)
                 std::cout << "[params] " << dt << " idd: " << pf.provenance << " row (" << pf.basis << ", " << pf.idd3n_bank_state
-                          << ", " << pf.rows.size() << " grade row(s)): " << nchk
-                          << " values cross-checked against the 1.11.103 code table (IDD-RECORDS step 1; step 2 makes the record the source)"
+                          << ", " << pf.rows.size() << " grade row(s)): the record is the source (IDD-RECORDS step 2, 1.11.105)"
                           << std::endl;
         }
     }

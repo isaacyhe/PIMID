@@ -1,5 +1,5 @@
 # PIMID shipped part record -- HBM3
-# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; since 1.11.105 (step 2) this record is the ONLY source of them (the code table is gone).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -24,7 +24,7 @@ refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-
   - { above_c: 85.0, factor: 0.5 }
   - { above_c: 95.0, factor: 0.25 }
 
-# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+# ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
 idd:
   basis: "per channel"
   channels_basis: 16

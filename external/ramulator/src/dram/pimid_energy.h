@@ -147,6 +147,49 @@ struct IDDSpec {
     double stack_floor_mw = -1.0;
 };
 
+/* ---- 1.11.105: the registry types, declared before the first reader ---- */
+inline std::string baseTech(const std::string& key) {
+    const auto dash = key.find('-');
+    return (dash == std::string::npos) ? key : key.substr(0, dash);
+}
+
+struct ComponentFactors {
+    bool   apply           = false;
+    double standby         = 1.0;
+    double standby_premium = 1.0;
+    double act             = 1.0;
+    double burst_rd        = 1.0;
+    double burst_wr        = 1.0;
+    double refresh         = 1.0;
+    double pd              = 1.0;
+};
+struct IddqBand { bool valid = false; double lo_pj_bit = 0.0, hi_pj_bit = 0.0; };
+enum class TermScheme { POD, SSTL, LVSTL, NONE };
+struct TermElectricals {
+    TermScheme scheme = TermScheme::NONE;
+    double vddq = -1.0, ron_rd = 0.0, rtt_rd = 0.0, ron_wr = 0.0, rtt_wr = 0.0;
+    bool known = false;   // false: no row (the caller announces its DDR4-class substitute)
+};
+
+struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
+    std::map<int, IDDSpec> rows;         // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
+    std::string provenance;              // MEASURED | CALIBRATED | DERIVED
+    std::string idd3n_bank_state;        // ALL_BANKS | ONE_BANK | UNVERIFIED
+    std::string basis;                   // "per device" | "per channel"
+    int channels_basis = 1;
+    int default_grade = 0;               // 1.11.105: the record's timing preset grade (DDR5), the row a bare key takes
+    ComponentFactors component_factors;
+    TermElectricals termination;
+    IddqBand iddq_band;
+    bool set = false;
+};
+inline std::map<std::string, PartIddFacts>& partIddFactsMap() { static std::map<std::string, PartIddFacts> m; return m; }
+inline void setPartIddFacts(const std::string& tech, const PartIddFacts& f) { partIddFactsMap()[baseTech(tech)] = f; }
+inline const PartIddFacts* partIddFactsIfAny(const std::string& tech) {
+    auto it = partIddFactsMap().find(baseTech(tech));
+    return (it == partIddFactsMap().end()) ? nullptr : &it->second;
+}
+
 /* 1.11.91 (item 11, user ruling 2026-09-26 18:44-19:00): ONE WORD OF
  * PROVENANCE PER IDD ROW, printed on the model-inputs line and nothing
  * more. The chain, the anchors, the factors and the bands live in the
@@ -162,16 +205,25 @@ struct IDDSpec {
  * nullptr = no word (a key with no row: the unknown-technology fallback);
  * the caller prints nothing for it. [1.11.91, 19:30 ruling: the DDR5 rows
  * are reached -- the component rule keeps their activate term positive.] */
-inline const char* iddRowProvenance(const std::string& key) {
-    if (key == "HBM2") return "MEASURED";
-    if (key == "DDR3" || key == "DDR4") return "CALIBRATED";
-    if (key == "LPDDR5" || key == "LPDDR5X" || key == "GDDR6" || key == "HBM3")
-        return "DERIVED";
-    if (key == "DDR5" || key == "DDR5-3200" || key == "DDR5-4800" ||
-        key == "DDR5-5600")
-        return "DERIVED";
-    return nullptr;
+inline const char* iddRowProvenance(const std::string& key) {   // 1.11.105: from the record
+    const PartIddFacts* f = partIddFactsIfAny(key);
+    return (f && !f->provenance.empty()) ? f->provenance.c_str() : nullptr;
 }
+/* ---- formerly the provenance table ----
+ * The rows below were the code table through 1.11.104; since 1.11.105 (IDD-RECORDS step 2) the values
+ * live in params/dram/<tech>.yaml (the record is the source) and the former code lines are kept here as
+ * comments because they carry the derivations and the datasheet pages behind each value. */
+// [former table row] inline const char* iddRowProvenance(const std::string& key) {
+// [former table row]     if (key == "HBM2") return "MEASURED";
+// [former table row]     if (key == "DDR3" || key == "DDR4") return "CALIBRATED";
+// [former table row]     if (key == "LPDDR5" || key == "LPDDR5X" || key == "GDDR6" || key == "HBM3")
+// [former table row]         return "DERIVED";
+// [former table row]     if (key == "DDR5" || key == "DDR5-3200" || key == "DDR5-4800" ||
+// [former table row]         key == "DDR5-5600")
+// [former table row]         return "DERIVED";
+// [former table row]     return nullptr;
+// [former table row] }
+
 
 /* 1.11.91 (audit R8-2, user ruling (a)): WHICH BANK STATE IDD3N WAS
  * MEASURED IN, PER TECHNOLOGY.
@@ -244,12 +296,12 @@ inline const char* iddRowProvenance(const std::string& key) {
  * measurement noise (IDD3N 133 <= IDD2N 136 mA); on HBM3/GDDR6 it is not
  * bounded by any held document. Stated, not corrected. */
 enum class Idd3nBasis { ALL_BANKS, ONE_BANK, UNVERIFIED };
-inline Idd3nBasis idd3nBasisFor(const std::string& base_tech) {
-    if (base_tech == "DDR3" || base_tech == "DDR4" || base_tech == "DDR5")
-        return Idd3nBasis::ALL_BANKS;
-    if (base_tech == "HBM2" || base_tech == "HBM3" || base_tech == "GDDR6")
-        return Idd3nBasis::ONE_BANK;
-    return Idd3nBasis::UNVERIFIED;   // LPDDR5, and anything without a row
+inline Idd3nBasis idd3nBasisFor(const std::string& base_tech) {   // 1.11.105: from the record
+    const PartIddFacts* f = partIddFactsIfAny(base_tech);
+    if (!f) return Idd3nBasis::UNVERIFIED;
+    if (f->idd3n_bank_state == "ALL_BANKS") return Idd3nBasis::ALL_BANKS;
+    if (f->idd3n_bank_state == "ONE_BANK")  return Idd3nBasis::ONE_BANK;
+    return Idd3nBasis::UNVERIFIED;
 }
 inline const char* idd3nBasisName(Idd3nBasis b) {
     switch (b) {
@@ -332,7 +384,42 @@ inline const char* idd3nBasisName(Idd3nBasis b) {
  *
  * Returns the factor to MULTIPLY tREFI by (< 1 = more frequent refresh). */
 
+/* 1.11.105 (IDD-RECORDS step 2): the IDD row FROM THE PART RECORD (params/dram/<tech>.yaml), registered by the
+ * Ramulator wrapper as PartIddFacts. A key may carry a grade suffix ("DDR5-4800"); a key without one, or with
+ * grade 0, takes the record's default grade (its timing preset's). No record, or no row for the grade: REFUSE --
+ * nothing is substituted (the DDR4-class fallback of 1.11.57 is gone with the table). */
+inline int gradeOfKey(const std::string& key) {
+    const auto dash = key.find('-');
+    if (dash == std::string::npos) return 0;
+    try { return std::stoi(key.substr(dash + 1)); } catch (...) { return 0; }
+}
 inline IDDSpec iddTableFor(const std::string& tech) {
+    const PartIddFacts* f = partIddFactsIfAny(tech);
+    if (!f || f->rows.empty()) {
+        std::cerr << "[energy] FATAL: no part record registered for '" << baseTech(tech) << "' (its IDD row); since 1.11.105 "
+                     "params/dram/<tech>.yaml is the only source of the IDD currents, tRFC/tREFI, the component factors, the "
+                     "termination electricals and the VDDQ band. Nothing is substituted." << std::endl;
+        std::exit(2);
+    }
+    int g = gradeOfKey(tech);
+    if (g == 0) g = f->default_grade;
+    auto it = f->rows.find(g);
+    if (it == f->rows.end() && f->rows.size() == 1) it = f->rows.begin();
+    if (it == f->rows.end()) {
+        std::cerr << "[energy] FATAL: the " << baseTech(tech) << " part record has no IDD row for the " << g << " MT/s grade "
+                     "(rows: ";
+        for (const auto& kv : f->rows) std::cerr << kv.first << " ";
+        std::cerr << "); add the grade's row to the record or run the recorded grade." << std::endl;
+        std::exit(2);
+    }
+    return it->second;
+}
+
+/* ---- PROVENANCE OF THE IDD ROWS (formerly iddTableFor) ----
+ * The rows below were the code table through 1.11.104; since 1.11.105 (IDD-RECORDS step 2) the values
+ * live in params/dram/<tech>.yaml (the record is the source) and the former code lines are kept here as
+ * comments because they carry the derivations and the datasheet pages behind each value. */
+// [former table row] inline IDDSpec iddTableFor(const std::string& tech) {
     /* idd2p (last column). 1.11.56 (audit D006): this column is APPROXIMATE
      * and is the one column in the table that is not a datasheet read. The
      * DDR/LPDDR/GDDR entries are rounded IDD2P fast-exit figures for the part
@@ -526,19 +613,19 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * the spec row's (positive, the 1.11.86 one-bank baseline), so the
      * per-current failure above no longer arises. The 3200 row's IDD is
      * unsourced (stated below); it is factored like the others. */
-    if (tech == "DDR5-3200") return {1.1, 55, 34, 42,148,168,120, 195.0, 3900.0, 1, 20};   // 8 Gb, UNSOURCED IDD (stated)
-    if (tech == "DDR5-5600") {
-        IDDSpec s{1.1, 53, 49, 91,218,241,377, 295.0, 3900.0, 1, 47};   // MT60B Rev D T8, 16 Gb
-        s.iddq3n = 70; s.iddq4r = 218; s.iddq4w = 271; s.vddq = 1.1;  // Rev D T8 pp.19-20
-        s.ipp2n = 7; s.ipp3n = 8; s.vpp = 1.8;                         // Rev D T8 pp.18-19
-        return s;
-    }
-    if (tech == "DDR5" || tech == "DDR5-4800") {
-        IDDSpec s{1.1,103, 92,142,377,349,277, 295.0, 3900.0, 1, 88};   // MT60B Rev A T6, 16 Gb (default)
-        s.iddq3n = 31; s.iddq4r = 57; s.iddq4w = 198; s.vddq = 1.1;    // Rev A T6 pp.18-19
-        s.ipp2n = 6; s.ipp3n = 7; s.vpp = 1.8;                          // Rev A T6 pp.17-18
-        return s;
-    }
+// [former table row]     if (tech == "DDR5-3200") return {1.1, 55, 34, 42,148,168,120, 195.0, 3900.0, 1, 20};   // 8 Gb, UNSOURCED IDD (stated)
+// [former table row]     if (tech == "DDR5-5600") {
+// [former table row]         IDDSpec s{1.1, 53, 49, 91,218,241,377, 295.0, 3900.0, 1, 47};   // MT60B Rev D T8, 16 Gb
+// [former table row]         s.iddq3n = 70; s.iddq4r = 218; s.iddq4w = 271; s.vddq = 1.1;  // Rev D T8 pp.19-20
+// [former table row]         s.ipp2n = 7; s.ipp3n = 8; s.vpp = 1.8;                         // Rev D T8 pp.18-19
+// [former table row]         return s;
+// [former table row]     }
+// [former table row]     if (tech == "DDR5" || tech == "DDR5-4800") {
+// [former table row]         IDDSpec s{1.1,103, 92,142,377,349,277, 295.0, 3900.0, 1, 88};   // MT60B Rev A T6, 16 Gb (default)
+// [former table row]         s.iddq3n = 31; s.iddq4r = 57; s.iddq4w = 198; s.vddq = 1.1;    // Rev A T6 pp.18-19
+// [former table row]         s.ipp2n = 6; s.ipp3n = 7; s.vpp = 1.8;                          // Rev A T6 pp.17-18
+// [former table row]         return s;
+// [former table row]     }
     /* [1.11.91: SUPERSEDED by the Rev B row below -- the 362 converted a
      * Rev A IDD5R against a standby that is not Rev A's. Kept as history.]
      * 1.11.66 (round 5, F5): idd5 155 -> 362 mA. The 155 had no source.
@@ -586,11 +673,11 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * 80 x 0.430 = 59.453, IDD5B 19.584 + 423.4 x 0.83 = 371.006, IDD2P
      * 14.4 mA. IPP is left at the sheet's value (no anchor calibrates
      * IPP). */
-    if (tech == "DDR4") {
-        IDDSpec s{1.2, 48,34,43,135,123,457.4, 350.0, 7800.0, 1, 25};   // MT40A Rev B T148 p.332, x8, 2400 (MAXIMA; typical via typicalFromSpec)
-        s.ipp2n = 3; s.ipp3n = 3; s.vpp = 2.5;                          // T148 p.332 + note 22 p.334; p.1
-        return s;
-    }
+// [former table row]     if (tech == "DDR4") {
+// [former table row]         IDDSpec s{1.2, 48,34,43,135,123,457.4, 350.0, 7800.0, 1, 25};   // MT40A Rev B T148 p.332, x8, 2400 (MAXIMA; typical via typicalFromSpec)
+// [former table row]         s.ipp2n = 3; s.ipp3n = 3; s.vpp = 2.5;                          // T148 p.332 + note 22 p.334; p.1
+// [former table row]         return s;
+// [former table row]     }
     /* 1.11.91 (audit R8-9, user ruling): THE DDR3 ROW IS ONE REVISION OF
      * ONE SHEET. Micron MT41K (4Gb_DDR3L.pdf Rev. Q 12/17) Table 20 "IDD
      * Maximum Limits Die Rev. E for 1.35/1.5V Operation", p.43, x8,
@@ -618,7 +705,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * 0.829 = 186.399, IDD2P 18.112 mA (fast exit; = IDD2N_t, as on the
      * sheet). Band (comment only): per-vendor ratios, e.g. IDD3N
      * 0.234-0.532. */
-    if (tech == "DDR3")   return {1.35,55,32,38,157,125,235, 350.0, 7800.0, 1, 32};   // MT41K Rev E T20 p.43, x8, 1600 (MAXIMA; typical via typicalFromSpec)
+// [former table row]     if (tech == "DDR3")   return {1.35,55,32,38,157,125,235, 350.0, 7800.0, 1, 32};   // MT41K Rev E T20 p.43, x8, 1600 (MAXIMA; typical via typicalFromSpec)
     /* LPDDR5 row history. 1.11.63 re-based the column on an 8 Gb LPDDR5-6400
      * Micron sheet in misc/; the user ruled on 2026-09-26 that that sheet is
      * marked confidential on every page and is NOT to be cited, so its part
@@ -671,15 +758,15 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * the part's high-voltage rail): IDD2N1 1.5 / IDD3N1 2.8 mA, as-is.
      * The per-access VDD1 increments (IDD4R1 18.0, IDD4W1 16.5) and VDD2L
      * (0.2 mA in every state) stay unpriced, as before. */
-    if (tech == "LPDDR5") {
-        IDDSpec s{1.05, 53, 32.5, 40,
-                  40 + (390 - 40) * 6400.0 / 7500.0,
-                  40 + (265 - 40) * 6400.0 / 7500.0,
-                  205, 210.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA, burst x 6400/7500 (1.11.91 item 11; typical via typicalFromSpec); tREFI 3906 = LPDDR5.cpp tREFI_BASE (1.11.66 L7)
-        s.iddq3n = 0.6; s.iddq4r = 111.9; s.iddq4w = 0.6; s.vddq = 0.5;   // Y52P T18 pp.42-43, VDDQ p.1
-        s.ipp2n = 1.5; s.ipp3n = 2.8; s.vpp = 1.8;                         // Y52P T18 p.42 (VDD1), VDD1 p.1
-        return s;
-    }
+// [former table row]     if (tech == "LPDDR5") {
+// [former table row]         IDDSpec s{1.05, 53, 32.5, 40,
+// [former table row]                   40 + (390 - 40) * 6400.0 / 7500.0,
+// [former table row]                   40 + (265 - 40) * 6400.0 / 7500.0,
+// [former table row]                   205, 210.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA, burst x 6400/7500 (1.11.91 item 11; typical via typicalFromSpec); tREFI 3906 = LPDDR5.cpp tREFI_BASE (1.11.66 L7)
+// [former table row]         s.iddq3n = 0.6; s.iddq4r = 111.9; s.iddq4w = 0.6; s.vddq = 0.5;   // Y52P T18 pp.42-43, VDDQ p.1
+// [former table row]         s.ipp2n = 1.5; s.ipp3n = 2.8; s.vpp = 1.8;                         // Y52P T18 p.42 (VDD1), VDD1 p.1
+// [former table row]         return s;
+// [former table row]     }
     /* 1.11.91 (item 11): LPDDR5X, the same public Y52P sheet at its own
      * 7500 Mb/s x16 column, WITHOUT rate scaling. The row stores the
      * MAXIMA; typicalFromSpec() applies the two-generation component
@@ -706,13 +793,13 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * trfc 280 ns (Y52P Table 6 p.11, 16 Gb); trefi 3906 ns is the LPDDR5
      * row's value and must be re-checked against the preset when it is
      * written. */
-    if (tech == "LPDDR5X") {
-        IDDSpec s{1.05, 53, 32.5, 40, 390, 265, 205,
-                  280.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA (1.11.91 item 11; typical via typicalFromSpec)
-        s.iddq3n = 0.6; s.iddq4r = 111.9; s.iddq4w = 0.6; s.vddq = 0.5;
-        s.ipp2n = 1.5; s.ipp3n = 2.8; s.vpp = 1.8;
-        return s;
-    }
+// [former table row]     if (tech == "LPDDR5X") {
+// [former table row]         IDDSpec s{1.05, 53, 32.5, 40, 390, 265, 205,
+// [former table row]                   280.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA (1.11.91 item 11; typical via typicalFromSpec)
+// [former table row]         s.iddq3n = 0.6; s.iddq4r = 111.9; s.iddq4w = 0.6; s.vddq = 0.5;
+// [former table row]         s.ipp2n = 1.5; s.ipp3n = 2.8; s.vpp = 1.8;
+// [former table row]         return s;
+// [former table row]     }
     /* 1.11.91 (R8-8): GDDR6 IDDQ/IPP PLACEHOLDER. JESD250D gives the rail
      * (Table 62 printed p.151: "Pump voltage VPP 1.746 1.8 1.908 V") and
      * the condition (Table 65 note 2 printed p.153: "IPP3N test and limit
@@ -776,12 +863,12 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * conditions' ODT). Maxima kept for the record (per device): {430,310,
      * 460,1220,1470,790, IDD2P 230}; the band of each typical value is the
      * [G] per-vendor spread of its factor (comment only). */
-    if (tech == "GDDR6") {
-        IDDSpec s{1.35, 430/2.0, 310/2.0, 460/2.0, 1220/2.0,
-                  1470/2.0, 790/2.0, 120.0, 1900.0, 1, 230/2.0};   // Samsung K4Z80325BC T82 HC14, per channel, MAXIMA (typical via typicalFromSpec)
-        s.e_actpre_pJ_override = 3240.0;   // IDD7 route, per channel ACT, at the maxima (typicalFromSpec x f.act)
-        return s;
-    }
+// [former table row]     if (tech == "GDDR6") {
+// [former table row]         IDDSpec s{1.35, 430/2.0, 310/2.0, 460/2.0, 1220/2.0,
+// [former table row]                   1470/2.0, 790/2.0, 120.0, 1900.0, 1, 230/2.0};   // Samsung K4Z80325BC T82 HC14, per channel, MAXIMA (typical via typicalFromSpec)
+// [former table row]         s.e_actpre_pJ_override = 3240.0;   // IDD7 route, per channel ACT, at the maxima (typicalFromSpec x f.act)
+// [former table row]         return s;
+// [former table row]     }
     /* 1.11.91 (audit R8, user ruling: DERIVE, band, record the chain;
      * item 11: one value per current, bands in this comment only).
      * DERIVED. THE HBM3 ROW IS DERIVED FROM MEASURED HBM2 SILICON BY JEDEC
@@ -837,11 +924,11 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * VPP_VOLTAGE = 2.5. Its ~3.12 A per-stack standby level (chip means,
      * IDD2 loop) with +10..+120 mA of loop response is card load, not a
      * DRAM pump current, so it is not used for HBM2 or HBM3. */
-    if (tech == "HBM3") {
-        IDDSpec s{1.1, 89+7.2, 89, 89, 89+1443, 89+970, 89+105, 260.0, 3900.0, 16, 0.25*89};
-        s.stack_floor_mw = 783.3 * 1.2 * (1.1 / 1.2);   // 861.6 mW per stack (1.11.91 item 12)
-        return s;
-    }
+// [former table row]     if (tech == "HBM3") {
+// [former table row]         IDDSpec s{1.1, 89+7.2, 89, 89, 89+1443, 89+970, 89+105, 260.0, 3900.0, 16, 0.25*89};
+// [former table row]         s.stack_floor_mw = 783.3 * 1.2 * (1.1 / 1.2);   // 861.6 mW per stack (1.11.91 item 12)
+// [former table row]         return s;
+// [former table row]     }
     /* 1.11.66 (round 5, F7 -- user ruling R8 #10): THE HBM2 IDD ROW IS
      * MEASURED SILICON. The row this replaces (28/17/21/80/90/65 mA) traced
      * to no vendor table -- HBM2 datasheets are NDA-only and JESD235D prints
@@ -924,22 +1011,23 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * part. IDD2P 7 stays the un-sourced column.
      * IPP: n/a -- the artifact's "ipp" column is a card-power residual, not
      * a VPP current (see the HBM3 row). */
-    if (tech == "HBM2") {
-        IDDSpec s{1.2, (1125.1 - 783.3) / 8, (1087.4 - 783.3) / 8, (1067.3 - 783.3) / 8,
-                  (1067.3 - 783.3) / 8 + (3710.1 - 1067.3) / 8 * 4.0,
-                  (1067.3 - 783.3) / 8 + (2844.6 - 1067.3) / 8 * 4.0,
-                  (1087.4 - 783.3) / 8 + (1514.5 - 1087.4) / 8 * (266.7 / 260.0),
-                  260.0, 3900.0, 8,  7};
-        s.stack_floor_mw = 783.3 * 1.2;   // 939.96 mW per stack (1.11.91 item 12)
-        return s;
-    }
+// [former table row]     if (tech == "HBM2") {
+// [former table row]         IDDSpec s{1.2, (1125.1 - 783.3) / 8, (1087.4 - 783.3) / 8, (1067.3 - 783.3) / 8,
+// [former table row]                   (1067.3 - 783.3) / 8 + (3710.1 - 1067.3) / 8 * 4.0,
+// [former table row]                   (1067.3 - 783.3) / 8 + (2844.6 - 1067.3) / 8 * 4.0,
+// [former table row]                   (1087.4 - 783.3) / 8 + (1514.5 - 1087.4) / 8 * (266.7 / 260.0),
+// [former table row]                   260.0, 3900.0, 8,  7};
+// [former table row]         s.stack_floor_mw = 783.3 * 1.2;   // 939.96 mW per stack (1.11.91 item 12)
+// [former table row]         return s;
+// [former table row]     }
     /* 1.11.57 (latent D007): unknown -> DDR4 class, and it says so. This
      * governs the array activate/precharge and burst energy, the background
      * standby power and the refresh line for the whole run. */
-    announceUnknownTech("iddFor", tech,
-                        "array energy, background standby and refresh power");
-    return {1.2, 58,35,42,140,150,155, 350.0, 7800.0, 1, 25};  // unknown -> DDR4 class
-}
+// [former table row]     announceUnknownTech("iddFor", tech,
+// [former table row]                         "array energy, background standby and refresh power");
+// [former table row]     return {1.2, 58,35,42,140,150,155, 350.0, 7800.0, 1, 25};  // unknown -> DDR4 class
+// [former table row] }
+
 
 /* 1.11.65: the IDD row AT A TEMPERATURE. The datasheet table above is the
  * nominal-range (<= 85 C) row; this applies refreshTempFactor() to tREFI so
@@ -955,10 +1043,6 @@ inline IDDSpec iddTableFor(const std::string& tech) {
  * "DDR5-4800" -- which selects the IDD row; every family-level decision
  * (refresh ladder, termination scheme, devices per access, background
  * units) sees the bare technology. baseTech() strips the suffix. */
-inline std::string baseTech(const std::string& key) {
-    const auto dash = key.find('-');
-    return (dash == std::string::npos) ? key : key.substr(0, dash);
-}
 /* 1.11.101 (step 2 of the parameter-file migration): the facts of the part
  * this model prices that used to be tables here -- the refresh ladder, the
  * channel width (devices per rank, the access path) and the channel count the
@@ -1022,69 +1106,70 @@ inline int devicesPerRank(const std::string& tech, const std::string& device_wid
  * apply == false: the row is already typical (HBM2 MEASURED, HBM3 DERIVED
  * from it) or is the unknown-technology fallback; typicalFromSpec returns
  * it unchanged. */
-struct ComponentFactors {
-    bool   apply           = false;
-    double standby         = 1.0;
-    double standby_premium = 1.0;
-    double act             = 1.0;
-    double burst_rd        = 1.0;
-    double burst_wr        = 1.0;
-    double refresh         = 1.0;
-    double pd              = 1.0;
-};
-inline ComponentFactors componentFactorsFor(const std::string& key) {
-    ComponentFactors f;
-    if (key == "DDR3") {
+inline ComponentFactors componentFactorsFor(const std::string& key) {   // 1.11.105: from the record
+    const PartIddFacts* f = partIddFactsIfAny(key);
+    return f ? f->component_factors : ComponentFactors();   // no record: none (iddTableFor has already refused)
+}
+/* ---- formerly the component-factor table ----
+ * The rows below were the code table through 1.11.104; since 1.11.105 (IDD-RECORDS step 2) the values
+ * live in params/dram/<tech>.yaml (the record is the source) and the former code lines are kept here as
+ * comments because they carry the derivations and the datasheet pages behind each value. */
+// [former table row] inline ComponentFactors componentFactorsFor(const std::string& key) {
+// [former table row]     ComponentFactors f;
+// [former table row]     if (key == "DDR3") {
         /* [G] alone (DDR3L-1600, the anchor's own generation): IDD2N 0.566,
          * IDD3N 0.367 -> premium 0.367/0.566, IDD0 loop 0.43, IDD4R 0.736
          * (I/O-corrected), IDD4W 0.542, IDD5B 0.829; pd = standby. */
-        f.apply = true; f.standby = 0.566; f.standby_premium = 0.367 / 0.566;
-        f.act = 0.43; f.burst_rd = 0.736; f.burst_wr = 0.542;
-        f.refresh = 0.829; f.pd = 0.566;
-    } else if (key == "DDR4") {
+// [former table row]         f.apply = true; f.standby = 0.566; f.standby_premium = 0.367 / 0.566;
+// [former table row]         f.act = 0.43; f.burst_rd = 0.736; f.burst_wr = 0.542;
+// [former table row]         f.refresh = 0.829; f.pd = 0.566;
+// [former table row]     } else if (key == "DDR4") {
         /* [S] where it has the ratio (DDR4-2133): IDD2N 0.576, IDD3N 0.350
          * -> premium 0.350/0.576, IDD0 0.540 applied to the excess, IDD4R
          * 0.553, IDD4W 0.430; refresh 0.83 from [G] ([S] did not calibrate
          * refresh); pd = standby. */
-        f.apply = true; f.standby = 0.576; f.standby_premium = 0.350 / 0.576;
-        f.act = 0.540; f.burst_rd = 0.553; f.burst_wr = 0.430;
-        f.refresh = 0.83; f.pd = 0.576;
-    } else if (key == "DDR5" || key == "DDR5-3200" || key == "DDR5-4800" ||
-               key == "DDR5-5600" || key == "LPDDR5" || key == "LPDDR5X" ||
-               key == "GDDR6") {
+// [former table row]         f.apply = true; f.standby = 0.576; f.standby_premium = 0.350 / 0.576;
+// [former table row]         f.act = 0.540; f.burst_rd = 0.553; f.burst_wr = 0.430;
+// [former table row]         f.refresh = 0.83; f.pd = 0.576;
+// [former table row]     } else if (key == "DDR5" || key == "DDR5-3200" || key == "DDR5-4800" ||
+// [former table row]                key == "DDR5-5600" || key == "LPDDR5" || key == "LPDDR5X" ||
+// [former table row]                key == "GDDR6") {
         /* The two-generation set ([G] and [S]; assumption: guardbanded as
          * DDR3L and DDR4 were). */
-        f.apply = true; f.standby = 0.57; f.standby_premium = 0.36 / 0.57;
-        f.act = 0.5; f.burst_rd = 0.6; f.burst_wr = 0.5;
-        f.refresh = 0.83; f.pd = 0.57;
-    }
-    return f;   // HBM2, HBM3, unknown: none
-}
-struct IddqBand { bool valid = false; double lo_pj_bit = 0.0, hi_pj_bit = 0.0; };
+// [former table row]         f.apply = true; f.standby = 0.57; f.standby_premium = 0.36 / 0.57;
+// [former table row]         f.act = 0.5; f.burst_rd = 0.6; f.burst_wr = 0.5;
+// [former table row]         f.refresh = 0.83; f.pd = 0.57;
+// [former table row]     }
+// [former table row]     return f;   // HBM2, HBM3, unknown: none
+// [former table row] }
 
 /* 1.11.104 (IDD-RECORDS step 1): the DQ termination SCHEME AND ELECTRICALS
  * as a row, extracted from terminationNJ (whose formula is unchanged and
  * reads this). Step 2 reads the part record here. */
-enum class TermScheme { POD, SSTL, LVSTL, NONE };
-struct TermElectricals {
-    TermScheme scheme = TermScheme::NONE;
-    double vddq = -1.0, ron_rd = 0.0, rtt_rd = 0.0, ron_wr = 0.0, rtt_wr = 0.0;
-    bool known = false;   // false: no row (the caller announces its DDR4-class substitute)
-};
-inline TermElectricals terminationElectricalsFor(const std::string& tech) {
-    TermElectricals e; e.known = true;
+inline TermElectricals terminationElectricalsFor(const std::string& tech) {   // 1.11.105: from the record
+    const PartIddFacts* f = partIddFactsIfAny(tech);
+    if (f) return f->termination;
+    TermElectricals e; e.known = false;   // no record: the caller announces its DDR4-class substitute (terminationNJ)
+    return e;
+}
+/* ---- formerly the termination electricals table ----
+ * The rows below were the code table through 1.11.104; since 1.11.105 (IDD-RECORDS step 2) the values
+ * live in params/dram/<tech>.yaml (the record is the source) and the former code lines are kept here as
+ * comments because they carry the derivations and the datasheet pages behind each value. */
+// [former table row] inline TermElectricals terminationElectricalsFor(const std::string& tech) {
+// [former table row]     TermElectricals e; e.known = true;
     /* R7 split (read: DRAM RON + RX RTT_NOM class; write: controller RON + DRAM RTT_WR class). */
-    if      (tech=="DDR3")   { e.scheme=TermScheme::SSTL;  e.vddq=1.35; e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
+// [former table row]     if      (tech=="DDR3")   { e.scheme=TermScheme::SSTL;  e.vddq=1.35; e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
                                                                        // SSTL-135 (JESD79-3-1 T38/T41, RZQ=240);
                                                                        // trio 34/40/120 = MT41K p.32 IDD conditions
-    else if (tech=="DDR4")   { e.scheme=TermScheme::POD;   e.vddq=1.2;  e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
+// [former table row]     else if (tech=="DDR4")   { e.scheme=TermScheme::POD;   e.vddq=1.2;  e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
                                                                        // POD12 (JESD8-24); trio = MT40A p.315 IDD conds
-    else if (tech=="DDR5")   { e.scheme=TermScheme::POD;   e.vddq=1.1;  e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
+// [former table row]     else if (tech=="DDR5")   { e.scheme=TermScheme::POD;   e.vddq=1.1;  e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
                                                                        // POD topology per JESD79-5 at 1.1 V (no separate
                                                                        // JESD8-* exists for 1.1 V -- the old "POD11" tag
                                                                        // named a nonexistent standard); trio = Micron
                                                                        // DDR5 core sheet p.453 IDD conditions
-    else if (tech=="GDDR6")  { e.scheme=TermScheme::POD;   e.vddq=1.35; e.ron_rd=40; e.rtt_rd=60; e.ron_wr=40; e.rtt_wr=120; return e; }
+// [former table row]     else if (tech=="GDDR6")  { e.scheme=TermScheme::POD;   e.vddq=1.35; e.ron_rd=40; e.rtt_rd=60; e.ron_wr=40; e.rtt_wr=120; return e; }
                                                                        // POD135 (JESD8-30A.01 family is POD125; GDDR6
                                                                        // at 1.35 V per JESD250D); rd 40+60 = Samsung
                                                                        // K4Z80325BC p.166 driver/termination chars;
@@ -1095,38 +1180,22 @@ inline TermElectricals terminationElectricalsFor(const std::string& tech) {
      * for "no DC termination path" (the RZQ/1..6 ladder is a controller
      * option; users modelling ODT-on systems override via
      * power.termination_pj_per_bit). */
-    else if (tech=="LPDDR5") { e.scheme=TermScheme::LVSTL; e.vddq=0.5;  e.ron_rd=40; e.rtt_rd=0;  e.ron_wr=40; e.rtt_wr=0;   return e; }
+// [former table row]     else if (tech=="LPDDR5") { e.scheme=TermScheme::LVSTL; e.vddq=0.5;  e.ron_rd=40; e.rtt_rd=0;  e.ron_wr=40; e.rtt_wr=0;   return e; }
     /* HBM (1.11.64): the DQ link is unterminated (JESD238B.01 cl.9.1 "IOUT =
      * 0mA; Ctotal = 2.5 pF"; Song, ISCA 2025 tutorial slide 46 "ODT not
      * allowed in HBM"; Chun JSSC 2021 Table I "CMOS, un-terminated"); the
      * vertical TSV drivers are inside the measured burst currents and are
      * NOT a separate term (Cho ISSCC 2018 12.3 is a decomposition insight). */
-    else if (tech.substr(0,3)=="HBM") { e.scheme=TermScheme::NONE; return e; }
-    e.known = false;
-    return e;
-}
+// [former table row]     else if (tech.substr(0,3)=="HBM") { e.scheme=TermScheme::NONE; return e; }
+// [former table row]     e.known = false;
+// [former table row]     return e;
+// [former table row] }
+
 
 /* 1.11.104 (IDD-RECORDS step 1): the part's measured data FROM THE RECORD
  * (params/dram/<tech>.yaml), registered by the Ramulator wrapper beside the
  * code table and cross-checked against it (crossCheckPartIddFacts, below the
  * tables); step 2 (1.11.105) makes it the source. */
-struct PartIddFacts {
-    std::map<int, IDDSpec> rows;         // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
-    std::string provenance;              // MEASURED | CALIBRATED | DERIVED
-    std::string idd3n_bank_state;        // ALL_BANKS | ONE_BANK | UNVERIFIED
-    std::string basis;                   // "per device" | "per channel"
-    int channels_basis = 1;
-    ComponentFactors component_factors;
-    TermElectricals termination;
-    IddqBand iddq_band;
-    bool set = false;
-};
-inline std::map<std::string, PartIddFacts>& partIddFactsMap() { static std::map<std::string, PartIddFacts> m; return m; }
-inline void setPartIddFacts(const std::string& tech, const PartIddFacts& f) { partIddFactsMap()[baseTech(tech)] = f; }
-inline const PartIddFacts* partIddFactsIfAny(const std::string& tech) {
-    auto it = partIddFactsMap().find(baseTech(tech));
-    return (it == partIddFactsMap().end()) ? nullptr : &it->second;
-}
 /* Declared here, defined (with its derivation) before arrayReadNJ. */
 inline double oneBankActiveStandbyMA(const IDDSpec& s, int banks_per_device,
                                      Idd3nBasis basis);
@@ -1781,83 +1850,12 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
  * report prints both ends. Reads only: the figure is a DRIVER energy, and
  * on a write the DRAM's DQ receives rather than drives (the host's PHY
  * drives), so a write is charged no IDDQ from this band. */
-inline IddqBand iddqBandFor(const std::string& base_tech) {
-    IddqBand b;
-    if (base_tech == "HBM2" || base_tech == "HBM3") {
-        b.valid = true; b.lo_pj_bit = 0.19; b.hi_pj_bit = 0.27;
-    }
-    return b;
+inline IddqBand iddqBandFor(const std::string& base_tech) {   // 1.11.105: from the record
+    const PartIddFacts* f = partIddFactsIfAny(base_tech);
+    return f ? f->iddq_band : IddqBand();
 }
 
-/* 1.11.104 (IDD-RECORDS step 1): the record's measured data against the
- * code table it replaces in step 2. The record is a TRANSCRIPTION of the
- * table in this release, so any difference is a transcription error (or an
- * edited record), never a new part: it REFUSES, naming the technology, the
- * field, the record value and the table value. The table rows are compared
- * RAW (the maxima as entered), not through typicalFromSpec. Returns the
- * number of values compared; the caller prints it. */
-inline int crossCheckPartIddFacts(const std::string& tech, const PartIddFacts& f) {
-    auto closeTo = [](double a, double b) {
-        const double m = std::max(std::fabs(a), std::fabs(b));
-        return std::fabs(a - b) <= 1e-9 * (m > 0.0 ? m : 1.0);
-    };
-    int n = 0; std::vector<std::string> bad;
-    auto chk = [&](const std::string& what, double rec, double tab) {
-        ++n;
-        if (!closeTo(rec, tab)) { std::ostringstream o; o.precision(12); o << what << ": record " << rec << " vs table " << tab; bad.push_back(o.str()); }
-    };
-    auto chkS = [&](const std::string& what, const std::string& rec, const std::string& tab) {
-        ++n;
-        if (rec != tab) bad.push_back(what + ": record '" + rec + "' vs table '" + tab + "'");
-    };
-    for (const auto& kv : f.rows) {
-        const std::string key = (kv.first > 0) ? tech + "-" + std::to_string(kv.first) : tech;
-        const IDDSpec& r = kv.second;
-        const IDDSpec t = iddTableFor(key);
-        const std::string p = key + " ";
-        chk(p+"vdd", r.vdd, t.vdd); chk(p+"idd0", r.idd0, t.idd0); chk(p+"idd2n", r.idd2n, t.idd2n); chk(p+"idd3n", r.idd3n, t.idd3n);
-        chk(p+"idd4r", r.idd4r, t.idd4r); chk(p+"idd4w", r.idd4w, t.idd4w); chk(p+"idd5", r.idd5, t.idd5);
-        chk(p+"trfc_ns", r.trfc_ns, t.trfc_ns); chk(p+"trefi_ns", r.trefi_ns, t.trefi_ns);
-        chk(p+"channels_basis", r.channels, t.channels); chk(p+"idd2p", r.idd2p, t.idd2p);
-        chk(p+"iddq3n", r.iddq3n, t.iddq3n); chk(p+"iddq4r", r.iddq4r, t.iddq4r); chk(p+"iddq4w", r.iddq4w, t.iddq4w); chk(p+"vddq", r.vddq, t.vddq);
-        chk(p+"ipp2n", r.ipp2n, t.ipp2n); chk(p+"ipp3n", r.ipp3n, t.ipp3n); chk(p+"vpp", r.vpp, t.vpp);
-        chk(p+"e_actpre_pj_override", r.e_actpre_pJ_override, t.e_actpre_pJ_override);
-        chk(p+"stack_floor_mw", r.stack_floor_mw, t.stack_floor_mw);
-        const char* prov = iddRowProvenance(key);
-        chkS(p+"provenance", f.provenance, prov ? prov : "");
-        const ComponentFactors cf = componentFactorsFor(key);
-        chk(p+"component_factors (applied)", f.component_factors.apply ? 1.0 : 0.0, cf.apply ? 1.0 : 0.0);
-        if (cf.apply && f.component_factors.apply) {
-            chk(p+"component_factors.standby", f.component_factors.standby, cf.standby);
-            chk(p+"component_factors.standby_premium", f.component_factors.standby_premium, cf.standby_premium);
-            chk(p+"component_factors.act", f.component_factors.act, cf.act);
-            chk(p+"component_factors.burst_rd", f.component_factors.burst_rd, cf.burst_rd);
-            chk(p+"component_factors.burst_wr", f.component_factors.burst_wr, cf.burst_wr);
-            chk(p+"component_factors.refresh", f.component_factors.refresh, cf.refresh);
-            chk(p+"component_factors.pd", f.component_factors.pd, cf.pd);
-        }
-    }
-    chkS(tech + " idd3n_bank_state", f.idd3n_bank_state, idd3nBasisName(idd3nBasisFor(tech)));
-    const TermElectricals te = terminationElectricalsFor(tech);
-    chk(tech + " termination.scheme", static_cast<double>(static_cast<int>(f.termination.scheme)), static_cast<double>(static_cast<int>(te.scheme)));
-    if (te.known && te.scheme != TermScheme::NONE && f.termination.scheme != TermScheme::NONE) {
-        chk(tech + " termination.vddq", f.termination.vddq, te.vddq);
-        chk(tech + " termination.ron_rd", f.termination.ron_rd, te.ron_rd); chk(tech + " termination.rtt_rd", f.termination.rtt_rd, te.rtt_rd);
-        chk(tech + " termination.ron_wr", f.termination.ron_wr, te.ron_wr); chk(tech + " termination.rtt_wr", f.termination.rtt_wr, te.rtt_wr);
-    }
-    const IddqBand b = iddqBandFor(tech);
-    chk(tech + " iddq_band (present)", f.iddq_band.valid ? 1.0 : 0.0, b.valid ? 1.0 : 0.0);
-    if (b.valid && f.iddq_band.valid) { chk(tech + " iddq_band.lo", f.iddq_band.lo_pj_bit, b.lo_pj_bit); chk(tech + " iddq_band.hi", f.iddq_band.hi_pj_bit, b.hi_pj_bit); }
-    if (!bad.empty()) {
-        std::cerr << "[params] FATAL: the " << tech << " part record's measured data disagrees with the code table it is cross-checked "
-                     "against (IDD-RECORDS step 1, 1.11.104) on " << bad.size() << " value(s). In this release the record is a "
-                     "transcription of the table, so a difference is a transcription error or an edited record, not a new part; "
-                     "step 2 (1.11.105) makes the record the source:" << std::endl;
-        for (const auto& e : bad) std::cerr << "  - " << e << std::endl;
-        std::exit(2);
-    }
-    return n;
-}
+/* 1.11.104's cross-check of the record against the code table is gone with the table (1.11.105). */
 inline double iddqNJ(const std::string& tech, const std::string& device_width,
                      double access_burst_ns, bool is_write,
                      double* band_lo_nj = nullptr, double* band_hi_nj = nullptr) {

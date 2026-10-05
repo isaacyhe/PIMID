@@ -312,7 +312,7 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
     if (rec.stack_dies > 0) o << ", " << rec.stack_dies << " dies x " << rec.die_capacity_gb << " Gb";
     o << ") -- the only source (step 2 of the parameter-file migration, 1.11.101)";
     o << "; idd: " << rec.idd.provenance << " row (" << rec.idd.basis << ", " << rec.idd.idd3n_bank_state << ", "
-      << rec.idd.by_grade.size() << " grade row(s)) cross-checked against the code table (IDD-RECORDS step 1, 1.11.104)";
+      << rec.idd.by_grade.size() << " grade row(s)) the source (IDD-RECORDS step 2, 1.11.105)";
     return o.str();
 }
 
