@@ -4,12 +4,14 @@
 // 1.11.94 (user ruling 2026-09-27 "we should not bind the sim and param hard",
 // sweep-94 rulings 13a/16/22): a calibrated set is ONE record per part, all
 // fields required, provenance beside each value, selectable or replaceable as
-// a whole, never patched per field. This release is STEP 1 of the two-step
-// migration: the loader reads the record AND cross-checks every field against
-// the code tables that still hold the same values; any disagreement refuses
-// the run. Step 2 (a later release) deletes the code tables and the record
-// becomes the single source. No simulated number depends on the record in
-// step 1 -- the cross-check is the proof that file == code.
+// a whole, never patched per field. 1.11.94 was STEP 1 of the two-step
+// migration: the loader read the record AND cross-checked every field against
+// the code tables that still held the same values. 1.11.101 is STEP 2: the
+// code tables are gone and the record is the single source -- the CACTI
+// wrapper's generation, feature size and density, the Ramulator wrapper's
+// preset names, channel count and dies per stack, the energy model's refresh
+// ladder and channel width, and the die population all read the registry
+// below. A missing record, a missing field or an inconsistent record refuses.
 #ifndef PIMID_PARAMS_PART_RECORDS_H
 #define PIMID_PARAMS_PART_RECORDS_H
 
@@ -37,7 +39,8 @@ struct DramPartRecord {
     std::string density_source;
     std::string organization_preset;   // Ramulator org preset name
     std::string timing_preset;         // Ramulator timing preset name
-    int channels = 0;              // channels the preset instantiates (HBM: per stack)
+    int channels = 0;              // channels the preset instantiates (HBM: per stack; DDR5: the two 32-bit sub-channels of one DIMM channel)
+    int channel_width_bits = 0;    // 1.11.101: JEDEC data width of ONE channel; the DDR family's devices per rank = this / device width
     int stack_dies = 0;            // HBM core dies per stack (0 for non-stacked)
     double die_capacity_gb = 0.0;  // HBM core die capacity (0 for non-stacked)
     std::vector<RefreshRung> refresh_ladder;
@@ -52,10 +55,19 @@ std::string paramsDir();
  * is missing, unreadable, or lacks a required field. Never substitutes. */
 bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::string& error);
 
-/* Step-1 cross-check: every record field that the code tables also carry
- * must agree. Returns false with every disagreement listed in `errors`. */
-bool crossCheckDramPartRecord(const DramPartRecord& rec, std::vector<std::string>& errors,
-                              bool check_presets = true);
+/* 1.11.101 (step 2): the registry. checkDramPartRecords (main.cpp) loads the
+ * record of every DRAM technology a run names and registers it; every former
+ * code table reads it from here. dramPartRecord() REFUSES (exit 2) for a
+ * technology no record was registered for: nothing is substituted. */
+void registerDramPartRecord(const DramPartRecord& rec);
+const DramPartRecord& dramPartRecord(const std::string& tech);
+bool hasDramPartRecord(const std::string& tech);
+/* The record's internal consistency (there is no table left to compare
+ * with): the channel width is a power of two from 16 to 256 bits, the ladder
+ * rises in temperature with factors in (0, 1], an HBM record's die capacity
+ * equals the named preset's stack capacity over its dies (ruling 16), and the
+ * channel count equals the IDD row's basis the energy model prices with. */
+bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>& errors);
 
 /* One line stating the record in force (the only print-out; derivations stay
  * in the record file and the code comments). */
@@ -67,6 +79,13 @@ struct CacheLevelRecord { int ways = -1; int line_bytes = -1; int banks = -1; };
 struct CacheRecord {
     std::string file, record;
     int slice_mb = 2;
+    /* 1.11.101 (review-93 BIG-CACHE ruling (b)): a cache above max_slices x
+     * slice_mb is REPLICATED slices -- area, leakage and energy scale with the
+     * slice count; latency = one slice's CACTI access + the mean mesh hop
+     * count to the home slice x home_hop_cycles. Up to the bound the slice
+     * rule stays (one CACTI array of up to 32 banks). */
+    int max_slices = 32;
+    int home_hop_cycles = 2;
     CacheLevelRecord l1d, l1i, l2, l3;
     const CacheLevelRecord& level(const std::string& name) const;   // "l1d" | "l1i" | "l2" | "l3"
 };

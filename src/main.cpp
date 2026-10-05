@@ -431,7 +431,34 @@ static int g_inorder_mispredict_penalty = -1;
  * checked against CACTI's range (1..32) and refused outside it. The old rule
  * (one bank per 64 KB) asked CACTI for 512 banks on a 32 MB L3 and the
  * run fell back to a written-down 20 cycles on every system cell. */
+/* 1.11.101 (review-93 BIG-CACHE ruling (b)): a cache above the record's
+ * max_slices x slice_mb is S replicated slices (the distributed LLC of a
+ * many-core chip): one slice is the CACTI array, area/leakage/energy scale
+ * by S, and the hit latency is the slice's access plus the mean mesh hop
+ * count to the home slice x the record's cycles per hop. k1 x k2 is the
+ * mesh (k1 the largest divisor of S at or below sqrt(S)); the mean Manhattan
+ * distance between two uniformly random nodes of a k1 x k2 grid is
+ * (k1^2-1)/(3 k1) + (k2^2-1)/(3 k2). */
+struct ReplicatedLLC { int slices = 1; int slice_kb = 0; double hops = 0.0; int hop_cycles = 0; };
+static ReplicatedLLC replicatedLLCFor(int size_kb, const char* what) {
+    ReplicatedLLC r;
+    if (!g_cache_rec_loaded || size_kb <= 0) return r;
+    const int slice_kb = g_cache_rec.slice_mb * 1024;
+    if (size_kb <= g_cache_rec.max_slices * slice_kb) return r;
+    if (size_kb % slice_kb != 0) {
+        std::cerr << "\n[cache] FATAL: " << what << " (" << size_kb << " KB) is above " << g_cache_rec.max_slices
+                  << " x " << g_cache_rec.slice_mb << " MB and would be built as replicated slices, but it is not a whole number of "
+                  << g_cache_rec.slice_mb << " MB slices. Choose a multiple of the record's slice_mb." << std::endl;
+        std::exit(2);
+    }
+    r.slices = size_kb / slice_kb; r.slice_kb = slice_kb; r.hop_cycles = g_cache_rec.home_hop_cycles;
+    int k1 = 1; for (int d = 1; d * d <= r.slices; ++d) if (r.slices % d == 0) k1 = d;
+    const int k2 = r.slices / k1;
+    r.hops = (static_cast<double>(k1) * k1 - 1.0) / (3.0 * k1) + (static_cast<double>(k2) * k2 - 1.0) / (3.0 * k2);
+    return r;
+}
 static int resolveCacheBanks(int size_kb, int banks_override, const char* level, const char* what) {
+    if (replicatedLLCFor(size_kb, what).slices > 1) return 1;   // 1.11.101: one CACTI array per slice
     int banks = banks_override;
     const char* src = "the user's";
     if (banks <= 0 && g_cache_rec_loaded) {
@@ -468,8 +495,9 @@ static int getCacheLatencyCycles(int size_kb, int ways, int line_size,
      * silently priced cache TIMING at 22 nm while the power path fatally
      * rejected the same node. One authority for the node surface. */
     int cacti_tech = validateTechNodeNm(tech_node_nm, "cache-latency query");
+    const ReplicatedLLC rep = replicatedLLCFor(size_kb, what);   // 1.11.101 (BIG-CACHE (b))
     pimid::CACTIWrapper::SRAMConfig cfg;
-    cfg.capacity_bytes = static_cast<uint64_t>(size_kb) * 1024;
+    cfg.capacity_bytes = static_cast<uint64_t>(rep.slices > 1 ? rep.slice_kb : size_kb) * 1024;
     cfg.associativity = ways;
     cfg.line_size = line_size;
     cfg.banks = resolveCacheBanks(size_kb, banks_override, cacheLevelOf(what), what);   // 1.11.95: record / slice rule / user, in CACTI's range
@@ -485,6 +513,15 @@ static int getCacheLatencyCycles(int size_kb, int ways, int line_size,
         if (wrapper.isValid()) {
             double ns = wrapper.getAccessTime() * 1e9;
             int cycles = static_cast<int>(std::round(ns * frequency_mhz / 1000.0));
+            if (rep.slices > 1) {
+                const int hop = static_cast<int>(std::lround(rep.hops * rep.hop_cycles));
+                std::cout << "  [cache] " << what << " " << size_kb << " KB = " << rep.slices << " replicated-slice record ("
+                          << rep.slices << " x " << (rep.slice_kb / 1024) << " MB, BIG-CACHE (b)): slice access " << ns
+                          << " ns = " << cycles << " cycles + " << rep.hops << " mean mesh hops x " << rep.hop_cycles
+                          << " cycles to the home slice = " << (cycles + hop) << " cycles; area, leakage and energy x "
+                          << rep.slices << std::endl;
+                return std::max(1, cycles + hop);
+            }
             return std::max(1, cycles);
         }
     } catch (const std::exception& e) {
@@ -1728,7 +1765,7 @@ struct UnifiedConfig {
     // Selects both the Ramulator2 org preset and PIMID's chips/rank + BG/chip
     // so the timing model and the in-memory hierarchy stay consistent.
     std::string dram_device_width;
-    int ddr5_speed_grade = 4800;   // 1.11.66 (R8 #9): memory.dram.ddr5_speed_grade, 3200|4800|5600
+    int ddr5_speed_grade = 0;      // 1.11.66 (R8 #9): memory.dram.ddr5_speed_grade, 3200|4800|5600; 1.11.101: 0 = unset, the part record's grade
 
     // Comprehensive memory characteristics (for YAML override of external models)
     // If use_yaml_memory_params is true, user provided complete params in YAML
@@ -2585,7 +2622,7 @@ struct UnifiedConfig {
  * grade and width both select which row is transcribed. */
 static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& config) {
     w.setDeviceWidth(config.dram_device_width);
-    w.setDdr5SpeedGrade(config.ddr5_speed_grade);
+    if (config.ddr5_speed_grade > 0) w.setDdr5SpeedGrade(config.ddr5_speed_grade);   // 1.11.101: unset -> the record's grade
     w.setTemperatureK(config.temperature_k);
     w.setTerminationOverridePJPerBit(config.termination_pj_per_bit);
 }
@@ -2774,10 +2811,30 @@ static std::string canonicalMemTech(std::string t) {
  *
  * The width -> chips relation is arithmetic, not a datasheet lookup: a rank
  * presents 64 data bits, so it takes 64/width devices to build one. */
-static int chipsPerRankForDeviceWidth(const std::string& device_width) {
-    if (device_width == "x4")  return 16;
-    if (device_width == "x16") return 4;
-    return 8;                      // "x8", and the default when none is set
+static int chipsPerRank(const std::string& tech, const std::string& device_width) {
+    /* 1.11.101 (step 2): the record's channel width over the device width.
+     * DDR3/DDR4 (64-bit channel): x8 -> 8; DDR5 (32-bit sub-channel): x8 -> 4.
+     * The 64/width table that stood here counted a DDR5 sub-channel rank as a
+     * 64-bit rank; multiplied by the record's two sub-channels it doubled the
+     * DDR5 die population and background units (1.11.97-1.11.100). */
+    const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(tech);
+    /* the device width: the knob, else the width the record's organization
+     * preset names (DDR5_16Gb_x8 -> 8, LPDDR5_8Gb_x16 -> 16, GDDR6_8Gb_x16 -> 16) */
+    int w = 0;
+    if (device_width == "x4") w = 4; else if (device_width == "x8") w = 8; else if (device_width == "x16") w = 16;
+    if (w == 0) { const auto x = rec.organization_preset.rfind("_x"); w = (x == std::string::npos) ? 8 : std::atoi(rec.organization_preset.c_str() + x + 2); }
+    const int cw = rec.channel_width_bits;
+    return (cw >= w && w > 0) ? cw / w : 1;
+}
+/* 1.11.101: the DDR5 grade in force -- the knob when set, else the grade the
+ * part record's timing preset names. */
+static int effectiveDdr5Grade(const UnifiedConfig& config) {
+    if (config.ddr5_speed_grade > 0) return config.ddr5_speed_grade;
+    if (!pimid::params::hasDramPartRecord("DDR5")) return 0;
+    const std::string& n = pimid::params::dramPartRecord("DDR5").timing_preset;
+    const auto us = n.find('_'); int v = 0;
+    for (size_t i = (us == std::string::npos ? n.size() : us + 1); i < n.size() && n[i] >= '0' && n[i] <= '9'; ++i) v = v * 10 + (n[i] - '0');
+    return v;
 }
 
 /**
@@ -2829,25 +2886,28 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
     } else {
         add(config.memory_tech);
     }
-    const bool default_knobs = (config.ddr5_speed_grade == 4800) && config.dram_device_width.empty();
+    /* 1.11.101 (step 2): load, REGISTER (every former table reads the
+     * registry from here on), then validate the record's own consistency
+     * through the wrapper it now configures. A missing record, a missing
+     * field or an inconsistent record refuses; nothing is substituted. */
     for (const auto& t : techs) {
         pimid::params::DramPartRecord rec; std::string err;
         if (!pimid::params::loadDramPartRecord(t, rec, err)) {
             std::cerr << "[params] FATAL: " << err << std::endl;
             return 1;
         }
+        pimid::params::registerDramPartRecord(rec);
         std::vector<std::string> errors;
-        pimid::params::crossCheckDramPartRecord(rec, errors, default_knobs);
+        pimid::params::validateDramPartRecord(rec, errors);
         if (!errors.empty()) {
-            std::cerr << "[params] FATAL: part record " << rec.file
-                      << " disagrees with the code tables on " << errors.size()
-                      << " field(s); in this release the record and the code must be one fact:" << std::endl;
+            std::cerr << "[params] FATAL: part record " << rec.file << " is inconsistent on "
+                      << errors.size() << " point(s); the record is the only source of these values:" << std::endl;
             for (const auto& e : errors) std::cerr << "  - " << e << std::endl;
-            std::cerr << "  Fix the record (or the table it mirrors); do not run with a disagreement." << std::endl;
             return 1;
         }
         std::cout << pimid::params::describeDramPartRecord(rec);
-        if (!default_knobs) std::cout << " [preset names not compared: the run's DDR5 grade / device width select other presets]";
+        if (config.ddr5_speed_grade > 0 || !config.dram_device_width.empty())
+            std::cout << " [knobs: the run's DDR5 grade / device width select other presets of the same part]";
         std::cout << std::endl;
     }
     return 0;
@@ -4421,7 +4481,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * row now says the same thing. Measured effect: +2.7% cycles on the
      * corrected tree (3 x 3 A/B, DDR5 BANK 100k, row-miss fraction identical
      * -- the access stream is unchanged, only the mapping). */
-    else if (tech == "DDR5")     { banks_per_bg = (config.ddr5_speed_grade == 3200) ? 2 : 4;
+    else if (tech == "DDR5")     { banks_per_bg = (effectiveDdr5Grade(config) == 3200) ? 2 : 4;
                                    bg_per_chip = 8; chips_per_rank = 8; }
     else if (tech == "LPDDR5")   { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     /* 1.11.70: chips_per_rank = 2, NOT 1 -- GDDR6 IS A TWO-CHANNEL DEVICE.
@@ -4484,6 +4544,15 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     else if (tech == "SRAM" || tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM") {
         banks_per_bg = config.num_banks; bg_per_chip = 1; chips_per_rank = 1;
     }
+    /* 1.11.101 (step 2): the chips-per-rank column from the part record --
+     * the DDR family's channel width over the device width (DDR5: 32-bit
+     * sub-channel, x8 -> 4; the literal 8 that stood above was the 64-bit
+     * rank), LPDDR5's one x16 die per channel, and the channel multiplicity
+     * this column carries for GDDR6 and HBM (the record's channels). */
+    if (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" || tech == "LPDDR5")
+        chips_per_rank = chipsPerRank(tech, config.dram_device_width);
+    else if (tech == "GDDR6" || tech == "HBM2" || tech == "HBM3")
+        chips_per_rank = pimid::params::dramPartRecord(tech).channels;
 
     // Optional JEDEC device-width override (memory.dram.device_width: x4|x8|x16).
     // Sets chips/rank = 64 / width for a 64-bit DDR channel, and adjusts bank
@@ -4525,7 +4594,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         if (is_ddr || is_lpddr5 || is_gddr6) {
             // chips/rank for a 64-bit DDR-class channel -- 1.11.57 (latent
             // A013): from the shared table, which the die-count helper reads too
-            chips_per_rank = chipsPerRankForDeviceWidth(w);
+            chips_per_rank = chipsPerRank(tech, w);
 
             // Bank-group count is coupled to width in the JEDEC tables.
             if (tech == "DDR4")      bg_per_chip = (w == "x16") ? 2 : 4;
@@ -5842,31 +5911,34 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                      * for. */
             }
 
-            /* 1.10.1: fabric-mismatch warning.
-             *
-             * Overriding the fabric is correct -- a DRAM die's internal datapath
-             * is a hierarchical tree, not a flat mesh, and the detailed path
-             * goes further and emits a per-technology CUSTOM tree. What was
-             * missing is telling the user. Someone who wrote noc.topology:
-             * MESH_2D got a tree and no indication their key had been discarded.
-             *
+            /* 1.10.1: fabric-mismatch warning; 1.11.101 (sweep-94 ruling 9,
+             * R0235/R0242): a REFUSAL. A mesh, ring or crossbar requested
+             * inside a DRAM die is a design alternative, not a mistake, and
+             * the simulator honours it only once its model is defined (what
+             * the links are: width and clock from the placement tier's ladder
+             * rung, the channel-DQ bandwidth wall still at the channel
+             * boundary, router energy via McPAT as for the tree). Until that
+             * definition exists the run refuses the request with the reason;
+             * it no longer prices a tree under the requested fabric's name.
              * Compared here, after BOTH overrides (CUSTOM above, H_TREE just
-             * now), because either can be the one that fires. Only when the key
-             * was actually set -- the default is MESH_2D, and complaining about
-             * a default nobody chose would be noise. */
+             * now), because either can be the one that fires, and only when
+             * the key was actually set (the default is MESH_2D). */
             if (config.noc_topology_user_set &&
                 config.noc_topology != requested_topo) {
-                std::cerr << "[config] WARNING: noc.topology=" << requested_topo
-                          << " was requested, but " << tech << " is a DRAM device "
-                             "whose internal datapath is a hierarchical tree, not "
-                             "a flat fabric. Using " << config.noc_topology
-                          << " instead.\n"
-                          << "  The requested fabric is not what this memory has, "
-                             "so honouring it would price a network the device "
-                             "does not contain. To model a genuine logic-die mesh, "
-                             "place the elements at LOGIC_DIE; to supply your own "
-                             "fabric, set noc.topology to CUSTOM with a topology "
-                             "file.\n";
+                std::cerr << "[config] FATAL: noc.topology=" << requested_topo
+                          << " was requested inside " << tech << ", a DRAM device "
+                             "whose modelled datapath is the hierarchical tree "
+                             "(" << config.noc_topology << "). A non-tree fabric "
+                             "inside a DRAM die is honoured only once its model "
+                             "is defined (ruling 9: link width and clock from the "
+                             "placement tier's ladder rung, the channel-DQ "
+                             "bandwidth wall at the channel boundary, router "
+                             "energy via McPAT as for the tree); until then the "
+                             "request is refused, not replaced. Remove noc.topology "
+                             "to take the tree; to model a logic-die mesh, place "
+                             "the elements at LOGIC_DIE; to supply your own fabric, "
+                             "set noc.topology to CUSTOM with a topology file.\n";
+                std::exit(2);
             }
         }
     }
@@ -7117,78 +7189,41 @@ static uint32_t computeSystemNetLatency(const UnifiedConfig& config,
 static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
                                      const std::string& device_width,
                                      const UnifiedConfig& config) {
+    (void)device_width;
     ofs << "Frontend:\n  impl: GEM5\n\n";
-
-    bool useClosedRow = false;
-
-    if (tech == "DDR3") {
-        std::string w = device_width.empty() ? "x8" : device_width;
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: DDR3\n"
-            << "    org:\n      preset: DDR3_8Gb_" << w << "\n    timing:\n      preset: DDR3_1600H\n";
-    } else if (tech == "DDR5") {
-        /* 1.11.91 (audit R8-6): ONE CELL, ONE PART. This branch wrote
-         * DDR5_8Gb_<w> / DDR5_3200AN whatever the run's grade, while the
-         * energy path, the wrapper's oracles and the preset transcription
-         * price memory.dram.ddr5_speed_grade (default 4800B on the 16 Gb
-         * die): the co-sim / zsim timing model counted cycles of one part and
-         * the report priced another. The preset pair is now READ from the
-         * wrapper that owns the grade -> {org, timing} mapping
-         * (RamulatorWrapper::resolvePresetOrganization / resolvePresetTiming,
-         * which the 1.11.66 shape check binds to the device Ramulator
-         * instantiates), so there is one table and this emitter cannot drift
-         * from it. 3200 still emits DDR5_8Gb_<w> / DDR5_3200AN. */
-        std::string w = device_width.empty() ? "x8" : device_width;
-        std::string org_p = "DDR5_8Gb_" + w, tim_p = "DDR5_3200AN";
-        try {
-            pimid::RamulatorWrapper rb("", "DDR5");
-            applyDramKnobs(rb, config);
-            rb.setAnchorQuiet(true);
-            rb.initialize();
-            if (rb.getPresetOrganization().valid && rb.getPresetTiming().valid) {
-                org_p = rb.getPresetOrganization().preset_name;
-                tim_p = rb.getPresetTiming().preset_name;
-            } else {
-                std::cerr << "[config] FATAL: the DDR5 preset pair for grade "
-                          << config.ddr5_speed_grade << " could not be resolved; refusing "
-                             "to emit a timing model for a different part." << std::endl;
-                std::exit(2);
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "[config] FATAL: could not resolve the DDR5 preset pair for grade "
-                      << config.ddr5_speed_grade << " (" << e.what()
-                      << "); refusing to emit a timing model for a different part." << std::endl;
+    /* 1.11.101 (step 2): the preset pair is the one the part record names,
+     * with the run's knobs applied by the wrapper's own resolvers -- the same
+     * pair the energy path prices. The seven per-technology branches that
+     * stood here were a third copy of the preset names. */
+    std::string org_p, tim_p;
+    try {
+        pimid::RamulatorWrapper rb("", tech);
+        applyDramKnobs(rb, config);
+        rb.setAnchorQuiet(true);
+        rb.initialize();
+        if (!(rb.getPresetOrganization().valid && rb.getPresetTiming().valid)) {
+            std::cerr << "[config] FATAL: the " << tech << " preset pair could not be resolved from the part record; "
+                         "refusing to emit a timing model for a different part." << std::endl;
             std::exit(2);
         }
-        std::cout << "  [mem] NOTE: DDR5 is modelled at memory.dram.ddr5_speed_grade "
-                  << config.ddr5_speed_grade << "; the co-sim/zsim Ramulator config emits org "
-                  << org_p << ", timing " << tim_p
-                  << " (the same pair the energy path prices)" << std::endl;
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: DDR5\n"
-            << "    org:\n      preset: " << org_p << "\n    timing:\n      preset: " << tim_p << "\n"
-            << "    RFM:\n      BRC: 2\n";
-        useClosedRow = true;
-    } else if (tech == "LPDDR5") {
-        // LPDDR5 only has an x16 organization in Ramulator2.
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: LPDDR5\n"
-            << "    org:\n      preset: LPDDR5_8Gb_x16\n    timing:\n      preset: LPDDR5_6400\n";
-    } else if (tech == "GDDR6") {
-        std::string w = device_width.empty() ? "x16" : device_width;
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: GDDR6\n"
-            << "    org:\n      preset: GDDR6_8Gb_" << w << "\n    timing:\n      preset: GDDR6_2000_1350mV_double\n";
-    } else if (tech == "HBM2") {
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: HBM2\n"
-            << "    org:\n      preset: HBM2_4Gb\n    timing:\n      preset: HBM2_2.4Gbps\n";
-    } else if (tech == "HBM3") {
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: HBM3\n"
-            << "    org:\n      preset: HBM3_4Gb\n    timing:\n      preset: HBM3_6.4Gbps\n";
-    } else {
-        // Default: DDR4
-        std::string w = device_width.empty() ? "x8" : device_width;
-        ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: DDR4\n"
-            << "    org:\n      preset: DDR4_8Gb_" << w << "\n    timing:\n      preset: DDR4_2400R\n";
-        useClosedRow = true;
+        org_p = rb.getPresetOrganization().preset_name;
+        tim_p = rb.getPresetTiming().preset_name;
+        if (tech == "DDR5")
+            std::cout << "  [mem] NOTE: DDR5 is modelled at speed grade " << rb.effectiveDdr5GradeMTs()
+                      << (config.ddr5_speed_grade > 0 ? " (memory.dram.ddr5_speed_grade)" : " (the part record's)")
+                      << "; the co-sim/zsim Ramulator config emits org " << org_p << ", timing " << tim_p
+                      << " (the same pair the energy path prices)" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[config] FATAL: could not resolve the " << tech << " preset pair (" << e.what()
+                  << "); refusing to emit a timing model for a different part." << std::endl;
+        std::exit(2);
     }
-
+    /* the controller's row policy per technology: closed-row for the DDR4/DDR5
+     * DIMM parts (plus DDR5's RFM), open-row for the others (unchanged) */
+    const bool useClosedRow = (tech == "DDR4" || tech == "DDR5");
+    ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: " << tech << "\n"
+        << "    org:\n      preset: " << org_p << "\n    timing:\n      preset: " << tim_p << "\n";
+    if (tech == "DDR5") ofs << "    RFM:\n      BRC: 2\n";
     ofs << "  Controller:\n    impl: Generic\n"
         << "    Scheduler:\n      impl: FRFCFS\n"
         << "    RefreshManager:\n      impl: AllBank\n";
@@ -7199,11 +7234,6 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
     }
     ofs << "  AddrMapper:\n    impl: RoBaRaCoCh\n";
 }
-
-
-/**
- * @brief Auto-generate a Ramulator2 YAML config file based on memory technology.
- */
 static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string& tech) {
     std::string tmpCfg = "/tmp/pimid_ramulator_" + std::to_string(getpid()) + ".yaml";
     std::ostringstream buf;
@@ -7571,8 +7601,8 @@ struct DRAMGenClass { const char* cls; int cacti_table_nm; };
 /* 1.11.94: the per-class feature size moved beside the generation table it
  * indexes (CACTIWrapper::generationFeatureNm); the step-1 part-record
  * cross-check compares the record's F against it. */
-static inline double dramGenFeatureNm(const std::string& cls) {
-    return pimid::CACTIWrapper::generationFeatureNm(cls);
+static inline double dramGenFeatureNm(const std::string& tech) {   // 1.11.101: by technology (the record's F)
+    return pimid::CACTIWrapper::generationFeatureNm(tech);
 }
 
 static DRAMGenClass getDRAMGenClass(const std::string& tech) {
@@ -9222,7 +9252,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             if (config.subarray_pitch_factor == 1.0) {
                 if (on_dram_silicon) {
                     DRAMGenClass g3 = getDRAMGenClass(config.memory_tech);
-                    double F3 = dramGenFeatureNm(g3.cls);
+                    double F3 = dramGenFeatureNm(config.memory_tech);
                     mcfg.subarray_pitch_factor = 1.25;
                     std::cout << "  [tech] SUBARRAY pitch: derived default "
                                  "1.25 = the FIMDRAM silicon bound (ISSCC "
@@ -9240,11 +9270,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                      * fixed by the package; commodity dies 40-65%). */
                     {
                         const double dens_mb = pimid::CACTIWrapper::vendorDieDensity(config.memory_tech);
-                        if (F3 > 0.0 && dens_mb > 0.0) {
-                            const double eff = 6.0 * F3 * F3 * dens_mb / 128000.0;
+                        const int cf = pimid::params::dramPartRecord(config.memory_tech).cell_factor_f2;   // 1.11.101: the record's cell factor
+                        if (F3 > 0.0 && dens_mb > 0.0 && cf > 0) {
+                            const double eff = cf * F3 * F3 * dens_mb / 128000.0;
                             std::cout << "; implied array efficiency "
                                       << std::fixed << std::setprecision(0) << (eff * 100.0)
-                                      << std::defaultfloat << "% = 6F^2 x measured die density";
+                                      << std::defaultfloat << "% = " << cf << "F^2 x measured die density";
                         }
                     }
                     std::cout << ". Settable: power.subarray_pitch_factor." << std::endl;
@@ -9383,6 +9414,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         if (config.enable_l2) { mcfg.l2_banks = resolveCacheBanks(config.l2_size_kb, config.l2_banks, "l2", "L2");
             mcfg.l2_latency_cycles = getCacheLatencyCycles(config.l2_size_kb, config.l2_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns", config.l2_params.latency_ns, config.l2_banks); }
         if (config.enable_l3) { mcfg.l3_banks = resolveCacheBanks(config.l3_size_kb, config.l3_banks, "l3", "L3");
+            { const ReplicatedLLC rl = replicatedLLCFor(config.l3_size_kb, "L3"); if (rl.slices > 1) { mcfg.l3_size_bytes = static_cast<uint64_t>(rl.slice_kb) * 1024ULL; mcfg.l3_replicated_slices = rl.slices; } }   // 1.11.101 (BIG-CACHE (b)): McPAT prices one slice, the wrapper scales by the count
             mcfg.l3_latency_cycles = getCacheLatencyCycles(config.l3_size_kb, config.l3_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns", config.l3_params.latency_ns, config.l3_banks); }
     }
     /* 1.11.93 (F1): the L2s the device-scope zsim config BUILDS
@@ -9827,6 +9859,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             if (hl2_kb > 0) { host_cfg.l2_banks = resolveCacheBanks(hl2_kb, host_node ? host_node->l2_banks : -1, "l2", "host L2");
                 host_cfg.l2_latency_cycles = getCacheLatencyCycles(hl2_kb, host_cfg.l2_ways, config.cache_line_size, host_clk_mhz, htech, "host L2", "system.hosts[].cache.l2_latency_ns", host_node ? host_node->l2_latency_ns : -1.0, host_node ? host_node->l2_banks : -1); }
             if (hl3_kb > 0) { host_cfg.l3_banks = resolveCacheBanks(hl3_kb, host_node ? host_node->l3_banks : -1, "l3", "host L3");
+            { const ReplicatedLLC rl = replicatedLLCFor(hl3_kb, "L3"); if (rl.slices > 1) { host_cfg.l3_size_bytes = static_cast<uint64_t>(rl.slice_kb) * 1024ULL; host_cfg.l3_replicated_slices = rl.slices; } }   // 1.11.101 (BIG-CACHE (b)): McPAT prices one slice, the wrapper scales by the count
                 host_cfg.l3_latency_cycles = getCacheLatencyCycles(hl3_kb, host_cfg.l3_ways, config.cache_line_size, host_clk_mhz, htech, "host L3", "system.hosts[].cache.l3_latency_ns", host_node ? host_node->l3_latency_ns : -1.0, host_node ? host_node->l3_banks : -1); }
         }
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per host
@@ -11193,7 +11226,7 @@ static int memorySystemDieCount(const std::string& tech,
         /* 1.11.57 (latent A013): the x4/x8/x16 -> chips/rank table used to be
          * written out here as well as in the hierarchy derivation. One table
          * now, shared. */
-        return chipsPerRankForDeviceWidth(device_width)
+        return chipsPerRank(tech, device_width)
              * ranks_per_channel * channels;
     }
     /* 1.11.57 (latent A013): READ THE CHANNEL COUNT.
@@ -11212,8 +11245,15 @@ static int memorySystemDieCount(const std::string& tech,
      * HBM3 stack at least 8, whatever a channel census says. Above that floor
      * the argument decides. Two channels land on one core die in both
      * generations (the pseudo-channel pair). */
-    if (tech == "HBM2") return std::max(4, channels / 2);
-    if (tech == "HBM3") return std::max(8, channels / 2);
+    /* 1.11.101 (step 2, ruling 16): the record's dies per stack, times the
+     * stacks the channel count makes (channels / the record's channels per
+     * stack); the max(floor, channels/2) rule that stood here is gone. */
+    if (tech == "HBM2" || tech == "HBM3") {
+        const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(tech);
+        const int per_stack = rec.channels > 0 ? rec.channels : 1;
+        const int stacks = (channels > per_stack) ? channels / per_stack : 1;
+        return rec.stack_dies * stacks;
+    }
     if (tech == "LPDDR5" || tech == "GDDR6") return channels;
     return 1;
 }
@@ -11847,7 +11887,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                               << ": SUBARRAY pitch derived default 1.25 "
                                  "(band [1.25, ~4]; FIMDRAM low end), gen "
                               << g3.cls << " 2F ~= "
-                              << (2.0 * dramGenFeatureNm(g3.cls)) << " nm."
+                              << (2.0 * dramGenFeatureNm(node.memory_tech)) << " nm."
                               << std::endl;
                 }
             } else {
@@ -12007,6 +12047,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             if (node.enable_l2 && node.l2_kb > 0) { mcfg.l2_banks = resolveCacheBanks(node.l2_kb, node.l2_banks, "l2", (node.name + " L2").c_str());
                 mcfg.l2_latency_cycles = getCacheLatencyCycles(node.l2_kb, node.l2_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L2").c_str(), "cache.l2_latency_ns", node.l2_latency_ns, node.l2_banks); }
             if (node.enable_l3 && node.l3_kb > 0) { mcfg.l3_banks = resolveCacheBanks(node.l3_kb, node.l3_banks, "l3", (node.name + " L3").c_str());
+            { const ReplicatedLLC rl = replicatedLLCFor(node.l3_kb, "L3"); if (rl.slices > 1) { mcfg.l3_size_bytes = static_cast<uint64_t>(rl.slice_kb) * 1024ULL; mcfg.l3_replicated_slices = rl.slices; } }   // 1.11.101 (BIG-CACHE (b)): McPAT prices one slice, the wrapper scales by the count
                 mcfg.l3_latency_cycles = getCacheLatencyCycles(node.l3_kb, node.l3_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L3").c_str(), "cache.l3_latency_ns", node.l3_latency_ns, node.l3_banks); }
         }
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per core of

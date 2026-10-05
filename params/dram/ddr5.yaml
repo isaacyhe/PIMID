@@ -1,7 +1,8 @@
 # PIMID shipped part record -- DDR5
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
-# Step 1 of the parameter-file migration: the loader cross-checks each field against
-# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
+# values; the code tables are gone. The loader validates the record's own consistency and REFUSES
+# a missing or inconsistent field.
 # To model another part: copy this file, change every field with its own source,
 # and point PIMID_PARAMS at the directory holding it. Partial records are refused.
 technology: DDR5
@@ -15,5 +16,6 @@ density_source: "Micron D1a (1-alpha) 8 Gb DDR5, 8 Gb / 25.41 mm^2 = 0.315 Gb/mm
 organization_preset: "DDR5_16Gb_x8"   # Ramulator org preset the run instantiates (default knobs)
 timing_preset: "DDR5_4800B"         # Ramulator timing preset (default knobs)
 channels: 2                   # 1.11.97 (review R1): the 64-bit DIMM channel is two independent 32-bit sub-channels (JESD79-5B 2.1); the preset instantiates both
+channel_width_bits: 32   # 1.11.101 (step 2): JESD79-5B 2.1: each of the two independent sub-channels is 32 bits wide; one sub-channel rank = 32 / device width devices (the DIMM rank spans both: 64 / width)
 refresh_ladder:                    # JEDEC JESD79-5: 2x refresh above 85 C (the model applies one step)
   - { above_c: 85.0, factor: 0.5 }

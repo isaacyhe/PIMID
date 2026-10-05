@@ -14,8 +14,19 @@
 #   since Sandy Bridge, which CACTI's 32-bank limit accommodates up to 64 MB);
 #   L1/L2 at <= 2 MB are one bank. An integer here fixes the count instead.
 #   Every count is checked against CACTI's range (1..32) and refused outside it.
+# max_slices / home_hop_cycles (1.11.101, review-93 BIG-CACHE ruling (b), user 2026-10-03):
+#   a cache above max_slices x slice_mb (64 MB) is the distributed LLC of a
+#   many-core chip: S = size / slice_mb identical slices, each ONE CACTI array
+#   (2 MB, 1 bank), area/leakage/energy x S, latency = the slice's access +
+#   the mean Manhattan hop count on a k x k mesh (k = sqrt(S); for S = k1 x k2,
+#   (k1^2-1)/(3 k1) + (k2^2-1)/(3 k2)) x home_hop_cycles. home_hop_cycles = 2 is
+#   one router pipeline stage + one link, the Garnet defaults the detailed NoC
+#   model runs (noc.router_latency 1, noc.link_latency 1), at the core clock.
+#   Up to the bound the slice rule stays. No corpus cell needs this today.
 record: pimid cache hierarchy default
 slice_mb: 2
+max_slices: 32
+home_hop_cycles: 2
 levels:
   l1d: { ways: 8,  line_bytes: 64, banks: slice }
   l1i: { ways: 4,  line_bytes: 64, banks: slice }

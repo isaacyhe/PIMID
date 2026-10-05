@@ -42,6 +42,11 @@
 // resistor-network dissipation VDDQ^2/Rtt over the bit period, per I/O standard.
 // ---------------------------------------------------------------------------
 #include <string>
+#include <map>
+#include <vector>
+#include <cstdlib>
+#include <iostream>
+#include <algorithm>
 #include <set>
 #include <cstdlib>
 #include <iostream>
@@ -90,11 +95,6 @@ inline void announceUnknownTech(const char* fn, const std::string& tech,
  * memory system draw standby current for one population while bursting from
  * another. There is a THIRD copy, memorySystemDieCount() in src/main.cpp,
  * which owns the AREA basis; it is outside this file and still separate. */
-inline int devicesPerRank(const std::string& device_width) {
-    if (device_width == "x4")  return 16;
-    if (device_width == "x16") return 4;
-    return 8;                       // x8, the default 64-bit rank
-}
 
 struct IDDSpec {
     double vdd;                                    // V
@@ -329,14 +329,6 @@ inline const char* idd3nBasisName(Idd3nBasis b) {
  *      consumer says so.
  *
  * Returns the factor to MULTIPLY tREFI by (< 1 = more frequent refresh). */
-inline double refreshTempFactor(const std::string& tech, int temperature_k) {
-    const double t_c = temperature_k - 273.15;
-    const bool hbm = (tech.substr(0, 3) == "HBM");
-    if (t_c <= 85.0) return 1.0;                 // nominal, every family
-    if (!hbm)        return 0.5;                 // DDR/LPDDR/GDDR: one step
-    if (t_c <= 95.0) return 0.5;                 // HBM 85-95 C  (PG276, UG-20031 010)
-    return 0.25;                                 // HBM > 95 C   (DS923 n.16, UG-20031 110)
-}
 
 inline IDDSpec iddTableFor(const std::string& tech) {
     /* idd2p (last column). 1.11.56 (audit D006): this column is APPROXIMATE
@@ -965,6 +957,52 @@ inline std::string baseTech(const std::string& key) {
     const auto dash = key.find('-');
     return (dash == std::string::npos) ? key : key.substr(0, dash);
 }
+/* 1.11.101 (step 2 of the parameter-file migration): the facts of the part
+ * this model prices that used to be tables here -- the refresh ladder, the
+ * channel width (devices per rank, the access path) and the channel count the
+ * IDD row is checked against. The Ramulator wrapper registers them from the
+ * part record (params/dram/<tech>.yaml) before any energy query; a query for a
+ * technology with no registered part refuses, it does not guess. */
+struct PartFacts {
+    int channel_width_bits = 0;
+    int default_device_width_bits = 8;   // the width the record's organization preset names (x8 / x16)
+    int channels = 0;
+    std::vector<std::pair<double, double>> refresh_ladder;   // (above_c, tREFI factor), rising
+};
+inline std::map<std::string, PartFacts>& partFactsMap() { static std::map<std::string, PartFacts> m; return m; }
+inline void setPartFacts(const std::string& tech, const PartFacts& f) { partFactsMap()[baseTech(tech)] = f; }
+inline const PartFacts& partFacts(const std::string& tech) {
+    auto it = partFactsMap().find(baseTech(tech));
+    if (it == partFactsMap().end()) {
+        std::cerr << "[energy] FATAL: no part record registered for '" << baseTech(tech)
+                  << "' (refresh ladder, channel width); the Ramulator wrapper registers it from "
+                     "params/dram/<tech>.yaml before any energy query. Nothing is substituted." << std::endl;
+        std::exit(2);
+    }
+    return it->second;
+}
+/* The factor tREFI is MULTIPLIED by at this temperature (< 1 = more frequent
+ * refresh): the record's ladder, rung by rung (JEDEC temperature-compensated
+ * refresh; the last rung is held above its threshold). */
+inline double refreshTempFactor(const std::string& tech, int temperature_k) {
+    const double t_c = temperature_k - 273.15;
+    double f = 1.0;
+    for (const auto& rung : partFacts(tech).refresh_ladder)
+        if (t_c > rung.first) f = rung.second;
+    return f;
+}
+/* Devices per rank of the DDR family: the record's channel width over the
+ * device width (DDR3/DDR4 64-bit channel: x8 -> 8; DDR5 32-bit sub-channel:
+ * x8 -> 4). The 64/width table that stood here counted a DDR5 sub-channel
+ * rank as a 64-bit rank and, multiplied by the two sub-channels, doubled the
+ * DDR5 die population (1.11.97-1.11.100). */
+inline int devicesPerRank(const std::string& tech, const std::string& device_width) {
+    const PartFacts& f = partFacts(tech);
+    int w = f.default_device_width_bits;
+    if (device_width == "x4") w = 4; else if (device_width == "x8") w = 8; else if (device_width == "x16") w = 16;
+    const int cw = f.channel_width_bits;
+    return (cw > 0 && w > 0) ? std::max(1, cw / w) : 8;
+}
 /* 1.11.91 (item 11, user ruling 2026-09-26 19:30): TYPICAL CURRENTS BY
  * COMPONENT FACTORS. The table above stores datasheet MAXIMA (HBM2/HBM3:
  * measured silicon); the model prices typical currents. The factors act on
@@ -1180,25 +1218,26 @@ inline AccessPath accessPathFor(const std::string& tech,
     int w = 8;
     if (device_width == "x4") w = 4;
     else if (device_width == "x16") w = 16;
+    /* 1.11.101 (step 2): the path width is the record's channel width; the
+     * unit is the device (DDR family) or the channel (the others). */
+    const int cw = (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" || tech == "LPDDR5" ||
+                    tech == "GDDR6" || tech == "HBM2" || tech == "HBM3") ? partFacts(tech).channel_width_bits : 0;
     if (tech == "DDR3" || tech == "DDR4") {
-        p.path_bits = 64; p.unit_bits = w;
-        p.path_name = "64-bit channel";
+        p.path_bits = cw; p.unit_bits = w;
+        p.path_name = std::to_string(cw) + "-bit channel";
     } else if (tech == "DDR5") {
-        p.path_bits = 32; p.unit_bits = w;
-        p.path_name = "32-bit sub-channel";
+        p.path_bits = cw; p.unit_bits = w;
+        p.path_name = std::to_string(cw) + "-bit sub-channel";
     } else if (tech == "LPDDR5") {
-        p.path_bits = 16; p.unit_bits = 16;
-        p.path_name = "16-bit channel"; p.unit_name = "16-bit die";
+        p.path_bits = cw; p.unit_bits = cw;
+        p.path_name = std::to_string(cw) + "-bit channel"; p.unit_name = std::to_string(cw) + "-bit die";
     } else if (tech == "GDDR6") {
-        p.path_bits = 16; p.unit_bits = 16;   // 1.11.91 item 11 (R8-5): per channel
-        p.path_name = "16-bit channel";
-        p.unit_name = "16-bit channel (IDD basis)";
-    } else if (tech == "HBM2") {
-        p.path_bits = 128; p.unit_bits = 128;
-        p.path_name = "128-bit channel (IDD basis)"; p.unit_name = "128-bit channel";
-    } else if (tech == "HBM3") {
-        p.path_bits = 64; p.unit_bits = 64;
-        p.path_name = "64-bit channel (IDD basis)"; p.unit_name = "64-bit channel";
+        p.path_bits = cw; p.unit_bits = cw;   // 1.11.91 item 11 (R8-5): per channel
+        p.path_name = std::to_string(cw) + "-bit channel";
+        p.unit_name = std::to_string(cw) + "-bit channel (IDD basis)";
+    } else if (tech == "HBM2" || tech == "HBM3") {
+        p.path_bits = cw; p.unit_bits = cw;
+        p.path_name = std::to_string(cw) + "-bit channel (IDD basis)"; p.unit_name = std::to_string(cw) + "-bit channel";
     } else {
         /* 1.11.57 (latent D007): an unrecognised string gets the DDR4 class
          * and says so, as before. */
@@ -1914,7 +1953,7 @@ inline int backgroundUnits(const std::string& tech,
     if (tech == "DDR3" || tech == "DDR4" || tech == "DDR5") {
         /* 1.11.57 (latent D075): was a second copy of the x4/x8/x16 table
          * that devicesPerAccess() also carried. One table now. */
-        return devicesPerRank(device_width) * ranks_per_channel * channels;
+        return devicesPerRank(tech, device_width) * ranks_per_channel * channels;   // 1.11.101: from the record's channel width
     }
     /* 1.11.57 (latent D007): one IDD-bearing unit per channel is correct for
      * LPDDR5 (an x16 die serves its own channel) and GDDR6 (point to point),

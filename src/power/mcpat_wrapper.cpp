@@ -1789,6 +1789,13 @@ void McPATWrapper::extractResults() {
     // L3
     component_power_[ComponentType::L3_CACHE] = extractComponent(
         mcpat_processor_->l3, "L3", componentIsDescribed(ComponentType::L3_CACHE));
+    if (config_.l3_replicated_slices > 1) {   // 1.11.101 (BIG-CACHE (b)): S identical slices, one priced above
+        const double S = static_cast<double>(config_.l3_replicated_slices);
+        PowerMetrics& pm = component_power_[ComponentType::L3_CACHE];
+        pm.subthreshold_leakage *= S; pm.gate_leakage *= S; pm.power_gated_leakage *= S;
+        pm.total_leakage = pm.subthreshold_leakage + pm.gate_leakage;
+        pm.total_power = pm.total_dynamic + pm.total_leakage;   // the dynamic term is the run's accesses, each on one slice
+    }
 
     // Memory Controller
     component_power_[ComponentType::MEMORY_CONTROLLER] = extractComponent(
@@ -1857,6 +1864,11 @@ void McPATWrapper::extractResults() {
     mcpat_mc_area_mm2_ = mcpat_processor_->mcs.area.get_area() * 1e-6;
     mcpat_pcie_area_mm2_ = mcpat_processor_->pcies.area.get_area() * 1e-6;  // 1.11.29
     mcpat_total_area_mm2_ = mcpat_processor_->area.get_area() * 1e-6;
+    if (config_.l3_replicated_slices > 1) {   // 1.11.101 (BIG-CACHE (b)): the other S-1 slices
+        const double extra = mcpat_l3_area_mm2_ * (config_.l3_replicated_slices - 1);
+        mcpat_l3_area_mm2_ += extra;
+        mcpat_total_area_mm2_ += extra;
+    }
 
     /* 1.11.12: the DRAM-periphery family MOVED INTO McPAT (processor.cc,
      * driven by the dram_periph_* XML params). What used to be a
@@ -2026,7 +2038,7 @@ void McPATWrapper::extractResults() {
     }
     if (componentIsDescribed(ComponentType::L3_CACHE)) {
         peak_dyn += peakDynamic(mcpat_processor_->l3, "L3");
-        peak_leak += peakLeakage(mcpat_processor_->l3, "L3");
+        peak_leak += peakLeakage(mcpat_processor_->l3, "L3") * (config_.l3_replicated_slices > 1 ? config_.l3_replicated_slices : 1);   // 1.11.101
     }
     if (componentIsDescribed(ComponentType::MEMORY_CONTROLLER)) {
         peak_dyn += peakDynamic(mcpat_processor_->mcs, "memory controller");

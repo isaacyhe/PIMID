@@ -1,7 +1,8 @@
 # PIMID shipped part record -- GDDR6
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
-# Step 1 of the parameter-file migration: the loader cross-checks each field against
-# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
+# values; the code tables are gone. The loader validates the record's own consistency and REFUSES
+# a missing or inconsistent field.
 # To model another part: copy this file, change every field with its own source,
 # and point PIMID_PARAMS at the directory holding it. Partial records are refused.
 technology: GDDR6
@@ -15,5 +16,6 @@ density_source: "Samsung K4Z80165BC D1z 8 Gb GDDR6, 8 Gb / 37.03 mm^2 whole die 
 organization_preset: "GDDR6_8Gb_x16"   # Ramulator org preset the run instantiates (default knobs)
 timing_preset: "GDDR6_2000_1350mV_double"         # Ramulator timing preset (default knobs)
 channels: 2                   # channels the preset instantiates
+channel_width_bits: 16   # 1.11.101 (step 2): JESD250D 4.1: two independent 16-bit channels per device
 refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }

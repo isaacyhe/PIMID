@@ -424,6 +424,7 @@ public:
         int cache_line_bytes = 64;
         int l1i_banks = 1, l1d_banks = 1, l2_banks = 8, l3_banks = 16;
         int l1i_latency_cycles = 3, l1d_latency_cycles = 3, l2_latency_cycles = 23, l3_latency_cycles = 23;
+        int l3_replicated_slices = 1;   // 1.11.101 (BIG-CACHE (b)): S identical L3 slices, one priced (l3_size_bytes is the slice), area/leakage x S
 
         // Memory parameters
         int num_memory_controllers;

@@ -1,7 +1,8 @@
 # PIMID shipped part record -- HBM3
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
-# Step 1 of the parameter-file migration: the loader cross-checks each field against
-# the code tables and REFUSES on mismatch (file != code is a defect, not a choice).
+# Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
+# values; the code tables are gone. The loader validates the record's own consistency and REFUSES
+# a missing or inconsistent field.
 # To model another part: copy this file, change every field with its own source,
 # and point PIMID_PARAMS at the directory holding it. Partial records are refused.
 technology: HBM3
@@ -15,6 +16,7 @@ density_source: "SK hynix HBM3 D1z 16 Gb core die, 0.16 Gb/mm^2 (SemiAnalysis; T
 organization_preset: "HBM3_4Gb"   # Ramulator org preset the run instantiates (default knobs)
 timing_preset: "HBM3_6.4Gbps"         # Ramulator timing preset (default knobs)
 channels: 16                   # channels the preset instantiates per stack
+channel_width_bits: 64   # 1.11.101 (step 2): JESD238B 2.x: sixteen 64-bit channels per stack, each two 32-bit pseudo-channels
 stack_dies: 8                 # core dies per stack = max(JEDEC floor, channels/2) today (ruling 16: becomes the record's fact)
 die_capacity_gb: 8.0           # = preset MB/channel x channels x 8 / dies (NOTE ruling 16: the density part is a 16 Gb die; the user decides the record's part)
 refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-95 C, 4x above 95 C (Xilinx PG276, Intel UG-20031; JESD238 refresh modes)

@@ -1,6 +1,7 @@
 #include "power/cacti_io_wrapper.h"   // 1.11.40 (N8): harnessed IO model
 #include <iostream>
 #include "memory/ramulator_wrapper.h"
+#include "params/part_records.h"   // 1.11.101 (step 2): presets, channels, dies and the energy model's part facts come from the record
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -59,7 +60,7 @@ double      RamulatorWrapper::s_run_termination_pj_per_bit_ = -1.0;
 
 void RamulatorWrapper::setRunWideKnobs(const std::string& device_width, int ddr5_grade_mtps,
                                        int temperature_k, double termination_pj_per_bit) {
-    if (ddr5_grade_mtps != 3200 && ddr5_grade_mtps != 4800 && ddr5_grade_mtps != 5600) {
+    if (ddr5_grade_mtps != 0 && ddr5_grade_mtps != 3200 && ddr5_grade_mtps != 4800 && ddr5_grade_mtps != 5600) {   // 1.11.101: 0 = unset, the record's grade
         // Same refusal as setDdr5SpeedGrade(): the grade names a part this tree holds.
         RamulatorWrapper probe("", "DDR5");
         probe.setDdr5SpeedGrade(ddr5_grade_mtps);   // prints the FATAL and exits 2
@@ -247,207 +248,165 @@ pimid::PresetTiming makePresetTiming(const char* name, const char* src,
  * Only the five columns PIMID consumes are carried (rate, nBL, nCL, nRCD, nRP,
  * nRAS) plus the row's own tCK_ps for the consistency check. Transcribing the
  * whole row would be transcribing the timing model, which is not PIMID's job. */
+/* 1.11.101 (step 2 of the parameter-file migration): the preset NAMES come
+ * from the part record (organization_preset / timing_preset); the knobs
+ * (memory.dram.device_width, memory.dram.ddr5_speed_grade) replace one
+ * component of the record's name -- the width suffix, the DDR5 grade bin and
+ * the capacity that bin implies -- and say so. The rows below are the
+ * transcriptions of Ramulator's impl presets (the tool's own tables, shape-
+ * checked against the device Ramulator instantiates every run); a name with
+ * no row refuses, nothing is substituted. */
+static int gradeOfTimingName(const std::string& n) {
+    // "DDR5_4800B" -> 4800; 0 when the name carries no grade
+    const auto us = n.find('_');
+    if (us == std::string::npos) return 0;
+    int v = 0; size_t i = us + 1;
+    while (i < n.size() && n[i] >= '0' && n[i] <= '9') { v = v * 10 + (n[i] - '0'); ++i; }
+    return v;
+}
+static int widthOfOrgName(const std::string& n, int fallback) {
+    const auto x = n.rfind("_x");
+    if (x == std::string::npos) return fallback;
+    return std::atoi(n.c_str() + x + 2);
+}
+static int capacityGbOfOrgName(const std::string& n, int fallback) {
+    const auto gb = n.find("Gb");
+    if (gb == std::string::npos) return fallback;
+    size_t i = gb; while (i > 0 && n[i-1] >= '0' && n[i-1] <= '9') --i;
+    return (i < gb) ? std::atoi(n.substr(i, gb - i).c_str()) : fallback;
+}
+int RamulatorWrapper::effectiveDdr5GradeMTs() const {
+    if (ddr5_grade_mtps_ > 0) return ddr5_grade_mtps_;
+    std::string dt = dram_type_;
+    std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
+    if (dt != "DDR5") return 0;
+    return gradeOfTimingName(pimid::params::dramPartRecord("DDR5").timing_preset);
+}
+
 void RamulatorWrapper::resolvePresetTiming() {
     std::string dt = dram_type_;
     std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
-
-    if (dt == "DDR3") {
-        // DDR3.cpp timing_presets, row "DDR3_1600H": nBL 4, nCL/nRCD/nRP 9,
-        // nRAS 28, tCK 1250 ps, tCK = 2E6/rate. (The 1600K row -- nCL 11 -- is
-        // the bin PIMID's getTRCD()/getTCAS()/getTRP() used to transcribe; it
-        // is NOT this run's.)
-        preset_timing_ = makePresetTiming(
-            "DDR3_1600H", "external/ramulator/src/dram/impl/DDR3.cpp timing_presets",
-            1600, 4, 9, 9, 9, 28, 1250, 2, /*nWTR*/ 6);      // DDR3_1600H nWTR 6
-    } else if (dt == "DDR4") {
-        // DDR4.cpp, row "DDR4_2400R": nBL 4, nCL/nRCD/nRP 16, nRAS 39, tCK 833,
-        // tCK = 2E6/rate.
-        preset_timing_ = makePresetTiming(
-            "DDR4_2400R", "external/ramulator/src/dram/impl/DDR4.cpp timing_presets",
-            2400, 4, 16, 16, 16, 39, 833, 2, /*nWTR*/ 9);     // DDR4_2400R nWTRL 9
-    } else if (dt == "DDR5") {
-        /* 1.11.66 (R8 #9): three grades, one transcription each, mirroring
-         * DDR5.cpp's rows. nWTR is the Max(16nCK, 10ns) term of the tCCD_L_WTR
-         * composite at each tCK (T334/T335/T336): 16 / 24 / 28. */
-        if (ddr5_grade_mtps_ == 5600) {
-            preset_timing_ = makePresetTiming(
-                "DDR5_5600B", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
-                5600, 8, 46, 45, 45, 90, 357, 2, /*nWTR*/ 28);
-        } else if (ddr5_grade_mtps_ == 4800) {
-            preset_timing_ = makePresetTiming(
-                "DDR5_4800B", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
-                4800, 8, 40, 39, 39, 77, 416, 2, /*nWTR*/ 24);
-        } else {
-            // DDR5.cpp, row "DDR5_3200AN": nBL 8, nCL/nRCD/nRP 24, nRAS 52, tCK 625
-            preset_timing_ = makePresetTiming(
-                "DDR5_3200AN", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
-                3200, 8, 24, 24, 24, 52, 625, 2, /*nWTR*/ 16);
-        }
-    } else if (dt == "LPDDR5") {
-        /* LPDDR5.cpp, row "LPDDR5_6400": nBL16 2, nCL 17, nRCD 15, nRPab 17,
-         * nRPpb 15, nRAS 34, tCK 1250 ps, tCK = 8E6/rate. nRP is taken from the
-         * PER-BANK column, which is the one PIMID's per-bank hierarchy means.
-         * 1.11.63 (calibration): nCL 20 -> 17 tracking the preset -- the old
-         * 20 was RL Set 0 of the NEXT frequency bin (JESD209-5C Table 225
-         * p.261, row 1011B covers 6000 < rate <= 6400 and gives RL = 17). */
-        preset_timing_ = makePresetTiming(
-            "LPDDR5_6400", "external/ramulator/src/dram/impl/LPDDR5.cpp timing_presets",
-            6400, 2, 17, 15, 15, 34, 1250, 8, /*nWTR*/ 10);   // LPDDR5_6400 nWTRL 10
-    } else if (dt == "GDDR6") {
-        /* GDDR6.cpp, row "GDDR6_2000_1350mV_double": nBL 2, nCL 24, nRCDRD 26,
-         * nRP 26, nRAS 53, tCK 571 ps, tCK = 8E6/rate (rate 14000). 1.11.66:
-         * GDDR6 is 8 bits/pin per CK (WCK 4x CK, DDR on WCK); the 1.11.63
-         * transcription at 1000 ps / 2E6 mirrored a wrong derivation -- see
-         * the row comment in GDDR6.cpp for the proof. nRCD is the READ
-         * column; the write column (16) is a separate constraint PIMID does
-         * not carry. */
-        preset_timing_ = makePresetTiming(
-            "GDDR6_2000_1350mV_double",
-            "external/ramulator/src/dram/impl/GDDR6.cpp timing_presets",
-            14000, 2, 24, 26, 26, 53, 571, 8, /*nWTR*/ 11);   // GDDR6_2000_1350mV_double nWTRL 11 (1.11.66: 8 bits/pin/CK)
-    } else if (dt == "HBM2") {
-        /* HBM2.cpp, row "HBM2_2.4Gbps": nBL 2, nCL/nRCDRD 20, nRP 18, nRAS
-         * 40, tCK 833 ps, tCK = 2E6/rate. 1.11.63 (JESD235D): nBL 4 -> 2 (PC
-         * mode BL4 = 4 UI = 2 CK; Tbl 68 p.109 tCCDS = 2 nCK proves the
-         * occupancy) and nRP 20 -> 18 (tRP 15 ns, Tbl 58 p.102 -- the old 20
-         * encoded a 16 ns claim that appears nowhere in the standard). */
-        preset_timing_ = makePresetTiming(
-            "HBM2_2.4Gbps", "external/ramulator/src/dram/impl/HBM2.cpp timing_presets",
-            2400, 2, 20, 20, 18, 40, 833, 2, /*nWTR*/ 10);    // HBM2_2.4Gbps nWTRL 10
-    } else if (dt == "HBM3") {
-        /* HBM3.cpp, row "HBM3_6.4Gbps", AS RE-DERIVED INTO THE CK DOMAIN: nBL
-         * 2, nCL/nRCDRD/nRP 26, nRAS 53, tCK 625 ps, and tCK = 4E6/rate
-         * because JESD238B.01 Table 92 (printed p.160) gives fCK = rate/4 in
-         * all nine bins -- the old 2E6/rate form was returning tWDQS, half a
-         * CK. The ns values are unchanged by that correction (26 x 0.625 =
-         * 16.25 against the previous 52 x 0.312 = 16.22); what moved is the
-         * DOMAIN the cycle counts are expressed in, which is why nothing here
-         * may assume either the counts or the divisor and both are read from
-         * the row that is actually in the tree. */
-        preset_timing_ = makePresetTiming(
-            "HBM3_6.4Gbps", "external/ramulator/src/dram/impl/HBM3.cpp timing_presets",
-            6400, 2, 26, 26, 26, 53, 625, 4, /*nWTR*/ 13);    // HBM3_6.4Gbps nWTRL 13 (CK domain)
+    const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(dt);
+    std::string name = rec.timing_preset;
+    if (dt == "DDR5") {
+        const int g = effectiveDdr5GradeMTs();
+        ddr5_grade_mtps_ = g;   // the grade every downstream key (energy row, org capacity) reads
+        name = (g == 5600) ? "DDR5_5600B" : (g == 4800) ? "DDR5_4800B" : (g == 3200) ? "DDR5_3200AN" : rec.timing_preset;
+    }
+    if (name == "DDR3_1600H") {
+        // DDR3.cpp timing_presets, row "DDR3_1600H": nBL 4, nCL/nRCD/nRP 9, nRAS 28, tCK 1250 ps, tCK = 2E6/rate.
+        preset_timing_ = makePresetTiming("DDR3_1600H", "external/ramulator/src/dram/impl/DDR3.cpp timing_presets",
+                                          1600, 4, 9, 9, 9, 28, 1250, 2, /*nWTR*/ 6);
+    } else if (name == "DDR4_2400R") {
+        // DDR4.cpp, row "DDR4_2400R": nBL 4, nCL/nRCD/nRP 16, nRAS 39, tCK 833, tCK = 2E6/rate.
+        preset_timing_ = makePresetTiming("DDR4_2400R", "external/ramulator/src/dram/impl/DDR4.cpp timing_presets",
+                                          2400, 4, 16, 16, 16, 39, 833, 2, /*nWTR*/ 9);
+    } else if (name == "DDR5_5600B") {
+        /* 1.11.66 (R8 #9): three DDR5 grades, one transcription each, mirroring DDR5.cpp's rows.
+         * nWTR is the Max(16nCK, 10ns) term of the tCCD_L_WTR composite at each tCK: 16 / 24 / 28. */
+        preset_timing_ = makePresetTiming("DDR5_5600B", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
+                                          5600, 8, 46, 45, 45, 90, 357, 2, /*nWTR*/ 28);
+    } else if (name == "DDR5_4800B") {
+        preset_timing_ = makePresetTiming("DDR5_4800B", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
+                                          4800, 8, 40, 39, 39, 77, 416, 2, /*nWTR*/ 24);
+    } else if (name == "DDR5_3200AN") {
+        // DDR5.cpp, row "DDR5_3200AN": nBL 8, nCL/nRCD/nRP 24, nRAS 52, tCK 625
+        preset_timing_ = makePresetTiming("DDR5_3200AN", "external/ramulator/src/dram/impl/DDR5.cpp timing_presets",
+                                          3200, 8, 24, 24, 24, 52, 625, 2, /*nWTR*/ 16);
+    } else if (name == "LPDDR5_6400") {
+        /* LPDDR5.cpp, row "LPDDR5_6400": nBL16 2, nCL 17, nRCD 15, nRPab 17, nRPpb 15, nRAS 34, tCK 1250 ps,
+         * tCK = 8E6/rate; nRP from the PER-BANK column (1.11.63: nCL 17 = RL Set 0 of the 6400 bin, JESD209-5C Tbl 225). */
+        preset_timing_ = makePresetTiming("LPDDR5_6400", "external/ramulator/src/dram/impl/LPDDR5.cpp timing_presets",
+                                          6400, 2, 17, 15, 15, 34, 1250, 8, /*nWTR*/ 10);
+    } else if (name == "GDDR6_2000_1350mV_double") {
+        /* GDDR6.cpp, row "GDDR6_2000_1350mV_double": nBL 2, nCL 24, nRCDRD 26, nRP 26, nRAS 53, tCK 571 ps,
+         * tCK = 8E6/rate (rate 14000; 1.11.66: 8 bits/pin per CK, WCK 4x CK, DDR on WCK). */
+        preset_timing_ = makePresetTiming("GDDR6_2000_1350mV_double", "external/ramulator/src/dram/impl/GDDR6.cpp timing_presets",
+                                          14000, 2, 24, 26, 26, 53, 571, 8, /*nWTR*/ 11);
+    } else if (name == "HBM2_2.4Gbps") {
+        /* HBM2.cpp, row "HBM2_2.4Gbps": nBL 2, nCL/nRCDRD 20, nRP 18, nRAS 40, tCK 833 ps, tCK = 2E6/rate
+         * (1.11.63, JESD235D: BL4 = 2 CK; tRP 15 ns = 18 CK). */
+        preset_timing_ = makePresetTiming("HBM2_2.4Gbps", "external/ramulator/src/dram/impl/HBM2.cpp timing_presets",
+                                          2400, 2, 20, 20, 18, 40, 833, 2, /*nWTR*/ 10);
+    } else if (name == "HBM3_6.4Gbps") {
+        /* HBM3.cpp, row "HBM3_6.4Gbps" in the CK domain: nBL 2, nCL/nRCDRD/nRP 26, nRAS 53, tCK 625 ps,
+         * tCK = 4E6/rate (JESD238B.01 Table 92: fCK = rate/4 in every bin). */
+        preset_timing_ = makePresetTiming("HBM3_6.4Gbps", "external/ramulator/src/dram/impl/HBM3.cpp timing_presets",
+                                          6400, 2, 26, 26, 26, 53, 625, 4, /*nWTR*/ 13);
     } else {
-        // Unknown technology: the DDR4 substitution, announced in initialize().
-        preset_timing_ = makePresetTiming(
-            "DDR4_2400R",
-            "external/ramulator/src/dram/impl/DDR4.cpp timing_presets (substituted)",
-            2400, 4, 16, 16, 16, 39, 833, 2, /*nWTR*/ 9);     // DDR4_2400R nWTRL 9
+        std::cerr << "[mem] FATAL: the part record for " << dt << " names timing preset '" << name
+                  << "', which this build has no transcription of (DDR3_1600H, DDR4_2400R, DDR5_3200AN/4800B/5600B, "
+                     "LPDDR5_6400, GDDR6_2000_1350mV_double, HBM2_2.4Gbps, HBM3_6.4Gbps). Add the row beside "
+                     "Ramulator's or name a transcribed preset; nothing is substituted." << std::endl;
+        std::exit(2);
     }
 }
 
 void RamulatorWrapper::resolvePresetOrganization() {
     std::string dt = dram_type_;
     std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
-    const int w = presetWidthBits(device_width_, 0);
-
-    if (dt == "DDR3") {
-        /* DDR3.cpp org_presets, 8 Gb rows: {density, DQ, {Ch, Ra, Ba, Ro, Co}}
-         *   x4  {1,1,8, 1<<16, 1<<12}   x8 {1,1,8, 1<<16, 1<<11}   x16 {1,1,8, 1<<16, 1<<10}
-         * 1.11.66 (R5 A1): this transcription was written in 1.11.61 against
-         * the PRE-1.11.63 rows (131072 x 1024 for x8) and was not updated
-         * when 1.11.63 corrected DDR3_8Gb_x8 to 65536 x 2048. The density
-         * product is identical, so makePresetOrg's check passed, and every
-         * DDR3 run built 256 subarrays/bank (should be 128) with a 1 KB page
-         * where the part has 2 KB. Rows are 65536 at every 8 Gb width;
-         * columns scale 4096/2048/1024 with x4/x8/x16. The shape check in
-         * createRamulatorInstance() now refuses this class of drift. */
-        const int    ww   = (w > 0) ? w : 8;
+    const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(dt);
+    const int wk = presetWidthBits(device_width_, 0);                      // the width knob, 0 = unset
+    const int ww = (wk > 0) ? wk : widthOfOrgName(rec.organization_preset, 8);
+    int cap_gb = capacityGbOfOrgName(rec.organization_preset, 8);
+    if (dt == "DDR5") {
+        /* the 4800 and 5600 grades are the 16 Gb Micron MT60B die (both addenda are 16 Gb parts); 3200 keeps
+         * the 8 Gb part (1.11.66 R8 #9). The grade knob therefore moves the capacity component too. */
+        const int g = effectiveDdr5GradeMTs();
+        if (g == 3200) cap_gb = 8; else if (g == 4800 || g == 5600) cap_gb = 16;
+    }
+    const std::string name = (dt == "HBM2" || dt == "HBM3") ? rec.organization_preset
+                           : (dt == "LPDDR5") ? "LPDDR5_8Gb_x16"
+                           : dt + "_" + std::to_string(cap_gb) + "Gb_x" + std::to_string(ww);
+    if (dt == "DDR3" && cap_gb == 8 && (ww == 4 || ww == 8 || ww == 16)) {
         const uint64_t ro = 65536ULL;
         const uint64_t co = (ww == 4) ? 4096ULL : (ww == 16) ? 1024ULL : 2048ULL;
-        preset_org_ = makePresetOrg(
-            (std::string("DDR3_8Gb_x") + std::to_string(ww)).c_str(),
-            "external/ramulator/src/dram/impl/DDR3.cpp org_presets",
-            1024, ww, 1, 8, ro, co, false,
-            /* JESD79-3D 2.11: 8 banks, NO bank groups */ 1, 8);
-    } else if (dt == "DDR4") {
-        // DDR4.cpp:19-21  8 Gb rows: x4 {4 BG, 4 Ba, 1<<17, 1<<10},
-        // x8 {4, 4, 1<<16, 1<<10}, x16 {2, 4, 1<<16, 1<<10}
-        const int ww = (w > 0) ? w : 8;
+        preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/DDR3.cpp org_presets",
+                                    1024, ww, 1, 8, ro, co, false,
+                                    /* JESD79-3D 2.11: 8 banks, NO bank groups */ 1, 8);
+    } else if (dt == "DDR4" && cap_gb == 8 && (ww == 4 || ww == 8 || ww == 16)) {
         const int banks = (ww == 16) ? 8 : 16;
         const uint64_t ro = (ww == 4) ? 131072ULL : 65536ULL;
-        preset_org_ = makePresetOrg(
-            (std::string("DDR4_8Gb_x") + std::to_string(ww)).c_str(),
-            "external/ramulator/src/dram/impl/DDR4.cpp org_presets",
-            1024, ww, 1, banks, ro, 1024, false,
-            /* JESD79-4: x4/x8 4 BG x 4; x16 2 BG x 4 */ (ww == 16) ? 2 : 4, 4);
-    } else if (dt == "DDR5") {
-        /* DDR5.cpp org_presets. 8 Gb rows: x4 {8 BG, 2 Ba, 1<<16, 1<<11},
-         * x8 {8, 2, 1<<16, 1<<10}, x16 {4, 2, 1<<16, 1<<10}. 16 Gb rows: x4
-         * {8, 4, 1<<16, 1<<11}, x8 {8, 4, 1<<16, 1<<10}, x16 {4, 4, 1<<16,
-         * 1<<10} -- JESD79-5D Tables 4/5 p.7: the step from 8 to 16 Gb is
-         * BA0 -> BA0~BA1 (2 -> 4 banks per group), rows unchanged.
-         * 1.11.66 (R8 #9): the 4800 and 5600 grades are the 16 Gb Micron
-         * MT60B die (both addenda are 16 Gb parts), so the org follows the
-         * grade; 3200 keeps the 8 Gb part. The shape check binds each to the
-         * device Ramulator instantiates. */
-        const int ww = (w > 0) ? w : 8;
-        const bool g16 = (ddr5_grade_mtps_ != 3200);
+        preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/DDR4.cpp org_presets",
+                                    1024, ww, 1, banks, ro, 1024, false,
+                                    (ww == 16) ? 2 : 4, 4);
+    } else if (dt == "DDR5" && (cap_gb == 8 || cap_gb == 16) && (ww == 4 || ww == 8 || ww == 16)) {
+        /* JESD79-5D Tables 4/5 p.7: x4/x8 8 BG, x16 4 BG; 16 Gb 4 banks/BG, 8 Gb 2 (the step from 8 to 16 Gb is
+         * BA0 -> BA0~BA1, rows unchanged). */
+        const bool g16 = (cap_gb == 16);
         const int bpg = g16 ? 4 : 2;
         const int banks = ((ww == 16) ? 4 : 8) * bpg;
         const uint64_t co = (ww == 4) ? 2048ULL : 1024ULL;
-        preset_org_ = makePresetOrg(
-            (std::string(g16 ? "DDR5_16Gb_x" : "DDR5_8Gb_x") + std::to_string(ww)).c_str(),
-            "external/ramulator/src/dram/impl/DDR5.cpp org_presets",
-            g16 ? 2048 : 1024, ww, 1, banks, 65536, co, false,
-            /* JESD79-5D Tbl 4: x4/x8 8 BG, x16 4 BG; 16 Gb 4 banks/BG, 8 Gb 2 */
-            (ww == 16) ? 4 : 8, bpg);
+        preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/DDR5.cpp org_presets",
+                                    g16 ? 2048 : 1024, ww, 1, banks, 65536, co, false,
+                                    (ww == 16) ? 4 : 8, bpg);
     } else if (dt == "LPDDR5") {
-        // LPDDR5.cpp:21-27 -- x16 only. {1, 1, 4 BG, 4 Ba, 1<<15, 1<<10}
-        preset_org_ = makePresetOrg(
-            "LPDDR5_8Gb_x16",
-            "external/ramulator/src/dram/impl/LPDDR5.cpp org_presets",
-            1024, 16, 1, 16, 32768, 1024, false,
-            /* JESD209-5C Tbl 6 BG mode: 4 BG x 4 */ 4, 4);
-    } else if (dt == "GDDR6") {
-        /* GDDR6.cpp:21-28. The density product INCLUDES the channel level
-         * ({2, 4 BG, 4 Ba, Ro, Co}), so 8 Gb is the whole two-channel DEVICE
-         * and the 32 banks are the device's, 16 per channel. */
-        const int ww = (w > 0) ? w : 16;
+        preset_org_ = makePresetOrg("LPDDR5_8Gb_x16", "external/ramulator/src/dram/impl/LPDDR5.cpp org_presets",
+                                    1024, 16, 1, 16, 32768, 1024, false,
+                                    4, 4);
+    } else if (dt == "GDDR6" && cap_gb == 8 && (ww == 8 || ww == 16)) {
+        /* GDDR6.cpp org_presets ({2, 4 BG, 4 Ba, Ro, Co}): 8 Gb is the whole two-channel DEVICE and the 32 banks
+         * are the device's, 16 per channel. */
         const uint64_t co = (ww == 8) ? 2048ULL : 1024ULL;
-        preset_org_ = makePresetOrg(
-            (std::string("GDDR6_8Gb_x") + std::to_string(ww)).c_str(),
-            "external/ramulator/src/dram/impl/GDDR6.cpp org_presets",
-            1024, ww, 2, 32, 16384, co, false,
-            /* JESD250D Tbl 19, PER CHANNEL: 4 BG x 4 (x2 channels = 32) */ 4, 4);
-    } else if (dt == "HBM2") {
-        /* HBM2.cpp org_presets. density is PER CHANNEL ("channel density" in
-         * the file's own error text). No device width applies.
-         * 1.11.64 (JESD235D Tbl 4 p.6): {1 Ch, 2 Pch, 4 Bg, 4 Ba} = 32 banks
-         * per channel (16 per pseudo-channel) over 16384 rows, tracking the
-         * org-preset correction in HBM2.cpp -- the old transcription (16
-         * banks/channel, 32768 rows) mirrored the pre-1.11.64 preset, which
-         * carried half the banks and twice the rows at this density. This
-         * value feeds getPresetRowsPerBank(), which is the SOLE authority for
-         * subarrays_per_bank, the in-memory tree shape, the tree-coverage
-         * assertion and pages_per_unit (ruling R4) -- so it must track the
-         * preset or those four quantities describe a different part. */
-        preset_org_ = makePresetOrg(
-            "HBM2_4Gb",
-            "external/ramulator/src/dram/impl/HBM2.cpp org_presets",
-            512, 128, 1, 32, 16384, 64, true,
-            /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
-    } else if (dt == "HBM3") {
-        // HBM3.cpp:21-26. Per-channel density; 2 Pch x 4 Bg x 4 Ba = 32 banks.
-        preset_org_ = makePresetOrg(
-            "HBM3_4Gb",
-            "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
-            512, 128, 1, 32, 16384, 64, true,
-            /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
+        preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/GDDR6.cpp org_presets",
+                                    1024, ww, 2, 32, 16384, co, false,
+                                    4, 4);
+    } else if (dt == "HBM2" && name == "HBM2_4Gb") {
+        /* 1.11.64 (JESD235D Tbl 4 p.6): {1 Ch, 2 Pch, 4 Bg, 4 Ba} = 32 banks per channel over 16384 rows. */
+        preset_org_ = makePresetOrg("HBM2_4Gb", "external/ramulator/src/dram/impl/HBM2.cpp org_presets",
+                                    512, 128, 1, 32, 16384, 64, true,
+                                    /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
+    } else if (dt == "HBM3" && name == "HBM3_4Gb") {
+        preset_org_ = makePresetOrg("HBM3_4Gb", "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
+                                    512, 128, 1, 32, 16384, 64, true,
+                                    /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
     } else {
-        /* Unknown technology: the same DDR4 substitution the architecture
-         * object makes a few lines below, which announces itself there. */
-        const int ww = (w > 0) ? w : 8;
-        const int banks = (ww == 16) ? 8 : 16;
-        const uint64_t ro = (ww == 4) ? 131072ULL : 65536ULL;
-        preset_org_ = makePresetOrg(
-            (std::string("DDR4_8Gb_x") + std::to_string(ww)).c_str(),
-            "external/ramulator/src/dram/impl/DDR4.cpp org_presets (substituted)",
-            1024, ww, 1, banks, ro, 1024, false,
-            (ww == 16) ? 2 : 4, 4);
+        std::cerr << "[mem] FATAL: the part record for " << dt << " (with the run's knobs) names organization preset '"
+                  << name << "', which this build has no transcription of. Add the row beside Ramulator's or name a "
+                     "transcribed preset; nothing is substituted." << std::endl;
+        std::exit(2);
     }
 }
-
 uint64_t RamulatorWrapper::getPresetDeviceCapacityMB() const {
     if (!preset_org_.valid) return 0;
     if (!preset_org_.per_channel_density) return preset_org_.density_mb;
@@ -457,9 +416,15 @@ uint64_t RamulatorWrapper::getPresetDeviceCapacityMB() const {
 }
 
 int RamulatorWrapper::getPresetDiesPerStack() const {
+    /* 1.11.101 (step 2, ruling 16): the record's stack_dies (0 for a part
+     * that is not stacked); the channels/2 rule that stood here is gone. */
     if (!preset_org_.per_channel_density) return 0;
-    const int nch = (channels_ > 0) ? static_cast<int>(channels_) : 1;
-    return (nch >= 2) ? nch / 2 : 1;   // two channels per core die
+    std::string dt = dram_type_;
+    std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
+    return pimid::params::dramPartRecord(dt).stack_dies;
+}
+int RamulatorWrapper::getIddRowChannels() const {
+    return Ramulator::pimid_energy::iddFor(energyKey()).channels;   // 1.11.101: the IDD row's basis, checked against the record
 }
 
 /* 1.11.61 (ruling R1): THE DDR-FAMILY DENSITY FOLLOWS THE PRESET, INCLUDING
@@ -909,6 +874,19 @@ void RamulatorWrapper::derivePresetCapacityAndBandwidth() {
 }
 
 void RamulatorWrapper::initialize() {
+    {   /* 1.11.101 (step 2): the energy model's facts of this part -- refresh
+         * ladder, channel width, channel count -- from the record, before any
+         * energy query. */
+        std::string dt = dram_type_;
+        std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
+        const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(dt);
+        Ramulator::pimid_energy::PartFacts f;
+        f.channel_width_bits = rec.channel_width_bits;
+        f.default_device_width_bits = widthOfOrgName(rec.organization_preset, 8);
+        f.channels = rec.channels;
+        for (const auto& g : rec.refresh_ladder) f.refresh_ladder.emplace_back(g.above_c, g.factor);
+        Ramulator::pimid_energy::setPartFacts(dt, f);
+    }
     parseConfiguration();
 
     /* 1.11.61 (rulings R1/R2/R4): resolve the simulated preset's organisation
@@ -1255,6 +1233,7 @@ std::string RamulatorWrapper::energyKey() const {
 }
 
 void RamulatorWrapper::setDdr5SpeedGrade(int mtps) {
+    if (mtps == 0) { ddr5_grade_mtps_ = 0; return; }   // 1.11.101: unset -> the part record's grade (effectiveDdr5GradeMTs)
     if (mtps != 3200 && mtps != 4800 && mtps != 5600) {
         std::cerr << "[mem] FATAL: memory.dram.ddr5_speed_grade = " << mtps
                   << " is not one of 3200 / 4800 / 5600 -- the three grades for "
@@ -1490,82 +1469,17 @@ void RamulatorWrapper::parseConfiguration() {
          * does -- the x8 literal made an x4/x16 run transcribe one part and
          * simulate another (caught the first time the check ran on an x4
          * DDR5 config). */
-        const std::string wsuf = std::string("_x") + std::to_string(presetWidthBits(device_width_, 8));
-        if (dt == "DDR3") {
-            config_yaml_ = makeConfig("DDR3", ("DDR3_8Gb" + wsuf).c_str(), "DDR3_1600H");
-            channels_ = 1; ranks_per_channel_ = 1;
-            sayPresetRate("DDR3", "DDR3_1600H", 1600);
-        } else if (dt == "DDR5") {
-            {   // 1.11.66 (R8 #9): grade selects the preset pair
-                const char* tp = (ddr5_grade_mtps_ == 5600) ? "DDR5_5600B"
-                               : (ddr5_grade_mtps_ == 4800) ? "DDR5_4800B" : "DDR5_3200AN";
-                const std::string op = std::string(ddr5_grade_mtps_ == 3200 ? "DDR5_8Gb" : "DDR5_16Gb") + wsuf;
-                config_yaml_ = makeConfig("DDR5", op.c_str(), tp);
-            }
-            channels_ = 2; ranks_per_channel_ = 1;   /* 1.11.97 (review R1, user (b)): the DIMM channel is two independent 32-bit sub-channels (JESD79-5B 2.1); the preset simulates BOTH, as the part record names them */
-            sayPresetRate("DDR5", preset_timing_.preset_name.c_str(), ddr5_grade_mtps_);
-        } else if (dt == "LPDDR5") {
-            config_yaml_ = makeConfig("LPDDR5", "LPDDR5_8Gb_x16", "LPDDR5_6400");
-            channels_ = 1; ranks_per_channel_ = 1;
-            sayPresetRate("LPDDR5", "LPDDR5_6400", 6400);
-        } else if (dt == "GDDR6") {
-            /* 1.11.60 (audit round 4, C007): the preset named here did not
-             * exist. `grep GDDR6_2000_1.35V_x16 external/ramulator/` returns
-             * nothing; the four GDDR6 timing presets this fork ships are
-             * GDDR6_2000_{1350mV,1250mV}_{double,quad} (GDDR6.cpp:34-37), and
-             * Ramulator2 throws ConfigurationError on an unrecognised name.
-             * It survived because this generated YAML is never handed to
-             * Ramulator on this path -- initialize() builds an instance only
-             * when config_path_ is non-empty, and then config_yaml_ holds the
-             * FILE's contents -- so the string reached nothing but the note
-             * below. Named to match what the run really writes for the timing
-             * model (main.cpp's GDDR6 emission), so that if this path is ever
-             * made live it selects a preset that exists. */
-            config_yaml_ = makeConfig("GDDR6", ("GDDR6_8Gb_x" + std::to_string(presetWidthBits(device_width_, 16))).c_str(), "GDDR6_2000_1350mV_double");   // 1.11.94 (H27): the width suffix the DDR families got in 1.11.66; the unset default is x16 (the transcription above and the 2026-08-22 GDDR6 16-DQ ruling), not the DDR families' x8
-            /* GDDR6 is a dual-channel part: two 16-bit fully independent
-             * channels per device (JESD250D sec 2.2 p.3, Table 19 p.18,
-             * Table 80 p.177). channels_ = 1 here used to contradict that spec
-             * and made the analytical model treat the whole device's rate as
-             * one channel's.
-             *
-             * 1.11.61 (ruling R3): the arithmetic in this note used to read
-             * "32 GB/s/channel x 2 = 64 GB/s", which is the 16 Gb/s bin's
-             * figure and not this tree's -- and dramChannelWidthBits() was
-             * returning the 32-bit DEVICE width beside it, so derivedBwMBs()
-             * booked the channel dimension twice and produced 112000 MB/s. On
-             * this tree's own 14000 MT/s basis (CactiIOWrapper::dramRateMTs)
-             * the arithmetic is 16 bits x 14000 MT/s / 8 = 28 GB/s per
-             * channel, x 2 channels = 56 GB/s for the device. */
-            channels_ = 2; ranks_per_channel_ = 1;
-            /* 1.11.60 (audit round 4, C007): both facts in this note were
-             * wrong. The preset named did not exist in the tree, and the
-             * 16000 MT/s attributed to it is not a rate any GDDR6 preset
-             * carries -- all four ship rate = 2000 in Ramulator2's timing
-             * table, the column GDDR6.cpp:33 documents as "rate (in MT/s)"
-             * and from which GDDR6.cpp:259 derives tCK as 1e6/(rate/2) ps. So
-             * a reader reconciling PIMID's 14000 MT/s energy basis against the
-             * timing model was handed a third number under a name that
-             * matched nothing. The note now carries the preset the run writes
-             * and the rate that preset holds; the claim it exists to make --
-             * upstream ships no GDDR6 timing bin at the modelled rate -- is
-             * unchanged and still true, since 2000 is the only rate on offer. */
-            /* 1.11.66: the rate column now carries the pin rate (14000), so
-             * the divergence this NOTE existed to announce -- energy at
-             * 14000, timing at "2000" -- is CLOSED: both describe the same
-             * 14 Gb/s part. The call stays so that a future preset swap that
-             * re-opens the gap is announced again; at 14000 it is silent. */
-            sayPresetRate("GDDR6", "GDDR6_2000_1350mV_double", 14000);
-        } else if (dt == "HBM2") {
-            config_yaml_ = makeConfig("HBM2", "HBM2_4Gb", "HBM2_2.4Gbps");
-            channels_ = 8; ranks_per_channel_ = 1;
-        } else if (dt == "HBM3") {
-            config_yaml_ = makeConfig("HBM3", "HBM3_4Gb", "HBM3_6.4Gbps");
-            channels_ = 16; ranks_per_channel_ = 1;
-        } else {
-            // Default: DDR4-2400
-            config_yaml_ = makeConfig("DDR4", ("DDR4_8Gb" + wsuf).c_str(), "DDR4_2400R");
-            channels_ = 1; ranks_per_channel_ = 1;
-            sayPresetRate("DDR4", "DDR4_2400R", 2400);
+        /* 1.11.101 (step 2): the preset pair the record names (knobs applied in
+         * the resolvers), the channel count the record states. The seven
+         * per-technology branches that stood here were a second copy of the
+         * preset names and the channel counts; the impl name is the technology. */
+        resolvePresetTiming();
+        resolvePresetOrganization();
+        {
+            const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(dt);
+            config_yaml_ = makeConfig(dt, preset_org_.preset_name, preset_timing_.preset_name);
+            channels_ = static_cast<uint32_t>(rec.channels); ranks_per_channel_ = 1;
+            (void)sayPresetRate;
         }
 
         /* 1.11.63 (R6-3): banks per rank, from the preset instead of beside

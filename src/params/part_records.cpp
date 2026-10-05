@@ -1,8 +1,10 @@
 // part_records.cpp -- see include/params/part_records.h.
 //
-// 1.11.94 (step 1 of the parameter-file migration). The cross-check below is
-// deliberately verbose: it names every field it compares, so the gate can
-// FIRE it by editing one value in a record and asserting the refusal.
+// 1.11.94 (step 1 of the parameter-file migration) cross-checked the record
+// against the code tables; 1.11.101 (step 2) deleted the tables: the record
+// is loaded, validated for its own consistency, registered, and read by every
+// former table site. The gate FIRES the registry by editing one value in a
+// copied record (the priced area moves) and by deleting one field (refusal).
 #include "params/part_records.h"
 #include "memory/cacti_wrapper.h"
 #include "memory/ramulator_wrapper.h"
@@ -12,6 +14,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <iostream>
+#include <map>
 
 namespace pimid {
 namespace params {
@@ -66,7 +70,8 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         !need(n, "feature_nm", r.feature_nm, error) || !need(n, "cell_factor_f2", r.cell_factor_f2, error) ||
         !need(n, "density_mb_per_mm2", r.density_mb_per_mm2, error) || !need(n, "density_source", r.density_source, error) ||
         !need(n, "organization_preset", r.organization_preset, error) || !need(n, "timing_preset", r.timing_preset, error) ||
-        !need(n, "channels", r.channels, error)) {
+        !need(n, "channels", r.channels, error) ||
+        !need(n, "channel_width_bits", r.channel_width_bits, error)) {   // 1.11.101
         error = "part record " + path + ": " + error; return false;
     }
     const bool stacked = (r.technology == "HBM2" || r.technology == "HBM3");
@@ -93,67 +98,79 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     return true;
 }
 
-/* The code tables this release still carries, and the record must equal:
- *   generation      CACTIWrapper::generationClass()
- *   feature_nm      CACTIWrapper::generationFeatureNm()
- *   density         CACTIWrapper::vendorDieDensity()
- *   presets/channels RamulatorWrapper (resolved at the default knobs)
- *   stack_dies      main.cpp's rule max(4|8, channels/2) -- restated here,
- *                   the duplicate dies with the rule in step 2
- *   refresh ladder  pimid_energy::refreshTempFactor() via the wrapper */
-bool crossCheckDramPartRecord(const DramPartRecord& rec, std::vector<std::string>& errors, bool check_presets) {
+namespace {
+std::map<std::string, DramPartRecord>& registry() { static std::map<std::string, DramPartRecord> m; return m; }
+}
+
+void registerDramPartRecord(const DramPartRecord& rec) { registry()[rec.technology] = rec; }
+bool hasDramPartRecord(const std::string& tech) { return registry().count(tech) > 0; }
+const DramPartRecord& dramPartRecord(const std::string& tech) {
+    auto it = registry().find(tech);
+    if (it == registry().end()) {
+        /* a technology the run did not name (a reference figure, an
+         * announcement, a cross-technology comparison): its record is read
+         * on demand, not validated against a wrapper (the wrapper reads this
+         * registry) */
+        DramPartRecord rec; std::string err;
+        if (loadDramPartRecord(tech, rec, err)) {
+            registry()[rec.technology] = rec;
+            it = registry().find(tech);
+        }
+    }
+    if (it == registry().end()) {
+        std::cerr << "[params] FATAL: no DRAM part record is registered for '" << tech
+                  << "'. Since 1.11.101 the record (params/dram/" << tech << ".yaml, or the directory "
+                     "PIMID_PARAMS names) is the only source of the part's generation, feature size, "
+                     "density, presets, channels, dies and refresh ladder; nothing is substituted for it."
+                  << std::endl;
+        std::exit(2);
+    }
+    return it->second;
+}
+
+/* 1.11.101 (step 2): the record's own consistency, in place of the deleted
+ * cross-check. The HBM capacity identity is ruling 16; the channel-count
+ * check ties the record to the IDD row the energy model prices with (the
+ * row's basis is a measurement context, not a second table of the part). */
+bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>& errors) {
     errors.clear();
     const std::string& t = rec.technology;
-
-    const std::string gen = CACTIWrapper::generationClass(t);
-    if (gen != rec.generation)
-        errors.push_back("generation: record '" + rec.generation + "' vs code '" + gen + "'");
-    const double f = CACTIWrapper::generationFeatureNm(rec.generation);
-    if (!close(f, rec.feature_nm))
-        errors.push_back("feature_nm: record " + fmt(rec.feature_nm) + " vs code " + fmt(f));
-    if (rec.cell_factor_f2 != 6)
-        errors.push_back("cell_factor_f2: record " + std::to_string(rec.cell_factor_f2) + " vs code 6 (6F^2 buried wordline)");
-    const double d = CACTIWrapper::vendorDieDensity(t);
-    if (!close(d, rec.density_mb_per_mm2, 1e-6))
-        errors.push_back("density_mb_per_mm2: record " + fmt(rec.density_mb_per_mm2) + " vs code " + fmt(d));
-
+    const int cw = rec.channel_width_bits;
+    if (cw < 16 || cw > 256 || (cw & (cw - 1)) != 0)
+        errors.push_back("channel_width_bits " + std::to_string(cw) + " is not a power of two from 16 to 256");
+    if (rec.feature_nm <= 0.0) errors.push_back("feature_nm must be positive");
+    if (rec.cell_factor_f2 <= 0) errors.push_back("cell_factor_f2 must be positive");
+    if (rec.density_mb_per_mm2 <= 0.0) errors.push_back("density_mb_per_mm2 must be positive");
+    if (rec.density_source.empty()) errors.push_back("density_source must name the measurement");
+    if (rec.channels < 1) errors.push_back("channels must be at least 1");
+    double last_c = -1e9;
+    for (const auto& g : rec.refresh_ladder) {
+        if (g.above_c <= last_c) errors.push_back("refresh_ladder rungs must rise in temperature (above_c " + fmt(g.above_c) + ")");
+        if (g.factor <= 0.0 || g.factor > 1.0) errors.push_back("refresh_ladder factor " + fmt(g.factor) + " is outside (0, 1]");
+        last_c = g.above_c;
+    }
+    const bool stacked = (t == "HBM2" || t == "HBM3");
+    if (stacked && rec.stack_dies < 1) errors.push_back("stack_dies must be at least 1 for a stacked part");
     try {
         RamulatorWrapper w("", t);
         w.initialize();
         const auto& org = w.getPresetOrganization();
-        const auto& tim = w.getPresetTiming();
-        if (check_presets && org.preset_name != rec.organization_preset)
-            errors.push_back("organization_preset: record '" + rec.organization_preset + "' vs code '" + org.preset_name + "'");
-        if (check_presets && tim.preset_name != rec.timing_preset)
-            errors.push_back("timing_preset: record '" + rec.timing_preset + "' vs code '" + tim.preset_name + "'");
-        const int nch = static_cast<int>(w.getNumChannels());
-        if (nch != rec.channels)
-            errors.push_back("channels: record " + std::to_string(rec.channels) + " vs code " + std::to_string(nch));
-        if (t == "HBM2" || t == "HBM3") {
-            const int code_dies = std::max(t == "HBM2" ? 4 : 8, rec.channels / 2);
-            if (code_dies != rec.stack_dies)
-                errors.push_back("stack_dies: record " + std::to_string(rec.stack_dies) + " vs code " + std::to_string(code_dies));
+        if (!org.valid) errors.push_back("the organization preset '" + rec.organization_preset + "' has no transcription in this build");
+        if (!w.getPresetTiming().valid) errors.push_back("the timing preset '" + rec.timing_preset + "' has no transcription in this build");
+        if (stacked && org.valid) {
             const double per_ch_gb = static_cast<double>(org.density_mb) / 1024.0;   // GB per channel (density_mb is MB per channel for HBM)
-            const double stack_gb_bytes = per_ch_gb * rec.channels;                     // GB per stack
-            const double die_gb = stack_gb_bytes * 8.0 / rec.stack_dies;                // Gb per die
+            const double die_gb = per_ch_gb * rec.channels * 8.0 / rec.stack_dies;     // Gb per die
             if (!close(die_gb, rec.die_capacity_gb, 1e-6))
-                errors.push_back("die_capacity_gb: record " + fmt(rec.die_capacity_gb) + " vs code " + fmt(die_gb) +
-                                 " (= preset " + std::to_string(org.density_mb) + " MB/channel x " + std::to_string(rec.channels) +
-                                 " channels x 8 / " + std::to_string(rec.stack_dies) + " dies)");
+                errors.push_back("die_capacity_gb " + fmt(rec.die_capacity_gb) + " != stack capacity / dies = " + fmt(die_gb) +
+                                 " Gb (preset " + std::to_string(org.density_mb) + " MB/channel x " + std::to_string(rec.channels) +
+                                 " channels x 8 / " + std::to_string(rec.stack_dies) + " dies; ruling 16)");
         }
-        /* refresh ladder: evaluate the code's factor at the midpoint of every
-         * rung the record declares and just above each threshold. */
-        for (size_t i = 0; i < rec.refresh_ladder.size(); ++i) {
-            const double probe_c = rec.refresh_ladder[i].above_c + 5.0;
-            const int probe_k = static_cast<int>(std::lround(probe_c + 273.15));
-            w.setTemperatureK(probe_k);
-            const double code_f = w.getRefreshTempFactor();
-            if (!close(code_f, rec.refresh_ladder[i].factor, 1e-9))
-                errors.push_back("refresh_ladder above " + fmt(rec.refresh_ladder[i].above_c) + " C: record " +
-                                 fmt(rec.refresh_ladder[i].factor) + " vs code " + fmt(code_f));
-        }
+        const int idd_ch = w.getIddRowChannels();
+        if (stacked && idd_ch > 0 && idd_ch != rec.channels)
+            errors.push_back("channels " + std::to_string(rec.channels) + " != the IDD row's basis of " + std::to_string(idd_ch) +
+                             " channels per stack (the energy model's background population)");
     } catch (const std::exception& e) {
-        errors.push_back(std::string("the Ramulator wrapper could not be queried for the cross-check: ") + e.what());
+        errors.push_back(std::string("the Ramulator wrapper could not be built from the record: ") + e.what());
     }
     return errors.empty();
 }
@@ -164,8 +181,9 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
       << " (" << rec.generation << ", F " << rec.feature_nm << " nm, " << rec.cell_factor_f2 << "F^2, "
       << rec.density_mb_per_mm2 << " MB/mm^2; " << rec.organization_preset << " / " << rec.timing_preset
       << ", " << rec.channels << " channel(s)";
+    o << ", " << rec.channel_width_bits << "-bit channel";
     if (rec.stack_dies > 0) o << ", " << rec.stack_dies << " dies x " << rec.die_capacity_gb << " Gb";
-    o << ") -- cross-checked against the code tables (step 1 of the parameter-file migration)";
+    o << ") -- the only source (step 2 of the parameter-file migration, 1.11.101)";
     return o.str();
 }
 
@@ -224,6 +242,12 @@ bool loadCacheRecord(CacheRecord& out, std::string& error) {
     out.record = n["record"].as<std::string>("");
     out.slice_mb = n["slice_mb"].as<int>(0);
     if (out.slice_mb < 1 || out.slice_mb > 64) { error = "cache record " + out.file + ": slice_mb " + std::to_string(out.slice_mb) + " outside 1..64"; return false; }
+    /* 1.11.101 (BIG-CACHE (b)): the replication bound and the home-slice hop */
+    if (!n["max_slices"] || !n["home_hop_cycles"]) { error = "cache record " + out.file + " lacks 'max_slices' or 'home_hop_cycles' (1.11.101)"; return false; }
+    out.max_slices = n["max_slices"].as<int>(0);
+    out.home_hop_cycles = n["home_hop_cycles"].as<int>(-1);
+    if (out.max_slices < 1 || out.max_slices > 32) { error = "cache record " + out.file + ": max_slices " + std::to_string(out.max_slices) + " outside CACTI's bank range 1..32"; return false; }
+    if (out.home_hop_cycles < 0 || out.home_hop_cycles > 64) { error = "cache record " + out.file + ": home_hop_cycles " + std::to_string(out.home_hop_cycles) + " outside 0..64"; return false; }
     return loadCacheLevel(n["levels"]["l1d"], "l1d", out.l1d, out.file, error) &&
            loadCacheLevel(n["levels"]["l1i"], "l1i", out.l1i, out.file, error) &&
            loadCacheLevel(n["levels"]["l2"], "l2", out.l2, out.file, error) &&
@@ -235,7 +259,8 @@ std::string describeCacheRecord(const CacheRecord& rec) {
     auto lv = [&](const char* nm, const CacheLevelRecord& l) {
         o << nm << " " << l.ways << "-way " << l.line_bytes << " B " << (l.banks > 0 ? std::to_string(l.banks) + " banks" : "slice-rule banks");
     };
-    o << "[params] cache record " << rec.file << ": " << rec.record << " (slice " << rec.slice_mb << " MB; ";
+    o << "[params] cache record " << rec.file << ": " << rec.record << " (slice " << rec.slice_mb << " MB, replicated above "
+      << rec.max_slices << " slices at " << rec.home_hop_cycles << " cycles per home-slice hop; ";
     lv("L1D", rec.l1d); o << "; "; lv("L1I", rec.l1i); o << "; "; lv("L2", rec.l2); o << "; "; lv("L3", rec.l3); o << ")";
     return o.str();
 }

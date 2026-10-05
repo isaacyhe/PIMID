@@ -468,6 +468,8 @@ public:
      * the same 2-channels-per-die relation memorySystemDieCount() uses in
      * main.cpp. 0 for the DDR family, which has no die stacking. */
     int getPresetDiesPerStack() const;
+    int getIddRowChannels() const;        // 1.11.101: the IDD row's channel basis (validated against the record)
+    int effectiveDdr5GradeMTs() const;    // 1.11.101: the grade knob, or the record's grade when unset (0)
 
     // Internal port bitwidths (critical for PIM bandwidth!)
     // 1.11.60 (one fabric): the rung's upstream reference, verbatim from the

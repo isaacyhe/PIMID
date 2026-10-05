@@ -1,4 +1,5 @@
 #include "memory/cacti_wrapper.h"
+#include "params/part_records.h"   // 1.11.101 (step 2): the DRAM part record is the source of generation, F and density
 #include <iostream>
 #include <cmath>
 #include <cstring>
@@ -444,61 +445,28 @@ double CACTIWrapper::getArea() const {
  * Values are MB/mm^2 = (Gb/mm^2) x 128. Each row states the part, the
  * capacity, the die area and the source. Rows we could NOT source are
  * marked and reported at runtime rather than quietly invented. */
-double CACTIWrapper::vendorDieDensity(const std::string& tech) {
-    // DDR4: SK Hynix D1z, 0.296 Gb/mm^2 (SemiAnalysis/TechInsights)
-    if (tech == "DDR4")   return 0.296 * 128.0;   // 37.9
-    // DDR5: Micron D1a, 8 Gb / 25.41 mm^2 = 0.315 Gb/mm^2 (TechInsights)
-    if (tech == "DDR5")   return 0.315 * 128.0;   // 40.3
-    // LPDDR5: Samsung D1z, 16 Gb / 43.98 mm^2 (TechInsights)
-    if (tech == "LPDDR5") return (16.0 / 43.98) * 128.0;   // 46.6
-    // GDDR6: Samsung K4Z80165BC D1z, 8 Gb / 37.03 mm^2 whole die
-    // (TechInsights floorplan analysis; NOTE the part is 8 Gb -- one
-    // secondary article labels it 16 Gb, which would double the density)
-    if (tech == "GDDR6")  return (8.0 / 37.03) * 128.0;    // 27.7
-    // HBM3: SK Hynix, 0.16 Gb/mm^2 (SemiAnalysis)
-    if (tech == "HBM3")   return 0.160 * 128.0;   // 20.5
-    // DDR3: SK Hynix 23nm 4 Gb DDR3 SDRAM, 30.9 mm^2 -- ISSCC 2012 Paper 2.3
-    // ("Hynix demonstrates the smallest 23nm 30.9mm2 4Gb DDR3 SDRAM by using
-    //  an open bitline architecture with 6F2 cell", ISSCC 2012 press kit).
-    // This is the densest DDR3 generation shipped; our class map puts DDR3 at
-    // 3x/2x nm, and 23 nm is that 2x end.
-    if (tech == "DDR3")   return (4.0 / 30.9) * 128.0;   // 16.6
-    /* HBM2: Samsung 20nm HBM Gen2 core die. Two statements from the SAME
-     * paper, in both its versions:
-     *   die area  "The HBM chip is fabricated using a 20nm DRAM process and
-     *              the chip size is 12x8mm2"       -> 96 mm^2
-     *   capacity  "each core die has 8 Gb DRAM cell array with additional
-     *              1 Gb [for ECC]"                 -> 8 Gb user capacity
-     * K. Sohn et al., ISSCC 2016, paper 18.2; and the journal version,
-     * IEEE JSSC vol.52 no.1 pp.250-260, Jan 2017 (misc/sohn2016.pdf,
-     * misc/sohn2017.pdf).
-     *
-     * 8 Gb / 96 mm^2 = 0.0833 Gb/mm^2. USER capacity is the numerator, to
-     * match every other row here (vendors advertise HBM2 stack capacity
-     * excluding the ECC bits); counting the full 9 Gb cell array instead
-     * would give 12.0 MB/mm^2.
-     *
-     * The 12x8 is rounded in the source -- it sits within a few percent of
-     * the JEDEC HBM package outline, which for HBM is nearly the die
-     * footprint. Treat as +/-5%; it does not move any conclusion.
-     *
-     * This replaces the 1.11.19 placeholder (HBM3 x 0.70 = 14.3), which was
-     * 34% too dense. HBM2 is now the LEAST dense row in the table by a wide
-     * margin -- about 4x less dense than LPDDR5. */
-    if (tech == "HBM2")   return (8.0 / 96.0) * 128.0;   // 10.7
-    return 0.296 * 128.0;                 // default: DDR4-class
+/* 1.11.101 (step 2): the seven DRAM technologies have part records; any
+ * other technology (SRAM and the NVMs, whose dies CACTI/NVSim price directly)
+ * keeps the defaults the old tables returned for an unknown name, so a
+ * non-DRAM run's log stays what it was (the DRAM class is not used to price
+ * them; the pitch note and the density are DRAM-only prints). */
+static bool isDramPartTech(const std::string& t) {
+    return t == "DDR3" || t == "DDR4" || t == "DDR5" || t == "LPDDR5" || t == "GDDR6" || t == "HBM2" || t == "HBM3";
 }
-
-/* 1.11.19 (D11): does this row rest on a published measurement? Rows that
- * do not are printed as DERIVED wherever the die area is reported, so a
- * number can never be cited as sourced when it is not. */
+double CACTIWrapper::vendorDieDensity(const std::string& tech) {
+    /* 1.11.101 (step 2): from the part record (params/dram/<tech>.yaml,
+     * density_mb_per_mm2 with its density_source). The seven sourced rows
+     * that stood here through 1.11.100 are the records' values; the records
+     * carry each row's provenance. */
+    if (!isDramPartTech(tech)) return 0.296 * 128.0;   // the old table's default (DDR4-class); not a DRAM part
+    return pimid::params::dramPartRecord(tech).density_mb_per_mm2;
+}
+/* 1.11.19 (D11): does this row rest on a published measurement? The record
+ * requires a density_source, so a registered record is always sourced; a
+ * technology without a record refuses in dramPartRecord(). */
 bool CACTIWrapper::vendorDieDensitySourced(const std::string& tech) {
-    /* 2026-08-15: HBM2 joined this list -- Sohn et al. ISSCC 2016 18.2 /
-     * JSSC Jan 2017. Every row in vendorDieDensity() now rests on a
-     * published measurement; there are no derived rows left. */
-    return tech == "DDR3" || tech == "DDR4" || tech == "DDR5" ||
-           tech == "LPDDR5" || tech == "GDDR6" ||
-           tech == "HBM2" || tech == "HBM3";
+    if (!isDramPartTech(tech)) return false;
+    return !pimid::params::dramPartRecord(tech).density_source.empty();
 }
 
 /* 1.11.19 (D11): the ARRAY fraction of a full die -- what the derived
@@ -574,53 +542,21 @@ int CACTIWrapper::generationTableNm(const std::string& tech) {
  * generation's own feature size (2F array pitch); NOT a distinct simulated
  * node -- see generationTableNm() above. */
 const char* CACTIWrapper::generationClass(const std::string& tech) {
-    /* 1.11.94 (sweep-94 row 13, user "check and fix" 2026-09-28): the label
-     * names the generation of THE SAME PART whose measured density prices the
-     * die (vendorDieDensity above) -- one part per technology, two facts from
-     * it. Five rows had drifted: the density part and the class label came
-     * from different generations, so the printed "2F array pitch" described a
-     * die the area model was not using. The 6F^2 x density cross-check
-     * (implied array efficiency) is printed beside the pitch note so a future
-     * drift shows up in the log instead of staying latent.
-     *   DDR3   SK hynix 23 nm 4 Gb (ISSCC 2012 2.3)        -> 3x/2x (unchanged)
-     *   DDR4   SK hynix D1z (SemiAnalysis/TechInsights)    -> 1z   (was 1x)
-     *   DDR5   Micron D1a 8 Gb (TechInsights)              -> 1a   (unchanged)
-     *   LPDDR5 Samsung D1z 16 Gb (TechInsights)            -> 1z   (was 1a)
-     *   GDDR6  Samsung K4Z80165BC D1z (TechInsights)       -> 1z   (was 1y/1z)
-     *   HBM2   Samsung 20 nm core die (Sohn, ISSCC 2016)   -> 2x   (was 1y)
-     *   HBM3   SK hynix H5VG7HMD83X020R D1z 16 Gb          -> 1z   (was 1a/1b)
-     *          (TechInsights floorplan analysis; the SemiAnalysis 0.16 Gb/mm^2
-     *          row is this part; Samsung's HBM3, JSSC 2023 "third generation
-     *          of the 10 nm class", is 1z as well)
-     * F per class is dramGenFeatureNm() in main.cpp (report-only: the pitch
-     * factor applied to PE area is the FIMDRAM silicon bound, not F). */
-    if (tech == "DDR3")   return "3x/2x";
-    if (tech == "DDR4")   return "1z";
-    if (tech == "DDR5")   return "1a";
-    if (tech == "LPDDR5") return "1z";
-    if (tech == "GDDR6")  return "1z";
-    if (tech == "HBM2")   return "2x";
-    if (tech == "HBM3")   return "1z";
-    return "1x";
+    /* 1.11.101 (step 2): the record's generation label (the generation of the
+     * same part whose measured density prices the die, sweep-94 row 13). The
+     * registry's strings are stable for the run. */
+    if (!isDramPartTech(tech)) return "1x";   // the old table's default label; not a DRAM part
+    return pimid::params::dramPartRecord(tech).generation.c_str();
 }
-
-double CACTIWrapper::generationFeatureNm(const std::string& cls) {
-    /* Mid-values of the published ranges per vendor generation label; the
-     * 2x class is Samsung's 20 nm HBM2 core die (1.11.94, sweep-94 row 13).
-     * Report-only today (the PE pitch factor is the FIMDRAM silicon bound);
-     * becomes an input when a pitch-matching model lands. */
-    if (cls == "2x")    return 20.0;
-    if (cls == "3x/2x") return 25.0;
-    if (cls == "1x")    return 19.0;
-    if (cls == "1y")    return 17.5;
-    if (cls == "1y/1z") return 16.5;
-    if (cls == "1z")    return 15.5;
-    if (cls == "1a")    return 14.0;
-    if (cls == "1a/1b") return 13.25;
-    if (cls == "1b")    return 12.5;
-    return 0.0;
+double CACTIWrapper::generationFeatureNm(const std::string& tech) {
+    /* 1.11.101 (step 2): the record's feature size F (mid-value of the
+     * published range of its generation; provenance in the record). Keyed by
+     * TECHNOLOGY now -- two technologies may share a generation label with
+     * different parts. Report-only today (the PE pitch factor is the FIMDRAM
+     * silicon bound); becomes an input when a pitch-matching model lands. */
+    if (!isDramPartTech(tech)) return 0.0;   // the old table's answer for an unknown class; not a DRAM part
+    return pimid::params::dramPartRecord(tech).feature_nm;
 }
-
 double CACTIWrapper::vendorAnchorAreaMM2(const std::string& tech,
                                          uint64_t chip_bytes) {
     /* 1.11.51 (L87): ONE home for the anchor arithmetic. MB / (MB/mm^2). */

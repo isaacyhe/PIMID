@@ -236,9 +236,9 @@ public:
     static double vendorArrayFraction(const std::string& tech);
     static int    generationTableNm(const std::string& tech);
     static const char* generationClass(const std::string& tech);
-    /* 1.11.94: the generation's feature size F in nm (moved from main.cpp so the
-     * part-record cross-check and the pitch note read ONE table). */
-    static double generationFeatureNm(const std::string& cls);
+    /* 1.11.94: the generation's feature size F in nm; 1.11.101: read from the
+     * part record, keyed by technology. */
+    static double generationFeatureNm(const std::string& tech);
     /* 1.11.51 (L87): the vendor JEDEC anchor as a METHOD, so no caller
      * re-implements the arithmetic. Returns (chip_bytes -> MB) / density
      * (MB/mm^2) = mm^2/die, or 0 when the technology has no density row.

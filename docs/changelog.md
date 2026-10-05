@@ -7,6 +7,92 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.101 -- the part records are the only source; a fabric the model does not define is refused, not replaced
+
+RETIREMENT release (R7 of `_1166audit/MANIFEST_1.11.94plus.md`; sweep-94
+rulings 13a step 2, 9, and the BIG-CACHE ruling (b) of 2026-10-03). Step 2 of
+the parameter-file migration: 1.11.94 proved file == code by cross-checking
+every part-record field against the code tables; this release deletes the
+tables and reads the records. Nothing priced moves for a run whose record
+matched its table (the gate asserts byte-identical outputs on every shape).
+
+**(1) In-die fabric requests are refused (ruling 9).** A mesh, ring or
+crossbar asked for inside a DRAM die was replaced by the tree with a
+warning (1.10.1). The request is a design alternative the simulator honours
+only once its model is defined (link width and clock from the placement
+tier's ladder rung, the channel-DQ bandwidth wall at the channel boundary,
+router energy via McPAT as for the tree); until then the run refuses with
+that reason (`[config] FATAL`, exit 2) instead of pricing a tree under the
+requested fabric's name. The tree is taken by leaving `noc.topology` unset;
+a logic-die mesh is modelled by placing the elements at LOGIC_DIE; a
+user-supplied fabric by CUSTOM with a topology file.
+
+**(2) The part records are the only source (ruling 13a step 2, 16, 22).**
+The tables the 1.11.94 cross-check proved equal to the records are deleted
+and every former table site reads the record registry
+(`src/params/part_records.cpp`): the CACTI wrapper's generation label,
+feature size (keyed by technology now) and die density; the Ramulator
+wrapper's preset names (the knobs replace a component of the record's name:
+the width suffix, the DDR5 grade bin and the capacity it implies, and say
+so), channel count and dies per stack; the energy model's refresh ladder,
+channel width and the IDD row's channel basis (registered from the record
+before any query; a technology with no registered part refuses); the die
+population (HBM: the record's dies per stack times the stacks the channel
+count makes), the hierarchy's chips-per-rank column, the zsim-path Ramulator
+config (one path through the wrapper's resolvers instead of seven branches)
+and the pitch note's cell factor. The record gained `channel_width_bits`
+(JEDEC, per technology); a technology the run did not name is read on
+demand. The cross-check is replaced by the record's own consistency check
+(channel width a power of two, ladder rising, an HBM die capacity equal to
+the named preset's stack capacity over its dies, the channel count equal to
+the IDD row's basis); a missing record, a missing field or an inconsistent
+record refuses. `memory.dram.ddr5_speed_grade` unset now means the record's
+grade (the knob's old default 4800 was the record's grade by coincidence).
+A non-DRAM technology (SRAM, the NVMs) has no DRAM record and keeps the
+labels the old tables returned for an unknown name (class "1x", no density),
+which price nothing on those paths; the first gate run found the SRAM power
+report refusing on the DRAM class lookup.
+Proof on the login node: `--print-mem-info` on every technology is
+line-identical to 1.11.100 for DDR3, DDR4, LPDDR5, GDDR6, HBM2, HBM3 and SRAM.
+
+DATA IMPACT (DDR5, every cell): the record's 32-bit sub-channel settles the
+device count. The chips-per-rank table counted a DDR5 rank as 64 bits / 8 =
+8 devices and the die population and background units multiplied that by
+the record's two sub-channels, so a DIMM rank priced 16 devices since 1.11.97
+(two sub-channels, 1.11.97 (19)); a DDR5 sub-channel rank is 32 / width = 4
+x8 devices and the DIMM rank 8. The DDR5 die count and memory area halve,
+the background and refresh unit population halves, and the placement tree
+offers 256 bank organisations per rank instead of 512 (the kernel's unit
+count and data layout follow). Gate 1211A P2/P2b state the moved figures.
+
+**(3) The replicated-slice cache record (review-93 BIG-CACHE ruling (b)).**
+A cache above the record's `max_slices` x `slice_mb` (32 x 2 MB = 64 MB) is
+the distributed LLC of a many-core chip: S identical slices, each one CACTI
+array (2 MB, one bank); area, leakage and energy scale by S (McPAT prices
+one slice, the wrapper multiplies); the hit latency is the slice's CACTI
+access plus the mean Manhattan hop count on a k1 x k2 mesh of slices
+((k1^2-1)/(3 k1) + (k2^2-1)/(3 k2)) times the record's `home_hop_cycles`
+(2: one router stage plus one link, the Garnet defaults the detailed model
+runs). The run prints the composition. Up to the bound the slice rule is
+unchanged (a 64 MB and a 32 MB LLC emit the same configuration as 1.11.100);
+before, a 128 MB LLC was silently clamped to 32 banks of 4 MB. No corpus
+cell needs it.
+
+**(4) What stays in code, and needs a schema ruling.** The IDD current
+sets, tRFC/tREFI, the termination rows, the bank and bank-group organisation
+defaults, the DDR5 speed-bin names, the transcriptions of Ramulator's timing
+and organisation presets and the CACTI table node have no record fields; a
+second step-1 migration (field, provenance, cross-check release) is the next
+decision (OPEN, user).
+
+DATA IMPACT: every DDR5 cell (above); no other cell moves. Gate 1211A: exact
+parity against 1.11.100 on every deterministic shape (one-PE runs of the
+three decoded cores, the DRAM and SRAM loads, a 16-PE configuration
+emission) and bands on the 16-PE OpenMP shape; the DDR5 device count, the
+fabric refusal and the replicated-slice record FIRE against 1.11.100; a
+record with a doubled density moves the priced area and a record missing a
+field refuses.
+
 ## 1.11.100 -- the trace replays what ran: every basic block, its branches, the ROI, the offload domain, the syscalls and the controller
 
 TRACE REPLAY release (R6 of `_1166audit/MANIFEST_1.11.94plus.md`; review C6
