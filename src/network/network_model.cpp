@@ -1,4 +1,5 @@
 #include "network/network_model.h"
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <sstream>

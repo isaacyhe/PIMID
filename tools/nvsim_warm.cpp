@@ -2,9 +2,7 @@
 //
 // The pregenerated NVSim set is what every run actually reads -- characterization
 // costs minutes, so a value absent from the cache does not exist for the corpus.
-// When the cache schema gains a field (1.11.25 added the sub-bank ladder:
-// subarray_latency_s, mat_latency_s), existing entries must be re-characterized
-// or those tiers stay unsourceable forever.
+// The wrapper exposes the mat latency as a cacheable sub-bank timing metric.
 //
 // Reverse-engineering which simulation config produces a given cache entry is
 // guesswork; this drives NVSimWrapper directly for an explicit tuple, which is
@@ -82,10 +80,10 @@ int main(int argc, char** argv) {
                      type, argv[2], argv[3], argv[4], corner, temp_k);
         return 1;
     }
-    std::printf("[nvsim_warm] t%d c%s n%s w%s dc%d t%d: read=%.6e s  subarray=%.6e s  "
+    std::printf("[nvsim_warm] t%d c%s n%s w%s dc%d t%d: read=%.6e s  "
                 "mat=%.6e s  leak=%.4f mW\n",
                 type, argv[2], argv[3], argv[4], corner, temp_k,
-                w.getReadLatency(), w.getSubarrayLatency(), w.getMatLatency(),
+                w.getReadLatency(), w.getMatLatency(),
                 w.getLeakagePower());
     return 0;
 }
