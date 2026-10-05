@@ -1,5 +1,5 @@
 /**
- * pe_memory_interface.h — PE Memory Interface
+ * pe_memory_interface.h -- PE Memory Interface
  *
  * Each PE-MI is bound to a group of PEs and covers a defined set of memory
  * units (banks, subarrays, etc.).  Accesses within coverage are served locally;
@@ -50,14 +50,14 @@ protected:
     std::vector<uint32_t> coverageSet_;  // sorted for binary search
 
     // Connection mode link latency
-    uint32_t localLinkLat_ = 0;  // additional PE↔mem hop for SEPARATE_ENDPOINTS
+    uint32_t localLinkLat_ = 0;  // additional PE<->mem hop for SEPARATE_ENDPOINTS
 
     // Phase tracking for Garnet batch processing
     uint64_t batchLastPhase_ = 0;
 
     // M/D/1 queuing (always active)
     double maxRequestsPerCycle_;
-    // TEMP (pre-arXiv): parallel server count for M/D/c queuing — the number of
+    // TEMP (pre-arXiv): parallel server count for M/D/c queuing -- the number of
     // DRAM channels serving requests concurrently (HBM3=16, HBM2=8, others=1).
     // Effective queuing load is divided by this so high-channel technologies stay
     // unsaturated under contention. A proper N-parallel-network model is future
@@ -300,7 +300,7 @@ public:
         return (uint64_t)zinfo->numPhases * pl + (coreCycle % pl);
     }
 
-    // ── Shared detailed-MPI NoC: ONE logical Garnet driven by ALL ranks ──────
+    // -- Shared detailed-MPI NoC: ONE logical Garnet driven by ALL ranks ------
     // When the launcher exports PIMID_NOC_SHM (MPI + detailed), every rank
     // publishes its network-traversing accesses {src,dst,cycle} to its ring in
     // the shared log and, at its own phase drain, replays the IDENTICAL merged
@@ -580,7 +580,7 @@ public:
 
             // Standalone MC: the MC fronting this memory is a SEPARATE NoC
             // endpoint (one per memory org), so even a local PE access must
-            // cross the NoC to reach the MC (core → MC node → memory). Charge an
+            // cross the NoC to reach the MC (core -> MC node -> memory). Charge an
             // extra one-RTT NoC hop to the MC node on top of the local access.
             // Standalone MC: each memory org fronts a separate NoC endpoint, so a
             // PE access crosses the NoC to its MC node. This hop is the near-data
@@ -769,13 +769,13 @@ public:
                 // DRAM channel bandwidth bottleneck (accuracy fix): the H-tree
                 // Garnet replays accesses at their original (load-spread) cycles
                 // and resets per drain, so it never models the SHARED DRAM
-                // channel saturating — detailed otherwise permits ~num_banks ×
+                // channel saturating -- detailed otherwise permits ~num_banks x
                 // per-MI BW. Add a shared M/D/c channel-BW queueing wait so
                 // effective aggregate DRAM BW is capped at the datasheet value.
                 if (zinfo->hierarchy.nocAggBandwidthMBs > 0) {
                     if (!byReplay) totalLat += channelBandwidthWait(req.srcId, req.cycle);
                 }
-                // Standalone MC: extra core → MC node hop on top of routing.
+                // Standalone MC: extra core -> MC node hop on top of routing.
                 if (zinfo->hierarchy.mcStandalone) {
                     totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId);
                 }
@@ -785,7 +785,7 @@ public:
                 return req.cycle + totalLat;
             }
 
-            // ── Simple model: hierarchy traversal + serialization + contention ──
+            // -- Simple model: hierarchy traversal + serialization + contention --
             // E16 site 3: the analytical NoC's remote path. This is the branch
             // the finding was about -- it traverses (computeHierTraversal walks
             // the LCA path and charges hops), so it marks; its LOCAL sibling
@@ -868,7 +868,7 @@ public:
 
             uint32_t totalLat;
             if (zinfo->hierarchy.nocMlpModel) {
-                // ── Unified analytical model: hop-count + M/D/1 + MLP ──────────
+                // -- Unified analytical model: hop-count + M/D/1 + MLP ----------
                 //   t_eff = max( (L + W_q) / M ,  P*D/c )
                 //   L   = unloaded per-access latency (network RTT + DRAM + links)
                 //         = networkLat + remoteLat + 2*localLinkLat_   [hop-count]
@@ -989,7 +989,7 @@ public:
             } else {
                 totalLat = networkLat + nocContentionLat + remoteLat + 2 * localLinkLat_;
             }
-            // Standalone MC: extra core → MC node hop on top of routing.
+            // Standalone MC: extra core -> MC node hop on top of routing.
             if (zinfo->hierarchy.mcStandalone) {
                 totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId);
             }
@@ -1255,7 +1255,7 @@ protected:
 
                     // TEMP (pre-arXiv) M/D/c stop-gap: numChannels_ independent DRAM
                     // channels serve requests in parallel, so the offered load is
-                    // spread across c servers — effective per-server utilization is
+                    // spread across c servers -- effective per-server utilization is
                     // load / c. High-channel technologies (HBM) therefore stay
                     // unsaturated where a single-channel part (DDR) would queue.
                     // Approximated by reducing the utilization that drives the
@@ -1283,7 +1283,7 @@ protected:
 
     // Standalone-MC extra hop: the MC fronting memory org `targetUnit` is a
     // distinct NoC endpoint (one per memory org), so reaching it costs one NoC
-    // RTT (core → MC node → and back) charged on top of the access. In
+    // RTT (core -> MC node -> and back) charged on top of the access. In
     // cycle-accurate mode this routes real packets through Garnet so the MC
     // traffic shows up in network contention; otherwise it is analytical.
     uint32_t mcHopLatency(uint32_t targetUnit, uint64_t cycle, uint32_t srcId = 0) {
@@ -1546,12 +1546,12 @@ protected:
         return coverageStart_;
     }
 
-    // ── Topology-aware network contention (shared across all PE-MIs) ──
+    // -- Topology-aware network contention (shared across all PE-MIs) --
     //
     // Three regimes matching cross-validated Garnet results:
-    //  A) BUS: shared medium, M/M/1 with (1-ρ)^1.5 divergence
+    //  A) BUS: shared medium, M/M/1 with (1-rho)^1.5 divergence
     //  B) CROSSBAR: per-output M/M/1 with HOL factor 1.58
-    //  C) Multi-hop: per-channel M/M/1 × avgHops, hotspot-adjusted
+    //  C) Multi-hop: per-channel M/M/1 x avgHops, hotspot-adjusted
     //
     // M/M/1 chosen over M/D/1 because wormhole blocking and backpressure
     // cascades create higher service time variance than deterministic.
@@ -1620,7 +1620,7 @@ protected:
                         waitCycles = rhoEff * svcTime / (1.0 - rhoEff);
                     }
                 } else {
-                    // Multi-hop: per-channel M/M/1 × avgHops
+                    // Multi-hop: per-channel M/M/1 x avgHops
                     double avgHops = (double)zinfo->hierarchy.nocAvgHopsTimes100 / 100.0;
                     if (avgHops < 0.01) avgHops = 0.01;
                     int channels = (int)zinfo->hierarchy.nocTotalChannels;
@@ -1637,7 +1637,7 @@ protected:
                     if (rhoMax >= 0.75) {
                         waitCycles = 10.0 * baseLatency;
                     } else if (rhoMax > 0.01) {
-                        // M/M/1 per channel: E[W] = ρ×S/(1-ρ), with VC factor
+                        // M/M/1 per channel: E[W] = rhoxS/(1-rho), with VC factor
                         double waitPerHop = vcFactor * rhoMax * svcTime / (1.0 - rhoMax);
                         waitCycles = waitPerHop * avgHops;
                     }
@@ -1652,12 +1652,12 @@ protected:
         return nocCurContentionLat;
     }
 
-    // ── Detailed-mode DRAM channel bandwidth bottleneck (accuracy fix) ──
+    // -- Detailed-mode DRAM channel bandwidth bottleneck (accuracy fix) --
     //
     // PROBLEM: in detailed mode each bank-MI runs an INDEPENDENT M/D/1 server at
     // its own per-MI bandwidth (defaultBandwidthMBs). With num_banks MIs (16),
-    // the model permits ~num_banks × per-MI-BW aggregate (e.g. DDR4: 16×12.8 =
-    // 204.8 GB/s) — ~10× the real DDR4-2400 single-channel 19.2 GB/s. The DRAM
+    // the model permits ~num_banks x per-MI-BW aggregate (e.g. DDR4: 16x12.8 =
+    // 204.8 GB/s) -- ~10x the real DDR4-2400 single-channel 19.2 GB/s. The DRAM
     // CHANNEL (the shared 64-bit DQ bus) is the true bandwidth bottleneck and was
     // never modeled, so detailed under-contends and reports unrealistically high
     // effective DRAM bandwidth ("too optimistic").
@@ -1747,7 +1747,7 @@ protected:
         return cbwWait;
     }
 
-    // ── Curve model (2b): load-dependent network latency by interpolation ──
+    // -- Curve model (2b): load-dependent network latency by interpolation --
     //
     // The init-time probe injected synthetic UNIFORM traffic at several
     // per-node injection rates and recorded (rate -> avg one-way latency).
@@ -1795,7 +1795,7 @@ protected:
 
     // Linear interpolation of the probed latency-vs-load curve. Clamps below the
     // lowest probed rate to L0 and above the highest probed rate to the last
-    // (saturated) point — the curve is intentionally bounded at probe time.
+    // (saturated) point -- the curve is intentionally bounded at probe time.
     double interpCurve(double rate) const {
         uint32_t n = zinfo->hierarchy.nocCurveN;
         const double* R = zinfo->hierarchy.nocCurveRates;

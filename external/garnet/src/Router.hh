@@ -167,7 +167,7 @@ class Router : public BasicRouter, public Consumer
     RoutingUnit routingUnit;
 
   protected:
-    // Pipeline stages — protected so subclasses (e.g. BusArbiter) can
+    // Pipeline stages -- protected so subclasses (e.g. BusArbiter) can
     // customize allocation and switch traversal behavior.
     SwitchAllocator switchAllocator;
     CrossbarSwitch crossbarSwitch;

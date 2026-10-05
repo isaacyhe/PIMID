@@ -54,8 +54,7 @@ system:
         technology: DDR4
         banks: 16
       noc:
-        topology: MESH_2D
-        model: detailed
+        model: detailed   # 1.11.106: the device fabric is the DRAM tree (a NAMED MESH_2D is the in-die fabric, analytical model only)
 
   network:
     topology: crossbar

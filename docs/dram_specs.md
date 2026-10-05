@@ -16,7 +16,7 @@ between the simulated parts and the latest shipping silicon.
 | HBM2 | `HBM2_4Gb` | `HBM2_2.4Gbps` | 2.4 Gb/s/pin | 32 GB/s | 8 | 307 GB/s |
 | HBM3 | `HBM3_4Gb` | `HBM3_6.4Gbps` | 6.4 Gb/s/pin | 102 GB/s | 16 | 819 GB/s |
 
-HBM gen-1 is **not supported** (removed) — use HBM2 or HBM3. An unknown
+HBM gen-1 is **not supported** (removed) -- use HBM2 or HBM3. An unknown
 `memory.technology` value is a hard error (PIMID exits rather than silently
 falling back to DDR4).
 
@@ -28,32 +28,32 @@ a generation; cycle counts follow from the clock period (tCK).
 
 | Tech | Standard | Verdict |
 |---|---|---|
-| DDR3-1600K | JESD79-3 | ✓ matches (11-11-11, tRAS 35 ns, tRC 49 ns) |
-| DDR4-2400R | JESD79-4 | ✓ matches (16-16-16, tRAS 32 ns, tRC 45 ns) |
-| DDR5-3200AN | JESD79-5 | ✓ within one speed-grade (nCL 24 vs spec-AN 22; ~1.25 ns) |
-| LPDDR5-6400 | JESD209-5 | ✓ matches (tRCDpb ~18 ns, tRAS ~42 ns) |
-| GDDR6 16 Gb/s | JESD250 | ✓ matches vendor specs (tRCD ~14.8 ns, tRC ~45 ns) |
-| HBM2 | JESD235C | **fixed** — see below |
-| HBM3 | JESD238 | **fixed** — see below |
+| DDR3-1600K | JESD79-3 | OK matches (11-11-11, tRAS 35 ns, tRC 49 ns) |
+| DDR4-2400R | JESD79-4 | OK matches (16-16-16, tRAS 32 ns, tRC 45 ns) |
+| DDR5-3200AN | JESD79-5 | OK within one speed-grade (nCL 24 vs spec-AN 22; ~1.25 ns) |
+| LPDDR5-6400 | JESD209-5 | OK matches (tRCDpb ~18 ns, tRAS ~42 ns) |
+| GDDR6 16 Gb/s | JESD250 | OK matches vendor specs (tRCD ~14.8 ns, tRC ~45 ns) |
+| HBM2 | JESD235C | **fixed** -- see below |
+| HBM3 | JESD238 | **fixed** -- see below |
 
 ### HBM2 / HBM3 correction
 
 Ramulator2's stock `HBM2_2Gbps` / `HBM3_2Gbps` presets (still upstream as of
 this writing, flagged `// TODO: Find more sources`) encoded physically
-impossible row timings: they implied tRCD ≈ 7 ns, tRAS ≈ 17 ns, tRC ≈ 19 ns —
-roughly **2× faster than any real HBM part** — and HBM3 used the wrong data
+impossible row timings: they implied tRCD ~ 7 ns, tRAS ~ 17 ns, tRC ~ 19 ns --
+roughly **2x faster than any real HBM part** -- and HBM3 used the wrong data
 rate (2.0 Gb/s instead of the JESD238 launch rate of 6.4 Gb/s).
 
 PIMID replaces them with presets derived from JEDEC spec-minimum physical
 timings (JESD235C / JESD238): **tRCD = tRP = 16 ns, tRAS = 33 ns, tRC = 49 ns,
-tCL = 16 ns, tWR = 16 ns, tFAW = 16 ns, tRFC = 220 ns (4 Gb), tREFI = 3.9 µs**.
+tCL = 16 ns, tWR = 16 ns, tFAW = 16 ns, tRFC = 220 ns (4 Gb), tREFI = 3.9 us**.
 Cycle counts are computed at the correct clock period:
 
-- `HBM2_2.4Gbps`: tCK = 833 ps → nRCD 20, nRAS 40, nRC 59, nRFC 265
-- `HBM3_6.4Gbps`: tCK = 312 ps → nRCD 52, nRAS 106, nRC 158, nRFC 706
+- `HBM2_2.4Gbps`: tCK = 833 ps -> nRCD 20, nRAS 40, nRC 59, nRFC 265
+- `HBM3_6.4Gbps`: tCK = 312 ps -> nRCD 52, nRAS 106, nRC 158, nRFC 706
 
 This was verified *not* to be reproducible by linearly scaling the old
-preset — scaling would have propagated the wrong base timing. The values come
+preset -- scaling would have propagated the wrong base timing. The values come
 from the JEDEC physical numbers directly.
 
 ## Known gaps vs. latest silicon
@@ -61,12 +61,12 @@ from the JEDEC physical numbers directly.
 PIMID's presets capture one JEDEC data point per generation. Real parts have
 moved well past these:
 
-| Tech | PIMID models | Latest shipping (≈2025) |
+| Tech | PIMID models | Latest shipping (~2025) |
 |---|---|---|
 | DDR4 | 2400 MT/s | up to 3200 MT/s |
 | DDR5 | 3200 MT/s | 8400+ MT/s |
 | LPDDR5 | 6400 MT/s | LPDDR5X 10700 MT/s |
-| GDDR6 | 16 Gb/s | GDDR6X/GDDR7 up to 24–32 Gb/s |
+| GDDR6 | 16 Gb/s | GDDR6X/GDDR7 up to 24-32 Gb/s |
 | HBM2 | 2.4 Gb/s (307 GB/s) | HBM2E 3.6 Gb/s (461 GB/s) |
 | HBM3 | 6.4 Gb/s (819 GB/s) | HBM3E 9.8 Gb/s (1229 GB/s); HBM4 (2048 GB/s) |
 
@@ -78,7 +78,7 @@ point the wrapper at it.
 ## Capacity reporting
 
 `capacity_` in the wrapper reflects the **single-rank part** that the org
-preset describes (e.g. HBM2 = 4 Gb/channel × 8 channels = 4 GiB), not a
-deep multi-die stack. Real HBM stacks (4-Hi … 16-Hi) reach 8–64 GB by
+preset describes (e.g. HBM2 = 4 Gb/channel x 8 channels = 4 GiB), not a
+deep multi-die stack. Real HBM stacks (4-Hi ... 16-Hi) reach 8-64 GB by
 stacking dies; PIMID does not model die-stacking depth. Treat the reported
 capacity as per-modeled-rank, not per-physical-stack.

@@ -47,6 +47,15 @@ added around that same region.
   the host crossbar are separate; the host<->device **bridge** joins them and
   carries only boundary traffic (launch cmd/ack, coherence flush, Case-2 DMA).
   See [architecture.md](architecture.md) and [network.md](network.md).
+- **One process, node workloads.** The system runs as ONE simulated process.
+  `system.hosts[].workload` and `system.devices[].workload` take `binary`,
+  `args` and `env`; a node without a `binary` inherits the top-level binary
+  and args. A node's `env` map (read since 1.11.106; documented earlier and
+  ignored) joins that one process's environment, the top-level
+  `workload.env`: nodes are applied in file order, hosts before devices, and a
+  name already set with a different value takes the node's value and the run
+  prints a NOTE naming both values. An `env` that is not a map of
+  `NAME: value` is refused.
 
 ### `scope: system` vs `scope: device`
 
@@ -157,15 +166,15 @@ Coherence follows **address-space visibility**, not physical placement.
 
 Baselines **never** flush (the host keeps using its caches), so this cost is
 PIM-side only and honesty demands it. Defaults: `flush_fixed_ns: 200`,
-`footprint_bytes: 16777216` (16 MiB), `writeback_bw_gbs` auto = host memory
-aggregate bandwidth (per-channel x channels).
+`writeback_bw_gbs` auto = host memory aggregate bandwidth (per-channel x
+channels). The footprint has no default: it is measured, and a configured
+`footprint_bytes` is refused (above).
 
-### 3. Host network -- crossbar, same fidelity ladder as the device
+### 3. Host network -- the analytic crossbar
 
-The host fabric is a first-class subsystem with the same two-tier ladder as
-the device (analytical | detailed) and identical config syntax
-(`system.hosts[].noc`). Default topology is **crossbar** (uniform one-hop;
-contention at ports, not hops).
+The host fabric is configured under `system.hosts[].noc`, with the device's
+config syntax, but only one tier is modelled: the analytic **crossbar**
+(uniform one-hop; contention at ports, not hops).
 
 - A **1-core host has no fabric** -- a crossbar degenerates at a single core
   (core -> caches -> MC direct). The core-to-memory path is the calibrated
@@ -175,12 +184,14 @@ contention at ports, not hops).
   contention is already priced by the host MC M/D/1 model, so the fabric stays
   analytic.
 
-> **Shipped-behavior note.** Only the **analytical** host tier is wired in
-> 1.7.4: `system.hosts[].noc.model` is parsed and echoed, but a detailed host
-> Garnet instance is *not* instantiated (the second-Garnet host tier is a
-> later 1.7.x increment). `model: detailed` on a host is currently inert.
+> **Shipped behavior (1.11.106).** The host fabric always runs as the
+> analytic crossbar (one uniform hop plus the host memory controller's queue);
+> no host Garnet is instantiated. A `system.hosts[].noc.topology` other than
+> `crossbar` or a `noc.model` other than `analytical` (`detailed` included) is
+> accepted with a WARNING that says so; it used to be accepted in silence. A
+> host NoC model is a planned 1.1x release.
 
-### 3b. Host-device link class (`power.pcie.link_type`, `system.network.links[].type`)
+### 3b. Host-device link class (`power.link.link_type`, `system.network.links[].type`)
 
 The link class prices the crossing's energy (pJ/bit band per class) and its
 controller, and fills the link's timing for the fields the configuration did
@@ -194,6 +205,11 @@ header 0, NO separate link energy (the channel's I/O and termination are in
 the DRAM energy model) and NO link controller (the host memory controller is
 priced as itself); an `external` device crosses `pcie_gen5`. A named class
 overrides the default and the run prints a `[link]` note naming both.
+`attachment` accepts `internal` or `external` only: any other word is refused
+at load (1.11.106; it used to run as `external` and take the PCIe class).
+`power.pcie` is the legacy name of the `power.link` block (giving both is
+refused); the class list, with `pcie_gen3` added in 1.11.106, is in
+[yaml_reference.md](yaml_reference.md#link-types-system-scope).
 
 ### 4. Bridge -- two-layer protocol x phy (`system.bridge`)
 
@@ -343,9 +359,12 @@ regenerated. Device-scope sweeps were never affected.
   busy-wait / boundary-charge accounting is core-type agnostic.)
 - **Single device in 1.7.x.** One PIM device (plus an optional separate
   `host.mem`). Multiple attached memory devices are a later increment; the
-  schema already generalizes but the plumbing is not built.
-- **Detailed host NoC not wired** (decision 3 note above): the analytical
-  host tier is shipped; the detailed host Garnet is a later increment.
+  schema already generalizes but the plumbing is not built, and a second
+  device node is refused at load (1.11.45: this build prices one memory per
+  role).
+- **Detailed host NoC not wired** (decision 3 note above): the host fabric is
+  the analytic crossbar; any other host topology or model warns (1.11.106) and
+  runs the crossbar. A host NoC model is a planned 1.1x release.
 - **Device-side weave +-1-phase quantum.** The device-side weave (in-order /
   OOO weave cores) has a residual +-1-phase QUANTUM nondeterminism in how a
   phase boundary lands relative to contention (<=0.4% at production scale).

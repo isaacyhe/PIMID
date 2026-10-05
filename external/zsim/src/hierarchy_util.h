@@ -1,5 +1,5 @@
 /**
- * hierarchy_util.h — Shared hierarchy position mapping and LCA traversal
+ * hierarchy_util.h -- Shared hierarchy position mapping and LCA traversal
  *
  * Used by:
  *   - PEMemoryInterface (pe_memory_interface.h) for local/remote routing
@@ -247,7 +247,7 @@ static inline uint64_t computePEtoPELatency(
                                          placement, sa_per_bank, banks_per_bg, bg_per_chip,
                                          chips_per_rank, ranks_per_channel);
 
-    // For SEPARATE_ENDPOINTS: add PE→NI and NI→PE hops at both ends
+    // For SEPARATE_ENDPOINTS: add PE->NI and NI->PE hops at both ends
     if (connMode == 1 && linkLat > 0) {
         lat += 2 * linkLat;
     }

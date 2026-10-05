@@ -2,7 +2,7 @@
 
 PIMID has exactly two NoC models (`noc.model`):
 
-## `detailed` — cycle-accurate Garnet (the default)
+## `detailed` -- cycle-accurate Garnet (the default)
 
 The full Garnet 3.0 engine (extracted from gem5): routers, virtual channels,
 credit-based flow control, deadlock-free routing.
@@ -71,9 +71,17 @@ credit-based flow control, deadlock-free routing.
   bandwidth is modeled by NI-side flit count; tree routing uses up/down
   virtual-channel classes and is deadlock-free (validated drain-complete
   across packet counts, technologies, and traffic patterns).
-- Flat topologies remain available for the host network and non-DRAM device
-  memories: `MESH_2D`, `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
-  `H_TREE`, `CUSTOM` (file-defined).
+- Flat topologies remain available for non-DRAM device memories: `MESH_2D`
+  (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
+  `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts
+  exactly this list, in any case, for every memory family, and refuses any
+  other word at load (an SRAM/NVM device used to run an unknown word as a
+  1 x N mesh with XY routing in silence); a DRAM device then applies its own
+  rule, the tree or the in-die fabric below. The system network
+  (`system.network.topology`) accepts `CROSSBAR`, `MESH_2D` (`MESH`),
+  `TORUS_2D`, `RING`, `FAT_TREE` and `BUS`, upper-cased at load (so the
+  printed `System Network:` line is upper-case). The host fabric is always the
+  analytic crossbar (below).
 - **The in-die fabric (1.11.103, ruling 9).** A `MESH_2D`, `RING` or
   `CROSSBAR` named on a DRAM device is that fabric INSIDE EACH DIE, over the
   die's organisations at the placement tier (the grid of a chip's bank
@@ -105,7 +113,7 @@ credit-based flow control, deadlock-free routing.
   no branch router and no endpoint are not priced (pass-through wire; their
   measured traversals are printed as not priced).
 
-## `analytical` — closed form
+## `analytical` -- closed form
 
 Per-access effective latency:
 
@@ -113,21 +121,21 @@ Per-access effective latency:
 t_eff = max( (L + W_q) / M ,  P * D / c )
 ```
 
-- `L` — unloaded latency: hop-count round trip + serialization + memory access.
+- `L` -- unloaded latency: hop-count round trip + serialization + memory access.
   For DRAM the per-hop link latency derives from the technology's
   **per-channel** bandwidth (the DQ datapath one access actually traverses),
   hop-normalized to the per-channel subtree depth; aggregate multi-channel
   bandwidth enters through the floor term instead.
-- `W_q` — M/D/1 queuing contention at the bottleneck channel, computed from
+- `W_q` -- M/D/1 queuing contention at the bottleneck channel, computed from
   the aggregate injection rate spread over the topology's channels
-- `M` — memory-level-parallelism intensity (`noc.mlp`; omit for the
-  calibrated per-core-model default)
-- `P * D / c` — aggregate-bandwidth floor: P PEs sharing c channels of
+- `M` -- memory-level-parallelism intensity (`noc.mlp`, at least 1; omit for
+  the default 10, one value for every core type, calibrated for `alu_core`)
+- `P * D / c` -- aggregate-bandwidth floor: P PEs sharing c channels of
   deterministic service time D
 
 `M = 1` degenerates to a fully serial latency model; large `M` approaches the
 bandwidth roofline. The default `M` is calibrated against `detailed`.
-Runs at analytical speed (~seconds) — use it for large design-space sweeps,
+Runs at analytical speed (~seconds) -- use it for large design-space sweeps,
 and `detailed` for ground truth.
 
 ## Thread-MPI per-access pricing (measured feedback, 1.9.0)
@@ -181,11 +189,13 @@ exactly one of them:
   (crossbar degenerates: core -> caches -> MC direct). A multi-core host adds
   a fixed one-hop latency (`hop_cycles`, core clock) on the host memory path;
   port contention is already priced by the host memory M/D/1, so the fabric
-  stays analytic. (`model: detailed` is parsed but currently inert -- no host
-  Garnet is instantiated; a later 1.7.x increment.) Host memory bandwidth is
-  a single aggregate M/D/1 queue at per-channel x channels GB/s, so one DDR5
-  channel saturates under many host cores while HBM3's wide aggregate does
-  not.
+  stays analytic. No host Garnet is instantiated: a host `noc.topology` other
+  than `crossbar` or a `noc.model` other than `analytical` is accepted with a
+  WARNING (1.11.106; it used to be accepted in silence) and the fabric still
+  runs as this crossbar. A host NoC model is a planned 1.1x release. Host
+  memory bandwidth is a single aggregate M/D/1 queue at per-channel x
+  channels GB/s, so one DDR5 channel saturates under many host cores while
+  HBM3's wide aggregate does not.
 - **Bridge** (`system.bridge`, two-layer `protocol` x `phy`) prices only the
   host<->device boundary traffic -- launch cmd/ack, Case-1 coherence flush,
   Case-2 DMA. A crossing costs `phy_latency + protocol_overhead +
@@ -195,7 +205,7 @@ exactly one of them:
 
 ## Synthetic traffic mode
 
-`--method synthetic` injects parametric traffic directly into Garnet — no
+`--method synthetic` injects parametric traffic directly into Garnet -- no
 workload or QEMU needed:
 
 ```yaml
@@ -206,21 +216,30 @@ synthetic:
   injection_rate: 0.1     # or injection_rate_min/max/step for a sweep
   packets: 10000
   warmup: 1000
+  power: true             # default: follows power.enabled / --power / --no-power
 ```
 
 Reports total cycles, average latency, and throughput per injection rate.
 
+The pattern aliases `bitcomp`, `bitrev`, `bitrot` and `memdir` are accepted;
+any other `pattern` is refused at load (1.11.106; it used to run `uniform`
+with a warning). Defaults: 0.1 flits/node/cycle, 10000 packets, 1000 warmup
+packets. A sweep runs when `injection_rate_min` and `injection_rate_max` are
+both given with 0 < min < max (`injection_rate_step` defaults to 0.02).
+`power` (bool) turns power analysis on or off for the synthetic run; absent,
+it follows `power.enabled` and the `--power` / `--no-power` flags.
+
 ## Per-level and bridge overrides
 
 When PEs sit deep inside a DRAM device (`placement: BANK` or `SUBARRAY`),
-memory traffic does not cross one flat network — it climbs a hierarchy:
+memory traffic does not cross one flat network -- it climbs a hierarchy:
 
 ```
 subarray -> bank -> bank_group -> chip -> rank -> channel -> system
 ```
 
 Each rung is physically different silicon: a subarray's local wiring, the
-bank I/O, the shared channel DQ bus. Real DRAM datapaths are asymmetric —
+bank I/O, the shared channel DQ bus. Real DRAM datapaths are asymmetric --
 wide and parallel near the arrays, narrow and shared toward the channel.
 PIMID exposes that structure through two override mechanisms. If you never
 touch them, the per-technology JEDEC-derived defaults apply; they exist for
@@ -253,7 +272,7 @@ input/output buffer depths.
 
 ### Bridge overrides (`noc.bridges.<boundary>`)
 
-The boundaries BETWEEN adjacent levels are modeled as bridges — the
+The boundaries BETWEEN adjacent levels are modeled as bridges -- the
 mux/TSV/bus transition points where the datapath changes width and clock.
 Valid boundary names: `subarray_bank`, `bank_bankgroup`, `bankgroup_chip`,
 `chip_rank`, `rank_channel`, `channel_system`.
@@ -276,11 +295,11 @@ touching either adjacent level.
 
 ### When to use which
 
-- **Sweep a single bottleneck** — override one bridge (e.g. shrink
+- **Sweep a single bottleneck** -- override one bridge (e.g. shrink
   `bank_bankgroup` width) and watch the bandwidth knee move.
-- **Mixed fidelity** — keep the contended level on `detailed` Garnet and let
+- **Mixed fidelity** -- keep the contended level on `detailed` Garnet and let
   quiet levels run the cheap per-level analytical path.
-- **What-if datapaths** — give a level a non-default topology or clock to
+- **What-if datapaths** -- give a level a non-default topology or clock to
   model a hypothetical device organization.
 
 The complete key list with defaults is in

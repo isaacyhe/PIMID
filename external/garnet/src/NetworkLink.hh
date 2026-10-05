@@ -93,7 +93,7 @@ class NetworkLink : public ClockedObject, public Consumer
         linkBuffer.clearAndDelete();
         // Note: link_srcQueue is a pointer to another object's buffer
         // (e.g., NI's outFlitQueue or InputUnit's creditQueue).
-        // It is reset by its owner — we only clear our own linkBuffer.
+        // It is reset by its owner -- we only clear our own linkBuffer.
     }
 
     std::vector<int> mVnets;

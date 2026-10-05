@@ -475,7 +475,7 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
     /* 1.11.8 PG residency; 1.11.18: the SIMULATED block decides (deferred
      * path), and an injected charge is a wait, not retirement. */
     if (!sim->synth) { uint64_t _ph = zinfo->numPhases;
-        pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); }
+        pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); zinfo->pgres.hostUnion.touch(_ph); }
     /* 1.11.16 (verification audit): count the mix and charge soft-float for
      * the BBL being SIMULATED (sim = the deferred previous BBL), not the one
      * just arriving -- instrs and the census were offset by one basic block

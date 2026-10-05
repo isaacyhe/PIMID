@@ -9,7 +9,7 @@
     "description": "Hypothetical study: What if DDR4 had wider internal ports?",
 
     "port_width_scale": 4.0,
-    "_port_width_scale_comment": "Multiply all port bitwidths by this factor. E.g., 4x makes 8-bit → 32-bit",
+    "_port_width_scale_comment": "Multiply all port bitwidths by this factor. E.g., 4x makes 8-bit -> 32-bit",
 
     "energy_scale": 1.5,
     "_energy_scale_comment": "Account for increased energy with wider ports. 1.5x = 50% more energy",
@@ -75,15 +75,15 @@
     "hypothesis_1": "Need ~32-bit bank ports (4x DDR4 baseline) for Bank-PIM to match Rank-PIM",
 
     "question_2": "How much energy overhead comes with wider internal ports?",
-    "hypothesis_2": "Energy scales sub-linearly: 4x width → ~1.5x energy (not 4x)",
+    "hypothesis_2": "Energy scales sub-linearly: 4x width -> ~1.5x energy (not 4x)",
 
     "question_3": "Can we achieve HBM-like PIM performance with modified DDR?",
     "hypothesis_3": "Yes, if internal ports are widened to 32-64 bits, but requires architecture changes"
   },
 
   "validation_notes": {
-    "note_1": "DDR4 actual: 8-bit bank ports → Rank-PIM optimal",
-    "note_2": "HBM2 actual: 64-bit bank ports → Bank-PIM viable",
+    "note_1": "DDR4 actual: 8-bit bank ports -> Rank-PIM optimal",
+    "note_2": "HBM2 actual: 64-bit bank ports -> Bank-PIM viable",
     "note_3": "TSV in HBM enables wide internal paths without huge energy penalty",
     "note_4": "DDR wire routing limits practical internal port widths to 8-16 bits"
   }

@@ -13,5 +13,5 @@ pim:
 memory:
   technology: HBM2
 noc:
-  topology: MESH_2D
+  topology: H_TREE   # 1.11.106: a LOGIC_DIE placement sits above the dies; the fabric there is the tree (an in-die MESH_2D/RING/CROSSBAR applies at BANK_GROUP and below)
   model: analytical

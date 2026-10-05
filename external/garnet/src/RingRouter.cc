@@ -1,5 +1,5 @@
 /*
- * RingRouter — dateline-aware router for Garnet RING topology.
+ * RingRouter -- dateline-aware router for Garnet RING topology.
  *
  * Standard crossbar throughput (N flits/cycle across N output ports),
  * but VC allocation enforces the dateline invariant:
@@ -81,14 +81,14 @@ RingRouter::wakeup()
     // Clear request state for next cycle
     clear_request_vector();
 
-    // 4. Switch traversal (standard crossbar — N flits/cycle)
+    // 4. Switch traversal (standard crossbar -- N flits/cycle)
     crossbarSwitch.wakeup();
 
     // 5. Reschedule if more flits pending
     check_for_wakeup();
 }
 
-// ─── Dateline helpers ────────────────────────────────────────
+// --- Dateline helpers ----------------------------------------
 
 bool
 RingRouter::isDatelineCrossing(int outport) const
@@ -161,7 +161,7 @@ RingRouter::targetClass(int inport, int invc, int outport)
     return vcClassOf(invc);
 }
 
-// ─── SA-I: per-input VC selection (standard round-robin) ─────
+// --- SA-I: per-input VC selection (standard round-robin) -----
 
 void
 RingRouter::arbitrate_inports()
@@ -189,7 +189,7 @@ RingRouter::arbitrate_inports()
     }
 }
 
-// ─── SA-II: per-output port arbitration with dateline VC ─────
+// --- SA-II: per-output port arbitration with dateline VC -----
 //
 // Same structure as standard SwitchAllocator::arbitrate_outports(),
 // but vc_allocate() is dateline-aware: when a HEAD flit crosses the
@@ -211,10 +211,10 @@ RingRouter::arbitrate_outports()
                 int outvc = input_unit->get_outvc(invc);
 
                 if (outvc == -1) {
-                    // VC Allocation — dateline-aware
+                    // VC Allocation -- dateline-aware
                     outvc = vc_allocate(outport, inport, invc);
                     if (outvc == -1) {
-                        // No free VC in the required class — skip
+                        // No free VC in the required class -- skip
                         inport = (inport + 1) % m_num_inports;
                         continue;
                     }
@@ -262,7 +262,7 @@ RingRouter::arbitrate_outports()
     }
 }
 
-// ─── Dateline-aware VC allocation ────────────────────────────
+// --- Dateline-aware VC allocation ----------------------------
 //
 // For HEAD/HEAD_TAIL flits:
 //   - NI-injected (Local inport): always allocate class 0
@@ -301,7 +301,7 @@ RingRouter::send_allowed(int inport, int invc, int outport, int outvc)
     auto input_unit = getInputUnit(inport);
 
     if (!has_outvc) {
-        // HEAD flit needs a new VC — determine target class
+        // HEAD flit needs a new VC -- determine target class
         int target_class = targetClass(inport, invc, outport);
 
         int lo, hi;

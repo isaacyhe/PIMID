@@ -139,7 +139,7 @@ uint64_t RamulatorMemory::access(MemReq& req) {
     if (req.type != PUTS) {
         uint64_t ph = zinfo->numPhases;
         if (pgIsDevice) zinfo->pgres.devMC[0].touch(ph);
-        else            zinfo->pgres.hostMC.touch(ph);
+        else          { zinfo->pgres.hostMC.touch(ph); zinfo->pgres.hostUnion.touch(ph); }   // 1.11.106: the union
     }
 
     uint64_t respCycle = req.cycle + minLatency;

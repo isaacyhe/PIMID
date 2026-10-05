@@ -55,7 +55,7 @@ shipped examples work from any directory.
   configure with `-DCMAKE_PREFIX_PATH=$HOME/.local`; run with
   `LD_LIBRARY_PATH=$HOME/.local/lib64:$LD_LIBRARY_PATH`.
 - **yaml-cpp is vendored** (via Ramulator's FetchContent). Do NOT install a
-  system/local yaml-cpp — it creates a duplicate target. If
+  system/local yaml-cpp -- it creates a duplicate target. If
   `find_package(yaml-cpp)` misses, add `-DCMAKE_CXX_FLAGS="-DHAVE_YAML_CPP"`.
 - Missing `libconfig` headers: build it from source into `~/.local`.
 - Use a fresh build directory whenever a dependency is added (CMake caches

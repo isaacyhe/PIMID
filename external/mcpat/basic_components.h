@@ -152,7 +152,8 @@ enum PimidSubstKind {
 	PIMID_SUBST_NOC       = 1,  // router power sanitised (noc.cc)
 	PIMID_SUBST_LINK      = 2,  // interconnect left at zero power
 	PIMID_SUBST_REDUCTION = 3,  // long-channel / power-gating factor
-	PIMID_SUBST_KINDS     = 4
+	PIMID_SUBST_WIRE      = 4,  // PIMID 1.11.106: a CACTI wire of non-zero length zeroed (wire.cc)
+	PIMID_SUBST_KINDS     = 5
 };
 void pimid_note_substitution(int kind, const std::string& key,
                              const std::string& line);

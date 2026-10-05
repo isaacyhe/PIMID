@@ -1,5 +1,5 @@
 /*
- * TreeRouter — up/down deadlock-free router for a CUSTOM DRAM tree.
+ * TreeRouter -- up/down deadlock-free router for a CUSTOM DRAM tree.
  * See TreeRouter.hh for the full rationale.
  */
 
@@ -61,14 +61,14 @@ TreeRouter::wakeup()
     // Clear request state for next cycle
     clear_request_vector();
 
-    // 4. Switch traversal (standard crossbar — N flits/cycle)
+    // 4. Switch traversal (standard crossbar -- N flits/cycle)
     crossbarSwitch.wakeup();
 
     // 5. Reschedule if more flits pending
     check_for_wakeup();
 }
 
-// ─── Up/Down helpers ─────────────────────────────────────────
+// --- Up/Down helpers -----------------------------------------
 
 bool
 TreeRouter::isDownOutport(int outport) const
@@ -98,7 +98,7 @@ TreeRouter::getClassRange(int vnet, int vc_class, int &lo, int &hi) const
     if (half <= 0) half = 1;
 
     if (m_vc_per_vnet <= 1) {
-        // Degenerate: only one VC per vnet — both classes share it.
+        // Degenerate: only one VC per vnet -- both classes share it.
         // (A 1-VC tree is not deadlock-free in general; provision >= 2.)
         lo = base;
         hi = base + m_vc_per_vnet;
@@ -126,7 +126,7 @@ TreeRouter::targetClass(int inport, int invc, int outport) const
     if (isDownOutport(outport)) {
         return 1;  // DOWN phase
     }
-    // UP outport (or Local — Local is only used for terminal delivery, which
+    // UP outport (or Local -- Local is only used for terminal delivery, which
     // the routing layer resolves before reaching here; treat as class 0).
     auto input_unit =
         const_cast<TreeRouter*>(this)->getInputUnit(inport);
@@ -136,7 +136,7 @@ TreeRouter::targetClass(int inport, int invc, int outport) const
     return vcClassOf(invc);  // stay in current phase (must be 0 for an UP hop)
 }
 
-// ─── SA-I: per-input VC selection (standard round-robin) ─────
+// --- SA-I: per-input VC selection (standard round-robin) -----
 
 void
 TreeRouter::arbitrate_inports()
@@ -164,7 +164,7 @@ TreeRouter::arbitrate_inports()
     }
 }
 
-// ─── SA-II: per-output port arbitration with up/down VC ──────
+// --- SA-II: per-output port arbitration with up/down VC ------
 
 void
 TreeRouter::arbitrate_outports()
@@ -181,10 +181,10 @@ TreeRouter::arbitrate_outports()
                 int outvc = input_unit->get_outvc(invc);
 
                 if (outvc == -1) {
-                    // VC Allocation — up/down-aware
+                    // VC Allocation -- up/down-aware
                     outvc = vc_allocate(outport, inport, invc);
                     if (outvc == -1) {
-                        // No free VC in the required class — skip this inport
+                        // No free VC in the required class -- skip this inport
                         inport = (inport + 1) % m_num_inports;
                         continue;
                     }
@@ -232,7 +232,7 @@ TreeRouter::arbitrate_outports()
     }
 }
 
-// ─── Up/Down-aware VC allocation ─────────────────────────────
+// --- Up/Down-aware VC allocation -----------------------------
 //
 // For HEAD/HEAD_TAIL flits: allocate a free VC from the required class
 // (UP=class 0, DOWN=class 1) on the chosen outport.
@@ -267,7 +267,7 @@ TreeRouter::send_allowed(int inport, int invc, int outport, int outvc)
     auto input_unit = getInputUnit(inport);
 
     if (!has_outvc) {
-        // HEAD flit needs a new VC — restrict to the required class
+        // HEAD flit needs a new VC -- restrict to the required class
         int target = targetClass(inport, invc, outport);
         int lo, hi;
         getClassRange(vnet, target, lo, hi);

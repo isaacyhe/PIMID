@@ -11,10 +11,10 @@
  *
  * Architecture:
  *   1. Parse args, set up shared memory (GlobSimInfo)
- *   2. SimInit(cfg, outputDir) → creates cores, caches, MCs, network
+ *   2. SimInit(cfg, outputDir) -> creates cores, caches, MCs, network
  *   3. Read PIMID trace header + events
  *   4. Event loop: dispatch to ZSim core function pointers
- *   5. SimEnd() → dump stats
+ *   5. SimEnd() -> dump stats
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -62,7 +62,7 @@ uint64_t procMask;
 Core* cores[MAX_THREADS];
 InstrFuncPtrs fPtrs[MAX_THREADS] ATTR_LINE_ALIGNED;
 
-/* tid→cid mapping */
+/* tid->cid mapping */
 #define INVALID_CID ((uint32_t)-1)
 #define UNINITIALIZED_CID ((uint32_t)-2)
 static uint32_t cids[MAX_THREADS];

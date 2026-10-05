@@ -60,7 +60,7 @@ void NullCore::bbl(BblInfo* bblInfo) {
            * active credited the very windows power gating exists for as
            * busy, so a co-sim PE could never show idle residency. */
           if (!bblInfo->synth) { uint64_t _ph = zinfo->numPhases;
-              pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); } }
+              pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); zinfo->pgres.hostUnion.touch(_ph); } }
         mixAdd(bblInfo);  // 1.11.10 measured instruction mix
     curCycle += bblInfo->instrs;
 }

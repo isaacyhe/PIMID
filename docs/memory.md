@@ -11,7 +11,7 @@ PIMID models 11 memory technologies through three production backends:
 | STT-MRAM, PCM, ReRAM | NVSim | first run characterizes (~5-7 min), then cached |
 
 Per-technology JEDEC organization (channels, banks, timings) drives both the
-memory timing and the device-internal network shape — see
+memory timing and the device-internal network shape -- see
 [dram_specs.md](dram_specs.md) and [network.md](network.md).
 
 ## PE placement levels

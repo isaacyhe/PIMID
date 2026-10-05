@@ -553,7 +553,7 @@ static void InitSystem(Config& config) {
         info("[ZSim] Using Garnet %s network, routing=%s",
              topoStr.c_str(), nocRoutingStr(routing).c_str());
 
-        // ── DIAGNOSTIC: synthetic injection-rate sweep on THIS (per-tech CUSTOM)
+        // -- DIAGNOSTIC: synthetic injection-rate sweep on THIS (per-tech CUSTOM)
         // topology. Drives the network at controlled offered loads to expose the
         // latency-vs-load curve and the saturation knee (= the channel bandwidth)
         // -- which the workload batch-replay cannot reach (it self-regulates to
@@ -843,7 +843,7 @@ static void InitSystem(Config& config) {
         zinfo->pcie.headerBytes = config.get<uint32_t>("sys.hierarchy.pcieHeaderBytes", 20);
         zinfo->pcie.coherenceExtraCycles = config.get<uint32_t>("sys.hierarchy.pcieCoherenceExtraCycles", 0);
         futex_init(&zinfo->pcie.updateLock);
-        // pcieBytesPerCycle is a double but ZSim config only supports string → parse
+        // pcieBytesPerCycle is a double but ZSim config only supports string -> parse
         {
             const char* bpcStr = config.get<const char*>("sys.hierarchy.pcieBytesPerCycle", "0.0");
             zinfo->pcie.bytesPerCycle = atof(bpcStr);
@@ -1059,7 +1059,7 @@ static void InitSystem(Config& config) {
         if (!found) panic("%s has invalid child %s", it.second.c_str(), it.first.c_str());
     }
 
-    // Get the LLC(s) — skip when no caches (e.g. ALU-only config)
+    // Get the LLC(s) -- skip when no caches (e.g. ALU-only config)
     // Multiple parentless cache groups are allowed (LLC=0 / no-unified-LLC mode):
     // each top-level group connects independently to memory with no global coherence.
     bool hasCaches = !cacheGroupNames.empty();
@@ -1081,7 +1081,7 @@ static void InitSystem(Config& config) {
     // Build each of the groups, starting with the LLC(s) (skip for cacheless configs)
     unordered_map<string, CacheGroup*> cMap;
     if (hasCaches) {
-    list<string> fringe;  // FIFO — seed with all top-level groups
+    list<string> fringe;  // FIFO -- seed with all top-level groups
     for (const string& grp : llcGroups) fringe.push_back(grp);
     while (!fringe.empty()) {
         string group = fringe.front();
@@ -1254,7 +1254,7 @@ static void InitSystem(Config& config) {
 
     if (mems.empty()) {
         // Host memory controllers (standalone host-MC mode, or the host side
-        // of a co-sim). Skip if SystemRouter — that path builds per-device
+        // of a co-sim). Skip if SystemRouter -- that path builds per-device
         // MCs below.
         string memType = config.get<const char*>("sys.mem.type", "");
         if (memType != "SystemRouter") {
@@ -1409,7 +1409,7 @@ static void InitSystem(Config& config) {
                     sysTopo, sysRows, sysCols,
                     routerLat, linkLat, true /* cycleAccurate */,
                     sysRouting, sysVCs, sysBuffers,
-                    1000.0 /* clockMhz — will use reference freq */, sysFlitBits);
+                    1000.0 /* clockMhz -- will use reference freq */, sysFlitBits);
 
                 // Register system network nodes
                 for (uint32_t n = 0; n < numNodes; n++) {
@@ -1523,7 +1523,7 @@ static void InitSystem(Config& config) {
             if (banks != 1) panic("Terminal cache group %s needs to have a single bank, has %d", grp, banks);
         }
     }
-    } // hasCaches — end of cache connection
+    } // hasCaches -- end of cache connection
 
     //Tracks how many terminal caches have been allocated to cores
     unordered_map<string, uint32_t> assignedCaches;
@@ -1966,6 +1966,8 @@ static void InitGlobalStats() {
               &zinfo->pgres.noc.activePhases, &zinfo->pgres.roiNoc);
     addPgStat("pgHostMCActivePhases", "Phases with >=1 host-MC access (ROI)",
               &zinfo->pgres.hostMC.activePhases, &zinfo->pgres.roiHostMC);
+    addPgStat("pgHostUnionActivePhases", "Phases with >=1 core retiring OR a host-MC access (ROI; 1.11.106 R106-8 (b))",
+              &zinfo->pgres.hostUnion.activePhases, &zinfo->pgres.roiHostUnion);
     addPgStat("pgDevMCActivePhases", "Phases with >=1 device-MC access (ROI)",
               &zinfo->pgres.devMC[0].activePhases, &zinfo->pgres.roiDevMC0);
     {   // the denominator for all of the above
@@ -2150,7 +2152,7 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     }
 
     //It's a global stat, but I want it to be last...
-    // PIMID: heartbeats are unused under the QEMU+ZSim flow — the HEARTBEAT
+    // PIMID: heartbeats are unused under the QEMU+ZSim flow -- the HEARTBEAT
     // magic op (1028) is never dispatched by our plugin, so this counter would
     // always report all-zeros and only clutters publication output. The stat
     // emission is disabled; profHeartbeats stays nullptr (zinfo is gm_calloc'd)

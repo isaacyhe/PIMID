@@ -310,7 +310,7 @@ static inline bool CheckForMESIRace(AccessType& type, MESIState* state, MESIStat
             //In this case, the line MUST have been in S and have been INValidated
             //Do nothing. This is still a valid GETX, only it is not an upgrade miss anymore
         } else {
-            //GETS racing with INV — skip gracefully rather than panic under QEMU
+            //GETS racing with INV -- skip gracefully rather than panic under QEMU
             skipAccess = true;
         }
     }

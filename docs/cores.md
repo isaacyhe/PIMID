@@ -21,15 +21,15 @@ There is no processing-element instruction set anywhere in the simulator.
 
 The compute unit does not decode at all. It charges every instruction the same
 scaled cost, so it models no instruction set and cannot distinguish a
-floating-point operation from an integer one. What it does model — and what its
-knobs describe — is the cost of an operation and the cost of reaching data: the
+floating-point operation from an integer one. What it does model -- and what its
+knobs describe -- is the cost of an operation and the cost of reaching data: the
 memory-interface path, locality, and the in-memory network. Use it for
 memory-bound kernels, which is what it is for.
 
 That boundary is deliberate and worth stating in any write-up: the memory side of
 an element is modelled in detail, the compute side crudely. Processing in memory
 exists for memory-bound work, so the well-modelled half is the half that
-dominates — but results about compute-bound kernels on these elements do not
+dominates -- but results about compute-bound kernels on these elements do not
 follow from this simulator.
 
 ## Compute unit scaling factors

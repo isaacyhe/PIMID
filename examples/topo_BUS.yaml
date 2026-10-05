@@ -11,7 +11,7 @@ pim:
   mc:
     type: simple
 memory:
-  technology: DDR4
+  technology: SRAM   # 1.11.106: a flat BUS/FAT_TREE/TORUS_2D fabric is modelled on an SRAM/NVM device; a DRAM device has the tree and the in-die MESH_2D/RING/CROSSBAR
 noc:
   topology: BUS
   model: analytical

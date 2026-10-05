@@ -13,5 +13,5 @@ pim:
 memory:
   technology: DDR4
 noc:
-  topology: MESH_2D
+  topology: H_TREE   # 1.11.106: the detailed (Garnet) model routes the DRAM tree (or an in-die CROSSBAR); an in-die MESH_2D runs on the analytical model
   model: detailed

@@ -44,7 +44,7 @@ struct TopologyResult {
 
 class TopologyBuilders {
 public:
-    // ── Built-in topologies ──────────────────────────────────
+    // -- Built-in topologies ----------------------------------
 
     static TopologyResult buildMesh(
         uint32_t rows, uint32_t cols, uint32_t num_endpoints,
@@ -106,7 +106,7 @@ private:
     static NetworkInterface* makeNI(uint32_t id, uint32_t vcs_per_vnet,
                                     uint32_t virt_nets);
 
-    // Helper: create an internal link (Router → Router)
+    // Helper: create an internal link (Router -> Router)
     static GarnetIntLink* makeIntLink(uint32_t id,
                                       uint32_t src_node, uint32_t dst_node,
                                       const std::string& src_outport,
@@ -116,7 +116,7 @@ private:
                                       uint32_t virt_nets,
                                       uint32_t width);
 
-    // Helper: create an external link (NI ↔ Router, bidirectional)
+    // Helper: create an external link (NI <-> Router, bidirectional)
     static GarnetExtLink* makeExtLink(uint32_t id,
                                       NodeID ext_node, uint32_t int_node,
                                       Cycles latency,

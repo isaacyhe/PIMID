@@ -13,6 +13,7 @@
 // Include CACTI headers if available
 #ifdef HAVE_CACTI
 #include "cacti_interface.h"
+#include "wire.h"   // 1.11.106: the zeroed-wire ledger
 #include "parameter.h"   // 1.11.45 (E30): g_ip, to clear the global at our boundary
 #endif
 
@@ -355,7 +356,20 @@ void CACTIWrapper::runCACTI() {
 #endif
 
         // Call CACTI interface
+        const int wire_zeroed_before = pimid_cacti_wire_zeroed_count();   // 1.11.106 (census A6)
         uca_org_t result = cacti_interface(cacti_input_);
+        {   /* 1.11.106 (census A6): a wire of non-zero length priced at zero power/delay is a
+             * substitution the characterisation would otherwise carry in silence (CACTI runs in
+             * this process, outside the McPAT fork's ledger). Refuse, as the McPAT parent does. */
+            const int nw = pimid_cacti_wire_zeroed_count() - wire_zeroed_before;
+            const char* allow = std::getenv("PIMID_ALLOW_ARRAY_CLAMP");
+            if (nw > 0 && !(allow && std::string(allow) == "1")) {
+                std::cerr << "[CACTIWrapper] FATAL: CACTI zeroed " << nw << " wire(s) of non-zero length during this solve "
+                             "(each named on a [cacti] WARNING line above): the structure's wire power and delay are not modelled "
+                             "at this node. Change the node or the geometry, or set PIMID_ALLOW_ARRAY_CLAMP=1 to report anyway." << std::endl;
+                std::exit(3);
+            }
+        }
         /* 1.11.45 (audit E30): the GLOBAL never outlives the call.
          * cacti_interface() points g_ip at our input and leaves it there;
          * when this wrapper is destroyed, delete cacti_input_ would turn the

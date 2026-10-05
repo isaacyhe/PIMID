@@ -32,7 +32,7 @@ namespace gem5 {
 namespace ruby {
 namespace garnet {
 
-// ── Helper: create a Router ──────────────────────────────────
+// -- Helper: create a Router ----------------------------------
 
 Router*
 TopologyBuilders::makeRouter(uint32_t id, uint32_t vcs_per_vnet,
@@ -49,7 +49,7 @@ TopologyBuilders::makeRouter(uint32_t id, uint32_t vcs_per_vnet,
     return new Router(rp);
 }
 
-// ── Helper: create a NetworkInterface ────────────────────────
+// -- Helper: create a NetworkInterface ------------------------
 
 NetworkInterface*
 TopologyBuilders::makeNI(uint32_t id, uint32_t vcs_per_vnet,
@@ -70,7 +70,7 @@ TopologyBuilders::makeNI(uint32_t id, uint32_t vcs_per_vnet,
     return new NetworkInterface(nip);
 }
 
-// ── Helper: create an internal (Router→Router) link ──────────
+// -- Helper: create an internal (Router->Router) link ----------
 
 GarnetIntLink*
 TopologyBuilders::makeIntLink(uint32_t id,
@@ -114,7 +114,7 @@ TopologyBuilders::makeIntLink(uint32_t id,
     return new GarnetIntLink(gilp);
 }
 
-// ── Helper: create an external (NI↔Router) link ─────────────
+// -- Helper: create an external (NI<->Router) link -------------
 
 GarnetExtLink*
 TopologyBuilders::makeExtLink(uint32_t id,
@@ -123,8 +123,8 @@ TopologyBuilders::makeExtLink(uint32_t id,
                               uint32_t vcs_per_vnet, uint32_t virt_nets,
                               uint32_t width)
 {
-    // External links are bidirectional: index 0 = In (NI→Router),
-    //                                   index 1 = Out (Router→NI)
+    // External links are bidirectional: index 0 = In (NI->Router),
+    //                                   index 1 = Out (Router->NI)
     NetworkLinkParams nlp_in;
     nlp_in.name = "ext_net_link_in" + std::to_string(id);
     nlp_in.link_id = 10000 + id * 4;
@@ -173,9 +173,9 @@ TopologyBuilders::makeExtLink(uint32_t id,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
-// MESH_2D: rows × cols grid, N/S/E/W + Local ports
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
+// MESH_2D: rows x cols grid, N/S/E/W + Local ports
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildMesh(uint32_t rows, uint32_t cols,
@@ -237,13 +237,13 @@ TopologyBuilders::buildMeshImpl(uint32_t rows, uint32_t cols,
         result.topology->addExternalLink(elink);
     }
 
-    // Internal links: East↔West, North↔South
+    // Internal links: East<->West, North<->South
     uint32_t int_id = 0;
     for (uint32_t r = 0; r < rows; r++) {
         for (uint32_t c = 0; c < cols; c++) {
             uint32_t src = r * cols + c;
 
-            // East link: (r,c) → (r,c+1)
+            // East link: (r,c) -> (r,c+1)
             if (c + 1 < cols) {
                 uint32_t dst = r * cols + (c + 1);
                 GarnetIntLink* link_e = makeIntLink(int_id++,
@@ -259,7 +259,7 @@ TopologyBuilders::buildMeshImpl(uint32_t rows, uint32_t cols,
                 result.topology->addInternalLink(link_w);
             }
 
-            // North link: (r,c) → (r+1,c) — increasing row = increasing y = North
+            // North link: (r,c) -> (r+1,c) -- increasing row = increasing y = North
             if (r + 1 < rows) {
                 uint32_t dst = (r + 1) * cols + c;
                 GarnetIntLink* link_n = makeIntLink(int_id++,
@@ -281,9 +281,9 @@ TopologyBuilders::buildMeshImpl(uint32_t rows, uint32_t cols,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // TORUS_2D: mesh + wrap-around links
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildTorus(uint32_t rows, uint32_t cols,
@@ -308,7 +308,7 @@ TopologyBuilders::buildTorus(uint32_t rows, uint32_t cols,
 
     uint32_t int_id = result.int_links.size();
 
-    // Wrap-around for columns (east edge → west edge)
+    // Wrap-around for columns (east edge -> west edge)
     for (uint32_t r = 0; r < rows; r++) {
         uint32_t left = r * cols;
         uint32_t right = r * cols + (cols - 1);
@@ -327,8 +327,8 @@ TopologyBuilders::buildTorus(uint32_t rows, uint32_t cols,
     }
 
     // Wrap-around for rows: continuing North/South through wrap
-    // North wrap: last_row → first_row (continuing North past edge)
-    // South wrap: first_row → last_row (continuing South past edge)
+    // North wrap: last_row -> first_row (continuing North past edge)
+    // South wrap: first_row -> last_row (continuing South past edge)
     for (uint32_t c = 0; c < cols; c++) {
         uint32_t top = c;                          // row 0 (lowest y)
         uint32_t bottom = (rows - 1) * cols + c;   // last row (highest y)
@@ -350,9 +350,9 @@ TopologyBuilders::buildTorus(uint32_t rows, uint32_t cols,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // RING: N routers in a bidirectional ring
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
@@ -365,8 +365,8 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
     result.topology->setName(unidirectional ? "RING (unidirectional)" : "RING");
 
     if (unidirectional) {
-        // ── Unidirectional ring: standard routers, CW links only ──
-        // Acyclic channel dependency → deadlock-free with 1 VC.
+        // -- Unidirectional ring: standard routers, CW links only --
+        // Acyclic channel dependency -> deadlock-free with 1 VC.
         for (uint32_t i = 0; i < ring_size; i++) {
             result.routers.push_back(
                 makeRouter(i, vcs_per_vnet, virt_nets, router_latency, width));
@@ -383,7 +383,7 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
             result.topology->addExternalLink(elink);
         }
 
-        // CW only: router i → router (i+1) % N
+        // CW only: router i -> router (i+1) % N
         uint32_t int_id = 0;
         for (uint32_t i = 0; i < ring_size; i++) {
             uint32_t next = (i + 1) % ring_size;
@@ -394,7 +394,7 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
             result.topology->addInternalLink(link_cw);
         }
     } else {
-        // ── Bidirectional ring: RingRouters with dateline-aware VC allocation ──
+        // -- Bidirectional ring: RingRouters with dateline-aware VC allocation --
         for (uint32_t i = 0; i < ring_size; i++) {
             GarnetRouterParams rp;
             rp.name = "ring_router" + std::to_string(i);
@@ -433,7 +433,7 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
         for (uint32_t i = 0; i < ring_size; i++) {
             uint32_t next = (i + 1) % ring_size;
 
-            // CW link: router i → router next
+            // CW link: router i -> router next
             GarnetIntLink* link_cw = makeIntLink(int_id++,
                 i, next, "East", "West",
                 link_latency, vcs_per_vnet, virt_nets, width);
@@ -446,7 +446,7 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
             }
             int_outport_idx[i]++;
 
-            // CCW link: router next → router i
+            // CCW link: router next -> router i
             GarnetIntLink* link_ccw = makeIntLink(int_id++,
                 next, i, "West", "East",
                 link_latency, vcs_per_vnet, virt_nets, width);
@@ -465,9 +465,9 @@ TopologyBuilders::buildRing(uint32_t ring_size, uint32_t num_endpoints,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // CROSSBAR: every router connected to every other router
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildCrossbar(uint32_t num_endpoints,
@@ -476,7 +476,7 @@ TopologyBuilders::buildCrossbar(uint32_t num_endpoints,
                                 uint32_t width)
 {
     TopologyResult result;
-    // Single central non-blocking switch — 1 router, all NIs directly connected.
+    // Single central non-blocking switch -- 1 router, all NIs directly connected.
     // Unlike the BusArbiter (1 grant/cycle), the standard Router crossbar switch
     // allows multiple non-conflicting transfers per cycle.
     result.topology = new Topology(1);
@@ -497,9 +497,9 @@ TopologyBuilders::buildCrossbar(uint32_t num_endpoints,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // FAT_TREE: k-ary fat tree
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildFatTree(uint32_t num_endpoints, uint32_t arity,
@@ -571,11 +571,11 @@ TopologyBuilders::buildFatTree(uint32_t num_endpoints, uint32_t arity,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // BUS: 1 central BusArbiter, all NIs directly connected.
 // Unlike a crossbar router, the BusArbiter enforces shared-bus
 // semantics: only ONE flit traverses the switch per cycle.
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildBus(uint32_t num_endpoints,
@@ -587,7 +587,7 @@ TopologyBuilders::buildBus(uint32_t num_endpoints,
     result.topology = new Topology(1);
     result.topology->setName("BUS");
 
-    // Central arbiter — shared bus, not a crossbar
+    // Central arbiter -- shared bus, not a crossbar
     GarnetRouterParams rp;
     rp.name = "bus_arbiter0";
     rp.router_id = 0;
@@ -609,9 +609,9 @@ TopologyBuilders::buildBus(uint32_t num_endpoints,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // H_TREE: binary tree with H-pattern branching
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildHTree(uint32_t num_endpoints,
@@ -649,7 +649,7 @@ TopologyBuilders::buildHTree(uint32_t num_endpoints,
         result.topology->addExternalLink(elink);
     }
 
-    // Binary tree: parent i → left child 2i+1, right child 2i+2
+    // Binary tree: parent i -> left child 2i+1, right child 2i+2
     uint32_t int_id = 0;
     for (uint32_t i = 0; i < total_routers; i++) {
         uint32_t left = 2 * i + 1;
@@ -688,9 +688,9 @@ TopologyBuilders::buildHTree(uint32_t num_endpoints,
 }
 
 
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 // CUSTOM: parse topology from file
-// ═══════════════════════════════════════════════════════════════
+// ===============================================================
 
 TopologyResult
 TopologyBuilders::buildFromFile(const std::string& filename,
@@ -752,7 +752,7 @@ TopologyBuilders::buildFromFile(const std::string& filename,
     }
     if (num_endpoints == 0) num_endpoints = num_routers;
 
-    // ── Tree detection for up*/down* deadlock-free routing ──────────────────
+    // -- Tree detection for up*/down* deadlock-free routing ------------------
     // The detailed DRAM topology is a rooted tree (ROOT = router 0; each edge
     // emitted in BOTH directions). On a tree, shortest-path routing is
     // up-to-LCA-then-down, which is deadlock-free PROVIDED the up- and

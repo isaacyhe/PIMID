@@ -2,6 +2,7 @@
  * @file cache_warehouse.cpp
  * @brief Implementation of the centralized PIMID cache warehouse.
  */
+#include <iostream>
 #include "util/cache_warehouse.h"
 
 #include <cstdlib>
@@ -169,6 +170,17 @@ void configure(const std::string& cli_mode, const std::string& cli_dir,
     else if (env("PIMID_CACHE_MODE")) mode_str = env("PIMID_CACHE_MODE");
     else if (env("PIMID_NVSIM_CACHE_DISABLE")) mode_str = "off";  // back-compat
     else if (!yaml_mode.empty())      mode_str = yaml_mode;
+    {   /* 1.11.106 (census S2): an unknown mode word used to run rw in silence. */
+        static const char* kWords[] = { "", "rw", "on", "ro", "read-only", "readonly", "wo", "write-only", "writeonly", "off", "none", "disable", "disabled" };
+        const std::string m = lower(mode_str); bool ok = false;
+        for (const char* w : kWords) if (m == w) { ok = true; break; }
+        if (!ok) {
+            std::cerr << "[config] FATAL: cache mode '" << mode_str << "' (cache.mode, --cache or PIMID_CACHE_MODE) is not a value this build has. "
+                         "Valid: rw, ro, wo, off (aliases: on, read-only, readonly, write-only, writeonly, none, disable, disabled). "
+                         "An unknown word used to run rw in silence." << std::endl;
+            std::exit(2);
+        }
+    }
     s.mode = parseMode(mode_str);  // empty -> RW
 
     // ---- Dir: CLI > env > YAML > default ----

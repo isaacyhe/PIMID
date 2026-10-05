@@ -496,7 +496,7 @@ GarnetNetwork::get_router_id(int global_ni, int vnet)
     return m_nis[local_ni]->get_router_id(vnet);
 }
 
-// ── Deadlock-state dump (diagnostic) ────────────────────────────────────────
+// -- Deadlock-state dump (diagnostic) ----------------------------------------
 // For every input VC that is requesting Switch Allocation (i.e. has a flit that
 // WANTS to move) but is BLOCKED, print what it is waiting for: its up/down class,
 // the outport it wants + that outport's direction, the destination router, the

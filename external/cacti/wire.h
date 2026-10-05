@@ -42,6 +42,15 @@
 #include <iostream>
 #include <list>
 
+/* PIMID 1.11.106 (census A6): a wire of non-zero length whose power or delay
+ * came out non-positive used to be zeroed in silence (three guards below).
+ * Each such wire now prints one "[cacti] WARNING: wire ..." line and counts
+ * here; the CACTI wrapper refuses after a solve that counted any, and the
+ * McPAT fork carries the count back in its result blob (kind PIMID_SUBST_WIRE).
+ * PIMID_CACTI_FAULT=wire injects one such wire for the gate. */
+int  pimid_cacti_wire_zeroed_count();
+void pimid_cacti_note_zeroed_wire(const char* where, double length_m);
+
 class Wire : public Component
 {
   public:

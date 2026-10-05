@@ -1,10 +1,10 @@
 /**
- * synthetic_traffic.cpp — Standalone synthetic traffic injection for Garnet
+ * synthetic_traffic.cpp -- Standalone synthetic traffic injection for Garnet
  *
  * Adapted from gem5 Ruby Tester (Wisconsin Multifacet Project).
  * Supports 8 traffic patterns: uniform random, bit-complement, tornado,
  * neighbor, transpose, bit-reverse, bit-rotation, shuffle.
- * No coherence protocol needed — pure network-layer injection.
+ * No coherence protocol needed -- pure network-layer injection.
  */
 
 #include "zsim_trace_api.h"
@@ -25,7 +25,7 @@ int zsim_synthetic_traffic(const char* cfgPath,
                                         routerLat, linkLat,
                                         vcsPerVnet, buffersPerVc,
                                         clockMhz, flitSizeBits, &result);
-    printf("\n── Synthetic Traffic Results ──\n");
+    printf("\n-- Synthetic Traffic Results --\n");
     printf("  Delivered:      %lu packets\n", result.totalPackets);
     printf("  Total cycles:   %lu\n", result.totalCycles);
     printf("  Avg latency:    %.1f cycles\n", result.avgLatency);

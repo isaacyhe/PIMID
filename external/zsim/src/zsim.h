@@ -504,6 +504,7 @@ struct GlobSimInfo {
         PhaseActivity sharedCache;
         PhaseActivity noc;
         PhaseActivity hostMC;
+        PhaseActivity hostUnion;   // 1.11.106 (ruling R106-8 (b)): any core retiring OR a host-MC access -- the host gating domain as ONE piece
         /* 1.11.57 (latent F024): the "[64]" and the words "per-channel"
          * promise a resolution nothing produces. Only devMC[0] is ever
          * touched (RamulatorMemory::access and the PE memory interface) and
@@ -551,6 +552,7 @@ struct GlobSimInfo {
         uint64_t roiPhase = 0;
         uint64_t roiAnyCore = 0, roiSharedCache = 0, roiNoc = 0;
         uint64_t roiHostMC = 0, roiDevMC0 = 0;
+        uint64_t roiHostUnion = 0;   // 1.11.106
         /* 1.11.40 (E17): the gap histograms arm HERE, not at the call sites --
          * there are four of them and a measurement that silently misses one
          * would report a window it did not measure. Same instant, same window
@@ -563,6 +565,7 @@ struct GlobSimInfo {
             roiSharedCache = sharedCache.activePhases;
             roiNoc         = noc.activePhases;
             roiHostMC      = hostMC.activePhases;
+            roiHostUnion   = hostUnion.activePhases;   // 1.11.106
             roiDevMC0      = devMC[0].activePhases;
         }
     } pgres;

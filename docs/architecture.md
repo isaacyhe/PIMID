@@ -15,12 +15,12 @@ backed by Ramulator2, CACTI, NVSim, McPAT, and Garnet.
 
 ```
 workload binary
-   └─ QEMU user-mode (TCG)
-        └─ libzsim_qemu.so plugin — every instruction/memory access
-             └─ ZSim core model (alu / simple / in_order / ooo / null)
-                  └─ caches → PE memory interface
-                       ├─ NoC model (analytical | detailed Garnet)
-                       └─ memory backend (Ramulator2 / CACTI / NVSim)
+   `- QEMU user-mode (TCG)
+        `- libzsim_qemu.so plugin -- every instruction/memory access
+             `- ZSim core model (alu / simple / in_order / ooo / null)
+                  `- caches -> PE memory interface
+                       |- NoC model (analytical | detailed Garnet)
+                       `- memory backend (Ramulator2 / CACTI / NVSim)
 ```
 
 ## Simulation methods
@@ -34,8 +34,8 @@ workload binary
 
 ## Scopes
 
-- `scope: device` — a single PIM device: PEs in the memory hierarchy.
-- `scope: system` — multi-node: hosts (with caches) + devices connected by a
+- `scope: device` -- a single PIM device: PEs in the memory hierarchy.
+- `scope: system` -- multi-node: hosts (with caches) + devices connected by a
   system interconnect; supports host->device offload ([cosim.md](cosim.md)).
 
 ## Two-fabric system view (co-sim)
@@ -78,7 +78,7 @@ A co-sim system has **two fabrics joined by one bridge**:
 ## Reproducibility
 
 **Given a deterministic instruction stream, the simulator is exact.** Repeated
-runs of a single-threaded workload produce bit-identical results — cycles and
+runs of a single-threaded workload produce bit-identical results -- cycles and
 access counts, every digit.
 
 **A parallel workload does not repeat.** Its threads are real threads inside the
@@ -88,7 +88,7 @@ interleaving either, so this is the workload's property rather than a defect in
 the simulator. Total work stays stable across runs; simulated time moves.
 
 The size of that movement is not a constant. It depends on the workload, the
-machine, and how loaded the machine is — measurements of the same configuration
+machine, and how loaded the machine is -- measurements of the same configuration
 on one node have ranged from a fraction of a percent to several percent depending
 on what else was running. Quote it as a measured bound for the specific study,
 not as a property of the simulator.
@@ -102,8 +102,8 @@ Two things follow:
   bit-identical output. That is a far sharper check than judging a parallel run
   through its own noise, and it costs one run.
 
-The settings below reduce this variation substantially — they stop the parallel
-runtime resizing its team and stop its threads spinning at barriers — but they
+The settings below reduce this variation substantially -- they stop the parallel
+runtime resizing its team and stop its threads spinning at barriers -- but they
 cannot remove it, because its source is the workload.
 
 ## Guest OpenMP runtime settings

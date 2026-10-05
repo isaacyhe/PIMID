@@ -545,7 +545,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
            * busy, so a co-sim PE could never show idle residency.
            * 1.11.51 (L207): classify by the block being RETIRED. */
           if (!retiredBbl->synth) { uint64_t _ph = zinfo->numPhases;
-              pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); } }
+              pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); zinfo->pgres.hostUnion.touch(_ph); } }
     mixAdd(retiredBbl);  // 1.11.10 measured mix; 1.11.51 (L207): the RETIRED block
     /* 1.11.47 (L203): soft-float on an FPU-less OOO element -- the same
      * charge simple/in-order/alu cores have carried since 1.11.11. Applied at

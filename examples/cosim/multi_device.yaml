@@ -55,7 +55,7 @@ system:
   devices:
     - name: device0
       type: compute
-      attachment: pcie_gen5
+      attachment: external   # 1.11.106: internal | external (the link class follows the attachment; name one with power.link.link_type)
       frequency_mhz: 2000
       tech_node_nm: 22
       pe_type: alu_core
@@ -69,7 +69,7 @@ system:
         technology: SRAM
       noc:
         topology: MESH_2D
-        model: simple
+        model: analytical   # 1.11.106: simple was refused since 1.11.90
 
     # v2 scope -- refused by resolveMemoryTopology() in this build (see header):
     # - name: device1
@@ -88,8 +88,8 @@ system:
     #     technology: SRAM
     #   noc:
     #     topology: MESH_2D
-    #     model: simple
+    #     model: analytical   # 1.11.106
 
   network:
     topology: crossbar
-    model: simple
+    model: analytical   # 1.11.106

@@ -16,8 +16,8 @@ run that asks for the same point reads it back instead of re-running the search.
 Because the underlying computation is deterministic, the cache is safe: a hit is
 indistinguishable from a fresh run except for being much faster.
 
-The warehouse is *centralized* — one root directory shared across runs and
-backends — so characterization work done by one experiment is reused by every
+The warehouse is *centralized* -- one root directory shared across runs and
+backends -- so characterization work done by one experiment is reused by every
 other.
 
 ## Cache modes
@@ -33,7 +33,7 @@ The cache behaves according to a **mode**:
 
 Notes:
 
-- `wo` ("write-only") still computes everything from scratch — it just skips the
+- `wo` ("write-only") still computes everything from scratch -- it just skips the
   read so it always recomputes, and it stores the fresh result, superseding any
   previous one. This is the mode to use when refreshing entries flagged by
   `pimid-cache stale`.
@@ -45,13 +45,13 @@ The cache mode and warehouse location can be set three ways. **Precedence,
 highest first: CLI > environment > YAML config > built-in default.**
 
 1. **CLI flags**
-   - `--cache <mode>` — one of `rw`, `ro`, `wo`, `off`.
-   - `--cache-dir <path>` — warehouse root.
+   - `--cache <mode>` -- one of `rw`, `ro`, `wo`, `off`.
+   - `--cache-dir <path>` -- warehouse root.
 
 2. **Environment variables**
-   - `PIMID_CACHE_MODE` — `rw` | `ro` | `wo` | `off`.
-   - `PIMID_CACHE_DIR` — warehouse root.
-   - `PIMID_CACHE_DISABLE` — if set to a truthy value, forces the cache off
+   - `PIMID_CACHE_MODE` -- `rw` | `ro` | `wo` | `off`.
+   - `PIMID_CACHE_DIR` -- warehouse root.
+   - `PIMID_CACHE_DISABLE` -- if set to a truthy value, forces the cache off
      (equivalent to `--cache off`).
 
 3. **YAML config**
@@ -70,11 +70,11 @@ highest first: CLI > environment > YAML config > built-in default.**
 
 The previous, NVSim-specific environment variables are still honored:
 
-- `PIMID_NVSIM_CACHE_DIR` — legacy location of the NVSim cache. The warehouse
+- `PIMID_NVSIM_CACHE_DIR` -- legacy location of the NVSim cache. The warehouse
   treats its **parent directory** as the warehouse root (the legacy dir was the
   per-backend `nvsim/` subdir). Honored only when the generic
   `PIMID_CACHE_DIR` is unset.
-- `PIMID_NVSIM_CACHE_DISABLE` — legacy disable switch, treated like
+- `PIMID_NVSIM_CACHE_DISABLE` -- legacy disable switch, treated like
   `PIMID_CACHE_DISABLE`.
 
 The generic `PIMID_CACHE_*` variables take precedence over the legacy
@@ -84,11 +84,11 @@ The generic `PIMID_CACHE_*` variables take precedence over the legacy
 
 ```
 <root>/                       warehouse root (default ~/.cache/pimid)
-├── index.jsonl               append-only manifest (one JSON object per line)
-├── nvsim/                     per-backend artifact subdir
-│   ├── nvm_t1_c8388608_n22.xml
-│   └── ...
-└── <other-backend>/          one subdir per backend
+|-- index.jsonl               append-only manifest (one JSON object per line)
+|-- nvsim/                     per-backend artifact subdir
+|   |-- nvm_t1_c8388608_n22.xml
+|   `-- ...
+`-- <other-backend>/          one subdir per backend
 ```
 
 ### Manifest: `index.jsonl`
@@ -143,15 +143,15 @@ A standalone Python 3 (stdlib-only) inspector/maintenance CLI lives at
 
 ### Subcommands
 
-- `pimid-cache path` — print the resolved root and manifest path.
-- `pimid-cache list [--backend B]` — table of unique `(backend, key)` entries
+- `pimid-cache path` -- print the resolved root and manifest path.
+- `pimid-cache list [--backend B]` -- table of unique `(backend, key)` entries
   (latest each): backend, key, tool_version, human timestamp, key params.
-- `pimid-cache show <key> [--backend B]` — pretty-printed full latest record.
-- `pimid-cache stale [--current-version X] [--backend B]` — entries whose
+- `pimid-cache show <key> [--backend B]` -- pretty-printed full latest record.
+- `pimid-cache stale [--current-version X] [--backend B]` -- entries whose
   `tool_version` differs from the current version (default `1.0.0`). These are
-  refresh candidates — re-run them with `--cache wo`.
+  refresh candidates -- re-run them with `--cache wo`.
 - `pimid-cache prune [--dry-run] [--force] [--stale] [--backend B] [--current-version X]`
-  — compact the manifest by removing superseded/duplicate (and malformed) lines,
+  -- compact the manifest by removing superseded/duplicate (and malformed) lines,
   keeping the latest line per key. With `--stale`, also drop entries whose
   version mismatches and delete their artifact files when locatable. **Defaults
   to a dry run**; pass `--force` to actually apply. All operations are confined
@@ -192,6 +192,6 @@ pimid-cache --dir /scratch/pimid-cache list
 PIMID_CACHE_DIR=/scratch/pimid-cache pimid-cache list
 ```
 
-A missing or empty warehouse is handled gracefully — the tool prints a
+A missing or empty warehouse is handled gracefully -- the tool prints a
 "warehouse empty / not found" notice rather than crashing, and malformed
 manifest lines are skipped with a warning.

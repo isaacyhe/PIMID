@@ -13,5 +13,5 @@ pim:
 memory:
   technology: DDR4
 noc:
-  topology: MESH_2D
+  topology: H_TREE   # 1.11.106: at the CHIP/RANK tiers the fabric is the tree (an in-die MESH_2D/RING/CROSSBAR applies at BANK_GROUP and below)
   model: analytical

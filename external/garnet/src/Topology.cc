@@ -1,5 +1,5 @@
 /*
- * Topology.cc — out-of-line implementation of Topology::createLinks()
+ * Topology.cc -- out-of-line implementation of Topology::createLinks()
  * and Topology::createRoutingTable()
  *
  * The methods must be defined here (not inline in Topology.hh) because
@@ -25,8 +25,8 @@ namespace ruby {
  *   routing_table_entry[vnet] = NetDest of all destination NODES reachable
  *   through outport P as the first hop on a shortest path.
  *
- * External outports (Router → NI): reachable set = {NI's node ID}
- * Internal outports (Router → Router_B): reachable set = all nodes whose
+ * External outports (Router -> NI): reachable set = {NI's node ID}
+ * Internal outports (Router -> Router_B): reachable set = all nodes whose
  *   shortest path from R passes through Router_B as next hop.
  */
 void Topology::createRoutingTable(Network* net) {
@@ -109,7 +109,7 @@ void Topology::createRoutingTable(Network* net) {
     // Key: (src_router, dst_router_or_NI), Value: vector<NetDest> per vnet.
     routingTable_.clear();
 
-    // For external out links (Router → NI): the routing entry just contains
+    // For external out links (Router -> NI): the routing entry just contains
     // the node connected by that link.
     for (auto* link : externalLinks_) {
         NodeID ext = link->getExtNode();
@@ -119,12 +119,12 @@ void Topology::createRoutingTable(Network* net) {
         for (uint32_t v = 0; v < numVnets; v++) {
             entry[v].add(ext);
         }
-        // Key is (router, ext_node) — but we need a way to distinguish
+        // Key is (router, ext_node) -- but we need a way to distinguish
         // ext link entries from int link entries. Use high bit for ext nodes.
         routingTable_[{router, (SwitchID)(ext + numR)}] = entry;
     }
 
-    // For internal out links (Router_A → Router_B): the routing entry contains
+    // For internal out links (Router_A -> Router_B): the routing entry contains
     // all nodes whose shortest path from Router_A goes through Router_B as
     // the next hop.
     for (auto* link : internalLinks_) {
@@ -146,12 +146,12 @@ void Topology::createRoutingTable(Network* net) {
 }
 
 void Topology::createLinks(Network* net) {
-    // External links: NI ↔ Router (bidirectional)
+    // External links: NI <-> Router (bidirectional)
     for (auto* link : externalLinks_) {
         NodeID ext = link->getExtNode();
         uint32_t router = link->getIntNode();
 
-        // Get routing entry for ext out link (Router → NI)
+        // Get routing entry for ext out link (Router -> NI)
         auto key = std::make_pair((SwitchID)router, (SwitchID)(ext + numRouters_));
         auto it = routingTable_.find(key);
         std::vector<NetDest> routing_table_entry;
@@ -162,7 +162,7 @@ void Topology::createLinks(Network* net) {
         net->makeExtInLink(ext, router, link, routing_table_entry);
         net->makeExtOutLink(router, ext, link, routing_table_entry);
     }
-    // Internal links: Router → Router (unidirectional)
+    // Internal links: Router -> Router (unidirectional)
     for (auto* link : internalLinks_) {
         auto* intLink = static_cast<BasicIntLink*>(link);
         uint32_t src = intLink->getSrcNode();

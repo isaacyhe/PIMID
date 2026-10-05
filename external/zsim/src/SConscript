@@ -146,7 +146,7 @@ import shutil
 zsimLibDir = os.path.join(Dir('#').abspath, "lib")
 if shutil.which("patchelf"):
     libEnv.AddPostAction(zsimLib, "patchelf --remove-needed ld-linux-x86-64.so.2 $TARGET 2>/dev/null || true")
-    # Convert RUNPATH to RPATH so it applies to transitive dependencies (libelf→libz→libc)
+    # Convert RUNPATH to RPATH so it applies to transitive dependencies (libelf->libz->libc)
     # and ensure zsim/lib/ (with patched system libs) is searched first
     rpath = ":".join([
         zsimLibDir,

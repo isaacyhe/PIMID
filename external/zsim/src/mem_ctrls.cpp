@@ -91,7 +91,7 @@ uint64_t SimpleMemory::access(MemReq& req) {
              * write-heavy phase could be credited as idle and power-gated.
              * (PUTS falls through below without marking: a clean writeback is
              * explicitly not a real access here.) */
-            zinfo->pgres.hostMC.touch(zinfo->numPhases);
+            zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);
             //Note no break
         case PUTS:
             //Not a real access -- memory must treat clean wbacks as if they never happened.
@@ -101,14 +101,14 @@ uint64_t SimpleMemory::access(MemReq& req) {
             profReads.atomicInc();
             profTotalRdLat.atomicInc(curLatency);
             __sync_fetch_and_add(&curPhaseAccesses, 1);
-            zinfo->pgres.hostMC.touch(zinfo->numPhases);  // 1.11.8 PG residency
+            zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);  // 1.11.8 PG residency
             *req.state = req.is(MemReq::NOEXCL)? S : E;
             break;
         case GETX:
             profReads.atomicInc();
             profTotalRdLat.atomicInc(curLatency);
             __sync_fetch_and_add(&curPhaseAccesses, 1);
-            zinfo->pgres.hostMC.touch(zinfo->numPhases);  // 1.11.8 PG residency
+            zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);  // 1.11.8 PG residency
             *req.state = M;
             break;
 

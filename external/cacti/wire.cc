@@ -32,6 +32,9 @@
 #include "wire.h"
 #include "cmath"
 #include <stdexcept>
+#include <cstdlib>
+#include <string>
+#include <iostream>
 // use this constructor to calculate wire stats
 Wire::Wire(
     enum Wire_type wire_model,
@@ -54,7 +57,8 @@ Wire::Wire(
     try {
       Wire winit;
     } catch (...) {
-      // Wire init failed -- leave this wire with zero power
+      // Wire init failed -- leave this wire with zero power (PIMID 1.11.106: counted)
+      pimid_cacti_note_zeroed_wire("wire type initialisation failed", wire_length);
       return;
     }
   }
@@ -64,9 +68,24 @@ Wire::Wire(
   wire_length      *= 1e6;
   wire_width       *= 1e6;
   wire_spacing     *= 1e6;
-  if (wire_length <= 0 || power.readOp.dynamic <= 0 || power.readOp.leakage <= 0 || power.readOp.gate_leakage <= 0) {
+  {   /* PIMID 1.11.106 (gate fault injection): PIMID_CACTI_FAULT=wire zeroes one wire of non-zero length */
+    static bool injected = false;
+    const char* f = std::getenv("PIMID_CACTI_FAULT");
+    if (!injected && f && std::string(f) == "wire" && wire_length > 0) { injected = true; power.readOp.dynamic = 0; }
+  }
+  if (wire_length <= 0) {
+    // A zero-length wire has no power and no delay: not a substitution (exempt, as in interconnect.cc).
+    power.readOp.dynamic = 0;
+    power.readOp.leakage = 0;
+    power.readOp.gate_leakage = 0;
+    delay = 0;
+    return;
+  }
+  if (power.readOp.dynamic <= 0 || power.readOp.leakage <= 0 || power.readOp.gate_leakage <= 0) {
     // Non-positive values can happen at certain technology nodes (e.g., 90nm).
-    // Return a zero-power wire instead of crashing.
+    // PIMID 1.11.106 (census A6): the wire is still returned at zero power so CACTI does not
+    // crash, but it is COUNTED and named; the caller refuses the solve.
+    pimid_cacti_note_zeroed_wire("wire power non-positive at this node", wire_length);
     power.readOp.dynamic = 0;
     power.readOp.leakage = 0;
     power.readOp.gate_leakage = 0;
@@ -121,11 +140,25 @@ Wire::Wire(double w_s, double s_s, enum Wire_placement wp, double resis, /*Techn
 
   if (power.readOp.dynamic <= 0 || power.readOp.leakage <= 0 || power.readOp.gate_leakage <= 0) {
     // Non-positive values can happen at certain technology nodes.
-    // Return a zero-power wire instead of crashing.
+    // PIMID 1.11.106 (census A6): counted and named; the caller refuses the solve.
+    pimid_cacti_note_zeroed_wire("wire type power non-positive at this node", 0.0);
     power.readOp.dynamic = 0;
     power.readOp.leakage = 0;
     power.readOp.gate_leakage = 0;
     delay = 0;
+  }
+}
+
+/* PIMID 1.11.106 (census A6): the zeroed-wire ledger. */
+static int pimid_wire_zeroed_total = 0;
+int pimid_cacti_wire_zeroed_count() { return pimid_wire_zeroed_total; }
+void pimid_cacti_note_zeroed_wire(const char* where, double length_m) {
+  pimid_wire_zeroed_total++;
+  static int printed = 0;
+  if (printed < 8) {   // once per structure in practice; never floods
+    printed++;
+    std::cerr << "[cacti] WARNING: wire " << where << " (length " << length_m
+              << " m) is priced at ZERO power and delay -- a substituted value, not a modelled one (counted; the run refuses unless PIMID_ALLOW_ARRAY_CLAMP=1)" << std::endl;
   }
 }
 

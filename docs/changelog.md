@@ -7,6 +7,102 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.106 -- the configuration loader refuses what it used to replace in silence: typed string reads, the enum words, the duplicate names, the key schema, the zeroed wires; the host idle credit is measured
+
+The queue the audit rounds 7 and 8 parked for after the fleet launch, pulled
+before it (user, 2026-10-05), censused against the tree (`_1166audit/r1/
+R106_CENSUS.md`: most of it had closed in 1.11.90) and settled under eight
+rulings (R106-1 to R106-8). Nothing here moves a corpus number; a refusal
+changes an exit code and a message.
+
+**(1) Typed string reads (census B1).** `yamlString` / `yamlStringReq`
+replace the 79 raw string reads: a map, a sequence or an empty value where a
+word is expected refuses naming the path (yaml-cpp used to turn the first two
+into the default and the third into the word "null", in silence). The
+`cache.cacti.power_gating.*` flags and `perf_loss` read through yamlBool /
+yamlDouble with a (0, 1) range; the three bare `as<bool>()` reads accept 0/1.
+
+**(2) The enum words (census S1-S10, rulings R106-1 b, R106-2 b, R106-3 a).**
+`system.devices[].attachment` accepts internal or external; `cache.mode`
+(and --cache, PIMID_CACHE_MODE) refuses an unknown word that used to run
+rw; `noc.topology` has one accepted list for every family (MESH_2D with the
+MESH alias, TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM; a DRAM
+device then applies its own rule); `system.network.topology` is upper-cased
+at load and checked (the corpus's lowercase crossbar would have become
+MESH_2D on zsim's multi-device path; the printed "System Network:" line is
+upper-case now); `system.devices[].pim.mc.type` accepts simple; an unknown
+`power.mcpat_overrides` name refuses; `placement.level` is case-folded and an
+unknown word refuses (R106-1 b); the host `noc.topology` / `noc.model` words
+stay accepted with a WARNING that the host fabric runs as the analytic
+crossbar (R106-2 b; a host NoC model is a planned 1.1x release); the four
+warn-and-run cases refuse (R106-3 a): an unparsable
+`memory.controller.bandwidth`, `controller.type: ramulator` on a non-DRAM
+part, a `system.network.links` entry naming no device, an unknown
+`synthetic.pattern` (the list now includes memory-directed).
+
+**(3) The new defects (census N1-N7) and the duplicate names (B5).**
+`cache.pg` is read outside the `cache.l2` block (N1; moves only a shape the
+corpus does not use: in-order PEs with cache.pg and no cache.l2 section);
+`noc.mlp` below 1 refuses (N3); `memory.dram.device_width` on a non-DRAM part
+refuses (N4); on SRAM and the NVMs a `memory.controller.bandwidth` above the
+array's own cap refuses instead of being clamped in silence (R106-4 b);
+`system.hosts[].workload.env` and `system.devices[].workload.env` are read
+and join the one simulated process's environment, a key given twice taking
+the node's value with a NOTE (R106-5 a); the `pcie_gen3` link preset exists
+(PCI-SIG 8 GT/s x16: 15.75 GB/s, 500 ns, 20 B header; R106-6 a); the second
+`link_type` read is gone (N2 residue); giving both names of one quantity
+refuses, naming both (power.temperature_k/c; technology.node_nm /
+system.tech_node_nm / power.tech_node_nm; pim.pe.core_type/type;
+pim.pe.placement/pim.placement; noc.virtual_channels_per_vn/vcs_per_vnet;
+memory.timing read and write pairs; noc.bridges/gateways; power.link/pcie);
+the `noc.clock_mhz` NOTE names pim.pe.frequency_mhz too.
+
+**(4) The key schema (census B6, review R6-7).** Every nested key the loader
+reads is listed (345 paths, from the census); an unknown key under a known
+section refuses naming it and the nearest accepted key, so a misspelt
+`memory.technolgy` no longer runs the SRAM default under DDR4's name.
+Device-scope-only keys written inside a `system.devices[]` node are refused
+in this release; 1.11.107 (ruling R106-7 c) makes a node a device-scope config.
+Every corpus and example configuration loads unchanged (41 + 37 key paths,
+all in the set).
+
+**(5) The zeroed wires (census A6).** CACTI's three wire guards used to
+return a wire of non-zero length at zero power and delay in silence at some
+nodes. Each now prints one `[cacti] WARNING: wire ...` and counts; the CACTI
+wrapper refuses the solve (rc 3) and the McPAT fork carries the count back
+as a fifth substitution kind, refused by the parent like the others
+(PIMID_ALLOW_ARRAY_CLAMP=1 reports anyway). Zero-length wires stay exempt.
+PIMID_CACTI_FAULT=wire injects one for the gate.
+
+**(6) The host idle credit is measured (census A10, ruling R106-8 b).** The
+host power-gating residency took max(core-active, host-MC-active) phases and
+called it a lower bound that under-credits; it is an upper bound on activity
+that over-credits. zsim now keeps a union tracker (any core retiring OR a
+host-MC access) and the credit uses it; the printed line says so. Moves only
+shapes with hosts[].pg: true, which the corpus does not use.
+
+**(7) ASCII (census A9 residue).** 265 non-ASCII lines in PIMID-authored
+files (docs, zsim, garnet, one JSON) are ASCII now; two printed strings change
+bytes (the GarnetBatch "smooth=a->b" line and the synthetic-traffic banner).
+
+**(7b) Closed on the docs census's findings.** The cache-mode refusal names the
+real flag (`--cache`); `system.devices[].noc.topology` is checked against the
+same list as `noc.topology`; `host.tech_node_nm` / `power.host_tech_node_nm`
+join the duplicate pairs; the `links[].type` refusal names pcie_gen3;
+`simulation.mpi_contention_points` outside 1..256 and `memory.ports_per_bank`
+below 1 refuse instead of being clamped in silence; a `power.mcpat_overrides`
+NoC name takes the 0-based level index the code looks up (`noc.<index>.*`);
+`cache.pg: true` gates the shared caches on its own (the flag and the
+shared-cache residency were set only inside the PE-gating branch, so it gated
+nothing unless the PEs gated too; moves only shapes with cache.pg and no PE
+gating, none in the corpus); `examples/cosim/multi_device.yaml` loads again.
+Deferred to 1.11.107's node vocabulary: a system device node is priced with
+McPAT's built-in 32/32 architectural registers instead of the config's.
+
+**(8) Docs.** yaml_reference.md gains the 69 read-but-undocumented keys,
+marks the refused or inert documented ones, states the rules above, fixes the
+DDR4 example that did not load and the placement and link-type tables.
+
 ## 1.11.105 -- the IDD code tables are deleted; the part record is the source (IDD-RECORDS step 2)
 
 Step 2 of the IDD-RECORDS migration (ruling (a)). The energy layer's code

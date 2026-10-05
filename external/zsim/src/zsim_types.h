@@ -2,7 +2,7 @@
  *
  * When building with ZSIM_USE_QEMU, this header provides the type aliases
  * that ZSim's simulation core (cores, caches, scheduler) expects from Pin.
- * These are simple integer typedefs — no Pin functionality is needed.
+ * These are simple integer typedefs -- no Pin functionality is needed.
  */
 
 #ifndef ZSIM_TYPES_H_

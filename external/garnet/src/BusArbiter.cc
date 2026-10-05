@@ -1,5 +1,5 @@
 /*
- * BusArbiter — shared-bus arbiter for Garnet BUS topology.
+ * BusArbiter -- shared-bus arbiter for Garnet BUS topology.
  *
  * Models a real shared bus: one flit crosses the switch per cycle.
  * Uses round-robin arbitration among all input ports for fairness.
@@ -72,7 +72,7 @@ BusArbiter::wakeup()
 
 /*
  * SA-I: For each input port, select one ready VC via round-robin.
- * Same logic as the standard SwitchAllocator — we just collect
+ * Same logic as the standard SwitchAllocator -- we just collect
  * per-input requests here.
  */
 void
@@ -101,7 +101,7 @@ BusArbiter::arbitrate_inports()
 }
 
 /*
- * SA-II: Bus arbitration — grant exactly ONE input port per cycle.
+ * SA-II: Bus arbitration -- grant exactly ONE input port per cycle.
  *
  * Round-robin across all input ports. The first port (starting from
  * m_bus_rr) that has a pending request wins the bus for this cycle.

@@ -1,5 +1,5 @@
 /*
- * RingRouter — dateline-aware router for Garnet RING topology.
+ * RingRouter -- dateline-aware router for Garnet RING topology.
  *
  * Standard crossbar throughput (N flits/cycle across N output ports),
  * but VC allocation enforces the dateline invariant:
@@ -86,7 +86,7 @@ class RingRouter : public Router {
     std::vector<PortDirection> m_dateline_dirns;
     bool m_dimension_reset = false;
 
-    // Per-input request state (SA-I → SA-II)
+    // Per-input request state (SA-I -> SA-II)
     std::vector<int> m_port_requests;
     std::vector<int> m_vc_winners;
     std::vector<int> m_round_robin_invc;

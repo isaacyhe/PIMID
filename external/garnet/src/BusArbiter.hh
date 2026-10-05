@@ -1,5 +1,5 @@
 /*
- * BusArbiter — shared-bus arbiter for Garnet BUS topology.
+ * BusArbiter -- shared-bus arbiter for Garnet BUS topology.
  *
  * Replaces the crossbar-style router at the center of a BUS topology.
  * A real shared bus allows only ONE transfer per cycle across all ports.
@@ -52,8 +52,8 @@ class BusArbiter : public Router {
     void check_for_wakeup();
 
     // Per-input request state (populated by SA-I, consumed by SA-II)
-    std::vector<int> m_port_requests;   // inport → requested outport (-1 = none)
-    std::vector<int> m_vc_winners;      // inport → winning VC
+    std::vector<int> m_port_requests;   // inport -> requested outport (-1 = none)
+    std::vector<int> m_vc_winners;      // inport -> winning VC
 
     // Per-input round-robin for VC selection
     std::vector<int> m_round_robin_invc;

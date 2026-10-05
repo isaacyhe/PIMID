@@ -1,3 +1,4 @@
+#include "wire.h"   // 1.11.106: pimid_cacti_wire_zeroed_count (the CACTI zeroed-wire ledger)
 #include "power/mcpat_wrapper.h"
 #include <iostream>
 #include <fstream>
@@ -1032,7 +1033,7 @@ struct ResultBlob {
      * sanitiser clamps, links left at zero power, non-finite reduction
      * factors. The child cannot refuse on its own behalf without losing the
      * count, so it carries them back and the PARENT refuses. */
-    int subst_counts[4];
+    int subst_counts[5];   // 1.11.106: + zeroed wires (PIMID_SUBST_WIRE)
     // After this struct, num_noc_levels * sizeof(PowerMetrics) bytes follow.
 };
 constexpr McPATWrapper::ComponentType kComponentOrder[ResultBlob::kNumComponents] = {
@@ -1048,7 +1049,7 @@ constexpr McPATWrapper::ComponentType kComponentOrder[ResultBlob::kNumComponents
 /* 1.11.57 (latent C012): the blob's format stamp. Bump it whenever the layout
  * of ResultBlob changes, so a file written by a different build is rejected
  * rather than reinterpreted. */
-constexpr uint64_t kResultBlobMagic = 0x50494D4944425032ULL;  // "PIMIDBP2" (1.11.90: +subst_counts)
+constexpr uint64_t kResultBlobMagic = 0x50494D4944425033ULL;  // "PIMIDBP3" (1.11.106: subst_counts[5], + wires)
 
 /* FNV-1a over raw bytes. Not a cryptographic hash and does not need to be:
  * its job is to make two DIFFERENT input sets collide with negligible
@@ -1326,6 +1327,7 @@ void McPATWrapper::computePower() {
         setenv("PIMID_MCPAT_CHILD", "1", 1);
         try {
             pimid_reset_substitutions();   // 1.11.90: this child's ledger only
+            const int wire_zeroed_before = pimid_cacti_wire_zeroed_count();   // 1.11.106: the parent's earlier solves are not this child's
             runMcPAT();
             extractResults();
 
@@ -1354,9 +1356,10 @@ void McPATWrapper::computePower() {
             blob.pcie_area_mm2   = mcpat_pcie_area_mm2_;
             blob.total_area_mm2  = mcpat_total_area_mm2_;
             blob.num_noc_levels  = static_cast<int>(noc_level_power_.size());
-            static_assert(PIMID_SUBST_KINDS == 4, "ResultBlob::subst_counts size");
+            static_assert(PIMID_SUBST_KINDS == 5, "ResultBlob::subst_counts size");
             for (int k = 0; k < PIMID_SUBST_KINDS; k++)
                 blob.subst_counts[k] = pimid_substitution_count(k);
+            blob.subst_counts[PIMID_SUBST_WIRE] = pimid_cacti_wire_zeroed_count() - wire_zeroed_before;   // 1.11.106: this child's solves
             blob.core_ifu_w = blob.core_lsu_w = blob.core_mmu_w = 0.0;
             blob.core_exu_w = blob.core_pipe_w = blob.core_undiff_w = 0.0;
             blob.core_btb_area_mm2 = blob.core_bpt_area_mm2 = blob.core_bp_w = 0.0;
@@ -1535,13 +1538,14 @@ void McPATWrapper::computePower() {
         const int nn = blob.subst_counts[PIMID_SUBST_NOC];
         const int nl = blob.subst_counts[PIMID_SUBST_LINK];
         const int nr = blob.subst_counts[PIMID_SUBST_REDUCTION];
-        if (na + nn + nl + nr > 0) {
-            char counts[256];
+        const int nw = blob.subst_counts[PIMID_SUBST_WIRE];   // 1.11.106 (census A6)
+        if (na + nn + nl + nr + nw > 0) {
+            char counts[320];
             std::snprintf(counts, sizeof(counts),
                           "%d array clamp(s) or unsolved array(s), %d router "
                           "field(s) sanitised, %d link(s) left at zero power, "
-                          "%d non-finite reduction factor(s)",
-                          na, nn, nl, nr);
+                          "%d non-finite reduction factor(s), %d wire(s) of non-zero length zeroed",
+                          na, nn, nl, nr, nw);
             const char* allow = std::getenv("PIMID_ALLOW_ARRAY_CLAMP");
             if (allow && std::string(allow) == "1") {
                 std::cerr << "[McPATWrapper] WARNING: PIMID_ALLOW_ARRAY_CLAMP=1:"

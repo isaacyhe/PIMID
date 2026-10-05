@@ -42,7 +42,7 @@
 #include "gem5_compat/sim/clocked_object.hh"
 #endif
 
-// ── Topology and routing enumerations ────────────────────────
+// -- Topology and routing enumerations ------------------------
 
 enum class NoCTopology {
     MESH_2D, TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM
@@ -52,7 +52,7 @@ enum class NoCRouting {
     XY, DOR, SHORTEST, DIRECT, NCA, TABLE, CUSTOM
 };
 
-// ── String ↔ enum helpers ────────────────────────────────────
+// -- String <-> enum helpers ------------------------------------
 
 inline NoCTopology parseNoCTopology(const std::string& s) {
     if (s == "MESH_2D")   return NoCTopology::MESH_2D;
@@ -208,14 +208,14 @@ struct GarnetStats {
  */
 class GarnetNetwork : public Network {
 private:
-    // ── Topology configuration ───────────────────────────────
+    // -- Topology configuration -------------------------------
     NoCTopology topology_;
     NoCRouting routing_;
     uint32_t numRows_;
     uint32_t numCols_;
     uint32_t numNodes_;
 
-    // ── Latency parameters ───────────────────────────────────
+    // -- Latency parameters -----------------------------------
     uint32_t routerLatency_;
     uint32_t linkLatency_;
     uint32_t injectionLatency_;
@@ -223,33 +223,33 @@ private:
     uint32_t deadlockThreshold_ = 500000;  // VC-busy cycles before deadlock panic
     double clockMhz_;
 
-    // ── Garnet detailed-mode parameters ──────────────────────
+    // -- Garnet detailed-mode parameters ----------------------
     uint32_t vcsPerVnet_;
     uint32_t buffersPerVc_;
 
-    // ── Message sizes (bits) ────────────────────────────────
+    // -- Message sizes (bits) --------------------------------
     // Control = request/command messages; Data = response/payload messages.
     // 0 = use defaults (control=64, data=576 for cacheline networks).
     uint32_t controlMsgBits_;
     uint32_t dataMsgBits_;
 
-    // ── Node name → ID mapping ───────────────────────────────
+    // -- Node name -> ID mapping -------------------------------
     std::unordered_map<std::string, uint32_t> nodeMap_;
 
-    // ── Latency cache (simple mode only) ─────────────────────
+    // -- Latency cache (simple mode only) ---------------------
     std::unordered_map<std::string, uint32_t> latencyCache_;
 
-    // ── Mode selection ───────────────────────────────────────
+    // -- Mode selection ---------------------------------------
     bool cycleAccurate_;
 
-    // ── Ring directionality ─────────────────────────────────
+    // -- Ring directionality ---------------------------------
     bool ringUnidirectional_;
 
-    // ── File paths ───────────────────────────────────────────
+    // -- File paths -------------------------------------------
     std::string customTopoFile_;
     std::string routingTableFile_;
 
-    // ── Custom topology adjacency list (for BFS hop counts) ──
+    // -- Custom topology adjacency list (for BFS hop counts) --
     std::vector<std::vector<uint32_t>> customAdj_;
     std::vector<uint32_t> epToRouter_;  // 1.9.36: endpoint id -> attached router id
     uint32_t customRouterCount_ = 0;
@@ -264,14 +264,14 @@ private:
     std::vector<int> routerDepth_;
     bool customIsTree_ = false;
 
-    // ── Statistics ───────────────────────────────────────────
+    // -- Statistics -------------------------------------------
     GarnetStats stats_;
     bool roi_rebased_ = false;   // 1.11.90
     uint64_t roiDroppedPackets_ = 0;   // 1.11.92: packets behind the dropped flits
     bool tierWalkUsed_ = false;        // 1.11.92 (F1): analytical counts recorded
 
 #ifdef HAVE_GARNET
-    // ── Cycle-accurate Garnet bridge ──────────────────────────
+    // -- Cycle-accurate Garnet bridge --------------------------
     gem5::ruby::garnet::GarnetNetwork* garnetNet_ = nullptr;
     gem5::ruby::RubySystem* rubySys_ = nullptr;
     std::vector<gem5::ruby::MessageBuffer*> allMsgBufs_;
@@ -280,11 +280,11 @@ private:
     bool garnetInitialized_ = false;
     gem5::Tick garnetTick_ = 0;
 
-    // ── Concurrent packet tracking for contention modeling ────
+    // -- Concurrent packet tracking for contention modeling ----
     uint64_t nextTag_ = 1;
-    // tag → (dst, injectTime) for packets still in-flight
+    // tag -> (dst, injectTime) for packets still in-flight
     std::unordered_map<uint64_t, std::pair<uint32_t, uint64_t>> pendingInfo_;
-    // tag → measured latency for packets that arrived while another thread was waiting
+    // tag -> measured latency for packets that arrived while another thread was waiting
     std::unordered_map<uint64_t, uint32_t> completedPackets_;
     // set of destinations with at least one pending packet (avoids scanning all nodes)
     std::unordered_set<uint32_t> activeDsts_;
@@ -411,7 +411,7 @@ public:
                         NoCRouting::XY, 4, 4, clockMhz, flitSizeBits)
     {}
 
-    // ── Accessors ────────────────────────────────────────────
+    // -- Accessors --------------------------------------------
 
     NoCTopology getTopology() const { return topology_; }
     NoCRouting  getRouting()  const { return routing_; }
@@ -444,7 +444,7 @@ public:
     }
 #endif
 
-    // ── Node registration ────────────────────────────────────
+    // -- Node registration ------------------------------------
 
     // Lowest node id not yet bound to any endpoint (for collision-free
     // assignment of non-numeric / auto-named endpoints). Co-located numeric
@@ -537,7 +537,7 @@ public:
         registerNode(name, nextFreeNodeId());
     }
 
-    // ── Main interface ───────────────────────────────────────
+    // -- Main interface ---------------------------------------
 
     uint32_t getRTT(const char* src, const char* dst) override {
         if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
@@ -634,7 +634,7 @@ public:
         return 2 * getAnalyticalLatency(nodeMap_[src], nodeMap_[dst], false);
     }
 
-    // ── Phase-sync injection/dequeue interface ─────────────────
+    // -- Phase-sync injection/dequeue interface -----------------
 
 #ifdef HAVE_GARNET
     /**
@@ -679,7 +679,7 @@ public:
      * Direct per-access Garnet injection from PE-MIs.
      *
      * Thread-safe: acquires garnetLock_.  Does NOT reset network state
-     * between calls — residual buffer/credit state from prior in-flight
+     * between calls -- residual buffer/credit state from prior in-flight
      * packets carries over, so back-to-back injections see real network
      * state.  One real, tag-matched packet is injected per call; the
      * tag identifies it for dequeue.  Cross-rank contention (the only
@@ -712,14 +712,14 @@ public:
             }
         }
 
-        // ── Inject real packet with unique tag ───────────────────
+        // -- Inject real packet with unique tag -------------------
         uint64_t tag = nextTag_++;
         auto msg = std::make_shared<gem5::ruby::SimpleMessage>(
             src, dst, gem5::ruby::MessageSizeType::Data, gem5::curTickRef());
         msg->setTag(tag);
         toNetBufs_[src][0]->enqueue(msg, gem5::curTickRef(), uint64_t(1));
 
-        // ── Tick until our tagged packet arrives ─────────────────
+        // -- Tick until our tagged packet arrives -----------------
         uint64_t maxTick = gem5::curTickRef() + 100000;
         uint32_t latCycles = 0;
 
@@ -738,7 +738,7 @@ public:
                         gem5::curTickRef() - injectTime);
                     break;
                 }
-                // Older real packet still draining — discard and keep ticking
+                // Older real packet still draining -- discard and keep ticking
                 continue;
             }
 
@@ -748,7 +748,7 @@ public:
         }
 
         if (latCycles == 0) {
-            // Timeout — use simple model fallback
+            // Timeout -- use simple model fallback
             latCycles = getAnalyticalLatency(src, dst);
         }
 
@@ -780,7 +780,7 @@ public:
         return getAnalyticalLatency(src, dst, false);
     }
 
-    // ── Phase-level batch: record all PE remote accesses with their
+    // -- Phase-level batch: record all PE remote accesses with their
     //    real ZSim cycle timestamps, then replay through Garnet.
     /* 1.11.92 (F2): `ctrl` selects MessageSizeType::Control (control_msg_bits)
      * over Data (data_msg_bits) for the injection. Every recording site in
@@ -1009,8 +1009,8 @@ public:
      * Process accumulated remote accesses through Garnet as a concurrent batch.
      * All packets are injected with staggered timing (spread over phaseLength)
      * and routed simultaneously, so contention is physically modeled:
-     *   - BUS: 1 link → packets serialize, high latency
-     *   - CROSSBAR: N/2 concurrent → low latency
+     *   - BUS: 1 link -> packets serialize, high latency
+     *   - CROSSBAR: N/2 concurrent -> low latency
      *   - MESH/TORUS: multi-hop contention at intermediate routers
      *
      * Called at phase boundary from PE-MI.  Idempotent per phase.
@@ -1060,14 +1060,14 @@ private:
             initGarnetNetwork();
         }
 
-        // Reset Garnet for each phase — clean slate
+        // Reset Garnet for each phase -- clean slate
         resetGarnetState();
 
-        // ── Sort by ZSim cycle timestamp so packets enter Garnet in the order
+        // -- Sort by ZSim cycle timestamp so packets enter Garnet in the order
         //    they'd naturally occur in real hardware. TOTAL order (cycle, src,
         //    dst): equal-cycle ties resolve identically everywhere, so the N
         //    per-rank replicas replaying the same merged multi-rank stream
-        //    stay deterministic (equal records are interchangeable). ──
+        //    stay deterministic (equal records are interchangeable). --
         std::sort(batch.begin(), batch.end(),
                   [](const BatchAccess& a, const BatchAccess& b) {
                       if (a.cycle != b.cycle) return a.cycle < b.cycle;
@@ -1102,9 +1102,9 @@ private:
             }
         }
 
-        // ── Natural inject-and-drain: inject each packet at its
+        // -- Natural inject-and-drain: inject each packet at its
         //    actual ZSim timestamp, let Garnet route them all
-        //    concurrently. The network physically models contention. ──
+        //    concurrently. The network physically models contention. --
         uint64_t tag = 1;
         std::unordered_map<uint64_t, uint64_t> tagToInjectTick;
         std::unordered_map<uint64_t, uint32_t> tagToSrc;  // epoch-dump attribution
@@ -1144,7 +1144,7 @@ private:
         // collapses into deadlock (the only reason a cap ever existed). Inject
         // every packet whose recorded time has come and let credits throttle it.
         while (delivered < validCount && gem5::curTickRef() < maxTick) {
-            // ── Inject: enqueue packets whose recorded time has come ──
+            // -- Inject: enqueue packets whose recorded time has come --
             while (nextInjectIdx < batch.size()) {
                 auto& acc = batch[nextInjectIdx];
                 uint64_t injectTick = acc.cycle - baseTime;
@@ -1168,7 +1168,7 @@ private:
                 nextInjectIdx++;
             }
 
-            // ── Drain: check destinations for arrivals ──
+            // -- Drain: check destinations for arrivals --
             for (uint32_t d : dstSet) {
                 while (fromNetBufs_[d][0]->isReady(gem5::curTickRef())) {
                     auto peekMsg = std::dynamic_pointer_cast<
@@ -1199,7 +1199,7 @@ private:
 
             if (delivered >= validCount) break;
 
-            // ── Advance Garnet simulation ──
+            // -- Advance Garnet simulation --
             if (!gem5::EventQueue::instance().processOneEvent()) {
                 gem5::curTickRef()++;
             }
@@ -1226,7 +1226,7 @@ private:
             }
             if (phaseNum <= 5 || phaseNum % 100 == 0) {
                 info("[GarnetBatch] phase=%lu batch=%u delivered=%u "
-                     "avgLat=%u smooth=%u→%u ticks=%lu",
+                     "avgLat=%u smooth=%u->%u ticks=%lu",
                      phaseNum, validCount, delivered, newAvg,
                      oldAvg, next,
                      gem5::curTickRef());
@@ -1295,7 +1295,7 @@ private:
 public:
 #endif
 
-    // ── Statistics ───────────────────────────────────────────
+    // -- Statistics -------------------------------------------
 
     void getStats(uint64_t& packets, uint64_t& hops, uint64_t& avgLat) const {
         packets = stats_.total_packets;
@@ -1596,7 +1596,7 @@ public:
         fclose(f);
     }
 
-    // ── Synthetic traffic injection ─────────────────────────
+    // -- Synthetic traffic injection -------------------------
     // Traffic patterns (from gem5 Ruby Tester):
     //   0 = Uniform Random, 1 = Bit-Complement, 2 = Tornado,
     //   3 = Neighbor, 4 = Transpose, 5 = Bit-Reverse,
@@ -1671,7 +1671,7 @@ public:
             uint32_t dst;
             uint64_t injectTick;
         };
-        // Map from tag → in-flight info
+        // Map from tag -> in-flight info
         std::unordered_map<uint64_t, InFlightPkt> inFlight;
         // Per-destination set of pending tags (for efficient drain)
         std::vector<std::vector<uint64_t>> dstPending(N);
@@ -1768,7 +1768,7 @@ public:
                 // with hundreds of packets still in flight (the DDR3 dropout).
                 break;  // stalled (saturated) -- report partial
             }
-            // ── Inject phase: try each source node ──
+            // -- Inject phase: try each source node --
             for (uint32_t src = 0; src < N; src++) {
                 if (nextArrival[src] > (double)gem5::curTickRef()) continue;
                 if (injected >= numPackets + (uint64_t)warmupPackets) continue;
@@ -1884,7 +1884,7 @@ public:
                 injected++;
             }
 
-            // ── Drain phase: check ALL destinations for arrivals ──
+            // -- Drain phase: check ALL destinations for arrivals --
             for (uint32_t dst = 0; dst < N; dst++) {
                 while (fromNetBufs_[dst][0]->isReady(gem5::curTickRef())) {
                     auto peekMsg = std::dynamic_pointer_cast<
@@ -1913,7 +1913,7 @@ public:
                 }
             }
 
-            // ── Advance simulation ──
+            // -- Advance simulation --
             if (!gem5::EventQueue::instance().processOneEvent()) {
                 gem5::curTickRef()++;
             }
@@ -2111,7 +2111,7 @@ private:
     }
 #endif
 
-    // ── Topology-specific hop count functions ────────────────
+    // -- Topology-specific hop count functions ----------------
 
     uint32_t getHopCount(uint32_t src, uint32_t dst) const {
         if (src == dst) return 0;
@@ -2239,10 +2239,10 @@ private:
                 }
             }
         }
-        return customRouterCount_;  // unreachable → worst case
+        return customRouterCount_;  // unreachable -> worst case
     }
 
-    // ── Parse custom topology file ───────────────────────────
+    // -- Parse custom topology file ---------------------------
 
     void parseCustomTopologyFile() {
         std::ifstream infile(customTopoFile_);
@@ -2331,10 +2331,10 @@ private:
         }
     }
 
-    // ── M/D/1 queuing contention model ───────────────────────
+    // -- M/D/1 queuing contention model -----------------------
 
     double estimateUtilization() const {
-        // ρ = (total_packets × avg_hops) / (num_links × total_cycles)
+        // rho = (total_packets x avg_hops) / (num_links x total_cycles)
         if (stats_.total_cycles == 0 || stats_.num_routers == 0) {
             // Before any cycles are recorded, estimate based on packet count
             // Use a conservative model: scale utilization with packet rate
@@ -2353,7 +2353,7 @@ private:
         return std::min(rho, 0.95);
     }
 
-    // ── Simple model latency (hop count + M/D/1 queuing) ─────
+    // -- Simple model latency (hop count + M/D/1 queuing) -----
 
     uint32_t getAnalyticalLatency(uint32_t src, uint32_t dst, bool count = true) {
         if (src == dst) return 0;
@@ -2365,7 +2365,7 @@ private:
                            hops * (routerLatency_ + linkLatency_) +
                            injectionLatency_;
 
-        // M/D/1 queuing: W_q = ρ / (2μ(1-ρ))
+        // M/D/1 queuing: W_q = rho / (2u(1-rho))
         double rho = estimateUtilization();
         double contention = 0.0;
         if (rho > 0.0 && rho < 1.0) {
@@ -2385,7 +2385,7 @@ private:
         return latency;
     }
 
-    // ── Cycle-accurate latency (Garnet bridge) ─────────────
+    // -- Cycle-accurate latency (Garnet bridge) -------------
 
     uint32_t getCycleAccurateLatency(uint32_t src, uint32_t dst, bool count = true) {
 #ifdef HAVE_GARNET
@@ -2452,7 +2452,7 @@ private:
     }
 
 #ifdef HAVE_GARNET
-    // ── Garnet initialization ────────────────────────────────
+    // -- Garnet initialization --------------------------------
 
     uint32_t mapRoutingAlgorithm(NoCRouting r) const {
         switch (r) {

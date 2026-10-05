@@ -38,7 +38,7 @@
 #include "garnet_network.h"
 
 /* Simple memory controller with M/D/1 queuing for bandwidth contention.
- * This is the standard simple memory model — M/D/1 is always active.
+ * This is the standard simple memory model -- M/D/1 is always active.
  * (The old fixed-latency SimpleMemory has been removed.)
  */
 class SimpleMemory : public MemObject {
