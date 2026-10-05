@@ -299,10 +299,16 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->organization.bank_rows = sqrt_banks > 0 ? sqrt_banks : 8;
     arch->organization.bank_cols = num_banks / arch->organization.bank_rows;
 
-    size_t chip_mb = config.capacity_bytes / (1024 * 1024);
-    if (chip_mb == 0) refuseGeometry("the configuration", "a capacity of at least 1 MB", "the STT-MRAM array", "capacity");
-    arch->organization.chip_size_mb = chip_mb;
-    arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
+    /* 1.11.102: the bank size from the capacity in BYTES, as the SRAM
+     * extractor computes it. The MB-rounded chip size that stood here made a
+     * 64 KB unit -- the corpus's SRAM/NVM element unit (16 units x 64 KiB)
+     * -- "0 MB", and the 1.11.94 refusal that replaced the literal fallback
+     * then rejected every STT-MRAM cell ("a capacity of at least 1 MB").
+     * chip_size_mb stays the floor MB (0 below 1 MB; nothing prices a
+     * non-DRAM array from it); only a zero capacity refuses. */
+    if (config.capacity_bytes == 0) refuseGeometry("the configuration", "a capacity", "the STT-MRAM array", "capacity");
+    arch->organization.chip_size_mb = config.capacity_bytes / (1024 * 1024);
+    arch->organization.bank_size_kb = (config.capacity_bytes / static_cast<size_t>(num_banks)) / 1024;
 
     /* 1.11.73: the tier below the bank is NVSim's MAT (numRowMat x
      * numColumnMat per bank). Cached since 1.11.73; an older cache entry
@@ -622,10 +628,16 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->organization.bank_rows = sqrt_banks > 0 ? sqrt_banks : 8;
     arch->organization.bank_cols = num_banks / arch->organization.bank_rows;
 
-    size_t chip_mb = config.capacity_bytes / (1024 * 1024);
-    if (chip_mb == 0) refuseGeometry("the configuration", "a capacity of at least 1 MB", "the PCM array", "capacity");
-    arch->organization.chip_size_mb = chip_mb;
-    arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
+    /* 1.11.102: the bank size from the capacity in BYTES, as the SRAM
+     * extractor computes it. The MB-rounded chip size that stood here made a
+     * 64 KB unit -- the corpus's SRAM/NVM element unit (16 units x 64 KiB)
+     * -- "0 MB", and the 1.11.94 refusal that replaced the literal fallback
+     * then rejected every PCM cell ("a capacity of at least 1 MB").
+     * chip_size_mb stays the floor MB (0 below 1 MB; nothing prices a
+     * non-DRAM array from it); only a zero capacity refuses. */
+    if (config.capacity_bytes == 0) refuseGeometry("the configuration", "a capacity", "the PCM array", "capacity");
+    arch->organization.chip_size_mb = config.capacity_bytes / (1024 * 1024);
+    arch->organization.bank_size_kb = (config.capacity_bytes / static_cast<size_t>(num_banks)) / 1024;
 
     /* 1.11.73: NVSim's mat count, cached; 0 = UNKNOWN from an older cache
      * (reported unsourceable, no literal 4 fallback). */
@@ -930,10 +942,16 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->organization.bank_rows = sqrt_banks > 0 ? sqrt_banks : 4;
     arch->organization.bank_cols = num_banks / arch->organization.bank_rows;
 
-    size_t chip_mb = config.capacity_bytes / (1024 * 1024);
-    if (chip_mb == 0) refuseGeometry("the configuration", "a capacity of at least 1 MB", "the ReRAM array", "capacity");
-    arch->organization.chip_size_mb = chip_mb;
-    arch->organization.bank_size_kb = (arch->organization.chip_size_mb * 1024) / num_banks;
+    /* 1.11.102: the bank size from the capacity in BYTES, as the SRAM
+     * extractor computes it. The MB-rounded chip size that stood here made a
+     * 64 KB unit -- the corpus's SRAM/NVM element unit (16 units x 64 KiB)
+     * -- "0 MB", and the 1.11.94 refusal that replaced the literal fallback
+     * then rejected every ReRAM cell ("a capacity of at least 1 MB").
+     * chip_size_mb stays the floor MB (0 below 1 MB; nothing prices a
+     * non-DRAM array from it); only a zero capacity refuses. */
+    if (config.capacity_bytes == 0) refuseGeometry("the configuration", "a capacity", "the ReRAM array", "capacity");
+    arch->organization.chip_size_mb = config.capacity_bytes / (1024 * 1024);
+    arch->organization.bank_size_kb = (config.capacity_bytes / static_cast<size_t>(num_banks)) / 1024;
 
     /* 1.11.73: the tier below the bank is NVSim's MAT (numRowMat x
      * numColumnMat per bank). Cached since 1.11.73; an older cache entry

@@ -246,6 +246,8 @@ private:
     double cached_mat_latency_s_ = -1.0;
     int    cached_mat_width_bits_ = -1;      // 1.11.73
     int    cached_mats_per_bank_  = -1;      // 1.11.73
+    int    cached_subarray_rows_  = -1;      // 1.11.102: the subarray (mat) rows and columns, cached like the mat count
+    int    cached_subarray_cols_  = -1;
     double cached_read_energy_nj_ = 0.0;
     double cached_write_energy_nj_ = 0.0;
     double cached_leakage_mw_ = 0.0;

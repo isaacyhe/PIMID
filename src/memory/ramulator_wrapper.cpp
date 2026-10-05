@@ -400,6 +400,13 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg("HBM3_4Gb", "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
                                     512, 128, 1, 32, 16384, 64, true,
                                     /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
+    } else if (dt == "HBM3" && name == "HBM3_8Gb") {
+        /* HBM3.cpp org_presets {"HBM3_8Gb", {8<<10, 128, {1, 2, 4, 4, 1<<15, 1<<6}}}: 8 Gb per channel
+         * (1024 MB), 32 banks per channel over 32768 rows -- the 16 Gb die's two channels, 8-high = 16 GB
+         * (1.11.102, user ruling HBM3-PART (a)). */
+        preset_org_ = makePresetOrg("HBM3_8Gb", "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
+                                    1024, 128, 1, 32, 32768, 64, true,
+                                    /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
     } else {
         std::cerr << "[mem] FATAL: the part record for " << dt << " (with the run's knobs) names organization preset '"
                   << name << "', which this build has no transcription of. Add the row beside Ramulator's or name a "

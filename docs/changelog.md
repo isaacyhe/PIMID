@@ -7,6 +7,57 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.102 -- every PCM, STT-MRAM and ReRAM cell refused since 1.11.94 (the array extractors and the NVSim cache); the HBM3 record is the 16 Gb die in its 8-high 16 GB stack
+
+Found by the step-8 prep pass (the first PCM cell to run since 1.11.93).
+Two defects in the chain from NVSim to the NVM array architecture
+(`include/memory/architecture_extractor.h`, `src/memory/nvsim_wrapper.cpp`):
+
+**(1) The capacity was rounded to whole megabytes** before the bank size was
+derived, so the corpus's 64 KiB element unit (16 units x 64 KiB) became
+"0 MB"; through 1.11.93 a literal chip (8 or 16 MB) was substituted and
+from 1.11.94 the refusal that replaced the literal rejected every NVM cell
+("a capacity of at least 1 MB"). The three extractors now derive the bank
+size from the capacity in bytes, as the SRAM extractor does, and refuse
+only a zero capacity.
+
+**(2) The NVSim cache never carried the subarray geometry** (wordlines x
+bitlines per subarray / mat, the ReRAM crossbar), and the memory model's
+own wrapper instance always loads the entry the first instance wrote, so
+every characterization reached the extractors with zero rows and columns:
+through 1.11.93 the literals 512 x 256 (STT-MRAM), 1024 x 1024 (PCM) and
+256 x 256 (ReRAM) were substituted, and from 1.11.94 the run refused
+("NVSim reported no wordlines per subarray"). The cache entry now stores
+`subarray_rows` / `subarray_cols` from NVSim's result, the accessors read
+them from the cache like the mat count, and an entry without them is a
+miss under `PIMID_NVSIM_CACHE_REQUIRE_FULL=1` (recharacterized, as the
+fleet runner sets) and a stated refusal otherwise. The 64 KiB units
+characterize to 256 x 512 (PCM), 128 x 1024 (STT-MRAM) and 512 x 256
+(ReRAM).
+
+**(3) The HBM3 record is one part (ruling 16, user (a) 2026-10-05).** The
+record named the SK hynix 16 Gb D1z core die as its density part but
+instantiated the HBM3_4Gb preset -- 4 Gb per channel, an 8 GB stack -- and
+called that 8 dies of 8 Gb. JESD238 puts two channels on each core die, so
+a 16 Gb die is 8 Gb per channel: the record now instantiates HBM3_8Gb
+(8 Gb per channel x 16 channels = 16 GB, the shipped 8-high stack; the
+wrapper carries the transcribed row, 32 banks over 32768 rows per channel),
+stack_dies 8 and die_capacity_gb 16, and the load-time identity (capacity =
+dies x die capacity) holds for the part the density describes. The 12-high
+24 GB part is another record.
+
+DATA IMPACT: every PCM, STT-MRAM and ReRAM corpus cell (30 cells) runs
+again, on the unit's own bank size and NVSim's own subarray geometry
+instead of the substituted chip and literals the pre-1.11.94 numbers
+carried; every HBM3 cell (210 cells) moves: stack capacity 8 to 16 GB,
+rows per bank 16384 to 32768 (pages per unit, the placement tree, the
+refresh population), die area 50 to 100 mm2 at 8 dies. DRAM cells of the
+other technologies and SRAM cells do not move. Gate 1212B: exact parity
+against 1.11.101 on every deterministic non-HBM3 shape and the loads; the
+three NVM one-PE shapes run on NEW (rc 0) where OLD refused (rc 2); cold
+and warm NVM loads agree; the HBM3 load states 16 GB, 8 dies x 100 mm2 and
+HBM3_8Gb where OLD stated 8 GB, 8 x 50 mm2 and HBM3_4Gb (FIRES).
+
 ## 1.11.101 -- the part records are the only source; a fabric the model does not define is refused, not replaced
 
 RETIREMENT release (R7 of `_1166audit/MANIFEST_1.11.94plus.md`; sweep-94
