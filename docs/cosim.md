@@ -180,6 +180,21 @@ contention at ports, not hops).
 > Garnet instance is *not* instantiated (the second-Garnet host tier is a
 > later 1.7.x increment). `model: detailed` on a host is currently inert.
 
+### 3b. Host-device link class (`power.pcie.link_type`, `system.network.links[].type`)
+
+The link class prices the crossing's energy (pJ/bit band per class) and its
+controller, and fills the link's timing for the fields the configuration did
+not set. Since 1.11.103 (ruling COSIM-LINK-CLASS) the class DEFAULTS to the
+attachment the device's placement implies: an on-package part (an HBM stack,
+SRAM, the NVMs) with `attachment: internal` crosses an `interposer`; a
+DDR-family part (DDR3/DDR4/DDR5/LPDDR5/GDDR6) with `attachment: internal` is
+reached over its own DRAM channel, the `dram_channel` class -- bandwidth =
+channels x channel width x the preset's data rate, base latency = tRCD + tCL,
+header 0, NO separate link energy (the channel's I/O and termination are in
+the DRAM energy model) and NO link controller (the host memory controller is
+priced as itself); an `external` device crosses `pcie_gen5`. A named class
+overrides the default and the run prints a `[link]` note naming both.
+
 ### 4. Bridge -- two-layer protocol x phy (`system.bridge`)
 
 The host<->device link is a **two-layer** model: `protocol`

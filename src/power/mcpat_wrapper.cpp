@@ -560,6 +560,7 @@ double McPATWrapper::linkSerDesLaneGbps(const std::string& link_type) {
 
 bool McPATWrapper::linkHasSerDes(const std::string& link_type) {
     if (link_type.rfind("interposer", 0) == 0) return false;
+    if (link_type == "dram_channel") return false;   // 1.11.103: the DRAM channel's I/O is the DRAM energy model's
     return true;
 }
 
@@ -701,6 +702,15 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
     if (link_type.rfind("ualink", 0) == 0) {
         b.lo = b.hi = 3.5; b.single_point = true;
         b.provenance = "3.5 @200G short-reach incl SerDes+DSP (arXiv 2510.15893); long-reach end NOT sourced; retires assumed 8.0";
+        return b;
+    }
+    /* 1.11.103 (ruling COSIM-LINK-CLASS): a DIMM-resident device is reached
+     * over its own DRAM channel. The channel's I/O and termination energy is
+     * priced per access by the DRAM energy model (TN-41-01 IDD + termination),
+     * so this class carries NO separate link energy: the band stays invalid
+     * on purpose and the caller prices 0 pJ/bit and says why. */
+    if (link_type == "dram_channel") {
+        b.provenance = "no separate link energy: the DRAM channel's I/O and termination are priced by the DRAM energy model";
         return b;
     }
     return b;   // invalid: caller warns and prices at zero

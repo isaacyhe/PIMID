@@ -7,6 +7,81 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.103 -- a mesh, ring or crossbar inside a DRAM device is the in-die fabric; the host-device link class follows the attachment, and a DIMM-resident device is reached over its own DRAM channel
+
+**(1) The in-die fabric (sweep-94 ruling 9, user "a" 2026-10-05).** A DRAM
+device whose configuration names `noc.topology: MESH_2D`, `RING` or
+`CROSSBAR` was refused since 1.11.101 as a fabric the model did not define
+(and silently replaced by the tree before that, which system scope still
+did: a device node's named fabric now carries the same mark as device
+scope's). The model now defines it: the fabric lives INSIDE EACH DIE, over
+the die's organisations at the placement tier (the grid of a chip's bank
+groups x banks [x subarrays], `gridW x gridH` from the record's counts); the
+chip, rank and channel tiers above the die keep the tree and the channel-DQ
+wall is unchanged. Every grid node is a router at the placement level with
+its own endpoint (the PE placed there, else an aggregated endpoint fronting
+that one organisation); the die's exit to its chip router is node (0,0)
+(MESH, RING) or the hub (CROSSBAR); hops come from the grid positions
+(dimension order on a MESH, the shorter arc on a RING, node-hub-node on a
+CROSSBAR); links take the placement tier's ladder rung; leaving a die
+charges the tiers the grid replaced, as the tree would. The walk that
+prices every access (`TreeWalker::walk`, now built on `TreeWalker::path`)
+and the census that feeds the analytical model (mean one-way cost, mean
+links, the hotspot factor) and McPAT (every grid node and hub is a priced
+switch at the placement tier, ports = its fabric links + endpoint + the
+exit) take the same path. The detailed (Garnet) path, which routes the
+device's CUSTOM topology by TABLE with the tree's UP/DOWN classes, runs the
+CROSSBAR (a hub is a tree) and refuses a MESH or RING it cannot keep
+deadlock-free; the analytical model prices all three. A fabric named at
+the chip tier or above, and a TORUS, stay refused. The `.topo` emitter
+writes the grid links; the zsim side rebuilds the same grid from the
+emitted `indieFabric` / `indieGridW` / `indieGridH` keys. On a plain tree
+nothing moves: the census walk is the parent-pointer walk it was.
+
+**(2) The host-device link class follows the attachment (ruling
+COSIM-LINK-CLASS, user "c" 2026-10-05; closes review R4).** The class
+DEFAULTS to what the device's placement implies: an on-package part (an HBM
+stack, SRAM, the NVMs) crosses an `interposer`; a DDR-family part
+(DDR3/DDR4/DDR5/LPDDR5/GDDR6) is reached over its own DRAM channel, the new
+`dram_channel` class; an externally attached device crosses PCIe. A
+configured class (`power.pcie.link_type` or a `system.network.links` entry's
+`type`) overrides the default, and the run prints a note naming both. The
+defaulted class carries its timing preset for the fields the configuration
+did not set, exactly as naming the class does (1.11.97 switched the energy
+class alone and left an interposer on PCIe's 500 ns / 63 GB/s): an
+interposer takes 5 ns / 256 GB/s / header 0; `dram_channel` takes the
+device's channel from its part record -- bandwidth = channels x channel
+width x the preset's data rate, base latency = the preset's tRCD + tCL,
+header 0 -- and carries NO separate link energy (the channel's I/O and
+termination are priced per access by the DRAM energy model) and NO link
+controller (the host memory controller is priced as itself). What moves
+for a co-simulation cell with an internally attached device and no named
+class (every corpus system configuration: `attachment: internal`, no
+class): the crossing TIMING does not -- it comes from the two-layer bridge
+keyed off the device technology, and the emitted zsim configuration is
+identical apart from the three in-die keys -- but the link ENERGY does: a
+DDR5 cell prices its crossings at 0 pJ/bit as `dram_channel` and prices no
+link controller (1.11.102 priced the interposer's 0.25-0.5 pJ/bit band and
+a link controller); an HBM3 cell keeps `interposer`, and its link
+controller's duty cycle is now derived against the interposer's 256 GB/s
+instead of PCIe's 63 GB/s.
+
+**(2b) A `power.pcie` block without `link_type` no longer counts as a named
+class.** Since 1.11.97 the presence of the block alone marked the class as
+user-set, so the attachment default of (2) was silently skipped and the run
+would have reported `pcie_gen5` as configured. Only a named `link_type` is a
+configured class now (found by the 1.11.106 census, N2; no corpus config
+carries a `power` block).
+
+**(3) The corpus's device fabric line.** The 90 system configurations of
+the fleet (`pimid_results/v1187_jobs/configs_sys/`, local) named
+`noc.topology: MESH_2D` with `model: detailed` on their DRAM device; the
+line never took effect (system scope replaced it by the tree without a
+word) and would now be the in-die MESH the detailed path refuses. The line
+is removed from the 90 files (originals kept beside them); the emitted zsim
+configuration of a cell is byte-identical to 1.11.102's apart from the link
+class lines of (2).
+
 ## 1.11.102 -- every PCM, STT-MRAM and ReRAM cell refused since 1.11.94 (the array extractors and the NVSim cache); the HBM3 record is the 16 Gb die in its 8-high 16 GB stack
 
 Found by the step-8 prep pass (the first PCM cell to run since 1.11.93).

@@ -74,6 +74,22 @@ credit-based flow control, deadlock-free routing.
 - Flat topologies remain available for the host network and non-DRAM device
   memories: `MESH_2D`, `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined).
+- **The in-die fabric (1.11.103, ruling 9).** A `MESH_2D`, `RING` or
+  `CROSSBAR` named on a DRAM device is that fabric INSIDE EACH DIE, over the
+  die's organisations at the placement tier (the grid of a chip's bank
+  groups x banks [x subarrays], `gridW x gridH` from the part record's
+  counts). Every grid node is a router at the placement level with its own
+  endpoint (the PE placed there, else an aggregated endpoint fronting that
+  organisation); the die's exit to its chip router is node (0,0) (MESH,
+  RING) or the hub (CROSSBAR); hops come from the grid positions (dimension
+  order on a MESH, the shorter arc on a RING, node-hub-node on a CROSSBAR);
+  links take the placement tier's ladder rung; leaving a die charges the
+  tiers the grid replaced, as the tree would. The chip, rank and channel
+  tiers above the die keep the tree. The per-access walk, the analytical
+  census (mean cost, mean links, hotspot) and McPAT's router census (every
+  grid node and hub is a priced switch at the placement tier) take the same
+  path. The detailed model runs the CROSSBAR and refuses a MESH or RING it
+  cannot route deadlock-free by TABLE; the analytical model prices all three.
 - **NoC energy (1.11.92).** McPAT charges one router access per FLIT per
   ROUTER crossed. The network counts true flits (ceil(message bits / source
   port width), 5 for a 576-bit data message on a 128-bit port) and routers

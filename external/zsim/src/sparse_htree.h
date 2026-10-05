@@ -73,12 +73,29 @@ struct SparseHTree;
  * visits per tier (the quantity Garnet's crossbars count) and prices the
  * path as censusSparseTree does for the hotspot and mean-cost walk: every
  * router's tier latency plus the bridge at every tier boundary. */
+/* 1.11.103 (sweep-94 ruling 9, user "a" 2026-10-05): the NON-TREE IN-DIE FABRIC.
+ * A DRAM device whose configuration asks for a mesh, ring or crossbar is
+ * modelled with that fabric INSIDE EACH DIE, over the die's organisations at
+ * the placement tier (the grid: the bank groups x banks [x subarrays] of one
+ * chip, gridW x gridH); the chip, rank and channel tiers above the die keep
+ * the tree. Every grid node is a router at the placement level with its own
+ * endpoint (the PE placed there, else an aggregated endpoint fronting that one
+ * organisation); the grid's exit to the chip router is node (0,0) (MESH,
+ * RING) or the hub (CROSSBAR). Hop counts come from the grid positions. */
+struct InDieFabric {
+    int kind = 0;        // 0 none (the tree), 1 MESH_2D, 2 RING, 3 CROSSBAR
+    int gridW = 0, gridH = 0;
+};
 struct TreeWalker {
     std::vector<int> parentOf;    // router -> parent router (-1 at ROOT)
     std::vector<int> routerOfEp;  // endpoint -> the router it hangs on (-1 = none)
     bool built = false;
 
     void build(const SparseHTree& t);
+    /* 1.11.103: the router sequence of the src -> dst path (the in-die grid walk,
+     * the exit, the tree above, the far die's walk), the same sequence walk()
+     * prices; the census takes its link loads and hop counts from it. */
+    bool path(const SparseHTree& t, int srcEp, int dstEp, std::vector<int>& routers) const;
 
     /* Walk srcEp -> dstEp. perLevel[l] (l in 0..6) = routers of tier l the
      * walk visits (the LCA once, every other router on the up and down
@@ -142,6 +159,16 @@ struct SparseHTree {
      * Filled from the same info map the build maintains, so it cannot
      * disagree with the tree it describes. */
     std::vector<int> levelOfRouter;
+    /* 1.11.103: the in-die fabric. gridLinks are the node<->node links of the
+     * grids (kept apart from intLinks so the tree's parent map stays a tree);
+     * gridX/gridY/gridDie index every router (-1 = not a grid node; a hub has
+     * gridX -1 and a die); dieExitOf maps the chip router of a gridded die to
+     * its exit node (the hub for a CROSSBAR). */
+    int fabricKind = 0, gridW = 0, gridH = 0;
+    std::vector<Link> gridLinks;
+    std::vector<int> gridX, gridY, gridDie;
+    std::map<int,int> dieExitOf;
+    int gridRouters = 0;
 
     int totalEndpoints() const { return numPEs + numAbstract; }
 
@@ -297,7 +324,8 @@ inline int layerForLevel(int childLevel, int chanLevel) {
 inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                                     int peLevel, int N,
                                     int SA, int BpBG, int BGpC, int CpR, int RpCh,
-                                    const int layerW[4], const int layerLat[4]) {
+                                    const int layerW[4], const int layerLat[4],
+                                    const InDieFabric* fab = nullptr) {
     SparseHTree t;
     t.peLevel = peLevel < 0 ? 0 : peLevel;
     t.SA = SA; t.BpBG = BpBG; t.BGpC = BGpC; t.CpR = CpR; t.RpCh = RpCh;
@@ -309,6 +337,11 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
     // per-router: (level, set of live child coords)
     std::map<int, std::pair<int, std::set<long>>> info;
     info[0] = { 6, {} };                       // ROOT at level 6 (system)
+    /* 1.11.103: with an in-die fabric the tree stops at the chip (level 3);
+     * the tiers below it are the die's grid, built after the PE paths. */
+    const bool gridded = (fab && fab->kind > 0 && t.peLevel <= 2);
+    if (gridded) { t.fabricKind = fab->kind; t.gridW = std::max(1, fab->gridW); t.gridH = std::max(1, fab->gridH); }
+    std::map<int, std::vector<std::pair<size_t, std::vector<long>>>> peOfDie;   // chip router -> (pe, full path)
 
     for (size_t p = 0; p < peHomes.size(); ++p) {
         std::vector<long> path = decompose(peHomes[p], t.peLevel, SA, BpBG, BGpC, CpR, RpCh);
@@ -316,6 +349,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
         std::string key;
         int parent = 0;
         for (int i = 0; i < Lp; ++i) {
+            if (gridded && info[parent].first <= 3) { peOfDie[parent].push_back({ p, path }); break; }   // the die holds the rest
             info[parent].second.insert(path[i]);      // parent now has this live child
             key += "/" + std::to_string(path[i]);
             auto it = t.routerOf.find(key);
@@ -333,10 +367,72 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
             }
             parent = rid;
         }
+        if (gridded && info[parent].first <= 3) continue;                 // placed on the die's grid below
         t.peOfLeaf[parent] = (int)p;
         t.extLinks.push_back({ (int)p, parent, layerW[0], layerLat[0] });  // PE at its unit -> L0
     }
     t.numPEs = (int)peHomes.size();
+    if (gridded) {
+        /* the die's grid: every organisation of the chip at the placement tier
+         * is a router at that level; node index = the path components below
+         * the chip (bank group, bank[, subarray]) in row-major order; the PE
+         * placed there is its endpoint, every other node gets an aggregated
+         * endpoint fronting that one organisation (the loop below); the chip
+         * router links to the exit node (0,0), or to the hub for a CROSSBAR */
+        const int li0 = layerForLevel(t.peLevel, chanLevel);
+        for (auto& kv : peOfDie) {
+            const int chip = kv.first;
+            const int chipLevel = info[chip].first;
+            const int nodes = t.gridW * t.gridH;
+            std::vector<int> nodeRouter((size_t)nodes, -1);
+            std::string chipKey;
+            for (auto& rk : t.routerOf) if (rk.second == chip) { chipKey = rk.first; break; }
+            int hub = -1;
+            if (t.fabricKind == 3) {
+                hub = nextRouter++;
+                info[hub] = { t.peLevel, {} };
+                t.intLinks.push_back({ chip, hub, layerW[li0], layerLat[li0] });   // the exit: chip <-> hub
+                t.dieExitOf[chip] = hub;
+            }
+            const long fan[3] = { (long)std::max(1, SA), (long)std::max(1, BpBG), (long)std::max(1, BGpC) };
+            for (int n = 0; n < nodes; ++n) {
+                std::string key = chipKey;                                // the chip's key + the node's components (top -> leaf)
+                std::vector<long> ftc; long rem = n;
+                for (int lvl = t.peLevel; lvl <= 2; ++lvl) { ftc.push_back(rem % fan[lvl]); rem /= fan[lvl]; }
+                for (auto it = ftc.rbegin(); it != ftc.rend(); ++it) key += "/" + std::to_string(*it);
+                const int rid = nextRouter++;
+                nodeRouter[(size_t)n] = rid;
+                t.routerOf[key] = rid;
+                info[rid] = { t.peLevel, {} };
+                if (t.fabricKind == 3) t.gridLinks.push_back({ hub, rid, layerW[li0], layerLat[li0] });
+            }
+            for (long c = 0; c < childFanout(chipLevel, N, SA, BpBG, BGpC, CpR, RpCh); ++c) info[chip].second.insert(c);   // fully live: the grid covers the die
+            if (t.fabricKind != 3) { t.intLinks.push_back({ chip, nodeRouter[0], layerW[li0], layerLat[li0] }); t.dieExitOf[chip] = nodeRouter[0]; }
+            if (t.fabricKind == 1) {                                    // MESH: 4-neighbour links
+                for (int y = 0; y < t.gridH; ++y) for (int x = 0; x < t.gridW; ++x) {
+                    const int a = nodeRouter[(size_t)(y * t.gridW + x)];
+                    if (x + 1 < t.gridW) t.gridLinks.push_back({ a, nodeRouter[(size_t)(y * t.gridW + x + 1)], layerW[li0], layerLat[li0] });
+                    if (y + 1 < t.gridH) t.gridLinks.push_back({ a, nodeRouter[(size_t)((y + 1) * t.gridW + x)], layerW[li0], layerLat[li0] });
+                }
+            } else if (t.fabricKind == 2 && nodes > 1) {                // RING: i <-> i+1 mod N
+                for (int n = 0; n < nodes; ++n) { if (nodes == 2 && n == 1) break; t.gridLinks.push_back({ nodeRouter[(size_t)n], nodeRouter[(size_t)((n + 1) % nodes)], layerW[li0], layerLat[li0] }); }
+            }
+            if ((int)t.gridX.size() < nextRouter) { t.gridX.resize((size_t)nextRouter, -1); t.gridY.resize((size_t)nextRouter, -1); t.gridDie.resize((size_t)nextRouter, -1); }
+            for (int n = 0; n < nodes; ++n) { const int rid = nodeRouter[(size_t)n]; t.gridX[(size_t)rid] = n % t.gridW; t.gridY[(size_t)rid] = n / t.gridW; t.gridDie[(size_t)rid] = chip; }
+            if (hub >= 0) { t.gridX[(size_t)hub] = -1; t.gridY[(size_t)hub] = -1; t.gridDie[(size_t)hub] = chip; }
+            t.gridRouters += nodes + (hub >= 0 ? 1 : 0);
+            for (auto& pp : kv.second) {                                // the die's PEs at their nodes
+                const std::vector<long>& path = pp.second;
+                const int below = 3 - t.peLevel;                        // components below the chip in the path (top -> leaf)
+                long n = 0, mult = 1;
+                for (int i = (int)path.size() - 1, lvl = t.peLevel; i >= (int)path.size() - below && lvl <= 2; --i, ++lvl) { n += path[(size_t)i] * mult; mult *= fan[lvl]; }
+                if (n < 0 || n >= nodes) n = 0;
+                const int rid = nodeRouter[(size_t)n];
+                t.peOfLeaf[rid] = (int)pp.first;
+                t.extLinks.push_back({ (int)pp.first, rid, layerW[0], layerLat[0] });
+            }
+        }
+    }
     t.numRouters = nextRouter;
 
     /* 1.10: MATERIALISE EVERY CHANNEL before aggregating.
@@ -415,11 +511,14 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
      * changes there. */
     const int leafLevel = t.peLevel < 5 ? t.peLevel : 5;
     int nextEndpoint = t.numPEs;
+    /* 1.11.103: a CROSSBAR's hub is a switch at the placement level, not an
+     * organisation -- it fronts nothing of its own, so it gets no endpoint. */
+    auto isHub = [&](int rid) { return rid >= 0 && rid < (int)t.gridDie.size() && t.gridDie[(size_t)rid] >= 0 && t.gridX[(size_t)rid] < 0; };
     for (auto& kv : info) {
         int rid = kv.first;
         int level = kv.second.first;
         int live = (int)kv.second.second.size();
-        if (level == leafLevel && rid != 0 && live == 0 &&
+        if (level == leafLevel && rid != 0 && live == 0 && !isHub(rid) &&
                 t.peOfLeaf.find(rid) == t.peOfLeaf.end()) {
             int abst = nextEndpoint++;
             t.abstractOf[rid] = abst;
@@ -450,6 +549,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
         }
     }
     t.numAbstract = nextEndpoint - t.numPEs;
+    if ((int)t.gridX.size() < t.numRouters) { t.gridX.resize((size_t)t.numRouters, -1); t.gridY.resize((size_t)t.numRouters, -1); t.gridDie.resize((size_t)t.numRouters, -1); }   // 1.11.103
 
     /* 1.11: census the built tree by level. Uses the same info map the build
      * maintained, so this cannot disagree with the tree it describes. */
@@ -483,45 +583,99 @@ inline void TreeWalker::build(const SparseHTree& t) {
     built = true;
 }
 
+/* 1.11.103: the router sequence src -> dst. On the tree: up to the LCA and
+ * down. On a gridded die: the grid walk (dimension order on a MESH, the
+ * shorter arc on a RING, node -> hub -> node on a CROSSBAR) between two nodes
+ * of one die; for a cross-die pair the walk to the exit, the chip router, the
+ * tree above, the far die's exit and its walk to the destination node. */
+inline bool TreeWalker::path(const SparseHTree& t, int srcEp, int dstEp, std::vector<int>& routers) const {
+    routers.clear();
+    if (!built || srcEp < 0 || dstEp < 0 || srcEp >= (int)routerOfEp.size() || dstEp >= (int)routerOfEp.size()) return false;
+    const int rs = routerOfEp[(size_t)srcEp], rd = routerOfEp[(size_t)dstEp];
+    if (rs < 0 || rd < 0) return false;
+    auto dieOf = [&](int r) -> int { return (r >= 0 && r < (int)t.gridDie.size()) ? t.gridDie[(size_t)r] : -1; };
+    auto nodeAt = [&](int die, int x, int y) -> int {
+        for (int r = 0; r < (int)t.gridDie.size(); ++r) if (t.gridDie[(size_t)r] == die && t.gridX[(size_t)r] == x && t.gridY[(size_t)r] == y) return r;
+        return -1;
+    };
+    auto gridWalk = [&](int a, int b, std::vector<int>& out) {       // a and b: grid nodes of one die; out gets a..b inclusive
+        const int die = t.gridDie[(size_t)a];
+        out.push_back(a);
+        if (a == b) return;
+        if (t.fabricKind == 3) { auto h = t.dieExitOf.find(die); if (h != t.dieExitOf.end()) out.push_back(h->second); out.push_back(b); return; }
+        if (t.fabricKind == 2) {
+            const int n = t.gridW * t.gridH;
+            const int ia = t.gridY[(size_t)a] * t.gridW + t.gridX[(size_t)a], ib = t.gridY[(size_t)b] * t.gridW + t.gridX[(size_t)b];
+            const int fwd = (ib - ia + n) % n, bwd = (ia - ib + n) % n; const int step = (fwd <= bwd) ? 1 : -1; const int steps = std::min(fwd, bwd);
+            int cur = ia; for (int k = 0; k < steps; ++k) { cur = (cur + step + n) % n; out.push_back(nodeAt(die, cur % t.gridW, cur / t.gridW)); }
+            return;
+        }
+        int x = t.gridX[(size_t)a], y = t.gridY[(size_t)a];
+        const int bx = t.gridX[(size_t)b], by = t.gridY[(size_t)b];
+        while (x != bx) { x += (bx > x) ? 1 : -1; out.push_back(nodeAt(die, x, y)); }
+        while (y != by) { y += (by > y) ? 1 : -1; out.push_back(nodeAt(die, x, y)); }
+    };
+    auto exitOf = [&](int die) -> int { auto e = t.dieExitOf.find(die); return (e == t.dieExitOf.end()) ? -1 : e->second; };
+    if (rs == rd) { routers.push_back(rs); return true; }
+    const int ds = dieOf(rs), dd = dieOf(rd);
+    if (ds >= 0 && ds == dd) { gridWalk(rs, rd, routers); return true; }
+    /* the source side up to its chip router (a die's walk to the exit, then the chip) */
+    if (ds >= 0) {
+        const int ex = exitOf(ds); if (ex < 0) return false;
+        if (t.fabricKind == 3) { routers.push_back(rs); if (rs != ex) routers.push_back(ex); }
+        else gridWalk(rs, ex, routers);
+        routers.push_back(ds);
+    } else routers.push_back(rs);
+    const int topS = (ds >= 0) ? ds : rs, topD = (dd >= 0) ? dd : rd;
+    std::vector<int> treeUp, treeDn;
+    for (int r = topS; r >= 0 && treeUp.size() < 32; r = parentOf[(size_t)r]) treeUp.push_back(r);
+    for (int r = topD; r >= 0 && treeDn.size() < 32; r = parentOf[(size_t)r]) treeDn.push_back(r);
+    int ui = -1, di = -1;
+    for (int i = 0; i < (int)treeUp.size() && ui < 0; ++i) for (int j = 0; j < (int)treeDn.size(); ++j) if (treeUp[(size_t)i] == treeDn[(size_t)j]) { ui = i; di = j; break; }
+    if (ui < 0) return false;
+    for (int i = 1; i <= ui; ++i) routers.push_back(treeUp[(size_t)i]);                           // climb to the LCA
+    for (int i = di - 1; i >= 0; --i) routers.push_back(treeDn[(size_t)i]);                      // down to the far chip (or rd)
+    if (dd >= 0) {
+        const int ex = exitOf(dd); if (ex < 0) return false;
+        if (t.fabricKind == 3) { if (ex != rd) routers.push_back(ex); routers.push_back(rd); }
+        else { std::vector<int> w; gridWalk(ex, rd, w); for (auto r : w) routers.push_back(r); }
+    }
+    return true;
+}
 inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
                                  const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost) const {
     for (int l = 0; l < 8; l++) perLevel[l] = 0;
     if (cost) *cost = 0;
-    if (!built || srcEp < 0 || dstEp < 0 ||
-        srcEp >= (int)routerOfEp.size() || dstEp >= (int)routerOfEp.size()) return 0;
-    const int rs = routerOfEp[(size_t)srcEp], rd = routerOfEp[(size_t)dstEp];
-    if (rs < 0 || rd < 0) return 0;
-    auto lvlOf = [&](int r) -> int {
-        return (r >= 0 && r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1;
-    };
-    auto visit = [&](int r) {
-        int lv = lvlOf(r);
-        if (lv >= 0 && lv <= 6) { perLevel[lv]++; if (cost && levelLat) *cost += levelLat[lv]; }
-    };
-    auto bridge = [&](int ra, int rb) {
-        int lb = std::min(lvlOf(ra), lvlOf(rb));
-        if (cost && bridgeLat && lb >= 0 && lb <= 5) *cost += bridgeLat[lb];
-    };
-    if (rs == rd) { visit(rs); return 0; }
-    int up[16], dn[16]; int nu = 0, nd = 0;
-    for (int r = rs; r >= 0 && nu < 16; r = parentOf[(size_t)r]) up[nu++] = r;
-    for (int r = rd; r >= 0 && nd < 16; r = parentOf[(size_t)r]) dn[nd++] = r;
-    int ui = -1, di = -1;
-    for (int i = 0; i < nu && ui < 0; ++i)
-        for (int j = 0; j < nd; ++j) if (up[i] == dn[j]) { ui = i; di = j; break; }
-    if (ui < 0) return 0;   // disconnected (cannot happen on a built tree)
+    std::vector<int> rs;
+    if (!path(t, srcEp, dstEp, rs) || rs.empty()) return 0;
+    auto lvlOf = [&](int r) -> int { return (r >= 0 && r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1; };
+    auto isDieNode = [&](int r) { return r >= 0 && r < (int)t.gridDie.size() && t.gridDie[(size_t)r] >= 0; };
     uint32_t links = 0;
-    for (int i = 0; i <= ui; ++i) {           // up to and including the LCA
-        visit(up[i]);
-        if (i < ui) { bridge(up[i], up[i + 1]); links++; }
-    }
-    for (int i = di; i >= 1; --i) {           // down from the LCA (exclusive) to rd
-        visit(dn[i - 1]);
-        bridge(dn[i], dn[i - 1]); links++;
+    for (size_t i = 0; i < rs.size(); ++i) {
+        const int r = rs[i];
+        const int lv = lvlOf(r);
+        if (lv >= 0 && lv <= 6) { perLevel[lv]++; if (cost && levelLat) *cost += levelLat[lv]; }
+        if (i + 1 < rs.size()) {
+            const int rn = rs[i + 1];
+            const int la = lvlOf(r), lb = lvlOf(rn);
+            /* 1.11.103: a die exit (grid node or hub <-> chip router) crosses the
+             * tiers the grid replaced: charge their level latencies and bridges
+             * as the tree would, so leaving a gridded die costs what leaving
+             * the tree's die costs. */
+            const bool exitLink = (isDieNode(r) != isDieNode(rn)) && (std::max(la, lb) >= 3);
+            if (exitLink) {
+                const int from = std::min(la, lb);
+                for (int lv2 = from + 1; lv2 <= 2; ++lv2) { perLevel[lv2]++; if (cost && levelLat) *cost += levelLat[lv2]; if (cost && bridgeLat) *cost += bridgeLat[lv2 - 1]; links++; }
+                if (cost && bridgeLat) *cost += bridgeLat[2];
+            } else {
+                const int lbm = std::min(la, lb);
+                if (cost && bridgeLat && lbm >= 0 && lbm <= 5) *cost += bridgeLat[lbm];
+            }
+            links++;
+        }
     }
     return links;
 }
-
 } // namespace pimid_htree
 
 #endif // PIMID_SPARSE_HTREE_H_

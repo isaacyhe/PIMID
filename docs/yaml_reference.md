@@ -790,7 +790,7 @@ system:
 |-----|------|---------|-------------|
 | `system.devices[].name` | string | - | Device name (required). |
 | `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). |
-| `system.devices[].attachment` | string | `"external"` | Today the code distinguishes only `internal` from anything else (external); the link class is set by `system.network.links[].type` / `power.link.link_type`, not here. |
+| `system.devices[].attachment` | string | `"external"` | `internal` or `external`. Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.pcie.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
 | `system.devices[].pe_type` | string | `"alu_core"` | PE core type (compute devices only). |
 | `system.devices[].num_pes` | int | `0` | Number of PEs (compute devices only). |
 | `system.devices[].frequency_mhz` | int | `1000` | Device frequency. |
@@ -943,6 +943,19 @@ Any other value (including the removed `timing_core`) is rejected with an error.
 | `H_TREE` | NCA | H-tree (DRAM-style hierarchy) |
 | `CUSTOM` | TABLE | User-defined (requires `topology_file`) |
 
+**Inside a DRAM device (1.11.103, ruling 9)** the datapath above the die is
+the tree whatever the configuration says, and a named `MESH_2D`, `RING` or
+`CROSSBAR` is the fabric INSIDE EACH DIE: a grid of the die's organisations
+at the placement tier (bank groups x banks [x subarrays]), one router with
+its own endpoint per node, the die's exit to its chip router at node (0,0)
+or at the crossbar's hub, links at the placement tier's ladder rung. The
+chip, rank and channel tiers keep the tree and the channel-DQ wall is
+unchanged. The analytical model prices all three; the detailed (Garnet)
+model runs the `CROSSBAR` and refuses a `MESH_2D` or `RING` (its TABLE
+routing with the tree's UP/DOWN classes cannot keep them deadlock-free). A
+non-tree fabric named at the `CHIP` tier or above, and `TORUS_2D`, are
+refused: the model does not define them there.
+
 ### Routing Algorithms
 
 | Value | Description |
@@ -1006,6 +1019,17 @@ analytical override on the MPI path (A/B only; not the default). See
 | `cxl_2_0` | CXL 2.0 (PCIe Gen 5 based) |
 | `cxl_3_0` | CXL 3.0 (PCIe Gen 6 based) |
 | `interposer` | Silicon interposer (low latency, high bandwidth) |
+| `dram_channel` | The device's own DRAM channel (1.11.103): a DIMM-resident DDR-family device. Timing from the part record (bandwidth = channels x channel width x data rate; base latency = tRCD + tCL; header 0); no separate link energy (the channel's I/O and termination are in the DRAM energy model) and no link controller (the host memory controller is priced as itself). |
+
+**Default class (1.11.103, ruling COSIM-LINK-CLASS).** When no class is
+named, the class follows the attachment the device's placement implies: an
+on-package part (an HBM stack, SRAM, the NVMs) with `attachment: internal`
+takes `interposer`; a DDR-family part (DDR3/DDR4/DDR5/LPDDR5/GDDR6) with
+`attachment: internal` takes `dram_channel`; an `external` device takes
+`pcie_gen5`. A named class (`power.pcie.link_type` or a
+`system.network.links[].type`) overrides the default and the run prints a
+`[link]` note naming both. The defaulted class carries its timing preset for
+the fields the configuration did not set, exactly as naming it does.
 
 ---
 

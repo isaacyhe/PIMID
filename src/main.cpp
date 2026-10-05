@@ -1958,6 +1958,8 @@ struct UnifiedConfig {
     // NoC configuration
     std::string noc_topology;
     bool noc_topology_user_set = false;  // true when YAML noc.topology is specified
+    std::string indie_fabric;            // 1.11.103 (ruling 9): "MESH_2D" | "RING" | "CROSSBAR" inside each DRAM die; "" = the tree
+    int indie_grid_w = 0, indie_grid_h = 0;   // the die's grid of placement-tier organisations
     int noc_router_latency;
     int noc_link_latency;
     // Channel-aware Garnet H-tree link latency for DRAM detailed/parallel
@@ -2312,6 +2314,8 @@ struct UnifiedConfig {
     // on-package: very high BW, low latency, ~no protocol/coherence overhead).
     std::string pcie_link_type = "pcie_gen5";
     bool pcie_link_type_user_set = false;   // 1.11.97 (review R4): the link class follows the declared attachment unless the user names it
+    bool pcie_base_latency_user_set = false, pcie_bandwidth_user_set = false, pcie_coherence_user_set = false;   // 1.11.103 (ruling COSIM-LINK-CLASS): a class preset fills only the fields the config did not set
+    std::string link_class_implied;         // 1.11.103: the class the device's attachment implies (named beside a configured override)
     int pcie_header_bytes = -1;            // 1.11.94 (row 6): -1 = derive from the link class; 0 is a real value (interposer)
     double pcie_coherence_extra_ns = 0.0;  // avg extra latency for coherent access
 
@@ -2497,6 +2501,7 @@ struct UnifiedConfig {
 
         // NoC config (DEVICE with PEs)
         std::string noc_topology = "MESH_2D";
+        bool noc_topology_user_set = false;   // 1.11.103 (ruling 9): the YAML named the device fabric (the default above is not a request)
         std::string noc_model = "simple";
 
         // Per-node workload (optional -- inherits top-level if empty)
@@ -2515,8 +2520,9 @@ struct UnifiedConfig {
     struct SystemLinkConfig {
         std::string src_name, dst_name;
         std::string link_type = "pcie_gen5";
+        bool type_user_set = false;   // 1.11.103: an entry without a type takes the attachment's default class
         // Supported: pcie_gen4, pcie_gen5, cxl_2_0, cxl_3_0,
-        //            nvlink_3_0, nvlink_4_0, nvlink_c2c, ualink_1_0, interposer
+        //            nvlink_3_0, nvlink_4_0, nvlink_c2c, ualink_1_0, interposer, dram_channel (1.11.103)
         /* 1.11.57 (latent B033): `lanes` and `coherence` are gone.
           *
           * `lanes` was parsed (default 16) and written by the legacy PCIe path
@@ -3018,6 +3024,34 @@ static int decoupledHostChannels(const std::string& tech, const UnifiedConfig& c
     }
 }
 
+/* 1.11.103 (ruling COSIM-LINK-CLASS): the dram_channel link class's timing is
+ * the device's own channel -- peak bandwidth = channels x channel width x the
+ * preset's data rate; per-transaction base latency = the preset's tRCD + tCL
+ * (a row-miss column access's command-to-data time). Every figure is read
+ * from the part record and its Ramulator preset; a failure refuses. */
+static int dramChannelLinkTiming(const std::string& tech, double& lat_ns, double& bw_gbs, std::string& how) {
+    try {
+        pimid::RamulatorWrapper q("", tech);
+        q.initialize();
+        const int channels = std::max(1, static_cast<int>(q.getNumChannels()));
+        const int width = pimid::params::dramPartRecord(tech).channel_width_bits;
+        const double rate = q.modelledRateMTs();
+        if (width <= 0 || rate <= 0.0) {
+            std::cerr << "[link] FATAL: the dram_channel class needs " << tech << "'s channel width and data rate from its part record (width "
+                      << width << " bits, rate " << rate << " MT/s)." << std::endl;
+            return 1;
+        }
+        lat_ns = q.getTRCD() + q.getTCAS();
+        bw_gbs = static_cast<double>(channels) * static_cast<double>(width) / 8.0 * rate / 1000.0;
+        std::ostringstream o;
+        o << channels << " channel(s) x " << width << " bits x " << rate << " MT/s; tRCD " << q.getTRCD() << " + tCL " << q.getTCAS() << " ns";
+        how = o.str();
+        return 0;
+    } catch (const std::exception& e) {
+        refuseWithoutDramOracle(tech, e.what(), "the dram_channel link's timing (channel width, data rate, tRCD + tCL)");
+    }
+}
+
 /* 1.11.98 (gate 1208A): the host-side memory controllers a run builds -- one
  * Ramulator2 instance per channel of the technology when the host memory is
  * timed by Ramulator (the generated YAML describes one channel), one
@@ -3373,6 +3407,13 @@ static double referenceLayer0BandwidthGBs() {
  * callers (dramHTreeBuilder for the detailed path, analyticalTreeCensus for
  * the analytical one). */
 static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig& config, long covered, int pe_level) {
+    /* 1.11.103 (ruling 9): the in-die fabric's node links count as ports and
+     * every grid node (and a CROSSBAR hub) is a priced switch; the walk census
+     * below takes the walker's own paths, so the hop counts, the hotspot and
+     * the mean cost describe the fabric the per-access pricing walks. */
+    std::map<int,int> gridDegree;
+    for (const auto& l : tree.gridLinks) { gridDegree[l.a]++; gridDegree[l.b]++; }
+    auto isGridRouter = [&](int r) { return r >= 0 && r < (int)tree.gridDie.size() && tree.gridDie[(size_t)r] >= 0; };
     /* 1.10.5: record what was actually built, for the power model.
      *
      * Until now the power model described a different machine from the one
@@ -3387,9 +3428,12 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
      * whatever fraction of the tree is degenerate -- which for a coarse
      * placement is most of it. */
     std::map<int,int> childrenOf;
-    for (const auto& l : tree.intLinks) childrenOf[l.a]++;
+    std::set<int> hasParent;   // 1.11.103: a grid node reaches the tree only through its die's exit
+    for (const auto& l : tree.intLinks) { childrenOf[l.a]++; hasParent.insert(l.b); }
     int branch = 0;
     for (const auto& kv : childrenOf) if (kv.second >= 2) ++branch;
+    for (int r = 0; r < tree.numRouters; ++r)   // 1.11.103: grid nodes and hubs are switches
+        if (isGridRouter(r) && !(childrenOf.count(r) && childrenOf[r] >= 2)) ++branch;
     config.htree_all_routers    = tree.numRouters;
     config.htree_branch_routers = branch;
     for (int l = 0; l < 7; ++l) {
@@ -3407,12 +3451,14 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
             int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
             if (lv < 0 || lv > 6) continue;
             int ports = (childrenOf.count(r) ? childrenOf[r] : 0)
-                      + (r != 0 ? 1 : 0) + (epAt.count(r) ? epAt[r] : 0);
+                      + ((r != 0 && (hasParent.count(r) || !isGridRouter(r))) ? 1 : 0) + (epAt.count(r) ? epAt[r] : 0)
+                      + (gridDegree.count(r) ? gridDegree[r] : 0);   // 1.11.103: the fabric's node links; a parent port only where the tree gives one
             if (ports > config.htree_level_max_ports[lv])
                 config.htree_level_max_ports[lv] = ports;
             /* 1.11.97 (review H19): the histogram the per-class pricing reads;
-             * only routers that ARBITRATE (>= 2 children) are router classes. */
-            if (childrenOf.count(r) && childrenOf[r] >= 2)
+             * only routers that ARBITRATE (>= 2 children) are router classes.
+             * 1.11.103: a grid node or hub arbitrates its fabric links. */
+            if ((childrenOf.count(r) && childrenOf[r] >= 2) || isGridRouter(r))
                 config.htree_level_port_hist[lv][std::min(16, std::max(1, ports))]++;
         }
     }
@@ -3422,65 +3468,66 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
      * internal link counts per direction; links no walk uses count as zero
      * load in the mean (they exist and carry nothing). */
     {
-        std::map<int,int> parentOf;
-        for (const auto& l : tree.intLinks) parentOf[l.b] = l.a;
         std::map<int,int> routerOfEp;
         for (const auto& e : tree.extLinks) routerOfEp[e.a] = e.b;
-        auto pathToRoot = [&](int r, std::vector<int>& out) { out.clear(); while (true) { out.push_back(r); auto it = parentOf.find(r); if (it == parentOf.end()) break; r = it->second; } };
+        /* 1.11.103 (ruling 9): the walk is the TreeWalker's own path (the
+         * tree up to the LCA and down; on a gridded die the grid walk, the
+         * exit and the tree above), so the census prices the fabric the
+         * per-access walk prices; a die exit charges the tiers the grid
+         * replaced, as TreeWalker::walk does. On a plain tree the path is
+         * the parent-pointer walk this census took before. */
+        pimid_htree::TreeWalker walker; walker.build(tree);
         std::map<std::pair<int,int>, long> load;   // (from,to) router pair, per direction
-        std::vector<int> up, dn;
+        std::vector<int> rt;
         const int nEp = tree.totalEndpoints();
-        for (int pe = 0; pe < tree.numPEs; ++pe) {
-            auto rs = routerOfEp.find(pe); if (rs == routerOfEp.end()) continue;
-            for (int ep = 0; ep < nEp; ++ep) {
-                if (ep == pe) continue;
-                auto rd = routerOfEp.find(ep); if (rd == routerOfEp.end()) continue;
-                if (rs->second == rd->second) continue;
-                pathToRoot(rs->second, up); pathToRoot(rd->second, dn);
-                std::set<int> onDn(dn.begin(), dn.end());
-                int lca = -1; size_t ui = 0;
-                for (; ui < up.size(); ++ui) if (onDn.count(up[ui])) { lca = up[ui]; break; }
-                if (lca < 0) continue;
-                for (size_t i = 0; i + 1 <= ui && i + 1 < up.size(); ++i) load[{up[i], up[i + 1]}]++;
-                size_t di = 0; for (; di < dn.size(); ++di) if (dn[di] == lca) break;
-                for (size_t i = di; i >= 1 && i < dn.size(); --i) { load[{dn[i], dn[i - 1]}]++; if (i == 1) break; }
-            }
-        }
+        auto lvlOf = [&](int r) { return (r >= 0 && r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : 6; };
+        auto isDieNode = [&](int r) { return r >= 0 && r < (int)tree.gridDie.size() && tree.gridDie[(size_t)r] >= 0; };
         /* 1.11.97 (ruling 7 (c)): the SAME walk gives the analytical model its
          * base latency and hop count -- the mean one-way tier-walk cost
          * (every router's tier latency on the path plus the bridge at every
          * tier boundary, the quantities computeHierTraversal charges) and the
          * mean number of links per pair -- instead of the reference-clock
          * formula (REF_FREQ 2.4 GHz, NET 2.0 GHz, RES 10, REF_HOPS 8). */
-        {
-            double sumCost = 0.0; long sumLinks = 0, nPairs = 0;
-            for (int pe = 0; pe < tree.numPEs; ++pe) {
-                auto rs = routerOfEp.find(pe); if (rs == routerOfEp.end()) continue;
-                for (int ep = 0; ep < nEp; ++ep) {
-                    if (ep == pe) continue;
-                    auto rd = routerOfEp.find(ep); if (rd == routerOfEp.end()) continue;
-                    if (rs->second == rd->second) continue;
-                    pathToRoot(rs->second, up); pathToRoot(rd->second, dn);
-                    std::set<int> onDn(dn.begin(), dn.end());
-                    int lca = -1; size_t ui = 0;
-                    for (; ui < up.size(); ++ui) if (onDn.count(up[ui])) { lca = up[ui]; break; }
-                    if (lca < 0) continue;
-                    size_t di = 0; for (; di < dn.size(); ++di) if (dn[di] == lca) break;
-                    auto lvlOf = [&](int r) { return (r >= 0 && r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : 6; };
-                    double cost = 0.0; long links = 0;
-                    for (size_t i = 0; i <= ui; ++i) { int lv = lvlOf(up[i]); if (lv >= 0 && lv <= 6) cost += config.hierarchy_level_latency[lv]; if (i < ui) { int lb = std::min(lvlOf(up[i]), lvlOf(up[i + 1])); if (lb >= 0 && lb <= 5) cost += config.hierarchy_bridge_latency[lb]; links++; } }
-                    for (size_t i = di; i >= 1; --i) { int lv = lvlOf(dn[i - 1]); if (lv >= 0 && lv <= 6) cost += config.hierarchy_level_latency[lv]; int lb = std::min(lvlOf(dn[i]), lvlOf(dn[i - 1])); if (lb >= 0 && lb <= 5) cost += config.hierarchy_bridge_latency[lb]; links++; if (i == 1) break; }
-                    sumCost += cost; sumLinks += links; nPairs++;
+        double sumCost = 0.0; long sumLinks = 0, nPairs = 0;
+        for (int pe = 0; pe < tree.numPEs; ++pe) {
+            auto rs = routerOfEp.find(pe); if (rs == routerOfEp.end()) continue;
+            for (int ep = 0; ep < nEp; ++ep) {
+                if (ep == pe) continue;
+                auto rd = routerOfEp.find(ep); if (rd == routerOfEp.end()) continue;
+                if (rs->second == rd->second) continue;
+                if (!walker.path(tree, pe, ep, rt) || rt.size() < 2) continue;
+                double cost = 0.0; long links = 0;
+                for (size_t i = 0; i < rt.size(); ++i) {
+                    const int lv = lvlOf(rt[i]);
+                    if (lv >= 0 && lv <= 6) cost += config.hierarchy_level_latency[lv];
+                    if (i + 1 < rt.size()) {
+                        load[{rt[i], rt[i + 1]}]++;
+                        const int la = lvlOf(rt[i]), lb = lvlOf(rt[i + 1]);
+                        const bool exitLink = (isDieNode(rt[i]) != isDieNode(rt[i + 1])) && (std::max(la, lb) >= 3);
+                        if (exitLink) {
+                            for (int lv2 = std::min(la, lb) + 1; lv2 <= 2; ++lv2) {
+                                cost += config.hierarchy_level_latency[lv2];
+                                cost += config.hierarchy_bridge_latency[lv2 - 1];
+                                links++;
+                            }
+                            cost += config.hierarchy_bridge_latency[2];
+                        } else {
+                            const int lbm = std::min(la, lb);
+                            if (lbm >= 0 && lbm <= 5) cost += config.hierarchy_bridge_latency[lbm];
+                        }
+                        links++;
+                    }
                 }
-            }
-            if (nPairs > 0) {
-                config.htree_mean_one_way_latency = (int)std::lround(sumCost / (double)nPairs);
-                config.htree_mean_hops_100 = (int)std::lround(100.0 * (double)sumLinks / (double)nPairs);
-                std::cout << "[htree] tier walk over " << nPairs << " PE->endpoint pairs: mean one-way cost " << config.htree_mean_one_way_latency
-                          << " PE cycles (levels + bridges), mean " << config.htree_mean_hops_100 / 100.0 << " links (ruling 7 (c): the analytical base latency and hop count)" << std::endl;
+                sumCost += cost; sumLinks += links; nPairs++;
             }
         }
-        long maxL = 0, sumL = 0; const long nLinks = 2L * (long)tree.intLinks.size();
+        if (nPairs > 0) {
+            config.htree_mean_one_way_latency = (int)std::lround(sumCost / (double)nPairs);
+            config.htree_mean_hops_100 = (int)std::lround(100.0 * (double)sumLinks / (double)nPairs);
+            std::cout << "[htree] tier walk over " << nPairs << " PE->endpoint pairs: mean one-way cost " << config.htree_mean_one_way_latency
+                      << " PE cycles (levels + bridges), mean " << config.htree_mean_hops_100 / 100.0 << " links (ruling 7 (c): the analytical base latency and hop count)" << std::endl;
+        }
+        long maxL = 0, sumL = 0; const long nLinks = 2L * (long)(tree.intLinks.size() + tree.gridLinks.size());   // 1.11.103: + the fabric's links
         for (const auto& kv : load) { if (kv.second > maxL) maxL = kv.second; sumL += kv.second; }
         config.htree_hotspot_100 = (nLinks > 0 && sumL > 0) ? (int)std::lround(100.0 * (double)maxL / ((double)sumL / (double)nLinks)) : 100;
         std::cout << "[htree] hotspot: max link load " << maxL << " vs mean " << ((nLinks > 0) ? (double)sumL / (double)nLinks : 0.0)
@@ -3496,6 +3543,11 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
               << tree.numPEs << " PE + " << tree.numAbstract
               << " aggregated), covering " << covered
               << " organisations at level " << pe_level << std::endl;
+    if (tree.fabricKind > 0)   // 1.11.103 (ruling 9)
+        std::cout << "[fabric] in-die " << (tree.fabricKind == 1 ? "MESH_2D" : tree.fabricKind == 2 ? "RING" : "CROSSBAR")
+                  << ": " << tree.dieExitOf.size() << " die(s) gridded " << tree.gridW << " x " << tree.gridH << ", "
+                  << tree.gridRouters << " switches (priced at the placement tier), " << tree.gridLinks.size()
+                  << " node links, one exit per die to its chip router" << std::endl;
 
     /* 1.10: WHERE the aggregated endpoints sit, and how much each fronts.
      *
@@ -3827,11 +3879,25 @@ static bool dramHTreeBuilder(const std::string& tech,
             home = (uint64_t)config.pe_mem_map[pe].mem_org_ids[0];
         peHomes.push_back(home);
     }
+    pimid_htree::InDieFabric fab;   // 1.11.103 (ruling 9)
+    if (!config.indie_fabric.empty()) {
+        fab.kind = (config.indie_fabric == "MESH_2D") ? 1 : (config.indie_fabric == "RING") ? 2 : 3;
+        fab.gridW = config.indie_grid_w; fab.gridH = config.indie_grid_h;
+        if (fab.kind != 3) {
+            std::cerr << "[fabric] FATAL: the detailed (Garnet) path routes the device's CUSTOM topology by TABLE with "
+                         "the tree's UP/DOWN virtual-channel classes, which do not make an in-die " << config.indie_fabric
+                      << " deadlock-free; the analytical fabric model prices it (noc.model: analytical), and a CROSSBAR "
+                         "(one switch per die) runs on both paths. Refusing rather than routing a fabric the model cannot "
+                         "keep deadlock-free (1.11.103, ruling 9)." << std::endl;
+            std::exit(2);
+        }
+    }
     pimid_htree::SparseHTree tree = pimid_htree::buildSparseHTree(
         peHomes, pe_level, N,
         config.subarrays_per_bank, config.hierarchy_banks_per_bg,
         config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
-        config.hierarchy_ranks_per_channel, layer_w, layer_lat);
+        config.hierarchy_ranks_per_channel, layer_w, layer_lat,
+        config.indie_fabric.empty() ? nullptr : &fab);
 
     /* 1.10: the tree must cover the memory exactly. Every organisation at the
      * placement level is either hosted by a processing element or sits behind
@@ -3880,6 +3946,10 @@ static bool dramHTreeBuilder(const std::string& tech,
     f << "routers " << tree.numRouters << "\n";
     f << "endpoints " << tree.totalEndpoints() << "\n";
     for (auto& e : tree.intLinks) {
+        f << "int " << e.a << " " << e.b << " 1 " << e.lat << " " << e.w << "\n";
+        f << "int " << e.b << " " << e.a << " 1 " << e.lat << " " << e.w << "\n";
+    }
+    for (auto& e : tree.gridLinks) {   // 1.11.103: the in-die fabric's node links (a CROSSBAR's hub spokes)
         f << "int " << e.a << " " << e.b << " 1 " << e.lat << " " << e.w << "\n";
         f << "int " << e.b << " " << e.a << " 1 " << e.lat << " " << e.w << "\n";
     }
@@ -3941,11 +4011,17 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
         for (int t = 0; t < 7; ++t) { const int li = pimid_htree::layerForLevel(t, chanL); config.htree_tier_width_bits[t] = (li >= 0 && li < 4) ? Lw[li] : 0; }
     }
     const int ones[4] = {1, 1, 1, 1};
+    pimid_htree::InDieFabric fab;   // 1.11.103 (ruling 9)
+    if (!config.indie_fabric.empty()) {
+        fab.kind = (config.indie_fabric == "MESH_2D") ? 1 : (config.indie_fabric == "RING") ? 2 : 3;
+        fab.gridW = config.indie_grid_w; fab.gridH = config.indie_grid_h;
+    }
     pimid_htree::SparseHTree tree = pimid_htree::buildSparseHTree(
         peHomes, pe_level, N,
         config.subarrays_per_bank, config.hierarchy_banks_per_bg,
         config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
-        config.hierarchy_ranks_per_channel, ones, ones);
+        config.hierarchy_ranks_per_channel, ones, ones,
+        config.indie_fabric.empty() ? nullptr : &fab);
     const long covered = tree.coveredOrgs();
     const long expected = (long)config.total_mem_orgs;
     if (expected > 0 && covered != expected) {
@@ -5713,6 +5789,44 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
              * comparison has to happen after both, not inside either. */
             const std::string requested_topo = config.noc_topology;
 
+            /* 1.11.103 (sweep-94 ruling 9, user "a" 2026-10-05): a mesh, ring or
+             * crossbar requested for a DRAM device is the IN-DIE fabric -- that
+             * fabric inside each die over the die's organisations at the
+             * placement tier, with the chip, rank and channel tiers above it
+             * kept (the tree above the die and the channel-DQ wall unchanged).
+             * Links take the placement tier's ladder rung; hops come from the
+             * grid; every grid node is priced as a router at that tier. The
+             * tree machinery below carries the tiers above the die, so the
+             * topology string it sees stays H_TREE/CUSTOM and the requested
+             * fabric is recorded in config.indie_fabric (the 1.11.101 refusal
+             * of a fabric the model does not define no longer applies: the
+             * model defines it). A fabric at the chip tier or above is still
+             * not defined (the die is the fabric's extent) and is refused. */
+            if (config.noc_topology_user_set && config.hierarchy_enabled &&
+                pimid::isDRAM(pimid::parseMemoryTechnology(tech))) {
+                std::string tp = requested_topo;
+                for (auto& c : tp) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                if (tp == "MESH") tp = "MESH_2D";
+                if ((tp == "MESH_2D" || tp == "RING" || tp == "CROSSBAR") &&
+                    config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level <= 2) {
+                    long nodes = (long)std::max(1, config.hierarchy_bg_per_chip);
+                    if (config.pe_hierarchy_level <= 1) nodes *= std::max(1, config.hierarchy_banks_per_bg);
+                    if (config.pe_hierarchy_level == 0) nodes *= std::max(1, config.subarrays_per_bank);
+                    int gw = 1;
+                    for (int d = 1; (long)d * d <= nodes; ++d) if (nodes % d == 0) gw = d;
+                    config.indie_fabric = tp;
+                    config.indie_grid_w = gw;
+                    config.indie_grid_h = (int)(nodes / gw);
+                    static const char* tiers[] = { "subarray", "bank", "bank group" };
+                    std::cout << "[fabric] in-die " << tp << " over each die's " << nodes << " "
+                              << tiers[config.pe_hierarchy_level] << " organisations ("
+                              << config.indie_grid_w << " x " << config.indie_grid_h
+                              << "; links at the " << tiers[config.pe_hierarchy_level]
+                              << " tier's rung; the chip, rank and channel tiers keep the tree; ruling 9)"
+                              << std::endl;
+                }
+            }
+
             bool detailed_dram =
                 config.noc_cycle_accurate &&
                 (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" ||
@@ -5923,7 +6037,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
              * Compared here, after BOTH overrides (CUSTOM above, H_TREE just
              * now), because either can be the one that fires, and only when
              * the key was actually set (the default is MESH_2D). */
-            if (config.noc_topology_user_set &&
+            if (config.noc_topology_user_set && config.indie_fabric.empty() &&
                 config.noc_topology != requested_topo) {
                 std::cerr << "[config] FATAL: noc.topology=" << requested_topo
                           << " was requested inside " << tech << ", a DRAM device "
@@ -6242,6 +6356,9 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     for (int i = 0; i < 7; ++i)
         out << "        levelLatency" << i << " = " << config.hierarchy_level_latency[i] << ";\n";
     out << "        levelLatency7 = " << config.hierarchy_hostmc_latency << ";\n";   // 1.11.94 (H17): HOST_MC rung
+    out << "        indieFabric = " << (config.indie_fabric == "MESH_2D" ? 1 : config.indie_fabric == "RING" ? 2 : config.indie_fabric == "CROSSBAR" ? 3 : 0) << ";\n";   // 1.11.103 (ruling 9)
+    out << "        indieGridW = " << config.indie_grid_w << ";\n";
+    out << "        indieGridH = " << config.indie_grid_h << ";\n";
     for (int i = 0; i < 6; ++i)
         out << "        bridgeLatency" << i << " = " << config.hierarchy_bridge_latency[i] << ";\n";
     out << "        bridgeLatency6 = 0;\n";   // 1.11.94 (H17): system -> HOST_MC is the host path itself, no extra bridge
@@ -7331,6 +7448,7 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
 static int headerBytesForLinkClass(const std::string& link_type) {
     if (link_type == "pcie_gen3" || link_type == "pcie_gen4" || link_type == "pcie_gen5") return 20;
     if (link_type.rfind("interposer", 0) == 0) return 0;
+    if (link_type == "dram_channel") return 0;   // 1.11.103: a DRAM channel carries no transaction framing
     return 16;   // cxl_*, nvlink_*, ualink_*
 }
 
@@ -9976,7 +10094,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         }
 
         // PCIe for host-device transfers (configurable via power.pcie YAML)
-        if (config.pcie_enabled) {
+        /* 1.11.103 (ruling COSIM-LINK-CLASS): a dram_channel link has no link
+         * controller of its own -- the host memory controller IS the crossing's
+         * controller and is priced above as itself -- so nothing is priced here. */
+        if (config.pcie_enabled && config.pcie_link_type == "dram_channel") {
+            std::cout << "  [power] host link: dram_channel -- no link controller priced (the host memory controller carries the crossing and is priced as itself)" << std::endl;
+        } else if (config.pcie_enabled) {
             McPAT::PCIeStats pcie;
             pcie.number_units = config.pcie_num_units;
             // Use num_lanes for num_channels if available
@@ -12308,6 +12431,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 } else {
                     pjbit = McPAT::linkEnergyPJPerBit(config.pcie_link_type);
                 }
+                /* 1.11.103 (ruling COSIM-LINK-CLASS): the dram_channel class
+                 * carries NO separate link energy -- the channel's I/O and
+                 * termination are priced per access by the DRAM energy model
+                 * -- so its crossings are priced at 0 pJ/bit, said so. */
+                const bool dram_channel_link = (config.pcie_link_type == "dram_channel");
+                if (dram_channel_link && !pj_overridden) pjbit = 0.0;
                 bool link_unpriced = false;
                 if (pjbit < 0.0) {
                     if (!xing_warned_unknown) {
@@ -12436,7 +12565,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                  * correct). Non-PIPE families (NVLink/UALink/UCIe) have no
                  * sourced controller clock: WARN and keep 1000, labelled
                  * ASSUMED, rather than pretending a derivation exists. */
-                {
+                if (!dram_channel_link) {
                     double clk = PIMID::CactiIOWrapper::linkControllerClockMHz(
                                      config.pcie_link_type);
                     if (clk > 0.0) {
@@ -12452,7 +12581,13 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     }
                 }
                 ps.link_type_name = config.pcie_link_type;   // 1.11.29: name it
-                mcpat.setPCIeStats(ps);
+                /* 1.11.103 (ruling COSIM-LINK-CLASS): no link controller on a
+                 * dram_channel link -- the host memory controller is priced as
+                 * itself and the DRAM interface per access. */
+                if (dram_channel_link)
+                    std::cout << "  [power] " << node.name << ": dram_channel -- no link controller priced (the host memory controller and the DRAM interface carry the crossing)" << std::endl;
+                else
+                    mcpat.setPCIeStats(ps);
                 if (charge_here) {
                     std::cout << "  [xing] " << node.name << ": link "
                               << config.pcie_link_type << ", " << xbytes
@@ -12468,6 +12603,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                * single-point entry says so, because that is a
                                * fact about our sourcing, not the hardware. */
                               << " crossings, " << pjbit << " pJ/bit"
+                              << (dram_channel_link && !pj_overridden
+                                    ? std::string(" [dram_channel: no separate link energy; the channel's I/O and termination are priced by the DRAM energy model]")
+                                    : std::string())
                               << (pj_overridden
                                     ? std::string(" [power.pcie.pj_per_bit_override;"
                                                   " no sourced range for a user value]")
@@ -14572,7 +14710,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             if (config.pcie_timing_configured &&
                 config.pcie_link_type != lnk.link_type) {
                 std::cout << "  [xing] link type from the declared topology: "
-                          << lnk.link_type << " (power.pcie said '"
+                          << lnk.link_type << " ("
+                          << (config.pcie_link_type_user_set ? "power.pcie said '" : "the attachment's default was '")   // 1.11.103
                           << config.pcie_link_type
                           << "'; the timing view wins -- one wire, one type)"
                           << std::endl;
@@ -16643,9 +16782,13 @@ int main(int argc, char** argv) {
                 // PCIe timing model params (tunable for CXL-like behavior)
                 config.pcie_base_latency_ns = yamlDouble(pc["base_latency_ns"], config.pcie_base_latency_ns, pc_path + ".base_latency_ns");
                 config.pcie_bandwidth_GBs = yamlDouble(pc["bandwidth_GBs"], config.pcie_bandwidth_GBs, pc_path + ".bandwidth_GBs");
+                if (pc["base_latency_ns"])   config.pcie_base_latency_user_set = true;   // 1.11.103 (ruling COSIM-LINK-CLASS)
+                if (pc["bandwidth_GBs"])     config.pcie_bandwidth_user_set = true;
+                if (pc["coherence_extra_ns"]) config.pcie_coherence_user_set = true;
                 config.pcie_num_lanes = yamlInt(pc["num_lanes"], config.pcie_num_lanes, pc_path + ".num_lanes");
                 config.pcie_pj_per_bit_override = yamlDouble(pc["pj_per_bit_override"], config.pcie_pj_per_bit_override, pc_path + ".pj_per_bit_override");
-                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type); config.pcie_link_type_user_set = true;   // 1.11.97 (review R4)
+                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type);
+                if (pc["link_type"]) config.pcie_link_type_user_set = true;   // 1.11.97 (review R4); 1.11.103 (census N2): only a NAMED class is user-set -- a power.pcie block without link_type keeps the attachment default
                 config.pcie_model = pc["model"].as<std::string>(config.pcie_model);
                 if (config.pcie_model != "simple" && config.pcie_model != "md1" &&
                     config.pcie_model != "analytical" && config.pcie_model != "detailed")   // 1.11.90
@@ -16654,17 +16797,18 @@ int main(int argc, char** argv) {
                                "run simple");
                 if (config.pcie_model == "md1") config.pcie_model = "simple";  // backward compat
                 // Link technology + per-transaction overhead (tunable per link).
-                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type); config.pcie_link_type_user_set = true;   // 1.11.97 (review R4)
+                config.pcie_link_type = pc["link_type"].as<std::string>(config.pcie_link_type);
+                if (pc["link_type"]) config.pcie_link_type_user_set = true;   // 1.11.97 (review R4); 1.11.103 (census N2): only a NAMED class is user-set -- a power.pcie block without link_type keeps the attachment default
                 {   // 1.11.90: the link classes the power and timing tables price
                     static const std::set<std::string> kPowerLinkTypes = {
                         "pcie_gen3", "pcie_gen4", "pcie_gen5", "cxl_2_0", "cxl_3_0",
                         "nvlink_3_0", "nvlink_4_0", "nvlink_c2c", "ualink_1_0",
-                        "interposer" };
+                        "interposer", "dram_channel" };   // 1.11.103: dram_channel = the device's own DRAM channel
                     if (!kPowerLinkTypes.count(config.pcie_link_type))
                         refuseEnum(pc_path + ".link_type", config.pcie_link_type,
                                    "pcie_gen3, pcie_gen4, pcie_gen5, cxl_2_0, cxl_3_0, "
                                    "nvlink_3_0, nvlink_4_0, nvlink_c2c, ualink_1_0, "
-                                   "interposer",
+                                   "interposer, dram_channel",
                                    "load, and was priced at zero link energy on an"
                                    " assumed controller clock with only a power-time"
                                    " warning", false);
@@ -16961,6 +17105,7 @@ int main(int argc, char** argv) {
 
                             if (d["noc"]) {
                                 node.noc_topology = d["noc"]["topology"].as<std::string>(node.noc_topology);
+                                if (d["noc"]["topology"]) node.noc_topology_user_set = true;   // 1.11.103
                                 node.noc_model = d["noc"]["model"].as<std::string>(node.noc_model);
                                 if (d["noc"]["model"] && node.noc_model != "analytical" &&
                                     node.noc_model != "detailed")   // 1.11.90
@@ -17060,16 +17205,17 @@ int main(int argc, char** argv) {
                                 std::exit(2);
                             }
                             link.link_type = lnk["type"].as<std::string>("pcie_gen5");
+                            link.type_user_set = static_cast<bool>(lnk["type"]);   // 1.11.103
                             {   // 1.11.90: the preset table below is the accepted set
                                 static const std::set<std::string> kLinkTypes = {
                                     "pcie_gen4", "pcie_gen5", "cxl_2_0", "cxl_3_0",
                                     "nvlink_3_0", "nvlink_4_0", "nvlink_c2c",
-                                    "ualink_1_0", "interposer" };
+                                    "ualink_1_0", "interposer", "dram_channel" };   // 1.11.103
                                 if (!kLinkTypes.count(link.link_type))
                                     refuseEnum(lpath + ".type", link.link_type,
                                                "pcie_gen4, pcie_gen5, cxl_2_0, cxl_3_0, "
                                                "nvlink_3_0, nvlink_4_0, nvlink_c2c, "
-                                               "ualink_1_0, interposer",
+                                               "ualink_1_0, interposer, dram_channel",
                                                "take the pcie_gen5 preset");
                             }
                             // 1.11.57 (latent B033): see SystemLinkConfig.
@@ -17100,6 +17246,7 @@ int main(int argc, char** argv) {
                                 else if (link.link_type == "nvlink_c2c") { preset_lat = 100.0; preset_bw = 450.0; preset_hdr = 16; preset_coh_ns = 50.0; }
                                 else if (link.link_type == "ualink_1_0") { preset_lat = 200.0; preset_bw = 100.0; preset_hdr = 16; preset_coh_ns = 40.0; }
                                 else if (link.link_type == "interposer") { preset_lat = 5.0;   preset_bw = 256.0; preset_hdr = 0; }
+                                else if (link.link_type == "dram_channel") { preset_lat = -1.0; preset_bw = -1.0; preset_hdr = 0; }   // 1.11.103: the channel's timing comes from the device's part record once the device node is known (loadConfig's link-class block)
                                 if (link.base_latency_ns < 0) link.base_latency_ns = preset_lat;
                                 if (link.bandwidth_GBs < 0)   link.bandwidth_GBs = preset_bw;
                                 link.header_bytes = preset_hdr;
@@ -17257,18 +17404,80 @@ int main(int argc, char** argv) {
     /* 1.11.97 (review R4 / m08-main-12671-14089-7, user "yes"): the host-device
      * link's energy class follows the DECLARED attachment -- an internally
      * attached device (on-package) crosses an interposer class, not a PCIe
-     * gen5 SerDes; PCIe is priced only when declared. Until now every co-sim
-     * cell priced the PCIe default on internally attached devices. */
-    if (config.scope == "system" && !config.pcie_link_type_user_set) {
-        bool any_dev = false, all_internal = true;
+     * gen5 SerDes; PCIe is priced only when declared.
+     *
+     * 1.11.103 (ruling COSIM-LINK-CLASS, user "c" 2026-10-05, closes R4): the
+     * class DEFAULTS to the attachment the device's placement implies -- an
+     * HBM stack (or any on-package part) sits on an interposer; a DDR-family
+     * part (DDR3/DDR4/DDR5/LPDDR5/GDDR6) is reached over its own DRAM
+     * channel, the dram_channel class: no separate link energy (the channel's
+     * I/O and termination are priced by the DRAM energy model), no link
+     * controller (the host memory controller is priced as itself), no
+     * framing, and its timing is the channel's from the part record; an
+     * externally attached device crosses PCIe -- and a configured class
+     * (power.pcie.link_type, or a system.network.links entry's type)
+     * OVERRIDES it with a printed note naming both. The defaulted class
+     * carries its timing preset for the fields the config did not set,
+     * exactly as naming the class does (1.11.97 switched the energy class
+     * alone and left an interposer on the PCIe 500 ns / 63 GB/s timing). */
+    if (config.scope == "system") {
+        bool any_dev = false, all_internal = true; std::string dev_tech;
         for (const auto& n : config.system_nodes) {
             if (n.role != UnifiedConfig::SystemNode::DEVICE) continue;
+            if (!any_dev) dev_tech = n.memory_tech;
             any_dev = true;
             if (n.attachment == UnifiedConfig::SystemNode::EXTERNAL) all_internal = false;
         }
-        if (any_dev && all_internal && config.pcie_link_type.rfind("pcie", 0) == 0) {
-            config.pcie_link_type = "interposer";
-            std::cout << "  [link] host-device link class: interposer (every device is INTERNALLY attached; PCIe is priced only when declared; review R4)" << std::endl;
+        if (any_dev) {
+            std::string implied = "pcie_gen5", why = "a device is EXTERNALLY attached; PCIe is the declared crossing";
+            if (all_internal) {
+                if (dev_tech == "DDR3" || dev_tech == "DDR4" || dev_tech == "DDR5" || dev_tech == "LPDDR5" || dev_tech == "GDDR6") {
+                    implied = "dram_channel";
+                    why = "every device is INTERNALLY attached and " + dev_tech + " is a channel-attached part: the host reaches it over its own DRAM channel";
+                } else {
+                    implied = "interposer";
+                    why = "every device is INTERNALLY attached (on-package " + dev_tech + ")";
+                }
+            }
+            config.link_class_implied = implied;
+            std::string configured; bool from_links = false;
+            if (config.pcie_link_type_user_set) configured = config.pcie_link_type;
+            else for (const auto& l : config.system_network.links) if (l.type_user_set) { configured = l.link_type; from_links = true; break; }
+            if (configured.empty()) {
+                config.pcie_link_type = implied;
+                for (auto& l : config.system_network.links) if (!l.type_user_set) l.link_type = implied;
+                std::cout << "  [link] host-device link class: " << implied << " (the attachment's default: " << why << "; ruling COSIM-LINK-CLASS)" << std::endl;
+                if (implied == "interposer") {
+                    if (!config.pcie_base_latency_user_set) config.pcie_base_latency_ns = 5.0;      // the named-interposer preset (2.5D on-package)
+                    if (!config.pcie_bandwidth_user_set)    config.pcie_bandwidth_GBs   = 256.0;
+                    if (config.pcie_header_bytes < 0)       config.pcie_header_bytes    = 0;
+                    if (!config.pcie_coherence_user_set)    config.pcie_coherence_extra_ns = 0.0;
+                    std::cout << "  [link] interposer timing preset for the fields the config did not set: base " << config.pcie_base_latency_ns
+                              << " ns, " << config.pcie_bandwidth_GBs << " GB/s, header " << config.pcie_header_bytes << " B, coherence "
+                              << config.pcie_coherence_extra_ns << " ns (the same preset a named interposer takes)" << std::endl;
+                }
+            } else {
+                if (from_links) config.pcie_link_type = configured;
+                if (configured != implied)
+                    std::cout << "  [link] host-device link class: " << configured << " (configured by "
+                              << (from_links ? "system.network.links" : "power.pcie.link_type") << ") overrides the attachment's default "
+                              << implied << " (" << why << "; ruling COSIM-LINK-CLASS)" << std::endl;
+                else
+                    std::cout << "  [link] host-device link class: " << configured << " (configured; also the attachment's default: " << why << ")" << std::endl;
+            }
+            if (config.pcie_link_type == "dram_channel") {
+                double lat = 0.0, bw = 0.0; std::string how;
+                if (dramChannelLinkTiming(dev_tech, lat, bw, how) != 0) return 1;
+                if (!config.pcie_base_latency_user_set) config.pcie_base_latency_ns = lat;
+                if (!config.pcie_bandwidth_user_set)    config.pcie_bandwidth_GBs   = bw;
+                if (config.pcie_header_bytes < 0)       config.pcie_header_bytes    = 0;
+                if (!config.pcie_coherence_user_set)    config.pcie_coherence_extra_ns = 0.0;
+                for (auto& l : config.system_network.links)
+                    if (l.link_type == "dram_channel") { if (l.base_latency_ns < 0) l.base_latency_ns = lat; if (l.bandwidth_GBs < 0) l.bandwidth_GBs = bw; l.header_bytes = 0; l.coherence_extra_ns = 0.0; }
+                std::cout << "  [link] dram_channel timing from the " << dev_tech << " part record: base " << config.pcie_base_latency_ns << " ns, "
+                          << config.pcie_bandwidth_GBs << " GB/s, header 0 B (" << how << "); no separate link energy and no link controller: "
+                             "the host memory controller and the DRAM interface carry the crossing and are priced in their own places" << std::endl;
+            }
         }
     }
     /* 1.11.94 (review H33-H35 follow-up): a DRAM device's fabric is the CUSTOM
@@ -17387,6 +17596,13 @@ int main(int argc, char** argv) {
             }
             if (!n.noc_topology.empty()) {
                 config.noc_topology = n.noc_topology;
+                /* 1.11.103 (ruling 9): a device node's NAMED fabric is a named
+                 * fabric. Device scope has marked it user-set since 1.11.101 (a
+                 * fabric the model does not define is refused, not replaced);
+                 * system scope adopted the name without the mark, so a mesh
+                 * named on a DRAM device was silently replaced by the tree.
+                 * The node's default (not named in the YAML) is not a request. */
+                if (n.noc_topology_user_set) config.noc_topology_user_set = true;
                 std::transform(config.noc_topology.begin(), config.noc_topology.end(),
                                config.noc_topology.begin(), ::toupper);
             }
@@ -18292,7 +18508,7 @@ int main(int argc, char** argv) {
                 // PCIe/CXL interconnect info
                 if (config.pcie_timing_configured && config.pcie_enabled) {
                     std::cout << "    Interconnect: " << config.pcie_link_type
-                              << " x" << config.pcie_num_lanes
+                              << (config.pcie_link_type == "dram_channel" ? std::string(" (the device's DRAM channels)") : " x" + std::to_string(config.pcie_num_lanes))   // 1.11.103
                               << " (base=" << std::fixed << std::setprecision(0)
                               << config.pcie_base_latency_ns << "ns, BW="
                               << std::setprecision(1) << config.pcie_bandwidth_GBs

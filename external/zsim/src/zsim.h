@@ -263,6 +263,7 @@ struct GlobSimInfo {
          * old -1 sentinel, read as 0xFFFFFFFF and then used as a signed index,
          * is gone: zsim refuses a placement above 7. */
         uint32_t levelLatency[8] = {};
+        uint32_t indieFabric = 0, indieGridW = 0, indieGridH = 0;   // 1.11.103 (ruling 9): the in-die fabric below the chip router (0 = the tree)
         uint32_t bridgeLatency[7] = {};
         // Bridge model strings: "auto", "simple", "md1", "detailed"
         // Stored as uint32_t enum: 0=auto, 1=simple, 2=md1, 3=detailed

@@ -198,12 +198,16 @@ public:
                     ? (uint64_t)zinfo->hierarchy.peMemMapData[off] : (uint64_t)p);
             }
             const int W[4] = {1, 1, 1, 1}, Lt[4] = {1, 1, 1, 1};  // structure only
+            pimid_htree::InDieFabric fab;   // 1.11.103 (ruling 9): the grid the simulator's census built
+            fab.kind = (int)zinfo->hierarchy.indieFabric;
+            fab.gridW = (int)zinfo->hierarchy.indieGridW;
+            fab.gridH = (int)zinfo->hierarchy.indieGridH;
             t = pimid_htree::buildSparseHTree(
                 peHomes, (int)zinfo->hierarchy.placementLevel,
                 (int)zinfo->hierarchy.dramChannels,
                 (int)zinfo->hierarchy.subarraysPerBank, (int)zinfo->hierarchy.banksPerBG,
                 (int)zinfo->hierarchy.bgPerChip, (int)zinfo->hierarchy.chipsPerRank,
-                (int)zinfo->hierarchy.ranksPerChannel, W, Lt);
+                (int)zinfo->hierarchy.ranksPerChannel, W, Lt, fab.kind > 0 ? &fab : nullptr);
         });
         return t;
     }

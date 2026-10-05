@@ -597,6 +597,9 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.ranksPerChannel = config.get<uint32_t>("sys.hierarchy.ranksPerChannel", 1);
         zinfo->hierarchy.channelsPerSystem = config.get<uint32_t>("sys.hierarchy.channelsPerSystem", 1);
         zinfo->hierarchy.dramChannels = config.get<uint32_t>("sys.hierarchy.dramChannels", 1);
+        zinfo->hierarchy.indieFabric = config.get<uint32_t>("sys.hierarchy.indieFabric", 0);   // 1.11.103 (ruling 9)
+        zinfo->hierarchy.indieGridW = config.get<uint32_t>("sys.hierarchy.indieGridW", 0);
+        zinfo->hierarchy.indieGridH = config.get<uint32_t>("sys.hierarchy.indieGridH", 0);
         zinfo->hierarchy.dramEpochReplay = config.get<uint32_t>("sys.hierarchy.dramEpochReplay", 0);   // 1.11.98 (ruling 4 (c))
         zinfo->hierarchy.nocAggBandwidthMBs = config.get<uint64_t>("sys.hierarchy.nocAggBandwidthMBs", 0);
         zinfo->hierarchy.dqTurnNsX100 = config.get<uint32_t>("sys.hierarchy.dqTurnNsX100", 0);
