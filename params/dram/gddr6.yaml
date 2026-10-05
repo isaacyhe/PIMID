@@ -1,4 +1,5 @@
 # PIMID shipped part record -- GDDR6
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -19,3 +20,39 @@ channels: 2                   # channels the preset instantiates
 channel_width_bits: 16   # 1.11.101 (step 2): JESD250D 4.1: two independent 16-bit channels per device
 refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per channel"
+  channels_basis: 1
+  provenance: DERIVED
+  idd3n_bank_state: ONE_BANK
+  vdd: 1.35
+  idd0: 215.0
+  idd2n: 155.0
+  idd3n: 230.0
+  idd4r: 610.0
+  idd4w: 735.0
+  idd5: 395.0
+  idd2p: 115.0
+  trfc_ns: 120.0
+  trefi_ns: 1900.0
+  source: "Samsung K4Z80325BC GDDR6 Table 82 (HC14), per DEVICE maxima {430, 310, 460, 1220, 1470, 790, IDD2P 230} halved to one of the two channels; typical via the component factors"
+  e_actpre_pj_override: 3240.0   # IDD7 route: (IDD7 - IDD4R) x tRC per channel activation at the maxima = 3240 pJ (well-conditioned: the two loops share the read stream); typicalFromSpec x f.act
+component_factors:   # typical / maximum per component; applied by typicalFromSpec
+  standby: 0.57
+  standby_premium: 0.631578947368
+  act: 0.5
+  burst_rd: 0.6
+  burst_wr: 0.5
+  refresh: 0.83
+  pd: 0.57
+  source: "the DDR5/LPDDR5/GDDR6 class set (1.11.91): standby 0.57, premium 0.36/0.57, act 0.5, burst 0.6 rd / 0.5 wr, refresh 0.83, pd 0.57"
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: POD
+  vddq: 1.35
+  ron_rd: 40.0
+  rtt_rd: 60.0
+  ron_wr: 40.0
+  rtt_wr: 120.0
+  source: "POD at 1.35 V per JESD250D; rd 40 + 60 = Samsung K4Z80325BC p.166 driver/termination; wr 120 = p.144 IDD 'All ODTs ... ZQ/2'"

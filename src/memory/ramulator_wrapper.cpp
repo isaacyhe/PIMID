@@ -893,6 +893,48 @@ void RamulatorWrapper::initialize() {
         f.channels = rec.channels;
         for (const auto& g : rec.refresh_ladder) f.refresh_ladder.emplace_back(g.above_c, g.factor);
         Ramulator::pimid_energy::setPartFacts(dt, f);
+        /* 1.11.104 (IDD-RECORDS step 1): the part's measured data from the
+         * record, registered beside the code table and cross-checked against
+         * it (a mismatch refuses); step 2 reads it instead of the table. */
+        Ramulator::pimid_energy::PartIddFacts pf;
+        for (const auto& kv : rec.idd.by_grade) {
+            const pimid::params::IddRow& r = kv.second;
+            Ramulator::pimid_energy::IDDSpec s{r.vdd, r.idd0, r.idd2n, r.idd3n, r.idd4r, r.idd4w, r.idd5,
+                                              r.trfc_ns, r.trefi_ns, rec.idd.channels_basis, r.idd2p};
+            if (r.has_iddq) { s.iddq3n = r.iddq3n; s.iddq4r = r.iddq4r; s.iddq4w = r.iddq4w; s.vddq = r.vddq; }
+            if (r.has_ipp)  { s.ipp2n = r.ipp2n; s.ipp3n = r.ipp3n; s.vpp = r.vpp; }
+            s.e_actpre_pJ_override = rec.idd.e_actpre_pj_override;
+            s.stack_floor_mw = rec.idd.stack_floor_mw;
+            pf.rows[kv.first] = s;
+        }
+        pf.provenance = rec.idd.provenance; pf.idd3n_bank_state = rec.idd.idd3n_bank_state;
+        pf.basis = rec.idd.basis; pf.channels_basis = rec.idd.channels_basis;
+        pf.component_factors.apply = rec.component_factors.apply;
+        if (rec.component_factors.apply) {
+            const auto& c = rec.component_factors;
+            pf.component_factors.standby = c.standby; pf.component_factors.standby_premium = c.standby_premium;
+            pf.component_factors.act = c.act; pf.component_factors.burst_rd = c.burst_rd; pf.component_factors.burst_wr = c.burst_wr;
+            pf.component_factors.refresh = c.refresh; pf.component_factors.pd = c.pd;
+        }
+        pf.termination.known = true;
+        pf.termination.scheme = (rec.termination.scheme == "POD") ? Ramulator::pimid_energy::TermScheme::POD
+                              : (rec.termination.scheme == "SSTL") ? Ramulator::pimid_energy::TermScheme::SSTL
+                              : (rec.termination.scheme == "LVSTL") ? Ramulator::pimid_energy::TermScheme::LVSTL
+                              : Ramulator::pimid_energy::TermScheme::NONE;
+        pf.termination.vddq = rec.termination.vddq; pf.termination.ron_rd = rec.termination.ron_rd; pf.termination.rtt_rd = rec.termination.rtt_rd;
+        pf.termination.ron_wr = rec.termination.ron_wr; pf.termination.rtt_wr = rec.termination.rtt_wr;
+        pf.iddq_band.valid = rec.iddq_band.valid; pf.iddq_band.lo_pj_bit = rec.iddq_band.lo; pf.iddq_band.hi_pj_bit = rec.iddq_band.hi;
+        pf.set = true;
+        const int nchk = Ramulator::pimid_energy::crossCheckPartIddFacts(dt, pf);
+        Ramulator::pimid_energy::setPartIddFacts(dt, pf);
+        {
+            static std::set<std::string> said;
+            if (said.insert(dt).second)
+                std::cout << "[params] " << dt << " idd: " << pf.provenance << " row (" << pf.basis << ", " << pf.idd3n_bank_state
+                          << ", " << pf.rows.size() << " grade row(s)): " << nchk
+                          << " values cross-checked against the 1.11.103 code table (IDD-RECORDS step 1; step 2 makes the record the source)"
+                          << std::endl;
+        }
     }
     parseConfiguration();
 

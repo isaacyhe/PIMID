@@ -1,4 +1,5 @@
 # PIMID shipped part record -- DDR5
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -19,3 +20,68 @@ channels: 2                   # 1.11.97 (review R1): the 64-bit DIMM channel is 
 channel_width_bits: 32   # 1.11.101 (step 2): JESD79-5B 2.1: each of the two independent sub-channels is 32 bits wide; one sub-channel rank = 32 / device width devices (the DIMM rank spans both: 64 / width)
 refresh_ladder:                    # JEDEC JESD79-5: 2x refresh above 85 C (the model applies one step)
   - { above_c: 85.0, factor: 0.5 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per device"
+  channels_basis: 1
+  provenance: DERIVED
+  idd3n_bank_state: ALL_BANKS
+  by_grade:
+    4800:
+      vdd: 1.1
+      idd0: 103.0
+      idd2n: 92.0
+      idd3n: 142.0
+      idd4r: 377.0
+      idd4w: 349.0
+      idd5: 277.0
+      idd2p: 88.0
+      trfc_ns: 295.0
+      trefi_ns: 3900.0
+      source: "Micron MT60B 16 Gb DDR5 core sheet Rev A Table 6, pp.17-19 (DDR5-4800B, the record grade), MAXIMA; typical via the component factors"
+      iddq: { iddq3n: 31.0, iddq4r: 57.0, iddq4w: 198.0, vddq: 1.1, source: "Rev A T6 pp.18-19 (VDDQ rail)" }
+      ipp: { ipp2n: 6.0, ipp3n: 7.0, vpp: 1.8, source: "Rev A T6 pp.17-18 (VPP rail)" }
+    5600:
+      vdd: 1.1
+      idd0: 53.0
+      idd2n: 49.0
+      idd3n: 91.0
+      idd4r: 218.0
+      idd4w: 241.0
+      idd5: 377.0
+      idd2p: 47.0
+      trfc_ns: 295.0
+      trefi_ns: 3900.0
+      source: "Micron MT60B 16 Gb DDR5 core sheet Rev D Table 8, pp.18-20 (DDR5-5600B), MAXIMA; typical via the component factors"
+      iddq: { iddq3n: 70.0, iddq4r: 218.0, iddq4w: 271.0, vddq: 1.1, source: "Rev D T8 pp.19-20" }
+      ipp: { ipp2n: 7.0, ipp3n: 8.0, vpp: 1.8, source: "Rev D T8 pp.18-19" }
+    3200:
+      vdd: 1.1
+      idd0: 55.0
+      idd2n: 34.0
+      idd3n: 42.0
+      idd4r: 148.0
+      idd4w: 168.0
+      idd5: 120.0
+      idd2p: 20.0
+      trfc_ns: 195.0
+      trefi_ns: 3900.0
+      source: "8 Gb DDR5-3200 row: IDD UNSOURCED (stated in the code since 1.11.63; kept as the stated gap); tRFC1 195 ns at 8 Gb = DDR5.cpp tRFC_TABLE"
+component_factors:   # typical / maximum per component; applied by typicalFromSpec
+  standby: 0.57
+  standby_premium: 0.631578947368
+  act: 0.5
+  burst_rd: 0.6
+  burst_wr: 0.5
+  refresh: 0.83
+  pd: 0.57
+  source: "the DDR5/LPDDR5/GDDR6 class set (1.11.91): standby 0.57, premium 0.36/0.57, act 0.5, burst 0.6 rd / 0.5 wr, refresh 0.83, pd 0.57"
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: POD
+  vddq: 1.1
+  ron_rd: 34.0
+  rtt_rd: 40.0
+  ron_wr: 34.0
+  rtt_wr: 120.0
+  source: "POD topology per JESD79-5 at 1.1 V; 34/40/120 = Micron DDR5 core sheet p.453 IDD conditions"

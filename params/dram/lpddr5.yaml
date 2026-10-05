@@ -1,4 +1,5 @@
 # PIMID shipped part record -- LPDDR5
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -19,3 +20,40 @@ channels: 1                   # channels the preset instantiates
 channel_width_bits: 16   # 1.11.101 (step 2): JESD209-5B 2.x: a 16-bit channel served by one x16 die
 refresh_ladder:                    # JEDEC JESD209-5: derated refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per device"
+  channels_basis: 1
+  provenance: DERIVED
+  idd3n_bank_state: UNVERIFIED
+  vdd: 1.05
+  idd0: 53.0
+  idd2n: 32.5
+  idd3n: 40.0
+  idd4r: 338.666666667
+  idd4w: 232.0
+  idd5: 205.0
+  idd2p: 3.9
+  trfc_ns: 210.0
+  trefi_ns: 3906.0
+  source: "Micron Y52P LPDDR5X public sheet Table 18 pp.42-43, x16, 7500 Mb/s column, MAXIMA; the burst increments scaled x 6400/7500 to the modelled LPDDR5-6400 (1.11.91 item 11): IDD4R = 40 + (390-40) x 6400/7500, IDD4W = 40 + (265-40) x 6400/7500; tRFCab 210 ns; tREFI 3906 ns = LPDDR5.cpp tREFI_BASE"
+  iddq: { iddq3n: 0.6, iddq4r: 111.9, iddq4w: 0.6, vddq: 0.5, source: "Y52P T18 pp.42-43 (IDD3NQ/IDD4RQ/IDD4WQ), VDDQ p.1; not factored, not rate-scaled" }
+  ipp: { ipp2n: 1.5, ipp3n: 2.8, vpp: 1.8, source: "Y52P T18 p.42 IDD2N1/IDD3N1 on the 1.8 V VDD1 rail (LPDDR5 has no VPP ball)" }
+component_factors:   # typical / maximum per component; applied by typicalFromSpec
+  standby: 0.57
+  standby_premium: 0.631578947368
+  act: 0.5
+  burst_rd: 0.6
+  burst_wr: 0.5
+  refresh: 0.83
+  pd: 0.57
+  source: "the DDR5/LPDDR5/GDDR6 class set (1.11.91): standby 0.57, premium 0.36/0.57, act 0.5, burst 0.6 rd / 0.5 wr, refresh 0.83, pd 0.57"
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: LVSTL
+  vddq: 0.5
+  ron_rd: 40.0
+  rtt_rd: 0.0
+  ron_wr: 40.0
+  rtt_wr: 0.0
+  source: "LVSTL at 0.5 V (JESD209-5): unterminated at this rate, RON 40"

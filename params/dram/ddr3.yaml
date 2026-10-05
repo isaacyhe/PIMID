@@ -1,4 +1,5 @@
 # PIMID shipped part record -- DDR3
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -19,3 +20,38 @@ channels: 1                   # channels the preset instantiates
 channel_width_bits: 64   # 1.11.101 (step 2): JESD79-3F 2.x: a 64-bit data channel; one rank = 64 / device width devices
 refresh_ladder:                    # JEDEC JESD79-3 extended temperature range: 2x refresh (tREFI/2) above 85 C
   - { above_c: 85.0, factor: 0.5 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per device"
+  channels_basis: 1
+  provenance: CALIBRATED
+  idd3n_bank_state: ALL_BANKS
+  vdd: 1.35
+  idd0: 55.0
+  idd2n: 32.0
+  idd3n: 38.0
+  idd4r: 157.0
+  idd4w: 125.0
+  idd5: 235.0
+  idd2p: 32.0
+  trfc_ns: 350.0
+  trefi_ns: 7800.0
+  source: "Micron MT41K 4 Gb DDR3L Rev E Table 20 p.43, x8, DDR3-1600 column, MAXIMA (IDD5B burst refresh; IDD2P1 fast exit); typical via the component factors"
+component_factors:   # typical / maximum per component; applied by typicalFromSpec
+  standby: 0.566
+  standby_premium: 0.648409893993
+  act: 0.43
+  burst_rd: 0.736
+  burst_wr: 0.542
+  refresh: 0.829
+  pd: 0.566
+  source: "[G] Ghose et al. per-component typical/maximum ratios, DDR3 set"
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: SSTL
+  vddq: 1.35
+  ron_rd: 34.0
+  rtt_rd: 40.0
+  ron_wr: 34.0
+  rtt_wr: 120.0
+  source: "SSTL-135 (JESD79-3-1 T38/T41, RZQ = 240); 34/40/120 = MT41K p.32 IDD conditions"

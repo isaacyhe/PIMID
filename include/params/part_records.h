@@ -15,6 +15,7 @@
 #ifndef PIMID_PARAMS_PART_RECORDS_H
 #define PIMID_PARAMS_PART_RECORDS_H
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,40 @@ namespace params {
  * operating temperature is above `above_c` (JEDEC temperature-compensated
  * refresh); rungs are listed in ascending temperature. */
 struct RefreshRung { double above_c; double factor; };
+
+/* 1.11.104 (IDD-RECORDS step 1, user ruling (a) 2026-10-05): the part's
+ * measured data, transcribed into the record with its source beside each
+ * value. In this release the energy model still prices from its code table
+ * and CROSS-CHECKS every record value against it at registration (a
+ * mismatch refuses); step 2 (1.11.105) deletes the table. */
+struct IddRow {
+    double vdd = 0.0;
+    double idd0 = 0.0, idd2n = 0.0, idd3n = 0.0, idd4r = 0.0, idd4w = 0.0, idd5 = 0.0, idd2p = 0.0;   // mA, the row's basis
+    double trfc_ns = 0.0, trefi_ns = 0.0;
+    std::string source;
+    bool has_iddq = false; double iddq3n = -1.0, iddq4r = -1.0, iddq4w = -1.0, vddq = -1.0; std::string iddq_source;   // VDDQ rail, when published
+    bool has_ipp = false;  double ipp2n = -1.0, ipp3n = -1.0, vpp = -1.0; std::string ipp_source;                      // VPP rail, when published
+};
+struct IddBlock {
+    std::string basis;                 // "per device" | "per channel"
+    int channels_basis = 1;            // the row's channel aggregation (HBM: the stack's channels)
+    std::string provenance;            // MEASURED | CALIBRATED | DERIVED
+    std::string idd3n_bank_state;      // ALL_BANKS | ONE_BANK | UNVERIFIED
+    std::map<int, IddRow> by_grade;    // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
+    double e_actpre_pj_override = -1.0;   // GDDR6: the IDD7-route activation energy, pJ
+    double stack_floor_mw = -1.0;         // HBM: the per-stack static floor, mW
+};
+struct ComponentFactorsRec {           // typical / maximum per component; apply = false for a measured row
+    bool apply = false;
+    double standby = 1.0, standby_premium = 1.0, act = 1.0, burst_rd = 1.0, burst_wr = 1.0, refresh = 1.0, pd = 1.0;
+    std::string source;
+};
+struct TerminationRec {                // DQ termination scheme and electricals; the formula stays in the tool
+    std::string scheme;                // POD | SSTL | LVSTL | none
+    double vddq = -1.0, ron_rd = 0.0, rtt_rd = 0.0, ron_wr = 0.0, rtt_wr = 0.0;
+    std::string source;
+};
+struct IddqBandRec { bool valid = false; double lo = 0.0, hi = 0.0; std::string source; };   // HBM VDDQ I/O band, pJ/bit
 
 /* The DRAM part record. Field names mirror the YAML keys. */
 struct DramPartRecord {
@@ -44,6 +79,10 @@ struct DramPartRecord {
     int stack_dies = 0;            // HBM core dies per stack (0 for non-stacked)
     double die_capacity_gb = 0.0;  // HBM core die capacity (0 for non-stacked)
     std::vector<RefreshRung> refresh_ladder;
+    IddBlock idd;                        // 1.11.104
+    ComponentFactorsRec component_factors;
+    TerminationRec termination;
+    IddqBandRec iddq_band;
 };
 
 /* The directory the records are read from: $PIMID_PARAMS when set, else the

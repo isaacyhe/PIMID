@@ -7,6 +7,30 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.104 -- the part's measured IDD data moves into the records, cross-checked against the code table (IDD-RECORDS step 1)
+
+Ruling IDD-RECORDS (a), user 2026-10-05, pulled before the fleet by the
+re-sequence of the same day. Step 1 of the two-step migration: every DRAM
+part record (`params/dram/<tech>.yaml`) now carries the part's measured
+data with its source beside each value -- the `idd` block (VDD, the IDD0 /
+IDD2N / IDD3N / IDD4R / IDD4W / IDD5 / IDD2P currents, tRFC, tREFI, the row's
+basis and channel aggregation, its provenance class and the bank state
+IDD3N was measured in, the optional VDDQ and VPP rails, GDDR6's IDD7-route
+activation override, HBM's per-stack floor; DDR5 holds one row per grade),
+the `component_factors` block (the typical-over-maximum factors per
+component, `none` for the measured HBM rows), the `termination` block (the
+DQ termination scheme and electricals; the formula stays in the tool) and
+HBM's `iddq_band_pj_bit`. The loader requires the blocks, validates them,
+and the energy registry (`PartFacts`) holds them. The energy model STILL
+prices from its code table in this release: at registration every record
+value is cross-checked against the table (1e-9 relative) and a mismatch
+REFUSES naming the technology, the field, the record value and the table
+value -- so no number can move, which the gate proves exactly on every
+technology and DDR5 grade. The `[params]` line names the row's provenance
+and the count of values checked. Step 2 (1.11.105) deletes the table and
+makes the record the source. The Ramulator preset transcriptions and the
+CACTI table node stay in the tools, as ruled.
+
 ## 1.11.103 -- a mesh, ring or crossbar inside a DRAM device is the in-die fabric; the host-device link class follows the attachment, and a DIMM-resident device is reached over its own DRAM channel
 
 **(1) The in-die fabric (sweep-94 ruling 9, user "a" 2026-10-05).** A DRAM

@@ -48,6 +48,8 @@
 #include <iostream>
 #include <algorithm>
 #include <set>
+#include <sstream>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -1058,6 +1060,73 @@ inline ComponentFactors componentFactorsFor(const std::string& key) {
     }
     return f;   // HBM2, HBM3, unknown: none
 }
+struct IddqBand { bool valid = false; double lo_pj_bit = 0.0, hi_pj_bit = 0.0; };
+
+/* 1.11.104 (IDD-RECORDS step 1): the DQ termination SCHEME AND ELECTRICALS
+ * as a row, extracted from terminationNJ (whose formula is unchanged and
+ * reads this). Step 2 reads the part record here. */
+enum class TermScheme { POD, SSTL, LVSTL, NONE };
+struct TermElectricals {
+    TermScheme scheme = TermScheme::NONE;
+    double vddq = -1.0, ron_rd = 0.0, rtt_rd = 0.0, ron_wr = 0.0, rtt_wr = 0.0;
+    bool known = false;   // false: no row (the caller announces its DDR4-class substitute)
+};
+inline TermElectricals terminationElectricalsFor(const std::string& tech) {
+    TermElectricals e; e.known = true;
+    /* R7 split (read: DRAM RON + RX RTT_NOM class; write: controller RON + DRAM RTT_WR class). */
+    if      (tech=="DDR3")   { e.scheme=TermScheme::SSTL;  e.vddq=1.35; e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
+                                                                       // SSTL-135 (JESD79-3-1 T38/T41, RZQ=240);
+                                                                       // trio 34/40/120 = MT41K p.32 IDD conditions
+    else if (tech=="DDR4")   { e.scheme=TermScheme::POD;   e.vddq=1.2;  e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
+                                                                       // POD12 (JESD8-24); trio = MT40A p.315 IDD conds
+    else if (tech=="DDR5")   { e.scheme=TermScheme::POD;   e.vddq=1.1;  e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
+                                                                       // POD topology per JESD79-5 at 1.1 V (no separate
+                                                                       // JESD8-* exists for 1.1 V -- the old "POD11" tag
+                                                                       // named a nonexistent standard); trio = Micron
+                                                                       // DDR5 core sheet p.453 IDD conditions
+    else if (tech=="GDDR6")  { e.scheme=TermScheme::POD;   e.vddq=1.35; e.ron_rd=40; e.rtt_rd=60; e.ron_wr=40; e.rtt_wr=120; return e; }
+                                                                       // POD135 (JESD8-30A.01 family is POD125; GDDR6
+                                                                       // at 1.35 V per JESD250D); rd 40+60 = Samsung
+                                                                       // K4Z80325BC p.166 driver/termination chars;
+                                                                       // wr 120 = p.144 IDD "All ODTs ... ZQ/2"
+    /* LPDDR5 (1.11.26 / 1.11.52 / 1.11.63): terminates to VSS (LVSTL); VDDQ
+     * 0.5 V is the ODT-ON rail, RON 40 ohm from the datasheets; JESD209-5C
+     * Table 84 p.144: DQ ODT default is DISABLE, so rtt = 0 is the sentinel
+     * for "no DC termination path" (the RZQ/1..6 ladder is a controller
+     * option; users modelling ODT-on systems override via
+     * power.termination_pj_per_bit). */
+    else if (tech=="LPDDR5") { e.scheme=TermScheme::LVSTL; e.vddq=0.5;  e.ron_rd=40; e.rtt_rd=0;  e.ron_wr=40; e.rtt_wr=0;   return e; }
+    /* HBM (1.11.64): the DQ link is unterminated (JESD238B.01 cl.9.1 "IOUT =
+     * 0mA; Ctotal = 2.5 pF"; Song, ISCA 2025 tutorial slide 46 "ODT not
+     * allowed in HBM"; Chun JSSC 2021 Table I "CMOS, un-terminated"); the
+     * vertical TSV drivers are inside the measured burst currents and are
+     * NOT a separate term (Cho ISSCC 2018 12.3 is a decomposition insight). */
+    else if (tech.substr(0,3)=="HBM") { e.scheme=TermScheme::NONE; return e; }
+    e.known = false;
+    return e;
+}
+
+/* 1.11.104 (IDD-RECORDS step 1): the part's measured data FROM THE RECORD
+ * (params/dram/<tech>.yaml), registered by the Ramulator wrapper beside the
+ * code table and cross-checked against it (crossCheckPartIddFacts, below the
+ * tables); step 2 (1.11.105) makes it the source. */
+struct PartIddFacts {
+    std::map<int, IDDSpec> rows;         // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
+    std::string provenance;              // MEASURED | CALIBRATED | DERIVED
+    std::string idd3n_bank_state;        // ALL_BANKS | ONE_BANK | UNVERIFIED
+    std::string basis;                   // "per device" | "per channel"
+    int channels_basis = 1;
+    ComponentFactors component_factors;
+    TermElectricals termination;
+    IddqBand iddq_band;
+    bool set = false;
+};
+inline std::map<std::string, PartIddFacts>& partIddFactsMap() { static std::map<std::string, PartIddFacts> m; return m; }
+inline void setPartIddFacts(const std::string& tech, const PartIddFacts& f) { partIddFactsMap()[baseTech(tech)] = f; }
+inline const PartIddFacts* partIddFactsIfAny(const std::string& tech) {
+    auto it = partIddFactsMap().find(baseTech(tech));
+    return (it == partIddFactsMap().end()) ? nullptr : &it->second;
+}
 /* Declared here, defined (with its derivation) before arrayReadNJ. */
 inline double oneBankActiveStandbyMA(const IDDSpec& s, int banks_per_device,
                                      Idd3nBasis basis);
@@ -1623,105 +1692,17 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
      * terminates to GROUND -- the mirror image of POD, which terminates to
      * VDDQ. So current flows while the driver holds the line HIGH, duty ~0.5
      * for random data, across a loop of driver pull-up plus terminator. */
-    enum Scheme { POD, SSTL, LVSTL, NONE };
-    Scheme sch; double vddq, ron_rd, rtt_rd, ron_wr, rtt_wr;   // R7 split; rate is the caller's
-    /* 1.11.46 (FIX-PRE-FLEET L164): ONE PART per technology. The IDD row
-     * above is sourced from Micron 4Gb DDR3L-1600 -- a 1.35 V part -- while
-     * this line priced a 1.5 V SSTL-15 DDR3. Array and termination now
-     * describe the SAME silicon: DDR3L, SSTL-135 (JESD79-3-1, the DDR3L
-     * addendum keeps RZQ=240 and the T38/T41 RTT/RON tables at 1.35 V). */
-    if      (tech=="DDR3")   {sch=SSTL; vddq=1.35; ron_rd=34; rtt_rd=40; ron_wr=34; rtt_wr=120;}
-                                                                       // SSTL-135 (JESD79-3-1 T38/T41, RZQ=240);
-                                                                       // trio 34/40/120 = MT41K p.32 IDD conditions
-    /* 1.11.52 (audit D002): the rate is the SIMULATED part's rate (DDR4-2400:
-     * Ramulator preset DDR4_2400R and the architecture object), not a
-     * different bin. POD12 (JESD8-24) is the interface standard and applies
-     * at either rate, so vddq/rtt/rpd are untouched. 1.11.57 (D017): that rate
-     * now arrives as an argument, from the one table that owns it. */
-    else if (tech=="DDR4")   {sch=POD;  vddq=1.2;  ron_rd=34; rtt_rd=40; ron_wr=34; rtt_wr=120;}
-                                                                       // POD12 (JESD8-24); trio = MT40A p.315 IDD conds
-    else if (tech=="DDR5")   {sch=POD;  vddq=1.1;  ron_rd=34; rtt_rd=40; ron_wr=34; rtt_wr=120;}
-                                                                       // POD topology per JESD79-5 at 1.1 V (no separate
-                                                                       // JESD8-* exists for 1.1 V -- the old "POD11" tag
-                                                                       // named a nonexistent standard); trio = Micron
-                                                                       // DDR5 core sheet p.453 IDD conditions
-    else if (tech=="GDDR6")  {sch=POD;  vddq=1.35; ron_rd=40; rtt_rd=60; ron_wr=40; rtt_wr=120;}
-                                                                       // POD135 (JESD8-30A.01 family is POD125; GDDR6
-                                                                       // at 1.35 V per JESD250D); rd 40+60 = Samsung
-                                                                       // K4Z80325BC p.166 driver/termination chars;
-                                                                       // wr 120 = p.144 IDD "All ODTs ... ZQ/2"
-    /* 1.11.26: was NONE ("LVSTL, unterminated") -- wrong. LPDDR5 does
-     * terminate; it terminates to VSS. VDDQ 0.5 V is the ODT-ON rail
-     * (0.30 V is the ODT-off rail), RON 40 ohm from the same datasheets.
-     * RTT: the datasheet defers the ohm table to Micron's separate
-     * "General LPDDR5 Specifications 2: AC/DC and Interface" document, which
-     * we do not have -- so 240 ohm (RZQ, the LPDDR4/5 ODT reference) is the
-     * one UNSOURCED input here and is flagged as such below. */
-    /* 1.11.52 (audit D008): the LPDDR5 Rtt below is the one UNSOURCED
-     * electrical input in this table -- Micron's datasheets state
-     * "programmable VSS ODT" and give VDDQ and RON but not the termination
-     * value we need, so 240 ohm is an assumption, and it is 240 of the
-     * 280-ohm loop (a 2x error in it moves LPDDR5 termination energy
-     * ~1.75x). It was disclosed only in a comment 45 lines away; the
-     * consumer now reports it at the point of use (see terminationNJ). */
-    /* 1.11.63 (calibration): JESD209-5C Table 84 p.144 -- DQ ODT default is
-     * DISABLE. rtt = 0 is the sentinel for "no DC termination path"; the
-     * LVSTL branch below prices zero termination current for it and states
-     * the citation. The RZQ/1..6 ladder (240..40 ohm) is a controller
-     * option, not a default; users modelling ODT-on systems override via
-     * power.termination_pj_per_bit. */
-    else if (tech=="LPDDR5") {sch=LVSTL; vddq=0.5; ron_rd=40; rtt_rd=0; ron_wr=40; rtt_wr=0;}
-    /* 1.11.64: HBM's zero is not an omission, and the vertical interconnect
-     * is NOT a missing term. Three independent confirmations that the DQ
-     * link is unterminated: JESD238B.01 cl.9.1 measures HBM3 read-burst
-     * current at "IOUT = 0mA; Ctotal = 2.5 pF" (a capacitive load, no DC
-     * path); ISCA 2025 tutorial slide 46 (Song, Samsung) states flatly "ODT
-     * not allowed in HBM (static power)"; and every HBM device paper we hold
-     * lists the interface as "CMOS, un-terminated" (Chun JSSC 2021 Table I
-     * p.200).
-     *
-     * WHY NO SEPARATE TSV TERM IS ADDED, having acquired the only public
-     * measurement of one. Cho ISSCC 2018 12.3 Fig.12.3.1 (misc/) measures
-     * per-TSV driver current on a real HBM2 stack -- ~880 uA multi-drop vs
-     * ~610 uA with the spiral point-to-point structure, at 1.0 V and
-     * 3.3 Gb/s PRBS, i.e. roughly 0.27 -> 0.19 pJ/bit for the TSV driver
-     * alone. It is tempting to add that as the "missing" vertical-link
-     * energy. It would DOUBLE COUNT. The IDD columns above are per-CHANNEL
-     * DEVICE currents (see devicesPerAccess below), and an IDD4R/IDD4W
-     * measurement is taken at the stack's supply balls with a read or write
-     * burst in flight -- the TSVs are inside the device under test, so their
-     * driver current is already inside the measured burst current. This is
-     * exactly the structural difference from DDR-class parts, whose DQ bus
-     * leaves the package and terminates externally, which is why those get a
-     * termination term and HBM does not: for HBM the interface is internal
-     * and is priced by the array/burst currents, not beside them.
-     * The Cho figure is therefore a DECOMPOSITION insight -- what fraction
-     * of stack current is vertical signalling -- and belongs in validation,
-     * not in the charged model.
-     * [1.11.91 (audit R8-8) CORRECTION: "already inside the measured burst
-     * current" is FALSE for the DQ driver rail. JESD238B.01 cl.9.1 (PDF
-     * p.164, printed p.150) measures IDD on the VDDC microbumps, IPP on VPP
-     * and IDDQ on VDDQ separately, and for IDDQ says "DRAM vendors shall
-     * provide simulated values using the IDD4R measurement-loop pattern" --
-     * the DQ output drivers are NOT in IDD4R. The zero TERMINATION above is
-     * unaffected (unterminated link, same citations). The DQ driver energy
-     * is now priced by iddqNJ(); HBM publishes no IDDQ number, so it takes
-     * the Cho 0.19-0.27 pJ/bit driver figure as a BAND (see iddqBandFor).
-     * Whether Cho's per-TSV drivers sit on VDDQ or VDDC is not stated in
-     * the paper; the band is the nearest held measurement of an HBM data
-     * driver, used for the VDDQ rail by the user's R8-8 ruling.] */
-    else if (tech.substr(0,3)=="HBM") return 0.0;
-    else {
-        /* 1.11.57 (latent D007): unknown -> POD12/DDR4 electricals, said out
-         * loud. This branch also disagrees with iddFor()'s exact "HBM2"/"HBM3"
-         * match three functions up: a string like "HBM2E" gets zero here (the
-         * substr) and DDR4 currents there. Whitelisting keeps both unreachable
-         * today. */
+    /* 1.11.104: the scheme and electricals come from terminationElectricalsFor
+     * (the row table, with its provenance); the formula below is unchanged. */
+    const TermElectricals te = terminationElectricalsFor(tech);
+    TermScheme sch = te.scheme;
+    double vddq = te.vddq, ron_rd = te.ron_rd, rtt_rd = te.rtt_rd, ron_wr = te.ron_wr, rtt_wr = te.rtt_wr;
+    if (!te.known) {
         announceUnknownTech("terminationNJ", tech,
                             "the DQ termination energy per 64 B access");
-        sch=POD;  vddq=1.2;  ron_rd=34; rtt_rd=40; ron_wr=34; rtt_wr=120;   // DDR4 electricals, said out loud
+        sch=TermScheme::POD; vddq=1.2; ron_rd=34; rtt_rd=40; ron_wr=34; rtt_wr=120;   // DDR4 electricals, said out loud
     }
-    if (sch == NONE) return 0.0;
+    if (sch == TermScheme::NONE) return 0.0;
 
     /* 1.11.57 (latent D017): the bit period comes from the caller's rate. A
      * non-positive rate means the caller could not source one, and this
@@ -1739,7 +1720,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
     const double r_drv = is_write ? ron_wr : ron_rd;
     const double r_trm = is_write ? rtt_wr : rtt_rd;
     double e_per_bit_pJ;
-    if (sch == LVSTL) {
+    if (sch == TermScheme::LVSTL) {
         /* Ground-referenced: the loop conducts while the line is HIGH, so the
          * duty is the complement of POD's but numerically the same 0.5 for
          * unbiased data. Loop = driver pull-up + terminator to VSS.
@@ -1755,7 +1736,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
         const double kHighDuty = 0.5;
         e_per_bit_pJ = kHighDuty * (vddq * vddq) / (r_drv + r_trm) * t_bit_s * 1e12;
     }
-    else if (sch == POD) {
+    else if (sch == TermScheme::POD) {
         // current only while LOW; loop = driver + terminator (R7: the pair
         // is direction-selected above -- read: DRAM RON + RX RTT_NOM class;
         // write: controller RON + DRAM RTT_WR class)
@@ -1790,7 +1771,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
  * HBM2/HBM3 publish no IDDQ value (JESD238B.01 PDF p.164: vendor-simulated;
  * JESD235D PDF p.108 likewise), so they take a BAND in energy per bit: see
  * iddqBandFor(). */
-struct IddqBand { bool valid = false; double lo_pj_bit = 0.0, hi_pj_bit = 0.0; };
+/* IddqBand is declared beside ComponentFactors above (1.11.104). */
 /* HBM2/HBM3 IDDQ BAND. Cho et al., SK hynix, ISSCC 2018 12.3 Fig.12.3.1
  * (misc/): per-TSV driver current ~880 uA (multi-drop) and ~610 uA (spiral
  * point-to-point) at 1.0 V and 3.3 Gb/s PRBS, i.e. 610e-6 x 1.0 / 3.3e9 =
@@ -1806,6 +1787,76 @@ inline IddqBand iddqBandFor(const std::string& base_tech) {
         b.valid = true; b.lo_pj_bit = 0.19; b.hi_pj_bit = 0.27;
     }
     return b;
+}
+
+/* 1.11.104 (IDD-RECORDS step 1): the record's measured data against the
+ * code table it replaces in step 2. The record is a TRANSCRIPTION of the
+ * table in this release, so any difference is a transcription error (or an
+ * edited record), never a new part: it REFUSES, naming the technology, the
+ * field, the record value and the table value. The table rows are compared
+ * RAW (the maxima as entered), not through typicalFromSpec. Returns the
+ * number of values compared; the caller prints it. */
+inline int crossCheckPartIddFacts(const std::string& tech, const PartIddFacts& f) {
+    auto closeTo = [](double a, double b) {
+        const double m = std::max(std::fabs(a), std::fabs(b));
+        return std::fabs(a - b) <= 1e-9 * (m > 0.0 ? m : 1.0);
+    };
+    int n = 0; std::vector<std::string> bad;
+    auto chk = [&](const std::string& what, double rec, double tab) {
+        ++n;
+        if (!closeTo(rec, tab)) { std::ostringstream o; o.precision(12); o << what << ": record " << rec << " vs table " << tab; bad.push_back(o.str()); }
+    };
+    auto chkS = [&](const std::string& what, const std::string& rec, const std::string& tab) {
+        ++n;
+        if (rec != tab) bad.push_back(what + ": record '" + rec + "' vs table '" + tab + "'");
+    };
+    for (const auto& kv : f.rows) {
+        const std::string key = (kv.first > 0) ? tech + "-" + std::to_string(kv.first) : tech;
+        const IDDSpec& r = kv.second;
+        const IDDSpec t = iddTableFor(key);
+        const std::string p = key + " ";
+        chk(p+"vdd", r.vdd, t.vdd); chk(p+"idd0", r.idd0, t.idd0); chk(p+"idd2n", r.idd2n, t.idd2n); chk(p+"idd3n", r.idd3n, t.idd3n);
+        chk(p+"idd4r", r.idd4r, t.idd4r); chk(p+"idd4w", r.idd4w, t.idd4w); chk(p+"idd5", r.idd5, t.idd5);
+        chk(p+"trfc_ns", r.trfc_ns, t.trfc_ns); chk(p+"trefi_ns", r.trefi_ns, t.trefi_ns);
+        chk(p+"channels_basis", r.channels, t.channels); chk(p+"idd2p", r.idd2p, t.idd2p);
+        chk(p+"iddq3n", r.iddq3n, t.iddq3n); chk(p+"iddq4r", r.iddq4r, t.iddq4r); chk(p+"iddq4w", r.iddq4w, t.iddq4w); chk(p+"vddq", r.vddq, t.vddq);
+        chk(p+"ipp2n", r.ipp2n, t.ipp2n); chk(p+"ipp3n", r.ipp3n, t.ipp3n); chk(p+"vpp", r.vpp, t.vpp);
+        chk(p+"e_actpre_pj_override", r.e_actpre_pJ_override, t.e_actpre_pJ_override);
+        chk(p+"stack_floor_mw", r.stack_floor_mw, t.stack_floor_mw);
+        const char* prov = iddRowProvenance(key);
+        chkS(p+"provenance", f.provenance, prov ? prov : "");
+        const ComponentFactors cf = componentFactorsFor(key);
+        chk(p+"component_factors (applied)", f.component_factors.apply ? 1.0 : 0.0, cf.apply ? 1.0 : 0.0);
+        if (cf.apply && f.component_factors.apply) {
+            chk(p+"component_factors.standby", f.component_factors.standby, cf.standby);
+            chk(p+"component_factors.standby_premium", f.component_factors.standby_premium, cf.standby_premium);
+            chk(p+"component_factors.act", f.component_factors.act, cf.act);
+            chk(p+"component_factors.burst_rd", f.component_factors.burst_rd, cf.burst_rd);
+            chk(p+"component_factors.burst_wr", f.component_factors.burst_wr, cf.burst_wr);
+            chk(p+"component_factors.refresh", f.component_factors.refresh, cf.refresh);
+            chk(p+"component_factors.pd", f.component_factors.pd, cf.pd);
+        }
+    }
+    chkS(tech + " idd3n_bank_state", f.idd3n_bank_state, idd3nBasisName(idd3nBasisFor(tech)));
+    const TermElectricals te = terminationElectricalsFor(tech);
+    chk(tech + " termination.scheme", static_cast<double>(static_cast<int>(f.termination.scheme)), static_cast<double>(static_cast<int>(te.scheme)));
+    if (te.known && te.scheme != TermScheme::NONE && f.termination.scheme != TermScheme::NONE) {
+        chk(tech + " termination.vddq", f.termination.vddq, te.vddq);
+        chk(tech + " termination.ron_rd", f.termination.ron_rd, te.ron_rd); chk(tech + " termination.rtt_rd", f.termination.rtt_rd, te.rtt_rd);
+        chk(tech + " termination.ron_wr", f.termination.ron_wr, te.ron_wr); chk(tech + " termination.rtt_wr", f.termination.rtt_wr, te.rtt_wr);
+    }
+    const IddqBand b = iddqBandFor(tech);
+    chk(tech + " iddq_band (present)", f.iddq_band.valid ? 1.0 : 0.0, b.valid ? 1.0 : 0.0);
+    if (b.valid && f.iddq_band.valid) { chk(tech + " iddq_band.lo", f.iddq_band.lo_pj_bit, b.lo_pj_bit); chk(tech + " iddq_band.hi", f.iddq_band.hi_pj_bit, b.hi_pj_bit); }
+    if (!bad.empty()) {
+        std::cerr << "[params] FATAL: the " << tech << " part record's measured data disagrees with the code table it is cross-checked "
+                     "against (IDD-RECORDS step 1, 1.11.104) on " << bad.size() << " value(s). In this release the record is a "
+                     "transcription of the table, so a difference is a transcription error or an edited record, not a new part; "
+                     "step 2 (1.11.105) makes the record the source:" << std::endl;
+        for (const auto& e : bad) std::cerr << "  - " << e << std::endl;
+        std::exit(2);
+    }
+    return n;
 }
 inline double iddqNJ(const std::string& tech, const std::string& device_width,
                      double access_burst_ns, bool is_write,

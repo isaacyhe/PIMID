@@ -1,4 +1,5 @@
 # PIMID shipped part record -- HBM2
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -22,3 +23,27 @@ die_capacity_gb: 8.0           # = preset MB/channel x channels x 8 / dies (NOTE
 refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-95 C, 4x above 95 C (Xilinx PG276, Intel UG-20031; JESD235 refresh modes)
   - { above_c: 85.0, factor: 0.5 }
   - { above_c: 95.0, factor: 0.25 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per channel"
+  channels_basis: 8
+  provenance: MEASURED
+  idd3n_bank_state: ONE_BANK
+  vdd: 1.2
+  idd0: 42.725
+  idd2n: 38.0125
+  idd3n: 35.5
+  idd4r: 1356.9
+  idd4w: 924.15
+  idd5: 92.7757548077
+  idd2p: 7.0
+  trfc_ns: 260.0
+  trefi_ns: 3900.0
+  source: "SAFARI HBM2 measurement (the JEDEC IDD loops; artifact all_idd_measurements.csv chip means): per-stack mA less the 783.3 mA floor over 8 channels: IDD0 (1125.1-783.3)/8, IDD2N (1087.4-783.3)/8, IDD3N (1067.3-783.3)/8, IDD4R = IDD3N + (3710.1-1067.3)/8 x 4 (rate factor), IDD4W = IDD3N + (2844.6-1067.3)/8 x 4, IDD5 = IDD2N + (1514.5-1087.4)/8 x 266.7/260 (refresh factor); IDD2P 7 mA stays the un-sourced column; tRFC 260 ns, tREFI 3.9 us; 8 channels per stack"
+  stack_floor_mw: 939.96   # per-stack static floor 783.3 mA x 1.2 V = 939.96 mW (1.11.91 item 12, ruling (c))
+component_factors: none   # HBM rows are measured means; no typical/maximum factor applies
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: none
+  source: "HBM: unterminated single-ended interposer I/O; the VDDQ band below prices the DQ"
+iddq_band_pj_bit: { lo: 0.19, hi: 0.27, source: "HBM2/HBM3 VDDQ I/O energy band 0.19-0.27 pJ/bit (measured; 1.11.91 R8-8)" }

@@ -1,4 +1,5 @@
 # PIMID shipped part record -- DDR4
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -19,3 +20,39 @@ channels: 1                   # channels the preset instantiates
 channel_width_bits: 64   # 1.11.101 (step 2): JESD79-4C 2.x: a 64-bit data channel; one rank = 64 / device width devices
 refresh_ladder:                    # JEDEC JESD79-4 extended temperature range: 2x refresh above 85 C
   - { above_c: 85.0, factor: 0.5 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per device"
+  channels_basis: 1
+  provenance: CALIBRATED
+  idd3n_bank_state: ALL_BANKS
+  vdd: 1.2
+  idd0: 48.0
+  idd2n: 34.0
+  idd3n: 43.0
+  idd4r: 135.0
+  idd4w: 123.0
+  idd5: 457.4
+  idd2p: 25.0
+  trfc_ns: 350.0
+  trefi_ns: 7800.0
+  source: "Micron MT40A 8 Gb DDR4 Rev B Table 148 p.332, x8, DDR4-2400, MAXIMA; typical via the component factors"
+  ipp: { ipp2n: 3.0, ipp3n: 3.0, vpp: 2.5, source: "MT40A Rev B T148 p.332 + note 22 p.334; VPP p.1" }
+component_factors:   # typical / maximum per component; applied by typicalFromSpec
+  standby: 0.576
+  standby_premium: 0.607638888889
+  act: 0.54
+  burst_rd: 0.553
+  burst_wr: 0.43
+  refresh: 0.83
+  pd: 0.576
+  source: "Shi et al. [S] per-component ratios (standby 0.576, premium 0.350/0.576, act 0.540, burst 0.553 rd / 0.430 wr, pd 0.576); refresh 0.83 from Ghose [G]"
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: POD
+  vddq: 1.2
+  ron_rd: 34.0
+  rtt_rd: 40.0
+  ron_wr: 34.0
+  rtt_wr: 120.0
+  source: "POD12 (JESD8-24); 34/40/120 = MT40A p.315 IDD conditions"

@@ -1,4 +1,5 @@
 # PIMID shipped part record -- HBM3
+# 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; every value is cross-checked against the 1.11.103 code table at load (step 2 deletes the table).
 # 1.11.94: ONE record per part; every field required; provenance beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
@@ -22,3 +23,27 @@ die_capacity_gb: 16.0          # = preset 1024 MB/channel x 16 channels x 8 / 8 
 refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-95 C, 4x above 95 C (Xilinx PG276, Intel UG-20031; JESD238 refresh modes)
   - { above_c: 85.0, factor: 0.5 }
   - { above_c: 95.0, factor: 0.25 }
+
+# ---- 1.11.104 (IDD-RECORDS step 1): the part's measured data; every value cross-checked against the 1.11.103 code table at load ----
+idd:
+  basis: "per channel"
+  channels_basis: 16
+  provenance: DERIVED
+  idd3n_bank_state: ONE_BANK
+  vdd: 1.1
+  idd0: 96.2
+  idd2n: 89.0
+  idd3n: 89.0
+  idd4r: 1532.0
+  idd4w: 1059.0
+  idd5: 194.0
+  idd2p: 22.25
+  trfc_ns: 260.0
+  trefi_ns: 3900.0
+  source: "JESD238B.01 Table 83 loops at the HBM2 measured per-channel standby of 89 mA (1.11.91): IDD0 = 89 + 7.2, IDD4R = 89 + 1443, IDD4W = 89 + 970, IDD5 = 89 + 105; IDD2P = 0.25 x 89 (the idd2p column is a precharge-power-down rule of thumb, not a datasheet read -- stated); tRFCab 260 ns (JESD238B.01, 4 Gb/channel), tREFI 3.9 us; 16 channels per stack"
+  stack_floor_mw: 861.63   # per-stack static floor 783.3 mA x 1.2 V scaled to 1.1 V = 861.6 mW (1.11.91 item 12, ruling (c))
+component_factors: none   # HBM rows are measured means; no typical/maximum factor applies
+termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
+  scheme: none
+  source: "HBM: unterminated single-ended interposer I/O; the VDDQ band below prices the DQ"
+iddq_band_pj_bit: { lo: 0.19, hi: 0.27, source: "HBM2/HBM3 VDDQ I/O energy band 0.19-0.27 pJ/bit (measured; 1.11.91 R8-8)" }

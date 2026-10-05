@@ -16,6 +16,7 @@
 #include <sstream>
 #include <iostream>
 #include <map>
+#include <set>
 
 namespace pimid {
 namespace params {
@@ -90,6 +91,87 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         }
         r.refresh_ladder.push_back(g);
     }
+    /* 1.11.104 (IDD-RECORDS step 1): the part's measured data. */
+    if (!n["idd"] || !n["idd"].IsMap()) {
+        error = "part record " + path + ": required field 'idd' is missing (the part's measured IDD data; step 1 of the IDD migration, 1.11.104)";
+        return false;
+    }
+    {
+        const YAML::Node b = n["idd"];
+        if (!need(b, "basis", r.idd.basis, error) || !need(b, "channels_basis", r.idd.channels_basis, error) ||
+            !need(b, "provenance", r.idd.provenance, error) || !need(b, "idd3n_bank_state", r.idd.idd3n_bank_state, error)) {
+            error = "part record " + path + ": idd: " + error; return false;
+        }
+        auto readRow = [&](const YAML::Node& m, IddRow& row, std::string& err) -> bool {
+            if (!need(m, "vdd", row.vdd, err) || !need(m, "idd0", row.idd0, err) || !need(m, "idd2n", row.idd2n, err) ||
+                !need(m, "idd3n", row.idd3n, err) || !need(m, "idd4r", row.idd4r, err) || !need(m, "idd4w", row.idd4w, err) ||
+                !need(m, "idd5", row.idd5, err) || !need(m, "idd2p", row.idd2p, err) || !need(m, "trfc_ns", row.trfc_ns, err) ||
+                !need(m, "trefi_ns", row.trefi_ns, err) || !need(m, "source", row.source, err)) return false;
+            if (m["iddq"]) {
+                const YAML::Node q = m["iddq"]; row.has_iddq = true;
+                if (!need(q, "iddq3n", row.iddq3n, err) || !need(q, "iddq4r", row.iddq4r, err) || !need(q, "iddq4w", row.iddq4w, err) ||
+                    !need(q, "vddq", row.vddq, err) || !need(q, "source", row.iddq_source, err)) { err = "iddq: " + err; return false; }
+            }
+            if (m["ipp"]) {
+                const YAML::Node q = m["ipp"]; row.has_ipp = true;
+                if (!need(q, "ipp2n", row.ipp2n, err) || !need(q, "ipp3n", row.ipp3n, err) || !need(q, "vpp", row.vpp, err) ||
+                    !need(q, "source", row.ipp_source, err)) { err = "ipp: " + err; return false; }
+            }
+            return true;
+        };
+        if (b["by_grade"]) {
+            if (!b["by_grade"].IsMap() || b["by_grade"].size() == 0) {
+                error = "part record " + path + ": idd.by_grade must be a non-empty map keyed by the data rate in MT/s"; return false;
+            }
+            for (const auto& kv : b["by_grade"]) {
+                int g = 0;
+                try { g = kv.first.as<int>(); }
+                catch (...) { error = "part record " + path + ": idd.by_grade has a key that is not a data rate"; return false; }
+                IddRow row; std::string err;
+                if (!readRow(kv.second, row, err)) { error = "part record " + path + ": idd.by_grade " + std::to_string(g) + ": " + err; return false; }
+                r.idd.by_grade[g] = row;
+            }
+        } else {
+            IddRow row; std::string err;
+            if (!readRow(b, row, err)) { error = "part record " + path + ": idd: " + err; return false; }
+            r.idd.by_grade[0] = row;
+        }
+        if (b["e_actpre_pj_override"] && !need(b, "e_actpre_pj_override", r.idd.e_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
+        if (b["stack_floor_mw"] && !need(b, "stack_floor_mw", r.idd.stack_floor_mw, error)) { error = "part record " + path + ": idd: " + error; return false; }
+    }
+    if (!n["component_factors"]) {
+        error = "part record " + path + ": required field 'component_factors' is missing (the seven typical/maximum factors, or 'none' for a measured row)";
+        return false;
+    }
+    if (n["component_factors"].IsMap()) {
+        const YAML::Node c = n["component_factors"]; r.component_factors.apply = true;
+        if (!need(c, "standby", r.component_factors.standby, error) || !need(c, "standby_premium", r.component_factors.standby_premium, error) ||
+            !need(c, "act", r.component_factors.act, error) || !need(c, "burst_rd", r.component_factors.burst_rd, error) ||
+            !need(c, "burst_wr", r.component_factors.burst_wr, error) || !need(c, "refresh", r.component_factors.refresh, error) ||
+            !need(c, "pd", r.component_factors.pd, error) || !need(c, "source", r.component_factors.source, error)) {
+            error = "part record " + path + ": component_factors: " + error; return false;
+        }
+    } else {
+        std::string v; try { v = n["component_factors"].as<std::string>(); } catch (...) {}
+        if (v != "none") { error = "part record " + path + ": component_factors must be a map of the seven factors or 'none'"; return false; }
+        r.component_factors.apply = false;
+    }
+    if (!n["termination"] || !n["termination"].IsMap()) {
+        error = "part record " + path + ": required field 'termination' is missing (the DQ termination scheme and electricals, or scheme none)";
+        return false;
+    }
+    {
+        const YAML::Node t2 = n["termination"];
+        if (!need(t2, "scheme", r.termination.scheme, error) || !need(t2, "source", r.termination.source, error)) { error = "part record " + path + ": termination: " + error; return false; }
+        if (r.termination.scheme != "none") {
+            if (!need(t2, "vddq", r.termination.vddq, error) || !need(t2, "ron_rd", r.termination.ron_rd, error) || !need(t2, "rtt_rd", r.termination.rtt_rd, error) ||
+                !need(t2, "ron_wr", r.termination.ron_wr, error) || !need(t2, "rtt_wr", r.termination.rtt_wr, error)) { error = "part record " + path + ": termination: " + error; return false; }
+        }
+    }
+    if (n["iddq_band_pj_bit"]) {
+        const YAML::Node q = n["iddq_band_pj_bit"]; r.iddq_band.valid = true;
+        if (!need(q, "lo", r.iddq_band.lo, error) || !need(q, "hi", r.iddq_band.hi, error) || !need(q, "source", r.iddq_band.source, error)) { error = "part record " + path + ": iddq_band_pj_bit: " + error; return false; }
+    }
     if (r.technology != tech) {
         error = "part record " + path + " says technology '" + r.technology + "' but was loaded for '" + tech + "'";
         return false;
@@ -151,6 +233,51 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
     }
     const bool stacked = (t == "HBM2" || t == "HBM3");
     if (stacked && rec.stack_dies < 1) errors.push_back("stack_dies must be at least 1 for a stacked part");
+    /* 1.11.104 (IDD-RECORDS step 1): the measured data's own consistency.
+     * No ordering rule between IDD3N and IDD2N: the measured HBM2 means have
+     * IDD3N below IDD2N (the row's stated ill-conditioning), so that is data,
+     * not an error. */
+    {
+        static const std::set<std::string> prov = {"MEASURED", "CALIBRATED", "DERIVED"};
+        static const std::set<std::string> bank = {"ALL_BANKS", "ONE_BANK", "UNVERIFIED"};
+        static const std::set<std::string> basis = {"per device", "per channel"};
+        static const std::set<std::string> schemes = {"POD", "SSTL", "LVSTL", "none"};
+        if (!prov.count(rec.idd.provenance)) errors.push_back("idd.provenance '" + rec.idd.provenance + "' is not MEASURED, CALIBRATED or DERIVED");
+        if (!bank.count(rec.idd.idd3n_bank_state)) errors.push_back("idd.idd3n_bank_state '" + rec.idd.idd3n_bank_state + "' is not ALL_BANKS, ONE_BANK or UNVERIFIED");
+        if (!basis.count(rec.idd.basis)) errors.push_back("idd.basis '" + rec.idd.basis + "' is not 'per device' or 'per channel'");
+        if (rec.idd.channels_basis < 1) errors.push_back("idd.channels_basis must be at least 1");
+        if (stacked && rec.idd.channels_basis != rec.channels)
+            errors.push_back("idd.channels_basis " + std::to_string(rec.idd.channels_basis) + " != channels " + std::to_string(rec.channels) + " (a stacked row aggregates the stack's channels)");
+        if (t == "DDR5") {
+            for (int g : {3200, 4800, 5600})
+                if (!rec.idd.by_grade.count(g)) errors.push_back("idd.by_grade lacks the " + std::to_string(g) + " MT/s row (the three DDR5 grades this build transcribes)");
+        } else if (!rec.idd.by_grade.count(0) || rec.idd.by_grade.size() != 1) {
+            errors.push_back("idd must be a single row (no by_grade) for " + t);
+        }
+        for (const auto& kv : rec.idd.by_grade) {
+            const IddRow& r = kv.second;
+            const std::string k = kv.first ? "idd.by_grade " + std::to_string(kv.first) : std::string("idd");
+            if (!(r.vdd > 0.0)) errors.push_back(k + ": vdd must be positive");
+            if (r.idd0 < 0.0 || r.idd2n < 0.0 || r.idd3n < 0.0 || r.idd4r < 0.0 || r.idd4w < 0.0 || r.idd5 < 0.0 || r.idd2p < 0.0) errors.push_back(k + ": currents must be non-negative");
+            if (r.idd2p > r.idd2n) errors.push_back(k + ": idd2p " + fmt(r.idd2p) + " exceeds idd2n " + fmt(r.idd2n) + " (power-down cannot draw more than precharge standby)");
+            if (!(r.trfc_ns > 0.0) || !(r.trefi_ns > r.trfc_ns)) errors.push_back(k + ": trfc_ns must be positive and below trefi_ns");
+            if (r.has_iddq && !(r.vddq > 0.0)) errors.push_back(k + ": iddq.vddq must be positive");
+            if (r.has_ipp && !(r.vpp > 0.0)) errors.push_back(k + ": ipp.vpp must be positive");
+            if (r.source.empty()) errors.push_back(k + ": source must name the datasheet or measurement");
+        }
+        if (rec.component_factors.apply) {
+            const ComponentFactorsRec& c = rec.component_factors;
+            const std::pair<const char*, double> fs[] = {{"standby", c.standby}, {"standby_premium", c.standby_premium}, {"act", c.act}, {"burst_rd", c.burst_rd}, {"burst_wr", c.burst_wr}, {"refresh", c.refresh}, {"pd", c.pd}};
+            for (const auto& f : fs) if (!(f.second > 0.0) || f.second > 1.0) errors.push_back(std::string("component_factors.") + f.first + " " + fmt(f.second) + " is outside (0, 1]");
+        }
+        if (!schemes.count(rec.termination.scheme)) errors.push_back("termination.scheme '" + rec.termination.scheme + "' is not POD, SSTL, LVSTL or none");
+        if (rec.termination.scheme != "none") {
+            if (!(rec.termination.vddq > 0.0)) errors.push_back("termination.vddq must be positive");
+            if (!(rec.termination.ron_rd > 0.0) || !(rec.termination.ron_wr > 0.0)) errors.push_back("termination.ron_rd / ron_wr must be positive");
+            if (rec.termination.rtt_rd < 0.0 || rec.termination.rtt_wr < 0.0) errors.push_back("termination.rtt_rd / rtt_wr must be non-negative (0 = no DC termination path)");
+        }
+        if (rec.iddq_band.valid && !(rec.iddq_band.lo > 0.0 && rec.iddq_band.hi >= rec.iddq_band.lo)) errors.push_back("iddq_band_pj_bit must satisfy 0 < lo <= hi");
+    }
     try {
         RamulatorWrapper w("", t);
         w.initialize();
@@ -184,6 +311,8 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
     o << ", " << rec.channel_width_bits << "-bit channel";
     if (rec.stack_dies > 0) o << ", " << rec.stack_dies << " dies x " << rec.die_capacity_gb << " Gb";
     o << ") -- the only source (step 2 of the parameter-file migration, 1.11.101)";
+    o << "; idd: " << rec.idd.provenance << " row (" << rec.idd.basis << ", " << rec.idd.idd3n_bank_state << ", "
+      << rec.idd.by_grade.size() << " grade row(s)) cross-checked against the code table (IDD-RECORDS step 1, 1.11.104)";
     return o.str();
 }
 
