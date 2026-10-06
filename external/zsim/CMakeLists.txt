@@ -89,6 +89,7 @@ set(ZSIM_SIM_SRCS
     src/utility_monitor.cpp
     src/partition_mapper.cpp
     src/access_tracing.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/address_translation/address_translator.cpp
     src/debug_zsim.cpp
     src/lookahead.cpp
     src/monitor.cpp
@@ -122,6 +123,7 @@ endif()
 
 target_include_directories(zsim_qemu PRIVATE
     src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${QEMU_PLUGIN_INCLUDE}
     ${HDF5_INCLUDE_DIRS}
 )

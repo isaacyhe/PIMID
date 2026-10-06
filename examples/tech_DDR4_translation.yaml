@@ -1,0 +1,24 @@
+scope: device
+workload:
+  binary: benchmarks/pim_kernels/stream_triad/stream_triad
+  args: ["--size", "8192"]
+pim:
+  pe:
+    type: alu_core
+    count: 4
+  placement:
+    level: BANK
+  mc:
+    type: simple
+memory:
+  technology: DDR4
+noc:
+  topology: H_TREE
+  model: analytical
+address_translation:
+  enabled: true
+  page_size_bytes: 4096
+  tlb_entries: 64
+  tlb_associativity: 4
+  tlb_hit_latency_cycles: 1
+  page_walk_latency_cycles: 20

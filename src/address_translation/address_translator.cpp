@@ -24,7 +24,8 @@ AddressTranslator::AddressTranslator(const AddressTranslationConfig& config)
     }
 
     if (config_.tlb_associativity == 0 ||
-        config_.tlb_associativity > config_.tlb_entries) {
+        config_.tlb_associativity > config_.tlb_entries ||
+        config_.tlb_entries % config_.tlb_associativity != 0) {
         std::cerr << "WARNING: Invalid TLB associativity, setting to fully associative"
                   << std::endl;
         config_.tlb_associativity = config_.tlb_entries;
@@ -41,8 +42,10 @@ AddressTranslator::AddressTranslator(const AddressTranslationConfig& config)
 
 Address AddressTranslator::translate(Address virtual_addr, uint32_t pe_id,
                                      bool& hit, Cycle& latency) {
-    // Update statistics
-    pe_stats_[pe_id].total_translations++;
+    const bool collect_stats = stats_enabled_.load();
+    auto& whole_stats = whole_program_pe_stats_[pe_id];
+    whole_stats.total_translations++;
+    if (collect_stats) pe_stats_[pe_id].total_translations++;
 
     // Extract page number and offset
     Address virtual_page = getPageNumber(virtual_addr);
@@ -52,16 +55,20 @@ Address AddressTranslator::translate(Address virtual_addr, uint32_t pe_id,
     Address physical_page;
     if (lookupTLB(pe_id, virtual_page, physical_page)) {
         // TLB hit!
-        pe_stats_[pe_id].tlb_hits++;
+        whole_stats.tlb_hits++;
+        if (collect_stats) pe_stats_[pe_id].tlb_hits++;
         hit = true;
         latency = config_.tlb_hit_latency;
+        whole_stats.translation_cycles += latency;
+        if (collect_stats) pe_stats_[pe_id].translation_cycles += latency;
 
         // Reconstruct physical address
         return (physical_page << config_.page_bits) | page_offset;
     }
 
     // TLB miss - perform page walk
-    pe_stats_[pe_id].tlb_misses++;
+    whole_stats.tlb_misses++;
+    if (collect_stats) pe_stats_[pe_id].tlb_misses++;
     hit = false;
 
     bool found = false;
@@ -70,6 +77,8 @@ Address AddressTranslator::translate(Address virtual_addr, uint32_t pe_id,
     if (found) {
         // Page found in page table
         latency = config_.tlb_hit_latency + config_.page_walk_latency;
+        whole_stats.translation_cycles += latency;
+        if (collect_stats) pe_stats_[pe_id].translation_cycles += latency;
 
         // Update TLB for future accesses
         updateTLB(pe_id, virtual_page, physical_page);
@@ -90,6 +99,8 @@ Address AddressTranslator::translate(Address virtual_addr, uint32_t pe_id,
         updateTLB(pe_id, virtual_page, physical_page);
 
         latency = config_.tlb_hit_latency + config_.page_walk_latency + 100; // +100 for page fault handling
+        whole_stats.translation_cycles += latency;
+        if (collect_stats) pe_stats_[pe_id].translation_cycles += latency;
 
         return (physical_page << config_.page_bits) | page_offset;
     }
@@ -173,6 +184,7 @@ bool AddressTranslator::lookupTLB(uint32_t pe_id, Address virtual_page,
         if (tlb[idx].valid && tlb[idx].virtual_page == virtual_page) {
             // TLB hit!
             physical_page = tlb[idx].physical_page;
+            tlb[idx].last_access = ++tlb_clock_;
             return true;
         }
     }
@@ -195,9 +207,9 @@ AddressTranslator::getStats(uint32_t pe_id) const {
 }
 
 void AddressTranslator::printStats() const {
-    std::cout << "\n=== Address Translation Statistics ===" << std::endl;
+    std::cout << "\n=== Address Translation Statistics (ROI) ===" << std::endl;
 
-    if (pe_stats_.empty()) {
+    if (pe_stats_.empty() && whole_program_pe_stats_.empty()) {
         std::cout << "No translation statistics available." << std::endl;
         return;
     }
@@ -207,6 +219,7 @@ void AddressTranslator::printStats() const {
     uint64_t total_tlb_hits = 0;
     uint64_t total_tlb_misses = 0;
     uint64_t total_page_walks = 0;
+    uint64_t total_translation_cycles = 0;
 
     std::cout << "\nPer-PE Statistics:" << std::endl;
     for (const auto& pe_stat_pair : pe_stats_) {
@@ -217,6 +230,7 @@ void AddressTranslator::printStats() const {
         total_tlb_hits += stats.tlb_hits;
         total_tlb_misses += stats.tlb_misses;
         total_page_walks += stats.page_walks;
+        total_translation_cycles += stats.translation_cycles;
 
         double hit_rate = 0.0;
         if (stats.total_translations > 0) {
@@ -229,6 +243,7 @@ void AddressTranslator::printStats() const {
                   << " (" << hit_rate << "%)" << std::endl;
         std::cout << "    TLB misses: " << stats.tlb_misses << std::endl;
         std::cout << "    Page walks: " << stats.page_walks << std::endl;
+        std::cout << "    Translation cycles: " << stats.translation_cycles << std::endl;
     }
 
     // Print aggregate statistics
@@ -237,10 +252,52 @@ void AddressTranslator::printStats() const {
     std::cout << "  Total TLB hits: " << total_tlb_hits << std::endl;
     std::cout << "  Total TLB misses: " << total_tlb_misses << std::endl;
     std::cout << "  Total page walks: " << total_page_walks << std::endl;
+    std::cout << "  Total translation cycles: " << total_translation_cycles << std::endl;
+    if (total_translations > 0) {
+        std::cout << "  Average translation latency: "
+                  << (static_cast<double>(total_translation_cycles) / total_translations)
+                  << " cycles/translation" << std::endl;
+    }
 
     if (total_translations > 0) {
         double overall_hit_rate = (total_tlb_hits * 100.0) / total_translations;
         std::cout << "  Overall TLB hit rate: " << overall_hit_rate << "%" << std::endl;
+    }
+
+    // Whole-program counters are cumulative and survive ROI rebasing.
+    std::cout << "\n=== Address Translation Statistics (Whole Program) ===" << std::endl;
+    uint64_t whole_translations = 0, whole_hits = 0, whole_misses = 0;
+    uint64_t whole_walks = 0, whole_cycles = 0;
+    std::cout << "\nPer-PE Statistics:" << std::endl;
+    for (const auto& pe_stat_pair : whole_program_pe_stats_) {
+        const uint32_t pe_id = pe_stat_pair.first;
+        const auto& stats = pe_stat_pair.second;
+        whole_translations += stats.total_translations;
+        whole_hits += stats.tlb_hits;
+        whole_misses += stats.tlb_misses;
+        whole_walks += stats.page_walks;
+        whole_cycles += stats.translation_cycles;
+        const double hit_rate = stats.total_translations
+            ? (stats.tlb_hits * 100.0) / stats.total_translations : 0.0;
+        std::cout << "  PE " << pe_id << ":" << std::endl;
+        std::cout << "    Total translations: " << stats.total_translations << std::endl;
+        std::cout << "    TLB hits: " << stats.tlb_hits << " (" << hit_rate << "%)" << std::endl;
+        std::cout << "    TLB misses: " << stats.tlb_misses << std::endl;
+        std::cout << "    Page walks: " << stats.page_walks << std::endl;
+        std::cout << "    Translation cycles: " << stats.translation_cycles << std::endl;
+    }
+    std::cout << "\nAggregate Statistics:" << std::endl;
+    std::cout << "  Total translations: " << whole_translations << std::endl;
+    std::cout << "  Total TLB hits: " << whole_hits << std::endl;
+    std::cout << "  Total TLB misses: " << whole_misses << std::endl;
+    std::cout << "  Total page walks: " << whole_walks << std::endl;
+    std::cout << "  Total translation cycles: " << whole_cycles << std::endl;
+    if (whole_translations) {
+        std::cout << "  Average translation latency: "
+                  << static_cast<double>(whole_cycles) / whole_translations
+                  << " cycles/translation" << std::endl;
+        std::cout << "  Overall TLB hit rate: "
+                  << (whole_hits * 100.0) / whole_translations << "%" << std::endl;
     }
 
     // Print page table statistics
@@ -284,7 +341,8 @@ Address AddressTranslator::getPageOffset(Address addr) const {
 
 void AddressTranslator::performPageWalk(Address virtual_page, uint32_t pe_id,
                                         Address& physical_page, bool& found) {
-    pe_stats_[pe_id].page_walks++;
+    whole_program_pe_stats_[pe_id].page_walks++;
+    if (stats_enabled_.load()) pe_stats_[pe_id].page_walks++;
 
     // Look up in page table
     auto it = page_table_.find(virtual_page);
@@ -322,7 +380,7 @@ void AddressTranslator::updateTLB(uint32_t pe_id, Address virtual_page,
             tlb[idx].virtual_page = virtual_page;
             tlb[idx].physical_page = physical_page;
             tlb[idx].valid = true;
-            tlb[idx].last_access = 0; // Would use current_cycle in real implementation
+            tlb[idx].last_access = ++tlb_clock_;
             return;
         }
     }
@@ -344,7 +402,7 @@ void AddressTranslator::updateTLB(uint32_t pe_id, Address virtual_page,
     tlb[lru_idx].virtual_page = virtual_page;
     tlb[lru_idx].physical_page = physical_page;
     tlb[lru_idx].valid = true;
-    tlb[lru_idx].last_access = 0; // Would use current_cycle in real implementation
+    tlb[lru_idx].last_access = ++tlb_clock_;
 }
 
 uint32_t AddressTranslator::getTLBSet(Address virtual_page) const {

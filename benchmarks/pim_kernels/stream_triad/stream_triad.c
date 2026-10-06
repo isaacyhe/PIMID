@@ -17,6 +17,8 @@ int main(int argc, char* argv[]) {
     int N = parse_int_arg(argc, argv, "--size", DEFAULT_SIZE);
     float scalar = 3.0f;
 
+    zsim_roi_begin();
+
     float* a = (float*)malloc(N * sizeof(float));
     float* b = (float*)malloc(N * sizeof(float));
     float* c = (float*)malloc(N * sizeof(float));
@@ -27,7 +29,6 @@ int main(int argc, char* argv[]) {
         c[i] = 2.0f;
     }
 
-    zsim_roi_begin();
     for (int i = 0; i < N; i++)
         a[i] = b[i] + scalar * c[i];
     zsim_roi_end();

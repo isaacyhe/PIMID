@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <atomic>
+#include <memory>
 #include <unordered_map>
 #include <mutex>
 
@@ -35,6 +36,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 /* ZSim headers (compiled with ZSIM_USE_QEMU, no Pin dependency) */
 #include "alu_core.h"
+#include "address_translation/address_translator.h"
 #include "null_core.h"
 #include "constants.h"
 #include "contention_sim.h"
@@ -213,6 +215,19 @@ static bool in_zsim[MAX_VCPUS];
 
 /* ROI state -- set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
 static std::atomic<bool> in_roi{true};              /* true = record; default on for non-ROI workloads */
+static std::unique_ptr<pimid::AddressTranslator> g_addressTranslator;
+static std::mutex g_addressTranslationMutex;
+static void addressTranslationRoiBegin() {
+    if (!g_addressTranslator) return;
+    std::lock_guard<std::mutex> lock(g_addressTranslationMutex);
+    g_addressTranslator->resetStats();
+    g_addressTranslator->setStatsEnabled(true);
+}
+static void addressTranslationRoiEnd() {
+    if (!g_addressTranslator) return;
+    std::lock_guard<std::mutex> lock(g_addressTranslationMutex);
+    g_addressTranslator->setStatsEnabled(false);
+}
 static void roiRebaseTrafficCounters(const char* where);   // 1.11.90, defined below
 static bool threadMpiMode();   // 1.11.92: g_mpi_thread_mode, which is declared below
 // 1.6 thread-MPI: N rank-threads each bracket their own ROI in ONE process.
@@ -1031,6 +1046,14 @@ void SimEnd() {
 
     if (zinfo->sched) zinfo->sched->notifyTermination();
 
+    /* SimEnd terminates with _exit(), which bypasses the QEMU plugin atexit
+     * callback. Emit plugin-owned counters here, after simulation activity has
+     * stopped and before the process exits. */
+    if (g_addressTranslator) {
+        std::lock_guard<std::mutex> lock(g_addressTranslationMutex);
+        g_addressTranslator->printStats();
+    }
+
     /* Terminate the process.  Background threads (contention sim, scheduler
      * watchdog) won't exit on their own, same as the original ZSim behaviour.
      * Use _exit() rather than exit() to avoid re-entering atexit/plugin_exit. */
@@ -1303,10 +1326,51 @@ static void mem_cb(unsigned int vcpu_index,
     if (mpi_comm_window[tid].load(std::memory_order_acquire)) return;
 
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = true;
+    uint64_t simAddr = vaddr;
+    if (g_addressTranslator && cores[tid] &&
+        dynamic_cast<ALUCore*>(cores[tid]) != nullptr) {
+        /* The PIM-side model uses a synthetic identity VA->PA map. Each PIM
+         * PE has its own TLB; the page table is process-local because each
+         * QEMU/MPI process owns a separate plugin instance. QEMU linux-user
+         * does not expose guest physical addresses or its host page walks. */
+        uint32_t peId = cids[tid];
+        if (peId == INVALID_CID || peId == UNINITIALIZED_CID) peId = tid;
+        const uint32_t pageSize = zinfo->hierarchy.addressTranslationPageSize;
+        const uint32_t pageBits = __builtin_ctz(pageSize);
+        const uint32_t accessSize = std::max(1u, qemu_plugin_mem_size(info));
+        const uint64_t lastAddr = vaddr + static_cast<uint64_t>(accessSize - 1);
+        const uint64_t firstPage = vaddr >> pageBits;
+        const uint64_t lastPage = lastAddr >> pageBits;
+        uint64_t translationCycles = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_addressTranslationMutex);
+            for (uint64_t page = firstPage; page <= lastPage; page++) {
+                const uint64_t pageAddr = (page == firstPage)
+                    ? vaddr : (page << pageBits);
+                if (!g_addressTranslator->isPageMapped(page)) {
+                    /* Lazy identity mapping is the explicit synthetic policy:
+                     * page allocation itself is not treated as a page fault. */
+                    g_addressTranslator->mapPage(page, page, peId);
+                }
+                bool tlbHit = false;
+                pimid::Cycle latency = 0;
+                const pimid::Address translated = g_addressTranslator->translate(
+                    pageAddr, peId, tlbHit, latency);
+                if (page == firstPage) simAddr = translated;
+                translationCycles += latency;
+                if (page == UINT64_MAX) break;
+            }
+        }
+        if (translationCycles > 0) {
+            const uint32_t charged = static_cast<uint32_t>(std::min<uint64_t>(
+                translationCycles, 0xFFFFFFFFull));
+            cores[tid]->addDelay(charged);
+        }
+    }
     if (qemu_plugin_mem_is_store(info)) {
-        fPtrs[tid].storePtr(tid, vaddr);
+        fPtrs[tid].storePtr(tid, simAddr);
     } else {
-        fPtrs[tid].loadPtr(tid, vaddr);
+        fPtrs[tid].loadPtr(tid, simAddr);
     }
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = false;
 }
@@ -2645,6 +2709,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 zinfo->cores[cid]->markRoiBegin();
             if (prev == 0) {
                 in_roi.store(true);
+                addressTranslationRoiBegin();
                 mpi_roi_baselined = true;
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
@@ -2668,6 +2733,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             return;
         }
         in_roi.store(true);
+        addressTranslationRoiBegin();
         // Snapshot each core's ROI baseline so the reported cycles/instrs cover
         // ONLY the kernel (roi_begin..roi_end), excluding the serial pre-ROI
         // array-init/setup that otherwise runs on the launcher PE and dominates.
@@ -2771,11 +2837,13 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (tid < MAX_THREADS && cids[tid] < MAX_THREADS)
                 g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
             in_roi.store(false);
+            addressTranslationRoiEnd();
             dumpTerminationStats();
             zinfo->terminationConditionMet = true;
             return;
         }
         in_roi.store(false);
+        addressTranslationRoiEnd();
         if (getenv("PIMID_MPI_RANK")) {
             /* MPI rank: freeze the ROI-scoped stats NOW (deterministic ROI
              * end) but DO NOT request termination -- this rank still owes MPI
@@ -3648,6 +3716,19 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         gm_attach(attached_shmid);
         zinfo = static_cast<GlobSimInfo*>(gm_get_glob_ptr());
         procIdx = argProcIdx;
+    }
+
+    if (zinfo->hierarchy.addressTranslationEnabled) {
+        pimid::AddressTranslationConfig atConfig;
+        atConfig.page_size_bytes = zinfo->hierarchy.addressTranslationPageSize;
+        atConfig.page_bits = 0;  // derive from the validated power-of-two page size
+        atConfig.tlb_entries = zinfo->hierarchy.addressTranslationTlbEntries;
+        atConfig.tlb_associativity = zinfo->hierarchy.addressTranslationTlbAssociativity;
+        atConfig.tlb_hit_latency = zinfo->hierarchy.addressTranslationTlbHitLatency;
+        atConfig.page_walk_latency = zinfo->hierarchy.addressTranslationPageWalkLatency;
+        g_addressTranslator.reset(new pimid::AddressTranslator(atConfig));
+        info("[PIM Translation] enabled for device ALU PEs; synthetic identity VA->PA map; "
+             "page walks use fixed PIM-side latency (no page-table memory traffic)");
     }
 
     sim_initialized = true;  // mark init complete -- subsequent vCPUs are application threads

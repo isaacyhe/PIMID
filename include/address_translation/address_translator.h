@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include <map>
 #include <vector>
+#include <atomic>
 
 namespace pimid {
 
@@ -81,17 +82,21 @@ public:
         uint64_t tlb_hits;
         uint64_t tlb_misses;
         uint64_t page_walks;
+        uint64_t translation_cycles;
 
         TranslationStats() : total_translations(0), tlb_hits(0),
-                             tlb_misses(0), page_walks(0) {}
+                             tlb_misses(0), page_walks(0), translation_cycles(0) {}
     };
 
     TranslationStats getStats(uint32_t pe_id) const;
     void printStats() const;
     void resetStats();
+    void setStatsEnabled(bool enabled) { stats_enabled_.store(enabled); }
 
 private:
     AddressTranslationConfig config_;
+    Cycle tlb_clock_ = 0;
+    std::atomic<bool> stats_enabled_{true};
 
     // Page table (shared across all PEs in unified mode)
     std::map<Address, PageTableEntry> page_table_;
@@ -101,6 +106,8 @@ private:
 
     // Per-PE statistics
     std::map<uint32_t, TranslationStats> pe_stats_;
+    // Cumulative counters are never reset at ROI boundaries.
+    std::map<uint32_t, TranslationStats> whole_program_pe_stats_;
 
     // Helper functions
     Address getPageNumber(Address addr) const;

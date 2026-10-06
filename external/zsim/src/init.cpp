@@ -771,6 +771,18 @@ static void InitSystem(Config& config) {
 
         // Parse flattened PE-mem mapping
         zinfo->hierarchy.peMemMapSize = config.get<uint32_t>("sys.hierarchy.peMemMapSize", 0);
+        zinfo->hierarchy.addressTranslationEnabled =
+            config.get<bool>("sys.hierarchy.addressTranslationEnabled", false);
+        zinfo->hierarchy.addressTranslationPageSize =
+            config.get<uint32_t>("sys.hierarchy.addressTranslationPageSize", 4096);
+        zinfo->hierarchy.addressTranslationTlbEntries =
+            config.get<uint32_t>("sys.hierarchy.addressTranslationTlbEntries", 64);
+        zinfo->hierarchy.addressTranslationTlbAssociativity =
+            config.get<uint32_t>("sys.hierarchy.addressTranslationTlbAssociativity", 4);
+        zinfo->hierarchy.addressTranslationTlbHitLatency =
+            config.get<uint32_t>("sys.hierarchy.addressTranslationTlbHitLatency", 1);
+        zinfo->hierarchy.addressTranslationPageWalkLatency =
+            config.get<uint32_t>("sys.hierarchy.addressTranslationPageWalkLatency", 20);
         if (zinfo->hierarchy.peMemMapSize > MAX_THREADS) {
             warn("peMemMapSize %u exceeds MAX_THREADS (%d), clamping",
                  zinfo->hierarchy.peMemMapSize, MAX_THREADS);
@@ -2117,4 +2129,3 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     //Causes every other process to wake up
     gm_set_glob_ptr(zinfo);
 }
-

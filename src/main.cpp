@@ -1651,6 +1651,14 @@ struct UnifiedConfig {
     std::string pe_type;
     std::string placement_level;
     int num_pes;
+    // Optional synthetic PIM-side VA->PA/TLB model (QEMU linux-user supplies
+    // guest virtual addresses; this does not model the host OS's real MMU).
+    bool address_translation_enabled = false;
+    uint32_t address_translation_page_size = 4096;
+    uint32_t address_translation_tlb_entries = 64;
+    uint32_t address_translation_tlb_associativity = 4;
+    uint32_t address_translation_tlb_hit_latency = 1;
+    uint32_t address_translation_page_walk_latency = 20;
 
     /* 1.9.32: the compute unit's datapath, as configuration rather than as a
      * constant buried in the power model. These four say what the element IS:
@@ -5583,6 +5591,18 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                                    double sys_freq_mhz = 0.0) {
     if (!config.hierarchy_enabled) return;
     out << "\n    hierarchy = {\n";
+    out << "        addressTranslationEnabled = "
+        << (config.address_translation_enabled ? "true" : "false") << ";\n";
+    out << "        addressTranslationPageSize = "
+        << config.address_translation_page_size << ";\n";
+    out << "        addressTranslationTlbEntries = "
+        << config.address_translation_tlb_entries << ";\n";
+    out << "        addressTranslationTlbAssociativity = "
+        << config.address_translation_tlb_associativity << ";\n";
+    out << "        addressTranslationTlbHitLatency = "
+        << config.address_translation_tlb_hit_latency << ";\n";
+    out << "        addressTranslationPageWalkLatency = "
+        << config.address_translation_page_walk_latency << ";\n";
     // Clock (MHz) used to convert device memory bandwidth into bytes/cycle for
     // the M/D/1 + bandwidth-floor contention. MUST be the DEVICE's own clock so
     // the device cycle count is invariant to the host/reference clock. Device
@@ -14114,7 +14134,7 @@ int main(int argc, char** argv) {
              * other, and six of them cover every shipped and corpus config. */
             {
                 static const std::set<std::string> kKnownSections = {
-                    "cache", "description", "host", "memory", "method", "name",
+                    "address_translation", "cache", "description", "host", "memory", "method", "name",
                     "noc", "pim", "power", "scope", "simulation", "system",
                     "synthetic",   // 1.11.88: documented (docs/network.md), read by --method synthetic; 1.11.76 left it out
                     "technology", "workload"
@@ -14547,6 +14567,59 @@ int main(int argc, char** argv) {
                             config.pe_mc_group_overrides.push_back(ov);
                         }
                     }
+                }
+            }
+
+            // Optional PIM-side data-address translation. Linux-user QEMU
+            // supplies guest virtual addresses, so the simulator uses a
+            // synthetic identity VA->PA page map and models the TLB/walk cost.
+            if (yaml_cfg["address_translation"]) {
+                const YAML::Node at = yaml_cfg["address_translation"];
+                config.address_translation_enabled = yamlBool(
+                    at["enabled"], false, "address_translation.enabled");
+                config.address_translation_page_size = yamlU32(
+                    at["page_size_bytes"], config.address_translation_page_size,
+                    "address_translation.page_size_bytes");
+                config.address_translation_tlb_entries = yamlU32(
+                    at["tlb_entries"], config.address_translation_tlb_entries,
+                    "address_translation.tlb_entries");
+                config.address_translation_tlb_associativity = yamlU32(
+                    at["tlb_associativity"], config.address_translation_tlb_associativity,
+                    "address_translation.tlb_associativity");
+                config.address_translation_tlb_hit_latency = yamlU32(
+                    at["tlb_hit_latency_cycles"], config.address_translation_tlb_hit_latency,
+                    "address_translation.tlb_hit_latency_cycles");
+                config.address_translation_page_walk_latency = yamlU32(
+                    at["page_walk_latency_cycles"], config.address_translation_page_walk_latency,
+                    "address_translation.page_walk_latency_cycles");
+
+                if (config.address_translation_enabled) {
+                    const uint32_t page = config.address_translation_page_size;
+                    if (page < 1024 || (page & (page - 1)) != 0) {
+                        std::cerr << "Error: address_translation.page_size_bytes must be a "
+                                     "power of two >= 1024.\n";
+                        std::exit(2);
+                    }
+                    const uint32_t entries = config.address_translation_tlb_entries;
+                    const uint32_t ways = config.address_translation_tlb_associativity;
+                    if (entries == 0 || ways == 0 || ways > entries || entries % ways != 0) {
+                        std::cerr << "Error: address_translation.tlb_entries must be positive, "
+                                     "and tlb_associativity must divide it.\n";
+                        std::exit(2);
+                    }
+                    if (config.scope != "device" || config.method != "exec" ||
+                        config.pe_type != "alu_core") {
+                        std::cerr << "Error: address_translation is currently supported only "
+                                     "for method=exec, scope=device, and pim.pe.type=alu_core.\n";
+                        std::exit(2);
+                    }
+                    std::cout << "[config] PIM-side address translation enabled: synthetic "
+                              << "identity page map, " << page << " B pages, TLB "
+                              << entries << " entries / " << ways << " ways, hit "
+                              << config.address_translation_tlb_hit_latency << " cycles, "
+                              << "abstract PIM page walk "
+                              << config.address_translation_page_walk_latency << " cycles"
+                              << std::endl;
                 }
             }
 
@@ -16431,6 +16504,11 @@ int main(int argc, char** argv) {
         config.method != "trace" && config.method != "synthetic") {
         std::cerr << "Error: Unknown simulation method: " << config.method << std::endl;
         std::cerr << "Valid methods: exec, trace, trace-gen, synthetic" << std::endl;
+        return 1;
+    }
+    if (config.address_translation_enabled && !config.hierarchy_enabled) {
+        std::cerr << "Error: address_translation requires an active PIM hierarchy, "
+                     "which this configuration does not provide.\n";
         return 1;
     }
 

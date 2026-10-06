@@ -6,6 +6,7 @@ Complete reference for all YAML configuration keys supported by PIMID.
 
 - [Top-Level Keys](#top-level-keys)
 - [Workload Configuration](#workload-configuration)
+- [PIM-side Address Translation](#pim-side-address-translation-exec-device-scope)
 - [PIM Configuration](#pim-configuration)
   - [Processing Elements](#processing-elements-pimpe)
   - [PE Placement](#pe-placement-pimplacement)
@@ -68,6 +69,28 @@ workload:
 | `workload.env` | map | `{}` | Environment variables injected into the workload process. |
 | `workload.type` | string | `"serial"` | Workload type: `serial`, `openmp`, or `mpi`. |
 | `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`). CLI `--mpi-ranks` overrides. |
+
+## PIM-side Address Translation (exec, device scope)
+
+```yaml
+address_translation:
+  enabled: true
+  page_size_bytes: 4096
+  tlb_entries: 64
+  tlb_associativity: 4
+  tlb_hit_latency_cycles: 1
+  page_walk_latency_cycles: 20
+```
+
+This opt-in model applies to data accesses on device `alu_core` PEs. QEMU's
+Linux user-mode plugin supplies guest virtual addresses, so PIMID uses a
+synthetic identity VA-to-PA page map. TLB misses pay the configured lookup
+latency plus fixed walk latency on the PIM-side cycle path; page-table reads
+are not yet sent through Ramulator or the NoC. The TLB is per PE, starts cold at the first ROI access,
+and reports per-PE/aggregate hit, miss, walk, and cycle statistics at exit.
+It is currently supported only for `method: exec`, `scope: device`, and
+`pim.pe.type: alu_core`. This is an explicit PIM translation model, not the
+host CPU's TLB or QEMU's functional address translation.
 
 ---
 
