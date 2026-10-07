@@ -1,0 +1,625 @@
+[config] PIM-side address translation enabled: synthetic identity page map, 4096 B pages, TLB 64 entries / 4 ways, hit 1 cycles, abstract PIM page walk 20 cycles
+  Subarray geometry from preset DDR4_8Gb_x8: 65536 rows/bank / 512 rows per subarray = 128 subarrays/bank
+In-Memory Network Initialized (DDR4) -- PROVISIONAL per-technology table defaults, printed at construction. If a sourced ladder is adopted below ("Hierarchy link ladder from the DDR4 architecture object"), THOSE widths are the ones simulated and these are superseded:
+  L0 Subarray network: 512 bits, 76.8 GB/s  [bridge: 1x 128b->64b, 0.5ns]
+  L1 Bank network: 256 bits, 38.4 GB/s  [bridge: 1x 64b->64b, 0.25ns]
+  L2 BankGroup network: 256 bits, 38.4 GB/s  [bridge: 1x 64b->8b, 1ns]
+  L3 Chip network: 192 bits, 28.8 GB/s  [bridge: 1x 8b->64b, 1.5ns]
+  L4 Rank network: 128 bits, 19.2 GB/s  [bridge: 1x 64b->64b, 0.5ns]
+  L5 Channel network: 128 bits, 19.2 GB/s  [bridge: 1x 64b->64b, 2ns]
+  L6 System network: 128 bits, 19.2 GB/s
+  [bw] DDR4 bandwidth by scope: rank bus 19.2 GB/s (device M/D/1 service rate), databus 19.2 GB/s (one channel, every family since 1.11.57 C007), aggregate 19.2 GB/s over 1 channel(s) (NoC cap; host MC sees 19.2 GB/s per controller)
+  Hierarchy top-tier node counts: L4 (rank) 1, L5 (channel) 1
+  Hierarchy link ladder from the DDR4 architecture object (bits/level): 256/8/16/8/64/64/64
+    rung 0 subarray (GSA): 256 b, 38.4154 GB/s  [INFERRED: DAS-MICRO15: 'data is read into 256 global sense-amplifiers']
+    rung 1 bank: 8 b, 1.20048 GB/s  [ESTIMATED: NOT DOCUMENTED! Estimated from bank performance limits]
+    rung 2 bank group: 16 b, 2.40096 GB/s  [ASSERTED: bank serialization x 2, an interleaving assumption -- no upstream field exists (declared since 1.11.58; also in the stated-constant register)]
+    rung 3 chip DQ: 8 b, 2.4 GB/s  [VERIFIED: JEDEC JESD79-4: DDR4 x8 configuration]
+    rung 4 rank bus: 64 b, 19.2 GB/s  [VERIFIED: JEDEC standard: 64-bit rank interface for DDR4]
+    rung 5 channel: 64 b, 19.2 GB/s  [VERIFIED: Standard DDR4 memory controller interface]
+    rung 6 system root: 64 b, 19.2 GB/s  [DERIVED: channel_databus_bits x the technology's channel count (arithmetic, not a sourced field)]
+    (this REPLACES the per-level table printed above, which is the technology placeholder the network is constructed with)
+    L2 (bank group) is ASSERTED, not sourced: it is L1 x 2, an interleaving assumption. The other six rungs come from the architecture object.
+  Hierarchy level latency (PE cycles, 64 B): 14/112/59/59/15/12/10 at 2000 MHz
+  Hierarchy bridge latency (PE cycles, 64 B): 110/109/57/58/9/12 at 2000 MHz (one per tier boundary; a traversal charges the levels it crosses AND the bridges between them)
+  [mem] DQ turnaround penalty: 7.497 ns = nWTR 9 x tCK 0.833 ns, from preset DDR4_2400R
+
+[provenance] Stated constants in effect (no tool source; each is an assumption this run rests on):
+  H-tree scaling constants = reference network clock 2.0 GHz, resolution 10, reference hops 8
+      governs: the NoC link latency, and with it every hierarchy traversal, on the analytical AND detailed paths
+      override: (none)
+  bank-group port width = the bank serialisation width x 2 (an interleaving assumption)
+      governs: the L2 rung of the hierarchy link ladder: its width, its bandwidth, and every level-2 crossing derived from them
+      override: (none -- no architecture object carries this field)
+  bandwidth reference anchor = HBM3's per-channel and L0 bandwidth, read from its preset
+      governs: per-layer link widths, Garnet link latency and flits-per-access on the detailed path
+      override: (derived, not a constant -- listed so the normalisation is visible)
+  MLP degree M = 10
+      governs: the PE outstanding-access window in the M/D/1 model
+      override: noc.mlp
+  network-interface overhead = 6 cycles
+      governs: the average one-way NoC latency, added for every topology including BUS and CROSSBAR where the hop count is zero
+      override: (none)
+  PE local-link latency = 2 cycles
+      governs: the PE<->local-memory hop
+      override: pim.pe.local_link_latency
+  (Quantities the tools CAN answer are measured instead and are not listed here.)
+[pimid] cache mode: rw
++==============================================================================+
+|                    PIMID Simulation Infrastructure v1.2.2                      |
++==============================================================================+
+  Method: exec (QEMU + ZSim cycle-accurate) | Scope: device
+  Config: examples/tech_DDR4_translation.yaml
+  Workload: benchmarks/pim_kernels/stream_triad/stream_triad
+  Power: disabled
+
+
+========================================
+PIMID CYCLE-ACCURATE MODE (QEMU + ZSim)
+========================================
+Workload: benchmarks/pim_kernels/stream_triad/stream_triad
+Using QEMU: /home/luca/Documents/Projects/PoliProjects/PIMID/external/qemu/build/qemu-x86_64
+[load] libpimid_plugin.so: /home/luca/Documents/Projects/PoliProjects/PIMID/build/libpimid_plugin.so (1.11.93)
+[load] libzsim_qemu.so: /home/luca/Documents/Projects/PoliProjects/PIMID/build/external/zsim/libzsim_qemu.so (1.11.93)
+Plugin:   /home/luca/Documents/Projects/PoliProjects/PIMID/build/external/zsim/libzsim_qemu.so
+  Core:      ALU (compute=1.00, access=1.00, throughput=1.00, energy=1.00, width=32b)
+  Memory:    DDR4, Controller: Ramulator (Ramulator2 cycle-accurate)
+             Config: /tmp/pimid_ramulator_124875.yaml
+  NoC:       H_TREE, routing=NCA, mode=simple
+             VCs=4/vnet, buffers=4/VC, router=1, link=1 cycles
+  Hierarchy: DDR4 internal network
+    L0 Subarray:    14 cycles + bridge 110 cy
+    L1 Bank:        112 cycles + bridge 109 cy
+    L2 BankGroup:   59 cycles + bridge 57 cy
+    L3 Chip:        59 cycles + bridge 58 cy
+    L4 Rank:        15 cycles + bridge 9 cy
+    L5 Channel:     12 cycles + bridge 12 cy
+    L6 System:      10 cycles
+    PE placement: L1 (BANK), 4 PEs -> 128 mem orgs (1:32, shared_io)
+    PE-MIs: 4 (1 PEs/MI)
+Creating memory model for technology: 1
+Configuration path: 
+  Creating DRAM model (Ramulator) for 1
+[DRAMModel] Initializing DRAM model with Ramulator2...
+[DRAMModel] No override file; Ramulator presets + architecture object supply the configuration.
+[DRAMModel] Using Ramulator2 for cycle-accurate DRAM simulation
+[DRAMModel] Architecture EXTRACTED from Ramulator2
+[DRAMModel] Inner-bank datapath delay: 6.7 ns
+[DRAMModel] Architecture source: Ramulator + DRAMArchitectureV2 extraction
+[DRAMModel] Configuration:
+  Standard: DDR4
+  Organization: 1024 MB/device x 8 devices/rank, 8-bit device
+  Channels: 1 (Ramulator preset)
+  Ranks/Channel: 2 (architecture object)
+  Banks/Rank: 16 (architecture object: banks/group x groups/chip)
+  Capacity: 8 GiB (Ramulator preset)
+  Bandwidth: 19 GB/s decimal, aggregate (Ramulator preset)
+  JEDEC timings (architecture object, ns; cycles at the 1.2e+03 MHz core clock):
+    tCL:  13 ns = 16 cycles
+    tRCD: 13 ns = 16 cycles
+    tRP:  13 ns = 16 cycles
+    tRAS: 32 ns = 39 cycles
+[DRAMModel] Initialization complete
+  [mem] DDR4 @ bank placement: 40 ns (Ramulator tRP+tRCD+tCAS)
+[CACTIWrapper] Running CACTI analysis...
+[CACTIWrapper] CACTI analysis complete
+[CACTIWrapper] Running CACTI analysis...
+[CACTIWrapper] CACTI analysis complete
+[CACTIWrapper] Running CACTI analysis...
+[CACTIWrapper] CACTI analysis complete
+  [mem] DRAM row (page) size: 1024 B, from preset organization (cols x dq / 8); row stride across the access: 8192 B = 8 device(s) x 1024 B (64-bit channel / 8-bit device)
+Creating memory model for technology: 1
+Configuration path: 
+  Creating DRAM model (Ramulator) for 1
+[DRAMModel] Initializing DRAM model with Ramulator2...
+[DRAMModel] No override file; Ramulator presets + architecture object supply the configuration.
+[DRAMModel] Using Ramulator2 for cycle-accurate DRAM simulation
+[DRAMModel] Architecture EXTRACTED from Ramulator2
+[DRAMModel] Inner-bank datapath delay: 6.7 ns
+[DRAMModel] Architecture source: Ramulator + DRAMArchitectureV2 extraction
+[DRAMModel] Configuration:
+  Standard: DDR4
+  Organization: 1024 MB/device x 8 devices/rank, 8-bit device
+  Channels: 1 (Ramulator preset)
+  Ranks/Channel: 2 (architecture object)
+  Banks/Rank: 16 (architecture object: banks/group x groups/chip)
+  Capacity: 8 GiB (Ramulator preset)
+  Bandwidth: 19 GB/s decimal, aggregate (Ramulator preset)
+  JEDEC timings (architecture object, ns; cycles at the 1.2e+03 MHz core clock):
+    tCL:  13 ns = 16 cycles
+    tRCD: 13 ns = 16 cycles
+    tRP:  13 ns = 16 cycles
+    tRAS: 32 ns = 39 cycles
+[DRAMModel] Initialization complete
+  [mem] DDR4 @ bank placement: 40 ns (Ramulator tRP+tRCD+tCAS)
+  [pe-mi] local access latency 80 cycles at 2e+03 MHz, from the array model at this placement (scales with the PE clock, as an array time must)
+  [pe-mi] bandwidth 19200 MB/s, from the memory model's own aggregate
+ZSim config: /tmp/pimid_qemu_zsim_124875.cfg
+Output:   /tmp/pimid_qemu_124875
+
+Running workload through QEMU+ZSim simulation...
+----------------------------------------
+Started contention simulation thread 0
+Limiting concurrent threads to 1
+Started RR scheduler, quantum=10000 phases
+SIMD width: 128 bits
+Started scheduler watchdog thread
+[GarnetNetwork] Topology: H_TREE, Routing: NCA
+  Router latency: 1 cycles, Link latency: 1 cycles
+  VCs/vnet: 4, Buffers/VC: 4
+  Clock: 2000.0 MHz, Flit size: 128 bits
+  Mode: simple
+[EpochFeedback] det-epoch-frozen NoC pricing table init: E_phases=4 (thread-MPI deterministic measured feedback; PIMID_MPI_ANALYTICAL_PRICING=1 restores the analytical override)
+[ZSim] Using Garnet H_TREE network, routing=NCA
+[ZSim] DRAM hierarchy enabled (placement=L1, 7 levels, PEMCs=4, mapping=4 PEs, conn=shared_io, endpoints=128)
+[NoC wiring] 128 endpoints over 128 network nodes (OK)
+[ZSim] Created 4 PE-MIs (1 PEs/MI, conn=shared_io)
+ALU Core 'pim_pes-0': compute=1.00, access=1.00, throughput=1.00, width=32, serial=no, energy=1.00, mi=wired
+ALU Core 'pim_pes-1': compute=1.00, access=1.00, throughput=1.00, width=32, serial=no, energy=1.00, mi=wired
+ALU Core 'pim_pes-2': compute=1.00, access=1.00, throughput=1.00, width=32, serial=no, energy=1.00, mi=wired
+ALU Core 'pim_pes-3': compute=1.00, access=1.00, throughput=1.00, width=32, serial=no, energy=1.00, mi=wired
+Initialized system
+HDF5 backend: Opening /tmp/pimid_qemu_124875/zsim.h5
+HDF5 backend: Created table, 2624 bytes/record, 400 records/write
+HDF5 backend: Opening /tmp/pimid_qemu_124875/zsim-ev.h5
+HDF5 backend: Created table, 2624 bytes/record, 50 records/write
+HDF5 backend: Opening /tmp/pimid_qemu_124875/zsim-cmp.h5
+HDF5 backend: Created table, 2192 bytes/record, 1 records/write
+Initialization complete
+AddressTranslator initialized:
+  Page size: 4096 bytes
+  Page bits: 12
+  TLB entries: 64
+  TLB associativity: 4
+  TLB hit latency: 1 cycles
+  Page walk latency: 20 cycles
+[PIM Translation] enabled for device ALU PEs; synthetic identity VA->PA map; page walks use fixed PIM-side latency (no page-table memory traffic)
+[ZSim] 1.9.20 PE pinning active: 4 device PEs, rank->PE home = vcpu_index % 4 (deterministic placement)
+[ZSim] ALU/Null-only config: all device cores promoted to host for QEMU execution
+Thread 0 starting (domain=HOST)
+[roi] traffic counters rebased at roi_begin (roi_begin): 1 stat groups, pre-ROI memory-controller accesses dropped: 40271, pre-ROI NoC flits dropped: 5490 (1098 packets; 0 pending pre-ROI records replayed first)
+ROI BEGIN (transition #1)
+ROI END (transition #2)
+Terminating scheduler watchdog thread
+Dumping termination stats
+[HOOKS] ROI begin
+[HOOKS] ROI end
+BENCH_CHECKSUM: 57344.000000
+BENCH_DONE
+[E17 gap histogram] clock 2000 MHz, whole run 10150000 cyc (1015 phases); percentages below are against each component's own ROI span. Since 1.11.51 the devMC buckets ARE read back: they weight the DRAM power-down residency (audit F006 -- the previous 'no model reads this' is stale). NoC buckets remain measurement-only: no sourced wake penalty exists for a logic fabric and none is invented.
+[E17 noc] ROI span 6569745 cyc (64.7% of the whole run)
+[E17 noc] events=41007 samples=41006 (dropped=1)
+[E17 noc] gap 2^7  (      64.0 ns) count=40983      cycles=6533770     
+[E17 noc] gap 2^8  (     128.0 ns) count=7          cycles=2636        
+[E17 noc] gap 2^9  (     256.0 ns) count=3          cycles=1697        
+[E17 noc] gap 2^10 (     512.0 ns) count=5          cycles=5952        
+[E17 noc] gap 2^11 (    1024.0 ns) count=6          cycles=15861       
+[E17 noc] gap 2^12 (    2048.0 ns) count=2          cycles=9829        
+[E17 noc] cycles in gaps total=6569745 (100.00% of span)
+[E17 noc] usable idle above tXP~10ns  (  20 cyc): 5749625      = 87.52% of span
+[E17 noc] usable idle above 100ns     ( 200 cyc): 31375        = 0.48% of span
+[E17 noc] usable idle above 1us       (2000 cyc): 9690         = 0.15% of span
+[E17 devMC] ROI span 6569830 cyc (64.7% of the whole run)
+[E17 devMC] events=41387 samples=41386 (dropped=1)
+[E17 devMC] gap 2^6  (      32.0 ns) count=380        cycles=32964       
+[E17 devMC] gap 2^7  (      64.0 ns) count=41006      cycles=6536866     
+[E17 devMC] cycles in gaps total=6569830 (100.00% of span)
+[E17 devMC] usable idle above tXP~10ns  (  20 cyc): 5742110      = 87.40% of span
+[E17 devMC] usable idle above 100ns     ( 200 cyc): 0            = 0.00% of span
+[E17 devMC] usable idle above 1us       (2000 cyc): 0            = 0.00% of span
+[GarnetNetwork] Statistics (H_TREE, NCA) [ROI only: counters rebased at roi_begin, 1.11.90]:
+  Total packets: 41007 (data 41007, control 0)
+  Total flits: 205035 (ceil(message bits / source port width) per packet; data 576 b, control 64 b)
+  Total hops: 164028 (router-to-router links per packet; the latency input)
+  Router traversals: 1025175 (flits x routers crossed, routers = links + 1)
+  Link traversals: 820140 (flits x router-to-router links)
+  Level 1 (bank): 410070 flit traversals, 82014 packet crossings (analytical tier walk)
+  Level 2 (bankgroup): 410070 flit traversals, 82014 packet crossings (analytical tier walk)
+  Level 3 (chip): 205035 flit traversals, 41007 packet crossings (analytical tier walk)
+  Avg latency: 0 cycles
+
+=== Address Translation Statistics (ROI) ===
+
+Per-PE Statistics:
+  PE 0:
+    Total translations: 41387
+    TLB hits: 41362 (99.9396%)
+    TLB misses: 25
+    Page walks: 25
+    Translation cycles: 41887
+
+Aggregate Statistics:
+  Total translations: 41387
+  Total TLB hits: 41362
+  Total TLB misses: 25
+  Total page walks: 25
+  Total translation cycles: 41887
+  Average translation latency: 1.01208 cycles/translation
+  Overall TLB hit rate: 99.9396%
+
+=== Address Translation Statistics (Whole Program) ===
+
+Per-PE Statistics:
+  PE 0:
+    Total translations: 81658
+    TLB hits: 81542 (99.8579%)
+    TLB misses: 116
+    Page walks: 116
+    Translation cycles: 83978
+
+Aggregate Statistics:
+  Total translations: 81658
+  Total TLB hits: 81542
+  Total TLB misses: 116
+  Total page walks: 116
+  Total translation cycles: 83978
+  Average translation latency: 1.02841 cycles/translation
+  Overall TLB hit rate: 99.8579%
+
+Page Table Statistics:
+  Total mapped pages: 109
+  Valid pages: 109
+
+TLB Configuration:
+  TLB entries: 64
+  TLB associativity: 4
+  Page size: 4096 bytes
+  TLB hit latency: 1 cycles
+  Page walk latency: 20 cycles
+----------------------------------------
+QEMU+ZSim completed with exit code: 0
+
+ZSim Statistics:
+  # zsim stats
+  ===
+  root: # Stats
+   contention: # Contention simulation stats
+    domain-0: # Domain stats
+     time: 0 # Weave simulation time
+   time: # Simulator time breakdown
+    init: 12763153
+    bound: 43925187
+    weave: 46323
+    ff: 0
+   trigger: 20000 # Reason for this stats dump
+   phase: 1015 # Simulated phases
+   xingH2DBytes: 0 # Host->device crossing payload bytes
+   xingD2HBytes: 0 # Device->host crossing payload bytes
+   xingCount: 0 # Discrete host<->device crossings
+   xingFlushBytes: 0 # Coherence-flush footprint bytes crossed
+   pgAnyCoreActivePhases: 657 # Phases with >=1 core retiring (ROI)
+   pgSharedCacheActivePhases: 0 # Phases with >=1 shared-cache access (ROI)
+   pgNocActivePhases: 657 # Phases with >=1 fabric injection (ROI)
+   pgHostMCActivePhases: 0 # Phases with >=1 host-MC access (ROI)
+   pgDevMCActivePhases: 657 # Phases with >=1 device-MC access (ROI)
+   pgPhaseWindow: 657 # Phases in the priced (ROI) window
+   pgDevMCGapCnt_0: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_0: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_1: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_1: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_2: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_2: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_3: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_3: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_4: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_4: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_5: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_5: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_6: 380 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_6: 32964 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_7: 41006 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_7: 6536866 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_8: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_8: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_9: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_9: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_10: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_10: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_11: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_11: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_12: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_12: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_13: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_13: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_14: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_14: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_15: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_15: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_16: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_16: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_17: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_17: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_18: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_18: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_19: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_19: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_20: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_20: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_21: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_21: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_22: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_22: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_23: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_23: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_24: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_24: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_25: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_25: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_26: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_26: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_27: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_27: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_28: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_28: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_29: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_29: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_30: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_30: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_31: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_31: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_32: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_32: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_33: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_33: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_34: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_34: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_35: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_35: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_36: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_36: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_37: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_37: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_38: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_38: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapCnt_39: 0 # devMC gap-histogram count, log2 bucket
+   pgDevMCGapCyc_39: 0 # devMC gap-histogram cycles, log2 bucket
+   pgDevMCGapSpan: 6569830 # devMC gap-histogram ROI span, cycles
+   pim_pes: # Core stats
+    pim_pes-0: # Core stats
+     mixInt: 33705 # Integer-class instructions (measured)
+     mixMul: 4 # Multiply/divide-class instructions (measured)
+     mixFp: 49165 # FP/vector-class instructions (measured)
+     mixLd: 16671 # Load uops (measured)
+     mixSt: 24718 # Store uops (measured)
+     mixBr: 16599 # Branch-class instructions (measured)
+     pgActivePhases: 657 # Phases with retirement (PG residency)
+     syntheticInstrs: 0 # Of instrs, injected timing charges (not executed code)
+     cycles: 6569992 # Simulated cycles
+     instrs: 99473 # Simulated instructions
+    pim_pes-1: # Core stats
+     mixInt: 0 # Integer-class instructions (measured)
+     mixMul: 0 # Multiply/divide-class instructions (measured)
+     mixFp: 0 # FP/vector-class instructions (measured)
+     mixLd: 0 # Load uops (measured)
+     mixSt: 0 # Store uops (measured)
+     mixBr: 0 # Branch-class instructions (measured)
+     pgActivePhases: 0 # Phases with retirement (PG residency)
+     syntheticInstrs: 0 # Of instrs, injected timing charges (not executed code)
+     cycles: 0 # Simulated cycles
+     instrs: 0 # Simulated instructions
+    pim_pes-2: # Core stats
+     mixInt: 0 # Integer-class instructions (measured)
+     mixMul: 0 # Multiply/divide-class instructions (measured)
+     mixFp: 0 # FP/vector-class instructions (measured)
+     mixLd: 0 # Load uops (measured)
+     mixSt: 0 # Store uops (measured)
+     mixBr: 0 # Branch-class instructions (measured)
+     pgActivePhases: 0 # Phases with retirement (PG residency)
+     syntheticInstrs: 0 # Of instrs, injected timing charges (not executed code)
+     cycles: 0 # Simulated cycles
+     instrs: 0 # Simulated instructions
+    pim_pes-3: # Core stats
+     mixInt: 0 # Integer-class instructions (measured)
+     mixMul: 0 # Multiply/divide-class instructions (measured)
+     mixFp: 0 # FP/vector-class instructions (measured)
+     mixLd: 0 # Load uops (measured)
+     mixSt: 0 # Store uops (measured)
+     mixBr: 0 # Branch-class instructions (measured)
+     pgActivePhases: 0 # Phases with retirement (PG residency)
+     syntheticInstrs: 0 # Of instrs, injected timing charges (not executed code)
+     cycles: 0 # Simulated cycles
+     instrs: 0 # Simulated instructions
+   mem: # Memory controller stats
+    pe-mi-0: # PE memory interface stats
+     rowHits: 308 # Accesses hitting the bank's open row (measured)
+     rowMisses: 41079 # Accesses opening a different row (measured)
+     localAcc: 380 # Local accesses (within coverage)
+     remoteAcc: 41007 # Remote accesses (hierarchy traversal)
+     localLat: 31160 # Total local access latency cycles
+     remoteLat: 6356085 # Total remote access latency cycles
+     rd: 16669 # Read requests
+     wr: 24718 # Write requests
+    pe-mi-1: # PE memory interface stats
+     rowHits: 0 # Accesses hitting the bank's open row (measured)
+     rowMisses: 0 # Accesses opening a different row (measured)
+     localAcc: 0 # Local accesses (within coverage)
+     remoteAcc: 0 # Remote accesses (hierarchy traversal)
+     localLat: 0 # Total local access latency cycles
+     remoteLat: 0 # Total remote access latency cycles
+     rd: 0 # Read requests
+     wr: 0 # Write requests
+    pe-mi-2: # PE memory interface stats
+     rowHits: 0 # Accesses hitting the bank's open row (measured)
+     rowMisses: 0 # Accesses opening a different row (measured)
+     localAcc: 0 # Local accesses (within coverage)
+     remoteAcc: 0 # Remote accesses (hierarchy traversal)
+     localLat: 0 # Total local access latency cycles
+     remoteLat: 0 # Total remote access latency cycles
+     rd: 0 # Read requests
+     wr: 0 # Write requests
+    pe-mi-3: # PE memory interface stats
+     rowHits: 0 # Accesses hitting the bank's open row (measured)
+     rowMisses: 0 # Accesses opening a different row (measured)
+     localAcc: 0 # Local accesses (within coverage)
+     remoteAcc: 0 # Remote accesses (hierarchy traversal)
+     localLat: 0 # Total local access latency cycles
+     remoteLat: 0 # Total remote access latency cycles
+     rd: 0 # Read requests
+     wr: 0 # Write requests
+   sched: # Scheduler stats
+    thCr: 1 # Threads created
+    thFn: 1 # Threads finished
+    schedEvs: 1 # Schedule events
+    waitEvs: 0 # Wait events
+    handoffEvs: 0 # Handoff events
+    sleepEvs: 0 # Sleep events
+    idlePhases: 0 # Phases with no thread active
+    idlePeriods: 0 # Periods with no thread active
+    occHist: # Occupancy histogram
+     0: 0
+     1: 1015
+     2: 0
+     3: 0
+     4: 0
+    rqSzHist: # Run queue size histogram
+     0: 1015
+     1: 0
+     2: 0
+     3: 0
+     4: 0
+     5: 0
+     6: 0
+     7: 0
+     8: 0
+     9: 0
+     10: 0
+     11: 0
+     12: 0
+     13: 0
+     14: 0
+     15: 0
+     16: 0
+   procCycles: # Per-process unhalted core cycles
+    0: 10157931
+    1: 0
+    2: 0
+    3: 0
+    4: 0
+    5: 0
+    6: 0
+    7: 0
+    8: 0
+    9: 0
+    10: 0
+    11: 0
+    12: 0
+    13: 0
+    14: 0
+    15: 0
+    16: 0
+    17: 0
+    18: 0
+    19: 0
+    20: 0
+    21: 0
+    22: 0
+    23: 0
+    24: 0
+    25: 0
+    26: 0
+    27: 0
+    28: 0
+    29: 0
+    30: 0
+    31: 0
+    32: 0
+    33: 0
+    34: 0
+    35: 0
+    36: 0
+    37: 0
+    38: 0
+    39: 0
+    40: 0
+    41: 0
+    42: 0
+    43: 0
+    44: 0
+    45: 0
+    46: 0
+    47: 0
+    48: 0
+    49: 0
+    50: 0
+    51: 0
+    52: 0
+    53: 0
+    54: 0
+    55: 0
+    56: 0
+    57: 0
+    58: 0
+    59: 0
+    60: 0
+    61: 0
+    62: 0
+    63: 0
+   procInstrs: # Per-process instructions
+    0: 222674
+    1: 0
+    2: 0
+    3: 0
+    4: 0
+    5: 0
+    6: 0
+    7: 0
+    8: 0
+    9: 0
+    10: 0
+    11: 0
+    12: 0
+    13: 0
+    14: 0
+    15: 0
+    16: 0
+    17: 0
+    18: 0
+    19: 0
+    20: 0
+    21: 0
+    22: 0
+    23: 0
+    24: 0
+    25: 0
+    26: 0
+    27: 0
+    28: 0
+    29: 0
+    30: 0
+    31: 0
+    32: 0
+    33: 0
+    34: 0
+    35: 0
+    36: 0
+    37: 0
+    38: 0
+    39: 0
+    40: 0
+    41: 0
+    42: 0
+    43: 0
+    44: 0
+    45: 0
+    46: 0
+    47: 0
+    48: 0
+    49: 0
+    50: 0
+    51: 0
+    52: 0
+    53: 0
+    54: 0
+    55: 0
+    56: 0
+    57: 0
+    58: 0
+    59: 0
+    60: 0
+    61: 0
+    62: 0
+    63: 0
+  ===
+OMP cycles: 6569992 (mean: 6569992, min: 6569992, pes: 1, critical-path max)
+Total:  6569992 cycles (max: 6569992)
+========================================

@@ -120,3 +120,6 @@ benchmarks/cosim/reduction_tree/rt_peer
 cache/*
 !cache/.gitkeep
 !cache/README.md
+
+
+logs/*
