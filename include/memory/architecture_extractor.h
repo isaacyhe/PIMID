@@ -401,6 +401,16 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     /* 1.11.23: NVSim reports the cell's own write latency; the 0.6 fraction
      * of a composed number was an assertion about where the time goes. */
     arch->timing.inner_bank.mtj_switching_ns = nvsim_wrapper.getCellWriteLatency() * 1e9;
+    /* 1.11.107 (gate 1217B, E2): these four were never assigned, so the inner-bank
+     * totals summed whatever the heap held (1.11.106 printed 2.5172e+180 ns on the
+     * STT-MRAM gemv cells). NVSim's breakdown has no subarray output driver, no
+     * in-bank H-tree legs and no write-verify for STT-MRAM: they are 0 here, and the
+     * provenance string below already says the breakdown is the top-level figure
+     * plus the three asserted I/O constants. Print-only: no caller reads the totals. */
+    arch->timing.inner_bank.subarray_output_drv_ns = 0.0;
+    arch->timing.inner_bank.htree_horizontal_ns = 0.0;
+    arch->timing.inner_bank.htree_vertical_ns = 0.0;
+    arch->timing.inner_bank.write_verify_ns = 0.0;
 
     // Remaining components
     arch->timing.inner_bank.local_io_ns = 0.5;

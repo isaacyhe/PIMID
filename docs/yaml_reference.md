@@ -69,11 +69,11 @@ contents are the user's own are exempt: `workload.env`,
 `system.hosts[].workload.env`, `system.devices[].workload.env`,
 `pim.mapping.map`, `pim.mc.groups` and `power.mcpat_overrides` (whose names
 are checked separately, see [McPAT Overrides](#mcpat-overrides)). A
-`system.hosts[]` or `system.devices[]` node accepts only the keys listed under
-[Hosts](#hosts) and [Devices](#devices): a device-scope key written inside a
-device node (`pim.pe.count`, `pim.mc.local_latency`, `pim.mapping`,
-`noc.levels`, `memory.dram`, ...) is refused in this release. 1.11.107 accepts
-the device-scope shape inside a node.
+`system.hosts[]` node accepts the keys listed under [Hosts](#hosts). A
+`system.devices[]` node accepts its node keys and every device-scope key --
+each `pim.*`, `memory.*`, `noc.*`, `cache.*`, `core.*` and
+`technology.node_nm` key on this page, under the node (1.11.107, one
+vocabulary; see [Devices](#devices) for what the system model does with each).
 
 **A word is one YAML scalar.** Every string knob refuses a map, a sequence or
 an empty value where a word is expected, naming the key path (rc 2). yaml-cpp
@@ -92,6 +92,9 @@ refuses (rc 2), naming both; the later one used to win in silence. The pairs:
 - `memory.timing.read_latency_ns` / `memory.timing.subarray_read_ns`, and `memory.timing.write_latency_ns` / `memory.timing.subarray_write_ns`
 - `noc.bridges` / `noc.gateways`
 - `power.link` / `power.pcie`
+- inside a `system.devices[]` node, each flat node key and the device-scope key
+  it aliases, and the pairs above that are device-scope keys (1.11.107; the
+  list is under [Devices](#devices))
 
 The L0 words follow the same rule since 1.11.74: one of
 `memory.subarrays_per_bank` / `subbanks_per_bank` / `mats_per_bank`, and one
@@ -929,6 +932,7 @@ system:
 | `system.hosts[].cache.l3_banks` | int | record (slice rule) | Host L3 bank count; as `l1d_banks`. |
 | `system.hosts[].floating_point` | bool | `true` | Whether the host cores have an FPU (per node: a device's setting does not leak onto the host). |
 | `system.hosts[].fp_emulation_cycles` | int | `0` | Cycles the host charges per FP-class instruction when `floating_point: false`. |
+| `system.hosts[].issue_width` | int | `2` | An `in_order_core` host's issue width, 1-6 (1.11.107; as `pim.pe.issue_width`, which a host could not set: before it only `PIMID_INORDER_WIDTH` narrowed an in-order host). Emitted as the host group's `issueWidth` and priced by McPAT at the same width. Refused (rc 2) on any other host core type, where it would change nothing, and outside 1-6. |
 | `system.hosts[].pg` | bool | `false` | Power-gate the host as ONE piece: cores and host memory controller share one domain and one idle residency. Since 1.11.106 the residency is 1 minus the MEASURED union of core-active and host-MC-active phases; it used to take max(core, mc), which understates activity and over-credits the gating. A stats file without the union counter falls back to the max and the `[pg]` line says it over-credits. |
 | `system.hosts[].workload` | map | - | Per-host workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
 | `system.hosts[].workload.env` | map | `{}` | Environment for the node's workload, read since 1.11.106 (documented earlier and ignored). The system runs as ONE simulated process, so the map joins that process's environment, the top-level `workload.env`. Nodes are applied in file order, hosts before devices; a name already set with a different value takes the node's value and the run prints a NOTE naming both values. A value that is not a map of `NAME: value` is refused. |
@@ -1007,26 +1011,83 @@ system:
         binary: ./pim_kernel
 ```
 
-A device node accepts only the keys below. A device-scope key written inside
-it -- `pim.mapping`, `pim.pe.count`, `pim.pe.type`, `pim.mc.local_latency`,
-`noc.levels`, `memory.dram`, ... -- is refused in this release (see
-[Loader Rules](#loader-rules)); 1.11.107 accepts the device-scope shape inside
-a node.
+**One vocabulary (1.11.107).** A device node is a device-scope configuration
+plus its node keys (`name`, `type`, `attachment`, `is_default_mem`,
+`workload`): it takes every `pim.*`, `memory.*`, `noc.*`, `cache.*`, `core.*`
+and `technology.node_nm` key, read by the same code as at the top level, and a
+key means there what it means at the top level. Until 1.11.106 a device-scope
+key written inside a node was ignored in silence; 1.11.106 refused it.
+
+- **The flat node keys are aliases.** `pe_type` = `pim.pe.type` (or
+  `pim.pe.core_type`), `num_pes` = `pim.pe.count`, `frequency_mhz` =
+  `pim.pe.frequency_mhz` (and `noc.clock_mhz`, which at the top level also sets
+  the device clock), `tech_node_nm` = `technology.node_nm`, and for each cache
+  level `cache.<level>_kb` = `cache.<level>.size_kb`, `cache.<level>_ways` =
+  `cache.<level>.ways`, `cache.<level>_banks` = `cache.<level>.banks`,
+  `cache.<level>_latency_ns` = `cache.<level>.latency_ns` (the node's own
+  latency override, as the flat key), with `cache.l2_kb` / `cache.l3_kb` and
+  `cache.l2.enabled` / `cache.l3.enabled` also one quantity (a node's level is
+  present when its size is above 0). **Giving both forms of one quantity in a
+  node is refused** (rc 2), naming both; so are the device-scope pairs of
+  [Loader Rules](#loader-rules) (`pim.pe.core_type` / `pim.pe.type`,
+  `pim.pe.placement` / `pim.placement`, ...) inside a node.
+- **What a node does not give.** Its node keys take the defaults in the table
+  below (`alu_core`, 0 PEs, 1000 MHz, `DDR4`, `BANK`, 32/32/256 KB caches and
+  no L3, ...); every other device-scope key takes the top-level value, else
+  the built-in default -- so a top-level `memory.dram.ddr5_speed_grade` still
+  reaches the device, as before.
+- **Per node.** The model reads these per node, so each device node may differ:
+  the clock, process node, PE type and count, memory technology, the PE's
+  `pim.pe.*` datapath and power keys (factors, `operand_width`, `bit_serial`,
+  `floating_point`, `fp_emulation_cycles`, `issue_width`, `lanes`,
+  `imem_bytes`, `arch_int_regs`, `arch_fp_regs`, `pg`), `pim.mc.pg`,
+  `noc.pg` and the cache sizes, ways, banks and latencies. A node's
+  `pim.pe.arch_int_regs` / `arch_fp_regs`, `lanes`, `imem_bytes` and
+  `operand_width` price THAT node's cores in McPAT (1.11.107; McPAT used the
+  run's values for every node).
+- **The built device.** The system model builds ONE device configuration -- the
+  first compute device with PEs -- and every other device-scope key the node
+  gives (`pim.placement.*`, `pim.mapping`, `pim.mc.*`, `noc.model`,
+  `noc.topology`, `noc.levels`, `noc.bridges`, `memory.banks`,
+  `memory.dram`, `memory.timing`, `memory.controller`, ...) takes effect
+  through it, as at device scope.
+- **Run-wide keys.** `memory.dram.ddr5_speed_grade` and
+  `memory.dram.device_width` set every DRAM model of the run, and
+  `core.in_order.*` / `core.ooo.*` every core of that type, hosts included.
+- **Refused instead of merged.** A key outside the per-node set must resolve to
+  the same value (the node's own, else the top level's, else unset) at every
+  node it reaches -- every compute device with PEs; for the DRAM grade every
+  DDR5 device, for the device width every DRAM device, plus a separate host
+  memory of that family; for `core.<type>.*` every device and host running
+  that core type. A difference is refused (rc 2) naming both nodes and the
+  reason -- two devices with different DDR5 grades, or a device's
+  `core.in_order.*` with an in-order host -- because the model would apply one
+  value to both; write it once at the top level instead. With no compute
+  device that has PEs, a key that takes effect through the built device would
+  be ignored, and is refused.
+- **Not node keys** (refused in a node, rc 2, with the reason): `cache.mode`,
+  `cache.enabled`, `cache.dir` and `cache.cacti.*` (the run's characterization
+  cache and CACTI search -- write them at the top level), `cache.l2.count` (a
+  node is built with one L2 per PE), `cache.<level>.energy_nj` /
+  `static_power_mw` (a node's caches are CACTI-priced) and `cache.pg` (a
+  node's caches have no gating flag of their own). A memory-only device
+  (`type: memory`) refuses `pe_type`, `num_pes` and any `pim`, `noc`, `cache`
+  or `core` key: it has no PEs, fabric or caches.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `system.devices[].name` | string | - | Device name (required). |
 | `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). |
 | `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
-| `system.devices[].pe_type` | string | `"alu_core"` | PE core type (compute devices only). |
-| `system.devices[].num_pes` | int | `0` | Number of PEs (compute devices only). |
-| `system.devices[].frequency_mhz` | int | `1000` | Device frequency. |
-| `system.devices[].tech_node_nm` | int | `22` | Device technology node. |
-| `system.devices[].memory` | map | - | Device memory: `technology`, `banks` and `ports_per_bank` only. |
+| `system.devices[].pe_type` | string | `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
+| `system.devices[].num_pes` | int | `0` | Number of PEs (compute devices only). Alias of `pim.pe.count` in the node. |
+| `system.devices[].frequency_mhz` | double | `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
+| `system.devices[].tech_node_nm` | int | the device node (`22`) | Device technology node. Alias of `technology.node_nm` in the node. |
+| `system.devices[].memory` | map | - | Device memory: every `memory.*` key (1.11.107; `technology`, `banks` and `ports_per_bank` only before). |
 | `system.devices[].is_default_mem` | bool | `true` | `true`: this PIM device IS the host's main memory (host tech = device tech by construction). `false`: accelerator-side memory only -- the host MUST supply a `system.hosts[].mem` block (else config error). |
-| `system.devices[].pim` | map | - | Device PIM block: `placement.level`; `pe.compute_factor`, `pe.access_factor`, `pe.throughput_factor`, `pe.operand_width`, `pe.energy_factor`, `pe.pg`, `pe.floating_point`, `pe.fp_emulation_cycles`, `pe.bit_serial`, `pe.issue_width`; `mc.type`, `mc.pes_per_mc`, `mc.pg`. Each means what its top-level `pim.*` key means; `mc.type` accepts `simple` only (1.11.106). |
-| `system.devices[].noc` | map | - | Device NoC: `model` (`analytical` or `detailed`, as the top-level `noc.model`; anything else is refused; absent = the top-level `noc.model`), `topology` (upper-cased; in this release a node's word is not checked against the `noc.topology` list at load), and `pg` (fabric power gating). |
-| `system.devices[].cache` | map | - | Device caches, flat keys only: `l1d_kb`, `l1i_kb`, `l2_kb`, `l3_kb`, and per level `<level>_latency_ns`, `<level>_ways`, `<level>_banks` (as the host's). |
+| `system.devices[].pim` | map | - | Device PIM block: every `pim.*` key (1.11.107), each meaning what its top-level `pim.*` key means; `mc.type` accepts `simple` only (1.11.106). |
+| `system.devices[].noc` | map | - | Device NoC: every `noc.*` key (1.11.107). `model` is `analytical` or `detailed` (as the top-level `noc.model`; anything else is refused; absent = the top-level `noc.model`); `topology` is upper-cased and checked against the `noc.topology` list (1.11.106); `pg` gates the fabric. |
+| `system.devices[].cache` | map | - | Device caches: the flat keys `l1d_kb`, `l1i_kb`, `l2_kb`, `l3_kb` and per level `<level>_latency_ns`, `<level>_ways`, `<level>_banks` (as the host's), or their device-scope forms `cache.<level>.size_kb` / `.ways` / `.banks` / `.latency_ns` and `cache.l2.enabled` / `cache.l3.enabled` (1.11.107; one form per quantity). A level is present when its size is above 0; `cache.l3.enabled: true` needs `cache.l3.size_kb`. Since 1.11.107 a device node's L3 is priced by McPAT as well as built (it was built and left out of the node's McPAT description). |
 | `system.devices[].workload` | map | - | Per-device workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
 | `system.devices[].workload.env` | map | `{}` | As `system.hosts[].workload.env`: joins the one simulated process's environment (1.11.106). |
 

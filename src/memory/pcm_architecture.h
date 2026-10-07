@@ -48,20 +48,23 @@ struct PCMOrganization {
 };
 
 struct PCMInnerBankTiming {
+    /* 1.11.107 (gate 1217B, E2): every member is value-initialised. The STT-MRAM
+     * extractor left four components unassigned and the printed inner-bank read
+     * latency summed uninitialised memory (2.5e+180 ns on two corpus cells). */
     // READ path
-    double row_decoder_ns, wordline_ns;
-    double bitline_read_ns;        // Resistance sensing (SLOW)
-    double sense_amp_external_ns;  // External to mat!
-    double column_mux_ns, mat_output_drv_ns;
-    double bus_horizontal_ns;      // Bus routing (not H-tree)
-    double bus_vertical_ns;
-    double global_io_ns, bank_output_drv_ns;
+    double row_decoder_ns = 0.0, wordline_ns = 0.0;
+    double bitline_read_ns = 0.0;        // Resistance sensing (SLOW)
+    double sense_amp_external_ns = 0.0;  // External to mat!
+    double column_mux_ns = 0.0, mat_output_drv_ns = 0.0;
+    double bus_horizontal_ns = 0.0;      // Bus routing (not H-tree)
+    double bus_vertical_ns = 0.0;
+    double global_io_ns = 0.0, bank_output_drv_ns = 0.0;
 
     // WRITE path (VERY SLOW!)
-    double set_pulse_ns;           // Crystallize (50-150ns)
-    double reset_pulse_ns;         // Amorphize (10-50ns)
+    double set_pulse_ns = 0.0;           // Crystallize (50-150ns)
+    double reset_pulse_ns = 0.0;         // Amorphize (10-50ns)
 
-    VerificationStatus verification_status;
+    VerificationStatus verification_status = VerificationStatus::UNKNOWN;
     std::string source;
 
     double getTotalReadLatency() const {

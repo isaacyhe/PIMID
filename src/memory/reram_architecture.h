@@ -48,24 +48,27 @@ struct ReRAMOrganization {
 };
 
 struct ReRAMInnerBankTiming {
+    /* 1.11.107 (gate 1217B, E2): every member is value-initialised. The STT-MRAM
+     * extractor left four components unassigned and the printed inner-bank read
+     * latency summed uninitialised memory (2.5e+180 ns on two corpus cells). */
     // READ path
-    double row_decoder_ns, wordline_ns;
-    double bitline_ns;             // Resistance sensing
-    double sense_amp_ns;
-    double column_mux_ns, subarray_output_drv_ns;
-    double local_io_ns;
-    double htree_horizontal_ns, htree_vertical_ns;
-    double global_io_ns, bank_output_drv_ns;
+    double row_decoder_ns = 0.0, wordline_ns = 0.0;
+    double bitline_ns = 0.0;             // Resistance sensing
+    double sense_amp_ns = 0.0;
+    double column_mux_ns = 0.0, subarray_output_drv_ns = 0.0;
+    double local_io_ns = 0.0;
+    double htree_horizontal_ns = 0.0, htree_vertical_ns = 0.0;
+    double global_io_ns = 0.0, bank_output_drv_ns = 0.0;
 
     // WRITE path (fast!)
-    double set_pulse_ns;           // Form conductive filament
-    double reset_pulse_ns;         // Rupture filament
+    double set_pulse_ns = 0.0;           // Form conductive filament
+    double reset_pulse_ns = 0.0;         // Rupture filament
 
     // ANALOG compute (special for ReRAM!)
-    double analog_multiply_ns;     // Matrix-vector multiply in crossbar
-    double analog_accumulate_ns;   // Column accumulation
+    double analog_multiply_ns = 0.0;     // Matrix-vector multiply in crossbar
+    double analog_accumulate_ns = 0.0;   // Column accumulation
 
-    VerificationStatus verification_status;
+    VerificationStatus verification_status = VerificationStatus::UNKNOWN;
     std::string source;
 
     double getTotalReadLatency() const {

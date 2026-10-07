@@ -7,6 +7,99 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.11.107 -- one vocabulary for a system device node: a node takes every device-scope key, read by the same code; the flat node keys are aliases; a node's McPAT core profile takes its own register counts
+
+Ruling R106-7 (c) (user, 2026-10-05). A device was described in two shapes:
+device scope (`pim.pe.{type,count,frequency_mhz,...}`, `pim.placement`,
+`pim.mc`, `memory.*`, `noc.*`, `cache.*`) and a system node (flat `pe_type`,
+`num_pes`, `frequency_mhz`, `tech_node_nm` plus a partial mirror of the
+device-scope blocks, written in 1.7 to mirror the host nodes). Every
+device-scope key outside that mirror, written in a `system.devices[]` node,
+was ignored in silence until 1.11.106, which refused it. Nothing here moves a
+corpus number: the 90 system configurations resolve every node field to its
+1.11.106 value and emit the same zsim configuration.
+
+**(1) One parser.** The top-level pim / technology / core / cache / noc /
+memory parse moved, unchanged, into three functions (`parseDevicePimBlock`,
+`parseDeviceCoreCacheNocBlocks`, `parseDeviceMemoryBlocks`) that take the key
+path prefix; the top level calls them in its old order, with byte-identical
+messages, and a device node calls them on its own block. A node's device
+configuration is the top-level configuration with the node keys at the node
+table's defaults (alu_core, 0 PEs, 1000 MHz, DDR4, BANK, 32/32/256 KB caches,
+no L3) and the node's blocks read onto it; a key the node does not give keeps
+the top-level value, so a top-level `memory.dram.ddr5_speed_grade` reaches the
+device as before.
+
+**(2) The flat keys are aliases.** `pe_type` = `pim.pe.type` /
+`pim.pe.core_type`, `num_pes` = `pim.pe.count`, `frequency_mhz` =
+`pim.pe.frequency_mhz` / `noc.clock_mhz`, `tech_node_nm` =
+`technology.node_nm`, and each `cache.<level>_kb / _ways / _banks /
+_latency_ns` = `cache.<level>.size_kb / .ways / .banks / .latency_ns`
+(`cache.l2.enabled` / `cache.l3.enabled` with the size keys). Both forms of
+one quantity in one node refuse naming both, as do the 1.11.106 device-scope
+pairs inside a node (33 pairs).
+
+**(3) What the system model does with each key.** Per node: the clock,
+process node, PE type and count, memory technology, the PE's datapath and
+power keys (factors, operand width, bit-serial, FPU, issue width, lanes,
+instruction memory, architectural registers, pg), `pim.mc.pg`, `noc.pg` and
+the caches. Through the one device the model builds (the first compute
+device with PEs): every other device-scope key -- placement connection,
+mapping, the MC block, the NoC levels and bridges, the memory organisation,
+timing and controller -- now takes effect as it does at device scope,
+adopted before the run-wide DRAM knobs are recorded. Run-wide:
+`memory.dram.ddr5_speed_grade`, `memory.dram.device_width` and
+`core.in_order.*` / `core.ooo.*`. A key that would reach another node with a
+different value is refused naming both nodes and the reason instead of being
+applied to both in silence: a device's `core.in_order.*` beside an in-order
+host, a device's DRAM grade beside a separate host memory of that family, two
+devices with different DDR5 grades (the multi-device model prices one DRAM
+grade per technology; a second device node is still refused by the one-device
+rule of 1.11.45). A device-scope key with no device built from a node, and
+the keys a node cannot carry -- `cache.mode / enabled / dir` and
+`cache.cacti.*` (the run's, write them at the top level), `cache.l2.count`,
+`cache.<level>.energy_nj / static_power_mw`, `cache.pg` -- refuse with the
+reason; a memory-only device refuses PE, NoC, cache and core keys.
+
+**(4) McPAT prices the node.** A device node's McPAT core profile takes its
+own `pim.pe.arch_int_regs` / `arch_fp_regs`, `lanes`, `imem_bytes` and
+operand width (the width its zsim group runs) instead of the run's; a node
+that gives none takes the top-level values, which is what it got before (the
+registers were the run's 16/16 since 1.11.97, not McPAT's built-in 32/32: the
+32/32 that remains is the dual-McPAT host of the device-scope power path,
+left as it is). A device node's L3 is priced as well as built: zsim built it
+when `l3_kb > 0` and the node's McPAT description left it out.
+
+**(5) `system.hosts[].issue_width`.** An `in_order_core` host's issue width
+(1-6), emitted as the host group's `issueWidth` and priced at the same width;
+before, only `PIMID_INORDER_WIDTH` could narrow an in-order host. Refused on
+any other host core type and outside 1-6.
+
+**(6) The NVM inner-bank timing breakdown is value-initialised.** The STT-MRAM
+extractor never assigned four of its components (the subarray output driver,
+the two in-bank H-tree legs, write-verify) and the three NVM timing structs
+left every field uninitialised, so the printed inner-bank read latency summed
+whatever the heap held: 1.11.106 printed 2.5e+180 ns on the two STT-MRAM gemv
+cells of the corpus (gate 1217B, arm E2) and 1.6 ns -- the three asserted I/O
+constants, NVSim's breakdown being absent on a cache hit -- everywhere else.
+The figure is print-only: no caller reads the inner-bank getters, so no number
+moves. The four components are now 0 and every field of the PCM, ReRAM and
+STT-MRAM inner-bank timing structs is value-initialised.
+
+**Docs.** `docs/yaml_reference.md`: the Loader Rules and Devices sections say a
+node takes every device-scope key, the flat keys are aliases and both forms
+refuse (the 1.11.106 "refused in this release" sentences are gone); the
+`system.hosts[].issue_width` row; the device NoC row no longer says a node's
+topology word is unchecked (1.11.106 checks it).
+
+**DATA IMPACT.** None on the corpus (90 system and 370 device configurations,
+the examples): every corpus node resolves to the 1.11.106 fields and the
+device-scope parse is the same code. Moves only on shapes outside it: a device
+node with an L3 (now priced); a system configuration with a top-level
+`pim.pe.operand_width` that a node does not repeat (McPAT follows the node's
+zsim width); a node's `pim.mc.pes_per_mc`, which is now honoured (1.11.106
+re-derived it in silence).
+
 ## 1.11.106 -- the configuration loader refuses what it used to replace in silence: typed string reads, the enum words, the duplicate names, the key schema, the zeroed wires; the host idle credit is measured
 
 The queue the audit rounds 7 and 8 parked for after the fleet launch, pulled

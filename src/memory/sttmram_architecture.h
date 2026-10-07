@@ -109,33 +109,36 @@ struct STTMRAMOrganization {
  * - Write: 13-27ns (MTJ switching + verify)
  */
 struct STTMRAMInnerBankTiming {
+    /* 1.11.107 (gate 1217B, E2): every member is value-initialised. The STT-MRAM
+     * extractor left four components unassigned and the printed inner-bank read
+     * latency summed uninitialised memory (2.5e+180 ns on two corpus cells). */
     // ===== READ PATH =====
 
     // Row path
-    double row_decoder_ns;        // Row address decode
-    double wordline_ns;           // WL activation
+    double row_decoder_ns = 0.0;        // Row address decode
+    double wordline_ns = 0.0;           // WL activation
 
     // Column path (READ)
-    double bitline_read_ns;       // MTJ resistance sensing
-    double sense_amp_ns;          // Amplify small signal
-    double column_mux_ns;         // Column selection
-    double subarray_output_drv_ns;
+    double bitline_read_ns = 0.0;       // MTJ resistance sensing
+    double sense_amp_ns = 0.0;          // Amplify small signal
+    double column_mux_ns = 0.0;         // Column selection
+    double subarray_output_drv_ns = 0.0;
 
     // Inner-bank datapath
-    double local_io_ns;           // Local data lines
-    double htree_horizontal_ns;   // H-tree routing
-    double htree_vertical_ns;
-    double global_io_ns;          // Bank-level I/O
-    double bank_output_drv_ns;
+    double local_io_ns = 0.0;           // Local data lines
+    double htree_horizontal_ns = 0.0;   // H-tree routing
+    double htree_vertical_ns = 0.0;
+    double global_io_ns = 0.0;          // Bank-level I/O
+    double bank_output_drv_ns = 0.0;
 
     // ===== WRITE PATH =====
 
-    double bitline_write_ns;      // Set WL + apply write voltage
-    double mtj_switching_ns;      // MTJ state switching (SLOW!)
-    double write_verify_ns;       // Read back to verify
+    double bitline_write_ns = 0.0;      // Set WL + apply write voltage
+    double mtj_switching_ns = 0.0;      // MTJ state switching (SLOW!)
+    double write_verify_ns = 0.0;       // Read back to verify
 
     // Verification
-    VerificationStatus verification_status;
+    VerificationStatus verification_status = VerificationStatus::UNKNOWN;
     std::string source;
 
     // Derived totals

@@ -1745,7 +1745,8 @@ static std::string yamlStringReq(const YAML::Node& n, const std::string& path) {
  * unknown TOP-LEVEL section was refused; a misspelt or misplaced nested key
  * (memory.technolgy, a device-scope key inside a system node) was ignored in
  * silence and the run took the default under the config's name. Every key the
- * loader reads is listed here (the census of 1.11.105, 345 paths); a key that
+ * loader reads is listed here (the census of 1.11.105, 345 paths; since 1.11.107
+ * a system.devices[] node takes every device-scope path, schemaPathsAll); a key that
  * matches none of them, and sits under no free map, refuses at load naming the
  * key and the nearest accepted sibling. Pattern segments: <level> is one of the
  * eight hierarchy words, <name> one of the six bridge names, [] a list entry.
@@ -1798,20 +1799,19 @@ static const char* kSchemaPaths[] = {
     "system.bridge.bandwidth_gbs", "system.bridge.channels", "system.bridge.latency_ns", "system.bridge.phy", "system.bridge.protocol", "system.bridge.protocol_overhead_ns", "system.bridge.uncached_ns",
     "system.cache_line_size", "system.frequency_mhz", "system.tech_node_nm",
     "system.coherence.flush_fixed_ns", "system.coherence.footprint_bytes", "system.coherence.mode", "system.coherence.writeback_bw_gbs",
-    "system.devices[].attachment", "system.devices[].cache.l1d_banks", "system.devices[].cache.l1d_kb", "system.devices[].cache.l1d_latency_ns", "system.devices[].cache.l1d_ways",
-    "system.devices[].cache.l1i_banks", "system.devices[].cache.l1i_kb", "system.devices[].cache.l1i_latency_ns", "system.devices[].cache.l1i_ways", "system.devices[].cache.l2_banks",
-    "system.devices[].cache.l2_kb", "system.devices[].cache.l2_latency_ns", "system.devices[].cache.l2_ways", "system.devices[].cache.l3_banks", "system.devices[].cache.l3_kb",
-    "system.devices[].cache.l3_latency_ns", "system.devices[].cache.l3_ways", "system.devices[].frequency_mhz", "system.devices[].is_default_mem", "system.devices[].memory.banks",
-    "system.devices[].memory.ports_per_bank", "system.devices[].memory.technology", "system.devices[].name", "system.devices[].noc.model", "system.devices[].noc.pg", "system.devices[].noc.topology",
-    "system.devices[].num_pes", "system.devices[].pe_type", "system.devices[].pim.mc.pes_per_mc", "system.devices[].pim.mc.pg", "system.devices[].pim.mc.type",
-    "system.devices[].pim.pe.access_factor", "system.devices[].pim.pe.bit_serial", "system.devices[].pim.pe.compute_factor", "system.devices[].pim.pe.energy_factor",
-    "system.devices[].pim.pe.floating_point", "system.devices[].pim.pe.fp_emulation_cycles", "system.devices[].pim.pe.issue_width", "system.devices[].pim.pe.operand_width",
-    "system.devices[].pim.pe.pg", "system.devices[].pim.pe.throughput_factor", "system.devices[].pim.placement.level", "system.devices[].tech_node_nm", "system.devices[].type",
+    /* system.devices[]: the node keys and the flat aliases. Every device-scope path in this list (pim, memory,
+     * noc, cache, core, technology) is accepted under system.devices[] as well (schemaPathsAll, 1.11.107). */
+    "system.devices[].attachment", "system.devices[].frequency_mhz", "system.devices[].is_default_mem", "system.devices[].name",
+    "system.devices[].num_pes", "system.devices[].pe_type", "system.devices[].tech_node_nm", "system.devices[].type",
+    "system.devices[].cache.l1d_banks", "system.devices[].cache.l1d_kb", "system.devices[].cache.l1d_latency_ns", "system.devices[].cache.l1d_ways",
+    "system.devices[].cache.l1i_banks", "system.devices[].cache.l1i_kb", "system.devices[].cache.l1i_latency_ns", "system.devices[].cache.l1i_ways",
+    "system.devices[].cache.l2_banks", "system.devices[].cache.l2_kb", "system.devices[].cache.l2_latency_ns", "system.devices[].cache.l2_ways",
+    "system.devices[].cache.l3_banks", "system.devices[].cache.l3_kb", "system.devices[].cache.l3_latency_ns", "system.devices[].cache.l3_ways",
     "system.devices[].workload.args", "system.devices[].workload.binary", "system.devices[].workload.env",
     "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
     "system.hosts[].cache.l1i_kb", "system.hosts[].cache.l1i_latency_ns", "system.hosts[].cache.l1i_ways", "system.hosts[].cache.l2_banks", "system.hosts[].cache.l2_kb",
     "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
-    "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz",
+    "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz", "system.hosts[].issue_width",
     "system.hosts[].mem.bandwidth_gbs", "system.hosts[].mem.capacity_gb", "system.hosts[].mem.channels", "system.hosts[].mem.technology", "system.hosts[].memory.bandwidth_mbs",
     "system.hosts[].memory.channels", "system.hosts[].memory.host_path.coherence_ns", "system.hosts[].memory.host_path.fabric_ns", "system.hosts[].memory.host_path.mc_pipeline_ns",
     "system.hosts[].memory.host_path.phy_ns", "system.hosts[].memory.latency_adder_ns", "system.hosts[].memory.technology", "system.hosts[].name", "system.hosts[].noc.hop_cycles",
@@ -1826,6 +1826,33 @@ static const char* kSchemaPaths[] = {
 };
 static const char* kSchemaFreeMaps[] = { "workload.env", "power.mcpat_overrides", "pim.mapping.map", "pim.mc.groups",
                                          "system.hosts[].workload.env", "system.devices[].workload.env" };
+/* 1.11.107 (ruling R106-7 (c), ONE VOCABULARY): a system.devices[] node takes every device-scope key -- each
+ * pim / memory / noc / cache / core / technology path above, under the node -- besides its node keys, and the two
+ * device-scope free maps are free there too. Generated once from the lists above, so a key added to device scope
+ * is a node key in the same edit. */
+static bool schemaIsDeviceScopePath(const std::string& s) {
+    for (const char* sec : {"pim.", "memory.", "noc.", "cache.", "core.", "technology."})
+        if (s.compare(0, std::strlen(sec), sec) == 0) return true;
+    return false;
+}
+static const std::vector<std::string>& schemaPathsAll() {
+    static std::vector<std::string> all;
+    if (all.empty()) {
+        for (const char* sp : kSchemaPaths) all.push_back(sp);
+        for (const char* sp : kSchemaPaths)
+            if (schemaIsDeviceScopePath(sp)) all.push_back(std::string("system.devices[].") + sp);
+    }
+    return all;
+}
+static const std::vector<std::string>& schemaFreeMapsAll() {
+    static std::vector<std::string> all;
+    if (all.empty()) {
+        for (const char* fm : kSchemaFreeMaps) all.push_back(fm);
+        for (const char* fm : kSchemaFreeMaps)
+            if (schemaIsDeviceScopePath(fm)) all.push_back(std::string("system.devices[].") + fm);
+    }
+    return all;
+}
 static bool schemaSegMatches(const std::string& pat, const std::string& seg) {
     if (pat == seg) return true;
     if (pat == "[]") return seg == "[]";
@@ -1854,7 +1881,7 @@ static std::vector<std::string> schemaSplit(const std::string& path) {
 }
 /* 0 = unknown, 1 = an accepted leaf or branch, 2 = under a free map */
 static int schemaLookup(const std::vector<std::string>& segs) {
-    for (const char* fm : kSchemaFreeMaps) {
+    for (const auto& fm : schemaFreeMapsAll()) {
         const auto f = schemaSplit(fm);
         if (segs.size() >= f.size()) {
             bool ok = true;
@@ -1862,7 +1889,7 @@ static int schemaLookup(const std::vector<std::string>& segs) {
             if (ok) return 2;
         }
     }
-    for (const char* sp : kSchemaPaths) {
+    for (const auto& sp : schemaPathsAll()) {
         const auto p = schemaSplit(sp);
         if (p.size() < segs.size()) continue;
         bool ok = true;
@@ -1884,7 +1911,7 @@ static size_t schemaEditDistance(const std::string& a, const std::string& b) {
 }
 static std::string schemaNearest(const std::vector<std::string>& parent, const std::string& key) {
     std::string best; size_t bestd = 1000000;
-    for (const char* sp : kSchemaPaths) {
+    for (const auto& sp : schemaPathsAll()) {
         const auto p = schemaSplit(sp);
         if (p.size() != parent.size() + 1) continue;
         bool ok = true;
@@ -1965,6 +1992,7 @@ struct UnifiedConfig {
     // so the timing model and the in-memory hierarchy stay consistent.
     std::string dram_device_width;
     int ddr5_speed_grade = 0;      // 1.11.66 (R8 #9): memory.dram.ddr5_speed_grade, 3200|4800|5600; 1.11.101: 0 = unset, the part record's grade
+    int mem_bank_kb = 0;           // 1.11.107: memory.bank_kb as given (0 = not given: 64 KB); the run's bank unit is g_bank_unit_bytes
 
     // Comprehensive memory characteristics (for YAML override of external models)
     // If use_yaml_memory_params is true, user provided complete params in YAML
@@ -2621,6 +2649,14 @@ struct UnifiedConfig {
          * in-order PE kept the hardcoded dual issue. */
         bool alu_bit_serial = false;
         int  inorder_issue_width = 2;
+        /* 1.11.107 (ONE VOCABULARY): the datapath fields McPAT prices per
+         * device node -- lanes, instruction memory, the architectural register
+         * files. They were read from the run configuration for every node and a
+         * node could not set them (refused since 1.11.106, ignored before); a
+         * node that gives none takes the top-level values, as before. */
+        int  pe_lanes = 1;
+        int  pe_imem_bytes = 4096;
+        int  arch_int_regs = 16, arch_fp_regs = 16;
         /* 1.11.56 (audit B055): whether this node actually DECLARED a
          * pim.mc block. pe_mc_type defaults to "simple" and can only be
          * overwritten by a key inside that block, so !pe_mc_type.empty() was
@@ -2706,6 +2742,16 @@ struct UnifiedConfig {
         // Per-node workload (optional -- inherits top-level if empty)
         std::string workload_binary;
         std::vector<std::string> workload_args;
+
+        /* 1.11.107 (ONE VOCABULARY): where the node sits in the YAML
+         * ("system.devices[0]"; empty for a synthesized node); for a device node
+         * its resolved device configuration (the top-level configuration with
+         * the node's own device-scope blocks read onto it, the node keys
+         * starting at this table's defaults) and the keys the node gave, by
+         * canonical path, for the cross-node checks (adoptSystemDeviceNodes). */
+        std::string cfg_path;
+        std::shared_ptr<const UnifiedConfig> dev;
+        std::map<std::string, std::string> dev_keys;
 
         // Computed at config time
         int core_start_idx = 0;        // first core index in global ZSim array
@@ -7026,6 +7072,10 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
     dev.l2_kb = config.enable_l2 ? config.l2_size_kb : 0;
     dev.l3_kb = config.enable_l3 ? config.l3_size_kb : 0;
     dev.noc_topology = config.noc_topology;
+    dev.pe_lanes = config.pe_lanes;            // 1.11.107: the per-node McPAT fields, as the run's
+    dev.pe_imem_bytes = config.pe_imem_bytes;
+    dev.arch_int_regs = config.arch_int_regs;
+    dev.arch_fp_regs = config.arch_fp_regs;
     config.system_nodes.push_back(dev);
 }
 
@@ -12285,6 +12335,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 mcfg, config, config.mcpat_overrides,
                 getDRAMGenClass(node.memory_tech),
                 node.frequency_mhz, node.name + ": ");
+            /* 1.11.107 (ONE VOCABULARY): the node's own architectural register
+             * files (pim.pe.arch_int_regs / arch_fp_regs in the node, else the
+             * top-level values); the call above wrote the run's. Equal for a
+             * node that gives neither. */
+            mcfg.arch_int_regs = node.arch_int_regs; mcfg.arch_fp_regs = node.arch_fp_regs;
         } else if (node.role == UnifiedConfig::SystemNode::HOST) {
             /* 1.11.49 (gate 1159I Y2, completing L119): the corner block above
              * is DEVICE-only, so a system-scope HOST node kept device_type=0
@@ -12341,8 +12396,13 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         /* 1.9.32: reference class follows the node's role -- a device node
          * sits on the memory die, a host node is a server part. */
         mcfg.device_scope   = (node.role == UnifiedConfig::SystemNode::DEVICE);
-        mcfg.pe_lanes       = config.pe_lanes;
-        mcfg.pe_element_bits= config.alu_operand_width;   // ONE width, shared
+        /* 1.11.107 (ONE VOCABULARY): a DEVICE node's datapath is its own -- the
+         * width its zsim group runs (node.alu_operand_width; this site used to
+         * price the run's pim.pe.operand_width), its lanes and its instruction
+         * memory. A host keeps the run's, as before. */
+        const bool dev_datapath = (node.role == UnifiedConfig::SystemNode::DEVICE);
+        mcfg.pe_lanes       = dev_datapath ? node.pe_lanes : config.pe_lanes;
+        mcfg.pe_element_bits= dev_datapath ? node.alu_operand_width : config.alu_operand_width;   // ONE width, shared
         /* 1.11.52 (audit C031): the NODE's flag, not the global one. The FPU
          * REMOVAL above keys on node.pe_has_fpu while this fed the ALU
          * profile's FPU emission (num_fpus = pe_has_fp ? lanes : 0, and
@@ -12354,7 +12414,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         mcfg.pe_has_fp      = node.pe_has_fpu;
         /* 1.11.51 (L215/L223): node-scoped emulation cost for the energy fold. */
         mcfg.fp_emul_cycles = (int)node.pe_fp_emul_cycles;
-        mcfg.pe_imem_bytes  = config.pe_imem_bytes;
+        mcfg.pe_imem_bytes  = dev_datapath ? node.pe_imem_bytes : config.pe_imem_bytes;
 
         // Apply overrides
         mcfg.pipeline_depth = ov_get_int("pipeline_depth", mcfg.pipeline_depth);
@@ -15250,6 +15310,1331 @@ void printVersion() {
     std::cout << "Build date: " << __DATE__ << " " << __TIME__ << std::endl;
 }
 
+/* 1.11.107 (ruling R106-7 (c), user 2026-10-05: ONE VOCABULARY for a system
+ * device node). The device-scope blocks -- pim, technology, core, cache, noc,
+ * memory -- are read by the three functions below: for the top level of a
+ * configuration (pfx "", onto the run's configuration) and for a
+ * system.devices[] node (pfx "system.devices[<i>].", onto the node's own copy
+ * of the configuration). A key means the same thing in both places, is read by
+ * the same code and is refused with the same message, the node's path in it.
+ * The code is the top-level parse moved here unchanged except for the path
+ * prefix in its messages and the places marked 1.11.107. Four are where a node
+ * differs: memory.bank_kb does not set the run's bank unit from a node (the
+ * system adoption applies the built device's), the characterization-cache words
+ * (cache.mode / enabled / dir) are refused in a node before this parse, the
+ * partial-override warnings speak only of a node's own keys, and noc.clock_mhz
+ * in a node names the node's clock. Four change nothing at the top level and
+ * make a node's copy behave: noc.model does not overwrite a level named by
+ * noc.levels.<level>.model (none is named yet at the top level), a node's
+ * pim.mc.groups replace the inherited list (empty at the top level), the
+ * placement node is chosen by construction instead of by YAML assignment, and
+ * the duplicate power.temperature_c/_k reads in the memory block are gone (the
+ * unconditional reads before it set the same value). The top level keeps its
+ * order: the pim block, then system:, then technology / core / cache / noc,
+ * then the temperature keys, then memory. Each returns 0, or 1 where the
+ * inline parse returned 1 from main. */
+struct DeviceParseScope {
+    std::string pfx;                     // "" at the top level; "system.devices[<i>]." in a node
+    bool node = false;
+    std::string* cache_mode = nullptr;   // the run's cache.mode / cache.enabled word (top level only)
+    std::string* cache_dir = nullptr;    // the run's cache.dir (top level only)
+};
+
+static int parseDevicePimBlock(YAML::Node root, UnifiedConfig& config, const DeviceParseScope& sc) {
+    if (root["pim"]) {
+        if (root["pim"]["pe"]) {
+            config.num_pes = yamlInt(root["pim"]["pe"]["count"], config.num_pes, sc.pfx + "pim.pe.count");
+            if (root["pim"]["pe"]["core_type"])
+                config.pe_type = yamlStringReq(root["pim"]["pe"]["core_type"], sc.pfx + "pim.pe.core_type");
+            else
+                config.pe_type = yamlString(root["pim"]["pe"]["type"], config.pe_type, sc.pfx + "pim.pe.type");
+            config.pg_pe = yamlBool(root["pim"]["pe"]["pg"], config.pg_pe, sc.pfx + "pim.pe.pg");  // 1.11.8
+            /* 1.11.56 (audit B046): the SAME normaliser the system-node
+             * path uses. This block used to open-code its own alias list
+             * and its own whitelist, and the two had already drifted --
+             * "compute_unit_pe" was a valid element name in system scope
+             * and a fatal config error in device scope. The old comment
+             * said both must be updated together, which is exactly the
+             * job of one function. normalizeCoreTypeName() rejects
+             * unknown names itself, with the same message. */
+            config.pe_type = normalizeCoreTypeName(config.pe_type);
+            // PE frequency (alternative to system.frequency_mhz)
+            if (root["pim"]["pe"]["frequency_mhz"])
+                config.frequency_mhz = yamlInt(root["pim"]["pe"]["frequency_mhz"],
+                                               config.frequency_mhz, sc.pfx + "pim.pe.frequency_mhz");
+
+            /* 1.9.32: the compute unit's datapath. Every configuration
+             * written before this release omits all four and gets the
+             * documented defaults, so no existing config changes
+             * meaning. */
+            config.pe_lanes = yamlInt(root["pim"]["pe"]["lanes"], config.pe_lanes, sc.pfx + "pim.pe.lanes");
+            config.pe_has_fp = yamlBool(root["pim"]["pe"]["floating_point"], config.pe_has_fp, sc.pfx + "pim.pe.floating_point");
+            config.pe_fp_emul_cycles = yamlU32(root["pim"]["pe"]["fp_emulation_cycles"],
+                                               config.pe_fp_emul_cycles,
+                                               sc.pfx + "pim.pe.fp_emulation_cycles");                     /* 1.11.47 (L203): null_core has NO timing model, so a
+             * soft-float timing charge cannot mean anything there.
+             * Refused rather than silently accepted-and-ignored. */
+            if (!config.pe_has_fp && config.pe_type == "null_core") {
+                std::cerr << "ERROR: " << sc.pfx << "pim.pe.floating_point=false with "
+                             "pe.type=null_core -- the null core has no "
+                             "timing model to charge FP emulation on. "
+                             "Use a timing core type." << std::endl;
+                return 1;
+            }
+            // 1.11.11
+            if (root["pim"]["pe"]["element_bits"]) {
+                std::cerr << "Error: " << sc.pfx << "pim.pe.element_bits was withdrawn. The "
+                          << "element's datapath width is " << sc.pfx << "pim.pe.operand_width, "
+                          << "which the timing model already reads; a second "
+                          << "name for it let the two halves disagree.\n";
+                return 1;
+            }
+            config.pe_imem_bytes =
+                yamlInt(root["pim"]["pe"]["imem_bytes"], config.pe_imem_bytes, sc.pfx + "pim.pe.imem_bytes");
+            if (config.pe_lanes < 1) {
+                std::cerr << "Error: " << sc.pfx << "pim.pe.lanes must be at least 1 (got "
+                          << config.pe_lanes << ").\n";
+                return 1;
+            }
+            // ALU scaling factors
+            config.alu_compute_factor = yamlDouble(root["pim"]["pe"]["compute_factor"], config.alu_compute_factor, sc.pfx + "pim.pe.compute_factor");
+            config.alu_access_factor = yamlDouble(root["pim"]["pe"]["access_factor"], config.alu_access_factor, sc.pfx + "pim.pe.access_factor");
+            config.alu_throughput_factor = yamlDouble(root["pim"]["pe"]["throughput_factor"], config.alu_throughput_factor, sc.pfx + "pim.pe.throughput_factor");
+            config.alu_operand_width = yamlInt(root["pim"]["pe"]["operand_width"], config.alu_operand_width, sc.pfx + "pim.pe.operand_width");
+            /* 1.9.40: validated now that it reaches the power model too.
+             * It was previously read only by the bit-serial cycle
+             * charge, which clamps with max(w,1), so a zero was merely
+             * inert; it now sizes register files and buses, where a
+             * zero-bit array aborts the array model outright. */
+            if (config.alu_operand_width < 1) {
+                std::cerr << "Error: " << sc.pfx << "pim.pe.operand_width must be at least 1 (got "
+                          << config.alu_operand_width << ").\n";
+                return 1;
+            }
+            config.alu_bit_serial = yamlBool(root["pim"]["pe"]["bit_serial"], config.alu_bit_serial, sc.pfx + "pim.pe.bit_serial");
+            config.alu_energy_factor = yamlDouble(root["pim"]["pe"]["energy_factor"], config.alu_energy_factor, sc.pfx + "pim.pe.energy_factor");
+            // In-order PE issue width (in_order_core only; default 2)
+            config.inorder_issue_width = yamlInt(root["pim"]["pe"]["issue_width"], config.inorder_issue_width, sc.pfx + "pim.pe.issue_width");
+            /* 1.11.94 (sweep-94 row 20 (a)): architectural register counts as knobs.
+             * Default 32/32 is today's value; the simulated guest ISA is x86-64
+             * (16 + 16), which R5 makes the default. A non-default prints that
+             * the timing model executes x86-64 regardless. */
+            if (root["pim"]["pe"]["arch_int_regs"]) {
+                config.arch_int_regs = yamlInt(root["pim"]["pe"]["arch_int_regs"], 32, sc.pfx + "pim.pe.arch_int_regs");
+                if (config.arch_int_regs < 1) { std::cerr << "Error: " << sc.pfx << "pim.pe.arch_int_regs must be >= 1" << std::endl; return 1; }
+                std::cout << "  [power] architectural integer registers " << config.arch_int_regs << " (" << sc.pfx << "pim.pe.arch_int_regs, user's choice; the timing model executes x86-64 regardless)" << std::endl;
+            }
+            if (root["pim"]["pe"]["arch_fp_regs"]) {
+                config.arch_fp_regs = yamlInt(root["pim"]["pe"]["arch_fp_regs"], 32, sc.pfx + "pim.pe.arch_fp_regs");
+                if (config.arch_fp_regs < 1) { std::cerr << "Error: " << sc.pfx << "pim.pe.arch_fp_regs must be >= 1" << std::endl; return 1; }
+                std::cout << "  [power] architectural FP registers " << config.arch_fp_regs << " (" << sc.pfx << "pim.pe.arch_fp_regs, user's choice; the timing model executes x86-64 regardless)" << std::endl;
+            }
+
+            /* 1.9.40: the two halves must agree about what the element
+             * is. Both checks below are placed AFTER the scaling factors
+             * are parsed, because each compares a power-model
+             * description against a timing-model one. */
+
+            /* An element described as wide in power but scalar in
+             * timing. lanes replicates the arithmetic, the register file
+             * and the result bus in the power model; the timing model
+             * expresses the same width through throughput_factor, which
+             * divides the per-instruction cost. Declaring lanes without
+             * throughput_factor gives an element that PAYS for W lanes
+             * and RUNS like one. That is a legitimate thing to model
+             * deliberately (a wide datapath the code fails to use), so
+             * this warns rather than refuses -- but silently is exactly
+             * how the previous defects happened. */
+            if (config.pe_lanes > 1 && config.alu_throughput_factor <= 1.0) {
+                std::cerr << "[config] WARNING: " << sc.pfx << "pim.pe.lanes=" << config.pe_lanes
+                          << " widens the POWER description (one arithmetic unit "
+                          << "and register file per lane) but throughput_factor is "
+                          << config.alu_throughput_factor << ", so the TIMING model "
+                          << "still charges a scalar element. The result is an "
+                          << "element that pays for " << config.pe_lanes
+                          << " lanes and runs like one. Set throughput_factor to "
+                          << "match unless the serialisation is intended.\n";
+            }
+
+            /* An element described without floating point, running
+             * floating-point kernels. Removing the FPU from the power
+             * description does NOT make the timing model emulate
+             * floating point in software, which is what a real part
+             * lacking an FPU would have to do -- tens to hundreds of
+             * operations per operation. So this is honest for an
+             * integer kernel and not honest for a floating-point one,
+             * and the model cannot tell which it is about to run. */
+            if (!config.pe_has_fp) {
+                std::cerr << "[config] " << sc.pfx << "pim.pe.floating_point=false: the element "
+                          << "has no FP unit. Since 1.11.10 the timing model CAN "
+                          << "see FP-class instructions, so the run will report "
+                          << "how many executed";
+                if (config.pe_fp_emul_cycles > 0) {
+                    std::cerr << " and charge " << config.pe_fp_emul_cycles
+                              << " cycles each as soft-float emulation.\n";
+                } else {
+                    std::cerr << ", but charge nothing for them "
+                              << "(" << sc.pfx << "pim.pe.fp_emulation_cycles=0). Honest for a "
+                              << "kernel with no FP; for one that has FP, set the "
+                              << "knob or the element runs code it has no unit "
+                              << "for at full speed.\n";
+                }
+            }
+        }
+        // placement can live either at pim.placement (older flat form)
+        // or pim.pe.placement (newer nested form, used by README and
+        // YAML_REFERENCE examples). Accept both; nested overrides flat.
+        /* 1.11.107: chosen by construction, not by assigning one YAML node to
+         * another (yaml-cpp's Node assignment rewrites the node it refers to). */
+        const bool nested_placement = root["pim"]["pe"] && root["pim"]["pe"]["placement"];
+        const YAML::Node placement_node = nested_placement ? root["pim"]["pe"]["placement"]
+                                                           : root["pim"]["placement"];
+        const std::string placement_path = sc.pfx + (nested_placement ? "pim.pe.placement" : "pim.placement");   // 1.11.90: for messages
+        if (placement_node) {
+            config.placement_level = yamlString(placement_node["level"], config.placement_level, placement_path + ".level");
+            // Connection mode: shared_io (default) or separate_endpoints
+            if (placement_node["connection"]) {
+                std::string conn = yamlStringReq(placement_node["connection"], placement_path + ".connection");
+                /* 1.11.85 (R6-20): the else-branch below used to
+                 * absorb EVERY unrecognised value into shared_io
+                 * without a word, so `separate_endpoint` (singular)
+                 * silently ran the opposite connectivity. */
+                if (conn != "separate_endpoints" && conn != "shared_io") {
+                    std::cerr << "Error: " << sc.pfx << "pim.placement.connection '"
+                              << conn << "' is not a connectivity mode"
+                                 " this build has. Valid values are"
+                                 " shared_io (the PE shares the memory"
+                                 " organisation's network interface)"
+                                 " and separate_endpoints (the PE has"
+                                 " its own). An unrecognised value used"
+                                 " to fall through to shared_io in"
+                                 " silence." << std::endl;
+                    std::exit(2);
+                }
+                if (conn == "separate_endpoints")
+                    config.pe_mem_connection = UnifiedConfig::PEMemConnectionMode::SEPARATE_ENDPOINTS;
+                else
+                    config.pe_mem_connection = UnifiedConfig::PEMemConnectionMode::SHARED_IO;
+            }
+            config.local_link_latency = yamlInt(placement_node["local_link_latency"], config.local_link_latency, placement_path + ".local_link_latency");
+        }
+        // PE-to-memory-org mapping (M:N connectivity)
+        if (root["pim"]["mapping"]) {
+            auto mapping = root["pim"]["mapping"];
+            std::string mode = yamlString(mapping["mode"], "uniform", sc.pfx + "pim.mapping.mode");
+            if (mode != "uniform" && mode != "explicit")   // 1.11.90
+                refuseEnum(sc.pfx + "pim.mapping.mode", mode, "uniform, explicit",
+                           "leave the PE-to-memory map at its default");
+            if (mode == "uniform") {
+                int pes_per_mo = yamlInt(mapping["pes_per_mem_org"], 0, sc.pfx + "pim.mapping.pes_per_mem_org");
+                int mos_per_pe = yamlInt(mapping["mem_orgs_per_pe"], 0, sc.pfx + "pim.mapping.mem_orgs_per_pe");
+                // Defer actual map generation to autoGeneratePEMemMap()
+                // Store ratios temporarily in pe_mem_map as empty with sentinel
+                if (pes_per_mo > 0) {
+                    // M:1 -- multiple PEs per mem org
+                    // We'll build the map after we know total_mem_orgs
+                    config.pe_mem_map.clear();
+                    // Use negative pe_id as sentinel: -pes_per_mo
+                    config.pe_mem_map.push_back({-pes_per_mo, {}});
+                } else if (mos_per_pe > 0) {
+                    // 1:N -- one PE manages multiple mem orgs
+                    config.pe_mem_map.clear();
+                    config.pe_mem_map.push_back({-1, std::vector<int>(mos_per_pe, -1)});
+                }
+            } else if (mode == "explicit") {
+                config.pe_mem_map.clear();
+                if (mapping["map"]) {
+                    for (const auto& entry : mapping["map"]) {
+                        UnifiedConfig::PEMemMapping m;
+                        m.pe_id = entry["pe"].as<int>();
+                        if (entry["mem_orgs"].IsSequence()) {
+                            for (const auto& mo : entry["mem_orgs"])
+                                m.mem_org_ids.push_back(mo.as<int>());
+                        }
+                        config.pe_mem_map.push_back(m);
+                    }
+                }
+            }
+        }
+        // PE-MI distributed memory interface config
+        if (root["pim"]["mc"]) {
+            config.pg_mc = yamlBool(root["pim"]["mc"]["pg"], config.pg_mc, sc.pfx + "pim.mc.pg");  // 1.11.8
+            config.pe_mc_enabled = true;
+            auto mc = root["pim"]["mc"];
+            config.mc_clock_gear = yamlInt(mc["clock_gear"], config.mc_clock_gear, sc.pfx + "pim.mc.clock_gear");   // 1.11.96 (14c)
+            config.mc_epoch_replay = yamlBool(mc["epoch_replay"], config.mc_epoch_replay, sc.pfx + "pim.mc.epoch_replay");   // 1.11.98 (4c)
+            if (config.mc_clock_gear != 1 && config.mc_clock_gear != 2) {
+                std::cerr << "Error: " << sc.pfx << "pim.mc.clock_gear = " << config.mc_clock_gear << "; the controller clock is the DRAM preset's CK x 1 (on-die) or x 2 (a gear-2 controller)." << std::endl;
+                return 1;
+            }
+            config.pe_mc_type = yamlString(mc["type"], config.pe_mc_type, sc.pfx + "pim.mc.type");
+            /* 1.9.35: the key reads as a choice but there is exactly one
+             * implementation. The old SimplePEMemoryController and
+             * MD1PEMemoryController were merged, and M/D/1 queuing is
+             * always active, so any value here yields the same model.
+             * Say so rather than letting a config claim a mode it did
+             * not get. */
+            if (config.pe_mc_type != "simple" && !config.pe_mc_type.empty()) {
+                std::cout << "  [config] WARNING: " << sc.pfx << "pim.mc.type = '"
+                          << config.pe_mc_type << "' is accepted but has no "
+                             "separate implementation; the PE memory interface "
+                             "always uses the merged coverage-routing + "
+                             "hierarchy-traversal + M/D/1 model." << std::endl;
+            }
+            if (mc["pes_per_mc"]) {
+                config.pes_per_mc = mc["pes_per_mc"].as<int>();
+                config.pes_per_mc_user_set = true;
+            }
+            if (mc["local_latency"])
+                config.pe_mc_local_latency = mc["local_latency"].as<int>();
+            if (mc["bandwidth_mbs"])
+                config.pe_mc_bandwidth_mbs = mc["bandwidth_mbs"].as<int>();
+
+            // MC placement: with_core (default) or standalone NoC endpoint
+            if (mc["placement"]) {
+                std::string pl = yamlStringReq(mc["placement"], sc.pfx + "pim.mc.placement");
+                if (pl != "standalone" && pl != "with_core")   // 1.11.90
+                    refuseEnum(sc.pfx + "pim.mc.placement", pl, "with_core, standalone",
+                               "run with_core");
+                config.mc_standalone = (pl == "standalone");
+            }
+
+            // Per-group overrides
+            if (mc["groups"]) {
+                config.pe_mc_group_overrides.clear();   // 1.11.107: a node's list replaces the top-level one it inherits (empty here at the top level)
+                for (const auto& grp : mc["groups"]) {
+                    UnifiedConfig::PEMCGroupOverride ov;
+                    if (grp["id"].IsSequence()) {
+                        for (const auto& id : grp["id"])
+                            ov.ids.push_back(id.as<int>());
+                    } else if (grp["id"]) {
+                        ov.ids.push_back(grp["id"].as<int>());
+                    }
+                    /* 1.11.57 (latent B032): the per-group `type` key
+                     * was parsed into a field with no reader -- the
+                     * per-group emitter writes bandwidthMBs and
+                     * localLatency and nothing else -- so a config
+                     * that gave one MC group a different controller
+                     * got the same controller as every other group,
+                     * silently. The GLOBAL pim.mc.type at least warns
+                     * that it has no separate implementation (see the
+                     * 1.9.35 note above); the per-group copy did not
+                     * even do that. Same warning here, in the same
+                     * terms, rather than a field that stores an
+                     * answer nobody asks for. */
+                    if (grp["type"]) {
+                        std::string gt = yamlStringReq(grp["type"], sc.pfx + "pim.mc.groups[].type");
+                        if (gt != "simple" && !gt.empty())
+                            std::cout << "  [config] WARNING: " << sc.pfx
+                                      << "pim.mc.groups[].type = '" << gt
+                                      << "' is accepted but has no "
+                                         "separate implementation, and "
+                                         "nothing in the emitted per-"
+                                         "group block carries it. Every "
+                                         "group uses the merged "
+                                         "coverage-routing + hierarchy-"
+                                         "traversal + M/D/1 model."
+                                      << std::endl;
+                    }
+                    if (grp["local_latency"])
+                        ov.local_latency = grp["local_latency"].as<int>();
+                    if (grp["bandwidth_mbs"])
+                        ov.bandwidth_mbs = grp["bandwidth_mbs"].as<int>();
+                    config.pe_mc_group_overrides.push_back(ov);
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config, const DeviceParseScope& sc) {
+    // Alternative technology section (technology.node_nm)
+    if (root["technology"] && root["technology"]["node_nm"]) {
+        config.tech_node_nm = root["technology"]["node_nm"].as<int>();
+    }
+
+    /* 1.11.97: core part record overrides (params/core/default.yaml
+     * holds the sourced defaults; applyCoreRecord() fills what is
+     * absent here and range-checks what is present). */
+    if (root["core"]) {
+        const YAML::Node c = root["core"];
+        if (c["in_order"]) {
+            config.core_inorder_mispredict_penalty = yamlInt(c["in_order"]["mispredict_penalty_cycles"], config.core_inorder_mispredict_penalty, sc.pfx + "core.in_order.mispredict_penalty_cycles");
+            config.core_inorder_resteer_penalty = yamlInt(c["in_order"]["resteer_penalty_cycles"], config.core_inorder_resteer_penalty, sc.pfx + "core.in_order.resteer_penalty_cycles");
+        }
+        if (c["ooo"]) {
+            config.core_ooo_mispredict_penalty = yamlInt(c["ooo"]["mispredict_penalty_cycles"], config.core_ooo_mispredict_penalty, sc.pfx + "core.ooo.mispredict_penalty_cycles");
+            config.core_ooo_fetch_width_bytes = yamlInt(c["ooo"]["fetch_width_bytes"], config.core_ooo_fetch_width_bytes, sc.pfx + "core.ooo.fetch_width_bytes");
+        }
+    }
+
+    // Load cache configuration
+    if (root["cache"]) {
+        // Characterization-cache warehouse settings (mode/dir). These feed
+        // cache::configure() after parsing; precedence is resolved there.
+        // (1.11.107: the run's words; a system node refuses these keys before this parse.)
+        if (root["cache"]["mode"]) {
+            const std::string w = yamlString(root["cache"]["mode"], "", sc.pfx + "cache.mode");
+            if (sc.cache_mode) *sc.cache_mode = w;
+        } else if (root["cache"]["enabled"] &&
+                   !yamlBool(root["cache"]["enabled"], true, sc.pfx + "cache.enabled")) {
+            // cache.enabled: false -> treat as mode "off" (only if mode unset)
+            if (sc.cache_mode) *sc.cache_mode = "off";
+        }
+        if (root["cache"]["dir"]) {
+            const std::string w = yamlString(root["cache"]["dir"], "", sc.pfx + "cache.dir");
+            if (sc.cache_dir) *sc.cache_dir = w;
+        }
+        if (root["cache"]["l1d"]) {
+            config.l1d_size_kb = yamlInt(root["cache"]["l1d"]["size_kb"], config.l1d_size_kb, sc.pfx + "cache.l1d.size_kb");
+            config.l1d_ways = yamlInt(root["cache"]["l1d"]["ways"], config.l1d_ways, sc.pfx + "cache.l1d.ways");
+            config.l1d_banks = yamlInt(root["cache"]["l1d"]["banks"], config.l1d_banks, sc.pfx + "cache.l1d.banks");   // 1.11.95
+        }
+        if (root["cache"]["l1i"]) {
+            config.l1i_size_kb = yamlInt(root["cache"]["l1i"]["size_kb"], config.l1i_size_kb, sc.pfx + "cache.l1i.size_kb");
+            config.l1i_ways = yamlInt(root["cache"]["l1i"]["ways"], config.l1i_ways, sc.pfx + "cache.l1i.ways");
+            config.l1i_banks = yamlInt(root["cache"]["l1i"]["banks"], config.l1i_banks, sc.pfx + "cache.l1i.banks");   // 1.11.95
+        }
+        if (root["cache"]["pg"])   // 1.11.94 (sweep-94 row 20 (a)): shared caches gate on their own flag; 1.11.106 (census N1): read outside the l2 block
+            config.pg_cache = yamlBool(root["cache"]["pg"], false, sc.pfx + "cache.pg") ? 1 : 0;
+        if (root["cache"]["l2"]) {
+            config.enable_l2 = yamlBool(root["cache"]["l2"]["enabled"], config.enable_l2, sc.pfx + "cache.l2.enabled");
+            config.l2_size_kb = yamlInt(root["cache"]["l2"]["size_kb"], config.l2_size_kb, sc.pfx + "cache.l2.size_kb");
+            config.l2_ways = yamlInt(root["cache"]["l2"]["ways"], config.l2_ways, sc.pfx + "cache.l2.ways");
+            config.l2_banks = yamlInt(root["cache"]["l2"]["banks"], config.l2_banks, sc.pfx + "cache.l2.banks");   // 1.11.95
+            config.l2_count = yamlInt(root["cache"]["l2"]["count"], config.l2_count, sc.pfx + "cache.l2.count");
+        }
+        if (root["cache"]["l3"]) {
+            config.enable_l3 = yamlBool(root["cache"]["l3"]["enabled"], config.enable_l3, sc.pfx + "cache.l3.enabled");
+            config.l3_size_kb = yamlInt(root["cache"]["l3"]["size_kb"], config.l3_size_kb, sc.pfx + "cache.l3.size_kb");
+            config.l3_ways = yamlInt(root["cache"]["l3"]["ways"], config.l3_ways, sc.pfx + "cache.l3.ways");
+            config.l3_banks = yamlInt(root["cache"]["l3"]["banks"], config.l3_banks, sc.pfx + "cache.l3.banks");   // 1.11.95
+        }
+
+        // Parse cache timing/energy/power overrides
+        if (root["cache"]["l1d"]) {
+            auto n = root["cache"]["l1d"];
+            if (n["latency_ns"]) config.l1d_params.latency_ns = n["latency_ns"].as<double>();
+            if (n["energy_nj"])  config.l1d_params.energy_nj = n["energy_nj"].as<double>();
+            if (n["static_power_mw"]) config.l1d_params.static_power_mw = n["static_power_mw"].as<double>();
+        }
+        if (root["cache"]["l1i"]) {
+            auto n = root["cache"]["l1i"];
+            if (n["latency_ns"]) config.l1i_params.latency_ns = n["latency_ns"].as<double>();
+            if (n["energy_nj"])  config.l1i_params.energy_nj = n["energy_nj"].as<double>();
+            if (n["static_power_mw"]) config.l1i_params.static_power_mw = n["static_power_mw"].as<double>();
+        }
+        if (root["cache"]["l2"]) {
+            auto n = root["cache"]["l2"];
+            if (n["latency_ns"]) config.l2_params.latency_ns = n["latency_ns"].as<double>();
+            if (n["energy_nj"])  config.l2_params.energy_nj = n["energy_nj"].as<double>();
+            if (n["static_power_mw"]) config.l2_params.static_power_mw = n["static_power_mw"].as<double>();
+        }
+        if (root["cache"]["l3"]) {
+            auto n = root["cache"]["l3"];
+            if (n["latency_ns"]) config.l3_params.latency_ns = n["latency_ns"].as<double>();
+            if (n["energy_nj"])  config.l3_params.energy_nj = n["energy_nj"].as<double>();
+            if (n["static_power_mw"]) config.l3_params.static_power_mw = n["static_power_mw"].as<double>();
+        }
+
+        // Check if user provided complete overrides for all active cache levels
+        config.use_yaml_cache_params =
+            config.l1d_params.isComplete() &&
+            config.l1i_params.isComplete() &&
+            (!config.enable_l2 || config.l2_params.isComplete()) &&
+            (!config.enable_l3 || config.l3_params.isComplete());
+
+        /* 1.11.107: in a system node cache.<level>.latency_ns is the node's own
+         * latency (the flat <level>_latency_ns); energy_nj / static_power_mw
+         * are refused there, so this device-scope warning is not a node's. */
+        if (!config.use_yaml_cache_params && !sc.node) {
+            // Check if any partial params were provided
+            bool any_provided =
+                config.l1d_params.latency_ns > 0 || config.l1d_params.energy_nj > 0 || config.l1d_params.static_power_mw > 0 ||
+                config.l1i_params.latency_ns > 0 || config.l1i_params.energy_nj > 0 || config.l1i_params.static_power_mw > 0 ||
+                config.l2_params.latency_ns > 0 || config.l2_params.energy_nj > 0 || config.l2_params.static_power_mw > 0 ||
+                config.l3_params.latency_ns > 0 || config.l3_params.energy_nj > 0 || config.l3_params.static_power_mw > 0;
+            if (any_provided) {
+                std::cerr << "Warning: Partial YAML cache params provided.\n"
+                          << "To override CACTI, provide ALL 3 params (latency_ns, energy_nj, static_power_mw)\n"
+                          << "for ALL active cache levels (l1d, l1i"
+                          << (config.enable_l2 ? ", l2" : "")
+                          << (config.enable_l3 ? ", l3" : "") << ").\n"
+                          << "Using CACTI-derived cache latencies instead.\n";
+                std::cerr.flush();
+            }
+        }
+    }
+
+    // Load NoC configuration
+    if (root["noc"]) {
+        config.pg_noc = yamlBool(root["noc"]["pg"], config.pg_noc, sc.pfx + "noc.pg");  // 1.11.8
+        if (root["noc"]["topology"]) config.noc_topology_user_set = true;
+        config.noc_topology = yamlString(root["noc"]["topology"], config.noc_topology, sc.pfx + "noc.topology");
+        std::transform(config.noc_topology.begin(), config.noc_topology.end(),
+                       config.noc_topology.begin(), ::toupper);
+        if (config.noc_topology == "MESH") config.noc_topology = "MESH_2D";   // 1.11.106: the documented alias
+        {   /* 1.11.106 (census S3): one accepted list for every family. A DRAM device
+             * applies its own rule below (the tree, the in-die fabric of 1.11.103, the
+             * refusals); an SRAM/NVM device used to run an unknown word as a 1 x N mesh
+             * with XY routing in silence. */
+            static const std::set<std::string> kTopos = { "MESH_2D", "TORUS_2D", "RING", "CROSSBAR", "FAT_TREE", "BUS", "H_TREE", "CUSTOM" };
+            if (config.noc_topology_user_set && !kTopos.count(config.noc_topology))
+                refuseEnum(sc.pfx + "noc.topology", config.noc_topology,
+                           "MESH_2D (alias MESH), TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM",
+                           "run a 1 x N mesh with XY routing on an SRAM/NVM device");
+        }
+        config.noc_router_latency = yamlInt(root["noc"]["router_latency"], config.noc_router_latency, sc.pfx + "noc.router_latency");
+        config.noc_link_latency = yamlInt(root["noc"]["link_latency"], config.noc_link_latency, sc.pfx + "noc.link_latency");
+
+        // Parse noc.model. The lineup is exactly TWO models -- no aliases:
+        //   "analytical" -> closed-form hop-count + M/D/1 + MLP (see noc.mlp)
+        //   "detailed"   -> cycle-accurate Garnet
+        if (root["noc"]["model"]) {
+            std::string noc_model = yamlStringReq(root["noc"]["model"], sc.pfx + "noc.model");
+            if (noc_model == "detailed") {
+                config.noc_cycle_accurate = true;
+                config.noc_mlp_model = 0;
+            } else if (noc_model == "analytical") {
+                config.noc_cycle_accurate = false;
+                config.noc_mlp_model = 1;
+            } else {
+                std::cerr << "Error: unknown " << sc.pfx << "noc.model '" << noc_model
+                          << "'. Valid: analytical | detailed" << std::endl;
+                return 1;
+            }
+            // Propagate to per-level network models ("simple" is the
+            // INTERNAL name of the per-level analytical path).
+            /* 1.11.107: not over a level the configuration named with
+             * noc.levels.<level>.model (1.11.56 B058's rule, which the system
+             * adoption applies). At the top level no level is named yet --
+             * noc.levels is read below -- so nothing changes there; a node
+             * keeps a top-level noc.levels.<level>.model it inherits. */
+            std::string effective_model = noc_model;
+            if (effective_model == "analytical")
+                effective_model = "simple";
+            for (int i = 0; i < 7; ++i) {
+                if (!config.network_level_model_user_set[i])
+                    config.network_level_model[i] = effective_model;
+            }
+        }
+        // noc.mlp: M, the PE outstanding-access window for the 'mlp' model.
+        if (root["noc"]["mlp"]) {
+            config.noc_mlp_degree = yamlInt(root["noc"]["mlp"], config.noc_mlp_degree, sc.pfx + "noc.mlp");
+            if (config.noc_mlp_degree < 1) {   // 1.11.106 (census N3): used to be clamped to 1 in silence
+                std::cerr << "[config] FATAL: " << sc.pfx << "noc.mlp = " << config.noc_mlp_degree << " is not a positive outstanding-access window." << std::endl;
+                std::exit(2);
+            }
+        }
+        // (the legacy noc.cycle_accurate boolean key was removed --
+        //  noc.model: analytical | detailed is the only selector)
+        config.noc_routing = yamlString(root["noc"]["routing"], config.noc_routing, sc.pfx + "noc.routing");
+        /* 1.11.85 (R6-20): an unknown routing algorithm was accepted
+         * and then ignored, the run falling back to whatever the
+         * topology derives. Empty stays legal and means "derive". */
+        if (!config.noc_routing.empty()) {
+            static const char* kRouting[] = {"XY", "DOR", "TABLE", "CUSTOM",
+                                             "SHORTEST", "NCA", "DIRECT"};
+            bool known = false;
+            for (const char* r : kRouting)
+                if (config.noc_routing == r) { known = true; break; }
+            if (!known) {
+                std::cerr << "Error: " << sc.pfx << "noc.routing '" << config.noc_routing
+                          << "' is not a routing algorithm this build"
+                             " has. Valid values are XY, DOR, TABLE,"
+                             " CUSTOM, SHORTEST, NCA and DIRECT; leave"
+                             " it empty to derive one from the"
+                             " topology. An unrecognised value used to"
+                             " be accepted and then ignored."
+                          << std::endl;
+                std::exit(2);
+            }
+        }
+        std::transform(config.noc_routing.begin(), config.noc_routing.end(),
+                       config.noc_routing.begin(), ::toupper);
+        if (root["noc"]["vcs_per_vnet"]) config.noc_vcs_user_set = true;
+        config.noc_vcs_per_vnet = yamlInt(root["noc"]["vcs_per_vnet"], config.noc_vcs_per_vnet, sc.pfx + "noc.vcs_per_vnet");
+        // Accept both virtual_channels_per_vn and vcs_per_vnet
+        if (root["noc"]["virtual_channels_per_vn"]) {
+            config.noc_vcs_per_vnet = root["noc"]["virtual_channels_per_vn"].as<int>();
+            config.noc_vcs_user_set = true;
+        }
+        if (root["noc"]["buffers_per_vc"]) config.noc_buffers_user_set = true;
+        config.noc_buffers_per_vc = yamlInt(root["noc"]["buffers_per_vc"], config.noc_buffers_per_vc, sc.pfx + "noc.buffers_per_vc");
+        /* 1.11.56 (audit B049): say what this key actually does.
+         *
+         * noc.clock_mhz reads as a NoC-fabric frequency override; it
+         * sets config.frequency_mhz, which is sys.frequency -- the PE
+         * clock, the divisor of every ns-to-cycle conversion in the
+         * device path, the clock McPAT prices the core at, and the
+         * device bandwidth clock. And because the noc: block is
+         * parsed AFTER system:, it silently overrode an explicit
+         * system.frequency_mhz. This tree has no separate NoC clock
+         * domain to set, so the key keeps its effect and stops being
+         * a misdescription: the run states that the device clock
+         * moved, and names the key it overrode. */
+        if (root["noc"]["clock_mhz"]) {
+            int noc_clk = root["noc"]["clock_mhz"].as<int>();
+            /* 1.11.107: in a system node the key names the node's clock (as
+             * frequency_mhz and pim.pe.frequency_mhz do, which it may not be
+             * given beside); the system path reads it from there. */
+            if (!sc.node) {
+                std::cout << "[config] NOTE: noc.clock_mhz = " << noc_clk
+                          << " sets the WHOLE device clock (sys.frequency), "
+                             "not a separate NoC domain -- this tree models "
+                             "one clock for the element, its caches and its "
+                             "fabric. It was " << config.frequency_mhz
+                          << " MHz";
+                if (root["system"] && root["system"]["frequency_mhz"])
+                    std::cout << ", set explicitly by system.frequency_mhz, "
+                                 "which this key overrides";
+                if (root["pim"] && root["pim"]["pe"] && root["pim"]["pe"]["frequency_mhz"])   // 1.11.106 (census B5 note)
+                    std::cout << ", set explicitly by pim.pe.frequency_mhz, "
+                                 "which this key overrides";
+                std::cout << "." << std::endl;
+            }
+            config.frequency_mhz = noc_clk;
+        }
+        /* 1.11.57 (latent B036): the two lines that used to sit here
+         * said the key was "accepted (stored for synthetic)". It was
+         * never parsed -- there is no read of noc.flit_size_bits
+         * anywhere, only the Garnet STATS parser's identically named
+         * field -- so a user setting it got no effect and no warning,
+         * which is the shape of failure this pass exists to remove.
+         *
+         * Garnet's flit is fixed at 128 bits internally and this file
+         * cannot change that, so the key cannot be wired up here. It is
+         * accepted only at the value that is true (128), where it is a
+         * harmless restatement of the fabric, and refused otherwise
+         * rather than silently not applying. Three shipped test configs
+         * declare 128 and keep working. */
+        /* 1.11.97 (sweep-94 row 18, user (a)): the flit width is a knob
+         * and it REACHES Garnet (sys.network.flitSizeBits -> the fork's
+         * ni_flit_size) and the topology emitter (a ladder rung runs at
+         * its true width up to the flit; the clamp follows the knob, not
+         * a literal 128). Default 128, Garnet's built-in flit. */
+        if (root["noc"]["flit_size_bits"]) {
+            int fsb = root["noc"]["flit_size_bits"].as<int>();
+            if (fsb < 8 || fsb > 4096 || (fsb % 8) != 0) {
+                std::cerr << "Error: " << sc.pfx << "noc.flit_size_bits = " << fsb
+                          << " must be a multiple of 8 bits between 8 and 4096 (Garnet's flit is sized in bytes)." << std::endl;
+                return 1;
+            }
+            config.noc_flit_size_bits_cfg = fsb;
+            std::cout << "  [noc] flit width " << fsb << " bits (" << sc.pfx << "noc.flit_size_bits, user's choice; the rung widths are clamped at the flit)" << std::endl;
+        }
+        config.noc_topology_file = yamlString(root["noc"]["topology_file"], config.noc_topology_file, sc.pfx + "noc.topology_file");
+        config.noc_routing_table_file = yamlString(root["noc"]["routing_table_file"], config.noc_routing_table_file, sc.pfx + "noc.routing_table_file");
+        // Message sizes in bits (0 = use defaults: control=64, data=576)
+        config.noc_control_msg_bits = yamlInt(root["noc"]["control_message_bits"], config.noc_control_msg_bits, sc.pfx + "noc.control_message_bits");
+        /* 1.11.93: the key is read and reaches Garnet, but no call site
+         * injects a Control message (one data packet per access; the
+         * response is charged as 2 x one-way), so it steers nothing --
+         * see the 1.11.92 open items. Said once per process, not
+         * modelled. */
+        if (root["noc"]["control_message_bits"]) {
+            static bool warned_ctrl_bits = false;
+            if (!warned_ctrl_bits) {
+                warned_ctrl_bits = true;
+                std::cerr << "[config] WARNING: " << sc.pfx << "noc.control_message_bits is"
+                             " accepted but inert in this release: every"
+                             " fabric injection is a Data message" << std::endl;
+            }
+        }
+        config.noc_data_msg_bits = yamlInt(root["noc"]["data_message_bits"], config.noc_data_msg_bits, sc.pfx + "noc.data_message_bits");
+        if (root["noc"]["header_bits"]) {   // 1.11.94 (row 18 (a)): data message = line x 8 + header
+            config.noc_header_bits = yamlInt(root["noc"]["header_bits"], config.noc_header_bits, sc.pfx + "noc.header_bits");
+            if (config.noc_header_bits < 0) { std::cerr << "Error: " << sc.pfx << "noc.header_bits must be >= 0" << std::endl; return 1; }
+        }
+
+        // Ring direction: "unidirectional"/"uni" or "bidirectional"/"bi" (default)
+        if (root["noc"]["ring_direction"]) {
+            std::string dir = yamlStringReq(root["noc"]["ring_direction"], sc.pfx + "noc.ring_direction");
+            std::transform(dir.begin(), dir.end(), dir.begin(), ::tolower);
+            if (dir != "unidirectional" && dir != "uni" &&
+                dir != "bidirectional" && dir != "bi")   // 1.11.90
+                refuseEnum(sc.pfx + "noc.ring_direction", dir,
+                           "unidirectional (uni), bidirectional (bi); case-insensitive",
+                           "run bidirectional");
+            config.noc_ring_unidirectional = (dir == "unidirectional" || dir == "uni");
+        }
+
+        // Per-level overrides (under noc.levels)
+        if (root["noc"]["levels"]) {
+            const auto& levels = root["noc"]["levels"];
+            const std::array<std::string, 7> level_keys = {
+                "subarray", "bank", "bank_group", "chip", "rank", "channel", "system"
+            };
+            for (int i = 0; i < 7; ++i) {
+                /* 1.11.74: noc.levels L0 accepts the family's word --
+                 * subarray (DRAM; legacy on SRAM/NVM), subbank (SRAM),
+                 * mat (NVM). One key only; family-checked later. */
+                std::string key = level_keys[i];
+                if (i == 0) {
+                    int nk = 0;
+                    for (const char* k : {"subarray", "subbank", "mat"}) if (levels[k]) { key = k; ++nk; }
+                    if (nk > 1) {
+                        std::cerr << "FATAL: " << sc.pfx << "noc.levels.subarray / subbank / mat name the same "
+                                     "level; give exactly one." << std::endl;
+                        std::exit(2);
+                    }
+                    if (nk == 1) config.l0_level_key = key;
+                }
+                if (levels[key]) {
+                    const auto& lv = levels[key];
+                    if (lv["model"]) {
+                        config.network_level_model[i] = yamlStringReq(lv["model"], sc.pfx + "noc.levels." + key + ".model");
+                        config.network_level_model_user_set[i] = true;  // 1.11.56 (B058)
+                    }
+                    if (lv["link_width_bits"])
+                        config.network_level_overrides[i].link_width_bits = lv["link_width_bits"].as<int>();
+                    if (lv["frequency_ghz"])
+                        config.network_level_overrides[i].frequency_ghz = lv["frequency_ghz"].as<double>();
+                    if (lv["latency_cycles"])
+                        config.network_level_overrides[i].latency_cycles = lv["latency_cycles"].as<int>();
+                    if (lv["topology"])
+                        config.network_level_overrides[i].topology = yamlStringReq(lv["topology"], sc.pfx + "noc.levels." + key + ".topology");
+                    // Router params
+                    if (lv["router_latency"])
+                        config.network_level_overrides[i].router_latency = lv["router_latency"].as<int>();
+                    if (lv["router_pipeline"]) {
+                        std::string rp = yamlStringReq(lv["router_pipeline"], sc.pfx + "noc.levels." + key + ".router_pipeline");
+                        if (rp == "full")           config.network_level_overrides[i].router_pipeline = 0;
+                        else if (rp == "reduced")   config.network_level_overrides[i].router_pipeline = 1;
+                        else if (rp == "simple")    config.network_level_overrides[i].router_pipeline = 2;
+                        else if (rp == "minimal")   config.network_level_overrides[i].router_pipeline = 3;
+                        else                        config.network_level_overrides[i].router_pipeline = lv["router_pipeline"].as<int>();
+                    }
+                    if (lv["router_bypass"])
+                        config.network_level_overrides[i].router_bypass = yamlBool(lv["router_bypass"], false, sc.pfx + "noc.levels." + key + ".router_bypass") ? 1 : 0;
+                    if (lv["virtual_networks"])
+                        config.network_level_overrides[i].virtual_networks = lv["virtual_networks"].as<int>();
+                    if (lv["virtual_channels_per_vn"])
+                        config.network_level_overrides[i].virtual_channels_per_vn = lv["virtual_channels_per_vn"].as<int>();
+                    if (lv["input_buffer_depth"])
+                        config.network_level_overrides[i].input_buffer_depth = lv["input_buffer_depth"].as<int>();
+                    if (lv["output_buffer_depth"])
+                        config.network_level_overrides[i].output_buffer_depth = lv["output_buffer_depth"].as<int>();
+                }
+            }
+        }
+
+        // Per-boundary bridge overrides (under noc.bridges, backward compat: noc.gateways)
+        auto parse_bridge_overrides = [&](const YAML::Node& node) {
+            const std::array<std::string, 6> br_keys = {
+                "subarray_bank", "bank_bankgroup", "bankgroup_chip",
+                "chip_rank", "rank_channel", "channel_system"
+            };
+            for (int i = 0; i < 6; ++i) {
+                if (node[br_keys[i]]) {
+                    auto& ov = config.bridge_overrides[i];
+                    const auto& n = node[br_keys[i]];
+                    /* 1.11.57 (latent B030): REJECT the four bridge
+                     * keys nothing consumes.
+                     *
+                     * count, lower_frequency_mhz, upper_frequency_mhz
+                     * and fifo_depth were parsed into BridgeOverride
+                     * fields that have no reader anywhere:
+                     * overrideBridgeConfig() takes router latency,
+                     * pipeline, bypass, vnets, VCs and the two buffer
+                     * depths, and no bridge count, clock or FIFO depth.
+                     * A user who set them got a run that looked like it
+                     * had honoured them. Wiring them up is not possible
+                     * from this file -- the bridge model that would
+                     * consume them lives in the internal-network
+                     * library -- so the keys are refused at the point
+                     * they are read, which is the one outcome that
+                     * cannot mislead. */
+                    {
+                        static const char* kUnimplBridgeKeys[] = {
+                            "count", "lower_frequency_mhz",
+                            "upper_frequency_mhz", "fifo_depth" };
+                        for (const char* bk : kUnimplBridgeKeys) {
+                            if (!n[bk]) continue;
+                            std::cerr << "[config] FATAL: " << sc.pfx << "noc.bridges."
+                                      << br_keys[i] << "." << bk
+                                      << " is parsed but NOT IMPLEMENTED"
+                                         " -- the bridge override "
+                                         "interface carries router and "
+                                         "link parameters only, so this "
+                                         "key would change nothing in "
+                                         "the emitted model. Remove it "
+                                         "rather than run with a "
+                                         "setting that does not apply."
+                                      << std::endl;
+                            std::exit(2);
+                        }
+                    }
+                    // New dual-link fields
+                    if (n["lower_width_bits"])
+                        ov.lower_width_bits = n["lower_width_bits"].as<int>();
+                    if (n["upper_width_bits"])
+                        ov.upper_width_bits = n["upper_width_bits"].as<int>();
+                    if (n["latency_ns"])
+                        ov.latency_ns = n["latency_ns"].as<double>();
+                    // Legacy single-width fields (backward compat)
+                    if (n["width_bits"])
+                        ov.width_bits = n["width_bits"].as<int>();
+                    if (n["latency_cycles"])
+                        ov.latency_cycles = n["latency_cycles"].as<int>();
+                    // Independent bridge model
+                    if (n["model"]) {
+                        ov.model = yamlStringReq(n["model"], sc.pfx + "noc.bridges." + br_keys[i] + ".model");
+                        if (!ov.model.empty() && ov.model != "auto" &&
+                            ov.model != "simple" && ov.model != "md1" &&
+                            ov.model != "analytical" &&
+                            ov.model != "detailed")   // 1.11.90
+                            refuseEnum(sc.pfx + "noc.bridges." + br_keys[i] + ".model",
+                                       ov.model,
+                                       "simple (analytical and md1 are aliases), detailed, auto or empty (derive)",
+                                       "run the auto-derived bridge model");
+                    }
+                    // Router params
+                    if (n["router_latency"])
+                        ov.router_latency = n["router_latency"].as<int>();
+                    if (n["router_pipeline"]) {
+                        std::string rp = yamlStringReq(n["router_pipeline"], sc.pfx + "noc.bridges." + br_keys[i] + ".router_pipeline");
+                        if (rp == "full")           ov.router_pipeline = 0;
+                        else if (rp == "reduced")   ov.router_pipeline = 1;
+                        else if (rp == "simple")    ov.router_pipeline = 2;
+                        else if (rp == "minimal")   ov.router_pipeline = 3;
+                        else                        ov.router_pipeline = n["router_pipeline"].as<int>();
+                    }
+                    if (n["router_bypass"])
+                        ov.router_bypass = yamlBool(n["router_bypass"], false, sc.pfx + "noc.bridges." + br_keys[i] + ".router_bypass") ? 1 : 0;
+                    if (n["virtual_networks"])
+                        ov.virtual_networks = n["virtual_networks"].as<int>();
+                    if (n["virtual_channels_per_vn"])
+                        ov.virtual_channels_per_vn = n["virtual_channels_per_vn"].as<int>();
+                    if (n["input_buffer_depth"])
+                        ov.input_buffer_depth = n["input_buffer_depth"].as<int>();
+                    if (n["output_buffer_depth"])
+                        ov.output_buffer_depth = n["output_buffer_depth"].as<int>();
+                }
+            }
+        };
+        if (root["noc"]["bridges"]) {
+            parse_bridge_overrides(root["noc"]["bridges"]);
+        } else if (root["noc"]["gateways"]) {
+            std::cerr << "WARNING: '" << sc.pfx << "noc.gateways' is deprecated, use '" << sc.pfx << "noc.bridges' instead\n";
+            parse_bridge_overrides(root["noc"]["gateways"]);
+        }
+    }
+    return 0;
+}
+
+static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const DeviceParseScope& sc) {
+    if (root["memory"]) {
+        if (root["memory"]["power_down"])
+            config.mem_power_down = yamlBool(root["memory"]["power_down"], config.mem_power_down, sc.pfx + "memory.power_down");
+        if (root["memory"]["power_down_threshold_ns"])   // 1.11.51 (E17)
+            config.power_down_threshold_ns =
+                yamlDouble(root["memory"]["power_down_threshold_ns"], -1.0, sc.pfx + "memory.power_down_threshold_ns");
+        /* 1.11.107: the two duplicate reads of power.temperature_c/_k that
+         * stood here are gone with the move: the unconditional parse before
+         * this call (1.11.60 A005) already set the same value from the same
+         * keys, and a power: key is not a device key. */
+        if (root["memory"]["array_pg"])
+            config.mem_array_pg = yamlBool(root["memory"]["array_pg"], config.mem_array_pg, sc.pfx + "memory.array_pg");
+    }
+
+    // Load memory configuration
+    if (root["memory"]) {
+        if (root["memory"]["dq_turnaround"])
+            config.dq_turnaround_enabled =
+                yamlBool(root["memory"]["dq_turnaround"], true, sc.pfx + "memory.dq_turnaround");
+        config.memory_tech = canonicalMemTech(
+            yamlString(root["memory"]["technology"], config.memory_tech, sc.pfx + "memory.technology"));
+
+        // Reject unknown memory technologies up front rather than
+        // silently falling back to DDR4 (which would hide user typos
+        // and produce misleading results). HBM gen-1 was removed --
+        // use HBM2/HBM3. The whitelist is canonical-only: input is
+        // normalized by canonicalMemTech() before this check.
+        {
+            static const std::set<std::string> kValidTechs = {
+                "DDR3", "DDR4", "DDR5", "LPDDR5", "GDDR6", "HBM2", "HBM3",
+                "SRAM", "STT_MRAM", "PCM", "RERAM"
+            };
+            if (kValidTechs.find(config.memory_tech) == kValidTechs.end()) {
+                std::cerr << "ERROR: unknown memory technology '"
+                          << config.memory_tech << "'.\n"
+                          << "Supported: DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3, "
+                          << "SRAM, STT_MRAM, PCM, ReRAM.\n"
+                          << "(HBM gen-1 is not supported -- use HBM2 or HBM3.)\n";
+                std::exit(1);
+            }
+        }
+
+        config.num_banks = yamlInt(root["memory"]["banks"], config.num_banks, sc.pfx + "memory.banks");
+        if (root["memory"]["bank_kb"]) {   // 1.11.94 (row 15): SRAM/NVM bank size, a part parameter
+            int bkb = yamlInt(root["memory"]["bank_kb"], 64, sc.pfx + "memory.bank_kb");
+            if (bkb < 1) { std::cerr << "Error: " << sc.pfx << "memory.bank_kb must be >= 1" << std::endl; return 1; }
+            config.mem_bank_kb = bkb;   // 1.11.107: a node's is applied by the system adoption (the built device's)
+            if (!sc.node) g_bank_unit_bytes = static_cast<uint64_t>(bkb) * 1024ULL;
+            std::cout << "  [memory] SRAM/NVM bank size " << bkb << " KB (" << sc.pfx << "memory.bank_kb, user's choice); device capacity = banks x bank size" << std::endl;
+        }
+        /* 1.9.35: ranks_per_channel was plumbed END TO END -- declared
+         * here, emitted into the zsim configuration, and read by the
+         * plugin, the trace driver and the analytical hierarchy model --
+         * with NO configuration key anywhere. It could therefore never
+         * be anything but its default of 1, so the rank tier of the tree
+         * was a pass-through hop for every run ever made, while the code
+         * read as though multi-rank were supported. Completing the
+         * plumbing costs one line; the default is unchanged, so no
+         * existing configuration moves. */
+        if (root["memory"]["ranks_per_channel"]) {
+            config.hierarchy_ranks_per_channel =
+                yamlInt(root["memory"]["ranks_per_channel"],
+                        config.hierarchy_ranks_per_channel,
+                        sc.pfx + "memory.ranks_per_channel");
+        }
+        // subarray geometry: optional height (rows) and/or an explicit
+        // count. If the count is set it wins; otherwise the per-tech
+        // default (or the given height) derives it in the org block.
+        if (root["memory"]["subarray_height"])
+            config.subarray_height = root["memory"]["subarray_height"].as<int>();
+        /* 1.11.74: the L0 count key carries the family's word --
+         * memory.subarrays_per_bank (DRAM; legacy on SRAM/NVM),
+         * memory.subbanks_per_bank (SRAM), memory.mats_per_bank (NVM).
+         * Exactly one may be given; the family check follows in
+         * computeHierarchyLatencies once the technology is settled. */
+        {
+            int nkeys = 0;
+            for (const char* k : {"subarrays_per_bank", "subbanks_per_bank", "mats_per_bank"}) {
+                if (root["memory"][k]) {
+                    config.subarrays_per_bank = root["memory"][k].as<int>();
+                    config.subarrays_per_bank_user_set = true;
+                    config.l0_count_key = k; ++nkeys;
+                }
+            }
+            if (nkeys > 1) {
+                std::cerr << "FATAL: " << sc.pfx << "memory.subarrays_per_bank / subbanks_per_bank / "
+                             "mats_per_bank name the same count; give exactly one." << std::endl;
+                std::exit(2);
+            }
+        }
+        // Optional JEDEC-org overrides (0/absent = per-tech JEDEC default).
+        if (root["memory"]["organization"]) {
+            auto org = root["memory"]["organization"];
+            if (org["bank_groups"])
+                config.bg_per_chip_override = org["bank_groups"].as<int>();
+            if (org["banks_per_group"])
+                config.banks_per_bg_override = org["banks_per_group"].as<int>();
+        }
+        config.memory_latency_override = yamlInt(root["memory"]["latency"], config.memory_latency_override, sc.pfx + "memory.latency");
+        config.ports_per_bank = yamlInt(root["memory"]["ports_per_bank"], config.ports_per_bank, sc.pfx + "memory.ports_per_bank");
+        if (root["memory"]["ports_per_bank"] && config.ports_per_bank < 1) {   // 1.11.106: used to become 1 in silence
+            std::cerr << "[config] FATAL: " << sc.pfx << "memory.ports_per_bank = " << config.ports_per_bank << " must be at least 1." << std::endl;
+            std::exit(2);
+        }
+        if (root["memory"]["dram"] && root["memory"]["dram"]["device_width"]) {
+            config.dram_device_width =
+                yamlString(root["memory"]["dram"]["device_width"], config.dram_device_width, sc.pfx + "memory.dram.device_width");
+        }
+        /* 1.11.66 (R8 #9): the DDR5 speed grade. Validated at the
+         * wrapper (3200/4800/5600; FATAL otherwise). Applied at every
+         * oracle site through applyDramKnobs() below. */
+        if (root["memory"]["dram"] && root["memory"]["dram"]["ddr5_speed_grade"]) {
+            config.ddr5_speed_grade =
+                yamlInt(root["memory"]["dram"]["ddr5_speed_grade"], config.ddr5_speed_grade, sc.pfx + "memory.dram.ddr5_speed_grade");
+        }
+
+        // Parse memory parameters from YAML
+        // To override external models, user must provide ALL 5 required params:
+        //   1. read_latency_ns    2. write_latency_ns
+        //   3. read_energy_nj     4. write_energy_nj
+        //   5. static_power_mw
+        auto& p = config.memory_params;
+
+        // Timing parameters (accept multiple naming conventions)
+        if (root["memory"]["timing"]) {
+            const auto& t = root["memory"]["timing"];
+            // Read latency
+            if (t["read_latency_ns"]) p.read_latency_ns = t["read_latency_ns"].as<double>();
+            else if (t["subarray_read_ns"]) p.read_latency_ns = t["subarray_read_ns"].as<double>();
+            // Write latency
+            if (t["write_latency_ns"]) p.write_latency_ns = t["write_latency_ns"].as<double>();
+            else if (t["subarray_write_ns"]) p.write_latency_ns = t["subarray_write_ns"].as<double>();
+        }
+
+        // Energy parameters
+        if (root["memory"]["energy"]) {
+            const auto& e = root["memory"]["energy"];
+            if (e["read_energy_nj"]) p.read_energy_nj = e["read_energy_nj"].as<double>();
+            if (e["write_energy_nj"]) p.write_energy_nj = e["write_energy_nj"].as<double>();
+        }
+
+        // Power parameters
+        if (root["memory"]["power"]) {
+            const auto& pw = root["memory"]["power"];
+            if (pw["static_power_mw"]) p.static_power_mw = pw["static_power_mw"].as<double>();
+        }
+
+        // Check if user provided ALL 5 required params to override external models
+        config.use_yaml_memory_params = p.isComplete();
+
+        /* 1.11.107: a node warns about its own memory.timing/energy/power keys,
+         * not again about the top-level ones it inherits. */
+        const bool own_mem_params = !sc.node || root["memory"]["timing"] || root["memory"]["energy"] || root["memory"]["power"];
+        if (!config.use_yaml_memory_params && own_mem_params &&
+            (p.read_latency_ns > 0 || p.write_latency_ns > 0 ||
+             p.read_energy_nj > 0 || p.write_energy_nj > 0 || p.static_power_mw > 0)) {
+            std::cerr << "Warning: Partial YAML memory params provided.\n"
+                      << "To override external models, provide ALL 5 required params:\n"
+                      << "  memory:\n"
+                      << "    timing:\n"
+                      << "      read_latency_ns: <value>\n"
+                      << "      write_latency_ns: <value>\n"
+                      << "    energy:\n"
+                      << "      read_energy_nj: <value>\n"
+                      << "      write_energy_nj: <value>\n"
+                      << "    power:\n"
+                      << "      static_power_mw: <value>\n"
+                      << "Using external models (NVSim/CACTI/Ramulator) instead.\n";
+            std::cerr.flush();
+        }
+    }
+
+    // Parse optional memory controller overrides
+    if (root["memory"] && root["memory"]["controller"]) {
+        const auto& ctrl = root["memory"]["controller"];
+        if (ctrl["type"])
+            config.zsim_mem_controller_type = yamlString(ctrl["type"], config.zsim_mem_controller_type, sc.pfx + "memory.controller.type");
+        if (ctrl["bandwidth"]) {
+            // Accepts "25.6 GB/s", "19200 MB/s", "1 TB/s", "6400000 KB/s", or bare number (MB/s)
+            int parsed = parseBandwidthToMBs(yamlStringReq(ctrl["bandwidth"], sc.pfx + "memory.controller.bandwidth"));
+            if (parsed > 0) {
+                config.md1_bandwidth_mbs = parsed;
+                config.md1_bandwidth_user_set = true;
+            } else {   // 1.11.106 (ruling R106-3 (a)): used to keep the default with a warning
+                std::cerr << "[config] FATAL: " << sc.pfx << "memory.controller.bandwidth '"
+                          << yamlStringReq(ctrl["bandwidth"], sc.pfx + "memory.controller.bandwidth")
+                          << "' is not a bandwidth this build can read. Write it as '25.6 GB/s', '19200 MB/s', "
+                             "'1 TB/s', '6400000 KB/s' or a bare number of MB/s; or remove the key." << std::endl;
+                std::exit(2);
+            }
+        }
+        // WeaveSimple
+        if (ctrl["bound_latency"])
+            config.weave_bound_latency = yamlInt(ctrl["bound_latency"], config.weave_bound_latency, sc.pfx + "memory.controller.bound_latency");
+        // Ramulator
+        if (ctrl["ramulator_config"])
+            config.ramulator_config_file = yamlString(ctrl["ramulator_config"], config.ramulator_config_file, sc.pfx + "memory.controller.ramulator_config");
+    }
+    return 0;
+}
+
+/* 1.11.107: a key path under a YAML map, read without creating anything
+ * (an absent level is an undefined node, never a throw). */
+static YAML::Node yamlAt(const YAML::Node& root, const std::string& path) {
+    YAML::Node cur = root;
+    size_t pos = 0;
+    while (pos <= path.size()) {
+        const size_t dot = path.find('.', pos);
+        const std::string key = path.substr(pos, dot == std::string::npos ? std::string::npos : dot - pos);
+        if (!cur.IsDefined() || !cur.IsMap()) return YAML::Node(YAML::NodeType::Undefined);
+        const YAML::Node next = static_cast<const YAML::Node&>(cur)[key];
+        if (!next.IsDefined()) return YAML::Node(YAML::NodeType::Undefined);
+        cur.reset(next);
+        if (dot == std::string::npos) break;
+        pos = dot + 1;
+    }
+    return cur;
+}
+
+/* 1.11.107: the two forms of one quantity a device node may not both give
+ * (the 1.11.106 duplicate-name rule). The first 27 pairs are the flat node
+ * keys and the device-scope keys they alias; the last six are the device-scope
+ * pairs refused at the top level since 1.11.106, now inside a node too. */
+static const char* const kNodeAliasPairs[][2] = {
+    {"pe_type", "pim.pe.type"}, {"pe_type", "pim.pe.core_type"},
+    {"num_pes", "pim.pe.count"},
+    {"frequency_mhz", "pim.pe.frequency_mhz"}, {"frequency_mhz", "noc.clock_mhz"}, {"pim.pe.frequency_mhz", "noc.clock_mhz"},
+    {"tech_node_nm", "technology.node_nm"},
+    {"cache.l1d_kb", "cache.l1d.size_kb"}, {"cache.l1i_kb", "cache.l1i.size_kb"},
+    {"cache.l2_kb", "cache.l2.size_kb"}, {"cache.l3_kb", "cache.l3.size_kb"},
+    {"cache.l2_kb", "cache.l2.enabled"}, {"cache.l3_kb", "cache.l3.enabled"},
+    {"cache.l1d_ways", "cache.l1d.ways"}, {"cache.l1i_ways", "cache.l1i.ways"},
+    {"cache.l2_ways", "cache.l2.ways"}, {"cache.l3_ways", "cache.l3.ways"},
+    {"cache.l1d_banks", "cache.l1d.banks"}, {"cache.l1i_banks", "cache.l1i.banks"},
+    {"cache.l2_banks", "cache.l2.banks"}, {"cache.l3_banks", "cache.l3.banks"},
+    {"cache.l1d_latency_ns", "cache.l1d.latency_ns"}, {"cache.l1i_latency_ns", "cache.l1i.latency_ns"},
+    {"cache.l2_latency_ns", "cache.l2.latency_ns"}, {"cache.l3_latency_ns", "cache.l3.latency_ns"},
+    {"pim.pe.core_type", "pim.pe.type"}, {"pim.pe.placement", "pim.placement"},
+    {"noc.virtual_channels_per_vn", "noc.vcs_per_vnet"},
+    {"memory.timing.read_latency_ns", "memory.timing.subarray_read_ns"},
+    {"memory.timing.write_latency_ns", "memory.timing.subarray_write_ns"},
+    {"noc.bridges", "noc.gateways"} };
+
+/* 1.11.107: one name per quantity, for comparing what two nodes give. */
+static std::string nodeCanonicalPath(const std::string& p) {
+    static const std::pair<const char*, const char*> kExact[] = {
+        {"pim.pe.frequency_mhz", "frequency_mhz"}, {"noc.clock_mhz", "frequency_mhz"},
+        {"technology.node_nm", "tech_node_nm"}, {"pim.pe.type", "pe_type"}, {"pim.pe.core_type", "pe_type"},
+        {"pim.pe.count", "num_pes"}, {"noc.vcs_per_vnet", "noc.virtual_channels_per_vn"},
+        {"memory.timing.subarray_read_ns", "memory.timing.read_latency_ns"},
+        {"memory.timing.subarray_write_ns", "memory.timing.write_latency_ns"},
+        {"memory.subbanks_per_bank", "memory.subarrays_per_bank"}, {"memory.mats_per_bank", "memory.subarrays_per_bank"} };
+    for (const auto& e : kExact) if (p == e.first) return e.second;
+    static const std::pair<const char*, const char*> kPrefix[] = {
+        {"pim.pe.placement.", "pim.placement."}, {"noc.gateways.", "noc.bridges."},
+        {"noc.levels.subbank.", "noc.levels.subarray."}, {"noc.levels.mat.", "noc.levels.subarray."} };
+    for (const auto& e : kPrefix) {
+        const std::string a(e.first);
+        if (p.compare(0, a.size(), a) == 0) return e.second + p.substr(a.size());
+    }
+    for (const char* lv : {"l1d", "l1i", "l2", "l3"}) {
+        const std::string a = std::string("cache.") + lv + ".";
+        if (p.compare(0, a.size(), a) != 0) continue;
+        const std::string leaf = p.substr(a.size());
+        if (leaf == "size_kb") return std::string("cache.") + lv + "_kb";
+        if (leaf == "ways" || leaf == "banks" || leaf == "latency_ns") return std::string("cache.") + lv + "_" + leaf;
+    }
+    return p;
+}
+
+/* 1.11.107: the keys a device node holds for itself -- its node words and the
+ * device-scope keys the system model reads per node (canonical paths). Every
+ * other key a node gives reaches the system through the one device the model
+ * builds, or through a run-wide setting, and is checked against the other
+ * nodes it reaches (adoptSystemDeviceNodes). */
+static bool nodePathPerNode(const std::string& c) {
+    static const std::set<std::string> kPerNode = {
+        "name", "type", "attachment", "is_default_mem",
+        "frequency_mhz", "tech_node_nm", "pe_type", "num_pes", "memory.technology",
+        "pim.pe.compute_factor", "pim.pe.access_factor", "pim.pe.throughput_factor", "pim.pe.operand_width",
+        "pim.pe.energy_factor", "pim.pe.bit_serial", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles",
+        "pim.pe.issue_width", "pim.pe.pg", "pim.pe.arch_int_regs", "pim.pe.arch_fp_regs", "pim.pe.lanes",
+        "pim.pe.imem_bytes", "pim.mc.pg", "noc.pg",
+        "cache.l1d_kb", "cache.l1i_kb", "cache.l2_kb", "cache.l3_kb", "cache.l2.enabled", "cache.l3.enabled",
+        "cache.l1d_ways", "cache.l1i_ways", "cache.l2_ways", "cache.l3_ways",
+        "cache.l1d_banks", "cache.l1i_banks", "cache.l2_banks", "cache.l3_banks",
+        "cache.l1d_latency_ns", "cache.l1i_latency_ns", "cache.l2_latency_ns", "cache.l3_latency_ns" };
+    return kPerNode.count(c) > 0 || c.compare(0, 9, "workload.") == 0;
+}
+
+/* 1.11.107: every leaf a YAML map gives, by canonical path, with its text
+ * (a sequence, and the free maps pim.mapping.map / pim.mc.groups /
+ * workload.env, as one leaf). */
+static void nodeLeafTexts(const YAML::Node& n, const std::string& path, std::map<std::string, std::string>& out) {
+    if (!n.IsDefined()) return;
+    if (n.IsMap() && path != "pim.mapping.map" && path != "pim.mc.groups" && path != "workload.env") {
+        for (const auto& kv : n) {
+            if (!kv.first.IsScalar()) continue;
+            nodeLeafTexts(kv.second, path.empty() ? kv.first.Scalar() : path + "." + kv.first.Scalar(), out);
+        }
+        return;
+    }
+    out[nodeCanonicalPath(path)] = n.IsScalar() ? n.Scalar() : YAML::Dump(n);
+}
+
+/* 1.11.107: device-scope keys a system node cannot honour, refused with the
+ * reason (they were refused as unknown keys in 1.11.106 and ignored in silence
+ * before it). */
+static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath) {
+    auto refuse = [&](const std::string& key, const char* why) {
+        std::cerr << "[config] FATAL: " << dpath << "." << key << " is not a setting a system device node can carry: "
+                  << why << " (1.11.107, one vocabulary)." << std::endl;
+        std::exit(2);
+    };
+    for (const char* k : {"cache.mode", "cache.enabled", "cache.dir"})
+        if (yamlAt(d, k).IsDefined())
+            refuse(k, "it configures the run's characterization cache, one for the run and not a device's; write it at the top level");
+    if (yamlAt(d, "cache.cacti").IsDefined())
+        refuse("cache.cacti", "it sets CACTI's design-space search for every cache and array the run characterises, the host's included; write it at the top level");
+    if (yamlAt(d, "cache.l2.count").IsDefined())
+        refuse("cache.l2.count", "a system node is built with one L2 per PE; a clustered L2 is a device-scope configuration");
+    for (const char* lv : {"l1d", "l1i", "l2", "l3"})
+        for (const char* leaf : {"energy_nj", "static_power_mw"}) {
+            const std::string k = std::string("cache.") + lv + "." + leaf;
+            if (yamlAt(d, k).IsDefined())
+                refuse(k, "a system node's caches are characterised by CACTI at the node's clock and process; the YAML energy and leakage override is device scope only");
+        }
+    if (yamlAt(d, "cache.pg").IsDefined())
+        refuse("cache.pg", "the per-node power gating covers pim.pe.pg, pim.mc.pg and noc.pg; a node's caches have no gating flag of their own in this release");
+}
+
+/* 1.11.107: the system model and the device nodes' resolved configurations.
+ * The model builds ONE device -- the first compute device with PEs, whose
+ * configuration the run adopts (its node keys in the adoption block after the
+ * link-class step, as before; every other device-scope key here, before the
+ * run-wide DRAM knobs are recorded) -- and applies a few settings once for the
+ * whole run: memory.dram.ddr5_speed_grade and memory.dram.device_width (every
+ * DRAM model of the run; the energy key is global) and core.in_order.* /
+ * core.ooo.* (every core of that type, hosts included). A key a node holds for
+ * itself (nodePathPerNode) is used per node. Any other key a device node gives
+ * must resolve to the same value -- the node's own, else the top level's, else
+ * unset -- at every node it reaches; a difference used to be merged in silence
+ * (or, since 1.11.106, refused as an unknown key) and is refused here naming
+ * both holders. With no device built from a node, such a key would be ignored,
+ * and is refused. */
+static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml_cfg) {
+    using SN = UnifiedConfig::SystemNode;
+    std::vector<size_t> devs;
+    int built = -1;
+    bool separate_host_mem = false;
+    for (size_t i = 0; i < config.system_nodes.size(); ++i) {
+        const auto& n = config.system_nodes[i];
+        if (n.role != SN::DEVICE || !n.dev) continue;
+        devs.push_back(i);
+        if (built < 0 && n.device_type == SN::COMPUTE && n.num_pes > 0) built = static_cast<int>(i);
+        if (!n.is_default_mem) separate_host_mem = true;
+    }
+    if (devs.empty()) return;
+    std::map<std::string, std::string> top;
+    for (const char* sec : {"pim", "memory", "noc", "cache", "core", "technology"})
+        nodeLeafTexts(yamlAt(yaml_cfg, sec), sec, top);
+    std::set<std::string> paths;
+    for (size_t i : devs)
+        for (const auto& kv : config.system_nodes[i].dev_keys)
+            if (!nodePathPerNode(kv.first)) paths.insert(kv.first);
+    for (const auto& c : paths) {
+        const bool grade = (c == "memory.dram.ddr5_speed_grade"), width = (c == "memory.dram.device_width");
+        const bool core_io = c.compare(0, 14, "core.in_order.") == 0, core_ooo = c.compare(0, 9, "core.ooo.") == 0;
+        const bool run_wide = grade || width || core_io || core_ooo;
+        if (!run_wide && built < 0) {
+            for (size_t i : devs)
+                if (config.system_nodes[i].dev_keys.count(c)) {
+                    std::cerr << "[config] FATAL: " << config.system_nodes[i].cfg_path << "." << c
+                              << " is given, but no device of this system is built from a node (there is no compute device with"
+                                 " PEs), so the key would be ignored. Remove it (1.11.107, one vocabulary)." << std::endl;
+                    std::exit(2);
+                }
+        }
+        struct Holder { std::string who, value; bool set, own; };
+        std::vector<Holder> hv;
+        const auto topIt = top.find(c);
+        auto fromTop = [&](const std::string& who) {
+            return (topIt != top.end()) ? Holder{who, topIt->second, true, false} : Holder{who, "", false, false};
+        };
+        for (size_t i : devs) {
+            const auto& n = config.system_nodes[i];
+            const auto own = n.dev_keys.find(c);
+            bool reach = (own != n.dev_keys.end());
+            if (grade)         reach = reach || canonicalMemTech(n.memory_tech) == "DDR5";
+            else if (width)    reach = reach || pimid::isDRAM(pimid::parseMemoryTechnology(canonicalMemTech(n.memory_tech)));
+            else if (core_io)  reach = reach || (n.device_type == SN::COMPUTE && n.num_pes > 0 && n.pe_type == "in_order_core");
+            else if (core_ooo) reach = reach || (n.device_type == SN::COMPUTE && n.num_pes > 0 && n.pe_type == "ooo_core");
+            else               reach = reach || (n.device_type == SN::COMPUTE && n.num_pes > 0);
+            if (!reach) continue;
+            hv.push_back(own != n.dev_keys.end() ? Holder{n.cfg_path, own->second, true, true} : fromTop(n.cfg_path));
+        }
+        if (run_wide) {
+            for (const auto& h : config.system_nodes) {
+                if (h.role != SN::HOST) continue;
+                bool reach = false;
+                if (core_io)  reach = (h.core_type == "in_order_core");
+                if (core_ooo) reach = (h.core_type == "ooo_core");
+                if ((grade || width) && separate_host_mem && h.host_mem_present && !h.host_mem_tech.empty()) {
+                    const std::string ht = canonicalMemTech(h.host_mem_tech);
+                    reach = grade ? (ht == "DDR5") : pimid::isDRAM(pimid::parseMemoryTechnology(ht));
+                }
+                if (reach) hv.push_back(fromTop((h.cfg_path.empty() ? h.name : h.cfg_path) + (grade || width ? " (its separate memory)" : " (" + h.core_type + ")")));
+            }
+        }
+        for (size_t k = 1; k < hv.size(); ++k) {
+            if (hv[k].set == hv[0].set && hv[k].value == hv[0].value) continue;
+            auto say = [](const Holder& h) {
+                if (h.own) return h.who + " gives '" + h.value + "'";
+                if (h.set) return h.who + " takes the top-level '" + h.value + "'";
+                return h.who + " leaves it unset";
+            };
+            std::cerr << "[config] FATAL: " << c << " differs between the nodes it reaches: " << say(hv[0]) << ", "
+                      << say(hv[k]) << ". ";
+            if (core_io || core_ooo)
+                std::cerr << "core." << (core_io ? "in_order" : "ooo") << ".* is the run's one "
+                          << (core_io ? "in-order" : "out-of-order") << " core record: every core of that type, hosts and"
+                             " devices alike, takes one value. ";
+            else if (run_wide)
+                std::cerr << "The DRAM speed grade and device width are the run's: every DRAM model of the run takes one value"
+                             " (the multi-device model prices one DRAM grade per technology; the energy key is global). ";
+            else
+                std::cerr << "The multi-device model builds ONE device configuration -- "
+                          << (built >= 0 ? config.system_nodes[built].cfg_path : std::string("none")) << "'s, the first compute"
+                             " device with PEs -- so a per-device value of this key is not modelled. ";
+            std::cerr << "Give every node it reaches the same value, or write it once at the top level; the model would"
+                         " otherwise apply one value to all of them in silence (1.11.107, one vocabulary)." << std::endl;
+            std::exit(2);
+        }
+    }
+    /* Adoption. The built device's device-scope fields (its node keys are
+     * adopted in the adoption block, as before); the run-wide keys from the
+     * node that gives them (all nodes they reach agree, above). A node that
+     * gives none of these keys holds the top-level values here, so this
+     * changes nothing for it. */
+    if (built >= 0) {
+        const UnifiedConfig& d = *config.system_nodes[built].dev;
+        config.pe_mem_connection = d.pe_mem_connection;
+        config.local_link_latency = d.local_link_latency;
+        config.pe_mem_map = d.pe_mem_map;
+        config.mc_clock_gear = d.mc_clock_gear;
+        config.mc_epoch_replay = d.mc_epoch_replay;
+        config.pes_per_mc_user_set = d.pes_per_mc_user_set;
+        config.pe_mc_local_latency = d.pe_mc_local_latency;
+        config.pe_mc_bandwidth_mbs = d.pe_mc_bandwidth_mbs;
+        config.mc_standalone = d.mc_standalone;
+        config.pe_mc_group_overrides = d.pe_mc_group_overrides;
+        config.noc_router_latency = d.noc_router_latency;
+        config.noc_link_latency = d.noc_link_latency;
+        config.noc_mlp_degree = d.noc_mlp_degree;
+        config.noc_routing = d.noc_routing;
+        config.noc_vcs_per_vnet = d.noc_vcs_per_vnet;
+        config.noc_vcs_user_set = d.noc_vcs_user_set;
+        config.noc_buffers_per_vc = d.noc_buffers_per_vc;
+        config.noc_buffers_user_set = d.noc_buffers_user_set;
+        config.noc_flit_size_bits_cfg = d.noc_flit_size_bits_cfg;
+        config.noc_topology_file = d.noc_topology_file;
+        config.noc_routing_table_file = d.noc_routing_table_file;
+        config.noc_control_msg_bits = d.noc_control_msg_bits;
+        config.noc_data_msg_bits = d.noc_data_msg_bits;
+        config.noc_header_bits = d.noc_header_bits;
+        config.noc_ring_unidirectional = d.noc_ring_unidirectional;
+        config.l0_level_key = d.l0_level_key;
+        for (int i = 0; i < 7; ++i)
+            if (d.network_level_model_user_set[i]) {   // a level the node (or the top level) named; the node's noc.model is applied in the adoption block
+                config.network_level_model[i] = d.network_level_model[i];
+                config.network_level_model_user_set[i] = true;
+            }
+        config.network_level_overrides = d.network_level_overrides;
+        config.bridge_overrides = d.bridge_overrides;
+        config.mem_power_down = d.mem_power_down;
+        config.power_down_threshold_ns = d.power_down_threshold_ns;
+        config.mem_array_pg = d.mem_array_pg;
+        config.dq_turnaround_enabled = d.dq_turnaround_enabled;
+        config.hierarchy_ranks_per_channel = d.hierarchy_ranks_per_channel;
+        config.subarray_height = d.subarray_height;
+        config.subarrays_per_bank = d.subarrays_per_bank;
+        config.subarrays_per_bank_user_set = d.subarrays_per_bank_user_set;
+        config.l0_count_key = d.l0_count_key;
+        config.bg_per_chip_override = d.bg_per_chip_override;
+        config.banks_per_bg_override = d.banks_per_bg_override;
+        config.memory_latency_override = d.memory_latency_override;
+        config.memory_params = d.memory_params;
+        config.use_yaml_memory_params = d.use_yaml_memory_params;
+        config.zsim_mem_controller_type = d.zsim_mem_controller_type;
+        config.md1_bandwidth_mbs = d.md1_bandwidth_mbs;
+        config.md1_bandwidth_user_set = d.md1_bandwidth_user_set;
+        config.weave_bound_latency = d.weave_bound_latency;
+        config.ramulator_config_file = d.ramulator_config_file;
+        if (d.mem_bank_kb != config.mem_bank_kb) {
+            config.mem_bank_kb = d.mem_bank_kb;
+            g_bank_unit_bytes = static_cast<uint64_t>(d.mem_bank_kb > 0 ? d.mem_bank_kb : 64) * 1024ULL;
+        }
+    }
+    for (size_t i : devs) {
+        const auto& n = config.system_nodes[i];
+        const auto& k = n.dev_keys;
+        if (k.count("memory.dram.ddr5_speed_grade")) config.ddr5_speed_grade = n.dev->ddr5_speed_grade;
+        if (k.count("memory.dram.device_width")) config.dram_device_width = n.dev->dram_device_width;
+        if (k.count("core.in_order.mispredict_penalty_cycles")) config.core_inorder_mispredict_penalty = n.dev->core_inorder_mispredict_penalty;
+        if (k.count("core.in_order.resteer_penalty_cycles")) config.core_inorder_resteer_penalty = n.dev->core_inorder_resteer_penalty;
+        if (k.count("core.ooo.mispredict_penalty_cycles")) config.core_ooo_mispredict_penalty = n.dev->core_ooo_mispredict_penalty;
+        if (k.count("core.ooo.fetch_width_bytes")) config.core_ooo_fetch_width_bytes = n.dev->core_ooo_fetch_width_bytes;
+    }
+}
+
 int main(int argc, char** argv) {
     UnifiedConfig config;
     std::string config_file;
@@ -15628,310 +17013,11 @@ int main(int argc, char** argv) {
                 config.description = yamlStringReq(yaml_cfg["description"], "description");
             }
 
-            // Load PE configuration
-            if (yaml_cfg["pim"]) {
-                if (yaml_cfg["pim"]["pe"]) {
-                    config.num_pes = yamlInt(yaml_cfg["pim"]["pe"]["count"], config.num_pes, "pim.pe.count");
-                    if (yaml_cfg["pim"]["pe"]["core_type"])
-                        config.pe_type = yamlStringReq(yaml_cfg["pim"]["pe"]["core_type"], "pim.pe.core_type");
-                    else
-                        config.pe_type = yamlString(yaml_cfg["pim"]["pe"]["type"], config.pe_type, "pim.pe.type");
-                    config.pg_pe = yamlBool(yaml_cfg["pim"]["pe"]["pg"], config.pg_pe, "pim.pe.pg");  // 1.11.8
-                    /* 1.11.56 (audit B046): the SAME normaliser the system-node
-                     * path uses. This block used to open-code its own alias list
-                     * and its own whitelist, and the two had already drifted --
-                     * "compute_unit_pe" was a valid element name in system scope
-                     * and a fatal config error in device scope. The old comment
-                     * said both must be updated together, which is exactly the
-                     * job of one function. normalizeCoreTypeName() rejects
-                     * unknown names itself, with the same message. */
-                    config.pe_type = normalizeCoreTypeName(config.pe_type);
-                    // PE frequency (alternative to system.frequency_mhz)
-                    if (yaml_cfg["pim"]["pe"]["frequency_mhz"])
-                        config.frequency_mhz = yamlInt(yaml_cfg["pim"]["pe"]["frequency_mhz"],
-                                                       config.frequency_mhz, "pim.pe.frequency_mhz");
-
-                    /* 1.9.32: the compute unit's datapath. Every configuration
-                     * written before this release omits all four and gets the
-                     * documented defaults, so no existing config changes
-                     * meaning. */
-                    config.pe_lanes = yamlInt(yaml_cfg["pim"]["pe"]["lanes"], config.pe_lanes, "pim.pe.lanes");
-                    config.pe_has_fp = yamlBool(yaml_cfg["pim"]["pe"]["floating_point"], config.pe_has_fp, "pim.pe.floating_point");
-                    config.pe_fp_emul_cycles = yamlU32(yaml_cfg["pim"]["pe"]["fp_emulation_cycles"],
-                                                       config.pe_fp_emul_cycles,
-                                                       "pim.pe.fp_emulation_cycles");                     /* 1.11.47 (L203): null_core has NO timing model, so a
-                     * soft-float timing charge cannot mean anything there.
-                     * Refused rather than silently accepted-and-ignored. */
-                    if (!config.pe_has_fp && config.pe_type == "null_core") {
-                        std::cerr << "ERROR: pim.pe.floating_point=false with "
-                                     "pe.type=null_core -- the null core has no "
-                                     "timing model to charge FP emulation on. "
-                                     "Use a timing core type." << std::endl;
-                        return 1;
-                    }
- // 1.11.11
-                    if (yaml_cfg["pim"]["pe"]["element_bits"]) {
-                        std::cerr << "Error: pim.pe.element_bits was withdrawn. The "
-                                  << "element's datapath width is pim.pe.operand_width, "
-                                  << "which the timing model already reads; a second "
-                                  << "name for it let the two halves disagree.\n";
-                        return 1;
-                    }
-                    config.pe_imem_bytes =
-                        yamlInt(yaml_cfg["pim"]["pe"]["imem_bytes"], config.pe_imem_bytes, "pim.pe.imem_bytes");
-                    if (config.pe_lanes < 1) {
-                        std::cerr << "Error: pim.pe.lanes must be at least 1 (got "
-                                  << config.pe_lanes << ").\n";
-                        return 1;
-                    }
-                    // ALU scaling factors
-                    config.alu_compute_factor = yamlDouble(yaml_cfg["pim"]["pe"]["compute_factor"], config.alu_compute_factor, "pim.pe.compute_factor");
-                    config.alu_access_factor = yamlDouble(yaml_cfg["pim"]["pe"]["access_factor"], config.alu_access_factor, "pim.pe.access_factor");
-                    config.alu_throughput_factor = yamlDouble(yaml_cfg["pim"]["pe"]["throughput_factor"], config.alu_throughput_factor, "pim.pe.throughput_factor");
-                    config.alu_operand_width = yamlInt(yaml_cfg["pim"]["pe"]["operand_width"], config.alu_operand_width, "pim.pe.operand_width");
-                    /* 1.9.40: validated now that it reaches the power model too.
-                     * It was previously read only by the bit-serial cycle
-                     * charge, which clamps with max(w,1), so a zero was merely
-                     * inert; it now sizes register files and buses, where a
-                     * zero-bit array aborts the array model outright. */
-                    if (config.alu_operand_width < 1) {
-                        std::cerr << "Error: pim.pe.operand_width must be at least 1 (got "
-                                  << config.alu_operand_width << ").\n";
-                        return 1;
-                    }
-                    config.alu_bit_serial = yamlBool(yaml_cfg["pim"]["pe"]["bit_serial"], config.alu_bit_serial, "pim.pe.bit_serial");
-                    config.alu_energy_factor = yamlDouble(yaml_cfg["pim"]["pe"]["energy_factor"], config.alu_energy_factor, "pim.pe.energy_factor");
-                    // In-order PE issue width (in_order_core only; default 2)
-                    config.inorder_issue_width = yamlInt(yaml_cfg["pim"]["pe"]["issue_width"], config.inorder_issue_width, "pim.pe.issue_width");
-                    /* 1.11.94 (sweep-94 row 20 (a)): architectural register counts as knobs.
-                     * Default 32/32 is today's value; the simulated guest ISA is x86-64
-                     * (16 + 16), which R5 makes the default. A non-default prints that
-                     * the timing model executes x86-64 regardless. */
-                    if (yaml_cfg["pim"]["pe"]["arch_int_regs"]) {
-                        config.arch_int_regs = yamlInt(yaml_cfg["pim"]["pe"]["arch_int_regs"], 32, "pim.pe.arch_int_regs");
-                        if (config.arch_int_regs < 1) { std::cerr << "Error: pim.pe.arch_int_regs must be >= 1" << std::endl; return 1; }
-                        std::cout << "  [power] architectural integer registers " << config.arch_int_regs << " (pim.pe.arch_int_regs, user's choice; the timing model executes x86-64 regardless)" << std::endl;
-                    }
-                    if (yaml_cfg["pim"]["pe"]["arch_fp_regs"]) {
-                        config.arch_fp_regs = yamlInt(yaml_cfg["pim"]["pe"]["arch_fp_regs"], 32, "pim.pe.arch_fp_regs");
-                        if (config.arch_fp_regs < 1) { std::cerr << "Error: pim.pe.arch_fp_regs must be >= 1" << std::endl; return 1; }
-                        std::cout << "  [power] architectural FP registers " << config.arch_fp_regs << " (pim.pe.arch_fp_regs, user's choice; the timing model executes x86-64 regardless)" << std::endl;
-                    }
-
-                    /* 1.9.40: the two halves must agree about what the element
-                     * is. Both checks below are placed AFTER the scaling factors
-                     * are parsed, because each compares a power-model
-                     * description against a timing-model one. */
-
-                    /* An element described as wide in power but scalar in
-                     * timing. lanes replicates the arithmetic, the register file
-                     * and the result bus in the power model; the timing model
-                     * expresses the same width through throughput_factor, which
-                     * divides the per-instruction cost. Declaring lanes without
-                     * throughput_factor gives an element that PAYS for W lanes
-                     * and RUNS like one. That is a legitimate thing to model
-                     * deliberately (a wide datapath the code fails to use), so
-                     * this warns rather than refuses -- but silently is exactly
-                     * how the previous defects happened. */
-                    if (config.pe_lanes > 1 && config.alu_throughput_factor <= 1.0) {
-                        std::cerr << "[config] WARNING: pim.pe.lanes=" << config.pe_lanes
-                                  << " widens the POWER description (one arithmetic unit "
-                                  << "and register file per lane) but throughput_factor is "
-                                  << config.alu_throughput_factor << ", so the TIMING model "
-                                  << "still charges a scalar element. The result is an "
-                                  << "element that pays for " << config.pe_lanes
-                                  << " lanes and runs like one. Set throughput_factor to "
-                                  << "match unless the serialisation is intended.\n";
-                    }
-
-                    /* An element described without floating point, running
-                     * floating-point kernels. Removing the FPU from the power
-                     * description does NOT make the timing model emulate
-                     * floating point in software, which is what a real part
-                     * lacking an FPU would have to do -- tens to hundreds of
-                     * operations per operation. So this is honest for an
-                     * integer kernel and not honest for a floating-point one,
-                     * and the model cannot tell which it is about to run. */
-                    if (!config.pe_has_fp) {
-                        std::cerr << "[config] pim.pe.floating_point=false: the element "
-                                  << "has no FP unit. Since 1.11.10 the timing model CAN "
-                                  << "see FP-class instructions, so the run will report "
-                                  << "how many executed";
-                        if (config.pe_fp_emul_cycles > 0) {
-                            std::cerr << " and charge " << config.pe_fp_emul_cycles
-                                      << " cycles each as soft-float emulation.\n";
-                        } else {
-                            std::cerr << ", but charge nothing for them "
-                                      << "(pim.pe.fp_emulation_cycles=0). Honest for a "
-                                      << "kernel with no FP; for one that has FP, set the "
-                                      << "knob or the element runs code it has no unit "
-                                      << "for at full speed.\n";
-                        }
-                    }
-                }
-                // placement can live either at pim.placement (older flat form)
-                // or pim.pe.placement (newer nested form, used by README and
-                // YAML_REFERENCE examples). Accept both; nested overrides flat.
-                auto placement_node = yaml_cfg["pim"]["placement"];
-                std::string placement_path = "pim.placement";   // 1.11.90: for messages
-                if (yaml_cfg["pim"]["pe"] && yaml_cfg["pim"]["pe"]["placement"]) {
-                    placement_node = yaml_cfg["pim"]["pe"]["placement"];
-                    placement_path = "pim.pe.placement";
-                }
-                if (placement_node) {
-                    config.placement_level = yamlString(placement_node["level"], config.placement_level, placement_path + ".level");
-                    // Connection mode: shared_io (default) or separate_endpoints
-                    if (placement_node["connection"]) {
-                        std::string conn = yamlStringReq(placement_node["connection"], placement_path + ".connection");
-                        /* 1.11.85 (R6-20): the else-branch below used to
-                         * absorb EVERY unrecognised value into shared_io
-                         * without a word, so `separate_endpoint` (singular)
-                         * silently ran the opposite connectivity. */
-                        if (conn != "separate_endpoints" && conn != "shared_io") {
-                            std::cerr << "Error: pim.placement.connection '"
-                                      << conn << "' is not a connectivity mode"
-                                         " this build has. Valid values are"
-                                         " shared_io (the PE shares the memory"
-                                         " organisation's network interface)"
-                                         " and separate_endpoints (the PE has"
-                                         " its own). An unrecognised value used"
-                                         " to fall through to shared_io in"
-                                         " silence." << std::endl;
-                            std::exit(2);
-                        }
-                        if (conn == "separate_endpoints")
-                            config.pe_mem_connection = UnifiedConfig::PEMemConnectionMode::SEPARATE_ENDPOINTS;
-                        else
-                            config.pe_mem_connection = UnifiedConfig::PEMemConnectionMode::SHARED_IO;
-                    }
-                    config.local_link_latency = yamlInt(placement_node["local_link_latency"], config.local_link_latency, placement_path + ".local_link_latency");
-                }
-                // PE-to-memory-org mapping (M:N connectivity)
-                if (yaml_cfg["pim"]["mapping"]) {
-                    auto mapping = yaml_cfg["pim"]["mapping"];
-                    std::string mode = yamlString(mapping["mode"], "uniform", "pim.mapping.mode");
-                    if (mode != "uniform" && mode != "explicit")   // 1.11.90
-                        refuseEnum("pim.mapping.mode", mode, "uniform, explicit",
-                                   "leave the PE-to-memory map at its default");
-                    if (mode == "uniform") {
-                        int pes_per_mo = yamlInt(mapping["pes_per_mem_org"], 0, "pim.mapping.pes_per_mem_org");
-                        int mos_per_pe = yamlInt(mapping["mem_orgs_per_pe"], 0, "pim.mapping.mem_orgs_per_pe");
-                        // Defer actual map generation to autoGeneratePEMemMap()
-                        // Store ratios temporarily in pe_mem_map as empty with sentinel
-                        if (pes_per_mo > 0) {
-                            // M:1 -- multiple PEs per mem org
-                            // We'll build the map after we know total_mem_orgs
-                            config.pe_mem_map.clear();
-                            // Use negative pe_id as sentinel: -pes_per_mo
-                            config.pe_mem_map.push_back({-pes_per_mo, {}});
-                        } else if (mos_per_pe > 0) {
-                            // 1:N -- one PE manages multiple mem orgs
-                            config.pe_mem_map.clear();
-                            config.pe_mem_map.push_back({-1, std::vector<int>(mos_per_pe, -1)});
-                        }
-                    } else if (mode == "explicit") {
-                        config.pe_mem_map.clear();
-                        if (mapping["map"]) {
-                            for (const auto& entry : mapping["map"]) {
-                                UnifiedConfig::PEMemMapping m;
-                                m.pe_id = entry["pe"].as<int>();
-                                if (entry["mem_orgs"].IsSequence()) {
-                                    for (const auto& mo : entry["mem_orgs"])
-                                        m.mem_org_ids.push_back(mo.as<int>());
-                                }
-                                config.pe_mem_map.push_back(m);
-                            }
-                        }
-                    }
-                }
-                // PE-MI distributed memory interface config
-                if (yaml_cfg["pim"]["mc"]) {
-                    config.pg_mc = yamlBool(yaml_cfg["pim"]["mc"]["pg"], config.pg_mc, "pim.mc.pg");  // 1.11.8
-                    config.pe_mc_enabled = true;
-                    auto mc = yaml_cfg["pim"]["mc"];
-                    config.mc_clock_gear = yamlInt(mc["clock_gear"], config.mc_clock_gear, "pim.mc.clock_gear");   // 1.11.96 (14c)
-                    config.mc_epoch_replay = yamlBool(mc["epoch_replay"], config.mc_epoch_replay, "pim.mc.epoch_replay");   // 1.11.98 (4c)
-                    if (config.mc_clock_gear != 1 && config.mc_clock_gear != 2) {
-                        std::cerr << "Error: pim.mc.clock_gear = " << config.mc_clock_gear << "; the controller clock is the DRAM preset's CK x 1 (on-die) or x 2 (a gear-2 controller)." << std::endl;
-                        return 1;
-                    }
-                    config.pe_mc_type = yamlString(mc["type"], config.pe_mc_type, "pim.mc.type");
-                    /* 1.9.35: the key reads as a choice but there is exactly one
-                     * implementation. The old SimplePEMemoryController and
-                     * MD1PEMemoryController were merged, and M/D/1 queuing is
-                     * always active, so any value here yields the same model.
-                     * Say so rather than letting a config claim a mode it did
-                     * not get. */
-                    if (config.pe_mc_type != "simple" && !config.pe_mc_type.empty()) {
-                        std::cout << "  [config] WARNING: pim.mc.type = '"
-                                  << config.pe_mc_type << "' is accepted but has no "
-                                     "separate implementation; the PE memory interface "
-                                     "always uses the merged coverage-routing + "
-                                     "hierarchy-traversal + M/D/1 model." << std::endl;
-                    }
-                    if (mc["pes_per_mc"]) {
-                        config.pes_per_mc = mc["pes_per_mc"].as<int>();
-                        config.pes_per_mc_user_set = true;
-                    }
-                    if (mc["local_latency"])
-                        config.pe_mc_local_latency = mc["local_latency"].as<int>();
-                    if (mc["bandwidth_mbs"])
-                        config.pe_mc_bandwidth_mbs = mc["bandwidth_mbs"].as<int>();
-
-                    // MC placement: with_core (default) or standalone NoC endpoint
-                    if (mc["placement"]) {
-                        std::string pl = yamlStringReq(mc["placement"], "pim.mc.placement");
-                        if (pl != "standalone" && pl != "with_core")   // 1.11.90
-                            refuseEnum("pim.mc.placement", pl, "with_core, standalone",
-                                       "run with_core");
-                        config.mc_standalone = (pl == "standalone");
-                    }
-
-                    // Per-group overrides
-                    if (mc["groups"]) {
-                        for (const auto& grp : mc["groups"]) {
-                            UnifiedConfig::PEMCGroupOverride ov;
-                            if (grp["id"].IsSequence()) {
-                                for (const auto& id : grp["id"])
-                                    ov.ids.push_back(id.as<int>());
-                            } else if (grp["id"]) {
-                                ov.ids.push_back(grp["id"].as<int>());
-                            }
-                            /* 1.11.57 (latent B032): the per-group `type` key
-                             * was parsed into a field with no reader -- the
-                             * per-group emitter writes bandwidthMBs and
-                             * localLatency and nothing else -- so a config
-                             * that gave one MC group a different controller
-                             * got the same controller as every other group,
-                             * silently. The GLOBAL pim.mc.type at least warns
-                             * that it has no separate implementation (see the
-                             * 1.9.35 note above); the per-group copy did not
-                             * even do that. Same warning here, in the same
-                             * terms, rather than a field that stores an
-                             * answer nobody asks for. */
-                            if (grp["type"]) {
-                                std::string gt = yamlStringReq(grp["type"], "pim.mc.groups[].type");
-                                if (gt != "simple" && !gt.empty())
-                                    std::cout << "  [config] WARNING: "
-                                                 "pim.mc.groups[].type = '" << gt
-                                              << "' is accepted but has no "
-                                                 "separate implementation, and "
-                                                 "nothing in the emitted per-"
-                                                 "group block carries it. Every "
-                                                 "group uses the merged "
-                                                 "coverage-routing + hierarchy-"
-                                                 "traversal + M/D/1 model."
-                                              << std::endl;
-                            }
-                            if (grp["local_latency"])
-                                ov.local_latency = grp["local_latency"].as<int>();
-                            if (grp["bandwidth_mbs"])
-                                ov.bandwidth_mbs = grp["bandwidth_mbs"].as<int>();
-                            config.pe_mc_group_overrides.push_back(ov);
-                        }
-                    }
-                }
-            }
+            // Load PE configuration (1.11.107: the device-scope parse, shared with a system device node)
+            DeviceParseScope top_sc;
+            top_sc.cache_mode = &yaml_cache_mode;
+            top_sc.cache_dir = &yaml_cache_dir;
+            if (parseDevicePimBlock(yaml_cfg, config, top_sc) != 0) return 1;
 
             // Load system configuration
             if (yaml_cfg["system"]) {
@@ -15958,461 +17044,8 @@ int main(int argc, char** argv) {
                 config.tech_node_nm = yamlInt(yaml_cfg["system"]["tech_node_nm"], config.tech_node_nm, "system.tech_node_nm");
             }
 
-            // Alternative technology section (technology.node_nm)
-            if (yaml_cfg["technology"] && yaml_cfg["technology"]["node_nm"]) {
-                config.tech_node_nm = yaml_cfg["technology"]["node_nm"].as<int>();
-            }
-
-            /* 1.11.97: core part record overrides (params/core/default.yaml
-             * holds the sourced defaults; applyCoreRecord() fills what is
-             * absent here and range-checks what is present). */
-            if (yaml_cfg["core"]) {
-                const YAML::Node c = yaml_cfg["core"];
-                if (c["in_order"]) {
-                    config.core_inorder_mispredict_penalty = yamlInt(c["in_order"]["mispredict_penalty_cycles"], config.core_inorder_mispredict_penalty, "core.in_order.mispredict_penalty_cycles");
-                    config.core_inorder_resteer_penalty = yamlInt(c["in_order"]["resteer_penalty_cycles"], config.core_inorder_resteer_penalty, "core.in_order.resteer_penalty_cycles");
-                }
-                if (c["ooo"]) {
-                    config.core_ooo_mispredict_penalty = yamlInt(c["ooo"]["mispredict_penalty_cycles"], config.core_ooo_mispredict_penalty, "core.ooo.mispredict_penalty_cycles");
-                    config.core_ooo_fetch_width_bytes = yamlInt(c["ooo"]["fetch_width_bytes"], config.core_ooo_fetch_width_bytes, "core.ooo.fetch_width_bytes");
-                }
-            }
-
-            // Load cache configuration
-            if (yaml_cfg["cache"]) {
-                // Characterization-cache warehouse settings (mode/dir). These feed
-                // cache::configure() after parsing; precedence is resolved there.
-                if (yaml_cfg["cache"]["mode"]) {
-                    yaml_cache_mode = yamlString(yaml_cfg["cache"]["mode"], "", "cache.mode");
-                } else if (yaml_cfg["cache"]["enabled"] &&
-                           !yamlBool(yaml_cfg["cache"]["enabled"], true, "cache.enabled")) {
-                    // cache.enabled: false -> treat as mode "off" (only if mode unset)
-                    yaml_cache_mode = "off";
-                }
-                if (yaml_cfg["cache"]["dir"]) {
-                    yaml_cache_dir = yamlString(yaml_cfg["cache"]["dir"], "", "cache.dir");
-                }
-                if (yaml_cfg["cache"]["l1d"]) {
-                    config.l1d_size_kb = yamlInt(yaml_cfg["cache"]["l1d"]["size_kb"], config.l1d_size_kb, "cache.l1d.size_kb");
-                    config.l1d_ways = yamlInt(yaml_cfg["cache"]["l1d"]["ways"], config.l1d_ways, "cache.l1d.ways");
-                    config.l1d_banks = yamlInt(yaml_cfg["cache"]["l1d"]["banks"], config.l1d_banks, "cache.l1d.banks");   // 1.11.95
-                }
-                if (yaml_cfg["cache"]["l1i"]) {
-                    config.l1i_size_kb = yamlInt(yaml_cfg["cache"]["l1i"]["size_kb"], config.l1i_size_kb, "cache.l1i.size_kb");
-                    config.l1i_ways = yamlInt(yaml_cfg["cache"]["l1i"]["ways"], config.l1i_ways, "cache.l1i.ways");
-                    config.l1i_banks = yamlInt(yaml_cfg["cache"]["l1i"]["banks"], config.l1i_banks, "cache.l1i.banks");   // 1.11.95
-                }
-                if (yaml_cfg["cache"]["pg"])   // 1.11.94 (sweep-94 row 20 (a)): shared caches gate on their own flag; 1.11.106 (census N1): read outside the l2 block
-                    config.pg_cache = yamlBool(yaml_cfg["cache"]["pg"], false, "cache.pg") ? 1 : 0;
-                if (yaml_cfg["cache"]["l2"]) {
-                    config.enable_l2 = yamlBool(yaml_cfg["cache"]["l2"]["enabled"], config.enable_l2, "cache.l2.enabled");
-                    config.l2_size_kb = yamlInt(yaml_cfg["cache"]["l2"]["size_kb"], config.l2_size_kb, "cache.l2.size_kb");
-                    config.l2_ways = yamlInt(yaml_cfg["cache"]["l2"]["ways"], config.l2_ways, "cache.l2.ways");
-                    config.l2_banks = yamlInt(yaml_cfg["cache"]["l2"]["banks"], config.l2_banks, "cache.l2.banks");   // 1.11.95
-                    config.l2_count = yamlInt(yaml_cfg["cache"]["l2"]["count"], config.l2_count, "cache.l2.count");
-                }
-                if (yaml_cfg["cache"]["l3"]) {
-                    config.enable_l3 = yamlBool(yaml_cfg["cache"]["l3"]["enabled"], config.enable_l3, "cache.l3.enabled");
-                    config.l3_size_kb = yamlInt(yaml_cfg["cache"]["l3"]["size_kb"], config.l3_size_kb, "cache.l3.size_kb");
-                    config.l3_ways = yamlInt(yaml_cfg["cache"]["l3"]["ways"], config.l3_ways, "cache.l3.ways");
-                    config.l3_banks = yamlInt(yaml_cfg["cache"]["l3"]["banks"], config.l3_banks, "cache.l3.banks");   // 1.11.95
-                }
-
-                // Parse cache timing/energy/power overrides
-                if (yaml_cfg["cache"]["l1d"]) {
-                    auto n = yaml_cfg["cache"]["l1d"];
-                    if (n["latency_ns"]) config.l1d_params.latency_ns = n["latency_ns"].as<double>();
-                    if (n["energy_nj"])  config.l1d_params.energy_nj = n["energy_nj"].as<double>();
-                    if (n["static_power_mw"]) config.l1d_params.static_power_mw = n["static_power_mw"].as<double>();
-                }
-                if (yaml_cfg["cache"]["l1i"]) {
-                    auto n = yaml_cfg["cache"]["l1i"];
-                    if (n["latency_ns"]) config.l1i_params.latency_ns = n["latency_ns"].as<double>();
-                    if (n["energy_nj"])  config.l1i_params.energy_nj = n["energy_nj"].as<double>();
-                    if (n["static_power_mw"]) config.l1i_params.static_power_mw = n["static_power_mw"].as<double>();
-                }
-                if (yaml_cfg["cache"]["l2"]) {
-                    auto n = yaml_cfg["cache"]["l2"];
-                    if (n["latency_ns"]) config.l2_params.latency_ns = n["latency_ns"].as<double>();
-                    if (n["energy_nj"])  config.l2_params.energy_nj = n["energy_nj"].as<double>();
-                    if (n["static_power_mw"]) config.l2_params.static_power_mw = n["static_power_mw"].as<double>();
-                }
-                if (yaml_cfg["cache"]["l3"]) {
-                    auto n = yaml_cfg["cache"]["l3"];
-                    if (n["latency_ns"]) config.l3_params.latency_ns = n["latency_ns"].as<double>();
-                    if (n["energy_nj"])  config.l3_params.energy_nj = n["energy_nj"].as<double>();
-                    if (n["static_power_mw"]) config.l3_params.static_power_mw = n["static_power_mw"].as<double>();
-                }
-
-                // Check if user provided complete overrides for all active cache levels
-                config.use_yaml_cache_params =
-                    config.l1d_params.isComplete() &&
-                    config.l1i_params.isComplete() &&
-                    (!config.enable_l2 || config.l2_params.isComplete()) &&
-                    (!config.enable_l3 || config.l3_params.isComplete());
-
-                if (!config.use_yaml_cache_params) {
-                    // Check if any partial params were provided
-                    bool any_provided =
-                        config.l1d_params.latency_ns > 0 || config.l1d_params.energy_nj > 0 || config.l1d_params.static_power_mw > 0 ||
-                        config.l1i_params.latency_ns > 0 || config.l1i_params.energy_nj > 0 || config.l1i_params.static_power_mw > 0 ||
-                        config.l2_params.latency_ns > 0 || config.l2_params.energy_nj > 0 || config.l2_params.static_power_mw > 0 ||
-                        config.l3_params.latency_ns > 0 || config.l3_params.energy_nj > 0 || config.l3_params.static_power_mw > 0;
-                    if (any_provided) {
-                        std::cerr << "Warning: Partial YAML cache params provided.\n"
-                                  << "To override CACTI, provide ALL 3 params (latency_ns, energy_nj, static_power_mw)\n"
-                                  << "for ALL active cache levels (l1d, l1i"
-                                  << (config.enable_l2 ? ", l2" : "")
-                                  << (config.enable_l3 ? ", l3" : "") << ").\n"
-                                  << "Using CACTI-derived cache latencies instead.\n";
-                        std::cerr.flush();
-                    }
-                }
-            }
-
-            // Load NoC configuration
-            if (yaml_cfg["noc"]) {
-                config.pg_noc = yamlBool(yaml_cfg["noc"]["pg"], config.pg_noc, "noc.pg");  // 1.11.8
-                if (yaml_cfg["noc"]["topology"]) config.noc_topology_user_set = true;
-                config.noc_topology = yamlString(yaml_cfg["noc"]["topology"], config.noc_topology, "noc.topology");
-                std::transform(config.noc_topology.begin(), config.noc_topology.end(),
-                               config.noc_topology.begin(), ::toupper);
-                if (config.noc_topology == "MESH") config.noc_topology = "MESH_2D";   // 1.11.106: the documented alias
-                {   /* 1.11.106 (census S3): one accepted list for every family. A DRAM device
-                     * applies its own rule below (the tree, the in-die fabric of 1.11.103, the
-                     * refusals); an SRAM/NVM device used to run an unknown word as a 1 x N mesh
-                     * with XY routing in silence. */
-                    static const std::set<std::string> kTopos = { "MESH_2D", "TORUS_2D", "RING", "CROSSBAR", "FAT_TREE", "BUS", "H_TREE", "CUSTOM" };
-                    if (config.noc_topology_user_set && !kTopos.count(config.noc_topology))
-                        refuseEnum("noc.topology", config.noc_topology,
-                                   "MESH_2D (alias MESH), TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM",
-                                   "run a 1 x N mesh with XY routing on an SRAM/NVM device");
-                }
-                config.noc_router_latency = yamlInt(yaml_cfg["noc"]["router_latency"], config.noc_router_latency, "noc.router_latency");
-                config.noc_link_latency = yamlInt(yaml_cfg["noc"]["link_latency"], config.noc_link_latency, "noc.link_latency");
-
-                // Parse noc.model. The lineup is exactly TWO models -- no aliases:
-                //   "analytical" -> closed-form hop-count + M/D/1 + MLP (see noc.mlp)
-                //   "detailed"   -> cycle-accurate Garnet
-                if (yaml_cfg["noc"]["model"]) {
-                    std::string noc_model = yamlStringReq(yaml_cfg["noc"]["model"], "noc.model");
-                    if (noc_model == "detailed") {
-                        config.noc_cycle_accurate = true;
-                        config.noc_mlp_model = 0;
-                    } else if (noc_model == "analytical") {
-                        config.noc_cycle_accurate = false;
-                        config.noc_mlp_model = 1;
-                    } else {
-                        std::cerr << "Error: unknown noc.model '" << noc_model
-                                  << "'. Valid: analytical | detailed" << std::endl;
-                        return 1;
-                    }
-                    // Propagate to per-level network models ("simple" is the
-                    // INTERNAL name of the per-level analytical path).
-                    std::string effective_model = noc_model;
-                    if (effective_model == "analytical")
-                        effective_model = "simple";
-                    for (int i = 0; i < 7; ++i) {
-                        config.network_level_model[i] = effective_model;
-                    }
-                }
-                // noc.mlp: M, the PE outstanding-access window for the 'mlp' model.
-                if (yaml_cfg["noc"]["mlp"]) {
-                    config.noc_mlp_degree = yamlInt(yaml_cfg["noc"]["mlp"], config.noc_mlp_degree, "noc.mlp");
-                    if (config.noc_mlp_degree < 1) {   // 1.11.106 (census N3): used to be clamped to 1 in silence
-                        std::cerr << "[config] FATAL: noc.mlp = " << config.noc_mlp_degree << " is not a positive outstanding-access window." << std::endl;
-                        std::exit(2);
-                    }
-                }
-                // (the legacy noc.cycle_accurate boolean key was removed --
-                //  noc.model: analytical | detailed is the only selector)
-                config.noc_routing = yamlString(yaml_cfg["noc"]["routing"], config.noc_routing, "noc.routing");
-                /* 1.11.85 (R6-20): an unknown routing algorithm was accepted
-                 * and then ignored, the run falling back to whatever the
-                 * topology derives. Empty stays legal and means "derive". */
-                if (!config.noc_routing.empty()) {
-                    static const char* kRouting[] = {"XY", "DOR", "TABLE", "CUSTOM",
-                                                     "SHORTEST", "NCA", "DIRECT"};
-                    bool known = false;
-                    for (const char* r : kRouting)
-                        if (config.noc_routing == r) { known = true; break; }
-                    if (!known) {
-                        std::cerr << "Error: noc.routing '" << config.noc_routing
-                                  << "' is not a routing algorithm this build"
-                                     " has. Valid values are XY, DOR, TABLE,"
-                                     " CUSTOM, SHORTEST, NCA and DIRECT; leave"
-                                     " it empty to derive one from the"
-                                     " topology. An unrecognised value used to"
-                                     " be accepted and then ignored."
-                                  << std::endl;
-                        std::exit(2);
-                    }
-                }
-                std::transform(config.noc_routing.begin(), config.noc_routing.end(),
-                               config.noc_routing.begin(), ::toupper);
-                if (yaml_cfg["noc"]["vcs_per_vnet"]) config.noc_vcs_user_set = true;
-                config.noc_vcs_per_vnet = yamlInt(yaml_cfg["noc"]["vcs_per_vnet"], config.noc_vcs_per_vnet, "noc.vcs_per_vnet");
-                // Accept both virtual_channels_per_vn and vcs_per_vnet
-                if (yaml_cfg["noc"]["virtual_channels_per_vn"]) {
-                    config.noc_vcs_per_vnet = yaml_cfg["noc"]["virtual_channels_per_vn"].as<int>();
-                    config.noc_vcs_user_set = true;
-                }
-                if (yaml_cfg["noc"]["buffers_per_vc"]) config.noc_buffers_user_set = true;
-                config.noc_buffers_per_vc = yamlInt(yaml_cfg["noc"]["buffers_per_vc"], config.noc_buffers_per_vc, "noc.buffers_per_vc");
-                /* 1.11.56 (audit B049): say what this key actually does.
-                 *
-                 * noc.clock_mhz reads as a NoC-fabric frequency override; it
-                 * sets config.frequency_mhz, which is sys.frequency -- the PE
-                 * clock, the divisor of every ns-to-cycle conversion in the
-                 * device path, the clock McPAT prices the core at, and the
-                 * device bandwidth clock. And because the noc: block is
-                 * parsed AFTER system:, it silently overrode an explicit
-                 * system.frequency_mhz. This tree has no separate NoC clock
-                 * domain to set, so the key keeps its effect and stops being
-                 * a misdescription: the run states that the device clock
-                 * moved, and names the key it overrode. */
-                if (yaml_cfg["noc"]["clock_mhz"]) {
-                    int noc_clk = yaml_cfg["noc"]["clock_mhz"].as<int>();
-                    std::cout << "[config] NOTE: noc.clock_mhz = " << noc_clk
-                              << " sets the WHOLE device clock (sys.frequency), "
-                                 "not a separate NoC domain -- this tree models "
-                                 "one clock for the element, its caches and its "
-                                 "fabric. It was " << config.frequency_mhz
-                              << " MHz";
-                    if (yaml_cfg["system"] && yaml_cfg["system"]["frequency_mhz"])
-                        std::cout << ", set explicitly by system.frequency_mhz, "
-                                     "which this key overrides";
-                    if (yaml_cfg["pim"] && yaml_cfg["pim"]["pe"] && yaml_cfg["pim"]["pe"]["frequency_mhz"])   // 1.11.106 (census B5 note)
-                        std::cout << ", set explicitly by pim.pe.frequency_mhz, "
-                                     "which this key overrides";
-                    std::cout << "." << std::endl;
-                    config.frequency_mhz = noc_clk;
-                }
-                /* 1.11.57 (latent B036): the two lines that used to sit here
-                 * said the key was "accepted (stored for synthetic)". It was
-                 * never parsed -- there is no read of noc.flit_size_bits
-                 * anywhere, only the Garnet STATS parser's identically named
-                 * field -- so a user setting it got no effect and no warning,
-                 * which is the shape of failure this pass exists to remove.
-                 *
-                 * Garnet's flit is fixed at 128 bits internally and this file
-                 * cannot change that, so the key cannot be wired up here. It is
-                 * accepted only at the value that is true (128), where it is a
-                 * harmless restatement of the fabric, and refused otherwise
-                 * rather than silently not applying. Three shipped test configs
-                 * declare 128 and keep working. */
-                /* 1.11.97 (sweep-94 row 18, user (a)): the flit width is a knob
-                 * and it REACHES Garnet (sys.network.flitSizeBits -> the fork's
-                 * ni_flit_size) and the topology emitter (a ladder rung runs at
-                 * its true width up to the flit; the clamp follows the knob, not
-                 * a literal 128). Default 128, Garnet's built-in flit. */
-                if (yaml_cfg["noc"]["flit_size_bits"]) {
-                    int fsb = yaml_cfg["noc"]["flit_size_bits"].as<int>();
-                    if (fsb < 8 || fsb > 4096 || (fsb % 8) != 0) {
-                        std::cerr << "Error: noc.flit_size_bits = " << fsb
-                                  << " must be a multiple of 8 bits between 8 and 4096 (Garnet's flit is sized in bytes)." << std::endl;
-                        return 1;
-                    }
-                    config.noc_flit_size_bits_cfg = fsb;
-                    std::cout << "  [noc] flit width " << fsb << " bits (noc.flit_size_bits, user's choice; the rung widths are clamped at the flit)" << std::endl;
-                }
-                config.noc_topology_file = yamlString(yaml_cfg["noc"]["topology_file"], config.noc_topology_file, "noc.topology_file");
-                config.noc_routing_table_file = yamlString(yaml_cfg["noc"]["routing_table_file"], config.noc_routing_table_file, "noc.routing_table_file");
-                // Message sizes in bits (0 = use defaults: control=64, data=576)
-                config.noc_control_msg_bits = yamlInt(yaml_cfg["noc"]["control_message_bits"], config.noc_control_msg_bits, "noc.control_message_bits");
-                /* 1.11.93: the key is read and reaches Garnet, but no call site
-                 * injects a Control message (one data packet per access; the
-                 * response is charged as 2 x one-way), so it steers nothing --
-                 * see the 1.11.92 open items. Said once per process, not
-                 * modelled. */
-                if (yaml_cfg["noc"]["control_message_bits"]) {
-                    static bool warned_ctrl_bits = false;
-                    if (!warned_ctrl_bits) {
-                        warned_ctrl_bits = true;
-                        std::cerr << "[config] WARNING: noc.control_message_bits is"
-                                     " accepted but inert in this release: every"
-                                     " fabric injection is a Data message" << std::endl;
-                    }
-                }
-                config.noc_data_msg_bits = yamlInt(yaml_cfg["noc"]["data_message_bits"], config.noc_data_msg_bits, "noc.data_message_bits");
-                if (yaml_cfg["noc"]["header_bits"]) {   // 1.11.94 (row 18 (a)): data message = line x 8 + header
-                    config.noc_header_bits = yamlInt(yaml_cfg["noc"]["header_bits"], config.noc_header_bits, "noc.header_bits");
-                    if (config.noc_header_bits < 0) { std::cerr << "Error: noc.header_bits must be >= 0" << std::endl; return 1; }
-                }
-
-                // Ring direction: "unidirectional"/"uni" or "bidirectional"/"bi" (default)
-                if (yaml_cfg["noc"]["ring_direction"]) {
-                    std::string dir = yamlStringReq(yaml_cfg["noc"]["ring_direction"], "noc.ring_direction");
-                    std::transform(dir.begin(), dir.end(), dir.begin(), ::tolower);
-                    if (dir != "unidirectional" && dir != "uni" &&
-                        dir != "bidirectional" && dir != "bi")   // 1.11.90
-                        refuseEnum("noc.ring_direction", dir,
-                                   "unidirectional (uni), bidirectional (bi); case-insensitive",
-                                   "run bidirectional");
-                    config.noc_ring_unidirectional = (dir == "unidirectional" || dir == "uni");
-                }
-
-                // Per-level overrides (under noc.levels)
-                if (yaml_cfg["noc"]["levels"]) {
-                    const auto& levels = yaml_cfg["noc"]["levels"];
-                    const std::array<std::string, 7> level_keys = {
-                        "subarray", "bank", "bank_group", "chip", "rank", "channel", "system"
-                    };
-                    for (int i = 0; i < 7; ++i) {
-                        /* 1.11.74: noc.levels L0 accepts the family's word --
-                         * subarray (DRAM; legacy on SRAM/NVM), subbank (SRAM),
-                         * mat (NVM). One key only; family-checked later. */
-                        std::string key = level_keys[i];
-                        if (i == 0) {
-                            int nk = 0;
-                            for (const char* k : {"subarray", "subbank", "mat"}) if (levels[k]) { key = k; ++nk; }
-                            if (nk > 1) {
-                                std::cerr << "FATAL: noc.levels.subarray / subbank / mat name the same "
-                                             "level; give exactly one." << std::endl;
-                                std::exit(2);
-                            }
-                            if (nk == 1) config.l0_level_key = key;
-                        }
-                        if (levels[key]) {
-                            const auto& lv = levels[key];
-                            if (lv["model"]) {
-                                config.network_level_model[i] = yamlStringReq(lv["model"], "noc.levels." + key + ".model");
-                                config.network_level_model_user_set[i] = true;  // 1.11.56 (B058)
-                            }
-                            if (lv["link_width_bits"])
-                                config.network_level_overrides[i].link_width_bits = lv["link_width_bits"].as<int>();
-                            if (lv["frequency_ghz"])
-                                config.network_level_overrides[i].frequency_ghz = lv["frequency_ghz"].as<double>();
-                            if (lv["latency_cycles"])
-                                config.network_level_overrides[i].latency_cycles = lv["latency_cycles"].as<int>();
-                            if (lv["topology"])
-                                config.network_level_overrides[i].topology = yamlStringReq(lv["topology"], "noc.levels." + key + ".topology");
-                            // Router params
-                            if (lv["router_latency"])
-                                config.network_level_overrides[i].router_latency = lv["router_latency"].as<int>();
-                            if (lv["router_pipeline"]) {
-                                std::string rp = yamlStringReq(lv["router_pipeline"], "noc.levels." + key + ".router_pipeline");
-                                if (rp == "full")           config.network_level_overrides[i].router_pipeline = 0;
-                                else if (rp == "reduced")   config.network_level_overrides[i].router_pipeline = 1;
-                                else if (rp == "simple")    config.network_level_overrides[i].router_pipeline = 2;
-                                else if (rp == "minimal")   config.network_level_overrides[i].router_pipeline = 3;
-                                else                        config.network_level_overrides[i].router_pipeline = lv["router_pipeline"].as<int>();
-                            }
-                            if (lv["router_bypass"])
-                                config.network_level_overrides[i].router_bypass = yamlBool(lv["router_bypass"], false, "noc.levels." + key + ".router_bypass") ? 1 : 0;
-                            if (lv["virtual_networks"])
-                                config.network_level_overrides[i].virtual_networks = lv["virtual_networks"].as<int>();
-                            if (lv["virtual_channels_per_vn"])
-                                config.network_level_overrides[i].virtual_channels_per_vn = lv["virtual_channels_per_vn"].as<int>();
-                            if (lv["input_buffer_depth"])
-                                config.network_level_overrides[i].input_buffer_depth = lv["input_buffer_depth"].as<int>();
-                            if (lv["output_buffer_depth"])
-                                config.network_level_overrides[i].output_buffer_depth = lv["output_buffer_depth"].as<int>();
-                        }
-                    }
-                }
-
-                // Per-boundary bridge overrides (under noc.bridges, backward compat: noc.gateways)
-                auto parse_bridge_overrides = [&](const YAML::Node& node) {
-                    const std::array<std::string, 6> br_keys = {
-                        "subarray_bank", "bank_bankgroup", "bankgroup_chip",
-                        "chip_rank", "rank_channel", "channel_system"
-                    };
-                    for (int i = 0; i < 6; ++i) {
-                        if (node[br_keys[i]]) {
-                            auto& ov = config.bridge_overrides[i];
-                            const auto& n = node[br_keys[i]];
-                            /* 1.11.57 (latent B030): REJECT the four bridge
-                             * keys nothing consumes.
-                             *
-                             * count, lower_frequency_mhz, upper_frequency_mhz
-                             * and fifo_depth were parsed into BridgeOverride
-                             * fields that have no reader anywhere:
-                             * overrideBridgeConfig() takes router latency,
-                             * pipeline, bypass, vnets, VCs and the two buffer
-                             * depths, and no bridge count, clock or FIFO depth.
-                             * A user who set them got a run that looked like it
-                             * had honoured them. Wiring them up is not possible
-                             * from this file -- the bridge model that would
-                             * consume them lives in the internal-network
-                             * library -- so the keys are refused at the point
-                             * they are read, which is the one outcome that
-                             * cannot mislead. */
-                            {
-                                static const char* kUnimplBridgeKeys[] = {
-                                    "count", "lower_frequency_mhz",
-                                    "upper_frequency_mhz", "fifo_depth" };
-                                for (const char* bk : kUnimplBridgeKeys) {
-                                    if (!n[bk]) continue;
-                                    std::cerr << "[config] FATAL: noc.bridges."
-                                              << br_keys[i] << "." << bk
-                                              << " is parsed but NOT IMPLEMENTED"
-                                                 " -- the bridge override "
-                                                 "interface carries router and "
-                                                 "link parameters only, so this "
-                                                 "key would change nothing in "
-                                                 "the emitted model. Remove it "
-                                                 "rather than run with a "
-                                                 "setting that does not apply."
-                                              << std::endl;
-                                    std::exit(2);
-                                }
-                            }
-                            // New dual-link fields
-                            if (n["lower_width_bits"])
-                                ov.lower_width_bits = n["lower_width_bits"].as<int>();
-                            if (n["upper_width_bits"])
-                                ov.upper_width_bits = n["upper_width_bits"].as<int>();
-                            if (n["latency_ns"])
-                                ov.latency_ns = n["latency_ns"].as<double>();
-                            // Legacy single-width fields (backward compat)
-                            if (n["width_bits"])
-                                ov.width_bits = n["width_bits"].as<int>();
-                            if (n["latency_cycles"])
-                                ov.latency_cycles = n["latency_cycles"].as<int>();
-                            // Independent bridge model
-                            if (n["model"]) {
-                                ov.model = yamlStringReq(n["model"], "noc.bridges." + br_keys[i] + ".model");
-                                if (!ov.model.empty() && ov.model != "auto" &&
-                                    ov.model != "simple" && ov.model != "md1" &&
-                                    ov.model != "analytical" &&
-                                    ov.model != "detailed")   // 1.11.90
-                                    refuseEnum("noc.bridges." + br_keys[i] + ".model",
-                                               ov.model,
-                                               "simple (analytical and md1 are aliases), detailed, auto or empty (derive)",
-                                               "run the auto-derived bridge model");
-                            }
-                            // Router params
-                            if (n["router_latency"])
-                                ov.router_latency = n["router_latency"].as<int>();
-                            if (n["router_pipeline"]) {
-                                std::string rp = yamlStringReq(n["router_pipeline"], "noc.bridges." + br_keys[i] + ".router_pipeline");
-                                if (rp == "full")           ov.router_pipeline = 0;
-                                else if (rp == "reduced")   ov.router_pipeline = 1;
-                                else if (rp == "simple")    ov.router_pipeline = 2;
-                                else if (rp == "minimal")   ov.router_pipeline = 3;
-                                else                        ov.router_pipeline = n["router_pipeline"].as<int>();
-                            }
-                            if (n["router_bypass"])
-                                ov.router_bypass = yamlBool(n["router_bypass"], false, "noc.bridges." + br_keys[i] + ".router_bypass") ? 1 : 0;
-                            if (n["virtual_networks"])
-                                ov.virtual_networks = n["virtual_networks"].as<int>();
-                            if (n["virtual_channels_per_vn"])
-                                ov.virtual_channels_per_vn = n["virtual_channels_per_vn"].as<int>();
-                            if (n["input_buffer_depth"])
-                                ov.input_buffer_depth = n["input_buffer_depth"].as<int>();
-                            if (n["output_buffer_depth"])
-                                ov.output_buffer_depth = n["output_buffer_depth"].as<int>();
-                        }
-                    }
-                };
-                if (yaml_cfg["noc"]["bridges"]) {
-                    parse_bridge_overrides(yaml_cfg["noc"]["bridges"]);
-                } else if (yaml_cfg["noc"]["gateways"]) {
-                    std::cerr << "WARNING: 'noc.gateways' is deprecated, use 'noc.bridges' instead\n";
-                    parse_bridge_overrides(yaml_cfg["noc"]["gateways"]);
-                }
-            }
+            // technology / core / cache / noc (1.11.107: the device-scope parse, shared with a system device node)
+            if (parseDeviceCoreCacheNocBlocks(yaml_cfg, config, top_sc) != 0) return 1;
 
                 /* 1.11.57 (audit round 3, A001): these keys are parsed HERE,
                  * at the top level of the config load, and not inside the
@@ -16544,205 +17177,8 @@ int main(int argc, char** argv) {
             std::exit(2);
         }
 
-    if (yaml_cfg["memory"]) {
-        if (yaml_cfg["memory"]["power_down"])
-            config.mem_power_down = yamlBool(yaml_cfg["memory"]["power_down"], config.mem_power_down, "memory.power_down");
-        if (yaml_cfg["memory"]["power_down_threshold_ns"])   // 1.11.51 (E17)
-            config.power_down_threshold_ns =
-                yamlDouble(yaml_cfg["memory"]["power_down_threshold_ns"], -1.0, "memory.power_down_threshold_ns");
-        /* 1.11.52: temperature knob; K wins if both given. Parsed ABOVE now
-         * (1.11.60 A005); these two lines are kept so a config that does have
-         * a memory: block behaves identically, and are harmless duplicates. */
-        if (yaml_cfg["power"] && yaml_cfg["power"]["temperature_c"])
-            config.temperature_k =
-                yamlInt(yaml_cfg["power"]["temperature_c"], 77, "power.temperature_c") + 273;
-        if (yaml_cfg["power"] && yaml_cfg["power"]["temperature_k"])
-            config.temperature_k =
-                yamlInt(yaml_cfg["power"]["temperature_k"], 350, "power.temperature_k");
-        if (yaml_cfg["memory"]["array_pg"])
-            config.mem_array_pg = yamlBool(yaml_cfg["memory"]["array_pg"], config.mem_array_pg, "memory.array_pg");
-    }
-
-            // Load memory configuration
-            if (yaml_cfg["memory"]) {
-                if (yaml_cfg["memory"]["dq_turnaround"])
-                    config.dq_turnaround_enabled =
-                        yamlBool(yaml_cfg["memory"]["dq_turnaround"], true, "memory.dq_turnaround");
-                config.memory_tech = canonicalMemTech(
-                    yamlString(yaml_cfg["memory"]["technology"], config.memory_tech, "memory.technology"));
-
-                // Reject unknown memory technologies up front rather than
-                // silently falling back to DDR4 (which would hide user typos
-                // and produce misleading results). HBM gen-1 was removed --
-                // use HBM2/HBM3. The whitelist is canonical-only: input is
-                // normalized by canonicalMemTech() before this check.
-                {
-                    static const std::set<std::string> kValidTechs = {
-                        "DDR3", "DDR4", "DDR5", "LPDDR5", "GDDR6", "HBM2", "HBM3",
-                        "SRAM", "STT_MRAM", "PCM", "RERAM"
-                    };
-                    if (kValidTechs.find(config.memory_tech) == kValidTechs.end()) {
-                        std::cerr << "ERROR: unknown memory technology '"
-                                  << config.memory_tech << "'.\n"
-                                  << "Supported: DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3, "
-                                  << "SRAM, STT_MRAM, PCM, ReRAM.\n"
-                                  << "(HBM gen-1 is not supported -- use HBM2 or HBM3.)\n";
-                        std::exit(1);
-                    }
-                }
-
-                config.num_banks = yamlInt(yaml_cfg["memory"]["banks"], config.num_banks, "memory.banks");
-                if (yaml_cfg["memory"]["bank_kb"]) {   // 1.11.94 (row 15): SRAM/NVM bank size, a part parameter
-                    int bkb = yamlInt(yaml_cfg["memory"]["bank_kb"], 64, "memory.bank_kb");
-                    if (bkb < 1) { std::cerr << "Error: memory.bank_kb must be >= 1" << std::endl; return 1; }
-                    g_bank_unit_bytes = static_cast<uint64_t>(bkb) * 1024ULL;
-                    std::cout << "  [memory] SRAM/NVM bank size " << bkb << " KB (memory.bank_kb, user's choice); device capacity = banks x bank size" << std::endl;
-                }
-                /* 1.9.35: ranks_per_channel was plumbed END TO END -- declared
-                 * here, emitted into the zsim configuration, and read by the
-                 * plugin, the trace driver and the analytical hierarchy model --
-                 * with NO configuration key anywhere. It could therefore never
-                 * be anything but its default of 1, so the rank tier of the tree
-                 * was a pass-through hop for every run ever made, while the code
-                 * read as though multi-rank were supported. Completing the
-                 * plumbing costs one line; the default is unchanged, so no
-                 * existing configuration moves. */
-                if (yaml_cfg["memory"]["ranks_per_channel"]) {
-                    config.hierarchy_ranks_per_channel =
-                        yamlInt(yaml_cfg["memory"]["ranks_per_channel"],
-                                config.hierarchy_ranks_per_channel,
-                                "memory.ranks_per_channel");
-                }
-                // subarray geometry: optional height (rows) and/or an explicit
-                // count. If the count is set it wins; otherwise the per-tech
-                // default (or the given height) derives it in the org block.
-                if (yaml_cfg["memory"]["subarray_height"])
-                    config.subarray_height = yaml_cfg["memory"]["subarray_height"].as<int>();
-                /* 1.11.74: the L0 count key carries the family's word --
-                 * memory.subarrays_per_bank (DRAM; legacy on SRAM/NVM),
-                 * memory.subbanks_per_bank (SRAM), memory.mats_per_bank (NVM).
-                 * Exactly one may be given; the family check follows in
-                 * computeHierarchyLatencies once the technology is settled. */
-                {
-                    int nkeys = 0;
-                    for (const char* k : {"subarrays_per_bank", "subbanks_per_bank", "mats_per_bank"}) {
-                        if (yaml_cfg["memory"][k]) {
-                            config.subarrays_per_bank = yaml_cfg["memory"][k].as<int>();
-                            config.subarrays_per_bank_user_set = true;
-                            config.l0_count_key = k; ++nkeys;
-                        }
-                    }
-                    if (nkeys > 1) {
-                        std::cerr << "FATAL: memory.subarrays_per_bank / subbanks_per_bank / "
-                                     "mats_per_bank name the same count; give exactly one." << std::endl;
-                        std::exit(2);
-                    }
-                }
-                // Optional JEDEC-org overrides (0/absent = per-tech JEDEC default).
-                if (yaml_cfg["memory"]["organization"]) {
-                    auto org = yaml_cfg["memory"]["organization"];
-                    if (org["bank_groups"])
-                        config.bg_per_chip_override = org["bank_groups"].as<int>();
-                    if (org["banks_per_group"])
-                        config.banks_per_bg_override = org["banks_per_group"].as<int>();
-                }
-                config.memory_latency_override = yamlInt(yaml_cfg["memory"]["latency"], config.memory_latency_override, "memory.latency");
-                config.ports_per_bank = yamlInt(yaml_cfg["memory"]["ports_per_bank"], config.ports_per_bank, "memory.ports_per_bank");
-                if (yaml_cfg["memory"]["ports_per_bank"] && config.ports_per_bank < 1) {   // 1.11.106: used to become 1 in silence
-                    std::cerr << "[config] FATAL: memory.ports_per_bank = " << config.ports_per_bank << " must be at least 1." << std::endl;
-                    std::exit(2);
-                }
-                if (yaml_cfg["memory"]["dram"] && yaml_cfg["memory"]["dram"]["device_width"]) {
-                    config.dram_device_width =
-                        yamlString(yaml_cfg["memory"]["dram"]["device_width"], config.dram_device_width, "memory.dram.device_width");
-                }
-                /* 1.11.66 (R8 #9): the DDR5 speed grade. Validated at the
-                 * wrapper (3200/4800/5600; FATAL otherwise). Applied at every
-                 * oracle site through applyDramKnobs() below. */
-                if (yaml_cfg["memory"]["dram"] && yaml_cfg["memory"]["dram"]["ddr5_speed_grade"]) {
-                    config.ddr5_speed_grade =
-                        yamlInt(yaml_cfg["memory"]["dram"]["ddr5_speed_grade"], config.ddr5_speed_grade, "memory.dram.ddr5_speed_grade");
-                }
-
-                // Parse memory parameters from YAML
-                // To override external models, user must provide ALL 5 required params:
-                //   1. read_latency_ns    2. write_latency_ns
-                //   3. read_energy_nj     4. write_energy_nj
-                //   5. static_power_mw
-                auto& p = config.memory_params;
-
-                // Timing parameters (accept multiple naming conventions)
-                if (yaml_cfg["memory"]["timing"]) {
-                    const auto& t = yaml_cfg["memory"]["timing"];
-                    // Read latency
-                    if (t["read_latency_ns"]) p.read_latency_ns = t["read_latency_ns"].as<double>();
-                    else if (t["subarray_read_ns"]) p.read_latency_ns = t["subarray_read_ns"].as<double>();
-                    // Write latency
-                    if (t["write_latency_ns"]) p.write_latency_ns = t["write_latency_ns"].as<double>();
-                    else if (t["subarray_write_ns"]) p.write_latency_ns = t["subarray_write_ns"].as<double>();
-                }
-
-                // Energy parameters
-                if (yaml_cfg["memory"]["energy"]) {
-                    const auto& e = yaml_cfg["memory"]["energy"];
-                    if (e["read_energy_nj"]) p.read_energy_nj = e["read_energy_nj"].as<double>();
-                    if (e["write_energy_nj"]) p.write_energy_nj = e["write_energy_nj"].as<double>();
-                }
-
-                // Power parameters
-                if (yaml_cfg["memory"]["power"]) {
-                    const auto& pw = yaml_cfg["memory"]["power"];
-                    if (pw["static_power_mw"]) p.static_power_mw = pw["static_power_mw"].as<double>();
-                }
-
-                // Check if user provided ALL 5 required params to override external models
-                config.use_yaml_memory_params = p.isComplete();
-
-                if (!config.use_yaml_memory_params &&
-                    (p.read_latency_ns > 0 || p.write_latency_ns > 0 ||
-                     p.read_energy_nj > 0 || p.write_energy_nj > 0 || p.static_power_mw > 0)) {
-                    std::cerr << "Warning: Partial YAML memory params provided.\n"
-                              << "To override external models, provide ALL 5 required params:\n"
-                              << "  memory:\n"
-                              << "    timing:\n"
-                              << "      read_latency_ns: <value>\n"
-                              << "      write_latency_ns: <value>\n"
-                              << "    energy:\n"
-                              << "      read_energy_nj: <value>\n"
-                              << "      write_energy_nj: <value>\n"
-                              << "    power:\n"
-                              << "      static_power_mw: <value>\n"
-                              << "Using external models (NVSim/CACTI/Ramulator) instead.\n";
-                    std::cerr.flush();
-                }
-            }
-
-            // Parse optional memory controller overrides
-            if (yaml_cfg["memory"] && yaml_cfg["memory"]["controller"]) {
-                const auto& ctrl = yaml_cfg["memory"]["controller"];
-                if (ctrl["type"])
-                    config.zsim_mem_controller_type = yamlString(ctrl["type"], config.zsim_mem_controller_type, "memory.controller.type");
-                if (ctrl["bandwidth"]) {
-                    // Accepts "25.6 GB/s", "19200 MB/s", "1 TB/s", "6400000 KB/s", or bare number (MB/s)
-                    int parsed = parseBandwidthToMBs(yamlStringReq(ctrl["bandwidth"], "memory.controller.bandwidth"));
-                    if (parsed > 0) {
-                        config.md1_bandwidth_mbs = parsed;
-                        config.md1_bandwidth_user_set = true;
-                    } else {   // 1.11.106 (ruling R106-3 (a)): used to keep the default with a warning
-                        std::cerr << "[config] FATAL: memory.controller.bandwidth '"
-                                  << yamlStringReq(ctrl["bandwidth"], "memory.controller.bandwidth")
-                                  << "' is not a bandwidth this build can read. Write it as '25.6 GB/s', '19200 MB/s', "
-                                     "'1 TB/s', '6400000 KB/s' or a bare number of MB/s; or remove the key." << std::endl;
-                        std::exit(2);
-                    }
-                }
-                // WeaveSimple
-                if (ctrl["bound_latency"])
-                    config.weave_bound_latency = yamlInt(ctrl["bound_latency"], config.weave_bound_latency, "memory.controller.bound_latency");
-                // Ramulator
-                if (ctrl["ramulator_config"])
-                    config.ramulator_config_file = yamlString(ctrl["ramulator_config"], config.ramulator_config_file, "memory.controller.ramulator_config");
-            }
+            // memory (1.11.107: the device-scope parse, shared with a system device node)
+            if (parseDeviceMemoryBlocks(yaml_cfg, config, top_sc) != 0) return 1;
 
             // Load simulation parameters
             if (yaml_cfg["simulation"]) {
@@ -17187,6 +17623,23 @@ int main(int argc, char** argv) {
                         node.role = UnifiedConfig::SystemNode::HOST;
                         node.pg_host = yamlBool(h["pg"], node.pg_host, hpath + ".pg");  // 1.11.20 (D7)
                         node.core_type = normalizeCoreType(yamlString(h["core_type"], "ooo_core", hpath + ".core_type"));
+                        node.cfg_path = hpath;   // 1.11.107
+                        if (h["issue_width"]) {   /* 1.11.107 (ONE VOCABULARY): pim.pe.issue_width for an in-order host.
+                                                    * The width an in_order_core host issues per cycle; an in-order host
+                                                    * could be set narrower only through PIMID_INORDER_WIDTH before. */
+                            if (node.core_type != "in_order_core") {
+                                std::cerr << "[config] FATAL: " << hpath << ".issue_width is the in-order core's issue width, and this"
+                                             " host's core_type is '" << node.core_type << "': the key would change nothing. Remove it,"
+                                             " or set core_type: in_order_core (1.11.107)." << std::endl;
+                                std::exit(2);
+                            }
+                            node.inorder_issue_width = yamlInt(h["issue_width"], node.inorder_issue_width, hpath + ".issue_width");
+                            if (node.inorder_issue_width < 1 || node.inorder_issue_width > 6) {
+                                std::cerr << "[config] FATAL: " << hpath << ".issue_width = " << node.inorder_issue_width
+                                          << " is outside 1..6, the in-order core's six issue ports (1.11.107)." << std::endl;
+                                std::exit(2);
+                            }
+                        }
                         node.num_cores = yamlInt(h["num_cores"], 4, hpath + ".num_cores");
                         node.frequency_mhz = yamlDouble(h["frequency_mhz"], 3000.0, hpath + ".frequency_mhz");
                         // Host node process node: explicit YAML wins; else the
@@ -17381,23 +17834,157 @@ int main(int argc, char** argv) {
                             UnifiedConfig::SystemNode::INTERNAL :
                             UnifiedConfig::SystemNode::EXTERNAL;
 
+                        /* 1.11.107 (ruling R106-7 (c), user 2026-10-05: ONE VOCABULARY).
+                         * A device node is a device-scope configuration plus its node
+                         * keys (name, type, attachment, is_default_mem, workload). Its
+                         * pim / technology / core / cache / noc / memory blocks are read
+                         * by the code that reads them at the top level
+                         * (parseDevicePimBlock and its two siblings), onto the node's own
+                         * copy of the configuration: the top-level values, with the node
+                         * keys at the defaults this node table has always had (alu_core,
+                         * 0 PEs, 1000 MHz, DDR4, BANK, the 32/32/256 KB caches, ...). The
+                         * flat node keys -- pe_type, num_pes, frequency_mhz,
+                         * tech_node_nm, cache.<level>_kb / _ways / _banks / _latency_ns --
+                         * are aliases of the device-scope keys and land on the same
+                         * fields; giving both forms of one quantity refuses, naming both
+                         * (the 1.11.106 duplicate-name rule). Until 1.11.106 every other
+                         * device-scope key written in a node was ignored in silence, and
+                         * 1.11.106 refused them; adoptSystemDeviceNodes() below says what
+                         * the system model does with each. */
+                        node.cfg_path = dpath;
+                        const bool compute = (node.device_type == UnifiedConfig::SystemNode::COMPUTE);
+                        auto given = [&](const char* p) { return yamlAt(d, p).IsDefined(); };
+                        for (const auto& pr : kNodeAliasPairs)
+                            if (given(pr[0]) && given(pr[1])) {
+                                std::cerr << "[config] FATAL: " << dpath << "." << pr[0] << " and " << dpath << "." << pr[1]
+                                          << " name the same setting (a node's flat key is an alias of the device-scope key;"
+                                             " the later one would win in silence). Give one of them (1.11.107, one vocabulary)." << std::endl;
+                                std::exit(2);
+                            }
+                        if (!compute) {
+                            for (const char* k : {"pe_type", "num_pes", "pim", "noc", "cache", "core"})
+                                if (given(k)) {
+                                    std::cerr << "[config] FATAL: " << dpath << "." << k << " is given, but " << dpath
+                                              << " is a memory-only device (type: memory): it has no PEs, fabric or caches, so the"
+                                                 " key would be ignored. Remove it, or make the device type: compute (1.11.107)." << std::endl;
+                                    std::exit(2);
+                                }
+                        }
+                        refuseNodeInertKeys(d, dpath);
                         node.frequency_mhz = yamlDouble(d["frequency_mhz"], 1000.0, dpath + ".frequency_mhz");
+                        /* The node words 1.11.106 checked with the node's own messages
+                         * keep them: read here, before the device-scope parse below
+                         * (which checks the same words with the top-level text). */
+                        if (compute && given("pim.mc.type")) {   // 1.11.106 (census S8): the one modelled controller
+                            node.pe_mc_type = yamlString(yamlAt(d, "pim.mc.type"), node.pe_mc_type, dpath + ".pim.mc.type");
+                            if (node.pe_mc_type != "simple")
+                                refuseEnum(dpath + ".pim.mc.type", node.pe_mc_type, "simple", "be stored and never read");
+                        }
+                        if (compute && given("noc.topology")) {   // 1.11.106 (census S3, system scope): the same accepted list as noc.topology
+                            node.noc_topology = yamlString(yamlAt(d, "noc.topology"), node.noc_topology, dpath + ".noc.topology");
+                            for (auto& c : node.noc_topology) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                            if (node.noc_topology == "MESH") node.noc_topology = "MESH_2D";
+                            static const std::set<std::string> kTopos = { "MESH_2D", "TORUS_2D", "RING", "CROSSBAR", "FAT_TREE", "BUS", "H_TREE", "CUSTOM" };
+                            if (!kTopos.count(node.noc_topology))
+                                refuseEnum(dpath + ".noc.topology", node.noc_topology, "MESH_2D (alias MESH), TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM",
+                                           "be adopted as the device fabric word unchecked");
+                            node.noc_topology_user_set = true;   // 1.11.103
+                        }
+                        if (compute && given("noc.model")) {
+                            node.noc_model = yamlString(yamlAt(d, "noc.model"), node.noc_model, dpath + ".noc.model");
+                            if (node.noc_model != "analytical" && node.noc_model != "detailed")   // 1.11.90
+                                refuseEnum(dpath + ".noc.model", node.noc_model,
+                                           "analytical, detailed (as the top-level noc.model)",
+                                           "leave the device NoC model unchanged");
+                        }
+
+                        // The node's device configuration: the top level's, the node defaults, the flat aliases, the node's blocks.
+                        auto dev = std::make_shared<UnifiedConfig>(config);
+                        dev->system_nodes.clear();
+                        dev->system_network.links.clear();
+                        dev->memory_tech = node.memory_tech;                 // "DDR4"
+                        dev->ports_per_bank = node.ports_per_bank;           // 1
+                        dev->placement_level = node.placement_level;         // "BANK"
+                        dev->pe_type = "alu_core";
+                        dev->num_pes = 0;
+                        dev->alu_compute_factor = node.alu_compute_factor;
+                        dev->alu_access_factor = node.alu_access_factor;
+                        dev->alu_throughput_factor = node.alu_throughput_factor;
+                        dev->alu_operand_width = node.alu_operand_width;
+                        dev->alu_energy_factor = node.alu_energy_factor;
+                        dev->pg_pe = node.pg_pe; dev->pg_noc = node.pg_noc; dev->pg_mc = node.pg_mc;
+                        dev->pe_has_fp = node.pe_has_fpu;
+                        dev->pe_fp_emul_cycles = node.pe_fp_emul_cycles;
+                        dev->alu_bit_serial = node.alu_bit_serial;
+                        dev->inorder_issue_width = node.inorder_issue_width;
+                        dev->pe_mc_type = node.pe_mc_type;
+                        dev->pes_per_mc = node.pes_per_mc;
+                        dev->pe_mc_enabled = false;                          // node.pe_mc_declared
+                        dev->noc_topology = "MESH_2D";
+                        dev->noc_topology_user_set = false;
+                        dev->l1d_size_kb = node.l1d_kb; dev->l1i_size_kb = node.l1i_kb;
+                        dev->enable_l2 = true; dev->l2_size_kb = node.l2_kb;
+                        dev->enable_l3 = false;
+                        dev->l1d_ways = dev->l1i_ways = dev->l2_ways = dev->l3_ways = -1;
+                        dev->l1d_banks = dev->l1i_banks = dev->l2_banks = dev->l3_banks = -1;
+                        dev->l1d_params = UnifiedConfig::CacheParams(); dev->l1i_params = UnifiedConfig::CacheParams();
+                        dev->l2_params = UnifiedConfig::CacheParams(); dev->l3_params = UnifiedConfig::CacheParams();
+                        if (compute) {
+                            dev->pe_type = normalizeCoreType(yamlString(d["pe_type"], "alu_core", dpath + ".pe_type"));
+                            dev->num_pes = yamlInt(d["num_pes"], 0, dpath + ".num_pes");
+                        }
                         // Device node process node: explicit YAML wins; else the
                         // device default (config.tech_node_nm / power.device_tech_node_nm,
                         // 22nm unless overridden). Default unchanged -> device flows
                         // are bit-identical when no override is given.
-                        node.tech_node_nm = yamlInt(d["tech_node_nm"], config.tech_node_nm, dpath + ".tech_node_nm");
-
-                        if (d["memory"]) {
-                            node.memory_tech = canonicalMemTech(
-                                yamlString(d["memory"]["technology"], node.memory_tech, dpath + ".memory.technology"));
-                            node.ports_per_bank = yamlInt(d["memory"]["ports_per_bank"], node.ports_per_bank, dpath + ".memory.ports_per_bank");
-                            if (d["memory"]["ports_per_bank"] && node.ports_per_bank < 1) {   // 1.11.106
-                                std::cerr << "[config] FATAL: " << dpath << ".memory.ports_per_bank = " << node.ports_per_bank << " must be at least 1." << std::endl;
-                                std::exit(2);
+                        dev->tech_node_nm = yamlInt(d["tech_node_nm"], config.tech_node_nm, dpath + ".tech_node_nm");
+                        if (d["cache"]) {
+                            dev->l1d_size_kb = yamlInt(d["cache"]["l1d_kb"], dev->l1d_size_kb, dpath + ".cache.l1d_kb");
+                            dev->l1i_size_kb = yamlInt(d["cache"]["l1i_kb"], dev->l1i_size_kb, dpath + ".cache.l1i_kb");
+                            if (d["cache"]["l2_kb"]) {   // a node's level is present when its size is above 0
+                                dev->l2_size_kb = yamlInt(d["cache"]["l2_kb"], dev->l2_size_kb, dpath + ".cache.l2_kb");
+                                dev->enable_l2 = (dev->l2_size_kb > 0);
                             }
-                            node.banks = yamlInt(d["memory"]["banks"], node.banks, dpath + ".memory.banks");
+                            if (d["cache"]["l3_kb"]) {
+                                dev->l3_size_kb = yamlInt(d["cache"]["l3_kb"], 0, dpath + ".cache.l3_kb");
+                                dev->enable_l3 = (dev->l3_size_kb > 0);
+                            }
+                            dev->l1d_params.latency_ns = yamlDouble(d["cache"]["l1d_latency_ns"], dev->l1d_params.latency_ns, dpath + ".cache.l1d_latency_ns");
+                            dev->l1i_params.latency_ns = yamlDouble(d["cache"]["l1i_latency_ns"], dev->l1i_params.latency_ns, dpath + ".cache.l1i_latency_ns");
+                            dev->l2_params.latency_ns = yamlDouble(d["cache"]["l2_latency_ns"], dev->l2_params.latency_ns, dpath + ".cache.l2_latency_ns");
+                            dev->l3_params.latency_ns = yamlDouble(d["cache"]["l3_latency_ns"], dev->l3_params.latency_ns, dpath + ".cache.l3_latency_ns");
+                            for (const char* lv : {"l1d", "l1i", "l2", "l3"}) {   // 1.11.95: per-node ways / banks (record otherwise)
+                                int* w = (!strcmp(lv, "l1d")) ? &dev->l1d_ways : (!strcmp(lv, "l1i")) ? &dev->l1i_ways : (!strcmp(lv, "l2")) ? &dev->l2_ways : &dev->l3_ways;
+                                int* b = (!strcmp(lv, "l1d")) ? &dev->l1d_banks : (!strcmp(lv, "l1i")) ? &dev->l1i_banks : (!strcmp(lv, "l2")) ? &dev->l2_banks : &dev->l3_banks;
+                                *w = yamlInt(d["cache"][std::string(lv) + "_ways"], *w, dpath + ".cache." + lv + "_ways");
+                                *b = yamlInt(d["cache"][std::string(lv) + "_banks"], *b, dpath + ".cache." + lv + "_banks");
+                            }
                         }
+                        {
+                            DeviceParseScope nsc;
+                            nsc.pfx = dpath + ".";
+                            nsc.node = true;
+                            YAML::Node dn = d;   // a non-const handle: absent keys read as at the top level
+                            if (parseDevicePimBlock(dn, *dev, nsc) != 0) return 1;
+                            if (parseDeviceCoreCacheNocBlocks(dn, *dev, nsc) != 0) return 1;
+                            if (parseDeviceMemoryBlocks(dn, *dev, nsc) != 0) return 1;
+                        }
+                        // The nested cache sizes follow the node's rule too: a level is present when its size is above 0.
+                        if (given("cache.l2.size_kb") && !given("cache.l2.enabled")) dev->enable_l2 = (dev->l2_size_kb > 0);
+                        if (given("cache.l3.size_kb") && !given("cache.l3.enabled")) dev->enable_l3 = (dev->l3_size_kb > 0);
+                        if (given("cache.l3.enabled") && dev->enable_l3 && !given("cache.l3.size_kb")) {
+                            std::cerr << "[config] FATAL: " << dpath << ".cache.l3.enabled is true but the node gives no L3 size: a node's"
+                                         " L3 has no default size. Give " << dpath << ".cache.l3.size_kb (1.11.107)." << std::endl;
+                            std::exit(2);
+                        }
+
+                        // The node's fields, from its resolved configuration.
+                        if (given("pim.pe.frequency_mhz") || given("noc.clock_mhz"))
+                            node.frequency_mhz = static_cast<double>(dev->frequency_mhz);
+                        node.tech_node_nm = dev->tech_node_nm;
+                        node.memory_tech = dev->memory_tech;
+                        node.ports_per_bank = dev->ports_per_bank;
+                        node.banks = given("memory.banks") ? dev->num_banks : 0;   // 0 = the run's (the top level's, or the default)
 
                         // Memory-topology knob (1.7.4). true (default): this
                         // device IS host main memory (host tech = device tech).
@@ -17406,85 +17993,53 @@ int main(int argc, char** argv) {
                         node.is_default_mem = yamlBool(d["is_default_mem"], node.is_default_mem, dpath + ".is_default_mem");
 
                         // PIM config (only for compute devices)
-                        if (node.device_type == UnifiedConfig::SystemNode::COMPUTE) {
-                            node.pe_type = normalizeCoreType(yamlString(d["pe_type"], "alu_core", dpath + ".pe_type"));
-                            node.num_pes = yamlInt(d["num_pes"], 0, dpath + ".num_pes");
+                        if (compute) {
+                            node.pe_type = dev->pe_type;
+                            node.num_pes = dev->num_pes;
                             node.num_cores = node.num_pes;  // PEs are cores in ZSim
                             node.core_type = node.pe_type;
-
-                            if (d["pim"]) {
-                                auto pim = d["pim"];
-                                if (pim["placement"] && pim["placement"]["level"])
-                                    node.placement_level = yamlStringReq(pim["placement"]["level"], dpath + ".pim.placement.level");
-                                if (pim["pe"]) {
-                                    node.alu_compute_factor = yamlDouble(pim["pe"]["compute_factor"], node.alu_compute_factor, dpath + ".pim.pe.compute_factor");
-                                    node.alu_access_factor = yamlDouble(pim["pe"]["access_factor"], node.alu_access_factor, dpath + ".pim.pe.access_factor");
-                                    node.alu_throughput_factor = yamlDouble(pim["pe"]["throughput_factor"], node.alu_throughput_factor, dpath + ".pim.pe.throughput_factor");
-                                    node.alu_operand_width = yamlInt(pim["pe"]["operand_width"], node.alu_operand_width, dpath + ".pim.pe.operand_width");
-                                    node.alu_energy_factor = yamlDouble(pim["pe"]["energy_factor"], node.alu_energy_factor, dpath + ".pim.pe.energy_factor");
-                                    node.pg_pe = yamlBool(pim["pe"]["pg"], node.pg_pe, dpath + ".pim.pe.pg");  // 1.11.16 (#84)
-                                    /* 1.11.43 (E23): the FPU keys were only
-                                     * parsed in DEVICE scope, so co-sim could
-                                     * not configure an FPU-less PE at all --
-                                     * and a global would have leaked it onto
-                                     * the host. Per node, like pg. */
-                                    node.pe_has_fpu = yamlBool(pim["pe"]["floating_point"], node.pe_has_fpu, dpath + ".pim.pe.floating_point");
-                                    node.pe_fp_emul_cycles = yamlU32(pim["pe"]["fp_emulation_cycles"], node.pe_fp_emul_cycles, dpath + ".pim.pe.fp_emulation_cycles");
-                                    // 1.11.56 (B054): per node, like the FPU keys.
-                                    node.alu_bit_serial = yamlBool(pim["pe"]["bit_serial"], node.alu_bit_serial, dpath + ".pim.pe.bit_serial");
-                                    node.inorder_issue_width = yamlInt(pim["pe"]["issue_width"], node.inorder_issue_width, dpath + ".pim.pe.issue_width");
-                                }
-                                if (pim["mc"]) {
-                                    node.pe_mc_declared = true;   // 1.11.56 (B055)
-                                    node.pe_mc_type = yamlString(pim["mc"]["type"], node.pe_mc_type, dpath + ".pim.mc.type");
-                                    if (node.pe_mc_type != "simple")   // 1.11.106 (census S8): the one modelled controller
-                                        refuseEnum(dpath + ".pim.mc.type", node.pe_mc_type, "simple", "be stored and never read");
-                                    node.pes_per_mc = yamlInt(pim["mc"]["pes_per_mc"], node.pes_per_mc, dpath + ".pim.mc.pes_per_mc");
-                                    node.pg_mc = yamlBool(pim["mc"]["pg"], node.pg_mc, dpath + ".pim.mc.pg");  // 1.11.16 (#84)
-                                }
-                            }
-
-                            if (d["noc"]) {
-                                node.noc_topology = yamlString(d["noc"]["topology"], node.noc_topology, dpath + ".noc.topology");
-                                if (d["noc"]["topology"]) {   // 1.11.106 (census S3, system scope): the same accepted list as noc.topology
-                                    for (auto& c : node.noc_topology) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                                    if (node.noc_topology == "MESH") node.noc_topology = "MESH_2D";
-                                    static const std::set<std::string> kTopos = { "MESH_2D", "TORUS_2D", "RING", "CROSSBAR", "FAT_TREE", "BUS", "H_TREE", "CUSTOM" };
-                                    if (!kTopos.count(node.noc_topology))
-                                        refuseEnum(dpath + ".noc.topology", node.noc_topology, "MESH_2D (alias MESH), TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM",
-                                                   "be adopted as the device fabric word unchecked");
-                                }
-                                if (d["noc"]["topology"]) node.noc_topology_user_set = true;   // 1.11.103
-                                node.noc_model = yamlString(d["noc"]["model"], node.noc_model, dpath + ".noc.model");
-                                if (d["noc"]["model"] && node.noc_model != "analytical" &&
-                                    node.noc_model != "detailed")   // 1.11.90
-                                    refuseEnum(dpath + ".noc.model", node.noc_model,
-                                               "analytical, detailed (as the top-level noc.model)",
-                                               "leave the device NoC model unchanged");
-                                node.pg_noc = yamlBool(d["noc"]["pg"], node.pg_noc, dpath + ".noc.pg");  // 1.11.16 (#84)
-                            }
+                            node.placement_level = dev->placement_level;
+                            node.alu_compute_factor = dev->alu_compute_factor;
+                            node.alu_access_factor = dev->alu_access_factor;
+                            node.alu_throughput_factor = dev->alu_throughput_factor;
+                            node.alu_operand_width = dev->alu_operand_width;
+                            node.alu_energy_factor = dev->alu_energy_factor;
+                            node.pg_pe = dev->pg_pe;                        // 1.11.16 (#84)
+                            node.pe_has_fpu = dev->pe_has_fp;               // 1.11.43 (E23): per node
+                            node.pe_fp_emul_cycles = dev->pe_fp_emul_cycles;
+                            node.alu_bit_serial = dev->alu_bit_serial;      // 1.11.56 (B054)
+                            node.inorder_issue_width = dev->inorder_issue_width;
+                            node.pe_lanes = dev->pe_lanes;                  // 1.11.107: priced per node
+                            node.pe_imem_bytes = dev->pe_imem_bytes;
+                            node.arch_int_regs = dev->arch_int_regs;
+                            node.arch_fp_regs = dev->arch_fp_regs;
+                            node.pe_mc_declared = dev->pe_mc_enabled;       // 1.11.56 (B055): the node declared a pim.mc block
+                            node.pes_per_mc = dev->pes_per_mc;
+                            node.pg_mc = dev->pg_mc;                        // 1.11.16 (#84)
+                            node.noc_topology = dev->noc_topology;
+                            node.pg_noc = dev->pg_noc;                      // 1.11.16 (#84)
+                            node.l1d_kb = dev->l1d_size_kb;
+                            node.l1i_kb = dev->l1i_size_kb;
+                            node.l2_kb = dev->enable_l2 ? dev->l2_size_kb : 0;
+                            node.l3_kb = dev->enable_l3 ? dev->l3_size_kb : 0;
+                            /* 1.11.107: McPAT prices the levels zsim builds -- an L3 is built
+                             * when l3_kb > 0, and a device node's enable_l3 was never set, so
+                             * a device node's L3 was built and not priced. */
+                            node.enable_l2 = (node.l2_kb > 0);
+                            node.enable_l3 = (node.l3_kb > 0);
+                            node.l1d_latency_ns = dev->l1d_params.latency_ns;
+                            node.l1i_latency_ns = dev->l1i_params.latency_ns;
+                            node.l2_latency_ns = dev->l2_params.latency_ns;
+                            node.l3_latency_ns = dev->l3_params.latency_ns;
+                            node.l1d_ways = dev->l1d_ways; node.l1i_ways = dev->l1i_ways; node.l2_ways = dev->l2_ways; node.l3_ways = dev->l3_ways;
+                            node.l1d_banks = dev->l1d_banks; node.l1i_banks = dev->l1i_banks; node.l2_banks = dev->l2_banks; node.l3_banks = dev->l3_banks;
                         } else {
                             // Memory-only device: no PEs/cores
                             node.num_cores = 0;
                             node.num_pes = 0;
                         }
-
-                        if (d["cache"]) {
-                            node.l1d_kb = yamlInt(d["cache"]["l1d_kb"], node.l1d_kb, dpath + ".cache.l1d_kb");
-                            node.l1i_kb = yamlInt(d["cache"]["l1i_kb"], node.l1i_kb, dpath + ".cache.l1i_kb");
-                            node.l2_kb = yamlInt(d["cache"]["l2_kb"], node.l2_kb, dpath + ".cache.l2_kb");
-                            node.l3_kb = yamlInt(d["cache"]["l3_kb"], node.l3_kb, dpath + ".cache.l3_kb");
-                            node.l1d_latency_ns = yamlDouble(d["cache"]["l1d_latency_ns"], node.l1d_latency_ns, dpath + ".cache.l1d_latency_ns");
-                            node.l1i_latency_ns = yamlDouble(d["cache"]["l1i_latency_ns"], node.l1i_latency_ns, dpath + ".cache.l1i_latency_ns");
-                            node.l2_latency_ns = yamlDouble(d["cache"]["l2_latency_ns"], node.l2_latency_ns, dpath + ".cache.l2_latency_ns");
-                            node.l3_latency_ns = yamlDouble(d["cache"]["l3_latency_ns"], node.l3_latency_ns, dpath + ".cache.l3_latency_ns");
-                            for (const char* lv : {"l1d", "l1i", "l2", "l3"}) {   // 1.11.95: per-node ways / banks (record otherwise)
-                                int* w = (!strcmp(lv, "l1d")) ? &node.l1d_ways : (!strcmp(lv, "l1i")) ? &node.l1i_ways : (!strcmp(lv, "l2")) ? &node.l2_ways : &node.l3_ways;
-                                int* b = (!strcmp(lv, "l1d")) ? &node.l1d_banks : (!strcmp(lv, "l1i")) ? &node.l1i_banks : (!strcmp(lv, "l2")) ? &node.l2_banks : &node.l3_banks;
-                                *w = yamlInt(d["cache"][std::string(lv) + "_ways"], *w, dpath + ".cache." + lv + "_ways");
-                                *b = yamlInt(d["cache"][std::string(lv) + "_banks"], *b, dpath + ".cache." + lv + "_banks");
-                            }
-                        }
+                        nodeLeafTexts(d, "", node.dev_keys);
+                        node.dev = dev;
 
                         if (d["workload"]) {
                             node.workload_binary = yamlString(d["workload"]["binary"], "", dpath + ".workload.binary");
@@ -17506,6 +18061,7 @@ int main(int argc, char** argv) {
 
                         config.system_nodes.push_back(node);
                     }
+                    adoptSystemDeviceNodes(config, yaml_cfg);   // 1.11.107: before the run-wide DRAM knobs are recorded
                 }
 
                 // Parse system network
