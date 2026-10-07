@@ -34,7 +34,8 @@
 //#define DEBUG_MSG(args...) info(args)
 
 InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain, g_string& _name,
-                         uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty)
+                         uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty,
+                         bool _staticNotTaken)
     : Core(_name), l1i(_l1i), l1d(_l1d), instrs(0), uops(0), bbls(0),
       curCycle(0), cRec(_domain, _name) {
     /* 1.11.44 (user ruling): the legacy IPC=1 NODECODE path is DELETED. Its
@@ -95,6 +96,10 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
         if (v >= 0 && v <= 1000) resteerPenalty = (uint32_t)v;
     }
     branches = mispredBranches = mispredStallCycles = 0;
+    /* 1.12.1 (ticket #114): branchPredictor "none" -- no prediction
+     * structure, static not-taken (see bblAndRecord / ctrlFlow). */
+    staticNotTaken = _staticNotTaken;
+    takenBranches = 0;
 
     // Indirect control flow (BTB + RAS; IndirectPredictor default-constructs).
     indirMispredPend = false;
@@ -178,6 +183,13 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zbr)>* branchesStat = new LambdaStat<decltype(zbr)>(zbr);
     branchesStat->init("branches", "Resolved conditional branches fed to the predictor");
     coreStat->append(branchesStat);
+    /* 1.12.1 (ticket #114): taken conditional branches, both modes (ROI).
+     * Under branchPredictor none every taken one is a static-not-taken
+     * mispredict, so mispredBranches == takenBranches there. */
+    auto ztk = [this]() -> uint64_t { return takenBranches - roiBaseTaken; };
+    LambdaStat<decltype(ztk)>* takenBranchesStat = new LambdaStat<decltype(ztk)>(ztk);
+    takenBranchesStat->init("takenBranches", "Resolved conditional branches that were taken");
+    coreStat->append(takenBranchesStat);
     auto zm = [this]() -> uint64_t { return mispredBranches - roiBaseMispred; };
     LambdaStat<decltype(zm)>* mispredBranchesStat = new LambdaStat<decltype(zm)>(zm);
     mispredBranchesStat->init("mispredBranches", "Mispredicted branches");
@@ -499,8 +511,25 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
     // update the predictor; on a mispredict, charge the front-end flush/refill
     // bubble. In-order cores resolve the branch at execute, so the redirect
     // lands after the BBL drains (curCycle is at last completion here).
-    if (branchPc) {
+    if (branchPc && staticNotTaken) {
+        /* 1.12.1 (ticket #114): branchPredictor none. Fetch continued at the
+         * fall-through, so a NOT-taken jcc costs nothing; a TAKEN one is
+         * known only when it executes -- the execute-depth flush/refill, the
+         * same drain + mispredPenalty a PAg direction mispredict pays. No
+         * predictor is read or trained and no BTB is looked up. */
         branches++;
+        if (branchTaken) {
+            takenBranches++;
+            mispredBranches++;
+            mispredStallCycles += mispredPenalty;
+            drainPipeline();
+            curCycle += mispredPenalty;
+            directResteerPend = false;   // subsumed by the execute-depth flush, as below
+        }
+        branchPc = 0; branchTarget = 0;
+    } else if (branchPc) {
+        branches++;
+        if (branchTaken) takenBranches++;   // 1.12.1: diagnostic only
         const bool dirOk = branchPred.predict(branchPc, branchTaken);
         /* 1.11.98 (user ruling (a)): a TAKEN direct branch also needs its
          * target from the BTB at fetch. The lookup trains the BTB either way;
@@ -603,6 +632,34 @@ void InOrderCore::branch(Address pc, bool taken, Address takenTarget) {
  * bubble (decode depth, 1.11.97; was mispredPenalty) consumed after the
  * terminator's BBL is simulated. */
 void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address retAddr) {
+    if (staticNotTaken) {
+        /* 1.12.1 (ticket #114): branchPredictor none -- no BTB and no RAS,
+         * so nothing is looked up, trained, pushed or popped. A direct call
+         * or jmp has its target computed by the decoder: the DECODE-depth
+         * resteer (resteerPenalty), counted in directBranches. An indirect
+         * jmp/call or a return is known only at EXECUTE: the execute-depth
+         * bubble (mispredPenalty), counted as a mispredict of its kind. */
+        switch (kind) {
+            case CF_DIR_CALL:
+            case CF_DIR_JMP:
+                directBranches++;
+                directResteerPend = true;
+                break;
+            case CF_IND_CALL:
+            case CF_IND_JMP:
+                indirBranches++;
+                indirMispreds++;
+                indirMispredPend = true;
+                break;
+            case CF_RET:
+                rasReturns++;
+                rasMispreds++;
+                indirMispredPend = true;
+                break;
+            default: break;
+        }
+        return;
+    }
     switch (kind) {
         case CF_DIR_CALL:
             /* 1.11.98 (user ruling (a)): a direct call's target is in the
@@ -624,6 +681,11 @@ void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address re
         case CF_RET:
             rasReturns++;
             if (!indirPred.ret(target)) { rasMispreds++; indirMispredPend = true; }
+            break;
+        case CF_DIR_JMP:
+            /* 1.12.1: fed since 1.12.1 for the predictor-less mode; under pag
+             * a direct jmp stays free, as it has always been (no BTB lookup,
+             * no resteer -- adjacent finding F1 of the #114 plan). */
             break;
         default: break;
     }

@@ -122,13 +122,18 @@ class BranchPredictorPAg {
 
 /* Control-flow kinds fed through the branchPtr callback. Values 0/1 are the
  * classic conditional-branch direction (not-taken/taken); >= 2 are indirect
- * control-flow resolutions handled by IndirectPredictor (BTB + RAS). */
+ * control-flow resolutions handled by IndirectPredictor (BTB + RAS).
+ * PIMID 1.12.1 (ticket #114): CF_DIR_JMP, a direct jmp, is fed so the
+ * predictor-less in-order mode (branchPredictor none) can charge its decode
+ * resteer; the OOO core and the PAg in-order core ignore it (default: break),
+ * as they ignored the unfed jmp before. */
 enum CtrlFlowKind : uint32_t {
     CF_COND_NT = 0, CF_COND_T = 1,
     CF_IND_JMP = 2,   /* jmp r/m   (FF /4,/5)             */
     CF_IND_CALL = 3,  /* call r/m  (FF /2,/3): BTB + push */
     CF_RET = 4,       /* ret       (C3/C2): RAS pop       */
-    CF_DIR_CALL = 5   /* call rel  (E8): RAS push only    */
+    CF_DIR_CALL = 5,  /* call rel  (E8): RAS push only    */
+    CF_DIR_JMP = 6    /* jmp rel   (E9/EB): decoder-computed target (1.12.1) */
 };
 
 /* Minimal indirect-branch predictor: a direct-mapped, PC-tagged BTB predicting

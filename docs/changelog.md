@@ -7,6 +7,148 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.1 -- simple_core is retired; the in-order core gets a predictor-off knob, and in_order_core at issue width 1 with no branch predictor is the scalar PE
+
+**(1) simple_core is retired (ticket #114, ruling (c) with the knob, user
+2026-10-05).** A configuration that names `simple_core`, or its aliases
+`Simple` / `simple`, is refused (rc 1) wherever a core type is read:
+`pim.pe.type` / `pim.pe.core_type` (also inside a `system.devices[]` node),
+`system.hosts[].core_type`, `system.devices[].pe_type` and the deprecated
+cosim `host.core_type`. The message names the key and the replacement:
+`in_order_core` with `pim.pe.issue_width: 1` and
+`pim.pe.branch_predictor: none` (system scope:
+`devices[].pe_type: in_order_core` with `devices[].pim.pe.issue_width: 1`
+and `devices[].pim.pe.branch_predictor: none`; a host:
+`hosts[].core_type: in_order_core` with `hosts[].issue_width: 1` and
+`hosts[].branch_predictor: none`). The reason is the #114 corpus finding:
+across the ten kernel x API cells, simple_core sat at 0.77-1.13x of
+in_order_core in cycles and 0.78-1.12x in energy. It was an IPC-1 bound and
+did not model any real PE class. The ten coremodel simple_core cells of the
+v1187 fleet had already been parked (`pimid_results/v1187_jobs/retired_simple_core/`).
+The zsim SimpleCore class is deleted (`simple_core.cpp` / `.h` and their two
+CMake lines). The core-group `type` key is now required: its default was
+"Simple". A hand-written zsim config that names `Simple` panics and names
+the replacement. Both PIMID zsim config writers lost their "Simple"
+fall-through. One explicit map now covers ooo / in_order / alu / null, and
+an unmapped type is FATAL. The McPAT description lost its fall-through
+too. null_core keeps its cell (values and print unchanged), and any other
+type is FATAL. The unknown-core-type message now names the key it came from
+(it named `system.hosts[].core_type / devices[].pe_type` whatever the key).
+`examples/core_simple_core.yaml` is deleted, and
+`examples/core_in_order_scalar.yaml` takes its place in the smoke set.
+
+**(2) The predictor knob.** Each in-order element now selects its front end
+with `pim.pe.branch_predictor: pag | none`. In system scope a device node
+gives it as its own `pim.pe.branch_predictor`
+(`system.devices[].pim.pe.branch_predictor`, a per-node key like the node's
+`pim.pe.issue_width`; a node that does not give it takes the core record,
+not a top-level `pim.pe.branch_predictor`), and an in-order host gives
+`system.hosts[].branch_predictor`, by the rule of
+`system.hosts[].issue_width` (1.11.107): refused on any other host core
+type. If the key is absent, the element takes the new core-record field
+`in_order.branch_predictor` (`params/core/default.yaml`). It ships `pag`,
+which is the machine of every earlier release. The loader requires the
+field and accepts only pag or none. Each of these is refused with rc 2:
+- any other word, an empty value included (the message lists `pag, none`);
+- the key on any core type but in_order_core (ooo_core always runs its
+  predictor; alu_core and null_core have none);
+- `core.in_order.branch_predictor`, at the top level or in a node (the
+  predictor is set per element, not for the run);
+- `host.branch_predictor` under the deprecated cosim alias.
+
+No earlier build read any of these keys. 1.11.106 to 1.12.0 refused each of
+them as an unknown key (the key schema, rc 2), and builds before 1.11.106
+ignored them in silence. 1.12.1 adds `pim.pe.branch_predictor` (and with it
+the node form) and `system.hosts[].branch_predictor` to the schema.
+`core.in_order.branch_predictor` and `host.branch_predictor` are listed there
+too, but only so that their own refusals answer: those name the keys that
+exist instead of the schema's nearest-key hint. The value goes into the
+zsim config as `branchPredictor = "pag" | "none"` in every InOrder group,
+from both writers. init.cpp requires the key and refuses any other value.
+The rule for `none` is static not-taken with no prediction structure. Fetch
+always continues at the fall-through. A redirect pays the bubble of the
+stage that first knows its target, with the core record's two penalties and
+the same drain-and-charge mechanics as before:
+- A taken conditional branch is known at execute. It pays
+  `in_order.mispredict_penalty_cycles` (7) and counts in `mispredBranches`.
+- An indirect jmp/call or a return is also known at execute. It pays 7 and
+  counts in `indirMispreds` / `rasMispreds`.
+- A direct call or jmp has its target computed by the decoder. It pays the
+  decode-depth resteer, `in_order.resteer_penalty_cycles` (4), and counts in
+  `directBranches`.
+- A not-taken branch is free.
+
+The PAg predictor, the BTB and the RAS are never read, trained or written,
+so `roiBpHistWrites` / `roiBpPhtWrites` stay 0. The counters satisfy
+`mispredBranches == takenBranches`, `indirMispreds == indirBranches`,
+`rasMispreds == rasReturns` and `btbMisses == 0` by construction. To charge
+the direct-jmp resteer, a direct jmp (E9/EB) is now classified as a new
+control-flow kind, `CF_DIR_JMP`. Both the execution plugin's classifier and
+the trace-replay classifier do this, so the two copies stay identical. The
+out-of-order core and the PAg in-order core ignore the new kind, as they
+ignored the unfed jmp before. The in-order core gains one diagnostic stat,
+`takenBranches` (ROI, both modes). `PIMID_INORDER_NOBRANCH` removes the whole
+feed in either mode, so with `none` it makes every branch free.
+
+**(3) The scalar PE profile.** McPAT prices an in-order element with issue
+width 1 and branch predictor none with 1 ALU, 1 MUL and 1 FPU (the FPU goes
+when `floating_point: false`) and no predictor: prediction_width 0, RAS_size
+0, no pattern table or BTB, and no predictor-write stats. This is the cell
+simple_core was priced with, with one difference. Per the user ruling of
+2026-10-05, the pipeline depth is 7, the execute-depth refill the in-order
+timing charges (`inorderTimingPipelineDepth()`, record
+`in_order.mispredict_penalty_cycles`). The old cell used 5. An in-order
+element with none at width 2 or more keeps 3 ALUs and drops the predictor.
+pag is unchanged. The profile applies per element, so an in-order host with
+`system.hosts[].issue_width: 1` and `system.hosts[].branch_predictor: none`
+is priced as a scalar PE too. The run prints `[power] in_order_core: scalar
+PE profile (issue width 1, branch predictor none, <source>): ...`,
+`[power] in_order_core: branch predictor none (...)` or `[power]
+in_order_core: branch predictor pag (...)`, after the unchanged
+issue-width/depth line.
+
+**(4) scope: cosim in-order issue width (B5 of the #114 plan).** The device
+node synthesized for the deprecated cosim alias kept the SystemNode default
+issue width of 2. Under scope: cosim, the device group was therefore emitted
+with `issueWidth = 2` and priced two-wide, whatever `pim.pe.issue_width`
+said. The node now carries the configured width and the predictor. Device
+scope reads the config, not this node, and is unaffected. The cosim host
+has no width or predictor key and takes the defaults (width 2, the record's
+predictor).
+
+**(5) Labels.** One label helper now serves every banner and the per-node
+power line. The system banner printed in_order and null device PEs as
+"Simple", and the per-node power line printed a null core as "Simple". They
+now print "InOrder" and "Null". The exec and trace banners print the
+in-order shape: `Core:      InOrder (issue width W, branch predictor P)`.
+
+**What moves.** No existing cell moves. A configuration that names neither
+simple_core nor the new keys runs the same machine: pag is the previous
+code, and the new `CF_DIR_JMP` feed does nothing on pag and OOO (the
+out-of-order core's 1.12.0 redirect is untouched). The changes on such runs
+are print-only:
+- the `[params] core record` line gains `, branch predictor pag`;
+- one `[params] [<node>: ]in_order branch predictor <v> (<source>)` line per
+  in-order element;
+- one `[power] in_order_core: branch predictor pag (...)` line per in-order
+  McPAT description;
+- the in-order banner shape;
+- a `takenBranches` line per in-order core in zsim.out;
+- the corrected labels;
+- the unknown-core-type message names its key;
+- the trace replay's `Branch feed` control-transfer count now includes
+  direct jmps.
+
+simple_core configurations, which ran through 1.12.0, now refuse. The scalar
+configuration (in_order_core, issue width 1, branch predictor none) is new.
+No retired simple_core number maps onto it: it is a weave core with
+decode-driven RAW, port and refill stalls, not an IPC-1 bound. Configurations
+under scope: cosim that set `pim.pe.issue_width` other than 2 on an in-order
+device move (B5). None ships, and none is in the corpus. A user
+`PIMID_PARAMS` core record without `in_order.branch_predictor` now refuses,
+and so does a hand-written zsim config with no `branchPredictor` in an
+InOrder group or no `type` in a core group.
+
 ## 1.12.0 -- the out-of-order core's mispredict redirect costs the core record's penalty in total, counted from the branch's resolution (#50)
 
 Ticket #50, user ruling (b) of 2026-10-05. The core record's

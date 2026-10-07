@@ -167,7 +167,6 @@ pim:
 | `pim.pe.access_factor` | double | `1.0` | Cycles per load/store. `0.0` = free local access (PUM). |
 | `pim.pe.throughput_factor` | double | `1.0` | Parallelism divider on instruction count. |
 | `pim.pe.bit_serial` | bool | `false` | Datapath model. `false` = bit-parallel (operand width has no cycle cost). `true` = bit-serial PUM (compute cost proportional to `operand_width`). |
-| `pim.pe.issue_width` | int | `2` | In-order core issue width (uops issued per cycle, program order). Valid 1-6 (clamped to the 6-port FU model; out-of-range falls back to 2); practical range 1-4 -- real in-order cores are 2-3 wide, and beyond 4 the ports and RAW chains bind first. Applies to `in_order_core` only; env `PIMID_INORDER_WIDTH` overrides YAML. Since 1.11.89 McPAT prices the core at this same resolved width (both scopes; printed as `McPAT issue width N = the timing model's (...)`). |
 | `pim.pe.operand_width` | int | `32` | Datapath width in bits, used by BOTH halves of the model. Timing: with `bit_serial: true` compute cost scales linearly with width (a W-bit op = W bit-steps); with `bit_serial: false` it has no cycle cost. Power/area: always sizes the register files, queue entries and result buses. The power model quantises to 32-bit granularity, so a narrower element is priced as 32-bit and says so. |
 | `pim.pe.energy_factor` | double | `1.0` | Per-op energy scale factor (reporting only, does not affect timing). |
 | `pim.pe.lanes` | int | `1` | Datapath replication. `1` = scalar, `W` = W-wide. Sizes the arithmetic units, register file and result bus in the power/area model. It does NOT speed the element up on its own -- the timing model expresses width through `throughput_factor`, so set both. Declaring lanes without throughput_factor warns, since the result is an element that pays for W lanes and runs like one. |
@@ -184,6 +183,13 @@ set and cannot distinguish a floating-point operation from an integer one. What
 it does model, and what these knobs describe, is the cost of an operation and the
 cost of reaching data: the memory-interface path, locality, and the in-memory
 network hierarchy. Use it for memory-bound kernels, which is what it is for.
+
+**In-order core** (`in_order_core` only; see [cores.md](cores.md)):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `pim.pe.issue_width` | int | `2` | In-order core issue width (uops issued per cycle, program order). Valid 1-6 (clamped to the 6-port FU model; out-of-range falls back to 2); practical range 1-4 -- real in-order cores are 2-3 wide, and beyond 4 the ports and RAW chains bind first. Applies to `in_order_core` only; env `PIMID_INORDER_WIDTH` overrides YAML. Since 1.11.89 McPAT prices the core at this same resolved width (both scopes; printed as `McPAT issue width N = the timing model's (...)`). |
+| `pim.pe.branch_predictor` | string | the core record (`pag`) | In-order branch predictor (1.12.1): `pag` = the PAg direction predictor + 512-entry BTB + 16-entry RAS; `none` = no prediction structure, static not-taken (a taken conditional branch, an indirect jmp/call or a return pays the execute-depth flush `in_order.mispredict_penalty_cycles`; a direct call/jmp pays the decode-depth resteer `in_order.resteer_penalty_cycles`; a not-taken branch is free). Absent = the core record's `in_order.branch_predictor` (`params/core/default.yaml`, ships `pag`). Any other word is refused (rc 2), and so is the key on any core type but `in_order_core`. With `issue_width: 1` this is the scalar single-issue PE that replaced `simple_core`; McPAT then prices 1 ALU / 1 MUL / 1 FPU with no predictor at the in-order refill depth. `core.in_order.branch_predictor` is not a key (refused): the predictor is set per element. |
 
 ### PE Placement (`pim.placement`)
 
@@ -797,8 +803,8 @@ time; `in_order_core` issue width defaults to 2, env-tunable via
 
 | Override Key | Type | Description |
 |-------------|------|-------------|
-| `pipeline_depth` | int | Pipeline stages (auto: `alu_core` 5, `simple_core`/`null_core` 5, `in_order_core` = `core.in_order.mispredict_penalty_cycles` (7), `ooo_core` 13 = zsim's dispatch stage; it was 14 and 19). |
-| `issue_width` | int | Issue width (auto: alu=1, simple_core=1, ooo=4; in_order_core = the width the timing model runs, i.e. `pim.pe.issue_width` resolved as zsim resolves it, default 2 -- since 1.11.89, it was 1). |
+| `pipeline_depth` | int | Pipeline stages (auto: `alu_core` 5, `null_core` 5, `in_order_core` = `core.in_order.mispredict_penalty_cycles` (7) for every predictor and issue width, the scalar profile included, `ooo_core` 13 = zsim's dispatch stage; it was 14 and 19). |
+| `issue_width` | int | Issue width (auto: alu=1, null=1, ooo=4; in_order_core = the width the timing model runs, i.e. `pim.pe.issue_width` (an in-order host: `system.hosts[].issue_width`) resolved as zsim resolves it, default 2 -- since 1.11.89, it was 1). The in-order ALU count is 3, or 1 for the scalar profile (issue width 1 + `branch_predictor: none`). |
 | `num_alus` | int | Number of ALUs. |
 | `num_muls` | int | Number of multipliers. |
 | `num_fpus` | int | Number of FPUs. |
@@ -933,6 +939,7 @@ system:
 | `system.hosts[].floating_point` | bool | `true` | Whether the host cores have an FPU (per node: a device's setting does not leak onto the host). |
 | `system.hosts[].fp_emulation_cycles` | int | `0` | Cycles the host charges per FP-class instruction when `floating_point: false`. |
 | `system.hosts[].issue_width` | int | `2` | An `in_order_core` host's issue width, 1-6 (1.11.107; as `pim.pe.issue_width`, which a host could not set: before it only `PIMID_INORDER_WIDTH` narrowed an in-order host). Emitted as the host group's `issueWidth` and priced by McPAT at the same width. Refused (rc 2) on any other host core type, where it would change nothing, and outside 1-6. |
+| `system.hosts[].branch_predictor` | string | the core record (`pag`) | An `in_order_core` host's branch predictor, `pag` or `none` (1.12.1; as `pim.pe.branch_predictor`). Emitted as the host group's `branchPredictor` and priced by McPAT the same way (`none`: no predictor). Refused (rc 2) on any other host core type, where it would change nothing, and for any other word. With `issue_width: 1` and `none` an in-order host is the scalar single-issue PE. |
 | `system.hosts[].pg` | bool | `false` | Power-gate the host as ONE piece: cores and host memory controller share one domain and one idle residency. Since 1.11.106 the residency is 1 minus the MEASURED union of core-active and host-MC-active phases; it used to take max(core, mc), which understates activity and over-credits the gating. A stats file without the union counter falls back to the max and the `[pg]` line says it over-credits. |
 | `system.hosts[].workload` | map | - | Per-host workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
 | `system.hosts[].workload.env` | map | `{}` | Environment for the node's workload, read since 1.11.106 (documented earlier and ignored). The system runs as ONE simulated process, so the map joins that process's environment, the top-level `workload.env`. Nodes are applied in file order, hosts before devices; a name already set with a different value takes the node's value and the run prints a NOTE naming both values. A value that is not a map of `NAME: value` is refused. |
@@ -1039,9 +1046,9 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 - **Per node.** The model reads these per node, so each device node may differ:
   the clock, process node, PE type and count, memory technology, the PE's
   `pim.pe.*` datapath and power keys (factors, `operand_width`, `bit_serial`,
-  `floating_point`, `fp_emulation_cycles`, `issue_width`, `lanes`,
-  `imem_bytes`, `arch_int_regs`, `arch_fp_regs`, `pg`), `pim.mc.pg`,
-  `noc.pg` and the cache sizes, ways, banks and latencies. A node's
+  `floating_point`, `fp_emulation_cycles`, `issue_width`, `branch_predictor`
+  (1.12.1), `lanes`, `imem_bytes`, `arch_int_regs`, `arch_fp_regs`, `pg`),
+  `pim.mc.pg`, `noc.pg` and the cache sizes, ways, banks and latencies. A node's
   `pim.pe.arch_int_regs` / `arch_fp_regs`, `lanes`, `imem_bytes` and
   `operand_width` price THAT node's cores in McPAT (1.11.107; McPAT used the
   run's values for every node).
@@ -1080,6 +1087,8 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). |
 | `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
 | `system.devices[].pe_type` | string | `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
+| `system.devices[].pim.pe.issue_width` | int | `2` | Per-device in-order issue width (as `pim.pe.issue_width`; the node's own). |
+| `system.devices[].pim.pe.branch_predictor` | string | the core record (`pag`) | Per-device in-order branch predictor, `pag` or `none` (1.12.1; as `pim.pe.branch_predictor`; the node's own). Refused (rc 2) unless the node's PE type (`pe_type` / `pim.pe.type`) is `in_order_core`. |
 | `system.devices[].num_pes` | int | `0` | Number of PEs (compute devices only). Alias of `pim.pe.count` in the node. |
 | `system.devices[].frequency_mhz` | double | `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
 | `system.devices[].tech_node_nm` | int | the device node (`22`) | Device technology node. Alias of `technology.node_nm` in the node. |
@@ -1197,7 +1206,7 @@ prints a NOTE saying so). With declared nodes `scope: cosim` is refused (since
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `host.core_type` | string | `"ooo_core"` | Host core type: `ooo_core`, `in_order_core`, `simple_core`, `alu_core` or `null_core`, spelled exactly; anything else is refused (rc 1). |
+| `host.core_type` | string | `"ooo_core"` | Host core type: `ooo_core`, `in_order_core`, `alu_core` or `null_core`, spelled exactly; anything else is refused (rc 1). `simple_core` (and `Simple` / `simple`) was retired in 1.12.1 and is refused (rc 1) with a message naming the replacement. An `in_order_core` host here takes the core record's branch predictor: `host.branch_predictor` is not a key (refused, rc 2; declare the host under `scope: system` and set `system.hosts[].branch_predictor`). |
 | `host.num_cores` | int | `4` | Host core count (see also `workload.mpi_ranks`). |
 | `host.frequency_mhz` | double | `3000.0` | Host clock (MHz). |
 | `host.tech_node_nm` | int | inherits device | Host process node. It sets the same field as `power.host_tech_node_nm` and wins when both are given; absent both, the host inherits the device node. |
@@ -1232,12 +1241,14 @@ prints a NOTE saying so). With declared nodes `scope: cosim` is refused (since
 | Value | ZSim Core | Description |
 |-------|-----------|-------------|
 | `compute_unit` | ALU | A datapath rather than a processor: register file, arithmetic units, result bus and a resident instruction store; no caches, no speculation. Sized by `lanes` / `operand_width` / `floating_point` / `imem_bytes`. Aliases: `alu_core` (names the entire existing sweep corpus, so it is permanent), `ComputeUnit`, `cu`, `compute_unit_pe`. Bare `alu` and `ALU` were RETIRED and are now rejected. |
-| `simple_core` | Simple | Coarse functional: IPC = 1 + serial memory latency, with caches. Aliases: `Simple`, `simple`. |
-| `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW/port stalls, dual-issue (default 2), mispredict bubbles, contention-aware two-phase bound/weave. Aliases: `InOrder`, `in-order`, `in_order`. |
+| `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW/port stalls, issue width `pim.pe.issue_width` (default 2), branch predictor `pim.pe.branch_predictor` (`pag` default, or `none`), mispredict bubbles, contention-aware two-phase bound/weave. With issue width 1 and `none` it is the scalar single-issue PE. Aliases: `InOrder`, `in-order`, `in_order`. |
 | `ooo_core` | Out-of-order | Decode-driven out-of-order superscalar (128-entry ROB, 4-wide, BTB+RAS branch prediction). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
 | `null_core` | Null | No timing model: IPC = 1 instruction counting; drops all memory accesses. Aliases: `Null`, `null`. |
 
 Any other value (including the removed `timing_core`) is rejected with an error.
+`simple_core` and its aliases `Simple` / `simple` were RETIRED in 1.12.1 (ticket
+#114) and are refused with a message naming the replacement: `in_order_core`
+with `pim.pe.issue_width: 1` and `pim.pe.branch_predictor: none`.
 
 ### NoC Topologies
 

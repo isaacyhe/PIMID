@@ -1,8 +1,11 @@
 /** Simplified BBL decoder for QEMU-based instrumentation.
  *
  * Creates BblInfo from instruction count and byte size, which is sufficient
- * for SimpleCore (IPC=1 model). For OOO cores, a full x86 decoder (e.g.
- * Capstone) would be needed to decompose instructions into micro-ops.
+ * for a core that reads only instrs/bytes (ALUCore, NullCore; and the
+ * injected timing charges every core takes). The decoded cores (OOO,
+ * in-order) get their micro-ops from x86_decoder.h; a block built here has
+ * none and runs their synthetic fallback. (1.12.1: SimpleCore, the IPC=1
+ * model this was written for, is retired.)
  *
  * This replaces decoder.h's dependency on Pin/XED when building with
  * ZSIM_USE_QEMU.
@@ -81,7 +84,7 @@ struct BblInfo;  // defined in core.h
 /** Create a BblInfo for a basic block with given instruction count and byte size.
  *
  * This allocates from the global heap (gm_malloc) so it persists across
- * phases. The BblInfo is suitable for SimpleCore which only uses instrs/bytes.
+ * phases. The BblInfo is suitable for a core that only uses instrs/bytes.
  *
  * 1.11.16: synth=true marks an INJECTED timing charge (barrier latency, PCIe
  * launch/transfer, drain trailer) whose "instrs" are cycles, not code; cores

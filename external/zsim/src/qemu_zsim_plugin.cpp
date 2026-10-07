@@ -125,8 +125,8 @@ static void pimid_noc_mark_state(uint32_t st) {
  * PIMID_INORDER_NODECODE
  * disables that decode (in-order falls back to the legacy IPC=1 path), mirroring
  * PIMID_OOO_NODECODE. Only OOOCore and InOrderCore read oooBbl; since 1.11.15
- * decode runs for EVERY core type (the class census needs it), and alu/simple/
- * null consume instrs/bytes/census -- their nFp feeds the 1.11.11 soft-float
+ * decode runs for EVERY core type (the class census needs it), and alu/null
+ * (1.12.1: SimpleCore retired) consume instrs/bytes/census -- their nFp feeds the 1.11.11 soft-float
  * charge when pim.pe.floating_point=false, so decode is timing-visible on
  * those cores ONLY under that non-default config. */
 static bool g_inorder_present = false;
@@ -1337,8 +1337,9 @@ struct TbUserdata {
     uint64_t  brTakenTarget;
     uint64_t  brFallthrough;
     /* Indirect control-flow wiring: if this TB's last instruction is a direct
-     * call (E8), indirect call (FF /2,/3), indirect jmp (FF /4,/5), or ret
-     * (C3/C2), termKind holds the CtrlFlowKind code (2..5, see ooo_core.h) and
+     * call (E8), indirect call (FF /2,/3), indirect jmp (FF /4,/5), ret
+     * (C3/C2) or (1.12.1) direct jmp (E9/EB), termKind holds the CtrlFlowKind
+     * code (2..6, see ooo_core.h) and
      * termPc/termRetAddr its PC and (for calls) fall-through return address.
      * The actual target is resolved from the NEXT TB's start address, exactly
      * like the conditional-direction wiring above. termKind=0 otherwise.
@@ -1521,7 +1522,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
      * THIS TB's address as the real next-PC, then feed direction+targets to the
      * core BEFORE bbl() (bbl() consumes branchPc when timing the prev BBL). Only
      * OOO and (decode-enabled) in-order cores get branch callbacks, so
-     * alu/simple/null stay byte-identical.
+     * alu/null stay byte-identical.
      * NOTE: the OOO leg now also checks !g_ooo_decode_disabled -- a no-op today,
      * since endsInCondBranch is only ever set when decode ran for the TB, but it
      * keeps OOO's feed provably unchanged in mixed-core configs where the
@@ -3487,7 +3488,12 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
      *  - indirect call (FF /2,/3)   -> BTB target check + RAS push
      *  - indirect jmp (FF /4,/5)    -> BTB target check
      *  - ret (C3/C2)                -> RAS pop + target check
-     * Direct jmp (E9/EB) has a fixed correctly-predicted target: no feed.
+     *  - direct jmp (E9/EB)         -> CF_DIR_JMP (1.12.1, ticket #114): the
+     *    decode resteer of the predictor-less in-order mode (branchPredictor
+     *    none); the OOO and the PAg in-order cores ignore it, as they ignored
+     *    the unfed jmp before (a fixed target, always predicted).
+     * The replay classifier (zsim_trace_driver.cpp classifyTerminator) is a
+     * copy of this one and must stay identical (1.11.100 H40).
      * Since 1.11.15 g_decode_enabled defaults to TRUE for every core type
      * (census decode-always); only the PIMID_NODECODE escape restores the
      * old (ooo && !ooo_nodecode) || (inorder && !inorder_nodecode) gate. */
@@ -3538,6 +3544,9 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
                     tud->termKind = CF_IND_JMP;
                     tud->termPc = lpc;
                 }
+            } else if (opb == 0xE9 || opb == 0xEB) {              /* direct jmp (1.12.1) */
+                tud->termKind = CF_DIR_JMP;
+                tud->termPc = lpc;
             }
         }
     }
@@ -3950,12 +3959,14 @@ int qemu_plugin_install(qemu_plugin_id_t id,
 
     /* Compute core-type masks for co-sim domain routing.
      *
-     * Valid host cores:   OoO, Simple, Timing  (need cache hierarchy)
+     * Valid host cores:   OoO, InOrder  (need cache hierarchy)
      * Invalid for host:   ALU (no cache), Null (no memory modeling)
-     * Valid device cores:  ALL five types (ALU, OoO, Simple, Timing, Null)
+     * Valid device cores:  ALL four types (ALU, OoO, InOrder, Null)
      *
      * ALU and Null cores are always placed in the device mask.
-     * All other core types (OoO, Simple, Timing) go to the host mask. */
+     * All other core types (OoO, InOrder) go to the host mask.
+     * (1.12.1: the Simple core is retired; "Timing" was the in-order core's
+     * former name.) */
     /* Detect any OOO core -> enable x86 decode of TBs into DynUops so the OOO
      * engine runs its real dataflow pipeline instead of the synthetic path. */
     g_ooo_decode_disabled = (getenv("PIMID_OOO_NODECODE") != nullptr);
@@ -4018,7 +4029,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         } else if (dynamic_cast<NullCore*>(zinfo->cores[i])) {
             device_mask[i] = true;
         } else {
-            /* OoO, Simple, Timing -- valid host cores */
+            /* OoO, InOrder -- valid host cores */
             host_mask[i] = true;
         }
     }

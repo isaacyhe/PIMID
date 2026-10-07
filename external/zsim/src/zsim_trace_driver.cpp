@@ -142,7 +142,9 @@ struct TraceBlock { uint32_t n = 0, bytes = 0; std::vector<uint8_t> lens; std::v
  * translation (qemu_zsim_plugin.cpp tb_trans_cb): a conditional jcc gives a
  * direction feed, a direct call (E8) a RAS push, an indirect call (FF /2,/3)
  * a BTB check plus a RAS push, an indirect jmp (FF /4,/5) a BTB check, a ret
- * (C3/C2) a RAS pop. A direct jmp has a fixed target: no feed. The outcome is
+ * (C3/C2) a RAS pop. A direct jmp (E9/EB) is fed as CF_DIR_JMP since 1.12.1
+ * (ticket #114): the decode resteer of the predictor-less in-order mode; the
+ * OOO and PAg in-order cores ignore it. The outcome is
  * resolved from the NEXT block's start address and fed to the core through
  * branchPtr BEFORE that block's bbl(), as the execution path does. */
 struct BlockTerm { bool cond = false; uint64_t brPc = 0, brTaken = 0, brFall = 0; uint8_t kind = 0; uint64_t termPc = 0, termRet = 0; };
@@ -194,6 +196,8 @@ static void classifyTerminator(const TraceBlock& b, uint64_t vaddr, BlockTerm& t
             } else if (ext == 4 || ext == 5) {                /* jmp r/m */
                 t.kind = CF_IND_JMP; t.termPc = lpc;
             }
+        } else if (opb == 0xE9 || opb == 0xEB) {              /* direct jmp (1.12.1) */
+            t.kind = CF_DIR_JMP; t.termPc = lpc;
         }
     }
 }
@@ -474,7 +478,8 @@ uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
      * per call: a core that crosses two phase ends in one block waits for
      * two) and the driver ends the phase when all joined threads are parked.
      * The scheduler's sync is not called: the barrier never ends a phase on
-     * its own (checkEndPhase needs a waiting thread). SimpleCore::BblFunc's
+     * its own (checkEndPhase needs a waiting thread). The (since retired,
+     * 1.12.1) SimpleCore::BblFunc's
      * debug assertion that the global phase advanced per crossing does not
      * hold for a second crossing in one block (release builds). */
     g_crossings[tid]++;

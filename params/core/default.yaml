@@ -42,6 +42,30 @@
 #     timing core does not have.
 #   (no fetch_width: the in-order core models no wrong-path fetch --
 #    in_order_core.cpp BranchFunc: "wrong-path fetches not modeled".)
+#   branch_predictor: pag. The value every in-order element takes when its
+#     config does not set pim.pe.branch_predictor (device scope),
+#     system.devices[].pim.pe.branch_predictor or system.hosts[].branch_predictor
+#     (1.12.1, ticket #114). Only pag or none is accepted.
+#       pag   the structures InOrderCore has always run: a 2-level PAg
+#             direction predictor (BranchPredictorPAg<11, 18, 14>: 2048 x
+#             18-bit local histories, 16384 2-bit counters) plus a 512-entry
+#             direct-mapped BTB and a 16-entry return-address stack
+#             (IndirectPredictor<9, 16>; in_order_core.h branchPred /
+#             indirPred). Unchanged value: pag is today's machine.
+#       none  no prediction structure. Fetch always continues at the
+#             fall-through (static not-taken); nothing is predicted, read or
+#             trained. A redirect pays the bubble of the stage that first
+#             knows its target, with the two penalties above: a TAKEN
+#             conditional branch, an indirect jmp/call or a return is known
+#             at EXECUTE (mispredict_penalty_cycles); a direct call or jmp
+#             has its target computed by the decoder (resteer_penalty_cycles);
+#             a not-taken branch is free. McPAT prices no predictor
+#             (prediction_width 0, no BTB, RAS or pattern table).
+#     in_order + issue width 1 + none is the scalar single-issue in-order PE
+#     that replaces the retired simple_core (1.12.1); McPAT prices it with one
+#     ALU, one MUL and one FPU at the depth above (mispredict_penalty_cycles,
+#     the refill the timing charges -- user ruling 2026-10-05; the retired
+#     simple cell used 5).
 #
 # ooo
 #   mispredict_penalty_cycles: 17. The TOTAL cost of a mispredict on the
@@ -87,6 +111,7 @@ in_order:
   mispredict_penalty_cycles: 7
   resteer_penalty_cycles: 4
   retire_width: issue
+  branch_predictor: pag
 ooo:
   mispredict_penalty_cycles: 17
   fetch_width_bytes: 16

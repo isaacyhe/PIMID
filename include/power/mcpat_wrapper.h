@@ -380,7 +380,7 @@ public:
          * retire width from the core record (params/core/default.yaml
          * retire_width: ooo 4 = the ROB retire width; in_order "issue").
          * -1 = the issue width McPAT is handed (in_order "issue", and the
-         * stage-less ALU / simple elements, which the record does not
+         * stage-less ALU / null elements, which the record does not
          * describe). Was commit_width = issue_width for every profile. */
         int commit_width = -1;
         int periphery_leakage_device = 4;
@@ -465,8 +465,9 @@ public:
          * per core (a caller that never said). */
         int l2_instances = 0;
         /* 1.11.93 (F6): the timing core runs a branch predictor (zsim
-         * OOOCore and InOrderCore do; ALUCore, SimpleCore and NullCore do
-         * not). The structure itself is zsim's, fixed at compile time, and
+         * OOOCore and InOrderCore do; ALUCore and NullCore do not, nor does
+         * an InOrderCore run with branch predictor none, 1.12.1). The
+         * structure itself is zsim's, fixed at compile time, and
          * is described in the wrapper next to its file:line citations. */
         bool has_branch_predictor = false;
         double subarray_pitch_factor = 1.0;  // extra area factor at SUBARRAY placement

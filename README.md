@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.0-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.1-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -20,8 +20,9 @@ McPAT, and Garnet for timing, power, and area.
 
 - **11 memory technologies** -- 7 DRAM (DDR3/4/5, LPDDR5, GDDR6, HBM2, HBM3),
   SRAM, 3 NVM (STT-MRAM, PCM, ReRAM) -> [docs/memory.md](docs/memory.md)
-- **5 PE core models** -- `alu_core`, `simple_core`, `in_order_core`,
-  `ooo_core`, `null_core` -> [docs/cores.md](docs/cores.md)
+- **4 PE core models** -- `alu_core`, `in_order_core` (also the scalar
+  single-issue PE: `issue_width: 1`, `branch_predictor: none`), `ooo_core`,
+  `null_core` -> [docs/cores.md](docs/cores.md)
 - **2 network models** -- `detailed` (cycle-accurate Garnet over sparse
   placement-driven DRAM trees; ONE logical network across OpenMP threads AND
   MPI ranks; the default) and `analytical` (closed-form hop + M/D/1 + MLP)

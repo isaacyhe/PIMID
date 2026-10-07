@@ -163,9 +163,10 @@ void McPATWrapper::setMeasuredControlFlow(uint64_t indirect_branches,
  * the pipeline duty divides by. OOO: zsim OOOCore issues ISSUES_PER_CYCLE =
  * 4 uops per cycle (external/zsim/src/ooo_core.cpp:56). ALU: one operation
  * per lane per cycle (the element is sized from pe_lanes, below). In-order
- * and simple: the width the caller resolved (in-order: pim.pe.issue_width,
- * the zsim InOrderCore issueWidth; simple/null: 1, SimpleCore is IPC-1 by
- * construction, simple_core.cpp:83). */
+ * and null: the width the caller resolved (in-order: pim.pe.issue_width,
+ * the zsim InOrderCore issueWidth; null: 1, NullCore retires one
+ * instruction per cycle). 1.12.1: the retired simple_core was priced here
+ * at 1 too. */
 int McPATWrapper::effectiveIssueWidth() const {
     if (device_profile_ == DeviceProfile::OOO) return 4;
     if (device_profile_ == DeviceProfile::DEVICE_ALU)
@@ -2832,7 +2833,7 @@ std::string McPATWrapper::generateXMLConfig() const {
         }
         /* 1.11.97 (R2537): the timing core's retire width from the core
          * record (SystemConfig::commit_width); -1 = the issue width above
-         * (in_order retires what it issues; ALU/simple are not described
+         * (in_order retires what it issues; ALU/null are not described
          * by the record). Was commit_width = issue_width unconditionally. */
         const int commit_width = (config_.commit_width > 0) ? config_.commit_width : issue_width;
         xml << "      <param name=\"commit_width\" value=\"" << commit_width << "\"/>\n";
@@ -2878,8 +2879,9 @@ std::string McPATWrapper::generateXMLConfig() const {
          * McPAT's predictor is the Alpha-21264 tournament; the fork (1.11.93)
          * builds a two-level local predictor with NO global table and NO
          * chooser when their entry counts are 0, and sizes the pattern table
-         * with its own local_predictor_l2_entries. ALU, simple and null cores
-         * run no predictor: prediction_width 0, nothing built. */
+         * with its own local_predictor_l2_entries. ALU and null cores, and an
+         * in-order core with branch predictor none (1.12.1), run no
+         * predictor: prediction_width 0, nothing built. */
         const bool has_bp = config_.has_branch_predictor && !is_alu;
         xml << "      <param name=\"prediction_width\" value=\"" << (has_bp ? 1 : 0) << "\"/>\n";
         xml << "      <param name=\"RAS_size\" value=\"" << (has_bp ? 16 : 0) << "\"/>\n";
@@ -3369,7 +3371,7 @@ std::string McPATWrapper::generateXMLConfig() const {
          * McPAT built 1-entry TLBs with ParseXML's default of 1 access each.
          * No zsim core models a TLB (grep of external/zsim/src: no TLB in
          * any core or in the cache hierarchy; the timing side charges no
-         * translation for any PE, ALU, simple, in-order or OOO), so no
+         * translation for any PE, ALU, null, in-order or OOO), so no
          * translation activity is priced on any profile: 0 accesses, 0
          * misses. McPAT cannot omit the TLB arrays -- MemManU builds both
          * unconditionally and a 0-entry array is a 0-byte CACTI request

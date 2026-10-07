@@ -19,7 +19,7 @@ typedef uint32_t BOOL;
 typedef uint64_t Address;
 
 // REG_LAST is used by decoder.h for temporary register numbering.
-// The actual value doesn't matter for SimpleCore (no OOO decoding).
+// The actual value doesn't matter for cores that do not read decoded uops.
 // We set it high enough to avoid collisions with temp register offsets.
 #define REG_LAST 512
 

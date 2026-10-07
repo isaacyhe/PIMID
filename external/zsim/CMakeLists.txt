@@ -65,8 +65,7 @@ set(ZSIM_SIM_SRCS
     src/memory_hierarchy.cpp
     src/network.cpp
 
-    # Cores
-    src/simple_core.cpp
+    # Cores (1.12.1: simple_core.cpp retired and deleted, ticket #114)
     src/in_order_core.cpp
     src/timing_cache.cpp
     src/timing_event.cpp
@@ -201,8 +200,7 @@ set(ZSIM_SIM_SRCS_TRACE
     src/memory_hierarchy.cpp
     src/network.cpp
 
-    # Cores
-    src/simple_core.cpp
+    # Cores (1.12.1: simple_core.cpp retired and deleted, ticket #114)
     src/in_order_core.cpp
     src/timing_cache.cpp
     src/timing_event.cpp

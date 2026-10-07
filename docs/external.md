@@ -16,7 +16,7 @@ into PIMID.
 ### 2. ZSim (Timing Model)
 - **Repository**: https://github.com/s5z/zsim (heavily modified)
 - **Purpose**: Core + cache-hierarchy timing for workload execution
-  (simple / in-order / out-of-order / ALU / null core models, see [cores.md](cores.md))
+  (in-order / out-of-order / ALU / null core models, see [cores.md](cores.md))
 - **Location**: `zsim/`
 - **Build**: built automatically with PIMID via CMake as QEMU TCG plugins
   (`libzsim_qemu.so`, `libpimid_trace.so`); the legacy native Intel-PIN build

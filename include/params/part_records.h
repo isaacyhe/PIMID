@@ -145,13 +145,19 @@ struct CoreTypeRecord {
     int resteer_penalty_cycles = -1;      // BTB/RAS target resteer, decode depth (in_order)
     int fetch_width_bytes = -1;           // wrong-path fetch bytes per cycle (ooo)
     int retire_width = -1;                // commit width McPAT prices; in_order: -1 = issue width
+    /* 1.12.1 (ticket #114): the in-order element's branch predictor, "pag" |
+     * "none" (in_order only; ooo always runs its PAg). A config sets it per
+     * element (pim.pe.branch_predictor, devices[].pim.pe.branch_predictor,
+     * hosts[].branch_predictor); this is the value where none is set. */
+    std::string branch_predictor;
 };
 struct CoreRecord {
     std::string file, record;
     CoreTypeRecord in_order, ooo;
 };
 /* Loads params/core/default.yaml (PIMID_PARAMS honoured); false + error on a
- * missing file or field, a value outside its range, or an ooo retire_width
+ * missing file or field, a value outside its range, an in_order
+ * branch_predictor that is not pag or none (1.12.1), or an ooo retire_width
  * that is not the timing core's compiled ROB retire width. */
 bool loadCoreRecord(CoreRecord& out, std::string& error);
 /* The ROB retire width zsim OOOCore is compiled with (ReorderBuffer<128, 4>,

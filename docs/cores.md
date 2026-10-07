@@ -1,21 +1,34 @@
 # PE Core Models
 
-Five core models are available for PIM device PEs (`pim.pe.type`) and, in
+Four core models are available for PIM device PEs (`pim.pe.type`) and, in
 system scope, for hosts (`hosts[].core_type`) and devices (`devices[].pe_type`).
+The in-order model also runs as the scalar single-issue PE (`issue_width: 1`,
+`branch_predictor: none`; see below), which replaced `simple_core` in 1.12.1.
 
 | Value | ZSim engine | What it models |
 |---|---|---|
 | `compute_unit` | ALU | A datapath, not a processor: a register file, arithmetic units, a result bus and a resident instruction store, with no caches and no speculation. Sized by `pim.pe.lanes` / `operand_width` / `floating_point` / `imem_bytes` and shaped by the scaling factors below. The default device element. Alias: `alu_core` (which the entire existing sweep corpus names, so it is permanent). |
-| `simple_core` | Simple | Coarse functional core: IPC = 1 plus serial memory latency. Fast, approximate. Aliases: `Simple`, `simple`. |
-| `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW-dependency stalls, functional-unit latencies, and dual-issue in program order (no reordering), plus the cross-PE memory-contention weave (`CoreRecorder`). Aliases: `InOrder`, `in-order`, `in_order`. |
+| `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW-dependency stalls, functional-unit latencies, and issue in program order (no reordering; `pim.pe.issue_width`, default 2), plus the cross-PE memory-contention weave (`CoreRecorder`). Branch prediction per `pim.pe.branch_predictor`: `pag` (default, from the core record) or `none`. Aliases: `InOrder`, `in-order`, `in_order`. |
 | `ooo_core` | Out-of-order | Out-of-order superscalar (Westmere-class: 128-entry ROB, 4-issue). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
 | `null_core` | Null | No timing model: counts instructions (cycles == instrs, IPC = 1) and drops all memory accesses (empty load/store handlers, so no NoC traffic). An IPC = 1 control/upper-bound baseline. Aliases: `Null`, `null`. |
 
 Any other value is rejected with an error listing the valid names.
 
+**Retired: `simple_core` (1.12.1, ticket #114).** `simple_core` and its aliases
+`Simple` / `simple` are refused, with a message naming the replacement:
+`in_order_core` with `pim.pe.issue_width: 1` and `pim.pe.branch_predictor: none`
+(system scope: `devices[].pe_type: in_order_core` with
+`devices[].pim.pe.issue_width: 1` and `devices[].pim.pe.branch_predictor: none`;
+a host: `hosts[].core_type: in_order_core` with `hosts[].issue_width: 1` and
+`hosts[].branch_predictor: none`).
+Its IPC = 1 bound modelled no real PE class -- on the 1.11.x corpus it sat
+between 0.77x and 1.13x of `in_order_core` in cycles depending on the kernel,
+a bound rather than an element. For an IPC = 1 control bound without memory
+traffic, `null_core` remains.
+
 ## What every model shares, and what none of them are
 
-All five consume the SAME host instruction stream: the emulator executes the real
+All four consume the SAME host instruction stream: the emulator executes the real
 guest binary and reports retired instruction counts and load/store addresses.
 There is no processing-element instruction set anywhere in the simulator.
 
@@ -70,28 +83,76 @@ The analytical NoC model divides per-access latency by an MLP intensity `M`
 cycle-accurate `detailed` model; omit `noc.mlp` to use the calibrated default.
 See [network.md](network.md).
 
-## Fidelity ladder (simple vs in-order vs out-of-order)
-
-`simple_core` is an **IPC = 1** model: one instruction per cycle plus full
-blocking memory latency, with no instruction- or memory-level parallelism. It is
-the optimistic per-instruction bound and the fast approximation.
+## Fidelity ladder (scalar in-order vs in-order vs out-of-order)
 
 `in_order_core` is a decode-driven **in-order pipeline**: it consumes the decoded
 uops (below) and issues them in strict program order, stalling on real
 per-instruction RAW dependencies, functional-unit latencies, and
 issue-width/port contention -- with no reordering (mechanism details in the
-Notes below). Dependency chains it cannot hide push it *above* simple's
-IPC = 1 (FP-latency-bound stencil), while dual-issue plus cross-block overlap
-pulls it *below* on kernels with exploitable independence (gemv, histogram); it
-also carries the cross-PE memory-contention weave (`CoreRecorder`) and pays
-branch-mispredict flush bubbles. Genuinely distinct from `simple` -- not a
-rename.
+Notes below). Dependency chains it cannot hide push it above one cycle per
+instruction on latency-bound kernels (FP-latency-bound stencil), while
+dual-issue plus cross-block overlap pulls it below one cycle per instruction on
+kernels with exploitable independence (gemv, histogram); it also carries the
+cross-PE memory-contention weave (`CoreRecorder`) and pays branch-mispredict
+flush bubbles.
+
+The **scalar single-issue in-order PE** is the same core with
+`pim.pe.issue_width: 1` and `pim.pe.branch_predictor: none` (next section): one
+uop issued per cycle, no branch prediction. It models a programmable PE with
+no branch predictor; it is not a renamed IPC = 1 bound, since it keeps every
+stall the in-order core models.
 
 `ooo_core` adds out-of-order issue (128-entry ROB + reordering), hiding latency
 the in-order core must stall on, so `ooo <= in_order` holds across the kernel
 suite (typical gaps 2-3.5x, tracking each kernel's ILP/MLP). Use
-`in_order_core` for dependency/issue-accurate in-order timing, `ooo_core` for
-the reordered upper bound, `simple_core` for the fast IPC = 1 approximation.
+`in_order_core` for dependency/issue-accurate in-order timing (scalar or
+dual-issue, with or without a predictor), `ooo_core` for the reordered upper
+bound, `null_core` for an IPC = 1 control bound.
+
+## Scalar single-issue PE (`issue_width: 1`, `branch_predictor: none`)
+
+```yaml
+pim:
+  pe:
+    type: in_order_core
+    issue_width: 1          # one uop issued per cycle
+    branch_predictor: none  # pag (default, the core record) | none
+```
+
+`pim.pe.branch_predictor` (1.12.1) selects the in-order core's front end:
+
+- `pag` (the default, from the core record `params/core/default.yaml`,
+  `in_order.branch_predictor`): the 2-level PAg direction predictor, the
+  512-entry BTB and the 16-entry return-address stack described in the Notes.
+- `none`: no prediction structure. Fetch always continues at the fall-through
+  (static not-taken); nothing is predicted, read or trained. A redirect pays
+  the bubble of the stage that first knows its target, with the core record's
+  two penalties: a **taken** conditional branch, an indirect jmp/call and a
+  return are known at execute and pay the execute-depth flush
+  (`in_order.mispredict_penalty_cycles`, 7); a direct call or jmp has its
+  target computed by the decoder and pays the decode-depth resteer
+  (`in_order.resteer_penalty_cycles`, 4); a not-taken branch is free. The
+  counters say so by construction: `mispredBranches == takenBranches`,
+  `indirMispreds == indirBranches`, `rasMispreds == rasReturns`,
+  `btbMisses == 0`, and the predictor-write counters (`roiBpHistWrites`,
+  `roiBpPhtWrites`) stay 0.
+
+The knob applies to `in_order_core` only (refused, rc 2, on any other type:
+`ooo_core` always runs its predictor, `alu_core` and `null_core` have none) and
+is set per element: `system.devices[].pim.pe.branch_predictor` for a device,
+`system.hosts[].branch_predictor` for an in-order host (which also takes
+`system.hosts[].issue_width`, 1.11.107, so a host can be the scalar PE too).
+Issue is per uop, so at width 1 a two-uop x86 instruction takes two issue
+slots.
+
+McPAT prices `none` with no predictor (prediction_width 0, no BTB, RAS or
+pattern table). With issue width 1 it is the **scalar PE profile**: 1 issue,
+1 ALU, 1 MUL, 1 FPU (the FPU goes when `floating_point: false`), no predictor,
+at the in-order refill depth (`in_order.mispredict_penalty_cycles`, 7) -- the
+cell `simple_core` was priced with, except that cell's depth was 5. The run
+prints `[power] in_order_core: scalar PE profile (...)`.
+`PIMID_INORDER_NOBRANCH=1` removes the branch feed in this mode too, which makes
+every branch free; do not combine it with `none`.
 
 Under thread-MPI, rendezvous clock jumps (barrier/reduce waits) are applied to
 the OOO scheduling window via a drain-then-jump bulk advance (1.9.2); the
@@ -144,7 +205,8 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   program order, functional-unit port contention, and load-use stalls (no
   reordering). The scoreboard carries across basic-block boundaries and drains
   only at mispredict flushes and scheduler boundaries
-  (join/phase/context-switch). Branch modeling matches `ooo_core`: a 2-level PAg
+  (join/phase/context-switch). Branch modeling (`branch_predictor: pag`, the
+  default; `none` is described above) matches `ooo_core`: a 2-level PAg
   predictor for conditional direction plus a 512-entry BTB (indirect jmp/call
   targets) and 16-entry return-address stack, all fed with real outcomes. A
   conditional mispredict and an indirect jmp/call or return target miss charge
@@ -160,9 +222,10 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   method. The in-order core has exactly one timing model.) The issue width is configurable via `pim.pe.issue_width`
   (default 2; env `PIMID_INORDER_WIDTH` overrides YAML). Diagnostics per
   in-order core: `uops`, `decodedBbls`, `syntheticBbls`, `depStalls`,
-  `issueStalls`, `branches`, `mispredBranches`, `mispredStallCycles`,
-  `indirBranches`, `indirMispreds`, `rasReturns`, `rasMispreds`,
-  `repDrainedLoads/Stores`, `memMismatchLoads/Stores`.
+  `issueStalls`, `branches`, `takenBranches` (1.12.1), `mispredBranches`,
+  `mispredStallCycles`, `indirBranches`, `indirMispreds`, `rasReturns`,
+  `rasMispreds`, `directBranches`, `btbMisses`, `roiBpHistWrites`,
+  `roiBpPhtWrites`, `repDrainedLoads/Stores`, `memMismatchLoads/Stores`.
 - Under QEMU user-mode execution the plugin decodes each guest x86 instruction
   into ZSim `DynUop`s (register read/write sets, latency class, functional-unit
   port, load/store markers) with a minimal in-tree x86-64 decoder

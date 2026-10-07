@@ -5,7 +5,7 @@
 | [architecture.md](architecture.md) | Simulation engine: QEMU + ZSim plugin, methods (exec / trace / trace-gen / synthetic), scopes, two-Garnet hierarchy |
 | [memory.md](memory.md) | 11 memory technologies, backend models (Ramulator2 / CACTI / NVSim), PE placement levels, characterization cache |
 | [network.md](network.md) | The two NoC models (analytical closed form + detailed Garnet), 8 topologies, DRAM-as-Garnet-tree, synthetic traffic |
-| [cores.md](cores.md) | The five PE core models, MLP intensity, ALU scaling factors |
+| [cores.md](cores.md) | The four PE core models (and the scalar single-issue in-order PE), MLP intensity, ALU scaling factors |
 | [cosim.md](cosim.md) | Host-device co-simulation: system model, the six boundary decisions (launch / coherence / host NoC / bridge / memory topology / host pricing), NO_OFFLOAD baseline, task-region window, MPI semantics |
 | [cosim_calibration.md](cosim_calibration.md) | Co-sim calibration: three-tier evidence, measured anchors + sources, source->sim provenance, the total-measured/split-inferred host-path note |
 | [benchmarks.md](benchmarks.md) | 48-benchmark suite, data-model variants, NPB details, building and running |

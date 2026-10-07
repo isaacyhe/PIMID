@@ -448,6 +448,20 @@ bool loadCoreRecord(CoreRecord& out, std::string& error) {
         return false;
     }
     out.in_order.retire_width = -1;
+    /* 1.12.1 (ticket #114): the in-order element's branch predictor --
+     * required like every field (no value lives in code); pag | none. */
+    if (!io["branch_predictor"]) {
+        error = "core record " + out.file + ": 'in_order' lacks 'branch_predictor' (in_order.branch_predictor: "
+                "pag | none, required since 1.12.1)";
+        return false;
+    }
+    out.in_order.branch_predictor = io["branch_predictor"].IsScalar() ? io["branch_predictor"].Scalar() : std::string();
+    if (out.in_order.branch_predictor != "pag" && out.in_order.branch_predictor != "none") {
+        error = "core record " + out.file + ": in_order.branch_predictor '" + out.in_order.branch_predictor +
+                "' is not pag or none (pag: the PAg direction predictor + BTB + RAS; none: no prediction "
+                "structure, static not-taken)";
+        return false;
+    }
     if (out.in_order.resteer_penalty_cycles > out.in_order.mispredict_penalty_cycles) {
         error = "core record " + out.file + ": in_order.resteer_penalty_cycles " + std::to_string(out.in_order.resteer_penalty_cycles) +
                 " exceeds mispredict_penalty_cycles " + std::to_string(out.in_order.mispredict_penalty_cycles) +
@@ -468,7 +482,8 @@ std::string describeCoreRecord(const CoreRecord& rec) {
     std::ostringstream o;
     o << "[params] core record " << rec.file << ": " << rec.record
       << " (in_order: mispredict " << rec.in_order.mispredict_penalty_cycles << " cyc, resteer "
-      << rec.in_order.resteer_penalty_cycles << " cyc, retire = issue width; ooo: mispredict "
+      << rec.in_order.resteer_penalty_cycles << " cyc, retire = issue width, branch predictor "
+      << rec.in_order.branch_predictor << "; ooo: mispredict "
       << rec.ooo.mispredict_penalty_cycles << " cyc, fetch " << rec.ooo.fetch_width_bytes
       << " B/cyc, retire " << rec.ooo.retire_width << ")";
     return o.str();

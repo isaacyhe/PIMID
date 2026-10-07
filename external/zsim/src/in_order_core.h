@@ -98,6 +98,28 @@ class FilterCache;
  * 4 = DECODE_STAGE). Overridable via PIMID_INORDER_MISPRED_PENALTY and
  * PIMID_INORDER_RESTEER_PENALTY; disable the whole feed with
  * PIMID_INORDER_NOBRANCH=1 (mirrors PIMID_OOO_NOBRANCH).
+ *
+ * PIMID 1.12.1 (ticket #114): TWO predictor modes, zsim key branchPredictor
+ * (required, emitted by PIMID from pim.pe.branch_predictor or the core
+ * record's in_order.branch_predictor):
+ *   pag   (staticNotTaken = false) the predictor path above, unchanged.
+ *   none  (staticNotTaken = true) NO prediction structure: fetch always
+ *         continues at the fall-through, nothing is predicted, read or
+ *         trained (branchPred / indirPred are never called, so the
+ *         predictor-write counters stay 0). A redirect pays the bubble of
+ *         the stage that first KNOWS its target, through the same drain +
+ *         penalty mechanics: a TAKEN conditional branch (direction known at
+ *         execute) and an indirect jmp/call or a return (target known at
+ *         execute) pay mispredPenalty and are counted as mispredicts
+ *         (mispredBranches == takenBranches, indirMispreds == indirBranches,
+ *         rasMispreds == rasReturns by construction); a direct call or jmp
+ *         (target computed by the decoder) pays resteerPenalty and counts in
+ *         directBranches (btbMisses stays 0: there is no BTB); a not-taken
+ *         branch is free. With issueWidth 1 this is the scalar single-issue
+ *         in-order PE that replaces the retired SimpleCore. The mode changes
+ *         WHICH events cost a bubble, never HOW one is charged.
+ *         PIMID_INORDER_NOBRANCH removes the feed in this mode too (then
+ *         every branch is free).
  */
 class InOrderCore : public Core {
     private:
@@ -181,6 +203,8 @@ class InOrderCore : public Core {
         uint32_t mispredPenalty; // execute-depth flush/refill bubble (cycles)
         uint32_t resteerPenalty; // decode-depth resteer bubble (cycles)
         uint64_t branches;           // resolved conditional branches fed to the predictor
+        uint64_t takenBranches;      // 1.12.1: of those, taken (both modes; diagnostic, ROI-windowed stat)
+        bool staticNotTaken;         // 1.12.1 (#114): branchPredictor "none" -- no prediction structure
         uint64_t mispredBranches;    // mispredicted branches
         uint64_t mispredStallCycles; // total cycles charged for mispredict bubbles
 
@@ -210,6 +234,7 @@ class InOrderCore : public Core {
         uint64_t roiBaseUops     = 0;
         uint64_t roiBaseBbls     = 0;
         uint64_t roiBaseBranches = 0;
+        uint64_t roiBaseTaken    = 0;   // 1.12.1: takenBranches
         uint64_t roiBaseMispred  = 0;
         /* 1.11.93 (F6): the BTB and RAS counters on the ROI window too. The
          * power model now prices the BTB and the RAS this core runs, from
@@ -231,8 +256,11 @@ class InOrderCore : public Core {
         // _mispredPenalty / _resteerPenalty (1.11.97): the core record's
         // in_order.mispredict_penalty_cycles / resteer_penalty_cycles (zsim
         // keys mispredPenalty / resteerPenalty, required; no default here).
+        // _staticNotTaken (1.12.1, #114): zsim key branchPredictor = "none"
+        // (required): no prediction structure, static not-taken.
         InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t domain, g_string& _name,
-                    uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty);
+                    uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty,
+                    bool _staticNotTaken);
         void initStats(AggregateStat* parentStat);
 
         uint64_t getInstrs() const {return instrs;}
@@ -256,7 +284,7 @@ class InOrderCore : public Core {
         /* 1.11.97 (review H05): an MPI message charge stalls the issue cursor.
          * Core::addDelay() was the empty default here, so every MPI_CONTEND /
          * MPI_ADVANCE charge on an in-order element was dropped; the ALU and
-         * simple cores had always advanced. memRespCycle is untouched: a
+         * (since retired) simple cores had always advanced. memRespCycle is untouched: a
          * response already in flight still arrives when it arrives. */
         void addDelay(uint32_t cycles) override { curCycle += cycles; }
 
@@ -267,6 +295,7 @@ class InOrderCore : public Core {
             roiBaseInstrs = instrs; roiBaseCycle = getCycles();  // adjusted clock: pre-ROI phantom excluded
             roiBaseUops = uops; roiBaseBbls = bbls;              // 1.9.33
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
+            roiBaseTaken = takenBranches;                        // 1.12.1
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns; roiBaseBtbMiss = btbMisses;   // 1.11.93 (F6)
             roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
@@ -345,6 +374,8 @@ class InOrderCore : public Core {
 
         // Indirect control-flow resolution (kind >= CF_IND_JMP, CtrlFlowKind in
         // ooo_core.h): BTB/RAS query+update; arms the mispredict bubble.
+        // 1.12.1: under staticNotTaken no structure is touched; the kind alone
+        // arms the bubble (CF_DIR_CALL / CF_DIR_JMP resteer, others execute).
         inline void ctrlFlow(uint32_t kind, Address pc, Address target, Address retAddr);
 
         static void LoadAndRecordFunc(THREADID tid, ADDRINT addr);

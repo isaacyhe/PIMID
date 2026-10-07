@@ -257,7 +257,7 @@ class Core : public GlobAlloc {
 
         // Inject a delay (in cycles) into the core's cycle counter.
         // Used by MPI timing handlers and PE-MC remote access modeling.
-        // Default: no-op (overridden by SimpleCore, ALUCore, etc.)
+        // Default: no-op (overridden by ALUCore, InOrderCore, OOOCore)
         virtual void addDelay(uint32_t /*cycles*/) {}
 
         // Snapshot the ROI baseline so per-core cycle/instr stats report only

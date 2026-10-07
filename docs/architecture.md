@@ -17,7 +17,7 @@ backed by Ramulator2, CACTI, NVSim, McPAT, and Garnet.
 workload binary
    `- QEMU user-mode (TCG)
         `- libzsim_qemu.so plugin -- every instruction/memory access
-             `- ZSim core model (alu / simple / in_order / ooo / null)
+             `- ZSim core model (alu / in_order / ooo / null)
                   `- caches -> PE memory interface
                        |- NoC model (analytical | detailed Garnet)
                        `- memory backend (Ramulator2 / CACTI / NVSim)

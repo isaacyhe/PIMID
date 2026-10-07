@@ -1741,6 +1741,43 @@ static std::string yamlStringReq(const YAML::Node& n, const std::string& path) {
     if (n.IsDefined() && n.IsScalar()) return n.Scalar();
     yamlRefuseScalar(path, n, "a word (one YAML scalar)");
 }
+/* 1.12.1 (ticket #114): the in-order PE's branch-predictor knob, ONE parser
+ * for its keys (pim.pe.branch_predictor, also inside a system.devices[] node
+ * since 1.11.107, and system.hosts[].branch_predictor).
+ *   pag   the PAg direction predictor + 512-entry BTB + 16-entry RAS the
+ *         in-order core has always run (in_order_core.h branchPred /
+ *         indirPred);
+ *   none  no prediction structure: fetch continues at the fall-through
+ *         (static not-taken), every redirect pays the bubble of the stage
+ *         that knows its target (in_order_core.cpp, staticNotTaken).
+ * A word outside the set refuses (rc 2), and so does the key on any core
+ * type but in_order_core: ooo_core always runs its predictor, alu_core and
+ * null_core have none, and a knob accepted and not applied is refused
+ * (1.11.57 B036). Absent: "" = the core record's in_order.branch_predictor
+ * (applyCoreRecord()). No build before 1.12.1 read the key: 1.11.106 to
+ * 1.12.0 refused it as an unknown key (the key schema), and older builds
+ * ignored it in silence (nested keys were not checked). */
+static std::string yamlBranchPredictor(const YAML::Node& n, const std::string& path,
+                                       const std::string& core_type) {
+    if (!n.IsDefined()) return "";
+    const char* used_to = "be refused as an unknown key (1.11.106 to 1.12.0, the key schema) and,"
+                          " before 1.11.106, ignored in silence: no build before 1.12.1 read this key";
+    if (!n.IsScalar())
+        refuseEnum(path, n.IsNull() ? "(empty)" : n.IsSequence() ? "(a sequence)"
+                         : n.IsMap() ? "(a map)" : "(unreadable)",
+                   "pag, none", used_to, false);
+    const std::string v = n.Scalar();
+    if (v != "pag" && v != "none") refuseEnum(path, v, "pag, none", used_to, false);
+    if (core_type != "in_order_core") {
+        std::cerr << "Error: " << path << " '" << v << "' applies to in_order_core"
+                     " only; this element is " << core_type << " (ooo_core always"
+                     " runs its branch predictor, alu_core and null_core have"
+                     " none). A knob that is accepted and not applied is"
+                     " refused." << std::endl;
+        std::exit(2);
+    }
+    return v;
+}
 /* 1.11.106 (census B6, review R6-7): THE KEY SCHEMA. Since 1.11.76 only an
  * unknown TOP-LEVEL section was refused; a misspelt or misplaced nested key
  * (memory.technolgy, a device-scope key inside a system node) was ignored in
@@ -1752,7 +1789,12 @@ static std::string yamlStringReq(const YAML::Node& n, const std::string& path) {
  * eight hierarchy words, <name> one of the six bridge names, [] a list entry.
  * Free maps (anything beneath them is the user's): workload.env, the node
  * workload.env maps, power.mcpat_overrides (its names are checked separately),
- * pim.mapping.map, pim.mc.groups. */
+ * pim.mapping.map, pim.mc.groups.
+ * 1.12.1 (ticket #114): + pim.pe.branch_predictor (so a node takes it too) and
+ * system.hosts[].branch_predictor, read; + core.in_order.branch_predictor and
+ * host.branch_predictor, listed only so that their own refusals, which name
+ * the keys that exist, answer instead of the nearest-key hint (as
+ * pim.pe.element_bits). */
 static const char* kSchemaPaths[] = {
     "cache.cacti.deviate", "cache.cacti.objective", "cache.cacti.optimize", "cache.cacti.power_gating.array", "cache.cacti.power_gating.bitline_floating",
     "cache.cacti.power_gating.columnline", "cache.cacti.power_gating.interconnect", "cache.cacti.power_gating.perf_loss", "cache.cacti.power_gating.wordline",
@@ -1760,9 +1802,9 @@ static const char* kSchemaPaths[] = {
     "cache.l1i.banks", "cache.l1i.energy_nj", "cache.l1i.latency_ns", "cache.l1i.size_kb", "cache.l1i.static_power_mw", "cache.l1i.ways",
     "cache.l2.banks", "cache.l2.count", "cache.l2.enabled", "cache.l2.energy_nj", "cache.l2.latency_ns", "cache.l2.size_kb", "cache.l2.static_power_mw", "cache.l2.ways",
     "cache.l3.banks", "cache.l3.enabled", "cache.l3.energy_nj", "cache.l3.latency_ns", "cache.l3.size_kb", "cache.l3.static_power_mw", "cache.l3.ways", "cache.mode", "cache.pg",
-    "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
+    "core.in_order.branch_predictor", "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
     "description", "method", "name", "scope",
-    "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
+    "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
     "memory.array_pg", "memory.bank_kb", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down",
     "memory.power_down_threshold_ns", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
@@ -1784,7 +1826,7 @@ static const char* kSchemaPaths[] = {
     "noc.levels.<level>.virtual_channels_per_vn", "noc.levels.<level>.virtual_networks",
     "pim.mapping.map", "pim.mapping.mem_orgs_per_pe", "pim.mapping.mode", "pim.mapping.pes_per_mem_org", "pim.mc.bandwidth_mbs", "pim.mc.clock_gear", "pim.mc.epoch_replay",
     "pim.mc.groups", "pim.mc.local_latency", "pim.mc.pes_per_mc", "pim.mc.pg", "pim.mc.placement", "pim.mc.type",
-    "pim.pe.access_factor", "pim.pe.arch_fp_regs", "pim.pe.arch_int_regs", "pim.pe.bit_serial", "pim.pe.compute_factor", "pim.pe.core_type", "pim.pe.count", "pim.pe.element_bits",
+    "pim.pe.access_factor", "pim.pe.arch_fp_regs", "pim.pe.arch_int_regs", "pim.pe.bit_serial", "pim.pe.branch_predictor", "pim.pe.compute_factor", "pim.pe.core_type", "pim.pe.count", "pim.pe.element_bits",
     "pim.pe.energy_factor", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles", "pim.pe.frequency_mhz", "pim.pe.imem_bytes", "pim.pe.issue_width", "pim.pe.lanes",
     "pim.pe.operand_width", "pim.pe.pg", "pim.pe.placement.connection", "pim.pe.placement.level", "pim.pe.placement.local_link_latency", "pim.pe.throughput_factor", "pim.pe.type",
     "pim.placement.connection", "pim.placement.level", "pim.placement.local_link_latency",
@@ -1808,7 +1850,7 @@ static const char* kSchemaPaths[] = {
     "system.devices[].cache.l2_banks", "system.devices[].cache.l2_kb", "system.devices[].cache.l2_latency_ns", "system.devices[].cache.l2_ways",
     "system.devices[].cache.l3_banks", "system.devices[].cache.l3_kb", "system.devices[].cache.l3_latency_ns", "system.devices[].cache.l3_ways",
     "system.devices[].workload.args", "system.devices[].workload.binary", "system.devices[].workload.env",
-    "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
+    "system.hosts[].branch_predictor", "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
     "system.hosts[].cache.l1i_kb", "system.hosts[].cache.l1i_latency_ns", "system.hosts[].cache.l1i_ways", "system.hosts[].cache.l2_banks", "system.hosts[].cache.l2_kb",
     "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
     "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz", "system.hosts[].issue_width",
@@ -2135,6 +2177,12 @@ struct UnifiedConfig {
     // configs without the key are numerically unchanged. The env var
     // PIMID_INORDER_WIDTH, if set, overrides this inside the core.
     int    inorder_issue_width = 2;
+    /* 1.12.1 (ticket #114): the in-order PE's branch predictor
+     * (pim.pe.branch_predictor: pag | none; in_order_core only). "" = the
+     * core record's in_order.branch_predictor, resolved by applyCoreRecord().
+     * `_src` names where the value came from, for the printed lines. */
+    std::string inorder_branch_predictor;
+    std::string inorder_branch_predictor_src;
 
     /* 1.11.97 (sweep-94 rulings 27/28): the core part record's fields
      * (params/core/default.yaml). -1 = take the record's value; the config
@@ -2649,6 +2697,12 @@ struct UnifiedConfig {
          * in-order PE kept the hardcoded dual issue. */
         bool alu_bit_serial = false;
         int  inorder_issue_width = 2;
+        /* 1.12.1 (ticket #114): this node's in-order branch predictor
+         * (devices[].pim.pe.branch_predictor / hosts[].branch_predictor),
+         * "" = the core record's, resolved by applyCoreRecord() (parsed
+         * nodes) or synthesizeSystemNodes() (synthesized ones). */
+        std::string inorder_branch_predictor;
+        std::string inorder_branch_predictor_src;
         /* 1.11.107 (ONE VOCABULARY): the datapath fields McPAT prices per
          * device node -- lanes, instruction memory, the architectural register
          * files. They were read from the run configuration for every node and a
@@ -2944,7 +2998,38 @@ static int parseBandwidthToMBs(const std::string& input) {
  * named a valid machine or a fatal config error depending on which
  * scope read it. The old comment said both must be updated together;
  * that is what a single function is for. */
-static std::string normalizeCoreTypeName(const std::string& ct) {
+/* 1.12.1 (ticket #114, user ruling (c) + knob, 2026-10-05): simple_core is
+ * RETIRED. Its IPC-1 bound modelled no real PE class -- the #114 corpus
+ * finding put simple/in_order at 0.77-1.13 in cycles and 0.78-1.12 in energy
+ * across the ten kernel x API cells, a bound, not an element. The scalar
+ * single-issue in-order PE it stood in for is in_order_core with issue width
+ * 1 and no branch predictor (pim.pe.branch_predictor: none, new in 1.12.1).
+ * Every spelling that used to select it is refused, naming the replacement;
+ * the zsim SimpleCore class is deleted, so no path can reach it. rc 1, the
+ * rc of an unknown core type. `keypath` names the key the value came from. */
+static bool isRetiredSimpleCoreName(const std::string& ct) {
+    return ct == "simple_core" || ct == "Simple" || ct == "simple";
+}
+[[noreturn]] static void refuseRetiredSimpleCore(const std::string& keypath,
+                                                 const std::string& ct) {
+    std::cerr << "ERROR: " << keypath << " '" << ct << "' names simple_core,"
+                 " retired in 1.12.1 (ticket #114): its IPC-1 bound modelled no"
+                 " real PE class. Its replacement is in_order_core with"
+                 " pim.pe.issue_width: 1 and pim.pe.branch_predictor: none --"
+                 " the scalar single-issue in-order PE with no branch"
+                 " prediction. System scope: devices[].pe_type: in_order_core"
+                 " with devices[].pim.pe.issue_width: 1 and"
+                 " devices[].pim.pe.branch_predictor: none (a host:"
+                 " hosts[].core_type: in_order_core with hosts[].issue_width: 1"
+                 " and hosts[].branch_predictor: none). For an IPC-1 control bound"
+                 " that drops memory traffic, null_core remains." << std::endl;
+    std::exit(1);
+}
+
+static std::string normalizeCoreTypeName(const std::string& ct,
+                                         const std::string& keypath) {
+                if (isRetiredSimpleCoreName(ct))
+                    refuseRetiredSimpleCore(keypath, ct);   // 1.12.1 (#114)
                 if (ct == "OOO" || ct == "OoO" || ct == "ooo" || ct == "out-of-order")
                     return "ooo_core";
                 if (ct == "InOrder" || ct == "in-order" || ct == "in_order")
@@ -2970,21 +3055,23 @@ static std::string normalizeCoreTypeName(const std::string& ct) {
                  * removing it costs nothing and narrows the surface. alu_core
                  * STAYS: it names the entire sweep corpus and dropping it
                  * would invalidate every cell ever run. */
-                if (ct == "Simple" || ct == "simple") return "simple_core";
                 if (ct == "Null" || ct == "null") return "null_core";
                 // STRICT: anything else must already be a canonical name.
                 // Unknown values used to pass through and silently fall to
                 // the "Simple" default at zsim emission (e.g. the removed
                 // timing_core ran hosts as Simple cores). Hard error now,
-                // same policy as the pim.pe.type gate.
+                // same policy as the pim.pe.type gate. 1.12.1: the zsim
+                // writers have no default any more (zsimCoreGroupType()).
                 if (ct == "ooo_core" || ct == "in_order_core" ||
-                    ct == "alu_core" || ct == "simple_core" || ct == "null_core")
+                    ct == "alu_core" || ct == "null_core")
                     return ct;
                 std::cerr << "ERROR: unknown core type '" << ct << "' in "
-                          << "system.hosts[].core_type / devices[].pe_type.\n"
+                          << keypath << ".\n"
                           << "Valid: compute_unit (alias alu_core), "
-                          << "ooo_core, in_order_core, simple_core, "
-                          << "alu_core, null_core.\n";
+                          << "ooo_core, in_order_core, "
+                          << "alu_core, null_core (simple_core was retired in"
+                          << " 1.12.1: in_order_core with issue width 1 and"
+                          << " branch predictor none replaces it).\n";
                 exit(1);
 }
 
@@ -3248,11 +3335,40 @@ static int applyCoreRecord(UnifiedConfig& config) {
         return 1;
     }
     g_inorder_mispredict_penalty = config.core_inorder_mispredict_penalty;
+    /* 1.12.1 (ticket #114): the in-order branch predictor, PER ELEMENT. An
+     * element whose config did not set it takes the record's
+     * in_order.branch_predictor. The resolved value is emitted into the zsim
+     * config (InOrder groups: branchPredictor, a required key) and selects
+     * the McPAT profile (describeTimingCore()). System-scope nodes parsed
+     * from the YAML are resolved here; the nodes synthesizeSystemNodes()
+     * builds later carry the resolved device value (and, for a cosim host,
+     * the record's). */
+    auto takeBp = [&](std::string& v, std::string& src) {
+        if (v.empty()) { v = io.branch_predictor; src = "core record in_order.branch_predictor"; }
+    };
+    takeBp(config.inorder_branch_predictor, config.inorder_branch_predictor_src);
+    for (auto& n : config.system_nodes)
+        takeBp(n.inorder_branch_predictor, n.inorder_branch_predictor_src);
     std::cout << pimid::params::describeCoreRecord(g_core_rec);
     if (user) std::cout << " [run uses core.* config values: in_order mispredict " << config.core_inorder_mispredict_penalty
                         << " / resteer " << config.core_inorder_resteer_penalty << ", ooo mispredict "
                         << config.core_ooo_mispredict_penalty << " / fetch " << config.core_ooo_fetch_width_bytes << " B (user's)]";
     std::cout << std::endl;
+    // One fact line per in-order element (1.12.1): the predictor in force and its source.
+    auto bpLine = [](const std::string& who, const std::string& v, const std::string& src) {
+        std::cout << "[params] " << who << "in_order branch predictor " << v << " (" << src << ")" << std::endl;
+    };
+    if (config.scope != "system" || config.cosim_remapped) {
+        if (config.pe_type == "in_order_core")
+            bpLine("", config.inorder_branch_predictor, config.inorder_branch_predictor_src);
+        if (config.cosim_remapped && config.host_core_type == "in_order_core")
+            bpLine("host: ", io.branch_predictor,
+                   "core record in_order.branch_predictor; the cosim alias has no host key");
+    } else {
+        for (const auto& n : config.system_nodes)
+            if (n.core_type == "in_order_core")
+                bpLine(n.name + ": ", n.inorder_branch_predictor, n.inorder_branch_predictor_src);
+    }
     return 0;
 }
 
@@ -6762,7 +6878,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
      * could not have produced a different answer if it had. What the 10 is:
      *   CALIBRATED for alu_core, vs detailed Garnet (P-sweep 2026-06-10,
      *     err <= 1.11x across P=8/16/32 x DDR3/HBM3);
-     *   PLACEHOLDER for in_order/simple_core -- a cached core does not fit a
+     *   PLACEHOLDER for in_order_core -- a cached core does not fit a
      *     single M (the NoC only sees misses; a miss-rate-aware load term is
      *     future work);
      *   PLACEHOLDER for ooo_core -- no cycle data under QEMU (known caveat).
@@ -7025,6 +7141,10 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
         host.l3_kb = config.host_l3_kb;
         host.enable_l3 = (config.host_l3_kb > 0);
         host.memory_tech = config.host_memory_tech;
+        /* 1.12.1 (#114): the cosim alias has no host predictor key; an
+         * in-order host takes the core record's (applyCoreRecord() has run). */
+        host.inorder_branch_predictor = g_core_rec.in_order.branch_predictor;
+        host.inorder_branch_predictor_src = "core record in_order.branch_predictor";
         config.system_nodes.push_back(host);
         std::cout << "[config] NOTE: scope: cosim (deprecated alias of system):"
                      " the nodes were SYNTHESIZED from top-level keys -- host: "
@@ -7071,6 +7191,15 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
     dev.alu_throughput_factor = config.alu_throughput_factor;
     dev.alu_operand_width = config.alu_operand_width;
     dev.alu_energy_factor = config.alu_energy_factor;
+    /* 1.12.1 (B5 of the #114 plan): the in-order element's shape. Through
+     * 1.12.0 the synthesized node kept the SystemNode default issue width 2,
+     * so under scope: cosim the device group was emitted issueWidth = 2 and
+     * priced two-wide whatever pim.pe.issue_width said (device scope reads
+     * the config, not this node, and is unaffected). The predictor rides
+     * along (resolved by applyCoreRecord()). */
+    dev.inorder_issue_width = config.inorder_issue_width;
+    dev.inorder_branch_predictor = config.inorder_branch_predictor;
+    dev.inorder_branch_predictor_src = config.inorder_branch_predictor_src;
     dev.l1d_kb = config.l1d_size_kb;
     dev.l1i_kb = config.l1i_size_kb;
     dev.l2_kb = config.enable_l2 ? config.l2_size_kb : 0;
@@ -9224,35 +9353,48 @@ static int inorderTimingPipelineDepth(const char** src) {
  *                 described in the wrapper (ooo_core.h:458-469). Branch
  *                 predictor: yes (PAg + BTB/RAS, ooo_core.h:477/548).
  *   in_order_core depth: inorderTimingPipelineDepth() (7; was 14); issue:
- *                 inorderTimingIssueWidth() (1.11.89). Predictor: yes, the
- *                 same structures (in_order_core.h:165/177).
+ *                 inorderTimingIssueWidth() (1.11.89). Predictor: the
+ *                 element's (1.12.1, ticket #114): pag = the same structures
+ *                 as OOO (in_order_core.h branchPred / indirPred), 3 ALUs,
+ *                 1 MUL, 1 FPU; none = no predictor priced (prediction_width
+ *                 0, no BTB, RAS or pattern table). With issue width 1 AND
+ *                 none it is the SCALAR PE PROFILE: 1 issue, 1 ALU, 1 MUL,
+ *                 1 FPU, no predictor -- the cell the retired simple_core was
+ *                 priced with through 1.12.0, but at the in-order refill
+ *                 depth (inorderTimingPipelineDepth(), record 7), not that
+ *                 cell's 5 (user ruling 2026-10-05: McPAT prices the pipeline
+ *                 the timing charges; the 5 was a stated choice for a core
+ *                 with no stages, and this core charges a 7-cycle refill).
  *   alu_core      unchanged: 5-deep, one lane-sized datapath (the wrapper
  *                 sizes it from pe_lanes). No predictor (ALUCore has none).
- *   simple_core / null_core  zsim SimpleCore charges ONE cycle per
- *                 instruction (simple_core.cpp:83, "IPC=1 except on memory
- *                 accesses", simple_core.h) and NullCore one cycle per
- *                 instruction with no memory (null_core.cpp:41): a 1-issue,
- *                 unpipelined element with no predictor. Was priced as a
- *                 14-stage in-order core with 3 ALUs, 1 MUL, 1 FPU. Now 1
- *                 issue, 1 ALU, 1 MUL, 1 FPU (every class the core retires
- *                 at IPC 1 needs its unit; the FPU still goes when the element
- *                 declares none), depth 5: zsim defines no stages, a literal
- *                 depth of 1 drives McPAT's embedded undifferentiated-core fit
- *                 negative (0.4109 x 1 - 0.776 < 0, logic.cc), and 5 is the
- *                 depth the other stage-less element (alu_core) is priced
- *                 at -- a CHOICE, stated, not a zsim number.
- * `who` prefixes the printed lines ("" in device scope, the node name in the
- * per-node path). Returns the McPAT profile. */
+ *   null_core     zsim NullCore charges one cycle per instruction with no
+ *                 memory (null_core.cpp:41): a 1-issue, unpipelined element
+ *                 with no predictor. Was priced as a 14-stage in-order core
+ *                 with 3 ALUs, 1 MUL, 1 FPU. Now 1 issue, 1 ALU, 1 MUL,
+ *                 1 FPU (every class the core retires at IPC 1 needs its
+ *                 unit; the FPU still goes when the element declares none),
+ *                 depth 5: zsim defines no stages, a literal depth of 1
+ *                 drives McPAT's embedded undifferentiated-core fit negative
+ *                 (0.4109 x 1 - 0.776 < 0, logic.cc), and 5 is the depth the
+ *                 other stage-less element (alu_core) is priced at -- a
+ *                 CHOICE, stated, not a zsim number. (Through 1.12.0 this
+ *                 cell also priced simple_core, retired in 1.12.1.)
+ *   anything else FATAL: the normaliser admits no other type.
+ * `inorder_bp` / `inorder_bp_src`: the element's resolved predictor (pag |
+ * none) and where it came from; read for in_order_core only. `who` prefixes
+ * the printed lines ("" in device scope, the node name in the per-node
+ * path). Returns the McPAT profile. */
 static pimid::McPATWrapper::DeviceProfile describeTimingCore(
         pimid::McPATWrapper::SystemConfig& mcfg, const std::string& type,
-        int inorder_issue_width, const std::string& who) {
+        int inorder_issue_width, const std::string& inorder_bp,
+        const std::string& inorder_bp_src, const std::string& who) {
     using W = pimid::McPATWrapper;
     const std::string pfx = who.empty() ? std::string("  [power] ")
                                         : "  [power] " + who + ": ";
     /* 1.11.97 (R2537): McPAT's commit width is the core record's retire
      * width: ooo = ooo.retire_width (the ROB retire width, cross-checked by
      * the loader); in_order = "issue" (-1: McPAT uses the issue width it is
-     * handed). The ALU and simple/null elements are not in the record and
+     * handed). The ALU and null elements are not in the record and
      * keep -1 (commit = issue, as before). */
     mcfg.commit_width = -1;
     if (type == "ooo_core") {
@@ -9279,24 +9421,80 @@ static pimid::McPATWrapper::DeviceProfile describeTimingCore(
         const char* wsrc = nullptr;
         mcfg.pipeline_depth = inorderTimingPipelineDepth(&dsrc);
         mcfg.issue_width = inorderTimingIssueWidth(inorder_issue_width, &wsrc);
-        mcfg.num_alus = 3; mcfg.num_muls = 1; mcfg.num_fpus = 1;
-        mcfg.has_branch_predictor = true;
+        if (inorder_bp != "pag" && inorder_bp != "none") {   // 1.12.1 (#114)
+            std::cerr << "[params] FATAL: the in-order branch predictor ('" << inorder_bp
+                      << "') was asked for before the core record was applied." << std::endl;
+            std::exit(2);
+        }
+        const bool bp_none = (inorder_bp == "none");
+        const bool scalar = bp_none && mcfg.issue_width == 1;
+        mcfg.num_alus = scalar ? 1 : 3; mcfg.num_muls = 1; mcfg.num_fpus = 1;
+        mcfg.has_branch_predictor = !bp_none;
         std::cout << pfx << "in_order_core: McPAT issue width "
                   << mcfg.issue_width << " = the timing model's (" << wsrc
                   << "); pipeline depth " << mcfg.pipeline_depth << " ("
                   << dsrc << ")" << std::endl;
+        if (scalar)
+            std::cout << pfx << "in_order_core: scalar PE profile (issue width 1,"
+                         " branch predictor none, " << inorder_bp_src << "): 1 ALU,"
+                         " 1 MUL, 1 FPU, no branch predictor (prediction_width 0;"
+                         " no BTB, RAS or pattern table), pipeline depth "
+                      << mcfg.pipeline_depth << " -- the cell simple_core was"
+                         " priced with through 1.12.0, at the in-order refill"
+                         " depth (that cell used 5)" << std::endl;
+        else if (bp_none)
+            std::cout << pfx << "in_order_core: branch predictor none ("
+                      << inorder_bp_src << "): no branch predictor priced"
+                         " (prediction_width 0; no BTB, RAS or pattern table)"
+                      << std::endl;
+        else
+            std::cout << pfx << "in_order_core: branch predictor pag ("
+                      << inorder_bp_src << "): PAg direction predictor,"
+                         " 512-entry BTB, 16-entry RAS" << std::endl;
         return W::DeviceProfile::DEVICE_INORDER;
     }
-    // simple_core, null_core (and any other stage-less IPC-1 core)
-    mcfg.pipeline_depth = 5;
-    mcfg.issue_width = 1;
-    mcfg.num_alus = 1; mcfg.num_muls = 1; mcfg.num_fpus = 1;
-    mcfg.has_branch_predictor = false;
-    std::cout << pfx << type << ": priced as a 1-issue, 1-ALU element with no"
-                 " branch predictor (zsim " << type << " retires one instruction"
-                 " per cycle), depth 5 (zsim defines no stages; the alu_core"
-                 " depth)" << std::endl;
-    return W::DeviceProfile::DEVICE_INORDER;
+    if (type == "null_core") {
+        // A stage-less IPC-1 core (values and print unchanged from 1.11.93).
+        mcfg.pipeline_depth = 5;
+        mcfg.issue_width = 1;
+        mcfg.num_alus = 1; mcfg.num_muls = 1; mcfg.num_fpus = 1;
+        mcfg.has_branch_predictor = false;
+        std::cout << pfx << type << ": priced as a 1-issue, 1-ALU element with no"
+                     " branch predictor (zsim " << type << " retires one instruction"
+                     " per cycle), depth 5 (zsim defines no stages; the alu_core"
+                     " depth)" << std::endl;
+        return W::DeviceProfile::DEVICE_INORDER;
+    }
+    /* 1.12.1 (#114): the fall-through used to price any other type (the
+     * retired simple_core included) as the IPC-1 cell. The normaliser admits
+     * no other type now, so reaching here is a defect. */
+    std::cerr << "[power] FATAL: no McPAT description for core type '" << type
+              << "' (ooo_core, in_order_core, alu_core, null_core)." << std::endl;
+    std::exit(2);
+}
+
+/* 1.12.1 (ticket #114): ONE display label per canonical core type, for the
+ * exec / trace banners, the two system banners and the per-node power line.
+ * Through 1.12.0 each site had its own chain with a "Simple" fall-through,
+ * and the system banner's device leg knew only ALU and OOO, so in_order and
+ * null device PEs were printed "Simple". `ooo` keeps each site's spelling of
+ * the out-of-order label ("OoO" in the device banners, "OOO" elsewhere). */
+static std::string coreTypeLabel(const std::string& type, const char* ooo) {
+    if (type == "ooo_core")      return ooo;
+    if (type == "in_order_core") return "InOrder";
+    if (type == "alu_core")      return "ALU";
+    if (type == "null_core")     return "Null";
+    std::cerr << "[config] FATAL: core type '" << type << "' has no label"
+                 " (ooo_core, in_order_core, alu_core, null_core)." << std::endl;
+    std::exit(2);
+}
+
+/* 1.12.1 (ticket #114): the device banner's in-order line names the shape
+ * the timing runs -- issue width as the core resolves it (env included) and
+ * the predictor -- so a scalar PE is visible as one. */
+static std::string inorderBannerShape(const UnifiedConfig& config) {
+    return " (issue width " + std::to_string(inorderTimingIssueWidth(config.inorder_issue_width, nullptr)) +
+           ", branch predictor " + config.inorder_branch_predictor + ")";
 }
 
 /* 1.11.89 (fix 2): ONE arming rule for a memory-controller phase counter,
@@ -9748,7 +9946,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     /* 1.11.93 (F6/F8): one owner -- describeTimingCore(). The profile is set
      * on the wrapper below, after construction, from the same answer. */
     const McPAT::DeviceProfile dev_profile =
-        describeTimingCore(mcfg, config.pe_type, config.inorder_issue_width, "");
+        describeTimingCore(mcfg, config.pe_type, config.inorder_issue_width,
+                           config.inorder_branch_predictor,          // 1.12.1 (#114)
+                           config.inorder_branch_predictor_src, "");
     /* 1.11.97 (review H30): the ALU element is priced with one FPU per lane
      * when pim.pe.floating_point is true (its timing executes FP); it was
      * priced without an FPU whatever the flag said. An explicit
@@ -10227,7 +10427,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         /* 1.11.93 (F6/F8): the host is priced as the zsim OOOCore this block
          * has always described (OOO profile below) -- now with that core's
          * depth, structures and branch predictor (describeTimingCore). */
-        (void)describeTimingCore(host_cfg, "ooo_core", 0, "host");
+        (void)describeTimingCore(host_cfg, "ooo_core", 0, "", "", "host");
         // 1.9.32: the host IS a server part -- stated, not left to the default.
         host_cfg.device_scope = false;
         /* 1.11.49 (FIX-PRE-FLEET L119): power.device_corner never reached the
@@ -12381,11 +12581,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
          * (describeTimingCore); 1.11.89's per-node issue width rides along
          * (node.inorder_issue_width, 1.11.56 B054). */
         profile = describeTimingCore(mcfg, effective_type, node.inorder_issue_width,
-                                     node.name);
+                                     node.inorder_branch_predictor,       // 1.12.1 (#114)
+                                     node.inorder_branch_predictor_src, node.name);
         is_alu = (profile == McPAT::DeviceProfile::DEVICE_ALU);
-        result.core_desc = (profile == McPAT::DeviceProfile::OOO) ? "OOO"
-                         : is_alu ? "ALU"
-                         : (effective_type == "in_order_core") ? "InOrder" : "Simple";
+        result.core_desc = coreTypeLabel(effective_type, "OOO");   // 1.12.1: null was "Simple"
         /* 1.11.51 (L214): same rule per node -- an element that declares no
          * FPU prices none, on every profile. Node-scoped flag (E23/E24);
          * an explicit num_fpus override below still wins. */
@@ -13802,6 +14001,37 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
     std::cout << std::defaultfloat << std::endl;
 }
 
+/* 1.12.1 (ticket #114): the zsim core-group type of each canonical core
+ * type -- ONE map for both config writers (device scope generateConfig(),
+ * system scope generateSystemConfig()). Through 1.12.0 both writers
+ * defaulted to "Simple" (zsim SimpleCore, IPC 1), so a type with no branch
+ * became an IPC-1 core in silence. SimpleCore is deleted and the normaliser
+ * refuses every other name, so an unmapped type here is a defect: FATAL. */
+static const char* zsimCoreGroupType(const std::string& type, const std::string& where) {
+    if (type == "ooo_core")      return "OoO";
+    if (type == "in_order_core") return "InOrder";
+    if (type == "alu_core")      return "ALU";
+    if (type == "null_core")     return "Null";
+    std::cerr << "[config] FATAL: " << where << ": core type '" << type
+              << "' has no zsim core model (ooo_core, in_order_core, alu_core,"
+                 " null_core)." << std::endl;
+    std::exit(2);
+}
+
+/* 1.12.1 (ticket #114): the zsim InOrder group's branchPredictor key. The
+ * value was resolved by applyCoreRecord() (or synthesizeSystemNodes()); an
+ * empty one means a path skipped that resolution, and zsim requires the key,
+ * so it is a defect here rather than a panic inside the simulator. */
+static const std::string& inorderBpForZsim(const std::string& v, const std::string& where) {
+    if (v != "pag" && v != "none") {
+        std::cerr << "[config] FATAL: " << where << ": the in-order branch predictor ('"
+                  << v << "') was not resolved before the zsim config was written."
+                  << std::endl;
+        std::exit(2);
+    }
+    return v;
+}
+
 /**
  * ZSim configuration helper.
  * Generates ZSim .cfg files for use by QEMU+ZSim (exec mode) and zsim_trace (trace mode).
@@ -13819,17 +14049,8 @@ public:
         std::ofstream cfg(cfg_path);
         if (!cfg.is_open()) return "";
 
-        std::string core_type = "Simple";
-        if (config_.pe_type == "ooo_core") {
-            core_type = "OoO";
-        } else if (config_.pe_type == "in_order_core") {
-            // The cycle-detailed in-order core (zsim InOrderCore).
-            core_type = "InOrder";
-        } else if (config_.pe_type == "alu_core" || config_.pe_type == "alu") {
-            core_type = "ALU";
-        } else if (config_.pe_type == "null_core" || config_.pe_type == "null") {
-            core_type = "Null";
-        }   // simple_core / unknown -> "Simple" (coarse SimpleCore)
+        // 1.12.1 (#114): one explicit map, no "Simple" default (zsimCoreGroupType()).
+        const std::string core_type = zsimCoreGroupType(config_.pe_type, "pim.pe.type");
 
         // Memory latency: priority is override > YAML config > external models > defaults
         int mem_latency;
@@ -13928,6 +14149,8 @@ public:
                 // 1.11.97 (R2313 (b)): the core record's two penalties (applyCoreRecord()).
                 cfg << "            mispredPenalty = " << config_.core_inorder_mispredict_penalty << ";\n";
                 cfg << "            resteerPenalty = " << config_.core_inorder_resteer_penalty << ";\n";
+                // 1.12.1 (#114): pag | none (pim.pe.branch_predictor, else the core record).
+                cfg << "            branchPredictor = \"" << inorderBpForZsim(config_.inorder_branch_predictor, "pim_pes") << "\";\n";
             } else if (core_type == "OoO") {
                 // 1.11.97 (R2355 (b)): wrong-path depth = penalty x fetch width (core record).
                 // 1.12.0 (#50 (b)): the penalty is also the TOTAL mispredict redirect cost.
@@ -14312,7 +14535,7 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
     if (agg_mbs < 1) agg_mbs = 1;
 
     // OoO / in-order host cores need the weave-phase MC (SimpleMemory subclass,
-    // same M/D/1); ALU / simple cores use the plain Simple MC.
+    // same M/D/1); ALU / null cores use the plain Simple MC.
     bool weave = (host.core_type == "ooo_core" || host.core_type == "in_order_core");
     // Self-documenting (1.7.4): host main-memory technology + effective idle
     // latency. Under is_default_mem=true this tech = the device tech; under
@@ -14609,14 +14832,9 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
         if (node.num_cores == 0) continue;  // memory-only
 
         std::string group_name = node.name + (node.role == UnifiedConfig::SystemNode::HOST ? "_cores" : "_pes");
-        std::string core_type = "Simple";
-        bool is_alu = false;
-
-        if (node.core_type == "ooo_core") core_type = "OoO";
-        else if (node.core_type == "in_order_core") core_type = "InOrder";
-        else if (node.core_type == "alu_core") { core_type = "ALU"; is_alu = true; }
-        else if (node.core_type == "null_core") core_type = "Null";
-        // simple_core / unknown -> "Simple" (coarse SimpleCore)
+        // 1.12.1 (#114): one explicit map, no "Simple" default (zsimCoreGroupType()).
+        const std::string core_type = zsimCoreGroupType(node.core_type, group_name);
+        const bool is_alu = (core_type == "ALU");
 
         cfg << "        " << group_name << " = {\n";
         cfg << "            type = \"" << core_type << "\";\n";
@@ -14680,6 +14898,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                  * same run-wide values the device-scope emitter writes. */
                 cfg << "            mispredPenalty = " << config.core_inorder_mispredict_penalty << ";\n";
                 cfg << "            resteerPenalty = " << config.core_inorder_resteer_penalty << ";\n";
+                // 1.12.1 (#114): the node's own predictor (host or device), pag | none.
+                cfg << "            branchPredictor = \"" << inorderBpForZsim(node.inorder_branch_predictor, group_name) << "\";\n";
             } else if (core_type == "OoO") {
                 // 1.11.97 (R2355 (b)): wrong-path depth = penalty x fetch width (core record).
                 // 1.12.0 (#50 (b)): the penalty is also the TOTAL mispredict redirect cost.
@@ -15362,8 +15582,11 @@ static int parseDevicePimBlock(YAML::Node root, UnifiedConfig& config, const Dev
              * and a fatal config error in device scope. The old comment
              * said both must be updated together, which is exactly the
              * job of one function. normalizeCoreTypeName() rejects
-             * unknown names itself, with the same message. */
-            config.pe_type = normalizeCoreTypeName(config.pe_type);
+             * unknown names itself, with the same message.
+             * 1.12.1 (#114): and the retired simple_core, naming the
+             * key the value came from (with the node's path in a node). */
+            config.pe_type = normalizeCoreTypeName(config.pe_type,
+                sc.pfx + (root["pim"]["pe"]["core_type"] ? "pim.pe.core_type" : "pim.pe.type"));
             // PE frequency (alternative to system.frequency_mhz)
             if (root["pim"]["pe"]["frequency_mhz"])
                 config.frequency_mhz = yamlInt(root["pim"]["pe"]["frequency_mhz"],
@@ -15421,6 +15644,16 @@ static int parseDevicePimBlock(YAML::Node root, UnifiedConfig& config, const Dev
             config.alu_energy_factor = yamlDouble(root["pim"]["pe"]["energy_factor"], config.alu_energy_factor, sc.pfx + "pim.pe.energy_factor");
             // In-order PE issue width (in_order_core only; default 2)
             config.inorder_issue_width = yamlInt(root["pim"]["pe"]["issue_width"], config.inorder_issue_width, sc.pfx + "pim.pe.issue_width");
+            /* 1.12.1 (ticket #114): the predictor knob (in_order_core
+             * only; absent = the core record's). With issue_width 1 and
+             * none this is the scalar single-issue PE that replaces
+             * the retired simple_core. In a system.devices[] node it is
+             * the node's own key (nodePathPerNode). */
+            config.inorder_branch_predictor = yamlBranchPredictor(
+                root["pim"]["pe"]["branch_predictor"], sc.pfx + "pim.pe.branch_predictor",
+                config.pe_type);
+            if (!config.inorder_branch_predictor.empty())
+                config.inorder_branch_predictor_src = sc.pfx + "pim.pe.branch_predictor";
             /* 1.11.94 (sweep-94 row 20 (a)): architectural register counts as knobs.
              * Default 32/32 is today's value; the simulated guest ISA is x86-64
              * (16 + 16), which R5 makes the default. A non-default prints that
@@ -15666,6 +15899,21 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
     if (root["core"]) {
         const YAML::Node c = root["core"];
         if (c["in_order"]) {
+            /* 1.12.1 (#114): the record field in_order.branch_predictor
+             * is set per ELEMENT (pim.pe.branch_predictor, devices[].
+             * pim.pe.branch_predictor, hosts[].branch_predictor), not
+             * run-wide -- one source per element. Refused here, naming
+             * the keys (the key schema lists the path for this). */
+            if (c["in_order"]["branch_predictor"]) {
+                std::cerr << "Error: " << sc.pfx << "core.in_order.branch_predictor is not a key."
+                             " The in-order branch predictor is set per element:"
+                             " pim.pe.branch_predictor (device scope),"
+                             " system.devices[].pim.pe.branch_predictor or"
+                             " system.hosts[].branch_predictor (system scope);"
+                             " absent, the core record's in_order.branch_predictor"
+                             " applies." << std::endl;
+                std::exit(2);
+            }
             config.core_inorder_mispredict_penalty = yamlInt(c["in_order"]["mispredict_penalty_cycles"], config.core_inorder_mispredict_penalty, sc.pfx + "core.in_order.mispredict_penalty_cycles");
             config.core_inorder_resteer_penalty = yamlInt(c["in_order"]["resteer_penalty_cycles"], config.core_inorder_resteer_penalty, sc.pfx + "core.in_order.resteer_penalty_cycles");
         }
@@ -16412,7 +16660,7 @@ static bool nodePathPerNode(const std::string& c) {
         "frequency_mhz", "tech_node_nm", "pe_type", "num_pes", "memory.technology",
         "pim.pe.compute_factor", "pim.pe.access_factor", "pim.pe.throughput_factor", "pim.pe.operand_width",
         "pim.pe.energy_factor", "pim.pe.bit_serial", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles",
-        "pim.pe.issue_width", "pim.pe.pg", "pim.pe.arch_int_regs", "pim.pe.arch_fp_regs", "pim.pe.lanes",
+        "pim.pe.issue_width", "pim.pe.branch_predictor", "pim.pe.pg", "pim.pe.arch_int_regs", "pim.pe.arch_fp_regs", "pim.pe.lanes",
         "pim.pe.imem_bytes", "pim.mc.pg", "noc.pg",
         "cache.l1d_kb", "cache.l1i_kb", "cache.l2_kb", "cache.l3_kb", "cache.l2.enabled", "cache.l3.enabled",
         "cache.l1d_ways", "cache.l1i_ways", "cache.l2_ways", "cache.l3_ways",
@@ -17581,19 +17829,33 @@ int main(int argc, char** argv) {
             if (yaml_cfg["host"]) {
                 auto h = yaml_cfg["host"];
                 config.host_core_type = yamlString(h["core_type"], config.host_core_type, "host.core_type");
+                // 1.12.1 (#114): the retired simple_core first, naming the replacement.
+                if (isRetiredSimpleCoreName(config.host_core_type))
+                    refuseRetiredSimpleCore("host.core_type", config.host_core_type);
                 // STRICT: same whitelist as pim.pe.type. Unknown host core
                 // types used to fall through to the "Simple" default at zsim
                 // emission silently (e.g. the removed timing_core).
                 if (config.host_core_type != "ooo_core" &&
                     config.host_core_type != "in_order_core" &&
-                    config.host_core_type != "simple_core" &&
                     config.host_core_type != "alu_core" &&
                     config.host_core_type != "null_core") {
                     std::cerr << "Error: unknown host.core_type '"
                               << config.host_core_type
-                              << "'. Valid: ooo_core | in_order_core | simple_core"
+                              << "'. Valid: ooo_core | in_order_core"
                               << " | alu_core | null_core" << std::endl;
                     return 1;
+                }
+                /* 1.12.1 (#114): the deprecated cosim alias has no host
+                 * predictor key (its in-order host takes the core record's).
+                 * Refused here, naming the key that exists (the key schema
+                 * lists the path for this). */
+                if (h["branch_predictor"]) {
+                    std::cerr << "Error: host.branch_predictor is not a key of the"
+                                 " deprecated scope: cosim host. Declare the host"
+                                 " under scope: system and set"
+                                 " system.hosts[].branch_predictor (in_order_core"
+                                 " hosts only)." << std::endl;
+                    return 2;
                 }
                 config.host_num_cores = yamlInt(h["num_cores"], config.host_num_cores, "host.num_cores");
                 config.host_frequency_mhz = yamlDouble(h["frequency_mhz"], config.host_frequency_mhz, "host.frequency_mhz");
@@ -17628,7 +17890,8 @@ int main(int argc, char** argv) {
                         node.name = yamlString(h["name"], "host" + std::to_string(config.system_nodes.size()), hpath + ".name");
                         node.role = UnifiedConfig::SystemNode::HOST;
                         node.pg_host = yamlBool(h["pg"], node.pg_host, hpath + ".pg");  // 1.11.20 (D7)
-                        node.core_type = normalizeCoreType(yamlString(h["core_type"], "ooo_core", hpath + ".core_type"));
+                        node.core_type = normalizeCoreType(yamlString(h["core_type"], "ooo_core", hpath + ".core_type"),
+                                                           hpath + ".core_type");   // 1.12.1: key path
                         node.cfg_path = hpath;   // 1.11.107
                         if (h["issue_width"]) {   /* 1.11.107 (ONE VOCABULARY): pim.pe.issue_width for an in-order host.
                                                     * The width an in_order_core host issues per cycle; an in-order host
@@ -17645,6 +17908,20 @@ int main(int argc, char** argv) {
                                           << " is outside 1..6, the in-order core's six issue ports (1.11.107)." << std::endl;
                                 std::exit(2);
                             }
+                        }
+                        if (h["branch_predictor"]) {   /* 1.12.1 (ticket #114): pim.pe.branch_predictor for an in-order host,
+                                                         * by the rule of issue_width above: refused on any other core type,
+                                                         * where it would change nothing; pag or none (yamlBranchPredictor).
+                                                         * Absent: the core record's (applyCoreRecord()). With issue_width 1
+                                                         * and none, an in-order host is the scalar single-issue PE. */
+                            if (node.core_type != "in_order_core") {
+                                std::cerr << "[config] FATAL: " << hpath << ".branch_predictor is the in-order core's branch predictor, and this"
+                                             " host's core_type is '" << node.core_type << "': the key would change nothing. Remove it,"
+                                             " or set core_type: in_order_core (1.12.1)." << std::endl;
+                                std::exit(2);
+                            }
+                            node.inorder_branch_predictor = yamlBranchPredictor(h["branch_predictor"], hpath + ".branch_predictor", node.core_type);
+                            node.inorder_branch_predictor_src = hpath + ".branch_predictor";
                         }
                         node.num_cores = yamlInt(h["num_cores"], 4, hpath + ".num_cores");
                         node.frequency_mhz = yamlDouble(h["frequency_mhz"], 3000.0, hpath + ".frequency_mhz");
@@ -17923,6 +18200,8 @@ int main(int argc, char** argv) {
                         dev->pe_fp_emul_cycles = node.pe_fp_emul_cycles;
                         dev->alu_bit_serial = node.alu_bit_serial;
                         dev->inorder_issue_width = node.inorder_issue_width;
+                        dev->inorder_branch_predictor = node.inorder_branch_predictor;            // 1.12.1: "" = the core record's
+                        dev->inorder_branch_predictor_src = node.inorder_branch_predictor_src;
                         dev->pe_mc_type = node.pe_mc_type;
                         dev->pes_per_mc = node.pes_per_mc;
                         dev->pe_mc_enabled = false;                          // node.pe_mc_declared
@@ -17936,7 +18215,8 @@ int main(int argc, char** argv) {
                         dev->l1d_params = UnifiedConfig::CacheParams(); dev->l1i_params = UnifiedConfig::CacheParams();
                         dev->l2_params = UnifiedConfig::CacheParams(); dev->l3_params = UnifiedConfig::CacheParams();
                         if (compute) {
-                            dev->pe_type = normalizeCoreType(yamlString(d["pe_type"], "alu_core", dpath + ".pe_type"));
+                            dev->pe_type = normalizeCoreType(yamlString(d["pe_type"], "alu_core", dpath + ".pe_type"),
+                                                             dpath + ".pe_type");   // 1.12.1: key path
                             dev->num_pes = yamlInt(d["num_pes"], 0, dpath + ".num_pes");
                         }
                         // Device node process node: explicit YAML wins; else the
@@ -18015,6 +18295,8 @@ int main(int argc, char** argv) {
                             node.pe_fp_emul_cycles = dev->pe_fp_emul_cycles;
                             node.alu_bit_serial = dev->alu_bit_serial;      // 1.11.56 (B054)
                             node.inorder_issue_width = dev->inorder_issue_width;
+                            node.inorder_branch_predictor = dev->inorder_branch_predictor;        // 1.12.1 (#114): per node
+                            node.inorder_branch_predictor_src = dev->inorder_branch_predictor_src;
                             node.pe_lanes = dev->pe_lanes;                  // 1.11.107: priced per node
                             node.pe_imem_bytes = dev->pe_imem_bytes;
                             node.arch_int_regs = dev->arch_int_regs;
@@ -18502,6 +18784,8 @@ int main(int argc, char** argv) {
              * exactly the scope that can configure it. */
             config.alu_bit_serial = n.alu_bit_serial;
             config.inorder_issue_width = n.inorder_issue_width;
+            config.inorder_branch_predictor = n.inorder_branch_predictor;           // 1.12.1 (#114)
+            config.inorder_branch_predictor_src = n.inorder_branch_predictor_src;
             config.pe_has_fp = n.pe_has_fpu;
             config.pe_fp_emul_cycles = n.pe_fp_emul_cycles;
             if (n.pes_per_mc > 0) config.pes_per_mc = n.pes_per_mc;
@@ -19226,17 +19510,8 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            // Determine core type (display label)
-            std::string core_type = "Simple";
-            if (config.pe_type == "ooo_core") {
-                core_type = "OoO";
-            } else if (config.pe_type == "in_order_core") {
-                core_type = "InOrder";
-            } else if (config.pe_type == "alu_core" || config.pe_type == "alu") {
-                core_type = "ALU";
-            } else if (config.pe_type == "null_core" || config.pe_type == "null") {
-                core_type = "Null";
-            }
+            // Determine core type (display label; 1.12.1: one helper, no "Simple" default)
+            const std::string core_type = coreTypeLabel(config.pe_type, "OoO");
 
             // Generate ZSim config (reuse QEMU config generator)
             ZSimSimulator zsim_helper(config);
@@ -19262,7 +19537,9 @@ int main(int argc, char** argv) {
                           << ", energy=" << config.alu_energy_factor << std::defaultfloat
                           << ", width=" << config.alu_operand_width << "b)" << std::endl;
             } else {
-                std::cout << "  Core:      " << core_type << std::endl;
+                std::cout << "  Core:      " << core_type
+                          << (core_type == "InOrder" ? inorderBannerShape(config) : std::string())
+                          << std::endl;   // 1.12.1 (#114): the in-order shape
             }
 
             // Display cache configuration with latencies (trace mode banner)
@@ -19833,17 +20110,8 @@ int main(int argc, char** argv) {
             std::string plugin_path = findQemuPlugin("libzsim_qemu.so", "zsim_qemu");   // exits 2 if missing (1.11.91 item 13)
             std::cout << "Plugin:   " << plugin_path << std::endl;
 
-            // Determine core type for display
-            std::string exec_core_type = "Simple";
-            if (config.pe_type == "ooo_core") {
-                exec_core_type = "OoO";
-            } else if (config.pe_type == "in_order_core") {
-                exec_core_type = "InOrder";
-            } else if (config.pe_type == "alu_core" || config.pe_type == "alu") {
-                exec_core_type = "ALU";
-            } else if (config.pe_type == "null_core" || config.pe_type == "null") {
-                exec_core_type = "Null";
-            }
+            // Determine core type for display (1.12.1: one helper, no "Simple" default)
+            const std::string exec_core_type = coreTypeLabel(config.pe_type, "OoO");
 
             // Display core info
             if (exec_core_type == "ALU") {
@@ -19853,7 +20121,9 @@ int main(int argc, char** argv) {
                           << ", energy=" << config.alu_energy_factor << std::defaultfloat
                           << ", width=" << config.alu_operand_width << "b)" << std::endl;
             } else {
-                std::cout << "  Core:      " << exec_core_type << std::endl;
+                std::cout << "  Core:      " << exec_core_type
+                          << (exec_core_type == "InOrder" ? inorderBannerShape(config) : std::string())
+                          << std::endl;   // 1.12.1 (#114): the in-order shape
             }
 
             // Display cache configuration with latencies (exec mode banner)
@@ -20426,20 +20696,15 @@ int main(int argc, char** argv) {
                 if (n.role == UnifiedConfig::SystemNode::HOST) {
                     std::cout << "  Host " << n.name << ": "
                               << n.num_cores << "x ";
-                    if (n.core_type == "ooo_core") std::cout << "OOO";
-                    else if (n.core_type == "in_order_core") std::cout << "InOrder";
-                    else if (n.core_type == "alu_core") std::cout << "ALU";
-                    else if (n.core_type == "null_core") std::cout << "Null";
-                    else std::cout << "Simple";
+                    std::cout << coreTypeLabel(n.core_type, "OOO");   // 1.12.1 (#114)
                     std::cout << " @ " << static_cast<int>(n.frequency_mhz) << " MHz"
                               << ", " << n.memory_tech << std::endl;
                 } else {
                     std::cout << "  Device " << n.name << ": ";
                     if (n.device_type == UnifiedConfig::SystemNode::COMPUTE) {
                         std::cout << n.num_pes << "x ";
-                        if (n.core_type == "alu_core") std::cout << "ALU";
-                        else if (n.core_type == "ooo_core") std::cout << "OOO";
-                        else std::cout << "Simple";
+                        // 1.12.1 (#114): in_order and null PEs were printed "Simple".
+                        std::cout << coreTypeLabel(n.core_type, "OOO");
                         std::cout << " @ " << static_cast<int>(n.frequency_mhz) << " MHz";
                     } else {
                         std::cout << "memory-only";
@@ -20787,20 +21052,15 @@ int main(int argc, char** argv) {
                 if (n.role == UnifiedConfig::SystemNode::HOST) {
                     std::cout << "  Host " << n.name << ": "
                               << n.num_cores << "x ";
-                    if (n.core_type == "ooo_core") std::cout << "OOO";
-                    else if (n.core_type == "in_order_core") std::cout << "InOrder";
-                    else if (n.core_type == "alu_core") std::cout << "ALU";
-                    else if (n.core_type == "null_core") std::cout << "Null";
-                    else std::cout << "Simple";
+                    std::cout << coreTypeLabel(n.core_type, "OOO");   // 1.12.1 (#114)
                     std::cout << " @ " << static_cast<int>(n.frequency_mhz) << " MHz"
                               << ", " << n.memory_tech << std::endl;
                 } else {
                     std::cout << "  Device " << n.name << ": ";
                     if (n.device_type == UnifiedConfig::SystemNode::COMPUTE) {
                         std::cout << n.num_pes << "x ";
-                        if (n.core_type == "alu_core") std::cout << "ALU";
-                        else if (n.core_type == "ooo_core") std::cout << "OOO";
-                        else std::cout << "Simple";
+                        // 1.12.1 (#114): in_order and null PEs were printed "Simple".
+                        std::cout << coreTypeLabel(n.core_type, "OOO");
                         std::cout << " @ " << static_cast<int>(n.frequency_mhz) << " MHz";
                     } else {
                         std::cout << "memory-only";

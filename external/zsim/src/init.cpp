@@ -84,7 +84,6 @@ class HomeRoutedMemory : public MemObject {
 #include "profile_stats.h"
 #include "repl_policies.h"
 #include "scheduler.h"
-#include "simple_core.h"
 #include "stats.h"
 #include "stats_filter.h"
 #include "str.h"
@@ -1543,7 +1542,10 @@ static void InitSystem(Config& config) {
 
             string prefix = string("sys.cores.") + group + ".";
             uint32_t cores = config.get<uint32_t>(prefix + "cores", 1);
-            string type = config.get<const char*>(prefix + "type", "Simple");
+            /* PIMID 1.12.1 (ticket #114): REQUIRED. The default was "Simple"
+             * (SimpleCore, IPC 1), retired and deleted in 1.12.1; PIMID
+             * emits the type of every group it writes. */
+            string type = config.get<const char*>(prefix + "type");
             /* 1.11.43 (audit E23): the FPU flag is PER GROUP, not global. The
              * old sys.hierarchy.peHasFpu applied the device PE's soft-float
              * penalty to every core in the simulation, host included. The
@@ -1556,14 +1558,18 @@ static void InitSystem(Config& config) {
 
             //Build the core group
             union {
-                SimpleCore* simpleCores;
                 InOrderCore* inOrderCores;
                 OOOCore* oooCores;
                 NullCore* nullCores;
                 ALUCore* aluCores;
             };
             if (type == "Simple") {
-                simpleCores = gm_memalign<SimpleCore>(CACHE_LINE_BYTES, cores);
+                /* PIMID 1.12.1 (ticket #114): SimpleCore is retired and its
+                 * source deleted; a hand-written config naming it is told
+                 * the replacement rather than "invalid core type". */
+                panic("%s: core type Simple (SimpleCore, IPC 1) was retired in PIMID 1.12.1; "
+                      "the scalar single-issue in-order PE is type InOrder with issueWidth = 1 "
+                      "and branchPredictor = \"none\"", group);
             } else if (type == "InOrder") {
                 inOrderCores = gm_memalign<InOrderCore>(CACHE_LINE_BYTES, cores);
             } else if (type == "OOO" || type == "OoO") {
@@ -1614,11 +1620,7 @@ static void InitSystem(Config& config) {
                     assignedCaches[dcache]++;
 
                     //Build the core
-                    if (type == "Simple") {
-                        SimpleCore* score = new (&simpleCores[j]) SimpleCore(ic, dc, name);
-                        score->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.43 (E23)
-                        core = score;
-                    } else if (type == "InOrder") {
+                    if (type == "InOrder") {
                         uint32_t domain = j*zinfo->numDomains/cores;
                         // In-order superscalar issue width (YAML pim.pe.issue_width;
                         // PIMID_INORDER_WIDTH env overrides inside the ctor). Default 2.
@@ -1628,8 +1630,19 @@ static void InitSystem(Config& config) {
                          * emitted by PIMID. REQUIRED keys: no value lives here. */
                         uint32_t mispredPenalty = config.get<uint32_t>(prefix + "mispredPenalty");
                         uint32_t resteerPenalty = config.get<uint32_t>(prefix + "resteerPenalty");
+                        /* PIMID 1.12.1 (ticket #114): the branch predictor,
+                         * "pag" (PAg + BTB + RAS) or "none" (static not-taken,
+                         * no prediction structure) -- REQUIRED, emitted by
+                         * PIMID from pim.pe.branch_predictor / devices[].pim.pe.
+                         * branch_predictor / hosts[].branch_predictor or the
+                         * core record's in_order.branch_predictor. */
+                        string branchPredictor = config.get<const char*>(prefix + "branchPredictor");
+                        if (branchPredictor != "pag" && branchPredictor != "none")
+                            panic("%s: branchPredictor '%s' is not pag or none", group, branchPredictor.c_str());
+                        const bool staticNotTaken = (branchPredictor == "none");
                         InOrderCore* tcore = new (&inOrderCores[j]) InOrderCore(ic, dc, domain, name, issueWidth,
-                                                                                mispredPenalty, resteerPenalty);
+                                                                                mispredPenalty, resteerPenalty,
+                                                                                staticNotTaken);
                         tcore->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.43 (E23)
                         zinfo->eventRecorders[coreIdx] = tcore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);

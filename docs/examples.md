@@ -8,7 +8,7 @@ dimension; they are also shipped in the Docker image as a smoke set.
 | Group | Files | Values |
 |---|---|---|
 | Memory tech (11) | `tech_*.yaml` | DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3, SRAM, STT_MRAM, PCM, ReRAM |
-| Core / PE type (5) | `core_*.yaml` | ooo_core (out-of-order), in_order_core, simple_core, alu_core, null_core |
+| Core / PE type (4, plus the scalar in-order PE) | `core_*.yaml` | ooo_core (out-of-order), in_order_core, in_order_scalar (in_order_core with issue_width 1 and branch_predictor none; replaced simple_core in 1.12.1), alu_core, null_core |
 | NoC topology (6) | `topo_*.yaml` | MESH_2D, CROSSBAR, RING, TORUS_2D, FAT_TREE, BUS |
 | Network model (2) | `netmodel_*.yaml` | detailed (cycle-accurate Garnet; the default), analytical (hop-count + M/D/1 + MLP closed form, `noc.mlp` knob) |
 | Hierarchical DRAM placement (5) | `placement_*.yaml` | SUBARRAY, BANK, BANK_GROUP, CHIP, RANK |
