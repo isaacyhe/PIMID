@@ -51,6 +51,25 @@
 #define ISSUE_STAGE 7
 #define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
 
+/* 1.12.0 (#50, user ruling (b) 2026-10-05): R, the refill the stage
+ * constants above already charge between a fetch restart and the earliest
+ * dispatch of the first uop fetched there (bbl(), front end then the next
+ * call's uop loop):
+ *   fetch -> decode     DECODE_STAGE - FETCH_STAGE   = 3  (minFetchDecCycle)
+ *   decode -> issue     not charged: the decode-stall loop advances the issue
+ *                       clock curCycle straight to decodeCycle, and a block's
+ *                       first uop has decCycle 0 (x86_decoder.h)
+ *   issue -> dispatch   DISPATCH_STAGE - ISSUE_STAGE = 6  (dispatchCycle)
+ * R = 3 + 6 = 9 cycles. Through 1.11.x a mispredict restarted fetch AT the
+ * branch's resolution, so its whole cost was R and the core record's
+ * mispredict penalty only sized the wrong-path fetch. A mispredict now
+ * restarts fetch redirectGap = penalty - R cycles after resolution, so the
+ * first correct-path uop dispatches no earlier than resolution + penalty:
+ * the record value is the TOTAL redirect cost, not a bubble stacked on R
+ * (17 = 8 + 9 at the record default). An L1I miss on the correct path still
+ * adds its latency on top, as it would in hardware. */
+#define REDIRECT_REFILL_CYCLES ((uint32_t)((DECODE_STAGE - FETCH_STAGE) + (DISPATCH_STAGE - ISSUE_STAGE)))
+
 /* 1.11.99 (user ruling 2026-10-04): the L1D hit latency the out-of-order core
  * adds on top of the filter cache's availability cycle is the CONFIGURED one
  * (FilterCache::getHitLatency: the CACTI-derived value, or the cache
@@ -73,6 +92,20 @@ OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
     if (_fetchBytesPerCycle == 0) panic("%s: fetchBytesPerCycle must be >= 1 (core record ooo.fetch_width_bytes)", _name.c_str());
     fetchBytesPerCycle = _fetchBytesPerCycle;
     wrongPathBytes = _mispredPenalty * _fetchBytesPerCycle;
+    /* 1.12.0 (#50, user ruling (b) 2026-10-05): the same record value is the
+     * TOTAL redirect cost of a mispredict, counted from the branch's
+     * resolution; the fetch restart is placed penalty - R cycles after it
+     * (REDIRECT_REFILL_CYCLES above, R = 9). A total below the refill the
+     * stage model charges by itself cannot be honoured without changing the
+     * stage model; refuse it rather than charge R under the record's name. */
+    if (_mispredPenalty < REDIRECT_REFILL_CYCLES) {
+        panic("%s: mispredPenalty %u is below the %u-cycle refill the OOO stage model charges after a fetch "
+              "restart (fetch->decode %u + issue->dispatch %u); the core record's ooo.mispredict_penalty_cycles "
+              "is the TOTAL redirect cost of a mispredict and cannot be smaller (1.12.0)",
+              _name.c_str(), _mispredPenalty, REDIRECT_REFILL_CYCLES,
+              (uint32_t)(DECODE_STAGE - FETCH_STAGE), (uint32_t)(DISPATCH_STAGE - ISSUE_STAGE));
+    }
+    redirectGap = _mispredPenalty - REDIRECT_REFILL_CYCLES;
     decodeCycle = DECODE_STAGE;  // allow subtracting from it
     curCycle = 0;
     phaseEndCycle = zinfo->phaseLength;
@@ -317,7 +350,19 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
     BblInfo* retiredBbl = prevBbl;
     prevBbl = bblInfo;
 
-    uint64_t lastCommitCycle = 0;  // used to find misprediction penalty
+    /* The completion (writeback) cycle of the block's LAST uop in program
+     * order. zsim's "commit" means execute-complete here, not ROB retirement:
+     * ReorderBuffer computes retirement internally and it is read back only
+     * for the ROB-full allocation stall. For a block ending in jcc / jmp* /
+     * ret the last uop is the branch's, so this is the branch's RESOLUTION,
+     * the point a mispredict's redirect is counted from (1.12.0, #50: the
+     * redirect is resolution-bound and costs the core record's penalty in
+     * total; see REDIRECT_REFILL_CYCLES). Where it is not the branch uop's
+     * own completion (unchanged by 1.12.0): the drain below raises it to the
+     * responses of leftover rep / mismatch accesses, an indirect call's last
+     * uop is its return-address push store, and a synthetic block's value is
+     * its 1-CPI end. */
+    uint64_t lastCommitCycle = 0;
 
     if (bbl->uops > 0) {
         /* Full OOO simulation with decoded micro-ops */
@@ -474,12 +519,18 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         // Two distinct populations, counted separately:
         //  - EXPECTED rep-string traffic (bbl->repInstrs > 0): rep movs/stos
         //    iteration counts are dynamic, so the decoder intentionally leaves
-        //    their per-iteration accesses to this drain (block-copy cost model:
-        //    serial L1-latency chain) -> repDrained{Loads,Stores}.
+        //    their per-iteration accesses to this drain (block-copy cost
+        //    model) -> repDrained{Loads,Stores}.
         //  - true decode/runtime divergences (approximated instructions that
         //    still touched memory) -> memMismatch{Loads,Stores}.
         // Either way the accesses go through the cache so DRAM/NoC traffic
-        // stays accounted; charge at lastCommit.
+        // stays accounted. 1.12.0 (correcting this note, which said "serial
+        // L1-latency chain"): on this core they are NOT a serial chain (the
+        // in-order core chains them). All are issued together at drainCycle,
+        // cost no issue cycles (curCycle does not move) and only raise
+        // lastCommitCycle -- so a mispredicted terminator of such a block
+        // redirects from the latest response, not from its branch's own
+        // resolution.
         bool repBbl = (bbl->repInstrs > 0);
         uint64_t drainCycle = MAX(lastCommitCycle, curCycle);
         while (loadIdx < loads) {
@@ -627,6 +678,11 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
          * fetched) -- both from the core record (ooo.mispredict_penalty_cycles
          * 17, ooo.fetch_width_bytes 16: ceil(272 / 64) = 5 lines, the old
          * count at 64 B). The early exit at lastCommitCycle is unchanged.
+         *
+         * PIMID 1.12.0 (#50, user ruling (b) 2026-10-05): the same penalty is
+         * now also the redirect's TOTAL cost (the fetchCycle placement after
+         * this loop). The wrong-path depth and its early exit at the
+         * branch's resolution (lastCommitCycle) are unchanged.
          */
 
         // info("Mispredicted branch, %ld %ld %ld | %ld %ld", decodeCycle, curCycle, lastCommitCycle,
@@ -645,18 +701,29 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
             reqCycle = respCycle + lineSize/fetchBytesPerCycle;
         }
 
-        fetchCycle = lastCommitCycle;
+        /* 1.12.0 (#50, user ruling (b) 2026-10-05): resolution-bound
+         * redirect whose TOTAL cost is the core record's penalty. Fetch
+         * restarts redirectGap = penalty - R cycles after the branch
+         * resolves, and the stage model adds its own R = 9-cycle refill
+         * (REDIRECT_REFILL_CYCLES), so the first correct-path uop dispatches
+         * no earlier than resolution + penalty (17 = 8 + 9 at the record
+         * default). Through 1.11.x this was fetchCycle = lastCommitCycle, a
+         * total cost of R alone. */
+        fetchCycle = lastCommitCycle + redirectGap;
     }
     branchPc = 0;  // clear for next BBL
 
     // Indirect jmp/call/ret target misprediction (BTB/RAS miss, flagged by
     // ctrlFlow): charge the same front-end redirect a conditional mispredict
-    // pays -- the next fetch cannot start until the branch resolves. Wrong-path
-    // ifetches are NOT simulated for indirects (no plausible wrong-path stream
-    // worth modeling for a first-target BTB).
+    // pays -- resolution-bound, the fetch restart placed redirectGap cycles
+    // after the branch resolves, a TOTAL cost of the core record's penalty
+    // (1.12.0, #50 (b); through 1.11.x the restart was at resolution, a cost
+    // of the 9-cycle stage refill alone). Wrong-path ifetches are NOT
+    // simulated for indirects (no plausible wrong-path stream worth modeling
+    // for a first-target BTB).
     if (indirMispredPending) {
         indirMispredPending = false;
-        fetchCycle = MAX(fetchCycle, lastCommitCycle);
+        fetchCycle = MAX(fetchCycle, lastCommitCycle + redirectGap);
     }
 
     // Simulate current bbl ifetch
@@ -677,7 +744,10 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
     uint64_t minFetchDecCycle = fetchCycle + (DECODE_STAGE - FETCH_STAGE);
     if (minFetchDecCycle > decodeCycle) {
 #ifdef OOO_STALL_STATS
-        profFetchStalls.inc(decodeCycle - minFetchDecCycle);
+        /* 1.12.0: the operands were reversed (upstream zsim) and the
+         * difference underflowed inside this branch. Compiled out by default
+         * (OOO_STALL_STATS, ooo_core.h). */
+        profFetchStalls.inc(minFetchDecCycle - decodeCycle);
 #endif
         decodeCycle = minFetchDecCycle;
     }

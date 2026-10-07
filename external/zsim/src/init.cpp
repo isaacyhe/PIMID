@@ -1638,7 +1638,10 @@ static void InitSystem(Config& config) {
                         assert(type == "OOO" || type == "OoO");
                         /* 1.11.97 (R2355 (b)): the wrong-path fetch depth is
                          * derived from the core record's ooo.mispredict_penalty_cycles
-                         * x ooo.fetch_width_bytes, emitted by PIMID. REQUIRED keys. */
+                         * x ooo.fetch_width_bytes, emitted by PIMID. REQUIRED keys.
+                         * 1.12.0 (#50 (b)): the same penalty is the TOTAL mispredict
+                         * redirect cost (ooo_core.cpp REDIRECT_REFILL_CYCLES); the
+                         * core refuses one below its 9-cycle stage refill. */
                         uint32_t oooMispredPenalty = config.get<uint32_t>(prefix + "mispredPenalty");
                         uint32_t oooFetchBytes = config.get<uint32_t>(prefix + "fetchBytesPerCycle");
                         OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, name, oooMispredPenalty, oooFetchBytes);

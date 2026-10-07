@@ -44,13 +44,24 @@
 #    in_order_core.cpp BranchFunc: "wrong-path fetches not modeled".)
 #
 # ooo
-#   mispredict_penalty_cycles: 17. OOOCore charges a mispredict by resolution
-#     time (fetch restarts at lastCommitCycle), not by a fixed bubble; this
-#     value sets only HOW FAR the wrong path is fetched (below). 17 is the
-#     "typical branch mispred penalty of 17 cycles" the wrong-path comment in
-#     ooo_core.cpp states for the Westmere-matched pipeline (Nehalem/Westmere
-#     measured penalty >= 17 cycles, A. Fog, "The microarchitecture of Intel,
-#     AMD and VIA CPUs", Nehalem chapter).
+#   mispredict_penalty_cycles: 17. The TOTAL cost of a mispredict on the
+#     out-of-order core, counted from the branch's resolution (1.12.0, ticket
+#     #50, user ruling (b) 2026-10-05). The redirect is resolution-bound:
+#     fetch restarts after the mispredicted branch uop COMPLETES (its
+#     execute-complete cycle, zsim's lastCommitCycle -- not its ROB
+#     retirement), placed so that the first correct-path uop dispatches no
+#     earlier than resolution + this value. The stage model already charges a
+#     9-cycle refill after any fetch restart (fetch->decode 3 +
+#     issue->dispatch 6; decode->issue is not charged; ooo_core.cpp
+#     REDIRECT_REFILL_CYCLES), so the restart is placed 17 - 9 = 8 cycles
+#     after resolution. Through 1.11.x the restart was AT resolution, the cost
+#     was the 9-cycle refill alone and this value only sized the wrong path.
+#     A value below 9 is refused by the core at initialisation. The same
+#     value still sets HOW FAR the wrong path is fetched (below). 17 is the
+#     Westmere-class measured penalty (Nehalem/Westmere >= 17 cycles, A. Fog,
+#     "The microarchitecture of Intel, AMD and VIA CPUs", Nehalem chapter),
+#     the "typical branch mispred penalty of 17 cycles" the wrong-path
+#     comment in ooo_core.cpp states for the Westmere-matched pipeline.
 #   fetch_width_bytes: 16. BYTES per cycle, not instructions or lines: x86
 #     instructions are variable-length and zsim fetches in 16-byte-wide
 #     accesses (ooo_core.cpp FETCH_BYTES_PER_CYCLE 16, "The Nehalem frontend
@@ -67,8 +78,10 @@
 #     compile-time constant of the timing core, so the record must equal it;
 #     the loader refuses any other value. McPAT's commit_width reads this
 #     field (was commit_width = issue_width).
-#   (no resteer_penalty_cycles: OOOCore charges an indirect/RAS miss by
-#    resolution time too -- fetchCycle = max(fetchCycle, lastCommitCycle).)
+#   (no resteer_penalty_cycles: OOOCore charges an indirect jmp/call or
+#    return target miss the same resolution-bound redirect, total cost
+#    mispredict_penalty_cycles -- fetchCycle = max(fetchCycle,
+#    lastCommitCycle + mispredict_penalty_cycles - 9).)
 record: pimid core default
 in_order:
   mispredict_penalty_cycles: 7

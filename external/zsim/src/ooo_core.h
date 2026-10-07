@@ -507,6 +507,13 @@ class OOOCore : public Core {
          * FETCH_BYTES_PER_CYCLE throughput step of that loop. */
         uint32_t fetchBytesPerCycle;
         uint32_t wrongPathBytes;
+        /* 1.12.0 (#50, user ruling (b) 2026-10-05): the same penalty is the
+         * TOTAL cost of a mispredict counted from the branch's resolution.
+         * The fetch restart is placed redirectGap = penalty - R cycles after
+         * resolution, R = the 9-cycle refill the stage model charges after
+         * any restart (REDIRECT_REFILL_CYCLES, ooo_core.cpp): 17 - 9 = 8 at
+         * the record default. The ctor refuses a penalty below R. */
+        uint32_t redirectGap;
 
         Address branchPc;  //0 if last bbl was not a conditional branch
         bool branchTaken;
@@ -575,8 +582,12 @@ class OOOCore : public Core {
         // Fed by the plugin with resolved targets (kind codes >= 2 through the
         // branchPtr callback); a wrong target sets indirMispredPending, consumed
         // in bbl() as the same front-end redirect a conditional mispredict pays
-        // (fetchCycle = lastCommitCycle; wrong-path ifetches NOT simulated for
-        // indirects). Gated by PIMID_OOO_NOBRANCH like all branch modeling.
+        // (1.12.0, #50 (b): fetchCycle = lastCommitCycle + redirectGap, a
+        // resolution-bound redirect whose total cost is the core record's
+        // penalty; wrong-path ifetches NOT simulated for indirects). An
+        // indirect call's last uop is its return-address push store, so its
+        // redirect counts from that store's completion, not its branch uop's.
+        // Gated by PIMID_OOO_NOBRANCH like all branch modeling.
         IndirectPredictor<9, 16> indirPred;
         bool indirMispredPending = false;
         uint64_t indirBranches = 0, indirMispreds = 0;
@@ -628,7 +639,10 @@ class OOOCore : public Core {
     public:
         /* 1.11.97: _mispredPenalty / _fetchBytesPerCycle = the core record's
          * ooo.mispredict_penalty_cycles / ooo.fetch_width_bytes (zsim keys
-         * mispredPenalty / fetchBytesPerCycle, required; no default here). */
+         * mispredPenalty / fetchBytesPerCycle, required; no default here).
+         * 1.12.0 (#50 (b)): _mispredPenalty is also the TOTAL mispredict
+         * redirect cost (redirectGap); a value below the 9-cycle stage refill
+         * is refused. */
         OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
                 uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle);
 

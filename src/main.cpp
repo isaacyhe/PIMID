@@ -3217,6 +3217,10 @@ static int applyCoreRecord(UnifiedConfig& config) {
     const auto& io = g_core_rec.in_order;
     const auto& oo = g_core_rec.ooo;
     bool user = false;
+    /* 1.12.0 (#50 ruling (b)): the OOO core's redirect cost is the record's penalty IN TOTAL from the
+     * branch's resolution; the stage constants already charge a 9-cycle refill (fetch->decode 3 +
+     * issue->dispatch 6), so a penalty below 9 cannot be honoured and is refused here, before zsim. */
+    constexpr int kOooRedirectRefillCycles = 9;
     auto take = [&](int& v, int rec, int lo, int hi, const char* key) {
         if (v == -1) { v = rec; return true; }
         user = true;
@@ -3228,7 +3232,7 @@ static int applyCoreRecord(UnifiedConfig& config) {
     };
     if (!take(config.core_inorder_mispredict_penalty, io.mispredict_penalty_cycles, 0, 1000, "core.in_order.mispredict_penalty_cycles") ||
         !take(config.core_inorder_resteer_penalty, io.resteer_penalty_cycles, 0, 1000, "core.in_order.resteer_penalty_cycles") ||
-        !take(config.core_ooo_mispredict_penalty, oo.mispredict_penalty_cycles, 0, 1000, "core.ooo.mispredict_penalty_cycles") ||
+        !take(config.core_ooo_mispredict_penalty, oo.mispredict_penalty_cycles, kOooRedirectRefillCycles, 1000, "core.ooo.mispredict_penalty_cycles") ||   // 1.12.0 (#50 b): the floor is the 9-cycle refill the OOO pipeline charges (zsim refuses below it too)
         !take(config.core_ooo_fetch_width_bytes, oo.fetch_width_bytes, 1, 64, "core.ooo.fetch_width_bytes"))
         return 1;
     if (config.core_inorder_resteer_penalty > config.core_inorder_mispredict_penalty) {
@@ -13926,6 +13930,7 @@ public:
                 cfg << "            resteerPenalty = " << config_.core_inorder_resteer_penalty << ";\n";
             } else if (core_type == "OoO") {
                 // 1.11.97 (R2355 (b)): wrong-path depth = penalty x fetch width (core record).
+                // 1.12.0 (#50 (b)): the penalty is also the TOTAL mispredict redirect cost.
                 cfg << "            mispredPenalty = " << config_.core_ooo_mispredict_penalty << ";\n";
                 cfg << "            fetchBytesPerCycle = " << config_.core_ooo_fetch_width_bytes << ";\n";
             }
@@ -14677,6 +14682,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                 cfg << "            resteerPenalty = " << config.core_inorder_resteer_penalty << ";\n";
             } else if (core_type == "OoO") {
                 // 1.11.97 (R2355 (b)): wrong-path depth = penalty x fetch width (core record).
+                // 1.12.0 (#50 (b)): the penalty is also the TOTAL mispredict redirect cost.
                 cfg << "            mispredPenalty = " << config.core_ooo_mispredict_penalty << ";\n";
                 cfg << "            fetchBytesPerCycle = " << config.core_ooo_fetch_width_bytes << ";\n";
             }

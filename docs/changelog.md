@@ -7,6 +7,81 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.0 -- the out-of-order core's mispredict redirect costs the core record's penalty in total, counted from the branch's resolution (#50)
+
+Ticket #50, user ruling (b) of 2026-10-05. The core record's
+`ooo.mispredict_penalty_cycles` (17 cycles, Westmere-class: the measured
+Nehalem/Westmere penalty, A. Fog, the value `ooo_core.cpp` already cited) is
+now the TOTAL cost of a mispredict on the out-of-order core. The redirect
+stays resolution-bound: fetch restarts after the mispredicted branch uop
+COMPLETES -- its execute-complete cycle, which zsim names `lastCommitCycle`
+-- not when it retires from the ROB. Retirement is computed inside the ROB
+model and the redirect never read it, so the ticket's "commit-bound" premise
+took zsim's variable name literally, and the redirect POINT does not change.
+What changes is the COST. Through 1.11.x fetch restarted AT resolution, and
+the whole cost was the refill the stage model charges after any fetch
+restart: 9 cycles, fetch->decode 3 plus issue->dispatch 6 (decode->issue is
+not charged). The record's 17 only sized the wrong-path L1I fetch. The
+restart is now placed penalty - 9 = 8 cycles after resolution, so the first
+correct-path uop dispatches no earlier than resolution + 17; an L1I miss on
+the correct path still adds its latency on top. A conditional direction
+mispredict and an indirect jmp/call or return target miss pay the same
+redirect. The wrong-path fetch is unchanged (at most 5 lines at 17 cycles x
+16 B over a 64 B line, stopping at resolution).
+
+A penalty below the 9-cycle refill cannot be honoured without changing the
+stage model, so the out-of-order core refuses one at initialisation and
+names the refill (the record loader and the
+`core.ooo.mispredict_penalty_cycles` override still accept 0..1000; no
+shipped record or corpus configuration sets the field). Where the redirect's
+base is not the branch uop's own completion it is unchanged, and stays its
+own ticket: a block whose leftover rep-string or mismatch accesses are
+drained after its last uop (the base is their latest response), an indirect
+call (its last uop is the return-address push store) and an injected wait
+between a branch and its successor (the base is the wait's end).
+
+**(2) Record, documentation and comments.** The record text,
+`docs/cores.md` and the core's comments say the above. `docs/cores.md` also
+said that wrong-path fetches do not pollute caches -- true of the in-order
+core only; the out-of-order core fetches the wrong path of a conditional
+mispredict into the L1I -- and called the rep-string traffic a serial
+drain, which it is only on the in-order core (the out-of-order core issues
+the drained accesses together and charges them no issue cycles); both are
+corrected, as is the same "serial" claim in the out-of-order core's drain
+comment. The off-by-default `OOO_STALL_STATS` fetch-stall counter had its
+operands reversed (upstream zsim) and underflowed whenever it fired;
+corrected (no shipped build compiles it).
+
+DATA IMPACT: every out-of-order core that mispredicts inside the ROI moves
+UP -- on a single thread by at most 8 cycles per ROI mispredict
+(conditional, indirect or return), less where an older long-latency access
+already holds the ROB. That is every device cell with `ooo_core` elements,
+and in system scope every host (`ooo_core` is the default and all 90 corpus
+system configurations name it): the host-only baselines move like device
+cells, and co-simulation cells move through their host's in-ROI
+mispredicts. Branchy irregular kernels move most: bfs (serial, OpenMP and
+MPI), whose data-dependent `dist[v] == -1` test is fed by a load. Loop
+kernels move by 8 cycles per loop exit: little where the loop is long
+(stream_triad, vector_add), more where short inner loops repeat (gate
+1209A's 16-PE HBM3 gemv-256 shape: 90 to 225 ROI mispredicts per element on
+20k to 28k cycles, a bound of +2.6% to +6.5%). OpenMP and MPI cells can
+move past that bound through spin-wait interplay and are banded, not
+bounded. The "ooo_core above in_order_core on large bfs" model boundary in
+`docs/cores.md` widens rather than closes. `in_order_core`, the compute
+unit (`alu_core`), `simple_core` and `null_core` are exact: their code is
+untouched. On every core the instruction, uop, branch and mispredict counts
+are unchanged; only timing moves, and with it, second order, the L1I and
+memory counters that follow timing. McPAT's out-of-order pipeline depth
+(13) is unchanged. Gate 1218A: one-element serial bfs on `ooo_core`: cycles
+rise against 1.11.107 by 32832 cycles (174942 -> 207774, 4105 ROI mispredicts) (1.000 of 8 x the ROI mispredicts), with
+instrs, uops, branches, mispredBranches and the indirect and return
+counters exact (FIRES); the same shape on `in_order_core`, `alu_core`,
+`simple_core` and `null_core` is exact in every counter; at
+`core.ooo.mispredict_penalty_cycles: 9` (no placed gap) the out-of-order
+core is exact against 1.11.107 at 9, and 8 refuses; one-element serial
+stream_triad on `ooo_core` moves by a factor 0.9978 (within the 0.5% address-layout band of that memory-bound shape), within 8 cycles per ROI
+mispredict.
+
 ## 1.11.107 -- one vocabulary for a system device node: a node takes every device-scope key, read by the same code; the flat node keys are aliases; a node's McPAT core profile takes its own register counts
 
 Ruling R106-7 (c) (user, 2026-10-05). A device was described in two shapes:

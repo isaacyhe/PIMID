@@ -106,19 +106,27 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   (`recordAccess` asserts `startCycle >= prevRespCycle`) and the cache has no
   side-effect-free probe to admit hits-only under a miss, so hit-under-miss
   would need an OOOCoreRecorder-style multi-outstanding weave recorder.
-- **No wrong-path effects**: a mispredict charges the flush/refill bubble but
-  wrong-path fetches do not pollute caches. Standard for simulators of this
-  class.
+- **Wrong-path effects are front-end only, and only on `ooo_core`**: no
+  wrong-path uop executes and no wrong-path data access is made on any core.
+  `in_order_core` charges its flush/refill bubble and fetches no wrong path.
+  `ooo_core` DOES fetch the wrong path of a conditional mispredict into the
+  L1I until the branch resolves (at most ceil(penalty x fetch width / line
+  size) lines: 5 at the core record's 17 cycles x 16 B over a 64 B line), so
+  wrong-path lines occupy the L1I and count in its accesses and in the
+  contention weave; an indirect or return target miss fetches no wrong path.
 - **Timing microarchitecture is fixed per core model** (`ooo_core`:
   128-entry-ROB/4-wide Westmere-class, compile-time; `in_order_core`: dual-issue
   default). The `power.mcpat_overrides` keys (`pipeline_depth`, `issue_width`,
   ...) shape the McPAT power/area model only, never cycle timing -- see
   [yaml_reference.md](yaml_reference.md).
 - At large working sets, `ooo_core` can legitimately exceed `in_order_core` on
-  branch-heavy irregular kernels: its mispredict redirect is resolution-bound,
-  so a load-fed mispredict pays a DRAM-latency-long refill that a shallow
-  in-order pipe does not pay on top of its load-use stall. This is physics, not
-  a calibration error.
+  branch-heavy irregular kernels: its mispredict redirect is resolution-bound
+  -- fetch restarts only after the mispredicted branch completes, and the
+  redirect then costs the core record's `ooo.mispredict_penalty_cycles` in
+  total (17 cycles, 1.12.0) -- so a load-fed mispredict waits out the load's
+  DRAM latency and then pays the full redirect, while a shallow in-order pipe,
+  already stalled on the same load, adds only its 7-cycle bubble. This is
+  physics, not a calibration error.
 
 ## Notes
 
@@ -173,7 +181,11 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   xchg as fenced rmw, div/idiv with the true rdx:rax pair via a merge uop +
   divide uop, and widening mul rd={rax,rdx}). rep movs/stos use a documented
   block-copy model: register-side dependency uops plus the QEMU-delivered
-  accesses through a serial drain, counted as `repDrainedLoads/Stores`. The
+  accesses through a drain after the block's last uop, counted as
+  `repDrainedLoads/Stores`. The drain is serial only on `in_order_core` (each
+  access waits for the previous response); on `ooo_core` the drained accesses
+  are issued together, cost no issue cycles and only extend the block's
+  completion, which a mispredicted terminator of that block redirects from. The
   generic-uop fallback is ~0.0% of dynamic instructions (only serializing ops:
   syscall/cpuid/rdtsc/xsave). Unrecognized instructions' memory accesses are
   absorbed by a tolerant load/store drain, so counts never desync (measured
@@ -182,6 +194,18 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   and indirect jmp/call targets and returns are predicted by a 512-entry
   direct-mapped BTB (last-seen-target) plus a 16-entry return-address stack --
   wrong targets pay the same front-end redirect as a conditional mispredict.
+  The redirect is resolution-bound and its TOTAL cost is the core record's
+  `ooo.mispredict_penalty_cycles` (17 cycles, Westmere-class; set per run
+  with `core.ooo.mispredict_penalty_cycles`, at least 9): fetch restarts
+  after the mispredicted branch uop completes (execute-complete, not ROB
+  retirement), placed so that the first correct-path uop dispatches no
+  earlier than the branch's resolution + the penalty. The pipeline's stage
+  model already charges 9 of those cycles after any fetch restart
+  (fetch->decode 3 + issue->dispatch 6), so the restart itself is placed
+  penalty - 9 = 8 cycles after resolution; through 1.11.x the restart was at
+  resolution and a mispredict cost those 9 cycles alone (1.12.0). An L1I
+  miss on the correct path adds its latency on top. The same value sizes the
+  wrong-path fetch (Model boundaries, above).
   Diagnostics per out-of-order core:
   `uops`, `decodedBbls`, `syntheticBbls`, `approxInstrs`, `mispredBranches`,
   `indirBranches`, `indirMispreds`, `rasReturns`, `rasMispreds`,
