@@ -10,6 +10,12 @@ code path a standalone `scope: device` run uses (same PE memory interfaces,
 same Garnet/analytical NoC, same JEDEC-derived memory timing), so device-only
 cycles are unchanged by co-sim.
 
+A co-sim system is declared under `system.hosts[]` / `system.devices[]`, or
+spelled with the flat keys under `scope: cosim`: the top-level `host:` block is
+`system.hosts[0]` and the top-level device keys are the device node, both read
+as declared nodes (1.12.2; see
+[yaml_reference.md](yaml_reference.md#host-block-host-scope-cosim)).
+
 There are **no special co-sim workloads**: any ordinary ROI-marked workload
 runs in co-sim unchanged. In a standalone device simulation only the ROI
 (the kernel) is counted; in co-sim the host phases and the boundary costs are

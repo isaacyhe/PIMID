@@ -139,9 +139,13 @@ pim:
 
 The knob applies to `in_order_core` only (refused, rc 2, on any other type:
 `ooo_core` always runs its predictor, `alu_core` and `null_core` have none) and
-is set per element: `system.devices[].pim.pe.branch_predictor` for a device,
+is set per element: `system.devices[].pim.pe.branch_predictor` for a device
+(a top-level `pim.pe.branch_predictor` / `pim.pe.issue_width` is the default of
+every device node that does not set it, 1.12.2),
 `system.hosts[].branch_predictor` for an in-order host (which also takes
-`system.hosts[].issue_width`, 1.11.107, so a host can be the scalar PE too).
+`system.hosts[].issue_width`, 1.11.107, so a host can be the scalar PE too;
+under `scope: cosim` the same keys are `host.branch_predictor` /
+`host.issue_width`, 1.12.2).
 Issue is per uop, so at width 1 a two-uop x86 instruction takes two issue
 slots.
 
@@ -220,7 +224,9 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   `PIMID_INORDER_NODECODE` escape hatch is REMOVED -- its A/B purpose ended
   with the 1.4.x validation, and release-vs-release builds are the baseline
   method. The in-order core has exactly one timing model.) The issue width is configurable via `pim.pe.issue_width`
-  (default 2; env `PIMID_INORDER_WIDTH` overrides YAML). Diagnostics per
+  (default 2, valid 1-6 -- the core's six issue ports; any other width is
+  refused since 1.12.2, where it used to run at 2; env `PIMID_INORDER_WIDTH`
+  overrides YAML). Diagnostics per
   in-order core: `uops`, `decodedBbls`, `syntheticBbls`, `depStalls`,
   `issueStalls`, `branches`, `takenBranches` (1.12.1), `mispredBranches`,
   `mispredStallCycles`, `indirBranches`, `indirMispreds`, `rasReturns`,

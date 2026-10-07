@@ -92,7 +92,8 @@ DRAM_TIER_STATUS_FOR_OWNER.md
 BUILD_FROM_SOURCE_CLOUD.md
 .claude/
 results/
-# Generated DRAM topology files (detailed NoC emits <TECH>_pe<N>_<pid>.topo in CWD)
+# Generated DRAM topology files (through 1.12.1 the detailed NoC left <TECH>_pe<N>_<pid>.topo
+# in the CWD; since 1.12.2 it writes /tmp/pimid_<TECH>_pe<N>_<pid>.topo and removes it at exit)
 *.topo
 
 

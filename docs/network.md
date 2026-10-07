@@ -54,7 +54,10 @@ credit-based flow control, deadlock-free routing.
 
 - **DRAM device networks are sparse placement-driven trees (1.5.3).** A DRAM
   device's internal datapath is a hierarchical distribution fabric, not a
-  mesh. PIMID regenerates a CUSTOM tree per simulation from the PE placement:
+  mesh. PIMID regenerates a CUSTOM tree per simulation from the PE placement
+  (on the detailed model it is written as `/tmp/pimid_<tech>_pe<N>_<pid>.topo`,
+  beside the run's zsim config, and removed when the run exits -- 1.12.2; it
+  used to be written into the working directory and left there):
   only PE-hosting branches are materialized down to the placement level, and
   every empty region hangs ONE abstract endpoint at its maximal-empty-subtree
   root -- so an access to a non-PE region still travels the real tiered

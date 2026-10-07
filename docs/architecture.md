@@ -37,6 +37,10 @@ workload binary
 - `scope: device` -- a single PIM device: PEs in the memory hierarchy.
 - `scope: system` -- multi-node: hosts (with caches) + devices connected by a
   system interconnect; supports host->device offload ([cosim.md](cosim.md)).
+- `scope: cosim` -- system scope with its two nodes given by the flat keys:
+  the `host:` block is `system.hosts[0]` (read as a declared host node) and
+  the top-level device keys are the device node (1.12.2; see
+  [yaml_reference.md](yaml_reference.md#host-block-host-scope-cosim)).
 
 ## Two-fabric system view (co-sim)
 
@@ -79,7 +83,25 @@ A co-sim system has **two fabrics joined by one bridge**:
 
 **Given a deterministic instruction stream, the simulator is exact.** Repeated
 runs of a single-threaded workload produce bit-identical results -- cycles and
-access counts, every digit.
+access counts, every digit -- when they are launched the same way.
+
+**The launch environment is part of the run.** The guest inherits pimid's
+environment block (plus `workload.env` and the OpenMP settings below), the
+environment strings are part of the guest's initial memory image, and the
+simulated address layout follows them: a different environment can place the
+workload's data at different addresses -- which addresses share a bank, a
+row, a channel. The instruction stream does not change; a memory-bound
+result can. Measured: 500 more bytes of environment moved a 65536-element
+serial `stream_triad` on HBM3 by 0.36% with identical instruction streams;
+small shapes (`bfs` 4096 vertices, `stream_triad` 1000, `gemv` 256) did not
+move. So:
+
+- **Results from different jobs are compared no finer than 0.5%.** Two jobs
+  rarely share an environment byte for byte (the job id, the working
+  directory and the scheduler's variables all live in it).
+- **When comparing two builds, run OLD and NEW from one working directory with
+  one environment.** Then a single-threaded comparison is exact again, and any
+  difference is the builds'.
 
 **A parallel workload does not repeat.** Its threads are real threads inside the
 emulator, the host kernel decides how they interleave, and the emulator reflects

@@ -495,14 +495,14 @@ namespace {
         }
         std::string xml((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        if (!from_legacy.empty()) {
-            std::ofstream out(path);
-            if (out.good()) {
-                out << xml;
-                std::cout << "[NVSimWrapper] migrated cached characterization "
-                          << "into the tree cache (" << path << ")" << std::endl;
-            }
-        }
+        /* 1.12.2 (ruling 3a, user 2026-10-07): a legacy entry is copied into the
+         * tree cache only after it has passed every check below (the copy-forward
+         * is at the end of this function), so the messages name the file that
+         * was read. Through 1.12.1 it was copied first and checked after, so a
+         * stale entry -- 6-significant-digit values, no subarray geometry -- was
+         * planted in the tree cache and served from there on, and the run then
+         * refused (a PCM cell: "NVSim reported no wordlines per mat"). */
+        const std::string& src = from_legacy.empty() ? path : from_legacy;
         auto get = [&](const char* tag, double& out) -> bool {
             std::string open = std::string("<") + tag + ">";
             std::string close = std::string("</") + tag + ">";
@@ -537,7 +537,7 @@ namespace {
             if (!get(tag, found)) return true;        // older file: field absent
             if (found == expected) return true;
             std::cerr << "[NVSimWrapper] REFUSING cached characterization "
-                      << path << ": its <" << tag << "> is " << found
+                      << src << ": its <" << tag << "> is " << found
                       << " but this query asks for " << expected
                       << ". The file does not describe the configuration its "
                          "name claims -- it has been renamed, copied or "
@@ -554,6 +554,28 @@ namespace {
             out = xml.substr(a, b - a);
             return true;
         };
+        /* 1.12.2 (ruling 3a): a LEGACY entry (the pre-1.11.52 per-user store) is
+         * migrated only in the current format -- full-precision values
+         * (<value_format>g17</value_format>, 1.11.94) and the subarray geometry
+         * (<subarray_rows> / <subarray_cols>, 1.11.102). Anything older is not
+         * copied: one line says so and the query is a miss, recharacterized and
+         * stored in the tree cache. (A tree-cache entry keeps the 1.11.94 /
+         * 1.11.102 rules below: read with a note, PIMID_NVSIM_CACHE_REQUIRE_FULL=1
+         * makes it a miss.) */
+        if (!from_legacy.empty()) {
+            std::string fmt;
+            double rows = 0.0, cols = 0.0;
+            const bool g17 = getStr("value_format", fmt) && fmt == "g17";
+            const bool geom = get("subarray_rows", rows) && get("subarray_cols", cols) && rows > 0.0 && cols > 0.0;
+            if (!g17 || !geom) {
+                std::cout << "[NVSimWrapper] legacy cache entry " << from_legacy << " is "
+                          << (!geom ? "pre-1.11.102 (no subarray geometry)" : "")
+                          << (!geom && !g17 ? " and " : "")
+                          << (!g17 ? "6-significant-digit (pre-1.11.94, no <value_format>g17</value_format>)" : "")
+                          << ": not migrated; recharacterizing" << std::endl;
+                return false;
+            }
+        }
         /* 1.11.60 (audit round 4, C013): THE PRODUCING VERSION IS READ, so the
          * stamp stops being a line of manifest text nobody consults.
          *
@@ -581,7 +603,7 @@ namespace {
             std::string ver;
             if (getStr("tool_version", ver) && ver != pimid::cache::toolVersion()) {
                 std::cerr << "[NVSimWrapper] REFUSING cached characterization "
-                          << path << ": it was produced by PIMID " << ver
+                          << src << ": it was produced by PIMID " << ver
                           << " and this build's characterization semantics are "
                           << pimid::cache::toolVersion()
                           << ". The keyed inputs all match -- what changed is "
@@ -606,7 +628,7 @@ namespace {
             std::string cf;
             if (getStr("cell_file", cf) && cf != k.cell_file) {
                 std::cerr << "[NVSimWrapper] REFUSING cached characterization "
-                          << path << ": its <cell_file> is \"" << cf
+                          << src << ": its <cell_file> is \"" << cf
                           << "\" but this query asks for \"" << k.cell_file
                           << "\". Recharacterizing." << std::endl;
                 return false;
@@ -688,6 +710,14 @@ namespace {
             std::cout << "[NVSimWrapper] cached characterization " << path
                       << " carries no subarray geometry (pre-1.11.102 format); the array architecture cannot be built from it:"
                          " delete it, or set PIMID_NVSIM_CACHE_REQUIRE_FULL=1, to recharacterize" << std::endl;
+        }
+        if (!from_legacy.empty()) {   // 1.12.2 (ruling 3a): copied forward only now, every check passed
+            std::ofstream out(path);
+            if (out.good()) {
+                out << xml;
+                std::cout << "[NVSimWrapper] migrated cached characterization "
+                          << "into the tree cache (" << path << ")" << std::endl;
+            }
         }
         return true;
     }

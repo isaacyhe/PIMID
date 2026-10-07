@@ -7,6 +7,127 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.2 -- scope: cosim is system scope (the host: block is system.hosts[0]); a top-level per-node key is every device node's default; an out-of-range in-order issue width refuses; the trace path prices the node's McPAT fields and the host's x86-64 registers; the generated topology file and stale legacy cache entries stay out of the way
+
+The "decide again" rulings of 2026-10-07 (user: "these are 1.12.x fixes"). Seven
+items, each its own arm in the gate. No corpus cell uses any of the shapes they
+touch.
+
+**(1) scope: cosim stays, and it is system scope (ruling 2b).** The flat
+top-level `host:` block is now `system.hosts[0]`, named `host`. A copy of the
+block goes through the code that reads a declared host node, so the cosim host
+gets that node's defaults, refusals and pricing. Its cache ways and banks come
+from the cache record, its caches default to 32/32/256 KB with no L3, and its
+messages name the key as written (`host.<key>`). The block takes
+`host.issue_width` and `host.branch_predictor` for an in_order_core host, as
+`system.hosts[]` does. Under `scope: device` and `scope: system` nothing reads
+these two keys, and they are refused there (rc 2); 1.12.1 refused
+`host.branch_predictor` in every scope. The top-level device keys are the device
+node, built at the same place. All the system steps after the load (part
+records, cache and core records, link class, the device's memory-hierarchy
+derivation) now run on both cosim nodes, as on declared ones.
+
+Through 1.12.1 the cosim nodes were synthesized after those steps had run. The
+host's cache ways stayed -1, so every cached cosim host was refused ("[cache]
+FATAL: CACTI could not price the host L1D (32 KB -1-way ..."). By code
+reading, the device's DRAM part record was not loaded and its memory hierarchy
+was not derived either. A `system:` block may carry `frequency_mhz`, `network`,
+`bridge`, `coherence` and `launch`. A given `system.network` is honoured, where
+1.12.1 replaced its topology and model in silence. When `system.network.model`
+is absent, `power.link.model` stays the network's model. Giving both with
+different words is refused (rc 2). The `power.link` link is added only when no
+`system.network.links` are given. A cosim config that also declares
+`system.hosts[]` / `system.devices[]` is still refused (1.11.90). The message
+now counts the declared nodes, and an empty list no longer counts. The run
+prints one NOTE naming both nodes. The cosim `[params] in_order branch
+predictor` lines are per node, as in system scope. The usage text no longer
+calls cosim a deprecated alias.
+
+**(2) A top-level per-node key is the device nodes' default (ruling 7a).** In
+system scope, a device-scope key that a device node reads for itself (the
+per-node set) is now the default of every device node that does not give it,
+when the top level gives it. A node's own value wins. The per-node set covers
+`pim.pe.issue_width`, `pim.pe.branch_predictor`, `pim.pe.type`,
+`pim.pe.count`, `pim.pe.frequency_mhz` / `noc.clock_mhz`, `memory.technology`,
+the `pim.pe` factors and flags, the pg flags, and the cache sizes, ways, banks
+and latencies. The run-wide `memory.dram.ddr5_speed_grade` already worked this
+way. Through 1.12.1 a node started from the node table's defaults for these
+keys. A top-level `pim.pe.issue_width` or `pim.pe.branch_predictor` was read
+and checked, and then reached no node. An inheriting node's `[params]
+in_order branch predictor` line names the top-level key. An inherited L2 or L3
+size makes the level present when it is above 0, unless `cache.<level>.enabled`
+is given. Hosts do not inherit: their keys are their own (the E23 ruling of
+1.11.43). The built-device node keys (`pim.placement`, `pim.mc.type` /
+`pes_per_mc`, `noc.topology`, `memory.ports_per_bank`) are not per-node keys
+and keep the node defaults, as before.
+
+**(3) pim.pe.issue_width outside 1..6 is refused (ruling 4a).** The width is
+refused (rc 2) at the top level and in a `system.devices[]` node, with the
+message style of `system.hosts[].issue_width` (1.11.107). The in-order core has
+six issue ports, and its constructor replaces any other width with 2. Through
+1.12.1 an out-of-range width went into the zsim config as written, ran at 2
+and was priced at 2.
+
+**(4) McPAT on the system trace path (ruling 5a).** (i) The dual-McPAT host of
+`runPowerAnalysis` now takes the run's architectural register files
+(`pim.pe.arch_int_regs` / `arch_fp_regs`; default 16 + 16, the x86-64 files
+the guest executes). A host node has had these on the per-node path since
+1.11.94. This description had kept McPAT's built-in 32 / 32. The host is
+priced there on the system-scope `--method trace` path and in the per-node
+fallback. Device scope prices no host. (ii) On the same path the device is
+now priced with the built device node's own lanes, instruction memory,
+operand width and architectural registers, as the per-node path has done
+since 1.11.107. These are per-node keys, so the adoption leaves them out of
+the run configuration, and the path used to price the top-level values. The
+ALU's one-FPU-per-lane count follows the priced lanes. The path still prices
+the device's core type, caches, clock and factors from the run configuration.
+That is a recorded open item.
+
+**(5) The generated topology file (ruling 6a).** The detailed DRAM fabric's
+CUSTOM topology file is now written to `/tmp/pimid_<TECH>_pe<N>_<pid>.topo`,
+beside the run's zsim config, and removed when the run exits. Only the
+process that wrote it removes it, and refusals take the same exit path. It
+used to be written into the working directory and left there by every
+detailed-DRAM run. The cfg's `topologyFile` and the banner's `NoC: CUSTOM
+(from ...)` name the new path. A run killed by a signal leaves the file in
+/tmp.
+
+**(6) Stale legacy NVSim cache entries are not migrated (ruling 3a).** An
+entry found in the pre-1.11.52 per-user store (`~/.cache/pimid/nvsim`) is
+copied into the tree cache only after it passes every check. It must also be
+in the current format: `<value_format>g17` (1.11.94) and the subarray geometry
+(1.11.102). Otherwise one line says `[NVSimWrapper] legacy cache entry <path>
+is pre-1.11.102 (no subarray geometry) and 6-significant-digit (...): not
+migrated; recharacterizing`, and the query is recharacterized and stored.
+Through 1.12.1 the entry was copied first and checked after. A stale entry
+was planted in the tree cache and served from there on, and a PCM cell then
+refused: "NVSim reported no wordlines per mat". The refusal messages now name
+the file that was read.
+
+**(7) Reproducibility note (ruling 1b, docs only).** `docs/architecture.md`
+(Reproducibility) and `docs/yaml_reference.md` (Workload) now say that the
+guest inherits pimid's environment block, and the simulated address layout
+follows it. 500 more bytes of environment moved a 65536-element serial
+stream_triad on HBM3 by 0.36% with identical instruction streams. bfs 4096,
+stream 1000 and gemv 256 did not move. Results from different jobs are
+compared no finer than 0.5%. When two builds are compared, OLD and NEW run
+from one working directory with one environment.
+
+**DATA IMPACT.** None on the corpus. The 90 system and 370 device cells use
+none of the shapes: no `scope: cosim`, no `host:` block, no top-level
+per-node key (the corpus top level gives only `memory.dram.ddr5_speed_grade`),
+no `issue_width` and no trace method. The emitted zsim configs are unchanged,
+except that `topologyFile` on detailed-DRAM cells now points under
+`/tmp/pimid_`. Non-corpus shapes that move:
+- (i) the host power of the system-scope `--method trace` path, and of the
+  per-node fallback: the host's register files are priced at 16 + 16
+  instead of 32 + 32;
+- the trace path's device power, where a device node gives its own lanes,
+  imem_bytes, operand_width or architectural registers;
+- scope: cosim runs, which run now where every cached-host one was refused;
+- system configs with a top-level per-node key, whose nodes now inherit it;
+- out-of-range issue widths, refused instead of run at 2.
+
 ## 1.12.1 -- simple_core is retired; the in-order core gets a predictor-off knob, and in_order_core at issue width 1 with no branch predictor is the scalar PE
 
 **(1) simple_core is retired (ticket #114, ruling (c) with the knob, user

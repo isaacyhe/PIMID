@@ -37,7 +37,7 @@ Complete reference for all YAML configuration keys supported by PIMID.
   - [Coherence (co-sim)](#coherence-co-sim)
   - [Kernel Launch (co-sim)](#kernel-launch-co-sim)
   - [System Network](#system-network)
-  - [Legacy Host Block](#legacy-host-block-host)
+  - [Host Block (scope: cosim)](#host-block-host-scope-cosim)
 - [Enumerations](#enumerations)
 - [Override Rules](#override-rules)
 - [Examples](#examples)
@@ -48,7 +48,7 @@ Complete reference for all YAML configuration keys supported by PIMID.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `scope` | string | `"device"` | Simulation scope: `device` or `system` (`cosim` accepted as deprecated alias for `system`) |
+| `scope` | string | `"device"` | Simulation scope: `device`, `system` or `cosim`. `cosim` is system scope with its two nodes given by the flat keys (1.12.2): the [`host:` block](#host-block-host-scope-cosim) is `system.hosts[0]`, read as a declared host node, and the top-level device keys (`pim`, `memory`, `noc`, `cache`, `core`, `technology`) are its device node. |
 | `method` | string | `"exec"` | Simulation method: `exec` (execution-driven, the default), `trace` (replay a recorded trace; needs `--trace-file`), `trace-gen` (record a trace, no simulation; needs `--trace-file`) or `synthetic` (parametric traffic into Garnet, see [Synthetic Traffic](#synthetic-traffic-synthetic)). CLI `--method` overrides. Any other word is refused (rc 1). |
 | `name` | string | `"PIMID_Simulation"` | Configuration name (appears in banner) |
 | `description` | string | `""` | Configuration description |
@@ -128,6 +128,16 @@ workload:
 | `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
 | `workload.mpich_path` | string | - | Deprecated and ignored, with a warning: PIMID no longer uses `mpirun`. |
 
+**The launch environment is part of a run.** The guest inherits pimid's own
+environment block (plus `workload.env` and the OpenMP settings PIMID adds), and
+the simulated address layout follows it. A memory-bound result can move with
+it while the instruction stream stays identical: 500 more bytes of environment
+moved a 65536-element serial `stream_triad` on HBM3 by 0.36%; small shapes
+(`bfs` 4096 vertices, `stream_triad` 1000, `gemv` 256) did not move. Compare
+results across jobs no finer than 0.5%, and when comparing two builds run both
+from one working directory with one environment. See
+[Reproducibility](architecture.md#reproducibility).
+
 ---
 
 ## PIM Configuration
@@ -155,7 +165,7 @@ pim:
 | `pim.pe.frequency_mhz` | int | `2000` | PE clock frequency in MHz. Overrides `system.frequency_mhz`. `noc.clock_mhz`, when given, overrides both. |
 | `pim.pe.pg` | bool | `false` | Power-gate the PE cores and their private caches over their measured idle residency. The shared L2/L3 gate with them unless `cache.pg: false`. |
 | `pim.pe.fp_emulation_cycles` | int | `0` | Cycles charged per floating-point-class instruction when `floating_point: false` (software emulation). `0` charges nothing; the run then reports how many FP instructions executed uncharged. A non-negative integer. |
-| `pim.pe.arch_int_regs` | int | `16` | Architectural integer registers the power model prices (McPAT's register file). Default 16, the simulated x86-64 guest's count (since 1.11.97; it was 32). The timing model executes x86-64 whatever the value; a set value is printed as the user's. Must be >= 1. In system scope the per-node power path applies it to the host node only; a device node keeps McPAT's built-in 32. |
+| `pim.pe.arch_int_regs` | int | `16` | Architectural integer registers the power model prices (McPAT's register file). Default 16, the simulated x86-64 guest's count (since 1.11.97; it was 32). The timing model executes x86-64 whatever the value; a set value is printed as the user's. Must be >= 1. In system scope it prices every host -- the host node on the per-node path (since 1.11.94) and the host of the `trace` method's power path (since 1.12.2; McPAT's built-in 32 before) -- and it is the default of every device node, which may set its own (`system.devices[].pim.pe.arch_int_regs`, 1.11.107); the device's own value prices it on both power paths (the `trace` path since 1.12.2, with the node's `lanes`, `imem_bytes` and `operand_width`). |
 | `pim.pe.arch_fp_regs` | int | `16` | Architectural floating-point registers the power model prices; as `arch_int_regs`. |
 | `pim.pe.element_bits` | int | - | WITHDRAWN: refused (rc 1). The element's datapath width is `pim.pe.operand_width`, which the timing model reads; a second name let the two halves disagree. |
 
@@ -188,7 +198,7 @@ network hierarchy. Use it for memory-bound kernels, which is what it is for.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `pim.pe.issue_width` | int | `2` | In-order core issue width (uops issued per cycle, program order). Valid 1-6 (clamped to the 6-port FU model; out-of-range falls back to 2); practical range 1-4 -- real in-order cores are 2-3 wide, and beyond 4 the ports and RAW chains bind first. Applies to `in_order_core` only; env `PIMID_INORDER_WIDTH` overrides YAML. Since 1.11.89 McPAT prices the core at this same resolved width (both scopes; printed as `McPAT issue width N = the timing model's (...)`). |
+| `pim.pe.issue_width` | int | `2` | In-order core issue width (uops issued per cycle, program order). Valid 1-6, the 6-port FU model; any other width is refused (rc 2, since 1.12.2, as `system.hosts[].issue_width`; through 1.12.1 it ran, and was priced, at the default 2); practical range 1-4 -- real in-order cores are 2-3 wide, and beyond 4 the ports and RAW chains bind first. Applies to `in_order_core` only; env `PIMID_INORDER_WIDTH` overrides YAML. Since 1.11.89 McPAT prices the core at this same resolved width (both scopes; printed as `McPAT issue width N = the timing model's (...)`). |
 | `pim.pe.branch_predictor` | string | the core record (`pag`) | In-order branch predictor (1.12.1): `pag` = the PAg direction predictor + 512-entry BTB + 16-entry RAS; `none` = no prediction structure, static not-taken (a taken conditional branch, an indirect jmp/call or a return pays the execute-depth flush `in_order.mispredict_penalty_cycles`; a direct call/jmp pays the decode-depth resteer `in_order.resteer_penalty_cycles`; a not-taken branch is free). Absent = the core record's `in_order.branch_predictor` (`params/core/default.yaml`, ships `pag`). Any other word is refused (rc 2), and so is the key on any core type but `in_order_core`. With `issue_width: 1` this is the scalar single-issue PE that replaced `simple_core`; McPAT then prices 1 ALU / 1 MUL / 1 FPU with no predictor at the in-order refill depth. `core.in_order.branch_predictor` is not a key (refused): the predictor is set per element. |
 
 ### PE Placement (`pim.placement`)
@@ -853,7 +863,7 @@ blocks is refused (1.11.106).
 |-----|------|---------|-------------|
 | `power.link.enabled` | bool | `true` | Price the host-device link (its energy and its controller). A declared link enables pricing by default; an explicit `false` keeps the link's timing and drops its energy. |
 | `power.link.link_type` | string | the attachment's class | Link class: `pcie_gen3`, `pcie_gen4`, `pcie_gen5`, `cxl_2_0`, `cxl_3_0`, `nvlink_3_0`, `nvlink_4_0`, `nvlink_c2c`, `ualink_1_0`, `interposer` or `dram_channel` (see [Link Types](#link-types-system-scope)). Absent: the class follows `system.devices[].attachment`. A named class overrides that default with a `[link]` note; a `system.network.links[].type` is the authoritative type when one is declared. Any other word is refused. |
-| `power.link.model` | string | `"simple"` | Link timing model word: `simple` (includes M/D/1 queuing; `md1` is an alias), `analytical` or `detailed`; any other word is refused. Used only when a system is synthesized from top-level keys (`scope: cosim` without declared nodes), where it becomes the system network's model; with declared nodes `system.network.model` governs and this key is not used. |
+| `power.link.model` | string | `"simple"` | Link timing model word: `simple` (includes M/D/1 queuing; `md1` is an alias), `analytical` or `detailed`; any other word is refused. Read only under `scope: cosim`, where it is the system network's model when `system.network.model` is not given (1.12.2: a given `system.network` block is honoured there, as at system scope; giving both model keys with different words is refused, rc 2). Under `scope: system` `system.network.model` governs and this key is not used. |
 | `power.link.base_latency_ns` | double | `500.0` | Per-transaction overhead (ns). When not set, the `interposer` class fills 5 ns and `dram_channel` the part's tRCD + tCL. |
 | `power.link.bandwidth_GBs` | double | `63.0` | Peak bandwidth (GB/s). When not set, `interposer` fills 256 and `dram_channel` the part's channel bandwidth. |
 | `power.link.num_lanes` | int | `16` | Lane count of the link controller McPAT prices (an interposer is counted in 64-lane modules instead). |
@@ -912,7 +922,7 @@ system:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.hosts[].name` | string | - | Host node name (required). |
+| `system.hosts[].name` | string | - | Host node name (required). Under `scope: cosim` the [`host:` block](#host-block-host-scope-cosim) is `system.hosts[0]`, named `host`, and its keys are the keys below written without the `system.hosts[]` prefix (1.12.2). |
 | `system.hosts[].core_type` | string | `"ooo_core"` | Host core type. |
 | `system.hosts[].num_cores` | int | `4` | Number of host cores. |
 | `system.hosts[].frequency_mhz` | double | `3000.0` | Host frequency. |
@@ -1038,11 +1048,24 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   node is refused** (rc 2), naming both; so are the device-scope pairs of
   [Loader Rules](#loader-rules) (`pim.pe.core_type` / `pim.pe.type`,
   `pim.pe.placement` / `pim.placement`, ...) inside a node.
-- **What a node does not give.** Its node keys take the defaults in the table
-  below (`alu_core`, 0 PEs, 1000 MHz, `DDR4`, `BANK`, 32/32/256 KB caches and
-  no L3, ...); every other device-scope key takes the top-level value, else
-  the built-in default -- so a top-level `memory.dram.ddr5_speed_grade` still
-  reaches the device, as before.
+- **What a node does not give.** A per-node key (the set under "Per node"
+  below) that the TOP LEVEL gives is the node's default: a top-level
+  `pim.pe.issue_width`, `pim.pe.branch_predictor`, `pim.pe.type`,
+  `pim.pe.count`, `pim.pe.frequency_mhz` / `noc.clock_mhz`,
+  `memory.technology`, a `pim.pe.*` factor or flag, the `pg` flags or a cache
+  size, `ways`, `banks` or `latency_ns` reaches every device node that does
+  not set it, and a node's own value wins (1.12.2; through 1.12.1 such a key
+  was read at the top level and reached no node). An inherited L2 or L3 size
+  makes the level present when it is above 0, unless `cache.<level>.enabled`
+  is given. A per-node key neither the node nor the top level gives takes the
+  defaults in the table below (`alu_core`, 0 PEs, 1000 MHz, `DDR4`, 32/32/256
+  KB caches and no L3, ...). The node keys the built device carries into the
+  run -- `pim.placement`, `pim.mc.type` / `pes_per_mc`, `noc.topology`,
+  `memory.ports_per_bank` -- take this table's defaults (`BANK`, `simple`, 1,
+  `MESH_2D`, 1) when the node does not give them. Every other device-scope key
+  takes the top-level value, else the built-in default -- so a top-level
+  `memory.dram.ddr5_speed_grade` still reaches the device, as before. A host
+  node takes none of these: its keys are its own `system.hosts[]` keys.
 - **Per node.** The model reads these per node, so each device node may differ:
   the clock, process node, PE type and count, memory technology, the PE's
   `pim.pe.*` datapath and power keys (factors, `operand_width`, `bit_serial`,
@@ -1086,11 +1109,11 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | `system.devices[].name` | string | - | Device name (required). |
 | `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). |
 | `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
-| `system.devices[].pe_type` | string | `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
-| `system.devices[].pim.pe.issue_width` | int | `2` | Per-device in-order issue width (as `pim.pe.issue_width`; the node's own). |
-| `system.devices[].pim.pe.branch_predictor` | string | the core record (`pag`) | Per-device in-order branch predictor, `pag` or `none` (1.12.1; as `pim.pe.branch_predictor`; the node's own). Refused (rc 2) unless the node's PE type (`pe_type` / `pim.pe.type`) is `in_order_core`. |
-| `system.devices[].num_pes` | int | `0` | Number of PEs (compute devices only). Alias of `pim.pe.count` in the node. |
-| `system.devices[].frequency_mhz` | double | `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
+| `system.devices[].pe_type` | string | the top-level `pim.pe.type`, else `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
+| `system.devices[].pim.pe.issue_width` | int | the top-level `pim.pe.issue_width`, else `2` | Per-device in-order issue width (as `pim.pe.issue_width`, 1-6; the node's own). |
+| `system.devices[].pim.pe.branch_predictor` | string | the top-level `pim.pe.branch_predictor`, else the core record (`pag`) | Per-device in-order branch predictor, `pag` or `none` (1.12.1; as `pim.pe.branch_predictor`; the node's own). Refused (rc 2) when the node gives it and the node's PE type (`pe_type` / `pim.pe.type`) is not `in_order_core`. An inherited top-level value names the top-level key in the `[params] <node>: in_order branch predictor` line. |
+| `system.devices[].num_pes` | int | the top-level `pim.pe.count`, else `0` | Number of PEs (compute devices only). Alias of `pim.pe.count` in the node. |
+| `system.devices[].frequency_mhz` | double | the top-level `pim.pe.frequency_mhz` / `noc.clock_mhz`, else `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
 | `system.devices[].tech_node_nm` | int | the device node (`22`) | Device technology node. Alias of `technology.node_nm` in the node. |
 | `system.devices[].memory` | map | - | Device memory: every `memory.*` key (1.11.107; `technology`, `banks` and `ports_per_bank` only before). |
 | `system.devices[].is_default_mem` | bool | `true` | `true`: this PIM device IS the host's main memory (host tech = device tech by construction). `false`: accelerator-side memory only -- the host MUST supply a `system.hosts[].mem` block (else config error). |
@@ -1196,25 +1219,48 @@ system:
 | `system.network.output_buffer_depth` | int | `4` | Output buffer depth. |
 | `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-system-scope) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` is REFUSED (rc 2, "NOT IMPLEMENTED", since 1.11.57): no lane count scales the link; set `bandwidth_GBs`. **Superseded by [`system.bridge`](#host-device-bridge-co-sim)** for the host<->device boundary charge in co-sim; still parsed for backward compatibility. |
 
-### Legacy Host Block (`host`)
+### Host Block (`host`, `scope: cosim`)
 
-These keys describe the host of a system synthesized from top-level keys:
-`scope: cosim` with no declared `system.hosts[]` / `system.devices[]` (the
-device then comes from the top-level `pim:` and `memory:` keys, and the run
-prints a NOTE saying so). With declared nodes `scope: cosim` is refused (since
-1.11.90); a `scope: system` config describes its host under `system.hosts[]`.
+`scope: cosim` is system scope with its two nodes given by the flat keys
+(1.12.2, ruling 2b). The `host:` block is `system.hosts[0]`, named `host`: it
+is read by the code that reads a declared host node, with that node's defaults
+(below; the caches' ways and banks are the cache record's), its refusals (the
+key paths print as `host.<key>`) and its pricing. The top-level device keys
+(`pim`, `memory`, `noc`, `cache`, `core`, `technology`) are the device node,
+named `device`, built where a declared device node is built, so the system
+steps after the load (the DRAM part records, the cache and core records, the
+link class, the device's memory-hierarchy derivation) run on it as on a
+declared node. A `system:` block may carry `frequency_mhz`, `network`,
+`bridge`, `coherence` and `launch`, read as at system scope; a `scope: cosim`
+config that also declares `system.hosts[]` / `system.devices[]` is refused
+(rc 2, since 1.11.90). The system network is `system.network` where given;
+otherwise CROSSBAR with `power.link.model` as its model, plus the host-device
+link from `power.link.*` when a `power.link` block is given and
+`system.network.links` is not. The run prints one NOTE naming the two nodes.
+Through 1.12.1 both nodes were synthesized after the system steps had run:
+the host's cache ways stayed unresolved and every cached host was refused
+("CACTI could not price the host L1D (32 KB -1-way ..."), the device's
+memory hierarchy was not derived, and a given `system.network` topology and
+model were replaced in silence.
+
+Under `scope: device` and `scope: system` the block is not a node: a
+`scope: system` config describes its hosts under `system.hosts[]`, and
+`host.issue_width` / `host.branch_predictor` are refused there (rc 2); the
+other keys fill the fields a run without a host node falls back to.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `host.core_type` | string | `"ooo_core"` | Host core type: `ooo_core`, `in_order_core`, `alu_core` or `null_core`, spelled exactly; anything else is refused (rc 1). `simple_core` (and `Simple` / `simple`) was retired in 1.12.1 and is refused (rc 1) with a message naming the replacement. An `in_order_core` host here takes the core record's branch predictor: `host.branch_predictor` is not a key (refused, rc 2; declare the host under `scope: system` and set `system.hosts[].branch_predictor`). |
+| `host.core_type` | string | `"ooo_core"` | Host core type, as `system.hosts[].core_type` (the same aliases; an unknown word is refused, rc 1). `simple_core` (and `Simple` / `simple`) was retired in 1.12.1 and is refused (rc 1) with a message naming the replacement. Outside `scope: cosim` the word must be spelled exactly (`ooo_core`, `in_order_core`, `alu_core` or `null_core`). |
 | `host.num_cores` | int | `4` | Host core count (see also `workload.mpi_ranks`). |
 | `host.frequency_mhz` | double | `3000.0` | Host clock (MHz). |
 | `host.tech_node_nm` | int | inherits device | Host process node. It sets the same field as `power.host_tech_node_nm` and wins when both are given; absent both, the host inherits the device node. |
 | `host.cache.l1d_kb` | int | `32` | Host L1D size (KB). |
 | `host.cache.l1i_kb` | int | `32` | Host L1I size (KB). |
-| `host.cache.l2_kb` | int | `1024` | Host L2 size (KB). |
-| `host.cache.l3_kb` | int | `8192` | Host L3 size (KB). |
+| `host.cache.l2_kb` | int | `256` | Host L2 size (KB); the declared host node's default since 1.12.2 (the block's own default was 1024). |
+| `host.cache.l3_kb` | int | `0` | Host L3 size (KB); `0` = no L3, the declared host node's default since 1.12.2 (the block's own default was 8192). |
 | `host.memory.technology` | string | `"DDR4"` | Host memory technology, canonicalised as `memory.technology` is (see [Memory Technologies](#memory-technologies)). |
+| `host.issue_width` | int | `2` | An `in_order_core` host's issue width, 1-6, as `system.hosts[].issue_width` (1.12.2; read under `scope: cosim` only). |
+| `host.branch_predictor` | string | the core record (`pag`) | An `in_order_core` host's branch predictor, `pag` or `none`, as `system.hosts[].branch_predictor` (1.12.2; read under `scope: cosim` only; 1.12.1 refused the key in every scope). |
 
 ---
 
@@ -1374,7 +1420,7 @@ the fields the configuration did not set, exactly as naming it does.
 2. **5-param memory override**: All 5 memory params must be provided to override external models. Partial = warning + external model used.
 3. **3-param cache override**: All 3 cache params (`latency_ns`, `energy_nj`, `static_power_mw`) must be provided per level.
 4. **Auto-derivation**: `-1` or unset values are auto-derived from the memory technology via external models.
-5. **Backward compatibility**: `noc.gateways` is the deprecated name of `noc.bridges`, `power.pcie` the legacy name of `power.link`, and `scope: cosim` = `scope: system`. Giving both names of one block or quantity is refused (see [Loader Rules](#loader-rules)). For `system.network.model` and `noc.bridges.*.model`, `analytical`/`md1` are accepted as aliases of `simple`, and `power.link.model` accepts `md1` for `simple`; the top-level `noc.model` accepts only `analytical` | `detailed`.
+5. **Backward compatibility**: `noc.gateways` is the deprecated name of `noc.bridges`, `power.pcie` the legacy name of `power.link`, and `scope: cosim` is `scope: system` with its nodes given by the flat keys (see [Host Block](#host-block-host-scope-cosim)). Giving both names of one block or quantity is refused (see [Loader Rules](#loader-rules)). For `system.network.model` and `noc.bridges.*.model`, `analytical`/`md1` are accepted as aliases of `simple`, and `power.link.model` accepts `md1` for `simple`; the top-level `noc.model` accepts only `analytical` | `detailed`.
 
 ---
 

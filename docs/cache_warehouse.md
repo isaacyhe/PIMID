@@ -64,7 +64,25 @@ highest first: CLI > environment > YAML config > built-in default.**
 
 4. **Defaults**
    - mode: `rw`
-   - dir: `~/.cache/pimid`
+   - dir: `<pimid>/cache`, located from the running binary (since 1.11.52;
+     `~/.cache/pimid` before -- see the per-user store below)
+
+### The pre-1.11.52 per-user store
+
+`~/.cache/pimid` is read as a READ-ONLY fallback: an NVSim query that misses
+the warehouse looks there, and an entry it finds is copied into the warehouse
+("migrated cached characterization into the tree cache"). Since 1.12.2 an
+entry is migrated only if it passes every check a warehouse entry passes and
+is in the current format -- full-precision values (`<value_format>g17`,
+1.11.94) and the subarray geometry (`<subarray_rows>` / `<subarray_cols>`,
+1.11.102). An older entry is not copied: the run prints
+
+    [NVSimWrapper] legacy cache entry <path> is pre-1.11.102 (no subarray geometry) [and 6-significant-digit (...)]: not migrated; recharacterizing
+
+and the query is recharacterized and stored in the warehouse. Through 1.12.1
+the entry was copied first and checked after, so a stale one was planted in
+the warehouse and served from there on (a PCM cell then refused: "NVSim
+reported no wordlines per mat").
 
 ### Back-compat
 
@@ -83,7 +101,7 @@ The generic `PIMID_CACHE_*` variables take precedence over the legacy
 ## On-disk layout
 
 ```
-<root>/                       warehouse root (default ~/.cache/pimid)
+<root>/                       warehouse root (default <pimid>/cache)
 |-- index.jsonl               append-only manifest (one JSON object per line)
 |-- nvsim/                     per-backend artifact subdir
 |   |-- nvm_t1_c8388608_n22.xml
