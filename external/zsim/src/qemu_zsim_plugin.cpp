@@ -936,8 +936,10 @@ static void recordProtocolTailStats() {
         uint64_t finalDev = zinfo->cores[dcid]->getCycles();
         uint64_t tail = (finalDev > g_tailMarker[tid]) ? (finalDev - g_tailMarker[tid]) : 0;
         g_mpiProtocolTailCyc[dcid] = tail;   // receipt only (fixed global array), no ledger move
+        g_mpiRoiCyc[dcid] = g_tailMarker[tid];   // 1.12.3 (ruling 1 (a)): the kernel-window receipt = the marker
         info("Protocol tail: rank %u PE(cid %u) post-ROI inter-PE collective tail %lu cyc "
-             "(device-resident)", tid, dcid, (unsigned long)tail);
+             "(device-resident); kernel window %lu cyc", tid, dcid, (unsigned long)tail,
+             (unsigned long)g_tailMarker[tid]);
     }
 }
 
@@ -1788,6 +1790,15 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                  * (kill-mid-protocol, rounds 4-6), no in_roi freeze (round 7).
                  * The guest runs to natural exit; the exit path dumps. */
                 info("Thread %d: ROI window drained (last rank out)", tid);
+                /* 1.12.3 (ruling 1 (a)): the device kernel window closes HERE,
+                 * at the last rank's closing-barrier marker. Snapshot the
+                 * power-gating residency window (phase index + active phases)
+                 * so the priced window ends with the kernel and the tail that
+                 * follows stays out of it. Bookkeeping only: no dump, no
+                 * termination, no freeze (the 1.8.6 rounds above). */
+                zinfo->pgres.markKernelClose(zinfo->numPhases);
+                info("Thread %d: device kernel window closed at phase %lu (co-sim MPI, the last rank's marker; the tail is outside the priced window) [1.12.3]",
+                     tid, (unsigned long)zinfo->numPhases);
             }
         }
         /* Per-rank ROI baseline (collective-first benchmarks). Some MPI

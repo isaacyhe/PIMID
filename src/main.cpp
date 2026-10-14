@@ -1071,9 +1071,18 @@ struct ZSimParsedOutput {
      * dump's per-core "cycles: N # Simulated ..." lines). The per-core
      * instruction counts feed the derived busy cycles of the pipeline duty.
      * group: 0 = ungrouped, 1 = host cores, 2 = device PEs. */
-    struct CoreRec { int group = 0; uint64_t cycles = 0, instrs = 0, synthetic = 0; };
+    struct CoreRec { int group = 0; uint64_t cycles = 0, instrs = 0, synthetic = 0;
+                     uint64_t tail = 0; };   // 1.12.3: the PE's protocolTail receipt (co-sim MPI), removed from cycles
     std::vector<CoreRec> core_recs;
     uint64_t max_core_cycles = 0;
+    /* 1.12.3 (ruling 1 (a)): a co-sim MPI device PE's 'cycles' runs to guest
+     * exit and holds the post-kernel collective tail (protocolTail, 1.8.7).
+     * The device window is the KERNEL window, cycles minus the tail per PE;
+     * dev_wall_cycles, max_core_cycles and the device core records carry the
+     * trimmed values. These say what was trimmed (all 0 when nothing was). */
+    uint64_t dev_tail_marked = 0;     // device PEs that reported a tail > 0
+    uint64_t dev_tail_max = 0;        // the largest tail removed
+    uint64_t dev_tail_untrimmed = 0;  // max over device PEs of the cycles as dumped
     /* Executed (non-injected) instructions per core, for one group (0 = all). */
     std::vector<uint64_t> realInstrsPerCore(int group) const {
         std::vector<uint64_t> v;
@@ -1452,6 +1461,14 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                         r.synthetic = val;
                     }
                 }
+                /* 1.12.3 (ruling 1 (a)): the PE's post-kernel tail receipt
+                 * (zsim 1.8.7, co-sim MPI only), two lines below its cycles
+                 * in the same stanza. Kept on the core record; applied once
+                 * the dump is read (the maxima are recomputed from the
+                 * trimmed records at the end of this function). */
+                if (key == "protocolTail" && cur_core_rec >= 0 &&
+                    core_group == CoreGroup::DEVICE)
+                    out.core_recs[cur_core_rec].tail = val;
                 /* 1.11.9 (#86, audit): instrs is SUMMED across cores, like every
                  * other activity counter. It used to latch the FIRST core's
                  * value while uops/bbls/branches/syntheticInstrs were all-core
@@ -1627,6 +1644,43 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 if (key == "rd") { out.mem_rd += val; if (cgrp) cgrp->mem_rd += val; }
                 else if (key == "wr") { out.mem_wr += val; if (cgrp) cgrp->mem_wr += val; }
             }
+        }
+    }
+    /* 1.12.3 (ruling 1 (a)): the co-sim MPI device window is the kernel
+     * window. A device PE's 'cycles' runs to guest exit and holds the
+     * post-kernel collective tail (closing barrier, reduce, finalize). The
+     * waiting ranks' clocks follow the global simulation clock there, so the
+     * tail's length is host thread scheduling, not modelled device work: 91
+     * to 98% of the reported device cycles on the smoke cells, and 3.9x
+     * between two runs of one cell with an identical kernel window. Each
+     * marked PE's window is cycles - protocolTail (its closing-barrier
+     * marker, the dump's roiCycles); the device wall clock and the
+     * critical-path max are the maxima of the trimmed records, and every
+     * consumer (McPAT runtime, the fabric window, the memory's integration
+     * time) prices over them. Nothing moves when no tail was reported:
+     * device scope, co-sim OpenMP, the no-offload baseline, an unmarked
+     * rank (no closing barrier) all keep the whole run. */
+    {
+        uint64_t marked = 0, ndev = 0, tmax = 0, untrimmed = 0, dev_max = 0, all_max = 0;
+        for (auto& r : out.core_recs) {
+            if (r.group == 2) { ndev++; untrimmed = std::max(untrimmed, r.cycles); }
+            if (r.group == 2 && r.tail > 0) {
+                marked++; tmax = std::max(tmax, r.tail);
+                r.cycles = (r.cycles > r.tail) ? (r.cycles - r.tail) : 0;
+            }
+            if (r.group == 2) dev_max = std::max(dev_max, r.cycles);
+            all_max = std::max(all_max, r.cycles);
+        }
+        if (marked > 0) {
+            out.dev_tail_marked = marked; out.dev_tail_max = tmax; out.dev_tail_untrimmed = untrimmed;
+            out.max_core_cycles = all_max;
+            out.dev_wall_cycles = dev_max;
+            std::cout << "[cosim] device kernel window: " << dev_max << " cycles = max over "
+                      << ndev << " device PEs of (cycles - protocolTail), " << marked
+                      << " marked; the post-kernel collective tail is outside the priced window"
+                         " (largest tail " << tmax << " cycles; max cycles as dumped " << untrimmed
+                      << "). Energy, the fabric and the residency window are priced over the kernel"
+                         " window (1.12.3, ruling 1 (a))." << std::endl;
         }
     }
     return out;
@@ -20712,6 +20766,15 @@ int main(int argc, char** argv) {
                                 l2.find("# Simulated") != std::string::npos) {
                                 uint64_t v = strtoull(l2.c_str() + cpos + 8, nullptr, 10);
                                 rankCycles.push_back(v);
+                                continue;
+                            }
+                            /* 1.12.3 (ruling 1 (a)): a co-sim MPI device PE's
+                             * tail receipt follows its cycles line in the same
+                             * stanza; the per-rank figure is the kernel window. */
+                            size_t tpos = l2.find("protocolTail: ");
+                            if (tpos != std::string::npos && !rankCycles.empty()) {
+                                uint64_t t = strtoull(l2.c_str() + tpos + 14, nullptr, 10);
+                                if (t > 0 && t < rankCycles.back()) rankCycles.back() -= t;
                             }
                         }
                         uint64_t tot = 0, mx = 0;

@@ -420,23 +420,40 @@ device window**, not a single host-driven offload:
 - **Window close -- ZERO migrations (1.8.6/1.8.7).** No rank migrates back to
   the host at the closing barrier. The ranks are device-resident PEs, so the
   post-ROI inter-PE collective tail (closing barrier + Reduce + Finalize)
-  **executes and prices ON THE DEVICE**: rank 0 collects on its PE and lands at
-  the reduce-completion makespan (the gather is included); ranks `1..N-1` show a
-  deterministic short tail. The host's only remaining role is reading back the
-  result. Removing the device->host closing legs is also what eliminates the
-  1.8.6 exit race by construction (below).
-- **`protocolTail` per-PE stat (1.8.7).** An explicit per-PE receipt = final PE
-  cycles minus that PE's closing-barrier marker. It is visibility only and never
-  alters `cycles`. Emitted **only** in co-sim runs (host + device cores
-  present) and stored in a fixed global array, so device-scope `Core` object
-  size and `initStats` stay byte-identical (a `Core` field or an unconditional
-  stat would shift heap layout and perturb a device PE).
+  **executes ON THE DEVICE**: rank 0 collects on its PE; ranks `1..N-1` wait
+  there. The host's only remaining role is reading back the result. Removing
+  the device->host closing legs is also what eliminates the 1.8.6 exit race by
+  construction (below). Since 1.12.3 the tail is reported and **not priced**
+  (counting contract below).
+- **`protocolTail` and `roiCycles` per-PE stats (1.8.7, 1.12.3).** Two per-PE
+  receipts: `protocolTail` = final PE cycles minus that PE's closing-barrier
+  marker, and `roiCycles` = the marker itself, the PE's kernel-window cycles
+  (`roiCycles + protocolTail == cycles` for every marked rank; `roiCycles` is 0
+  for a rank that was never marked). Neither alters `cycles`. Emitted **only**
+  in co-sim runs (host + device cores present) and stored in fixed global
+  arrays, so device-scope `Core` object size and `initStats` stay
+  byte-identical (a `Core` field or an unconditional stat would shift heap
+  layout and perturb a device PE).
 
 **Counting contract.** Host cores are counted across the task region around the
-kernel; device PEs are counted within their per-rank kernel windows (window open
-at each rank's kernel-entry barrier through the device-resident collective tail).
-The device-side cycles remain identical to a standalone device-scope run (the
-parity invariant).
+kernel. Device PEs are counted within their per-rank kernel windows: the window
+opens at the rank's kernel-entry barrier and closes at its closing-barrier
+marker. The device wall clock is the maximum over PEs of `cycles -
+protocolTail`, and energy, the device fabric and the power-gating residency
+window are priced over it (1.12.3, ruling 1 (a)). The post-kernel collective
+tail is outside the priced window: during it the waiting ranks' clocks follow
+the global simulation clock, so its length is host thread scheduling, not
+modelled device work. On the 1.12.1 and 1.12.2 smoke cells it was 91 to 98% of
+the reported device cycles, and the same HBM3 cell reported 11.8M and 3.1M
+device cycles in two runs with an identical 276k-cycle kernel window. Through
+1.12.2 the tail was inside the window, so every co-sim MPI device cycle and
+energy figure before 1.12.3 carries it. The run prints one `[cosim] device
+kernel window` line naming the trimmed window, the number of marked PEs and
+the largest tail. A rank with no closing barrier after its kernel (bfs) is
+never marked; its window is the whole run, as before. Co-sim OpenMP cells and
+the no-offload baseline report no tail and are unchanged. The device-side
+cycles remain identical to a standalone device-scope run (the parity
+invariant).
 
 ### Fixes folded into the co-sim MPI window (1.8.6/1.8.7)
 

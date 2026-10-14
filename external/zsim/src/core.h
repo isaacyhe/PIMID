@@ -119,6 +119,11 @@ class EventRecorder;
  * it would churn all five core types to buy nothing. The array stays because
  * it is still the right place for a receipt; the overclaim is what changed. */
 extern uint64_t g_mpiProtocolTailCyc[];
+/* 1.12.3 (ruling 1 (a)): the companion receipt -- the PE's cycle count at its
+ * closing-barrier marker, i.e. its KERNEL-WINDOW cycles (cycles - protocolTail).
+ * 0 for a rank that was never marked (no closing barrier: bfs), whose window is
+ * the whole run. Same fixed-array rule as the tail, for the same reason. */
+extern uint64_t g_mpiRoiCyc[];
 
 //Generic core class
 

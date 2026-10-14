@@ -7,6 +7,60 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.3 -- the co-sim MPI device window is the kernel window: the post-kernel collective tail is reported, not priced; CACTI closes its technology tables
+
+Ruling 1 (a) of 2026-10-14, the first of the pre-fleet rulings, and one defect
+the gate found. Each has its own arms in the gate.
+
+**(1) The co-sim MPI device time is the kernel window.** In a co-sim MPI run the
+ranks are the device PEs (1.8.7). A PE's `cycles` ran to guest exit and held
+the post-kernel collective tail (closing barrier, reduce, finalize), during
+which the waiting ranks' clocks follow the global simulation clock. That tail's
+length is host thread scheduling, not modelled device work. On the 1.12.1 and
+1.12.2 smoke cells it was 91 to 98% of the reported device cycles, and the
+co-sim HBM3 MPI stream_triad cell reported 11,781,379 device cycles on 1.12.1
+and 3,056,455 on 1.12.2 with the same 276,395-cycle kernel window. Energy was
+integrated over the same window (157 mJ against 45 mJ for that cell).
+
+Now each marked PE's window is `cycles - protocolTail`, its closing-barrier
+marker. The device wall clock (system scope) and the critical-path max are the
+maxima of the trimmed PE records, so McPAT's runtime, the memory's integration
+time and the device fabric's window end with the kernel. The power-gating
+residency window ends there too: zsim snapshots the phase index and the
+active-phase counters at the last rank's marker, and `pgPhaseWindow` and the
+`pg*ActivePhases` stats read the snapshot. The per-rank `Rank N` and
+`Total: ... (max: N)` summary reports the trimmed figures. The dump carries a
+new per-PE `roiCycles` receipt beside `protocolTail` (`roiCycles +
+protocolTail == cycles` for a marked rank; 0 for an unmarked one), emitted
+only in co-sim runs, as the tail is. The run prints one `[cosim] device kernel
+window` line naming the window, the marked PEs and the largest tail. `cycles`
+itself is unchanged in the dump.
+
+Unchanged: device scope, co-sim OpenMP (no tail), the no-offload baseline, and
+a rank with no closing barrier after its kernel (bfs), whose window stays the
+whole run as before. The emitted zsim configuration is unchanged everywhere.
+
+**(2) CACTI closes its technology tables.** `MemoryType::assign`
+(`external/cacti/parameter.cc`) opened `tech_params/<node>nm.dat` for every
+array it solved and never closed it, one descriptor per call. A host with
+many arrays (an out-of-order core, or a core with an L3) leaked past the
+1024-descriptor soft limit that the cluster's compute nodes now set; the
+next open failed, CACTI reported the table as missing, and McPAT's child
+crashed on the invalid result, so every co-sim and host-baseline cell with
+such a host refused (`[Power] FATAL: ... produced nothing for node 'host'`).
+Found by gate 1221A on the first run after the cluster's reinstall; the
+previous nodes' higher limit had hidden it. The file is closed, and a table
+that cannot be opened is refused by name instead of being read through a
+null handle.
+
+**DATA IMPACT.** Every co-sim MPI cell moves: the 10 stage-1 co-sim MPI cells
+(HBM3 and DDR5, five kernels) and the 5 DDR5-3200 MPI cells of stage 2. Their
+device cycles fall by the tail (10x to 40x on the smoke cells) and their
+energy with them; their host cycles do not move. Every co-sim MPI device cycle
+and energy figure before 1.12.3 carries the tail. Co-sim OpenMP, baseline and
+device-scope cells do not move. Item (2) changes no number: a closed
+descriptor prices the same table.
+
 ## 1.12.2 -- scope: cosim is system scope (the host: block is system.hosts[0]); a top-level per-node key is every device node's default; an out-of-range in-order issue width refuses; the trace path prices the node's McPAT fields and the host's x86-64 registers; the generated topology file and stale legacy cache entries stay out of the way
 
 The "decide again" rulings of 2026-10-07 (user: "these are 1.12.x fixes"). Seven

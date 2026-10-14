@@ -553,6 +553,28 @@ struct GlobSimInfo {
         uint64_t roiAnyCore = 0, roiSharedCache = 0, roiNoc = 0;
         uint64_t roiHostMC = 0, roiDevMC0 = 0;
         uint64_t roiHostUnion = 0;   // 1.11.106
+        /* 1.12.3 (ruling 1 (a), co-sim MPI): the priced window CLOSES at the
+         * last rank's closing-barrier marker, where the device kernel ends.
+         * The post-kernel collective tail (closing barrier, reduce, finalize)
+         * is outside it. markKernelClose() snapshots the phase index and the
+         * active-phase counters at that instant; once taken, the exported pg
+         * stats read the snapshot, so numerator and denominator stay one
+         * window. Never taken outside co-sim MPI with offload: every other
+         * run reproduces the 1.11.18 whole-window values exactly. */
+        volatile bool kernelClosed = false;
+        uint64_t closePhase = 0;
+        uint64_t closeAnyCore = 0, closeSharedCache = 0, closeNoc = 0;
+        uint64_t closeHostMC = 0, closeDevMC0 = 0, closeHostUnion = 0;
+        inline void markKernelClose(uint64_t phase) {
+            closePhase       = phase;
+            closeAnyCore     = anyCore.activePhases;
+            closeSharedCache = sharedCache.activePhases;
+            closeNoc         = noc.activePhases;
+            closeHostMC      = hostMC.activePhases;
+            closeHostUnion   = hostUnion.activePhases;
+            closeDevMC0      = devMC[0].activePhases;
+            kernelClosed     = true;
+        }
         /* 1.11.40 (E17): the gap histograms arm HERE, not at the call sites --
          * there are four of them and a measurement that silently misses one
          * would report a window it did not measure. Same instant, same window

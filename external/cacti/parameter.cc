@@ -552,6 +552,17 @@ void scan_five_input_double_mem_type(char* line, const char* name, const char* u
 void MemoryType::assign(const string & in_file, int tech_flavor, int cell_type) 
 {
 	FILE *fp = fopen(in_file.c_str(), "r");
+	/* 1.12.3: refuse like ScalingFactor::assign instead of reading through a null
+	 * FILE; and the file is CLOSED at the end (below). This loader never closed
+	 * it, so every array solve leaked one descriptor per technology table; an
+	 * out-of-order host with its many arrays leaked past a 1024-descriptor limit
+	 * (the Ubuntu compute nodes' default), the next open failed, the solve was
+	 * reported as "scaling factor file ... is missing", and McPAT crashed on the
+	 * invalid result. */
+	if(!fp)
+	{
+		throw std::runtime_error("CACTI: technology table " + in_file + " is missing");
+	}
 	char line[5000];
 	//char temp_var[5000];
 
@@ -619,7 +630,7 @@ void MemoryType::assign(const string & in_file, int tech_flavor, int cell_type)
     Vbitfloating = Vbitpre*0.7;
 
 	//display(5);
-	
+	fclose(fp);   // 1.12.3: was never closed (one descriptor leaked per call)
 }
 
 void MemoryType::interpolate(double alpha, const MemoryType& mem1, const MemoryType& mem2)

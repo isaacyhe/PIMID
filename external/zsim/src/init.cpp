@@ -1964,10 +1964,15 @@ static void InitGlobalStats() {
      * at roi_begin; pgPhaseWindow is the matching denominator (numPhases
      * minus the ROI phase), so consumers divide two numbers from the same
      * window. Without an ROI every base is 0 and these are the old values. */
+    /* 1.12.3 (ruling 1 (a)): once the co-sim MPI kernel window has closed
+     * (pgres.markKernelClose, the last rank's closing-barrier marker), the
+     * numerators read the snapshot taken there and the denominator below is
+     * the phase index at that instant; the post-kernel tail is outside the
+     * priced window. Unclosed (every other run), the live values as before. */
     auto addPgStat = [](const char* n, const char* d,
-                        volatile uint64_t* cur, uint64_t* base) {
-        auto fn = [cur, base]() -> uint64_t {
-            uint64_t c = *cur, b = *base;
+                        volatile uint64_t* cur, uint64_t* base, uint64_t* close) {
+        auto fn = [cur, base, close]() -> uint64_t {
+            uint64_t c = zinfo->pgres.kernelClosed ? *close : *cur, b = *base;
             return (c > b) ? (c - b) : 0;
         };
         auto* st = new LambdaStat<decltype(fn)>(fn);
@@ -1975,20 +1980,21 @@ static void InitGlobalStats() {
         zinfo->rootStat->append(st);
     };
     addPgStat("pgAnyCoreActivePhases", "Phases with >=1 core retiring (ROI)",
-              &zinfo->pgres.anyCore.activePhases, &zinfo->pgres.roiAnyCore);
+              &zinfo->pgres.anyCore.activePhases, &zinfo->pgres.roiAnyCore, &zinfo->pgres.closeAnyCore);
     addPgStat("pgSharedCacheActivePhases", "Phases with >=1 shared-cache access (ROI)",
-              &zinfo->pgres.sharedCache.activePhases, &zinfo->pgres.roiSharedCache);
+              &zinfo->pgres.sharedCache.activePhases, &zinfo->pgres.roiSharedCache, &zinfo->pgres.closeSharedCache);
     addPgStat("pgNocActivePhases", "Phases with >=1 fabric injection (ROI)",
-              &zinfo->pgres.noc.activePhases, &zinfo->pgres.roiNoc);
+              &zinfo->pgres.noc.activePhases, &zinfo->pgres.roiNoc, &zinfo->pgres.closeNoc);
     addPgStat("pgHostMCActivePhases", "Phases with >=1 host-MC access (ROI)",
-              &zinfo->pgres.hostMC.activePhases, &zinfo->pgres.roiHostMC);
+              &zinfo->pgres.hostMC.activePhases, &zinfo->pgres.roiHostMC, &zinfo->pgres.closeHostMC);
     addPgStat("pgHostUnionActivePhases", "Phases with >=1 core retiring OR a host-MC access (ROI; 1.11.106 R106-8 (b))",
-              &zinfo->pgres.hostUnion.activePhases, &zinfo->pgres.roiHostUnion);
+              &zinfo->pgres.hostUnion.activePhases, &zinfo->pgres.roiHostUnion, &zinfo->pgres.closeHostUnion);
     addPgStat("pgDevMCActivePhases", "Phases with >=1 device-MC access (ROI)",
-              &zinfo->pgres.devMC[0].activePhases, &zinfo->pgres.roiDevMC0);
+              &zinfo->pgres.devMC[0].activePhases, &zinfo->pgres.roiDevMC0, &zinfo->pgres.closeDevMC0);
     {   // the denominator for all of the above
         auto fnw = []() -> uint64_t {
-            uint64_t p = zinfo->numPhases, b = zinfo->pgres.roiPhase;
+            uint64_t p = zinfo->pgres.kernelClosed ? zinfo->pgres.closePhase : zinfo->numPhases;   // 1.12.3
+            uint64_t b = zinfo->pgres.roiPhase;
             return (p > b) ? (p - b) : 0;
         };
         auto* stw = new LambdaStat<decltype(fnw)>(fnw);

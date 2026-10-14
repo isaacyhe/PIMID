@@ -33,6 +33,7 @@
 // Fixed BSS storage (see core.h) -- deliberately NOT a Core member, so Core's
 // object size stays byte-identical and device-scope runs stay bit-identical.
 uint64_t g_mpiProtocolTailCyc[MAX_THREADS] = {0};
+uint64_t g_mpiRoiCyc[MAX_THREADS] = {0};   // 1.12.3: the kernel-window receipt
 
 // ALU Core: Pure computational core with optional PE memory interface
 
@@ -108,6 +109,21 @@ void ALUCore::initStats(AggregateStat* parentStat) {
         auto protocolTailStat = makeLambdaStat(xt);
         protocolTailStat->init("protocolTail", "Post-ROI MPI inter-PE collective tail cycles (device-resident)");
         coreStat->append(protocolTailStat);
+        /* 1.12.3 (ruling 1 (a)): the kernel-window receipt beside the tail,
+         * in the SAME basis as 'cycles' (ROI-relative: the opener's pre-ROI
+         * cycles are rebased out of its 'cycles' line, so the receipt is
+         * derived from that line, not from the raw marker). For a marked
+         * rank roiCycles + protocolTail == cycles exactly; 0 for an unmarked
+         * rank. The consumer (src/main.cpp) prices the device over cycles
+         * minus the tail; this line lets a reader of the dump see the window. */
+        auto xr = [this, sid]() -> uint64_t {
+            if (g_mpiRoiCyc[sid] == 0) return 0;   // never marked
+            uint64_t c = curCycle - roiBaseCycle, t = g_mpiProtocolTailCyc[sid];
+            return (c > t) ? (c - t) : 0;
+        };
+        auto roiCyclesStat = makeLambdaStat(xr);
+        roiCyclesStat->init("roiCycles", "Kernel-window cycles: PE cycles at its closing-barrier marker (= cycles - protocolTail; 0 = unmarked rank, window is the whole run)");
+        coreStat->append(roiCyclesStat);
     }
 
     parentStat->append(coreStat);
