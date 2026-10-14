@@ -243,7 +243,7 @@ Per-tech defaults (BW reuses the simulator's channel rates):
 | DDR3 | native | pcb | 12.8 GB/s | 20 ns | 1 | 200 ns |
 | DDR4 | native | pcb | 19.2 GB/s | 20 ns | 1 | 200 ns |
 | DDR5 | native | pcb | 25.6 GB/s | 18 ns | 1 | 200 ns |
-| LPDDR5 | native | pcb | 12.8 GB/s | 12 ns | 1 | 200 ns |
+| LPDDR5 | native | pcb | 12.8 GB/s | 12 ns | 4 | 200 ns |
 | GDDR6 | native | pcb | 32 GB/s | 10 ns | 2 | 200 ns |
 | HBM2 | native | interposer | 38.4 GB/s | 30 ns | 8 | 230 ns |
 | HBM3 | native | interposer | 51.2 GB/s | 30 ns | 16 | 335 ns |

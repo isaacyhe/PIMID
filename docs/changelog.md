@@ -7,6 +7,43 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.4 -- the LPDDR5 part record is the four-channel package: four independent x16 channels, one die each
+
+Ruling 2 (c) of 2026-10-15, the second of the pre-fleet rulings. One record
+field moves; the gate shows every consequence.
+
+**(1) The LPDDR5 record's `channels` is 4.** The record
+(`params/dram/lpddr5.yaml`) instantiated one x16 channel: a bare 8 Gb die,
+1 GB, 12.8 GB/s, 16 banks. No LPDDR5 part is deployed that way; the package
+the IDD row's own sheet describes (Micron Y52P, its x64 packages) carries four
+independent 16-bit channels, one die each (JESD209-5B multi-channel package).
+The record now states 4, and everything that reads the channel count follows,
+as it already did for DDR5 (two sub-channels), GDDR6 (2) and HBM (8, 16):
+zsim builds four Ramulator controllers, the aggregate bandwidth is
+4 x 16 bits x 6400 MT/s = 51.2 GB/s, the capacity 4 GiB, the die count and the
+DRAM die area 4, the background and refresh populations 4, the co-sim
+`dram_channel` link class 51.2 GB/s, and the placement frame 64 bank units
+(16 per channel). The bank itself does not change: 2^15 rows x 2^10 columns x
+16 bits = 64 MiB, the same bank as DDR4's and DDR5's.
+
+What the single channel did to the fleet: a 16-PE BANK cell had one bank unit
+per PE, 64 MiB, and the MPI bfs cell at 5,000,000 vertices (200 MB per rank)
+refused at data preparation, the only refusing cell of the corpus. With 64
+units each PE owns 4, 256 MiB, and the cell fits. No workload size changes.
+
+Unchanged: every other technology (their records and emitted configurations
+are identical), the LPDDR5 timing preset and IDD row (per device = per
+channel; the four dies are four background units), the bank organisation and
+the placement ladder. The tables in `docs/dram_specs.md` and `docs/cosim.md`
+carry the count.
+
+**DATA IMPACT.** Every LPDDR5 cell moves: the 10 fig3 LPDDR5 cells of stage 2
+(five kernels x OpenMP and MPI, 16 PEs at BANK). Their memory system has four
+times the capacity, bandwidth, die area and background power of the one-die
+record, and their cycles move with the channel parallelism. The LPDDR5 MPI
+bfs cell runs at the corpus size instead of refusing. No cell of another
+technology moves.
+
 ## 1.12.3 -- the co-sim MPI device window is the kernel window: the post-kernel collective tail is reported, not priced; CACTI closes its technology tables
 
 Ruling 1 (a) of 2026-10-14, the first of the pre-fleet rulings, and one defect

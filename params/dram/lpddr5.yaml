@@ -16,7 +16,7 @@ density_mb_per_mm2: 46.566621191450665  # measured FULL-DIE density, user capaci
 density_source: "Samsung D1z 16 Gb LPDDR5, 16 Gb / 43.98 mm^2 (TechInsights) x 128"
 organization_preset: "LPDDR5_8Gb_x16"   # Ramulator org preset the run instantiates (default knobs)
 timing_preset: "LPDDR5_6400"         # Ramulator timing preset (default knobs)
-channels: 1                   # channels the preset instantiates
+channels: 4                   # 1.12.4 (ruling 2 (c), 2026-10-15): the deployed package, four independent x16 channels, one die each (JESD209-5B multi-channel package; the IDD row's own sheet lists the x64 four-channel packages). 1 was the bare die: 1 GB, 12.8 GB/s, 16 banks, one bank per PE in a 16-PE BANK cell
 channel_width_bits: 16   # 1.11.101 (step 2): JESD209-5B 2.x: a 16-bit channel served by one x16 die
 refresh_ladder:                    # JEDEC JESD209-5: derated refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
