@@ -887,8 +887,9 @@ system:
   frequency_mhz: 2000
   cache_line_size: 64
   tech_node_nm: 22
-  hosts: [...]
-  devices: [...]
+  hosts: [...]       # processors
+  devices: [...]     # memories with PEs (PIM devices)
+  memories: [...]    # memories without PEs (1.12.7)
   network: {...}
 ```
 
@@ -1011,11 +1012,16 @@ Ignored (with a warning) when the device is `is_default_mem: true`.
 
 ### Devices
 
+A device is a memory with PEs (1.12.7: the list says what a node is). A
+`devices[]` entry with no PEs is refused (rc 2), naming `system.memories[]` as
+the place for a memory without PEs. The `type` key is retired: `type: compute`
+is dropped with a warning, and a `type: memory` entry left here is read as a
+memory, moved to `system.memories[]` with a warning naming its new place.
+
 ```yaml
 system:
   devices:
     - name: hbm_pim
-      type: compute            # compute (has PEs) or memory (no PEs)
       attachment: internal     # internal or external; the default link class follows
       pe_type: alu_core
       num_pes: 64
@@ -1107,8 +1113,8 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   cache and CACTI search -- write them at the top level), `cache.l2.count` (a
   node is built with one L2 per PE), `cache.<level>.energy_nj` /
   `static_power_mw` (a node's caches are CACTI-priced) and `cache.pg` (a
-  node's caches have no gating flag of their own). A memory-only device
-  (`type: memory`) has no PEs, fabric or caches: `pe_type`, `num_pes` and any
+  node's caches have no gating flag of their own). A memory
+  (`system.memories[]`; `type: memory` through 1.12.6) has no PEs, fabric or caches: `pe_type`, `num_pes` and any
   `pim`, `noc`, `cache` or `core` key on it is dropped with a `[config]
   WARNING` naming the node and the keys, and the run continues (1.12.6,
   ruling 1; refused 1.11.107 to 1.12.5). A `pim` block on a host node (a
@@ -1118,7 +1124,7 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `system.devices[].name` | string | - | Device name (required). |
-| `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). On a `memory` device `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` are ignored with a warning (1.12.6). |
+| `system.devices[].type` | string | retired | Retired (1.12.7): the list says what a node is. `type: compute` is dropped with a warning; a `type: memory` entry under `devices` is read as a memory and moved to `system.memories[]` with a warning naming its place; any other word is dropped as a retired key. Through 1.12.6 it chose between a compute device and a memory-only device. |
 | `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
 | `system.devices[].pe_type` | string | the top-level `pim.pe.type`, else `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
 | `system.devices[].pim.pe.issue_width` | int | the top-level `pim.pe.issue_width`, else `2` | Per-device in-order issue width (as `pim.pe.issue_width`, 1-6; the node's own). |
@@ -1133,6 +1139,37 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | `system.devices[].cache` | map | - | Device caches: the flat keys `l1d_kb`, `l1i_kb`, `l2_kb`, `l3_kb` and per level `<level>_latency_ns`, `<level>_ways`, `<level>_banks` (as the host's), or their device-scope forms `cache.<level>.size_kb` / `.ways` / `.banks` / `.latency_ns` and `cache.l2.enabled` / `cache.l3.enabled` (1.11.107; one form per quantity). A level is present when its size is above 0; `cache.l3.enabled: true` needs `cache.l3.size_kb`. Since 1.11.107 a device node's L3 is priced by McPAT as well as built (it was built and left out of the node's McPAT description). |
 | `system.devices[].workload` | map | - | Per-device workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
 | `system.devices[].workload.env` | map | `{}` | As `system.hosts[].workload.env`: joins the one simulated process's environment (1.11.106). |
+
+### Memories
+
+A memory is a memory without PEs (1.12.7; the `type: memory` device of
+1.11.90 to 1.12.6, read by the same code). It takes its node keys and every
+`memory.*` key; `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` on it are
+dropped with a warning (1.12.6). This build prices one memory per role, so a
+memory beside a device that carries memory is refused by name (multi-memory
+topologies are version 2 work): the list is accepted by the loader and priced
+where the model has a memory for it.
+
+```yaml
+system:
+  memories:
+    - name: far_dram
+      attachment: external
+      tech_node_nm: 22
+      memory:
+        technology: DDR5
+        banks: 16
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `system.memories[].name` | string | - | Memory name (required). |
+| `system.memories[].attachment` | string | `"external"` | `internal` or `external`, as `system.devices[].attachment`. |
+| `system.memories[].is_default_mem` | bool | `true` | As `system.devices[].is_default_mem`. |
+| `system.memories[].frequency_mhz` | double | `1000` | The node clock (the memory's own, for its timing conversions). |
+| `system.memories[].tech_node_nm` | int | `system.tech_node_nm` (`22`) | Process node. Alias of `technology.node_nm` in the node. |
+| `system.memories[].memory` | map | - | Every `memory.*` key, as in a device node. |
+| `system.memories[].workload` | map | - | Accepted as on a device node; a memory runs nothing. |
 
 ### Host-Device Bridge (co-sim)
 
@@ -1563,7 +1600,6 @@ system:
         l3_kb: 32768
   devices:
     - name: hbm_pim
-      type: compute
       attachment: internal     # on-package: the default link class is interposer
       pe_type: alu_core
       num_pes: 64
@@ -1575,7 +1611,6 @@ system:
       workload:
         binary: ./pim_kernel
     # - name: sram_accel       # a second device is refused in this build
-    #   type: compute
     #   attachment: internal
     #   pe_type: alu_core
     #   num_pes: 16

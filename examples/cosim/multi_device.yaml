@@ -54,7 +54,6 @@ system:
 
   devices:
     - name: device0
-      type: compute
       attachment: external   # 1.11.106: internal | external (the link class follows the attachment; name one with power.link.link_type)
       frequency_mhz: 2000
       tech_node_nm: 22
@@ -73,7 +72,6 @@ system:
 
     # v2 scope -- refused by resolveMemoryTopology() in this build (see header):
     # - name: device1
-    #   type: compute
     #   attachment: pcie_gen5
     #   frequency_mhz: 2000
     #   tech_node_nm: 22

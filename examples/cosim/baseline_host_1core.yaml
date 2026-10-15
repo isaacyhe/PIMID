@@ -38,7 +38,6 @@ system:
 
   devices:
     - name: device
-      type: compute
       attachment: internal
       frequency_mhz: 2000
       tech_node_nm: 22

@@ -36,7 +36,6 @@ system:
 
   devices:
     - name: device
-      type: compute
       attachment: internal     # on-package; use links for pcie/interposer
       frequency_mhz: 500     # device: DRAM-periphery silicon. Was 2000 --
                              # the host clock copied down. No DRAM-periphery

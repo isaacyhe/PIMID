@@ -1906,6 +1906,9 @@ static const char* kSchemaPaths[] = {
     "system.devices[].cache.l2_banks", "system.devices[].cache.l2_kb", "system.devices[].cache.l2_latency_ns", "system.devices[].cache.l2_ways",
     "system.devices[].cache.l3_banks", "system.devices[].cache.l3_kb", "system.devices[].cache.l3_latency_ns", "system.devices[].cache.l3_ways",
     "system.devices[].workload.args", "system.devices[].workload.binary", "system.devices[].workload.env",
+    /* system.memories[] (1.12.7): a memory without PEs -- its node keys and every memory.* path (schemaPathsAll). */
+    "system.memories[].attachment", "system.memories[].frequency_mhz", "system.memories[].is_default_mem", "system.memories[].name",
+    "system.memories[].tech_node_nm", "system.memories[].workload.args", "system.memories[].workload.binary", "system.memories[].workload.env",
     "system.hosts[].branch_predictor", "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
     "system.hosts[].cache.l1i_kb", "system.hosts[].cache.l1i_latency_ns", "system.hosts[].cache.l1i_ways", "system.hosts[].cache.l2_banks", "system.hosts[].cache.l2_kb",
     "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
@@ -1923,7 +1926,7 @@ static const char* kSchemaPaths[] = {
     "workload.args", "workload.binary", "workload.env", "workload.mpi_ranks", "workload.mpich_path", "workload.type",
 };
 static const char* kSchemaFreeMaps[] = { "workload.env", "power.mcpat_overrides", "pim.mapping.map", "pim.mc.groups",
-                                         "system.hosts[].workload.env", "system.devices[].workload.env" };
+                                         "system.hosts[].workload.env", "system.devices[].workload.env", "system.memories[].workload.env" };
 /* 1.11.107 (ruling R106-7 (c), ONE VOCABULARY): a system.devices[] node takes every device-scope key -- each
  * pim / memory / noc / cache / core / technology path above, under the node -- besides its node keys, and the two
  * device-scope free maps are free there too. Generated once from the lists above, so a key added to device scope
@@ -1939,6 +1942,8 @@ static const std::vector<std::string>& schemaPathsAll() {
         for (const char* sp : kSchemaPaths) all.push_back(sp);
         for (const char* sp : kSchemaPaths)
             if (schemaIsDeviceScopePath(sp)) all.push_back(std::string("system.devices[].") + sp);
+        for (const char* sp : kSchemaPaths)   // 1.12.7: a memory takes every memory.* path
+            if (std::string(sp).compare(0, 7, "memory.") == 0) all.push_back(std::string("system.memories[].") + sp);
     }
     return all;
 }
@@ -16865,6 +16870,45 @@ static void yamlLeafPathsFlat(const YAML::Node& n, const std::string& path, std:
     }
     out.push_back(path);
 }
+/* 1.12.7 (the user, 2026-10-15, ruling 4 of the configuration-shape rulings: "no type, but have host, device,
+ * memory"; "device is a memory with pe, memory is a memory without pe"). The system: block has three lists --
+ * hosts, devices (memories with PEs), memories (memories without PEs) -- and the list says what a node is, so
+ * system.devices[].type is retired: a type: compute key is dropped with a WARNING; a type: memory entry left
+ * under devices is read as a memory, moved to system.memories[] with a WARNING naming its new place (the
+ * realistic reading the user chose over refusing the file); any other word is a retired key and is dropped
+ * the same way. Runs before dropPeKeysOnNonPeNodes (so a moved memory's PE keys drop as on any memory) and
+ * before the key schema. Through 1.12.6 type chose the kind and an unknown word was refused. */
+static void retireDeviceTypeKey(YAML::Node& yaml_cfg) {
+    if (!yaml_cfg.IsMap() || !yaml_cfg["system"] || !yaml_cfg["system"].IsMap()) return;
+    YAML::Node sys = yaml_cfg["system"];
+    if (!sys["devices"] || !sys["devices"].IsSequence()) return;
+    YAML::Node kept(YAML::NodeType::Sequence);
+    bool changed = false;
+    int i = -1;
+    for (YAML::Node d : sys["devices"]) {
+        ++i;
+        const std::string dpath = "system.devices[" + std::to_string(i) + "]";
+        if (!d.IsMap() || !d["type"]) { kept.push_back(d); continue; }
+        const std::string t = d["type"].IsScalar() ? d["type"].Scalar() : std::string("<map>");
+        d.remove("type");
+        changed = true;
+        if (t == "memory") {
+            if (!sys["memories"] || !sys["memories"].IsSequence()) sys["memories"] = YAML::Node(YAML::NodeType::Sequence);
+            const size_t k = sys["memories"].size();
+            sys["memories"].push_back(d);
+            std::cerr << "[config] WARNING: " << dpath << " gives type: memory. A memory without PEs is written under"
+                         " system.memories[] (1.12.7: the list says what a node is, type is retired); the node is read as"
+                         " system.memories[" << k << "]. Move it there and drop the type key." << std::endl;
+            continue;
+        }
+        kept.push_back(d);
+        std::cerr << "[config] WARNING: " << dpath << ".type is retired (1.12.7): the list says what a node is -- a"
+                     " system.devices[] entry is a memory with PEs, a system.memories[] entry a memory without. The key"
+                     " (type: " << t << ") is ignored; remove it." << std::endl;
+    }
+    if (!changed) return;
+    if (kept.size() > 0) sys["devices"] = kept; else sys.remove("devices");
+}
 static void dropPeKeysOnNonPeNodes(YAML::Node& yaml_cfg) {
     if (!yaml_cfg.IsMap() || !yaml_cfg["system"] || !yaml_cfg["system"].IsMap()) return;
     YAML::Node sys = yaml_cfg["system"];
@@ -16889,13 +16933,12 @@ static void dropPeKeysOnNonPeNodes(YAML::Node& yaml_cfg) {
             if (h.IsMap()) drop(h, "system.hosts[" + std::to_string(i) + "]", {"pim"}, "is a host: it has no PEs and no placement level");
         }
     }
-    if (sys["devices"] && sys["devices"].IsSequence()) {
+    if (sys["memories"] && sys["memories"].IsSequence()) {   // 1.12.7: the memories list (a type: memory device through 1.12.6)
         int i = -1;
-        for (YAML::Node d : sys["devices"]) {
+        for (YAML::Node m : sys["memories"]) {
             ++i;
-            if (!d.IsMap() || !d["type"] || !d["type"].IsScalar() || d["type"].Scalar() != "memory") continue;
-            drop(d, "system.devices[" + std::to_string(i) + "]", {"pim", "pe_type", "num_pes", "noc", "cache", "core"},
-                 "is a memory-only device (type: memory): it has no PEs, fabric or caches");
+            if (m.IsMap()) drop(m, "system.memories[" + std::to_string(i) + "]", {"pim", "pe_type", "num_pes", "noc", "cache", "core"},
+                                "is a memory (system.memories[]): it has no PEs, fabric or caches");
         }
     }
 }
@@ -17274,7 +17317,8 @@ int main(int argc, char** argv) {
     if (!config_file.empty()) {
         try {
             YAML::Node yaml_cfg = YAML::LoadFile(config_file);
-            dropPeKeysOnNonPeNodes(yaml_cfg);   // 1.12.6 (ruling 1): PE keys on a host or a memory-only device, ignored with a warning
+            retireDeviceTypeKey(yaml_cfg);      // 1.12.7 (ruling 4): the list says what a node is; type: memory entries move to memories[]
+            dropPeKeysOnNonPeNodes(yaml_cfg);   // 1.12.6 (ruling 1): PE keys on a host or a memory, ignored with a warning
 
             /* 1.11.76 (audit round 6, R6-7): A MISSPELLED SECTION USED TO BE
              * SILENT, AND IT DISCARDS EVERYTHING INSIDE IT.
@@ -18342,9 +18386,12 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                // Parse devices
-                if (sys["devices"]) {
-                    int dev_idx = -1;   // 1.11.90: key paths in messages
+                // Parse devices and memories (1.12.7: two lists; a device is a memory with PEs, a memory one without)
+                if (sys["devices"] || sys["memories"]) {
+                    struct NodeEntry { YAML::Node d; std::string dpath; bool compute; };
+                    std::vector<NodeEntry> entries;   // devices first, then memories; key paths in messages (1.11.90)
+                    { int i = -1; if (sys["devices"]) for (const auto& e : sys["devices"]) entries.push_back({e, "system.devices[" + std::to_string(++i) + "]", true}); }
+                    { int i = -1; if (sys["memories"]) for (const auto& e : sys["memories"]) entries.push_back({e, "system.memories[" + std::to_string(++i) + "]", false}); }
                     /* 1.12.2 (ruling 7a, user 2026-10-07): a per-node key the TOP LEVEL gives (each
                      * device-scope path whose canonical form nodePathPerNode() lists: pim.pe.type /
                      * count / frequency_mhz / issue_width / branch_predictor / the factors / ...,
@@ -18362,19 +18409,14 @@ int main(int argc, char** argv) {
                     for (const char* sec : {"pim", "memory", "noc", "cache", "core", "technology"})
                         nodeLeafTexts(yamlAt(yaml_cfg, sec), sec, top_keys);
                     auto topGives = [&](const char* canon) { return top_keys.count(canon) > 0; };
-                    for (const auto& d : sys["devices"]) {
-                        const std::string dpath = "system.devices[" + std::to_string(++dev_idx) + "]";
+                    for (const auto& ent : entries) {
+                        const YAML::Node& d = ent.d;
+                        const std::string& dpath = ent.dpath;
                         UnifiedConfig::SystemNode node;
-                        node.name = yamlString(d["name"], "device" + std::to_string(config.system_nodes.size()), dpath + ".name");
+                        node.name = yamlString(d["name"], (ent.compute ? "device" : "memory") + std::to_string(config.system_nodes.size()), dpath + ".name");
                         node.role = UnifiedConfig::SystemNode::DEVICE;
-
-                        std::string dtype = yamlString(d["type"], "compute", dpath + ".type");
-                        if (dtype != "compute" && dtype != "memory")   // 1.11.90
-                            refuseEnum(dpath + ".type", dtype, "compute, memory",
-                                       "build a compute device");
-                        node.device_type = (dtype == "memory") ?
-                            UnifiedConfig::SystemNode::MEMORY_ONLY :
-                            UnifiedConfig::SystemNode::COMPUTE;
+                        // 1.12.7: the list says what a node is (type: is retired, retireDeviceTypeKey)
+                        node.device_type = ent.compute ? UnifiedConfig::SystemNode::COMPUTE : UnifiedConfig::SystemNode::MEMORY_ONLY;
 
                         std::string attach = yamlString(d["attachment"], "external", dpath + ".attachment");
                         if (attach != "internal" && attach != "external")   // 1.11.106 (census S1)
@@ -18545,6 +18587,14 @@ int main(int argc, char** argv) {
                             if (parseDevicePimBlock(dn, *dev, nsc) != 0) return 1;
                             if (parseDeviceCoreCacheNocBlocks(dn, *dev, nsc) != 0) return 1;
                             if (parseDeviceMemoryBlocks(dn, *dev, nsc) != 0) return 1;
+                        }
+                        if (compute && dev->num_pes <= 0) {   // 1.12.7 (the user: "device is a memory with pe"): a device without PEs is a memory
+                            std::cerr << "[config] FATAL: " << dpath << " has no PEs (pim.pe.count / num_pes is " << dev->num_pes
+                                      << "). A device is a memory with PEs; a memory without PEs is written under system.memories[]"
+                                         " (1.12.7, the list says what a node is). Give " << dpath << ".num_pes (or pim.pe.count), or"
+                                         " move the node to system.memories[]. Through 1.12.6 such a node loaded as a device with 0 PEs, or tripped a later"
+                                         " refusal about a key no built device would read." << std::endl;
+                            std::exit(2);
                         }
                         /* 1.12.5 (ruling F3 (a), user 2026-10-15): the node keys the built device
                          * carries into the run (pim.placement.level, pim.mc.type, pim.mc.pes_per_mc,

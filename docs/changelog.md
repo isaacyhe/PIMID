@@ -7,6 +7,33 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.7 -- three node lists: hosts, devices, memories; the type key is retired
+
+Ruling 4 of the configuration-shape rulings of 2026-10-15 (the user: "no type, but have host, device, memory"; "device is a
+memory with pe, memory is a memory without pe"), with its two follow-up rulings (the realistic reading on both).
+
+**(1) `system.memories[]` is the list of memories without PEs.** A memory node takes `name`, `attachment`, `is_default_mem`,
+`frequency_mhz`, `tech_node_nm`, every `memory.*` key and `workload`. It is the node `type: memory` declared through 1.12.6,
+read by the same code (a memory-only device node). `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` on it are dropped
+with the 1.12.6 warning (a memory has no PEs, fabric or caches).
+
+**(2) `system.devices[].type` is retired: the list says what a node is.** A `type: compute` key is dropped with a `[config]
+WARNING` naming the node. A `type: memory` entry left under `devices` is read as a memory, moved to `system.memories[]` with
+a WARNING naming its new place (its PE keys then drop as on any memory). Any other word is a retired key and is dropped the
+same way. Through 1.12.6 `type` chose between the two kinds and an unknown word was refused.
+
+**(3) A device is a memory with PEs: a `devices[]` entry with no PEs is refused** (rc 2), naming the node, `num_pes` /
+`pim.pe.count` and `system.memories[]` as the place for a memory without PEs. Through 1.12.6 a compute device with 0 PEs
+loaded (the node default), or tripped a later refusal about a key no built device would read.
+
+The one-memory-per-role bound is unchanged: a memory beside a device that carries memory is still refused by name
+(multi-memory topologies are version 2 work), so `memories:` is accepted by the loader and priced only where the model has
+a memory for it.
+
+**Data impact.** None. Every corpus co-sim cell and every co-sim example carried `type: compute`; the migrated copies drop the
+line and emit identically (gate E1), and the originals load with one warning and the same emission (gate E2). No corpus cell
+has a memory without PEs or a device without PEs.
+
 ## 1.12.6 -- a placement level on a host or on a memory-only device is ignored with a warning
 
 Ruling 1 of the configuration-shape rulings of 2026-10-15 (the user: "pl for memory and host should be ignored
