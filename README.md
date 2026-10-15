@@ -1,10 +1,10 @@
-# PIMID: Processing-In-Memory Infrastructure for Design-space Exploration
+# PIMID: A Full-System Simulator with Intricacy and Diversity for Processing-in-Memory
 
 <img src="assets/qr-code.png" alt="PIMID repository QR code" width="130" align="right" />
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.12-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.13-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -37,6 +37,30 @@ McPAT, and Garnet for timing, power, and area.
 - **48 benchmarks** across 7 suites; any of them runs in co-sim (no
   co-sim-specific workloads) -> [docs/benchmarks.md](docs/benchmarks.md)
 - **Power/area** via McPAT -> [docs/power.md](docs/power.md)
+
+## What 1.12 simulates, and what 1.13 adds
+
+Every hardware block is written under `system:` as `hosts`, `devices` (a
+memory with PEs) and `memories` (a memory without PEs). 1.12 simulates these
+three system shapes:
+
+| Shape | Nodes | What runs |
+|---|---|---|
+| Device run | one device | the PIM device alone; its memory is the device's |
+| Co-simulation | one host + one device | the device is the host's main memory |
+| Co-simulation with host memory | one host + one memory + one device | the memory is the host's own main memory, with its own technology and DDR5 speed grade; the device is the PIM accelerator |
+
+Each device and memory may declare its address window, and the host and the
+device what they may address (`address`, `allowed_address_ranges`, 1.12.12);
+without them the memory takes the first 4 GB window and the device the next.
+See [docs/yaml_reference.md](docs/yaml_reference.md).
+
+**Multi-node systems are 1.13.** Several hosts, several devices, several
+memories, a host-only system (a host with no device), and a device or host
+reaching other nodes' memory beyond the 1.12 wiring are provided in 1.13 (the
+multi-host / multi-device / multi-memory implementation). 1.12 refuses such a
+configuration by name, with a message naming 1.13, rather than run it on a
+model that does not exist yet.
 
 ## Project layout
 

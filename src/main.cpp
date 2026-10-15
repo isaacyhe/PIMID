@@ -7295,16 +7295,23 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
 static void normalizeSystemConfig(UnifiedConfig& config) {
     if (config.system_nodes.empty()) return;
 
-    // Validate: hosts must have at least one accompanying memory device
-    bool has_host = false, has_device = false;
+    /* 1.12.13 (the user: "unsupported conf (for 1.13) just got refused"): a host needs a device (a memory with PEs). A host
+     * alone, or a host with only system.memories[] entries, is a host-only system, whose run is 1.13 work (the multi-host /
+     * multi-device / multi-memory implementation). Through 1.12.12 a host with a memory and no device loaded and emitted a
+     * system the 1.12 model does not define, and a bare host stopped with rc 1 and no word of 1.13. */
+    bool has_host = false, has_compute = false, has_memory = false;
     for (const auto& n : config.system_nodes) {
         if (n.role == UnifiedConfig::SystemNode::HOST) has_host = true;
-        if (n.role == UnifiedConfig::SystemNode::DEVICE) has_device = true;
+        else if (n.device_type == UnifiedConfig::SystemNode::COMPUTE) has_compute = true;
+        else has_memory = true;
     }
-    if (has_host && !has_device) {
-        std::cerr << "ERROR: A host must be accompanied by at least one memory device.\n"
-                  << "  Add a device entry under 'system.devices' in your YAML config.\n";
-        exit(1);
+    if (has_host && !has_compute) {
+        std::cerr << "[config] FATAL: this system has a host and no device (no system.devices[] entry, a memory with PEs)"
+                  << (has_memory ? ", only system.memories[]" : "") << ": a host-only system is 1.13 work (the multi-host /"
+                     " multi-device / multi-memory implementation). 1.12 runs one device alone, or one host with one device,"
+                     " optionally with the host's own main memory as one system.memories[] entry (1.12.13). Add a device under"
+                     " system.devices." << std::endl;
+        exit(2);
     }
 
     // 1. Compute reference frequency (max of all)
@@ -15769,7 +15776,7 @@ void printUsage(const char* program_name) {
 }
 
 void printVersion() {
-    std::cout << "PIMID - Processing-In-Memory Infrastructure for Design-space exploration" << std::endl;
+    std::cout << "PIMID: A Full-System Simulator with Intricacy and Diversity for Processing-in-Memory" << std::endl;   // 1.12.13: the papers' title
     std::cout << "Version " << PIMID_VERSION << std::endl;
     std::cout << std::endl;
     std::cout << "Integrated External Models:" << std::endl;

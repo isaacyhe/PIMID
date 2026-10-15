@@ -388,11 +388,16 @@ regenerated. Device-scope sweeps were never affected.
   recorder assertion. The 1.7.7 one-line fix advances `memRespCycle` by the
   same skew, so the cursor and the recorded clock stay consistent. (The
   busy-wait / boundary-charge accounting is core-type agnostic.)
-- **Single device in 1.7.x.** One PIM device (plus an optional separate
-  `host.mem`). Multiple attached memory devices are a later increment; the
-  schema already generalizes but the plumbing is not built, and a second
-  device node is refused at load (1.11.45: this build prices one memory per
-  role).
+- **One host, one device, at most one host memory (1.12).** A co-simulation
+  is one host and one PIM device, optionally with the host's own main memory
+  as one `system.memories[]` entry (1.12.10). Multi-node systems -- several
+  hosts, devices or memories, a host-only system, a node reaching another
+  node's memory beyond the 1.12 wiring -- are provided in 1.13 (the
+  multi-host / multi-device / multi-memory implementation); 1.12 refuses
+  them at load, naming 1.13. The address keys (`address`,
+  `allowed_address_ranges`, 1.12.12) are accepted and checked now, and
+  enforced in 1.13. See the README, "What 1.12 simulates, and what 1.13
+  adds".
 - **Detailed host NoC not wired** (decision 3 note above): the host fabric is
   the analytic crossbar; any other host topology or model warns (1.11.106) and
   runs the crossbar. A host NoC model is a planned 1.1x release.

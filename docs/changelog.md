@@ -7,6 +7,33 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.13 -- the end of 1.12: what 1.12 simulates is documented, 1.13 configurations are refused, and the image is built from this release
+
+The last 1.12 release (the user: "ship the conf fix, then ship the docker file polish again, then the docker image";
+"this will be the end of 1.12"). The published image `ghcr.io/isaacyhe/pimid` is built from this release and tagged
+`1.12.13` and `latest`.
+
+**(1) What 1.12 simulates, and what 1.13 adds** (the user: "please note in the doc that multi-node feature will be
+provided in 1.13" / "and what 1.12 can do"). The README gains a section with the three system shapes 1.12 simulates: a
+device run (one device), a co-simulation (one host + one device, the device the host's main memory), and a
+co-simulation with the host's own memory (one host + one memory + one device). It says that multi-node systems are
+provided in 1.13: several hosts, devices or memories, a host-only system, and a node reaching other nodes' memory beyond
+the 1.12 wiring. `docs/cosim.md` replaces its stale "Single device in 1.7.x" limitation with the same statement.
+
+**(2) A host-only system is refused naming 1.13** (the user: "unsupported conf (for 1.13) just got refused"). A host with
+no device -- a bare host, or a host with only `system.memories[]` entries -- is refused with rc 2 and a message naming
+1.13. Through 1.12.12 a host with a memory and no device loaded and emitted a system the 1.12 model does not define, and
+a bare host stopped with rc 1 and no word of 1.13. No corpus configuration or example has that shape: every one emits
+identically (gate E1).
+
+**(3) The in-image smoke sweep (`pimid_smoke`)** runs the addressed co-simulation example
+(`cosim/host_memory_device_addressed.yaml`, 1.12.12) and checks that three configurations needing 1.13 are refused
+naming 1.13: a second host, a device whose allowed range reaches the host memory's window, and a host-only system. A
+refusal case passes only on rc 2 with a message naming 1.13. **(4) The entrypoint banner** names the address keys and
+that multi-node configurations are 1.13 work. **(5) `docs/build.md`** describes the new sweep cases. **(6) The title** is the papers' ("PIMID: A Full-System
+Simulator with Intricacy and Diversity for Processing-in-Memory") in the README heading and the `--version` line, which
+carried an old expansion (the user: "title is wrong").
+
 ## 1.12.12 -- the address configuration layer: a device or memory declares its window, a host or device what it may address
 
 The configuration keys for the address map arrive, as 1.12.10 announced ("We make its conf ready at 12, we make it
