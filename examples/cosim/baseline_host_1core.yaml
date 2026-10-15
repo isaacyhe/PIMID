@@ -20,8 +20,6 @@
 # 1 core = no host fabric (a crossbar is degenerate at a single core); the
 # core-to-memory path is the calibrated analytic memory latency.
 
-scope: system
-
 system:
   hosts:
     - name: host

@@ -2562,7 +2562,6 @@ struct UnifiedConfig {
     int stats_interval;
 
     // Legacy co-sim field -- set when scope "cosim" was auto-remapped to "system"
-    bool cosim_remapped = false;
 
     // Host processor config (for cosim->system synthesis)
     std::string host_core_type = "ooo_core";
@@ -7196,7 +7195,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
 /* 1.12.2 (ruling 2b): the device node a run builds from its own configuration,
  * the top-level device keys. Device scope builds it for the system-level code
  * (synthesizeSystemNodes()) and scope: cosim starts its device node from it
- * (cosimDeviceNode()). The field list is the one synthesizeSystemNodes() has
+ * (the flat cosim node, retired in 1.12.9). The field list is the one synthesizeSystemNodes() has
  * always written, moved here unchanged. */
 static UnifiedConfig::SystemNode runConfigDeviceNode(const UnifiedConfig& config) {
     UnifiedConfig::SystemNode dev;
@@ -7239,61 +7238,6 @@ static UnifiedConfig::SystemNode runConfigDeviceNode(const UnifiedConfig& config
     return dev;
 }
 
-/* 1.12.2 (ruling 2b, user 2026-10-07: "cosim STAYS and IS the system scope").
- * The device node of a scope: cosim run is the run's own configuration -- the
- * top-level pim / memory / noc / cache / core / technology keys, read by the
- * device-scope parse -- and it is built at load, where a system config's
- * declared device node is built, so every system-scope step after the load
- * (the DRAM part records, the cache and core records, the link class, the
- * device adoption and its memory-hierarchy derivation) runs on it as on a
- * declared node. Through 1.12.1 it was synthesized after those steps had run
- * with no device: the device's part record was not loaded, its memory
- * hierarchy was not derived, and its cache ways stayed -1 (the cache record
- * resolves the ways of the nodes that exist when it is applied). Besides the
- * fields device scope writes, it carries every field the devices parse reads
- * back from a node's configuration -- ways, banks, latencies, the levels
- * present, the gating flags, the FPU, the datapath, the controller -- each the
- * run's. banks 0 and noc_model "simple" mean "the run's" to the adoption, as
- * for a declared node that gives neither. */
-static UnifiedConfig::SystemNode cosimDeviceNode(const UnifiedConfig& config) {
-    UnifiedConfig::SystemNode dev = runConfigDeviceNode(config);
-    dev.ports_per_bank = config.ports_per_bank;
-    dev.pg_pe = config.pg_pe; dev.pg_noc = config.pg_noc; dev.pg_mc = config.pg_mc;
-    dev.pe_has_fpu = config.pe_has_fp;
-    dev.pe_fp_emul_cycles = config.pe_fp_emul_cycles;
-    dev.alu_bit_serial = config.alu_bit_serial;
-    dev.pe_mc_type = config.pe_mc_type;
-    dev.pe_mc_declared = config.pe_mc_enabled;
-    dev.pes_per_mc = config.pes_per_mc;
-    dev.noc_topology_user_set = config.noc_topology_user_set;
-    dev.enable_l2 = (dev.l2_kb > 0);   // the levels zsim builds and McPAT prices (as a declared node, 1.11.107)
-    dev.enable_l3 = (dev.l3_kb > 0);
-    dev.l1d_latency_ns = config.l1d_params.latency_ns; dev.l1i_latency_ns = config.l1i_params.latency_ns;
-    dev.l2_latency_ns = config.l2_params.latency_ns; dev.l3_latency_ns = config.l3_params.latency_ns;
-    dev.l1d_ways = config.l1d_ways; dev.l1i_ways = config.l1i_ways; dev.l2_ways = config.l2_ways; dev.l3_ways = config.l3_ways;
-    dev.l1d_banks = config.l1d_banks; dev.l1i_banks = config.l1i_banks; dev.l2_banks = config.l2_banks; dev.l3_banks = config.l3_banks;
-    return dev;
-}
-
-/* 1.12.2 (ruling 2b): the flat top-level host: block as system.hosts[0] -- a
- * one-entry sequence holding a copy of the block, named "host", which the
- * hosts parse reads exactly as a declared host node: the node's defaults
- * (4 x ooo_core at 3000 MHz, 32/32/256 KB caches and no L3, the cache
- * record's ways), its key checks and refusals (key paths host.<key>), and
- * its per-node pricing. Through 1.12.1 the host was a node synthesized from
- * the legacy host_* fields after the cache record had been applied, so its
- * ways stayed -1 and every cached cosim host was refused by CACTI ("could not
- * price the host L1D (32 KB -1-way ..."); its own defaults were a 1 MB L2
- * and an 8 MB L3. No host: block = the node defaults. */
-static YAML::Node cosimHostSequence(const YAML::Node& yaml_cfg) {
-    YAML::Node h = (yaml_cfg["host"] && yaml_cfg["host"].IsMap()) ? YAML::Clone(yaml_cfg["host"])
-                                                                  : YAML::Node(YAML::NodeType::Map);
-    h["name"] = "host";
-    YAML::Node seq(YAML::NodeType::Sequence);
-    seq.push_back(h);
-    return seq;
-}
-
 /**
  * @brief Synthesize system nodes from existing single-device config.
  *
@@ -7301,37 +7245,11 @@ static YAML::Node cosimHostSequence(const YAML::Node& yaml_cfg) {
  * SystemNode from the existing flat UnifiedConfig fields so that the
  * system-level code path can treat all scopes uniformly.
  *
- * Under scope: cosim the nodes are built at load (1.12.2, ruling 2b: the
- * host: block is system.hosts[0], read by the hosts parse; the device node is
- * cosimDeviceNode()). Here the system network takes the cosim defaults for
- * what the config's system.network block does not set: the model from
- * power.link.model and the host-device link from power.link.*.
+ * 1.12.9: a co-simulation's nodes are parsed from system: at load; only a
+ * device run (no hosts) synthesizes its node here, from the run configuration.
  */
 static void synthesizeSystemNodes(UnifiedConfig& config) {
-    if (config.scope == "system" && !config.cosim_remapped) return;  // already parsed from YAML
-
-    if (config.scope == "system") {   // scope: cosim
-        /* 1.12.2 (ruling 2b): a system.network block a scope: cosim config
-         * gives is the system's, as at system scope; through 1.12.1 its
-         * topology and model were replaced here in silence. The topology
-         * default is CROSSBAR (the struct's), the model default
-         * power.link.model, and the power.link.* link is added when the config
-         * gives a power.link block and no system.network.links. */
-        if (!config.system_network.model_user_set)
-            config.system_network.model = config.pcie_model;  // "simple" unless power.link.model says otherwise (md1 mapped earlier)
-        if (config.pcie_timing_configured && config.system_network.links.empty()) {
-            UnifiedConfig::SystemLinkConfig link;
-            link.src_name = "host";
-            link.dst_name = "device";
-            link.link_type = config.pcie_link_type;
-            link.base_latency_ns = config.pcie_base_latency_ns;
-            link.bandwidth_GBs = config.pcie_bandwidth_GBs;
-            if (config.pcie_header_bytes >= 0) link.header_bytes = config.pcie_header_bytes;   // 1.11.94: -1 = unset
-            link.coherence_extra_ns = config.pcie_coherence_extra_ns;
-            config.system_network.links.push_back(link);
-        }
-        return;
-    }
+    if (config.scope == "system") return;  // already parsed from YAML
 
     config.system_nodes.clear();
     config.system_nodes.push_back(runConfigDeviceNode(config));   // device scope (1.12.2: the builder moved, unchanged)
@@ -15655,8 +15573,8 @@ void printUsage(const char* program_name) {
     std::cout << "  --no-cache           Disable the characterization cache (alias for --cache off)" << std::endl;
     std::cout << "  --cache-dir PATH     Warehouse root directory for cached characterizations" << std::endl;
     std::cout << "\nSystem Scope Options:" << std::endl;
-    std::cout << "  --scope SCOPE        Simulation scope: device (default), system" << std::endl;
-    std::cout << "                       (cosim: system scope with its nodes given by the flat host: and device keys)" << std::endl;
+    std::cout << "  --scope SCOPE        Retired (1.12.9): ignored with a warning; the nodes decide" << std::endl;
+    std::cout << "                       (system.hosts[] present = co-simulation, none = device run)" << std::endl;
     std::cout << "\nExternal Models (used by exec and trace modes):" << std::endl;
     std::cout << "  - Ramulator2: DRAM timing simulation" << std::endl;
     std::cout << "  - CACTI:      SRAM/cache modeling" << std::endl;
@@ -17266,21 +17184,17 @@ int main(int argc, char** argv) {
         } else if (arg == "--method" && i + 1 < argc) {
             config.method = argv[++i];
         } else if (arg == "--scope" && i + 1 < argc) {
-            config.scope = argv[++i];
-            if (config.scope == "cosim") {
-                config.scope = "system";
-                config.cosim_remapped = true;
-            }
+            /* 1.12.9 (ruling 3 of 2026-10-15, the user: "scope retires"): the nodes decide -- system.hosts[] present
+             * is a co-simulation, none a device run (1.12.8 put every hardware block under system:). Dropped with a warning. */
+            std::cerr << "[config] WARNING: --scope " << argv[++i] << " is retired (1.12.9): the nodes decide (system.hosts[] present"
+                         " = co-simulation, none = device run); the flag is ignored." << std::endl;
         } else if (arg == "--mode" && i + 1 < argc) {
-            // Legacy support: map old modes to new method/scope
+            // Legacy support: the method part is kept; the scope part is retired (1.12.9: the nodes decide)
             std::string mode = argv[++i];
-            if (mode == "sim" || mode == "standalone") {
+            if (mode == "sim" || mode == "standalone" || mode == "cosim") {
                 config.method = "exec";
-                config.scope = "device";
-            } else if (mode == "cosim") {
-                config.method = "exec";
-                config.scope = "system";
-                config.cosim_remapped = true;
+                std::cerr << "[config] WARNING: --mode " << mode << " sets --method exec; its scope part is retired (1.12.9): the nodes"
+                             " decide (system.hosts[] present = co-simulation, none = device run)." << std::endl;
             } else {
                 std::cerr << "Warning: Unknown legacy mode '" << mode << "', using defaults" << std::endl;
             }
@@ -17343,12 +17257,10 @@ int main(int argc, char** argv) {
     /* 1.11.90 (B5): docs/yaml_reference.md Override Rule 1 says the command
      * line overrides the YAML. For scope and power.report_detail the YAML was
      * parsed AFTER the flag and won. Both are now tracked like the others. */
-    bool cli_scope_set = false;
     bool cli_power_report_set = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--scope" || a == "--mode") cli_scope_set = true;
-        else if (a == "--power-report") cli_power_report_set = true;
+        if (a == "--power-report") cli_power_report_set = true;
         else if (a == "--method") cli_method_set = true;
         else if (a == "--workload") cli_workload_set = true;
         else if (a == "--workload-type") cli_workload_type_set = true;
@@ -17456,25 +17368,18 @@ int main(int argc, char** argv) {
                 config.method = yamlStringReq(yaml_cfg["method"], "method");
             }
 
-            // Scope: device or system (cosim -> system with the nodes given by the flat keys; 1.12.2, ruling 2b)
-            if (yaml_cfg["scope"] && cli_scope_set) {
-                /* 1.11.90 (B5): the command line wins (Override Rule 1). */
-                std::string ys = yamlStringReq(yaml_cfg["scope"], "scope");
-                const std::string ys_eff = (ys == "cosim") ? "system" : ys;
-                if (ys_eff != config.scope ||
-                    ((ys == "cosim") != config.cosim_remapped))
-                    std::cout << "[config] NOTE: scope '" << ys << "' in the YAML"
-                                 " is overridden by the command line ("
-                              << config.scope
-                              << (config.cosim_remapped ? ", via the cosim alias" : "")
-                              << "): the command line wins (Override Rule 1)."
-                              << std::endl;
-            } else if (yaml_cfg["scope"]) {
-                config.scope = yamlStringReq(yaml_cfg["scope"], "scope");
-                if (config.scope == "cosim") {
-                    config.scope = "system";
-                    config.cosim_remapped = true;
-                }
+            /* 1.12.9 (ruling 3 of 2026-10-15, the user: "scope retires"): the nodes decide. system.hosts[] present is a
+             * co-simulation (the system path); none is a device run (the device path from the one system.devices[] entry,
+             * 1.12.8). A scope: key is dropped with a warning; the flat cosim spelling went with 1.12.8. */
+            if (yaml_cfg["scope"]) {
+                const std::string sv = yaml_cfg["scope"].IsScalar() ? yaml_cfg["scope"].Scalar() : std::string("<not a word>");
+                std::cerr << "[config] WARNING: scope: '" << sv << "' is retired (1.12.9): the nodes decide (system.hosts[] present"
+                             " = co-simulation, none = device run); the key is ignored." << std::endl;
+            }
+            {
+                YAML::Node hs;
+                if (yaml_cfg["system"] && yaml_cfg["system"].IsMap()) hs = yaml_cfg["system"]["hosts"];
+                config.scope = (hs && hs.IsSequence() && hs.size() > 0) ? "system" : "device";
             }
 
             // Workload section
@@ -18130,91 +18035,9 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Host processor config (for co-sim ZSim-based host modeling)
-            const bool cosim_scope = (config.scope == "system" && config.cosim_remapped);   // 1.12.2 (ruling 2b)
-            if (cosim_scope) {   /* 1.12.8 (ruling 5): the flat spelling put the device at the left margin, which now holds no hardware. */
-                std::cerr << "[config] FATAL: the flat scope: cosim spelling is retired (1.12.8: every hardware block is written"
-                             " under system:). Declare the host under system.hosts[] and the device under system.devices[] with"
-                             " scope: system." << std::endl;
-                std::exit(2);
-            }
-            /* 1.12.2 (ruling 2b): under scope: cosim this block IS system.hosts[0]: the hosts parse
-             * below reads it as a declared host node (cosimHostSequence()), with that parse's defaults,
-             * key checks and refusals, so this block's own checks are skipped there. The legacy host_*
-             * fields below are still filled in every scope (the fallbacks of a run with no host node). */
-            if (yaml_cfg["host"]) {
-                auto h = yaml_cfg["host"];
-                config.host_core_type = yamlString(h["core_type"], config.host_core_type, "host.core_type");
-                if (!cosim_scope) {
-                    // 1.12.1 (#114): the retired simple_core first, naming the replacement.
-                    if (isRetiredSimpleCoreName(config.host_core_type))
-                        refuseRetiredSimpleCore("host.core_type", config.host_core_type);
-                    // STRICT: same whitelist as pim.pe.type. Unknown host core
-                    // types used to fall through to the "Simple" default at zsim
-                    // emission silently (e.g. the removed timing_core).
-                    if (config.host_core_type != "ooo_core" &&
-                        config.host_core_type != "in_order_core" &&
-                        config.host_core_type != "alu_core" &&
-                        config.host_core_type != "null_core") {
-                        std::cerr << "Error: unknown host.core_type '"
-                                  << config.host_core_type
-                                  << "'. Valid: ooo_core | in_order_core"
-                                  << " | alu_core | null_core" << std::endl;
-                        return 1;
-                    }
-                }
-                /* 1.12.2 (ruling 2b): host.issue_width and host.branch_predictor are read where the block
-                 * is a node -- scope: cosim, by the hosts parse (in_order_core hosts only, as
-                 * system.hosts[]). Anywhere else nothing reads them: refused. (1.12.1 refused
-                 * host.branch_predictor in every scope; host.issue_width was not a key.) */
-                for (const char* k : {"issue_width", "branch_predictor"})
-                    if (h[std::string(k)] && !cosim_scope) {
-                        std::cerr << "[config] FATAL: host." << k << " is read only under scope: cosim, where the"
-                                     " host: block is system.hosts[0]; under scope: " << config.scope << " nothing"
-                                     " reads it. Remove it, or declare the host under system.hosts[] and set"
-                                     " system.hosts[]." << k << " (1.12.2)." << std::endl;
-                        std::exit(2);
-                    }
-                config.host_num_cores = yamlInt(h["num_cores"], config.host_num_cores, "host.num_cores");
-                config.host_frequency_mhz = yamlDouble(h["frequency_mhz"], config.host_frequency_mhz, "host.frequency_mhz");
-                config.host_tech_node_nm = yamlInt(h["tech_node_nm"], config.host_tech_node_nm, "host.tech_node_nm");
-                if (h["cache"]) {
-                    config.host_l1d_kb = yamlInt(h["cache"]["l1d_kb"], config.host_l1d_kb, "host.cache.l1d_kb");
-                    config.host_l1i_kb = yamlInt(h["cache"]["l1i_kb"], config.host_l1i_kb, "host.cache.l1i_kb");
-                    config.host_l2_kb = yamlInt(h["cache"]["l2_kb"], config.host_l2_kb, "host.cache.l2_kb");
-                    config.host_l3_kb = yamlInt(h["cache"]["l3_kb"], config.host_l3_kb, "host.cache.l3_kb");
-                }
-                if (h["memory"]) {
-                    config.host_memory_tech = canonicalMemTech(
-                        yamlString(h["memory"]["technology"], config.host_memory_tech, "host.memory.technology"));
-                }
-            }
-
-            //=================================================================
-            // Multi-host/multi-device system configuration (scope: "system")
-            //=================================================================
-            /* 1.12.2 (ruling 2b, user 2026-10-07: "cosim STAYS and IS the system scope"). scope: cosim
-             * is system scope whose nodes are given by the flat keys: the host: block is system.hosts[0],
-             * read below by the hosts parse as a declared host node, and the top-level device keys are
-             * its device node (cosimDeviceNode()); both are built here, where a system config's nodes
-             * are built. A scope: cosim config that also declares system.hosts[] / devices[] describes
-             * its nodes twice and is refused, as since 1.11.90 (the refusal moved here from
-             * synthesizeSystemNodes(), which used to rebuild the nodes after the cache record). */
-            const size_t cosim_declared = (!cosim_scope || !yaml_cfg["system"]) ? 0
-                : (yaml_cfg["system"]["hosts"] ? yaml_cfg["system"]["hosts"].size() : 0)
-                + (yaml_cfg["system"]["devices"] ? yaml_cfg["system"]["devices"].size() : 0);
-            if (cosim_declared > 0) {
-                std::cerr << "[config] FATAL: scope: cosim with a system: block that"
-                             " declares hosts/devices (" << cosim_declared
-                          << " node(s) declared). The cosim alias builds its nodes from"
-                             " the top-level host:/pim:/memory: keys and used to"
-                             " discard the declared ones in silence, so the run"
-                             " simulated a different machine from the one in the file."
-                             " Use scope: system to run the declared nodes, or remove"
-                             " the system: hosts/devices to keep the cosim spelling."
-                          << std::endl;
-                std::exit(2);
-            }
+            /* 1.12.9: the flat host: block reader, the cosim remap and the duplicate-node refusal of 1.11.90 are gone with
+             * the scope words (1.12.8 drops a margin host: block at load; the legacy host_* fields keep their defaults,
+             * the fallbacks of a run without a host node). */
             if (yaml_cfg["system"]) {   // 1.12.8 (ruling 5): read in device scope too -- a system with no hosts is a device run
                 // 1.12.2: an empty map under a scope: cosim config that has no system: block.
                 YAML::Node sys = yaml_cfg["system"] ? yaml_cfg["system"] : YAML::Node(YAML::NodeType::Map);
@@ -18223,20 +18046,11 @@ int main(int argc, char** argv) {
                 auto normalizeCoreType = normalizeCoreTypeName;
 
                 // Parse hosts (1.12.2, ruling 2b: under scope: cosim, the host: block as system.hosts[0])
-                const YAML::Node host_seq = sys["hosts"];   // 1.12.8: the flat host: block is gone with the cosim spelling
-                if (config.scope == "device" && host_seq && host_seq.IsSequence() && host_seq.size() > 0) {
-                    std::cerr << "[config] FATAL: scope: device with " << host_seq.size() << " system.hosts[] entr"
-                              << (host_seq.size() == 1 ? "y" : "ies") << ". A device run is a system with no hosts; a system with"
-                                 " hosts is a co-simulation: give scope: system (1.12.8; the scope key retires in 1.12.9, when the"
-                                 " nodes alone decide)." << std::endl;
-                    std::exit(2);
-                }
+                const YAML::Node host_seq = sys["hosts"];   // 1.12.9: hosts present = a co-simulation (config.scope was derived from this list)
                 if (host_seq) {
                     int host_idx = -1;   // 1.11.90: key paths in messages
                     for (const auto& h : host_seq) {
-                        // 1.12.2: a scope: cosim host's keys are named as written (host.<key>).
-                        const std::string hpath = cosim_scope ? std::string("host")
-                                                              : "system.hosts[" + std::to_string(++host_idx) + "]";
+                        const std::string hpath = "system.hosts[" + std::to_string(++host_idx) + "]";
                         UnifiedConfig::SystemNode node;
                         node.name = yamlString(h["name"], "host" + std::to_string(config.system_nodes.size()), hpath + ".name");
                         node.role = UnifiedConfig::SystemNode::HOST;
@@ -18786,18 +18600,6 @@ int main(int argc, char** argv) {
                     }
                     adoptSystemDeviceNodes(config, yaml_cfg);   // 1.11.107: before the run-wide DRAM knobs are recorded
                 }
-                if (cosim_scope) {   // 1.12.2 (ruling 2b): the scope: cosim device node, after its host
-                    config.system_nodes.push_back(cosimDeviceNode(config));
-                    const auto& hn = config.system_nodes.front();
-                    const auto& dn = config.system_nodes.back();
-                    std::cout << "[config] NOTE: scope: cosim is system scope with its nodes given by the flat keys:"
-                                 " system.hosts[0] '" << hn.name << "' is the host: block, read as a declared host node ("
-                              << hn.num_cores << " x " << hn.core_type << " at " << hn.frequency_mhz << " MHz), and the"
-                                 " device node '" << dn.name << "' is the top-level device configuration ("
-                              << dn.num_pes << " x " << dn.pe_type << " at " << dn.frequency_mhz << " MHz). Declare"
-                                 " the nodes under system: with scope: system to set more per node." << std::endl;
-                }
-
                 // Parse system network
                 if (sys["network"]) {
                     auto net = sys["network"];
@@ -18825,21 +18627,7 @@ int main(int argc, char** argv) {
                     if (config.system_network.model == "md1" || config.system_network.model == "analytical")
                         config.system_network.model = "simple";  // backward compat
                     if (net["model"]) {
-                        config.system_network.model_user_set = true;   // 1.12.2 (ruling 2b): scope: cosim keeps it
-                        /* 1.12.2 (ruling 2b): under scope: cosim power.link.model is this network's model
-                         * when system.network.model is not given (synthesizeSystemNodes()), so giving both
-                         * with different words names one setting twice. */
-                        const char* lk = !yaml_cfg["power"] ? nullptr
-                                       : (yaml_cfg["power"]["link"] && yaml_cfg["power"]["link"]["model"]) ? "power.link.model"
-                                       : (yaml_cfg["power"]["pcie"] && yaml_cfg["power"]["pcie"]["model"]) ? "power.pcie.model" : nullptr;
-                        const std::string lm = (config.pcie_model == "detailed") ? "detailed" : "simple";
-                        if (cosim_scope && lk && lm != config.system_network.model) {
-                            std::cerr << "[config] FATAL: system.network.model '" << config.system_network.model << "' and "
-                                      << lk << " '" << config.pcie_model << "' both set the host-device network's model under"
-                                         " scope: cosim (" << lk << " is its default there), and they differ. Give one of"
-                                         " them (1.12.2)." << std::endl;
-                            std::exit(2);
-                        }
+                        config.system_network.model_user_set = true;
                     }
                     config.system_network.link_width_bits = yamlInt(net["link_width_bits"], config.system_network.link_width_bits, "system.network.link_width_bits");
                     config.system_network.frequency_ghz = yamlDouble(net["frequency_ghz"], config.system_network.frequency_ghz, "system.network.frequency_ghz");
@@ -19046,7 +18834,6 @@ int main(int argc, char** argv) {
         }
         UnifiedConfig run = *built->dev;
         run.scope = "device";
-        run.cosim_remapped = false;
         run.system_nodes.clear();
         run.workload_env = config.workload_env;   // the margin env with the node's merged in (the node parse merges into config)
         if (!built->workload_binary.empty()) {    // the node's workload, when it gives one; else the margin's (already in the copy)

@@ -48,7 +48,7 @@ Complete reference for all YAML configuration keys supported by PIMID.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `scope` | string | `"device"` | `device` (a system with no hosts: one `system.devices[]` entry, run on the device path) or `system` (a co-simulation: `system.hosts[]` and the device). The flat `cosim` spelling is retired (1.12.8; it put the device at the left margin). Hosts under `scope: device` are refused, naming `scope: system`. The key itself retires in 1.12.9, when the nodes alone decide. |
+| `scope` | string | retired | Retired (1.12.9): the nodes decide -- `system.hosts[]` present is a co-simulation, none a device run. A `scope:` key, `--scope` and the scope part of `--mode` are dropped with a warning. Through 1.12.8 it chose the path (`device` / `system`; the flat `cosim` spelling was retired in 1.12.8). |
 | `method` | string | `"exec"` | Simulation method: `exec` (execution-driven, the default), `trace` (replay a recorded trace; needs `--trace-file`), `trace-gen` (record a trace, no simulation; needs `--trace-file`) or `synthetic` (parametric traffic into Garnet, see [Synthetic Traffic](#synthetic-traffic-synthetic)). CLI `--method` overrides. Any other word is refused (rc 1). |
 | `name` | string | `"PIMID_Simulation"` | Configuration name (appears in banner) |
 | `description` | string | `""` | Configuration description |
@@ -60,10 +60,11 @@ Complete reference for all YAML configuration keys supported by PIMID.
 Every hardware block is written under `system:` (ruling 5 of 2026-10-15,
 "everything under system"). A device is a `system.devices[]` entry (a memory
 with PEs), a memory without PEs a `system.memories[]` entry, a host a
-`system.hosts[]` entry. A device-only run is a system with no hosts:
+`system.hosts[]` entry. The nodes decide what the run is (1.12.9): a system
+with `system.hosts[]` is a co-simulation, one without is a device run. A
+device-only run:
 
 ```yaml
-scope: device
 workload:
   binary: ./my_benchmark
 system:
@@ -77,15 +78,16 @@ system:
         technology: SRAM
 ```
 
-The left margin keeps the run's keys: `workload`, `scope`, `method`, `name`,
+The left margin keeps the run's keys: `workload`, `method`, `name`,
 `description`, `simulation`, `synthetic`, `power`, `cache.dir` / `mode` /
 `enabled` / `cacti` and the `core.*` records. A `pim`, `memory`, `noc` or
 `technology` block, a `cache` level or `cache.pg`, a `host` block, or
 `power.host_tech_node_nm` / `power.device_tech_node_nm` left at the margin is
 dropped before the key schema runs, with one `[config] WARNING` naming every
-dropped key; the run continues on the nodes. A device-scope file with no
-device node is refused, naming `system.devices[]`; a second node in a device
-run is refused by name (the device-scope model has one memory, the device's).
+dropped key; the run continues on the nodes. A file with no device node is
+refused, naming `system.devices[]`; a second node in a device run is refused
+by name (the device-scope model has one memory, the device's). A `scope:`
+line is a retired word, dropped with a warning (1.12.9).
 In a device run a key the node does not give takes the device-scope default
 (as the margin form did: a core-type PE's 16 KB L1I and 2 MB L2); in a
 co-simulation it takes the node table's default (32/32/256 KB caches,
@@ -940,10 +942,10 @@ blocks is refused (1.11.106).
 
 ## System Configuration
 
-System scope (`scope: system`) enables multi-host, multi-device simulation.
+A system with `system.hosts[]` is a co-simulation (1.12.9: no scope key; the
+nodes decide).
 
 ```yaml
-scope: system
 system:
   frequency_mhz: 2000
   cache_line_size: 64
@@ -1533,7 +1535,7 @@ the fields the configuration did not set, exactly as naming it does.
 2. **5-param memory override**: All 5 memory params must be provided to override external models. Partial = warning + external model used.
 3. **3-param cache override**: All 3 cache params (`latency_ns`, `energy_nj`, `static_power_mw`) must be provided per level.
 4. **Auto-derivation**: `-1` or unset values are auto-derived from the memory technology via external models.
-5. **Backward compatibility**: `noc.gateways` is the deprecated name of `noc.bridges`, `power.pcie` the legacy name of `power.link`, and `scope: cosim` is `scope: system` with its nodes given by the flat keys (see [Host Block](#host-block-host-scope-cosim)). Giving both names of one block or quantity is refused (see [Loader Rules](#loader-rules)). For `system.network.model` and `noc.bridges.*.model`, `analytical`/`md1` are accepted as aliases of `simple`, and `power.link.model` accepts `md1` for `simple`; the top-level `noc.model` accepts only `analytical` | `detailed`.
+5. **Backward compatibility**: `noc.gateways` is the deprecated name of `noc.bridges`, `power.pcie` the legacy name of `power.link`, and `scope:` / `--scope` are retired words, dropped with a warning (1.12.9; the nodes decide). Giving both names of one block or quantity is refused (see [Loader Rules](#loader-rules)). For `system.network.model` and `noc.bridges.*.model`, `analytical`/`md1` are accepted as aliases of `simple`, and `power.link.model` accepts `md1` for `simple`; the top-level `noc.model` accepts only `analytical` | `detailed`.
 
 ---
 
@@ -1542,7 +1544,6 @@ the fields the configuration did not set, exactly as naming it does.
 ### Minimal Device Config
 
 ```yaml
-scope: device
 workload:
   binary: ./my_benchmark
 system:
@@ -1559,7 +1560,6 @@ system:
 ### DDR4 with Queuing-Aware NoC
 
 ```yaml
-scope: device
 workload:
   binary: ./benchmark
   args: ["--size", "4096"]
@@ -1593,7 +1593,6 @@ power:
 ### HBM3 PUM Design Point
 
 ```yaml
-scope: device
 system:
   devices:
     - name: device
@@ -1619,7 +1618,6 @@ system:
 ### Multi-Level Hierarchy Tuning
 
 ```yaml
-scope: device
 system:
   devices:
     - name: device
@@ -1660,7 +1658,6 @@ kept below, commented, as the shape to restore when per-node memory counters
 exist.
 
 ```yaml
-scope: system
 workload:
   binary: ./host_app
 system:

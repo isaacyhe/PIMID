@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/rodinia/particlefilter/particlefilter
   args: ["--particles", "10000", "--frames", "100"]

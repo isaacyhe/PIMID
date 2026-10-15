@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/rodinia/srad/srad
   args: ["--rows", "512", "--cols", "512", "--iters", "50"]

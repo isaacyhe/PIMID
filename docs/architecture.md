@@ -34,13 +34,15 @@ workload binary
 
 ## Scopes
 
-- `scope: device` -- a single PIM device: PEs in the memory hierarchy. Since
-  1.12.8 it is a system with no hosts: one `system.devices[]` entry, run on the
-  device path ([yaml_reference.md](yaml_reference.md#configuration-shape-1128)).
-- `scope: system` -- multi-node: hosts (with caches) + devices connected by a
-  system interconnect; supports host->device offload ([cosim.md](cosim.md)).
-- `scope: cosim` -- retired in 1.12.8 (the flat spelling put the device at the
-  left margin, which holds no hardware now); refused, naming the node lists.
+The nodes decide (1.12.9; the `scope` key and `--scope` are retired, dropped
+with a warning):
+
+- a **device run** -- a system with no hosts: one `system.devices[]` entry, a
+  single PIM device with PEs in the memory hierarchy, run on the device path
+  ([yaml_reference.md](yaml_reference.md#configuration-shape-1128));
+- a **co-simulation** -- a system with `system.hosts[]`: hosts (with caches) +
+  devices connected by a system interconnect; supports host->device offload
+  ([cosim.md](cosim.md)).
 
 ## Two-fabric system view (co-sim)
 

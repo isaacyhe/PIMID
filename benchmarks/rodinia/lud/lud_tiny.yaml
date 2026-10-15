@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/rodinia/lud/lud
   args: ["--size", "64"]

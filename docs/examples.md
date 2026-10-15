@@ -42,7 +42,7 @@ required by the parser but is inert under the knob. The sweep runner overrides
 cell -- no host-tech confound); `DDR5` in the files is a placeholder default.
 
 ```bash
-PIMID_COSIM_NO_OFFLOAD=1 ./build/pimid --method exec --scope system \
+PIMID_COSIM_NO_OFFLOAD=1 ./build/pimid --method exec \
     --config examples/cosim/baseline_host_4core.yaml \
     --workload benchmarks/pim_kernels/gemv/gemv_omp \
     --workload-type openmp --size 512

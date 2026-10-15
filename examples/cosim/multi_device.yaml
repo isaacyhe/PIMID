@@ -36,8 +36,6 @@
 #       --workload benchmarks/pim_kernels/reduction/reduction_omp \
 #       1024 4 0
 
-scope: system
-
 system:
   hosts:
     - name: host

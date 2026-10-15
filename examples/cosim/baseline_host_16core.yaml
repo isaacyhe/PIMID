@@ -18,8 +18,6 @@
 # 16 cores: the host fabric is a crossbar (uniform one-hop; contention at
 # ports, not hops) -- the ISSUE-5-ADDENDUM host-side default topology.
 
-scope: system
-
 system:
   hosts:
     - name: host

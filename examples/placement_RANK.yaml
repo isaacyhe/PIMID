@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/pim_kernels/stream_triad/stream_triad
   args: ["--size", "1024"]

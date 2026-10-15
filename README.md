@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.8-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.9-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -84,7 +84,6 @@ setarch -R ./build/pimid --method exec --config examples/tech_DDR4.yaml
 A minimal config:
 
 ```yaml
-scope: device
 workload: { binary: benchmarks/pim_kernels/stream_triad/stream_triad,
             args: ["--size", "8192"] }
 system:

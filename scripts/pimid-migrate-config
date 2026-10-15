@@ -8,7 +8,8 @@ hardware block is written under system: -- a device is a system.devices[] entry 
 memory without PEs a system.memories[] entry, a host a system.hosts[] entry -- and a hardware block
 left at the margin is ignored with a warning. The left margin keeps the run's keys: workload, scope
 (retired in 1.12.9), method, name, description, simulation, synthetic, power, cache.dir / mode /
-enabled / cacti, and the core.* records.
+enabled / cacti, and the core.* records. Since 1.12.9 the scope: key is retired too (the nodes decide:
+system.hosts[] present is a co-simulation, none a device run): a margin scope: line is dropped.
 
 This tool moves the margin hardware blocks, text-preserving (comments and spacing kept):
   * a file without a system: block gets one, with a single device node named "device" that holds the
@@ -109,9 +110,13 @@ def migrate_text(text):
     moved = []           # list of (section_name, [lines at margin indentation])
     remove = set()       # line indices to drop
     replace_cache = None
+    dropped_scope = False
     for s in spans:
         name, h, e = s
-        if name in HARDWARE:
+        if name == "scope":      # 1.12.9: retired, the nodes decide
+            remove.update(range(h, e))
+            dropped_scope = True
+        elif name in HARDWARE:
             moved.append((name, lines[h:e]))
             remove.update(range(h, e))
         elif name == "cache":
@@ -123,7 +128,7 @@ def migrate_text(text):
                 if stay:
                     replace_cache = (h, e, [lines[h]] + [ln for c in stay for ln in c[1]])
                 remove.update(range(h, e))
-    if not moved:
+    if not moved and not dropped_scope:
         return None, None   # nothing at the margin: already in shape
     out = []
     for i, ln in enumerate(lines):
@@ -140,6 +145,8 @@ def migrate_text(text):
         cleaned.append(ln)
     out = cleaned
     sys_span = next((s for s in block_spans(out) if s[0] == "system"), None)
+    if sys_span is None and not moved:
+        return None, "no system: block and no hardware block to move: add the device node by hand"
     if sys_span is None:
         if out and out[-1].strip() != "":
             out.append("")
@@ -197,7 +204,7 @@ def verify(old_text, new_text):
     import yaml
     old = yaml.safe_load(old_text) or {}
     new = yaml.safe_load(new_text) or {}
-    for k in HARDWARE + ("host",):
+    for k in HARDWARE + ("host", "scope"):
         if k in new:
             return "margin %s survives" % k
     if "cache" in new and any(k not in CACHE_RUN_KEYS for k in new["cache"]):
@@ -215,7 +222,7 @@ def verify(old_text, new_text):
     if new_dev != expect:
         return "the device node does not equal the old node merged with the margin blocks"
     for k in old:
-        if k in HARDWARE or k in ("cache", "system"):
+        if k in HARDWARE or k in ("cache", "system", "scope"):
             continue
         if new.get(k) != old[k]:
             return "the run key %s changed" % k
@@ -261,7 +268,7 @@ def main(argv):
         if inplace:
             with open(f, "w") as fh:
                 fh.write(new)
-            print("%s: migrated (%d hardware block(s) moved under system.devices[0])" % (f, len([1 for s in block_spans(text.split('\n')) if s[0] in HARDWARE or s[0] == 'cache'])), file=sys.stderr)
+            print("%s: migrated (%d hardware block(s) moved under system.devices[0]%s)" % (f, len([1 for s in block_spans(text.split('\n')) if s[0] in HARDWARE or s[0] == 'cache']), ", scope line dropped" if any(s[0] == 'scope' for s in block_spans(text.split('\n'))) else ""), file=sys.stderr)
         else:
             sys.stdout.write(new)
     return rc

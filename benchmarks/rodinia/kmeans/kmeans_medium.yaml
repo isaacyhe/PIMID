@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/rodinia/kmeans/kmeans
   args: ["--points", "4096", "--clusters", "16", "--dims", "32", "--iters", "20"]

@@ -18,8 +18,6 @@
 # Replace the workload with any pim_kernels binary (histogram, spmv_csr,
 # stream_triad, gemv, bfs, stencil_2d, vector_add ...) -- same config.
 
-scope: system
-
 system:
   hosts:
     - name: host

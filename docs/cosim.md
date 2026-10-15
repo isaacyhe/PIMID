@@ -1,12 +1,12 @@
 # Host-Device Co-simulation
 
-Co-simulation (`scope: system`) runs a general-purpose **host** and a
+Co-simulation (a system with `system.hosts[]`; 1.12.9: no scope key) runs a general-purpose **host** and a
 **PIM device** as one system: the host is a real CPU (out-of-order cores,
 cache hierarchy, its own main memory), the device is processing elements
 inside memory. An offloaded kernel migrates from the host onto the device
 PEs and back; the boundary costs -- launch, coherence, and the host<->device
 bridge -- are priced explicitly. The device-side execution is the *identical*
-code path a standalone `scope: device` run uses (same PE memory interfaces,
+code path a standalone device run (no hosts) uses (same PE memory interfaces,
 same Garnet/analytical NoC, same JEDEC-derived memory timing), so device-only
 cycles are unchanged by co-sim.
 
@@ -22,7 +22,7 @@ runs in co-sim unchanged. In a standalone device simulation only the ROI
 added around that same region.
 
 ```bash
-./build/pimid --method exec --scope system \
+./build/pimid --method exec \
     --config examples/cosim/host_device_basic.yaml \
     --workload benchmarks/pim_kernels/gemv/gemv_omp --size 512 \
     --workload-type openmp
@@ -63,19 +63,19 @@ added around that same region.
   prints a NOTE naming both values. An `env` that is not a map of
   `NAME: value` is refused.
 
-### `scope: system` vs `scope: device`
+### Co-simulation vs device run
 
-| | `scope: device` | `scope: system` (co-sim) |
+| | device run (no hosts) | co-simulation (`system.hosts[]` present) |
 |---|---|---|
 | host | none (a hidden host prepared the layout, uncounted by design) | real OoO host: cores, caches, own main memory |
 | measured region | ROI (kernel) only | task region: flush/launch/kernel/busy-wait/readback |
 | boundary costs | none | launch + coherence + bridge, all explicit |
 | device cycles | reference | **identical** (parity invariant) |
 
-Since 1.12.8 both are systems: a `scope: device` file declares its one device
-under `system.devices[]` and no hosts, and a `scope: system` file adds the
-`system.hosts[]` list. The flat `scope: cosim` spelling (a `host:` block and the
-device at the left margin) is retired and refused.
+Both are systems (1.12.8): a device run declares its one device under
+`system.devices[]` and no hosts, a co-simulation adds the `system.hosts[]`
+list, and the nodes alone decide (1.12.9: the `scope` key and `--scope` are
+retired, dropped with a warning). The flat `scope: cosim` spelling went in 1.12.8.
 
 **Parity invariant** (enforced by validation): the device-side cycles of a
 co-sim run agree with a standalone device-scope run of the same kernel. If

@@ -7,6 +7,32 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.9 -- the scope key is retired: the nodes decide (hosts present = co-simulation, none = device run)
+
+Ruling 3 of the configuration-shape rulings of 2026-10-15 (the user: "scope retires"; "need restructure under new conf
+look"). With every hardware block under `system:` (1.12.8) the file's structure says what the run is.
+
+**(1) The scope is derived from the nodes.** `system.hosts[]` present means a co-simulation (the system path); no hosts means a
+device run (the device path, from the one `system.devices[]` entry). Nothing else chooses.
+
+**(2) `scope:` in the file and `--scope` / `--mode` on the command line are retired**: each is dropped with one `[config]
+WARNING` naming it, and the run goes on as the nodes say. A `scope: device` file with hosts therefore runs as a co-simulation
+with a warning (1.12.8 refused it); `--scope system` on a device-only file leaves it a device run with a warning (the fleet's
+run scripts, which pass the flag, keep working). `scope: cosim` and `--mode cosim` are the same retired words (1.12.8 refused
+the flat spelling by name; its hardware form, the margin blocks, is gone since 1.12.8).
+
+**(3) The flat co-simulation code is removed**: the `cosim` remap flag, the flat `host:` block reader (its keys were dropped at
+load since 1.12.8), the synthesized flat device node and the flat host sequence, the duplicate-node refusal of 1.11.90 and the
+`power.link.model` cross-check that only the flat spelling needed.
+
+**(4) `scripts/pimid-migrate-config` drops a margin `scope:` line** as part of the shape (1.12.9); `--check` reports a file
+that still carries one. The 36 examples and the 40 Rodinia configurations are rewritten in the tree; the corpus copies
+`configs_v1187_129` (280) and `configs_sys_129` (90) hold the migrated cells.
+
+**Data impact.** None: every migrated file emits what its 1.12.8 original emitted (gate E1), the 1.12.8 originals load with
+one warning and the same emission (gate E2), device-scope and co-sim parity EXACT. The run banner's `Scope:` field now reports
+the derived value.
+
 ## 1.12.8 -- everything under system: a device-only run is a one-device system; a hardware block at the left margin is ignored with a warning
 
 Ruling 5 of the configuration-shape rulings of 2026-10-15 (the user: "memory should also be in the system, device only should

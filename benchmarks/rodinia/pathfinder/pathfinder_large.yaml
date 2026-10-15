@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/rodinia/pathfinder/pathfinder
   args: ["--rows", "100", "--cols", "100000"]

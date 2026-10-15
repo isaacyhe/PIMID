@@ -1,4 +1,3 @@
-scope: device
 workload:
   binary: benchmarks/rodinia/myocyte/myocyte
   args: ["--cells", "1", "--steps", "1000"]

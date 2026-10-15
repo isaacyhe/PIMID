@@ -17,7 +17,7 @@ Additionally:
 - `benchmarks/host/` -- host-side variants of the core kernels.
 
 Co-simulation has NO separate workload family: any ordinary ROI-marked
-workload runs in co-sim (`--scope system`). Its ROI region executes on the
+workload runs in co-sim (a configuration with `system.hosts[]`). Its ROI region executes on the
 device PEs, the out-of-ROI code on the host, and the boundary costs (launch,
 coherence flush, and the two-layer host<->device bridge) are charged
 explicitly (see [cosim.md](cosim.md)).
@@ -117,11 +117,11 @@ forked ranks.
 
 ## Running
 
-- **pim_kernels** / **host**: `--scope device`, select the data model with
+- **pim_kernels** / **host**: a device-only configuration (no hosts), select the data model with
   `--workload-type {serial|openmp|mpi}` (openmp -> shared_memory binary,
   mpi -> message_passing binary). Host vs device is chosen by the config's
   core type + placement (`ooo_core`/`HOST_MC` vs `alu_core`/`BANK`).
-- **cosim**: `--scope system` with a host+device config; the binary already
+- **cosim**: a host+device configuration; the binary already
   encodes the device-side data model (the `_sm` / `_mp` suffix).
 
 See [cosim.md](cosim.md) for the host-device link model used by cosim.
