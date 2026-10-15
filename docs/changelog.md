@@ -7,6 +7,27 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.14 -- the non-DRAM memory models no longer report a configuration fallback that does not happen; the image is rebuilt from this release
+
+The user: "The sram model shit" -> "14, then remake the image". The four non-DRAM plugin memory models (SRAM, STT-MRAM, PCM,
+ReRAM) are always created with an empty configuration path: the tier-latency and L0-organisation queries call
+`createMemoryModel(tech, "")` and then set the array themselves (capacity, access width, process node, temperature) before
+`initialize()`. Each model's `loadConfig()` still tried the empty path as a file and reported a fallback:
+
+| Model | Through 1.12.13 |
+|---|---|
+| SRAM | `YAML parsing error: bad file:` then `Using default configuration` |
+| STT-MRAM | `Warning: Failed to parse config, using defaults` |
+| PCM | `Using default 1GB PCM configuration` |
+| ReRAM | `Using default 256MB ReRAM configuration` |
+
+None of those fallbacks reached a result: the setters overwrite the size, width, node and temperature, the SRAM array is
+characterised as a one-bank scratchpad RAM since 1.11.97, and the latency and energy placeholders are replaced by CACTI or
+NVSim (a run refuses when that fails). With no path each model now prints one line saying the caller sets the array and
+which tool characterises it, as the DRAM model has since 1.11.57; a non-empty path keeps its behaviour. Printed lines
+only: every corpus configuration and example emits the identical configuration and, apart from these lines, identical
+output (gate E1). The image `ghcr.io/isaacyhe/pimid` is rebuilt from this release (`1.12.14` and `latest`).
+
 ## 1.12.13 -- the end of 1.12: what 1.12 simulates is documented, 1.13 configurations are refused, and the image is built from this release
 
 The last 1.12 release (the user: "ship the conf fix, then ship the docker file polish again, then the docker image";

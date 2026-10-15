@@ -182,6 +182,14 @@ void ReRAMModel::initialize() {
 }
 
 void ReRAMModel::loadConfig(const std::string& config_path) {
+    /* 1.12.14: no configuration file is the normal case -- the caller (main.cpp's tier and L0 queries) creates this model
+     * with an empty path and sets the array itself (capacity, access width, process node, temperature) before
+     * initialize(). Through 1.12.13 the empty path was tried as a file and reported a fallback that does not happen. */
+    if (config_path.empty()) {
+        std::cout << "[ReRAMModel] No configuration file: the caller sets the array (capacity, access width, process node,"
+                     " temperature) and NVSim characterises it (1.12.14)." << std::endl;
+        return;
+    }
     std::cout << "[ReRAMModel] Loading configuration from: " << config_path << std::endl;
     std::cout << "[ReRAMModel] Using default 256MB ReRAM configuration" << std::endl;
 }
