@@ -12117,6 +12117,12 @@ static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
  * disagree. Both now call this. */
 static int effectiveDramBanks(const std::string& memory_tech,
                               const UnifiedConfig& config) {
+    /* 1.12.11 (G5): a non-DRAM array has no bank organisation to read. The oracle below demands a DRAM part record
+     * (1.11.101) and exits the run without one, which killed a coupled system whose one shared memory is SRAM
+     * (examples/cosim/multi_device.yaml) before reportSharedMemoryArrayEnergy() could reach its own non-DRAM guard.
+     * 0 is the documented "preset organisation" answer downstream; the same predicate as that guard. */
+    if (memory_tech == "SRAM" || memory_tech == "STT_MRAM" ||
+        memory_tech == "PCM"  || memory_tech == "RERAM") return 0;
     try {
         pimid::RamulatorWrapper oracle("", memory_tech);
         applyDramKnobs(oracle, config);   // 1.11.66 (B2): the x16 part has half the bank groups

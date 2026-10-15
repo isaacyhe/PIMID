@@ -7,6 +7,45 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.11 -- the Docker image tooling polished for the 1.12 shape; the image is built from this release
+
+Item 5 of the pre-fleet sequencing (the user: "12.11 is ... the polishing of docker file and then the image is a result of
+this polish"). The image-build tooling lives in the dev repository's `docker/` directory, outside the public tree, and the
+published image is `ghcr.io/isaacyhe/pimid` (`:latest` and, from this release, a version tag).
+
+**(1) The Dockerfile ships what 1.12.5 to 1.12.10 added**: the characterization cache warehouse (`cache/`, located from the
+binary at `/opt/pimid/cache`, with the tree's NVM entries so the NVM examples start characterized) and the two tools
+`pimid-cache` and `pimid-migrate-config` at `/opt/pimid/scripts`, on `PATH`. The baked CACTI / NVSim data path is a build
+argument (`PIMID_SRC_ROOT`, the absolute path of the tree the binaries were built from) instead of a fixed workstation path;
+the image carries `org.opencontainers.image.version` from the `PIMID_VERSION` build argument. The shared libraries the binaries
+link outside the base image's packages ship from a staging directory `build/runtime-libs/` (a cluster build links libconfig++
+1.7, `libconfig++.so.15`, where ubuntu:24.04 carries `.so.9`; the candidate image's first smoke failed on exactly that), and the
+base image installs `libdw1t64`, which the built QEMU links (the fourth smoke failed on it). The part
+records (`params/`, read at run time since 1.11.94) ship too, with `PIMID_PARAMS` naming them (the second smoke failed on a missing
+`params/dram/ddr4.yaml`).
+
+**(2) The in-image smoke sweep (`pimid_smoke`) follows the current shape**: the co-simulation runs give no `--scope` flag
+(retired in 1.12.9; the nodes decide) and the sweep exercises the two tools and the shipped cache. The entrypoint banner names
+the tools and the configuration shape.
+
+**(3) The build context is the dev repository root** (`-f docker/Dockerfile .`): the tree sources are copied from `pimid/`,
+the two in-image scripts from `docker/`, and `docker/Dockerfile.dockerignore` whitelists what the image needs. Through 1.12.10
+the header said "pimid/ as the context" while two COPY lines read `docker/...`, outside it, so the documented command could not
+build. **(4) `docs/build.md`** describes the image's contents, the version tag, the tools and the build context.
+
+**(5) One simulator fix the image's smoke sweep surfaced (G5)**: a coupled system whose one shared memory is a non-DRAM
+technology (the example `cosim/multi_device.yaml`, SRAM) died at the pricing stage with "no DRAM part record is registered for
+'SRAM'": the bank-organisation helper the shared-array pricing takes as an argument built a Ramulator oracle for any technology,
+and the oracle has demanded a DRAM part record since 1.11.101, so the run exited before the pricing function's own non-DRAM
+guard ("array energy not charged in system scope yet") was reached. The helper now answers 0 (the preset organisation) for the
+four non-DRAM technologies. Every DRAM-memory corpus configuration and example emits identically (gate E1); the example now
+completes (gate M1). Also observed, not changed: the SRAM device model prints "[SRAMModel] YAML parsing error: bad file:" and
+falls back to its defaults when it is created without a configuration path (G6, pending a ruling).
+
+The image itself is built
+and pushed from this release on a machine with Docker (the command sheet `DOCKER_1.12.11.md`), smoke-tested, and the previous
+image tags are removed only after the new image is confirmed working.
+
 ## 1.12.10 -- the host's own main memory is a memory in the system, with its own DDR5 speed grade
 
 Ruling 2 of the configuration-shape rulings of 2026-10-15 (the user: "allow speed grade per mem or per device, so mem with

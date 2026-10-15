@@ -64,12 +64,23 @@ shipped examples work from any directory.
 ## Docker
 
 ```bash
-docker pull ghcr.io/isaacyhe/pimid:latest
+docker pull ghcr.io/isaacyhe/pimid:latest                    # also tagged by version, e.g. :1.12.10
 docker run --rm -it ghcr.io/isaacyhe/pimid:latest            # shell at /opt/pimid
 docker run --rm ghcr.io/isaacyhe/pimid:latest \
     pimid --method exec --config examples/tech_DDR4.yaml --no-power
 docker run --rm ghcr.io/isaacyhe/pimid:latest pimid_smoke    # full feature sweep
+docker run --rm ghcr.io/isaacyhe/pimid:latest pimid-cache list              # the characterization cache the image carries
+docker run --rm -v "$PWD:/work" ghcr.io/isaacyhe/pimid:latest \
+    pimid-migrate-config --check /work/my_config.yaml                      # is a pre-1.12.8 file in the current shape?
 ```
+
+The image ships the prebuilt simulator, QEMU, the plugins, the examples (every
+hardware block under `system:`, 1.12.8), the benchmark workloads, the
+characterization cache warehouse with the tree's NVM entries, and the two tools
+`pimid-cache` and `pimid-migrate-config` (1.12.11). A co-simulation needs no
+`--scope` flag (retired in 1.12.9): the nodes in the file decide. The image is
+built from the dev repository root as the context (`-f docker/Dockerfile .`),
+with the tree built and `PIMID_SRC_ROOT` naming the tree the binaries came from.
 
 ## Reproducibility (ASLR)
 
