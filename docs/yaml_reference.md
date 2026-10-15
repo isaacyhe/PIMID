@@ -900,6 +900,11 @@ system:
 
 ### Hosts
 
+A host has no PEs and no placement level: a `pim` block written on a host node
+is dropped with a `[config] WARNING` naming the node and the keys, and the run
+continues on the node's other keys (1.12.6, ruling 1; the key schema refused
+it through 1.12.5).
+
 ```yaml
 system:
   hosts:
@@ -1103,13 +1108,17 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   node is built with one L2 per PE), `cache.<level>.energy_nj` /
   `static_power_mw` (a node's caches are CACTI-priced) and `cache.pg` (a
   node's caches have no gating flag of their own). A memory-only device
-  (`type: memory`) refuses `pe_type`, `num_pes` and any `pim`, `noc`, `cache`
-  or `core` key: it has no PEs, fabric or caches.
+  (`type: memory`) has no PEs, fabric or caches: `pe_type`, `num_pes` and any
+  `pim`, `noc`, `cache` or `core` key on it is dropped with a `[config]
+  WARNING` naming the node and the keys, and the run continues (1.12.6,
+  ruling 1; refused 1.11.107 to 1.12.5). A `pim` block on a host node (a
+  placement level among its keys) is dropped the same way (1.12.6; the key
+  schema refused it before).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `system.devices[].name` | string | - | Device name (required). |
-| `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). |
+| `system.devices[].type` | string | `"compute"` | Device type: `compute` (has PEs) or `memory` (memory-only, no cores). On a `memory` device `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` are ignored with a warning (1.12.6). |
 | `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
 | `system.devices[].pe_type` | string | the top-level `pim.pe.type`, else `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
 | `system.devices[].pim.pe.issue_width` | int | the top-level `pim.pe.issue_width`, else `2` | Per-device in-order issue width (as `pim.pe.issue_width`, 1-6; the node's own). |

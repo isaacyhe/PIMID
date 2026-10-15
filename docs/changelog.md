@@ -7,6 +7,27 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.6 -- a placement level on a host or on a memory-only device is ignored with a warning
+
+Ruling 1 of the configuration-shape rulings of 2026-10-15 (the user: "pl for memory and host should be ignored
+with warning"; "not reject but ignore"). The five rulings of that day each take a release: this one, then the three node
+lists (hosts / devices / memories, no `type`), everything under `system:`, the scope key retired, the speed grade per node.
+
+**(1) A `pim` block on a host node is dropped with a WARNING.** A host has no PEs and no placement level. The block
+(every key under `system.hosts[].pim`, the placement level among them) is removed before the key schema runs, one
+`[config] WARNING` line names the node and every dropped key, and the run continues on the node's other keys (rc 0).
+Through 1.12.5 the key schema refused the block (rc 2, "the key 'system.hosts[].pim' is not one this build reads").
+
+**(2) The PE keys on a memory-only device are dropped the same way.** A device of `type: memory` has no PEs, fabric or
+caches: `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` on it are removed with the same WARNING. Through 1.12.5 the
+node parse refused them (rc 2, 1.11.107).
+
+Nothing else changes: a key the loader does not read is still refused by the key schema, and a device node's keys are read
+as before. The dropped keys are PE keys on nodes that have no PEs, where no value could have reached a result.
+
+**Data impact.** None. No corpus cell or example writes a `pim` block on a host or a PE key on a memory-only device (no corpus
+cell has a memory-only device). Gate 1226A: every corpus configuration and example emits identically.
+
 ## 1.12.5 -- the five open findings of 1.12.2 (F1-F5): both nodes priced from their own fields, both clocks correct, one cache store
 
 Rulings F1-F5 of 2026-10-15, the third of the pre-fleet rulings: (a) on each.

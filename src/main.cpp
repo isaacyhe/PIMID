@@ -16849,6 +16849,57 @@ static void nodeLeafTexts(const YAML::Node& n, const std::string& path, std::map
     out[nodeCanonicalPath(path)] = n.IsScalar() ? n.Scalar() : YAML::Dump(n);
 }
 
+/* 1.12.6 (the user, 2026-10-15, ruling 1 of the configuration-shape rulings: "pl for memory and
+ * host should be ignored with warning", "not reject but ignore"). A placement level is a PE device's.
+ * A host node has no PEs, and a memory-only device (type: memory) has none either, so a pim block on
+ * a host and the PE keys on a memory-only device (pim, pe_type, num_pes, noc, cache, core) are
+ * dropped here, before the key schema runs, with one WARNING per node naming every dropped key; the
+ * run continues on the node's other keys. Through 1.12.5 a host's pim block was refused by the key
+ * schema (1.11.106) and a memory-only device's PE keys by the node parse (1.11.107). No value of
+ * these keys could reach a result on a node without PEs. */
+static void yamlLeafPathsFlat(const YAML::Node& n, const std::string& path, std::vector<std::string>& out) {
+    if (!n.IsDefined() || n.IsNull()) { out.push_back(path); return; }
+    if (n.IsMap() && n.size() > 0) {
+        for (const auto& kv : n) yamlLeafPathsFlat(kv.second, path + "." + kv.first.Scalar(), out);
+        return;
+    }
+    out.push_back(path);
+}
+static void dropPeKeysOnNonPeNodes(YAML::Node& yaml_cfg) {
+    if (!yaml_cfg.IsMap() || !yaml_cfg["system"] || !yaml_cfg["system"].IsMap()) return;
+    YAML::Node sys = yaml_cfg["system"];
+    auto drop = [](YAML::Node node, const std::string& npath, const std::vector<const char*>& keys, const char* why) {
+        std::vector<std::string> dropped;
+        for (const char* k : keys) {
+            if (!node[k]) continue;
+            yamlLeafPathsFlat(node[k], k, dropped);
+            node.remove(k);
+        }
+        if (dropped.empty()) return;
+        std::cerr << "[config] WARNING: " << npath << " " << why << ", so " << (dropped.size() == 1 ? "this key is" : "these keys are")
+                  << " ignored:";
+        for (const auto& d : dropped) std::cerr << " " << npath << "." << d;
+        std::cerr << ". The run continues on the node's other keys (1.12.6, ruling 1: ignored with a warning, not refused;"
+                     " refused through 1.12.5)." << std::endl;
+    };
+    if (sys["hosts"] && sys["hosts"].IsSequence()) {
+        int i = -1;
+        for (YAML::Node h : sys["hosts"]) {
+            ++i;
+            if (h.IsMap()) drop(h, "system.hosts[" + std::to_string(i) + "]", {"pim"}, "is a host: it has no PEs and no placement level");
+        }
+    }
+    if (sys["devices"] && sys["devices"].IsSequence()) {
+        int i = -1;
+        for (YAML::Node d : sys["devices"]) {
+            ++i;
+            if (!d.IsMap() || !d["type"] || !d["type"].IsScalar() || d["type"].Scalar() != "memory") continue;
+            drop(d, "system.devices[" + std::to_string(i) + "]", {"pim", "pe_type", "num_pes", "noc", "cache", "core"},
+                 "is a memory-only device (type: memory): it has no PEs, fabric or caches");
+        }
+    }
+}
+
 /* 1.11.107: device-scope keys a system node cannot honour, refused with the
  * reason (they were refused as unknown keys in 1.11.106 and ignored in silence
  * before it). */
@@ -17223,6 +17274,7 @@ int main(int argc, char** argv) {
     if (!config_file.empty()) {
         try {
             YAML::Node yaml_cfg = YAML::LoadFile(config_file);
+            dropPeKeysOnNonPeNodes(yaml_cfg);   // 1.12.6 (ruling 1): PE keys on a host or a memory-only device, ignored with a warning
 
             /* 1.11.76 (audit round 6, R6-7): A MISSPELLED SECTION USED TO BE
              * SILENT, AND IT DISCARDS EVERYTHING INSIDE IT.
@@ -18359,7 +18411,7 @@ int main(int argc, char** argv) {
                                              " the later one would win in silence). Give one of them (1.11.107, one vocabulary)." << std::endl;
                                 std::exit(2);
                             }
-                        if (!compute) {
+                        if (!compute) {   // unreachable since 1.12.6 (dropPeKeysOnNonPeNodes removes these keys with a warning); kept as the backstop
                             for (const char* k : {"pe_type", "num_pes", "pim", "noc", "cache", "core"})
                                 if (given(k)) {
                                     std::cerr << "[config] FATAL: " << dpath << "." << k << " is given, but " << dpath
