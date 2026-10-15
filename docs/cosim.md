@@ -72,6 +72,11 @@ added around that same region.
 | boundary costs | none | launch + coherence + bridge, all explicit |
 | device cycles | reference | **identical** (parity invariant) |
 
+Since 1.12.8 both are systems: a `scope: device` file declares its one device
+under `system.devices[]` and no hosts, and a `scope: system` file adds the
+`system.hosts[]` list. The flat `scope: cosim` spelling (a `host:` block and the
+device at the left margin) is retired and refused.
+
 **Parity invariant** (enforced by validation): the device-side cycles of a
 co-sim run agree with a standalone device-scope run of the same kernel. If
 they ever diverge, a second device model has crept in -- file a bug.

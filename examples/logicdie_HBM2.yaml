@@ -2,16 +2,20 @@ scope: device
 workload:
   binary: benchmarks/pim_kernels/stream_triad/stream_triad
   args: ["--size", "1024"]
-pim:
-  pe:
-    type: alu_core
-    count: 4
-  placement:
-    level: LOGIC_DIE
-  mc:
-    type: simple
-memory:
-  technology: HBM2
-noc:
-  topology: H_TREE   # 1.11.106: a LOGIC_DIE placement sits above the dies; the fabric there is the tree (an in-die MESH_2D/RING/CROSSBAR applies at BANK_GROUP and below)
-  model: analytical
+
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 4
+        placement:
+          level: LOGIC_DIE
+        mc:
+          type: simple
+      memory:
+        technology: HBM2
+      noc:
+        topology: H_TREE   # 1.11.106: a LOGIC_DIE placement sits above the dies; the fabric there is the tree (an in-die MESH_2D/RING/CROSSBAR applies at BANK_GROUP and below)
+        model: analytical

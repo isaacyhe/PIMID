@@ -48,12 +48,54 @@ Complete reference for all YAML configuration keys supported by PIMID.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `scope` | string | `"device"` | Simulation scope: `device`, `system` or `cosim`. `cosim` is system scope with its two nodes given by the flat keys (1.12.2): the [`host:` block](#host-block-host-scope-cosim) is `system.hosts[0]`, read as a declared host node, and the top-level device keys (`pim`, `memory`, `noc`, `cache`, `core`, `technology`) are its device node. |
+| `scope` | string | `"device"` | `device` (a system with no hosts: one `system.devices[]` entry, run on the device path) or `system` (a co-simulation: `system.hosts[]` and the device). The flat `cosim` spelling is retired (1.12.8; it put the device at the left margin). Hosts under `scope: device` are refused, naming `scope: system`. The key itself retires in 1.12.9, when the nodes alone decide. |
 | `method` | string | `"exec"` | Simulation method: `exec` (execution-driven, the default), `trace` (replay a recorded trace; needs `--trace-file`), `trace-gen` (record a trace, no simulation; needs `--trace-file`) or `synthetic` (parametric traffic into Garnet, see [Synthetic Traffic](#synthetic-traffic-synthetic)). CLI `--method` overrides. Any other word is refused (rc 1). |
 | `name` | string | `"PIMID_Simulation"` | Configuration name (appears in banner) |
 | `description` | string | `""` | Configuration description |
 
 ---
+
+## Configuration Shape (1.12.8)
+
+Every hardware block is written under `system:` (ruling 5 of 2026-10-15,
+"everything under system"). A device is a `system.devices[]` entry (a memory
+with PEs), a memory without PEs a `system.memories[]` entry, a host a
+`system.hosts[]` entry. A device-only run is a system with no hosts:
+
+```yaml
+scope: device
+workload:
+  binary: ./my_benchmark
+system:
+  devices:
+    - name: device
+      pim:
+        pe: { type: alu_core, count: 4 }
+        placement: { level: BANK }
+        mc: { type: simple }
+      memory:
+        technology: SRAM
+```
+
+The left margin keeps the run's keys: `workload`, `scope`, `method`, `name`,
+`description`, `simulation`, `synthetic`, `power`, `cache.dir` / `mode` /
+`enabled` / `cacti` and the `core.*` records. A `pim`, `memory`, `noc` or
+`technology` block, a `cache` level or `cache.pg`, a `host` block, or
+`power.host_tech_node_nm` / `power.device_tech_node_nm` left at the margin is
+dropped before the key schema runs, with one `[config] WARNING` naming every
+dropped key; the run continues on the nodes. A device-scope file with no
+device node is refused, naming `system.devices[]`; a second node in a device
+run is refused by name (the device-scope model has one memory, the device's).
+In a device run a key the node does not give takes the device-scope default
+(as the margin form did: a core-type PE's 16 KB L1I and 2 MB L2); in a
+co-simulation it takes the node table's default (32/32/256 KB caches,
+`alu_core`, 0 PEs, 1000 MHz, `DDR4`).
+`scripts/pimid-migrate-config` rewrites a pre-1.12.8 file into this shape,
+text-preserving, and checks the rewrite; `--check` reports whether a file is
+already in shape. The key tables below describe each block as written in its
+node; the device-scope-only cache keys (`cache.l2.count`, the `energy_nj` /
+`static_power_mw` overrides, `cache.pg`) are accepted in the device node of a
+device run and stay refused in a co-simulation node.
 
 ## Loader Rules
 
@@ -141,6 +183,10 @@ from one working directory with one environment. See
 ---
 
 ## PIM Configuration
+
+Written in the node (`system.devices[]`, for a memory without PEs `system.memories[]`
+where the block applies) since 1.12.8; a block at the left margin is ignored with a
+warning (see [Configuration Shape](#configuration-shape-1128)).
 
 ### Processing Elements (`pim.pe`)
 
@@ -275,6 +321,9 @@ pim:
 
 ## Core Record Overrides (`core`)
 
+A run record, written at the left margin (one record for every core of the type, hosts and
+devices alike); it is not a node block.
+
 The timing cores' front-end penalties come from the core part record,
 `params/core/default.yaml` (since 1.11.97), which records each value's
 derivation. A `core:` key replaces one field for the run -- every core of that
@@ -303,6 +352,10 @@ for the pipelines these values feed.
 ---
 
 ## Memory Configuration
+
+Written in the node (`system.devices[]`, for a memory without PEs `system.memories[]`
+where the block applies) since 1.12.8; a block at the left margin is ignored with a
+warning (see [Configuration Shape](#configuration-shape-1128)).
 
 ```yaml
 memory:
@@ -420,6 +473,10 @@ memory:
 ---
 
 ## Cache Configuration
+
+Written in the node (`system.devices[]`, for a memory without PEs `system.memories[]`
+where the block applies) since 1.12.8; a block at the left margin is ignored with a
+warning (see [Configuration Shape](#configuration-shape-1128)).
 
 ```yaml
 cache:
@@ -540,6 +597,10 @@ characterisation and by PIMID's residency-based gating outside it.
 ---
 
 ## NoC Configuration
+
+Written in the node (`system.devices[]`, for a memory without PEs `system.memories[]`
+where the block applies) since 1.12.8; a block at the left margin is ignored with a
+warning (see [Configuration Shape](#configuration-shape-1128)).
 
 ```yaml
 noc:
@@ -1267,7 +1328,11 @@ system:
 | `system.network.output_buffer_depth` | int | `4` | Output buffer depth. |
 | `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-system-scope) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` is REFUSED (rc 2, "NOT IMPLEMENTED", since 1.11.57): no lane count scales the link; set `bandwidth_GBs`. **Superseded by [`system.bridge`](#host-device-bridge-co-sim)** for the host<->device boundary charge in co-sim; still parsed for backward compatibility. |
 
-### Host Block (`host`, `scope: cosim`)
+### Host Block (`host`, `scope: cosim`) -- retired in 1.12.8
+
+The flat spelling put the device at the left margin, which holds no hardware since
+1.12.8: `scope: cosim` is refused, naming `system.hosts[]` / `system.devices[]` with
+`scope: system`. The section is kept for the record of 1.12.2 to 1.12.7.
 
 `scope: cosim` is system scope with its two nodes given by the flat keys
 (1.12.2, ruling 2b). The `host:` block is `system.hosts[0]`, named `host`: it
@@ -1480,12 +1545,15 @@ the fields the configuration did not set, exactly as naming it does.
 scope: device
 workload:
   binary: ./my_benchmark
-pim:
-  pe: { type: alu_core, count: 4 }
-  placement: { level: BANK }
-  mc: { type: simple }
-memory:
-  technology: SRAM
+system:
+  devices:
+    - name: device
+      pim:
+        pe: { type: alu_core, count: 4 }
+        placement: { level: BANK }
+        mc: { type: simple }
+      memory:
+        technology: SRAM
 ```
 
 ### DDR4 with Queuing-Aware NoC
@@ -1495,23 +1563,26 @@ scope: device
 workload:
   binary: ./benchmark
   args: ["--size", "4096"]
-pim:
-  pe:
-    type: in_order_core
-    count: 16
-    frequency_mhz: 1500
-    placement: { level: BANK }
-  mc:
-    type: simple
-    bandwidth_mbs: 12800
-memory:
-  technology: DDR4
-noc:
-  model: analytical          # hop count + M/D/1 queuing + MLP
-  vcs_per_vnet: 8            # no topology: a DRAM device's datapath is the tier tree
-cache:
-  l1d: { size_kb: 64, ways: 8 }
-  l2: { size_kb: 4096, count: 4 }
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: in_order_core
+          count: 16
+          frequency_mhz: 1500
+          placement: { level: BANK }
+        mc:
+          type: simple
+          bandwidth_mbs: 12800
+      memory:
+        technology: DDR4
+      noc:
+        model: analytical          # hop count + M/D/1 queuing + MLP
+        vcs_per_vnet: 8            # no topology: a DRAM device's datapath is the tier tree
+      cache:
+        l1d: { size_kb: 64, ways: 8 }
+        l2: { size_kb: 4096, count: 4 }
 simulation:
   max_instructions: 50000000
 power:
@@ -1523,56 +1594,62 @@ power:
 
 ```yaml
 scope: device
-pim:
-  pe:
-    type: alu_core
-    count: 128
-    frequency_mhz: 500
-    compute_factor: 50.0       # tRAS-bound row activation
-    access_factor: 0.0          # Free local SRAM access
-    throughput_factor: 256.0    # 256-wide SIMD in subarray
-    operand_width: 1            # Bit-serial
-    energy_factor: 0.01         # Minimal switching energy
-    placement: { level: SUBARRAY }
-  mc: { type: simple }
-memory:
-  technology: HBM3
-noc:
-  topology: H_TREE
-  model: analytical
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 128
+          frequency_mhz: 500
+          compute_factor: 50.0       # tRAS-bound row activation
+          access_factor: 0.0          # Free local SRAM access
+          throughput_factor: 256.0    # 256-wide SIMD in subarray
+          operand_width: 1            # Bit-serial
+          energy_factor: 0.01         # Minimal switching energy
+          placement: { level: SUBARRAY }
+        mc: { type: simple }
+      memory:
+        technology: HBM3
+      noc:
+        topology: H_TREE
+        model: analytical
 ```
 
 ### Multi-Level Hierarchy Tuning
 
 ```yaml
 scope: device
-pim:
-  pe: { type: alu_core, count: 32, placement: { level: BANK } }
-  mc: { type: simple }
-memory:
-  technology: DDR4
-noc:
-  topology: MESH_2D
-  model: analytical
-  levels:
-    bank:
-      model: simple
-      link_width_bits: 128
-      frequency_ghz: 2.4
-    bank_group:
-      model: detailed         # Garnet for bank-group level
-      router_latency: 2
-      virtual_channels_per_vn: 8
-    chip:
-      model: simple
-  bridges:
-    bank_bankgroup:
-      model: simple
-      lower_width_bits: 128
-      upper_width_bits: 64
-      latency_ns: 0.5
-    bankgroup_chip:
-      model: detailed
+system:
+  devices:
+    - name: device
+      pim:
+        pe: { type: alu_core, count: 32, placement: { level: BANK } }
+        mc: { type: simple }
+      memory:
+        technology: DDR4
+      noc:
+        topology: MESH_2D
+        model: analytical
+        levels:
+          bank:
+            model: simple
+            link_width_bits: 128
+            frequency_ghz: 2.4
+          bank_group:
+            model: detailed         # Garnet for bank-group level
+            router_latency: 2
+            virtual_channels_per_vn: 8
+          chip:
+            model: simple
+        bridges:
+          bank_bankgroup:
+            model: simple
+            lower_width_bits: 128
+            upper_width_bits: 64
+            latency_ns: 0.5
+          bankgroup_chip:
+            model: detailed
 ```
 
 ### System Scope with Host + Device

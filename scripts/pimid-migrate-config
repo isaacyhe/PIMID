@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""pimid-migrate-config -- rewrite a PIMID YAML configuration into the 1.12.8 shape: every hardware
+block under system:.
+
+Through 1.12.7 a device-only run was described by hardware blocks at the left margin (pim:, memory:,
+noc:, cache.l*, technology:). Since 1.12.8 (the configuration-shape rulings of 2026-10-15) every
+hardware block is written under system: -- a device is a system.devices[] entry (a memory with PEs), a
+memory without PEs a system.memories[] entry, a host a system.hosts[] entry -- and a hardware block
+left at the margin is ignored with a warning. The left margin keeps the run's keys: workload, scope
+(retired in 1.12.9), method, name, description, simulation, synthetic, power, cache.dir / mode /
+enabled / cacti, and the core.* records.
+
+This tool moves the margin hardware blocks, text-preserving (comments and spacing kept):
+  * a file without a system: block gets one, with a single device node named "device" that holds the
+    moved blocks;
+  * a file with a system: block has the moved blocks merged into its FIRST system.devices[] entry
+    (a same-named block there receives the margin block's children at its end).
+cache: is split: dir / mode / enabled / cacti stay at the margin, the levels and pg move.
+A margin host: block (the retired flat scope: cosim spelling) is not migrated: the file is reported
+and left alone; write the host under system.hosts[].
+
+Every rewrite is checked with a YAML round trip (PyYAML): the new file has no margin hardware key, and
+the node's blocks equal the old margin blocks merged into the old node's.
+
+usage: pimid-migrate-config [-i] [--check] FILE...
+  -i       rewrite each FILE in place (default: write the migrated text to stdout, one file)
+  --check  only report whether each FILE is already in the 1.12.8 shape
+exit status: 0 when every file was migrated (or, with --check, is already in shape), 1 otherwise.
+"""
+import re
+import sys
+
+HARDWARE = ("pim", "memory", "noc", "technology")
+CACHE_RUN_KEYS = ("dir", "mode", "enabled", "cacti")
+HEADER_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(.*)$")
+
+
+def block_spans(lines):
+    """Top-level blocks: (name, header_index, end_index_exclusive). The body is the run of indented or
+    blank lines after the header, with trailing blank lines left outside the block."""
+    spans = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = HEADER_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        j = i + 1
+        while j < n and (lines[j].strip() == "" or lines[j][0] in " \t"):
+            j += 1
+        k = j
+        while k > i + 1 and lines[k - 1].strip() == "":
+            k -= 1
+        spans.append((m.group(1), i, k))
+        i = j
+    return spans
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip(" "))
+
+
+def reindent(block_lines, by):
+    out = []
+    for ln in block_lines:
+        if ln.strip() == "":
+            out.append(ln)
+        else:
+            out.append(" " * by + ln)
+    return out
+
+
+def split_cache(lines, span):
+    """Split a margin cache: block into run keys (stay) and hardware children (move)."""
+    name, h, e = span
+    header = lines[h]
+    inline = HEADER_RE.match(header).group(2).strip()
+    if inline and not inline.startswith("#"):
+        return None, None   # cache: { ... } on one line: not split by this tool
+    children = []          # (key, [lines])
+    cur = None
+    for ln in lines[h + 1:e]:
+        if ln.strip() == "" or ln.lstrip().startswith("#"):
+            if cur is not None:
+                cur[1].append(ln)
+            continue
+        ind = indent_of(ln)
+        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*):", ln)
+        if ind == 2 and m:
+            cur = (m.group(1), [ln])
+            children.append(cur)
+        elif cur is not None:
+            cur[1].append(ln)
+    stay = [c for c in children if c[0] in CACHE_RUN_KEYS]
+    move = [c for c in children if c[0] not in CACHE_RUN_KEYS]
+    return stay, move
+
+
+def migrate_text(text):
+    lines = text.split("\n")
+    had_trailing_newline = text.endswith("\n")
+    if had_trailing_newline:
+        lines = lines[:-1]
+    spans = block_spans(lines)
+    names = [s[0] for s in spans]
+    if "host" in names:
+        return None, "a margin host: block (the retired flat scope: cosim spelling): write the host under system.hosts[] by hand"
+    moved = []           # list of (section_name, [lines at margin indentation])
+    remove = set()       # line indices to drop
+    replace_cache = None
+    for s in spans:
+        name, h, e = s
+        if name in HARDWARE:
+            moved.append((name, lines[h:e]))
+            remove.update(range(h, e))
+        elif name == "cache":
+            stay, move = split_cache(lines, s)
+            if stay is None:
+                return None, "cache: written on one line: split dir / mode / enabled / cacti from the levels by hand"
+            if move:
+                moved.append(("cache", [lines[h]] + [ln for c in move for ln in c[1]]))
+                if stay:
+                    replace_cache = (h, e, [lines[h]] + [ln for c in stay for ln in c[1]])
+                remove.update(range(h, e))
+    if not moved:
+        return None, None   # nothing at the margin: already in shape
+    out = []
+    for i, ln in enumerate(lines):
+        if replace_cache and i == replace_cache[0]:
+            out.extend(replace_cache[2])
+        if i in remove:
+            continue
+        out.append(ln)
+    # strip the blank lines that the removals left doubled
+    cleaned = []
+    for ln in out:
+        if ln.strip() == "" and cleaned and cleaned[-1].strip() == "":
+            continue
+        cleaned.append(ln)
+    out = cleaned
+    sys_span = next((s for s in block_spans(out) if s[0] == "system"), None)
+    if sys_span is None:
+        if out and out[-1].strip() != "":
+            out.append("")
+        out.append("system:")
+        out.append("  devices:")
+        out.append("    - name: device")
+        for name, blk in moved:
+            out.extend(reindent(blk, 6))
+    else:
+        h, e = sys_span[1], sys_span[2]
+        # the first devices entry
+        dev_hdr = next((i for i in range(h + 1, e) if re.match(r"^  devices:\s*$", out[i])), None)
+        if dev_hdr is None:
+            return None, "a system: block without a devices: list: add the device node by hand"
+        ent = next((i for i in range(dev_hdr + 1, e) if re.match(r"^    - ", out[i])), None)
+        if ent is None:
+            return None, "an empty devices: list: add the device node by hand"
+        ent_end = ent + 1
+        while ent_end < e and (out[ent_end].strip() == "" or indent_of(out[ent_end]) >= 6 or out[ent_end].lstrip().startswith("#") and indent_of(out[ent_end]) >= 4):
+            ent_end += 1
+        while ent_end > ent + 1 and out[ent_end - 1].strip() == "":
+            ent_end -= 1
+        insert_at = ent_end
+        for name, blk in moved:
+            child = next((i for i in range(ent + 1, ent_end) if re.match(r"^      %s:\s*(#.*)?$" % re.escape(name), out[i])), None)
+            if child is None:
+                out[insert_at:insert_at] = reindent(blk, 6)
+                insert_at += len(blk)
+                ent_end += len(blk)
+            else:
+                child_end = child + 1
+                while child_end < ent_end and (out[child_end].strip() == "" or indent_of(out[child_end]) >= 8):
+                    child_end += 1
+                while child_end > child + 1 and out[child_end - 1].strip() == "":
+                    child_end -= 1
+                body = reindent(blk[1:], 6)
+                out[child_end:child_end] = body
+                ent_end += len(body)
+                insert_at += len(body)
+    new = "\n".join(out) + ("\n" if had_trailing_newline else "")
+    return new, None
+
+
+def merge(a, b):
+    """b over a, recursively for maps."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        r = dict(a)
+        for k, v in b.items():
+            r[k] = merge(r[k], v) if k in r else v
+        return r
+    return b
+
+
+def verify(old_text, new_text):
+    import yaml
+    old = yaml.safe_load(old_text) or {}
+    new = yaml.safe_load(new_text) or {}
+    for k in HARDWARE + ("host",):
+        if k in new:
+            return "margin %s survives" % k
+    if "cache" in new and any(k not in CACHE_RUN_KEYS for k in new["cache"]):
+        return "margin cache hardware survives"
+    old_margin = {k: old[k] for k in HARDWARE if k in old}
+    if "cache" in old:
+        hw = {k: v for k, v in old["cache"].items() if k not in CACHE_RUN_KEYS}
+        if hw:
+            old_margin["cache"] = hw
+    old_dev = ((old.get("system") or {}).get("devices") or [{}])[0]
+    new_dev = ((new.get("system") or {}).get("devices") or [{}])[0]
+    expect = merge(old_dev, old_margin)
+    if "name" not in expect:
+        expect = merge({"name": "device"}, expect)
+    if new_dev != expect:
+        return "the device node does not equal the old node merged with the margin blocks"
+    for k in old:
+        if k in HARDWARE or k in ("cache", "system"):
+            continue
+        if new.get(k) != old[k]:
+            return "the run key %s changed" % k
+    return None
+
+
+def main(argv):
+    inplace = "-i" in argv
+    check = "--check" in argv
+    files = [a for a in argv if not a.startswith("-")]
+    if not files or ("-h" in argv) or ("--help" in argv):
+        print(__doc__.strip())
+        return 0 if files or "-h" in argv or "--help" in argv else 1
+    if not inplace and not check and len(files) != 1:
+        print("pimid-migrate-config: give -i to rewrite several files in place", file=sys.stderr)
+        return 1
+    rc = 0
+    for f in files:
+        with open(f) as fh:
+            text = fh.read()
+        new, why = migrate_text(text)
+        if check:
+            if new is None and why is None:
+                print("%s: in shape" % f)
+            else:
+                print("%s: NOT in shape%s" % (f, (": " + why) if why else ""))
+                rc = 1
+            continue
+        if new is None:
+            if why is None:
+                print("%s: already in shape, unchanged" % f, file=sys.stderr)
+                if not inplace:
+                    sys.stdout.write(text)
+            else:
+                print("%s: NOT migrated: %s" % (f, why), file=sys.stderr)
+                rc = 1
+            continue
+        err = verify(text, new)
+        if err:
+            print("%s: NOT migrated, the rewrite failed its check: %s" % (f, err), file=sys.stderr)
+            rc = 1
+            continue
+        if inplace:
+            with open(f, "w") as fh:
+                fh.write(new)
+            print("%s: migrated (%d hardware block(s) moved under system.devices[0])" % (f, len([1 for s in block_spans(text.split('\n')) if s[0] in HARDWARE or s[0] == 'cache'])), file=sys.stderr)
+        else:
+            sys.stdout.write(new)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

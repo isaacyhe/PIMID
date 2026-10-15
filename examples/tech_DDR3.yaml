@@ -2,16 +2,20 @@ scope: device
 workload:
   binary: benchmarks/pim_kernels/stream_triad/stream_triad
   args: ["--size", "1024"]
-pim:
-  pe:
-    type: alu_core
-    count: 4
-  placement:
-    level: BANK
-  mc:
-    type: simple
-memory:
-  technology: DDR3
-noc:
-  topology: MESH_2D
-  model: analytical
+
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 4
+        placement:
+          level: BANK
+        mc:
+          type: simple
+      memory:
+        technology: DDR3
+      noc:
+        topology: MESH_2D
+        model: analytical

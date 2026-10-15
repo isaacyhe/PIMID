@@ -2,16 +2,20 @@ scope: device
 workload:
   binary: benchmarks/pim_kernels/stream_triad/stream_triad
   args: ["--size", "1024"]
-pim:
-  pe:
-    type: alu_core
-    count: 4
-  placement:
-    level: BANK
-  mc:
-    type: simple
-memory:
-  technology: SRAM   # 1.11.106: a flat BUS/FAT_TREE/TORUS_2D fabric is modelled on an SRAM/NVM device; a DRAM device has the tree and the in-die MESH_2D/RING/CROSSBAR
-noc:
-  topology: FAT_TREE
-  model: analytical
+
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 4
+        placement:
+          level: BANK
+        mc:
+          type: simple
+      memory:
+        technology: SRAM   # 1.11.106: a flat BUS/FAT_TREE/TORUS_2D fabric is modelled on an SRAM/NVM device; a DRAM device has the tree and the in-die MESH_2D/RING/CROSSBAR
+      noc:
+        topology: FAT_TREE
+        model: analytical

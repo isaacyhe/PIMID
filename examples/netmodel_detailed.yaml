@@ -2,16 +2,20 @@ scope: device
 workload:
   binary: benchmarks/pim_kernels/stream_triad/stream_triad
   args: ["--size", "1024"]
-pim:
-  pe:
-    type: alu_core
-    count: 4
-  placement:
-    level: BANK
-  mc:
-    type: simple
-memory:
-  technology: DDR4
-noc:
-  topology: H_TREE   # 1.11.106: the detailed (Garnet) model routes the DRAM tree (or an in-die CROSSBAR); an in-die MESH_2D runs on the analytical model
-  model: detailed
+
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 4
+        placement:
+          level: BANK
+        mc:
+          type: simple
+      memory:
+        technology: DDR4
+      noc:
+        topology: H_TREE   # 1.11.106: the detailed (Garnet) model routes the DRAM tree (or an in-die CROSSBAR); an in-die MESH_2D runs on the analytical model
+        model: detailed

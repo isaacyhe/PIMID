@@ -16870,6 +16870,48 @@ static void yamlLeafPathsFlat(const YAML::Node& n, const std::string& path, std:
     }
     out.push_back(path);
 }
+/* 1.12.8 (the user, 2026-10-15, ruling 5 of the configuration-shape rulings: "everything under system";
+ * "memory should also be in the system, device only should also be in a system"). Every hardware block is
+ * written under system: -- a device under system.devices[], a memory without PEs under system.memories[], a
+ * host under system.hosts[]. A hardware block left at the left margin (pim, memory, noc, technology, host, a
+ * cache level or cache.pg, power.host_tech_node_nm / power.device_tech_node_nm) is dropped here, before the
+ * key schema and before the margin parse, with one WARNING naming every dropped key; the run continues on the
+ * nodes (the user: stray keys are ignored with a warning, not refused). The left margin keeps the run's keys:
+ * workload, scope, method, name, description, simulation, synthetic, power, cache.dir / mode / enabled /
+ * cacti and the core.* records. Through 1.12.7 the margin blocks were the device-only configuration, and in
+ * system scope the device nodes' defaults (1.12.2, ruling 7a) or refused when a node differed (1.12.5). */
+static void dropMarginHardwareKeys(YAML::Node& yaml_cfg) {
+    if (!yaml_cfg.IsMap()) return;
+    std::vector<std::string> dropped;
+    for (const char* sec : {"pim", "memory", "noc", "technology", "host"}) {
+        if (!yaml_cfg[sec]) continue;
+        yamlLeafPathsFlat(yaml_cfg[sec], sec, dropped);
+        yaml_cfg.remove(sec);
+    }
+    if (yaml_cfg["cache"] && yaml_cfg["cache"].IsMap()) {
+        YAML::Node c = yaml_cfg["cache"];
+        std::vector<std::string> hw;
+        for (const auto& kv : c) {
+            const std::string k = kv.first.Scalar();
+            if (k == "dir" || k == "mode" || k == "enabled" || k == "cacti") continue;
+            hw.push_back(k);
+        }
+        for (const auto& k : hw) { yamlLeafPathsFlat(c[k], "cache." + k, dropped); c.remove(k); }
+        if (c.size() == 0) yaml_cfg.remove("cache");
+    }
+    if (yaml_cfg["power"] && yaml_cfg["power"].IsMap()) {
+        YAML::Node pw = yaml_cfg["power"];
+        for (const char* k : {"host_tech_node_nm", "device_tech_node_nm"})
+            if (pw[k]) { dropped.push_back(std::string("power.") + k); pw.remove(k); }
+    }
+    if (dropped.empty()) return;
+    std::cerr << "[config] WARNING: " << dropped.size() << " hardware key" << (dropped.size() == 1 ? "" : "s")
+              << " at the left margin " << (dropped.size() == 1 ? "is" : "are") << " ignored:";
+    for (const auto& d : dropped) std::cerr << " " << d;
+    std::cerr << ". Every hardware block is written under system: (1.12.8) -- a device under system.devices[], a memory"
+                 " without PEs under system.memories[], a host under system.hosts[]; scripts/pimid-migrate-config rewrites a"
+                 " file into that shape. The run continues on the nodes' values." << std::endl;
+}
 /* 1.12.7 (the user, 2026-10-15, ruling 4 of the configuration-shape rulings: "no type, but have host, device,
  * memory"; "device is a memory with pe, memory is a memory without pe"). The system: block has three lists --
  * hosts, devices (memories with PEs), memories (memories without PEs) -- and the list says what a node is, so
@@ -16946,7 +16988,7 @@ static void dropPeKeysOnNonPeNodes(YAML::Node& yaml_cfg) {
 /* 1.11.107: device-scope keys a system node cannot honour, refused with the
  * reason (they were refused as unknown keys in 1.11.106 and ignored in silence
  * before it). */
-static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath) {
+static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath, bool device_run) {
     auto refuse = [&](const std::string& key, const char* why) {
         std::cerr << "[config] FATAL: " << dpath << "." << key << " is not a setting a system device node can carry: "
                   << why << " (1.11.107, one vocabulary)." << std::endl;
@@ -16957,6 +16999,7 @@ static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath) {
             refuse(k, "it configures the run's characterization cache, one for the run and not a device's; write it at the top level");
     if (yamlAt(d, "cache.cacti").IsDefined())
         refuse("cache.cacti", "it sets CACTI's design-space search for every cache and array the run characterises, the host's included; write it at the top level");
+    if (device_run) return;   // 1.12.8: in a device run (a system with no hosts) the node IS the device-scope configuration
     if (yamlAt(d, "cache.l2.count").IsDefined())
         refuse("cache.l2.count", "a system node is built with one L2 per PE; a clustered L2 is a device-scope configuration");
     for (const char* lv : {"l1d", "l1i", "l2", "l3"})
@@ -17317,6 +17360,7 @@ int main(int argc, char** argv) {
     if (!config_file.empty()) {
         try {
             YAML::Node yaml_cfg = YAML::LoadFile(config_file);
+            dropMarginHardwareKeys(yaml_cfg);   // 1.12.8 (ruling 5): a hardware block at the left margin, ignored with a warning
             retireDeviceTypeKey(yaml_cfg);      // 1.12.7 (ruling 4): the list says what a node is; type: memory entries move to memories[]
             dropPeKeysOnNonPeNodes(yaml_cfg);   // 1.12.6 (ruling 1): PE keys on a host or a memory, ignored with a warning
 
@@ -18088,6 +18132,12 @@ int main(int argc, char** argv) {
 
             // Host processor config (for co-sim ZSim-based host modeling)
             const bool cosim_scope = (config.scope == "system" && config.cosim_remapped);   // 1.12.2 (ruling 2b)
+            if (cosim_scope) {   /* 1.12.8 (ruling 5): the flat spelling put the device at the left margin, which now holds no hardware. */
+                std::cerr << "[config] FATAL: the flat scope: cosim spelling is retired (1.12.8: every hardware block is written"
+                             " under system:). Declare the host under system.hosts[] and the device under system.devices[] with"
+                             " scope: system." << std::endl;
+                std::exit(2);
+            }
             /* 1.12.2 (ruling 2b): under scope: cosim this block IS system.hosts[0]: the hosts parse
              * below reads it as a declared host node (cosimHostSequence()), with that parse's defaults,
              * key checks and refusals, so this block's own checks are skipped there. The legacy host_*
@@ -18165,7 +18215,7 @@ int main(int argc, char** argv) {
                           << std::endl;
                 std::exit(2);
             }
-            if (config.scope == "system" && (yaml_cfg["system"] || cosim_scope)) {
+            if (yaml_cfg["system"]) {   // 1.12.8 (ruling 5): read in device scope too -- a system with no hosts is a device run
                 // 1.12.2: an empty map under a scope: cosim config that has no system: block.
                 YAML::Node sys = yaml_cfg["system"] ? yaml_cfg["system"] : YAML::Node(YAML::NodeType::Map);
 
@@ -18173,7 +18223,14 @@ int main(int argc, char** argv) {
                 auto normalizeCoreType = normalizeCoreTypeName;
 
                 // Parse hosts (1.12.2, ruling 2b: under scope: cosim, the host: block as system.hosts[0])
-                const YAML::Node host_seq = cosim_scope ? cosimHostSequence(yaml_cfg) : sys["hosts"];
+                const YAML::Node host_seq = sys["hosts"];   // 1.12.8: the flat host: block is gone with the cosim spelling
+                if (config.scope == "device" && host_seq && host_seq.IsSequence() && host_seq.size() > 0) {
+                    std::cerr << "[config] FATAL: scope: device with " << host_seq.size() << " system.hosts[] entr"
+                              << (host_seq.size() == 1 ? "y" : "ies") << ". A device run is a system with no hosts; a system with"
+                                 " hosts is a co-simulation: give scope: system (1.12.8; the scope key retires in 1.12.9, when the"
+                                 " nodes alone decide)." << std::endl;
+                    std::exit(2);
+                }
                 if (host_seq) {
                     int host_idx = -1;   // 1.11.90: key paths in messages
                     for (const auto& h : host_seq) {
@@ -18462,7 +18519,7 @@ int main(int argc, char** argv) {
                                     std::exit(2);
                                 }
                         }
-                        refuseNodeInertKeys(d, dpath);
+                        refuseNodeInertKeys(d, dpath, config.scope == "device");   // 1.12.8: the device run keeps the device-scope-only cache keys
                         node.frequency_mhz = yamlDouble(d["frequency_mhz"],
                                                         topGives("frequency_mhz") ? static_cast<double>(config.frequency_mhz) : 1000.0,   // 1.12.2 (7a)
                                                         dpath + ".frequency_mhz");
@@ -18498,6 +18555,11 @@ int main(int argc, char** argv) {
                         auto dev = std::make_shared<UnifiedConfig>(config);
                         dev->system_nodes.clear();
                         dev->system_network.links.clear();
+                        /* 1.12.8 (gate 1228A, E1 / P3 / B1): in a DEVICE RUN the node is the device-scope configuration, so a
+                         * key it does not give keeps the device-scope default the margin form had (a core-type PE's 16 KB L1I
+                         * and 2 MB L2, in_order_core, ...); the node table's defaults below (alu_core, 0 PEs, 1000 MHz, DDR4,
+                         * 32/32/256 KB caches) are a co-simulation node's. Same file, same machine, same result. */
+                        if (config.scope == "system") {
                         if (!topGives("memory.technology")) dev->memory_tech = node.memory_tech;   // "DDR4"
                         dev->ports_per_bank = node.ports_per_bank;           // 1
                         dev->placement_level = node.placement_level;         // "BANK"
@@ -18547,7 +18609,8 @@ int main(int argc, char** argv) {
                             if (topGives("cache.l2_latency_ns")) dev->l2_params.latency_ns = lat[2];
                             if (topGives("cache.l3_latency_ns")) dev->l3_params.latency_ns = lat[3];
                         }
-                        if (compute) {   // 1.12.2 (7a): absent, the default above (the top level's or the table's)
+                        }   // end of the co-simulation node defaults (1.12.8)
+                        if (compute) {   // absent: the default above (a co-simulation node's table, or the device-scope default in a device run)
                             dev->pe_type = normalizeCoreType(yamlString(d["pe_type"], dev->pe_type, dpath + ".pe_type"),
                                                              dpath + ".pe_type");   // 1.12.1: key path
                             dev->num_pes = yamlInt(d["num_pes"], dev->num_pes, dpath + ".num_pes");
@@ -18582,7 +18645,7 @@ int main(int argc, char** argv) {
                         {
                             DeviceParseScope nsc;
                             nsc.pfx = dpath + ".";
-                            nsc.node = true;
+                            nsc.node = (config.scope == "system");   // 1.12.8: in a device run the node IS the device-scope configuration (its notes, its bank unit)
                             YAML::Node dn = d;   // a non-const handle: absent keys read as at the top level
                             if (parseDevicePimBlock(dn, *dev, nsc) != 0) return 1;
                             if (parseDeviceCoreCacheNocBlocks(dn, *dev, nsc) != 0) return 1;
@@ -18637,6 +18700,8 @@ int main(int argc, char** argv) {
                         // The node's fields, from its resolved configuration.
                         if (given("pim.pe.frequency_mhz") || given("noc.clock_mhz"))
                             node.frequency_mhz = static_cast<double>(dev->frequency_mhz);
+                        else if (config.scope == "device" && d["frequency_mhz"])   // 1.12.8: the flat alias is the device run's clock
+                            dev->frequency_mhz = static_cast<int>(node.frequency_mhz);
                         node.tech_node_nm = dev->tech_node_nm;
                         node.memory_tech = dev->memory_tech;
                         node.ports_per_bank = dev->ports_per_bank;
@@ -18952,6 +19017,43 @@ int main(int argc, char** argv) {
                          " and re-run." << std::endl;
             std::exit(2);
         }
+    }
+
+    /* 1.12.8 (the user, 2026-10-15, ruling 5): a system with no hosts is a device run. Under scope: device the
+     * system: block has been read above; its one device node (a memory with PEs) is the run: the node's own
+     * configuration -- the copy the node parse built with the device-scope code, the node table's defaults for
+     * what it does not give, the flat aliases -- replaces the margin configuration, which holds no hardware
+     * since this release, and the run takes the device path as before (emission and results unchanged, gate
+     * 1228A). One device and no memory: the device-scope model has one memory, the device's. */
+    if (config.scope == "device") {
+        const UnifiedConfig::SystemNode* built = nullptr;
+        size_t others = 0;
+        for (const auto& n : config.system_nodes) {
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type == UnifiedConfig::SystemNode::COMPUTE && n.num_pes > 0 && n.dev && !built) built = &n;
+            else ++others;
+        }
+        if (!built) {
+            std::cerr << "[config] FATAL: no device: a run needs one system.devices[] entry with PEs (1.12.8: every hardware block is"
+                         " written under system:; a device-only file is a system with no hosts). Write the device under"
+                         " system.devices[], or run scripts/pimid-migrate-config on a pre-1.12.8 file." << std::endl;
+            std::exit(2);
+        }
+        if (others > 0) {
+            std::cerr << "[config] FATAL: a device run has one node, the device; this configuration declares " << (others + 1)
+                      << " (another device or a system.memories[] entry beside '" << built->name << "'). The device-scope model prices"
+                         " one memory, the device's; a system with several nodes is a co-simulation (scope: system, with a host)." << std::endl;
+            std::exit(2);
+        }
+        UnifiedConfig run = *built->dev;
+        run.scope = "device";
+        run.cosim_remapped = false;
+        run.system_nodes.clear();
+        run.workload_env = config.workload_env;   // the margin env with the node's merged in (the node parse merges into config)
+        if (!built->workload_binary.empty()) {    // the node's workload, when it gives one; else the margin's (already in the copy)
+            run.workload_binary = built->workload_binary;
+            run.workload_args = built->workload_args;
+        }
+        config = run;
     }
 
     /* 1.11.67: the four run-wide DRAM knobs are final here (every assignment

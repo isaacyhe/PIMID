@@ -7,6 +7,45 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.8 -- everything under system: a device-only run is a one-device system; a hardware block at the left margin is ignored with a warning
+
+Ruling 5 of the configuration-shape rulings of 2026-10-15 (the user: "memory should also be in the system, device only should
+also be in a system, device is a memory with pe, memory is a memory without pe"; "everything under system"; stray keys "not
+reject but ignore", with a warning).
+
+**(1) Every hardware block is written under `system:`.** A device is a `system.devices[]` entry, a memory without PEs a
+`system.memories[]` entry, a host a `system.hosts[]` entry. The left margin keeps the run's keys: `workload`, `scope` (retired
+in 1.12.9), `method`, `name`, `description`, `simulation`, `synthetic`, `power`, `cache.dir` / `mode` / `enabled` / `cacti`
+and the `core.*` records. A `pim`, `memory`, `noc` or `technology` block, a `cache` level or `cache.pg`, a `host` block, or
+`power.host_tech_node_nm` / `power.device_tech_node_nm` left at the margin is dropped before the key schema runs, with one
+`[config] WARNING` naming every dropped key; the run continues on the nodes. Through 1.12.7 the margin blocks were the
+device-only configuration, and in system scope the defaults of the device nodes (1.12.2) or refused (1.12.5).
+
+**(2) A device-only run is a system with no hosts.** Under `scope: device` the `system:` block is read; its one device node
+(a memory with PEs) becomes the run's configuration, parsed by the device-scope code (the node's own blocks, the node table's
+defaults for what it does not give -- the DEVICE-SCOPE defaults the margin form had (a core-type PE's 16 KB L1I and 2 MB L2),
+not a co-simulation node's table (32/32/256 KB), the flat aliases `pe_type` / `num_pes` / `frequency_mhz` / `tech_node_nm`, its
+`workload` when the margin gives none) and the run takes the device path as before: same emission, same results (gate E1, 396
+pairs EXACT; P2 / P2c / P3 / B1 / C2 EXACT or in band). A `system.hosts[]` list under `scope: device` is refused, naming
+`scope: system`; a second node (another device or a memory) in a device run is refused by name (one device, one memory: the
+device-scope model); a device-scope file with no device node is refused, naming `system.devices[]`. The device-scope-only
+cache keys (`cache.l2.count`, the `energy_nj` / `static_power_mw` overrides, `cache.pg`) are accepted in the device node of a
+device run (they stay refused in a co-simulation node).
+
+**(3) The flat `scope: cosim` spelling is retired** (its hardware lived at the margin): refused, naming `system.hosts[]` /
+`system.devices[]` with `scope: system`. Nothing in the corpus or the examples used it.
+
+**(4) `scripts/pimid-migrate-config` ships**: it rewrites a file into the new shape, text-preserving (comments kept), moving the
+margin blocks into a new single device node or merging them into the first `system.devices[]` entry (the DDR5 speed grade of
+the ten DDR5-3200 co-sim cells moves into the device's `memory` block), and checks the rewrite with a YAML round trip.
+`--check` reports whether a file is already in shape. The 31 device examples and the 40 Rodinia configurations are rewritten
+in the tree; the corpus copies `configs_v1187_128` (280) and `configs_sys_128` (90) hold the migrated cells, the originals
+untouched.
+
+**Data impact.** None by construction: every migrated file emits what its original emitted (gate E1), and the parity arms are
+EXACT. An original device-only file loads on 1.12.8 with the margin warning and is then refused for having no device node
+(gate E2): it must be migrated, which the shipped tool does.
+
 ## 1.12.7 -- three node lists: hosts, devices, memories; the type key is retired
 
 Ruling 4 of the configuration-shape rulings of 2026-10-15 (the user: "no type, but have host, device, memory"; "device is a

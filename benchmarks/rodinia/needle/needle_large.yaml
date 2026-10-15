@@ -4,19 +4,23 @@ workload:
   args: ["--size", "4096"]
   env:
     OMP_NUM_THREADS: "8"
-pim:
-  pe:
-    type: alu_core
-    count: 8
-    frequency_mhz: 1000
-    placement:
-      level: BANK
-  mc:
-    type: simple
-memory:
-  technology: SRAM
-noc:
-  topology: MESH_2D
-  model: analytical
 simulation:
   max_instructions: 1000000000
+
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 8
+          frequency_mhz: 1000
+          placement:
+            level: BANK
+        mc:
+          type: simple
+      memory:
+        technology: SRAM
+      noc:
+        topology: MESH_2D
+        model: analytical

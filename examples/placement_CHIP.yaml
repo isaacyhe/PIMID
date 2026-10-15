@@ -2,16 +2,20 @@ scope: device
 workload:
   binary: benchmarks/pim_kernels/stream_triad/stream_triad
   args: ["--size", "1024"]
-pim:
-  pe:
-    type: alu_core
-    count: 4
-  placement:
-    level: CHIP
-  mc:
-    type: simple
-memory:
-  technology: DDR4
-noc:
-  topology: H_TREE   # 1.11.106: at the CHIP/RANK tiers the fabric is the tree (an in-die MESH_2D/RING/CROSSBAR applies at BANK_GROUP and below)
-  model: analytical
+
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          count: 4
+        placement:
+          level: CHIP
+        mc:
+          type: simple
+      memory:
+        technology: DDR4
+      noc:
+        topology: H_TREE   # 1.11.106: at the CHIP/RANK tiers the fabric is the tree (an in-die MESH_2D/RING/CROSSBAR applies at BANK_GROUP and below)
+        model: analytical
