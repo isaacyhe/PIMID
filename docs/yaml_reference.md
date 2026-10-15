@@ -1068,10 +1068,7 @@ Ignored (with a warning) when the device is `is_default_mem: true`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.hosts[].mem.technology` | string | (required) | Host main-memory tech (one of the 11). Required when device `is_default_mem: false`. |
-| `system.hosts[].mem.capacity_gb` | double | - | REFUSED at load (rc 2, "NOT IMPLEMENTED", since 1.11.57): host nodes carry no address range and no term in this model scales with memory capacity, so the key would change nothing. |
-| `system.hosts[].mem.bandwidth_gbs` | double | auto | Per-channel bandwidth (GB/s); converted to MB/s. Absent = auto from tech. |
-| `system.hosts[].mem.channels` | int | `-1` | Host memory channel count. `-1` = auto from tech. |
+| `system.hosts[].mem` | map | retired | Retired (1.12.10): the host's own main memory is a `system.memories[]` entry (see [Memories](#memories)); a `mem` block is dropped with a warning. From 1.7.4 to 1.12.9 it named the host's separate memory (`technology`, `bandwidth_gbs`, `channels`; `capacity_gb` was refused). |
 
 ### Devices
 
@@ -1136,12 +1133,10 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   KB caches and no L3, ...). The node keys the built device carries into the
   run -- `pim.placement`, `pim.mc.type` / `pes_per_mc`, `noc.topology`,
   `memory.ports_per_bank` -- take this table's defaults (`BANK`, `simple`, 1,
-  `MESH_2D`, 1) when the node does not give them; a top-level value for one of
-  these five keys that the node does not match is refused (rc 2), naming both
-  (1.12.5; it was overridden in silence before). Every other device-scope key
-  takes the top-level value, else the built-in default -- so a top-level
-  `memory.dram.ddr5_speed_grade` still reaches the device, as before. A host
-  node takes none of these: its keys are its own `system.hosts[]` keys.
+  `MESH_2D`, 1) when the node does not give them (since 1.12.8 the left margin
+  holds no device key; through 1.12.7 a top-level value was the node's default,
+  1.12.2, or refused when unequal, 1.12.5). A host node takes none of these:
+  its keys are its own `system.hosts[]` keys.
 - **Per node.** The model reads these per node, so each device node may differ:
   the clock, process node, PE type and count, memory technology, the PE's
   `pim.pe.*` datapath and power keys (factors, `operand_width`, `bit_serial`,
@@ -1157,9 +1152,12 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   `noc.topology`, `noc.levels`, `noc.bridges`, `memory.banks`,
   `memory.dram`, `memory.timing`, `memory.controller`, ...) takes effect
   through it, as at device scope.
-- **Run-wide keys.** `memory.dram.ddr5_speed_grade` and
-  `memory.dram.device_width` set every DRAM model of the run, and
-  `core.in_order.*` / `core.ooo.*` every core of that type, hosts included.
+- **Run-wide keys.** The device node's `memory.dram.ddr5_speed_grade` and
+  `memory.dram.device_width` set every DRAM model of the run -- the device's,
+  and the shared array when the device is the host's main memory; a memory
+  declared beside the device is the host's own main memory with its own grade
+  (`system.memories[].memory.dram.ddr5_speed_grade`, 1.12.10). `core.in_order.*`
+  / `core.ooo.*` set every core of that type, hosts included.
 - **Refused instead of merged.** A key outside the per-node set must resolve to
   the same value (the node's own, else the top level's, else unset) at every
   node it reaches -- every compute device with PEs; for the DRAM grade every
@@ -1196,7 +1194,7 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | `system.devices[].frequency_mhz` | double | the top-level `pim.pe.frequency_mhz` / `noc.clock_mhz`, else `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
 | `system.devices[].tech_node_nm` | int | the device node (`22`) | Device technology node. Alias of `technology.node_nm` in the node. |
 | `system.devices[].memory` | map | - | Device memory: every `memory.*` key (1.11.107; `technology`, `banks` and `ports_per_bank` only before). |
-| `system.devices[].is_default_mem` | bool | `true` | `true`: this PIM device IS the host's main memory (host tech = device tech by construction). `false`: accelerator-side memory only -- the host MUST supply a `system.hosts[].mem` block (else config error). |
+| `system.devices[].is_default_mem` | bool | derived | `true`: this PIM device IS the host's main memory (host tech = device tech by construction). Since 1.12.10 the system decides: a `system.memories[]` entry present makes that memory the host's and the device not (`false`); a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`. |
 | `system.devices[].pim` | map | - | Device PIM block: every `pim.*` key (1.11.107), each meaning what its top-level `pim.*` key means; `mc.type` accepts `simple` only (1.11.106). |
 | `system.devices[].noc` | map | - | Device NoC: every `noc.*` key (1.11.107). `model` is `analytical` or `detailed` (as the top-level `noc.model`; anything else is refused; absent = the top-level `noc.model`); `topology` is upper-cased and checked against the `noc.topology` list (1.11.106); `pg` gates the fabric. |
 | `system.devices[].cache` | map | - | Device caches: the flat keys `l1d_kb`, `l1i_kb`, `l2_kb`, `l3_kb` and per level `<level>_latency_ns`, `<level>_ways`, `<level>_banks` (as the host's), or their device-scope forms `cache.<level>.size_kb` / `.ways` / `.banks` / `.latency_ns` and `cache.l2.enabled` / `cache.l3.enabled` (1.11.107; one form per quantity). A level is present when its size is above 0; `cache.l3.enabled: true` needs `cache.l3.size_kb`. Since 1.11.107 a device node's L3 is priced by McPAT as well as built (it was built and left out of the node's McPAT description). |
@@ -1206,12 +1204,27 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 ### Memories
 
 A memory is a memory without PEs (1.12.7; the `type: memory` device of
-1.11.90 to 1.12.6, read by the same code). It takes its node keys and every
-`memory.*` key; `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` on it are
-dropped with a warning (1.12.6). This build prices one memory per role, so a
-memory beside a device that carries memory is refused by name (multi-memory
-topologies are version 2 work): the list is accepted by the loader and priced
-where the model has a memory for it.
+1.11.90 to 1.12.6, read by the same code). Since 1.12.10 a memory declared
+beside the device is the HOST's own main memory (ruling 2: "it is a memory in
+the system"): its `memory.technology` and `memory.dram.ddr5_speed_grade`
+(`3200` / `4800` / `5600`) are honoured in the host memory's idle latency,
+per-channel bandwidth and array energy, so the host's memory and the PIM device
+may run at different speeds. The device is then not the host's memory
+(`is_default_mem` derived `false`). One memory in this build (one host, one
+device, one host memory): a second entry is refused by name; several memories
+are the multi-memory model's, after 1.12. A key on the memory that the host
+memory model does not read (`memory.banks`, ...) is dropped with a warning
+naming it; `pim`, `pe_type`, `num_pes`, `noc`, `cache` and `core` on it are
+dropped with a warning (1.12.6). The host's bandwidth and channel overrides
+stay `system.hosts[].memory.bandwidth_mbs` / `channels`.
+
+The node lists say what the run is and how the address space is laid out
+(1.12.10): devices only is a device run; hosts and devices alone make the
+device the host's main memory; hosts, a memory and a device lay the address
+space memory first, then device (the node map's windows); hosts and a memory
+alone describe a host-only system, whose run-time behaviour, explicit
+addresses, allowed address ranges and several hosts, devices or memories are
+1.13 work (the configuration keys for addresses arrive in 1.12.12).
 
 ```yaml
 system:
@@ -1228,7 +1241,8 @@ system:
 |-----|------|---------|-------------|
 | `system.memories[].name` | string | - | Memory name (required). |
 | `system.memories[].attachment` | string | `"external"` | `internal` or `external`, as `system.devices[].attachment`. |
-| `system.memories[].is_default_mem` | bool | `true` | As `system.devices[].is_default_mem`. |
+| `system.memories[].memory.technology` | string | `"DDR4"` | The host memory's technology (one of the 11). |
+| `system.memories[].memory.dram.ddr5_speed_grade` | int | the run's | The host memory's own DDR5 speed grade (1.12.10). Dropped with a warning on a non-DDR5 memory. |
 | `system.memories[].frequency_mhz` | double | `1000` | The node clock (the memory's own, for its timing conversions). |
 | `system.memories[].tech_node_nm` | int | `system.tech_node_nm` (`22`) | Process node. Alias of `technology.node_nm` in the node. |
 | `system.memories[].memory` | map | - | Every `memory.*` key, as in a device node. |

@@ -89,6 +89,14 @@ block and the device as the top-level configuration) the top-level clock IS
 the device's and `host.frequency_mhz` the host's; with declared nodes the
 top-level `system.frequency_mhz` is only the run's reference clock.
 
+**Memory speed.** The device node's `memory.dram.ddr5_speed_grade` is the run's
+DRAM part. A memory declared beside the device (`system.memories[]`, a memory
+without PEs) is the host's own main memory (1.12.10): its `memory.technology`
+and `memory.dram.ddr5_speed_grade` set the host memory's idle latency,
+per-channel bandwidth and array energy, so the host memory and the PIM device
+may run at different speeds; the device's figures do not move. One host, one
+device and one host memory in this build; `system.hosts[].mem` is retired.
+
 **Power.** `--method exec` and `--method trace` in system scope price the
 nodes the same way, each from its own fields (the per-node path; trace since
 1.12.5).

@@ -2792,6 +2792,7 @@ struct UnifiedConfig {
         // matrix). false: the device is accelerator-side memory only and the
         // host MUST supply a host.mem block (resolveMemoryTopology enforces).
         bool is_default_mem = true;
+        bool is_default_mem_given = false;   // 1.12.10: written in the file (cross-checked against a system.memories[] entry)
         // Host memory bandwidth/channel overrides (HOST role). -1 = auto from
         // technology (per-channel BW = aggregate/channels; DDR5 c=1 x 25.6 GB/s,
         // HBM3 c=16 x 51.2 GB/s). User-settable via host memory: block.
@@ -2829,6 +2830,11 @@ struct UnifiedConfig {
         // "advisory" by its own comment, and the key is refused at parse time.
         int         host_mem_bandwidth_mbs = -1; // host.mem.bandwidth_gbs -> per-channel MB/s override
         int         host_mem_channels = -1;      // host.mem.channels override
+        /* 1.12.10 (ruling 2, user 2026-10-15: "allow speed grade per mem or per device"; "it is a memory in the system"):
+         * the host's own main memory is a system.memories[] entry; resolveMemoryTopology() copies its technology here
+         * (host_mem_tech) and its memory.dram.ddr5_speed_grade (0 = the run's). The grade is honoured where the host
+         * memory is priced on its own: its idle latency, its per-channel bandwidth and its array energy. */
+        int         host_ddr5_speed_grade = 0;
 
         // Host NoC config (HOST with num_cores>1): analytic crossbar fabric.
         // 1-core hosts have no fabric (crossbar degenerates at a single core).
@@ -3234,6 +3240,10 @@ static int effectiveDdr5Grade(const UnifiedConfig& config) {
     const auto us = n.find('_'); int v = 0;
     for (size_t i = (us == std::string::npos ? n.size() : us + 1); i < n.size() && n[i] >= '0' && n[i] <= '9'; ++i) v = v * 10 + (n[i] - '0');
     return v;
+}
+/* 1.12.10 (ruling 2): the host memory's grade -- its own where the system declares a memory for it, else the run's. */
+static int hostDdr5Grade(const UnifiedConfig::SystemNode& host, const UnifiedConfig& config) {
+    return host.host_ddr5_speed_grade > 0 ? host.host_ddr5_speed_grade : config.ddr5_speed_grade;
 }
 
 /**
@@ -7303,16 +7313,23 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
     int net_id = 0;
     for (auto& n : config.system_nodes) {
         n.node_network_id = net_id++;
-        if (n.role == UnifiedConfig::SystemNode::DEVICE) {
-            n.addr_start = addr;
-            n.addr_end = addr + RANGE_SIZE;
-            addr += RANGE_SIZE;
-        } else {
+        if (n.role != UnifiedConfig::SystemNode::DEVICE) {
             // Host: no address range (accesses device memory through system network)
             n.addr_start = 0;
             n.addr_end = 0;
         }
     }
+    /* 1.12.10 (the user's layout rule: "if host mem device, then the addr is mem then device"): the memories without PEs
+     * take the first windows, the devices follow; explicit addresses and their enforcement are 1.12.12 / 1.13. */
+    for (int pass = 0; pass < 2; ++pass)
+        for (auto& n : config.system_nodes) {
+            if (n.role != UnifiedConfig::SystemNode::DEVICE) continue;
+            const bool mem_only = (n.device_type == UnifiedConfig::SystemNode::MEMORY_ONLY);
+            if ((pass == 0) != mem_only) continue;
+            n.addr_start = addr;
+            n.addr_end = addr + RANGE_SIZE;
+            addr += RANGE_SIZE;
+        }
 
     // 4. Inherit top-level workload for nodes without explicit workload
     for (auto& n : config.system_nodes) {
@@ -7362,6 +7379,7 @@ static int resolveMemoryTopology(UnifiedConfig& config) {
         const UnifiedConfig::SystemNode* first_mem[2] = {nullptr, nullptr};
         for (const auto& n : config.system_nodes) {
             if (n.memory_tech.empty()) continue;
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type == UnifiedConfig::SystemNode::MEMORY_ONLY) continue;   // 1.12.10: the host's own memory, resolved below
             int r = (n.role == UnifiedConfig::SystemNode::HOST) ? 0 : 1;
             if (!first_mem[r]) { first_mem[r] = &n; continue; }
             std::cerr << "ERROR: two " << (r == 0 ? "HOST" : "DEVICE")
@@ -7454,10 +7472,9 @@ static int resolveMemoryTopology(UnifiedConfig& config) {
     } else {
         // Separate memory: the host must declare its own main memory tech.
         if (!host->host_mem_present || host->host_mem_tech.empty()) {
-            std::cerr << "ERROR: device.is_default_mem=false requires a host.mem "
-                      << "block with host.mem.technology on host '" << host->name
-                      << "'.\n  The accelerator-side device is NOT the host's "
-                      << "main memory; there is no silent DDR5 fallback.\n";
+            std::cerr << "ERROR: " << dev->cfg_path << ".is_default_mem: false requires a system.memories[] entry: the host's own main"
+                         " memory, a memory without PEs with its memory.technology (1.12.10; system.hosts[].mem is retired). The"
+                         " accelerator-side device is NOT the host's main memory; there is no silent DDR5 fallback.\n";
             return 1;
         }
         if (kValidTechs.find(host->host_mem_tech) == kValidTechs.end()) {
@@ -13959,7 +13976,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               host_ch,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
                                               config.temperature_k,            // 1.11.65
-                                              config.ddr5_speed_grade,         // 1.11.66 (R8 #9)
+                                              hostDdr5Grade(node, config),     // 1.11.66 (R8 #9); 1.12.10: the host memory's own grade
                                               bankOpenFrom(zsim_stats.host.bank_open_present,   // 1.11.91 (R8-7)
                                                            zsim_stats.host.bank_open_cycles,
                                                            zsim_stats.host.bank_open_window));
@@ -14350,13 +14367,15 @@ static HostMemBW getHostMemBandwidth(const std::string& tech_in,
                                      int tech_node_nm = 22,
                                      int temperature_k = 350,
                                      double freq_mhz = 2000.0,
-                                     bool user_bw_set = false) {
+                                     bool user_bw_set = false,
+                                     int ddr5_speed_grade = 0) {   // 1.12.10: the host memory's grade (0 = the run's knobs)
     std::string tech = tech_in;
     std::transform(tech.begin(), tech.end(), tech.begin(), ::toupper);
     HostMemBW r; r.per_channel_mbs = 0; r.channels = 1; r.sourced = false;   // 1.11.94: no placeholder rate
     if (pimid::isDRAM(pimid::parseMemoryTechnology(tech_in))) {
         try {
             pimid::RamulatorWrapper bw_q("", tech);
+            if (ddr5_speed_grade > 0) bw_q.setDdr5SpeedGrade(ddr5_speed_grade);   // 1.12.10: the host memory's own part
             bw_q.initialize();
             double agg = static_cast<double>(bw_q.getBandwidth());  // aggregate MB/s
             uint32_t nch = bw_q.getNumChannels();
@@ -14553,7 +14572,9 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
     int phys_latency = getMemoryLatencyCycles(host.memory_tech, host_freq,
                                               host.tech_node_nm, false, 0.0,
                                               -999, config.temperature_k,
-                                              config.cache_line_size);  // 1.11.56 (B018)
+                                              config.cache_line_size,  // 1.11.56 (B018)
+                                              config.dram_device_width,
+                                              hostDdr5Grade(host, config));   // 1.12.10: the host memory's own grade
     phys_latency = std::max(1, phys_latency);
     // Host-path adder (ns): the aggregate override wins outright; otherwise the
     // per-tech DECOMPOSED default split (getHostPathSplit) with any per-component
@@ -14601,7 +14622,8 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
     HostMemBW bw = getHostMemBandwidth(host.memory_tech,
                                        config.num_banks, config.cache_line_size,
                                        host.tech_node_nm, config.temperature_k,
-                                       host_freq, host.mem_bandwidth_mbs > 0);   // 1.11.56 (B004); 1.11.94 (2b)
+                                       host_freq, host.mem_bandwidth_mbs > 0,
+                                       hostDdr5Grade(host, config));   // 1.11.56 (B004); 1.11.94 (2b); 1.12.10: the host memory's grade
     if (host.mem_bandwidth_mbs > 0) bw.per_channel_mbs = host.mem_bandwidth_mbs;
     if (host.mem_channels > 0)      bw.channels = host.mem_channels;
     // Aggregate host memory bandwidth = per-channel x channels (the M/D/1 cap).
@@ -14614,6 +14636,8 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
     // Self-documenting (1.7.4): host main-memory technology + effective idle
     // latency. Under is_default_mem=true this tech = the device tech; under
     // false it is host.mem.technology (decoupled from the device / bridge tech).
+    if (host.host_ddr5_speed_grade > 0)
+        out << "    // host main memory DDR5 grade (1.12.10): " << host.host_ddr5_speed_grade << " (the system's memory's own; the device's part is the run's)\n";
     out << "    // host main memory (1.7.4): tech=" << host.memory_tech
         << " idle=" << std::fixed << std::setprecision(1)
         << (mem_latency * 1000.0 / host_freq) << "ns" << std::defaultfloat
@@ -15065,7 +15089,10 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
     // Count devices that contribute memory
     int num_mem_devices = 0;
     for (const auto& n : config.system_nodes) {
-        if (n.role == UnifiedConfig::SystemNode::DEVICE) num_mem_devices++;
+        /* 1.12.10: a memory without PEs is the host main memory, served by the host memory controller (the mem block
+         * below, at the memory technology and grade); it holds the first address window as a label and is not a
+         * router device. Routing by window and several memories are 1.13 work. */
+        if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY) num_mem_devices++;
     }
 
     // The DEVICE's own clock, captured here so the hierarchy block can clock the
@@ -16930,6 +16957,75 @@ static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath, b
         refuse("cache.pg", "the per-node power gating covers pim.pe.pg, pim.mc.pg and noc.pg; a node's caches have no gating flag of their own in this release");
 }
 
+/* 1.12.10 (ruling 2, the user: "it is a memory in the system"; "how you wired the dev, the mem or both to the host?"):
+ * the host's own main memory is a system.memories[] entry -- a memory without PEs -- whose memory.technology and
+ * memory.dram.ddr5_speed_grade are the host memory's: the host's memory controller (the emitted mem block) runs them.
+ * The entry stays in the node map and takes the FIRST address window, the device's window follows (the user's layout
+ * rule: "if host mem device, then the addr is mem then device"; a host and a device alone deduce the device as the
+ * host's memory; hosts and a memory alone are a host-only system, whose run-time behaviour is 1.13 work with the
+ * multi-host / multi-device / multi-memory implementation). One in this build (one host, one device, one host
+ * memory; several are the multi-memory model's, after 1.12). With one present the device is not the host's memory
+ * (is_default_mem false, derived); a written true is dropped with a warning. A key on the memory the host memory
+ * model does not read is dropped with a warning naming it. */
+static void resolveHostMemoryNode(UnifiedConfig& config) {
+    /* 1.12.10 (the user: "if a conf for the multi node is not supported, then refusal is the pick for now"): one host and
+     * one device in this build; several hosts, devices or memories are 1.13 (the multi-host / multi-device / multi-memory
+     * implementation). Through 1.12.9 a second host or device tripped the one-memory-per-role refusal, worded for memory. */
+    {
+        size_t nh = 0, nd = 0;
+        for (const auto& n : config.system_nodes) {
+            if (n.role == UnifiedConfig::SystemNode::HOST) ++nh;
+            else if (n.device_type == UnifiedConfig::SystemNode::COMPUTE) ++nd;
+        }
+        if (nh > 1) { std::cerr << "[config] FATAL: " << nh << " system.hosts[] entries. This build simulates one host; several hosts are 1.13 (the multi-host / multi-device / multi-memory implementation). Keep one." << std::endl; std::exit(2); }
+        if (nd > 1) { std::cerr << "[config] FATAL: " << nd << " system.devices[] entries. This build simulates one device; several devices are 1.13 (the multi-host / multi-device / multi-memory implementation). Keep one." << std::endl; std::exit(2); }
+    }
+    UnifiedConfig::SystemNode* host = nullptr;
+    UnifiedConfig::SystemNode* dev = nullptr;
+    for (auto& n : config.system_nodes)
+        if (n.role == UnifiedConfig::SystemNode::HOST) { host = &n; break; }
+    for (auto& n : config.system_nodes)
+        if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type == UnifiedConfig::SystemNode::COMPUTE) { dev = &n; break; }
+    std::vector<UnifiedConfig::SystemNode*> mems;
+    for (auto& n : config.system_nodes)
+        if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type == UnifiedConfig::SystemNode::MEMORY_ONLY) mems.push_back(&n);
+    if (mems.empty()) return;
+    if (!host) return;   // a device run: the 1.12.8 one-node rule refuses the extra node by name
+    if (mems.size() > 1) {
+        std::cerr << "[config] FATAL: " << mems.size() << " system.memories[] entries ('" << mems[0]->name << "', '" << mems[1]->name
+                  << "'" << (mems.size() > 2 ? ", ..." : "") << "). This build prices one host memory beside the device; several"
+                     " memories are the multi-memory model's, after 1.12 (1.12.10). Keep one." << std::endl;
+        std::exit(2);
+    }
+    UnifiedConfig::SystemNode* m = mems[0];
+    if (dev && dev->is_default_mem && dev->is_default_mem_given)
+        std::cerr << "[config] WARNING: " << dev->cfg_path << ".is_default_mem: true is ignored: the system declares a memory ('"
+                  << m->name << "', " << m->memory_tech << "), which is the host's main memory (1.12.10); the device is not." << std::endl;
+    if (dev) dev->is_default_mem = false;
+    host->host_mem_present = true;
+    host->host_mem_tech = canonicalMemTech(m->memory_tech);
+    if (m->dev && m->dev_keys.count("memory.dram.ddr5_speed_grade")) {
+        host->host_ddr5_speed_grade = m->dev->ddr5_speed_grade;
+        if (host->host_ddr5_speed_grade > 0 && host->host_mem_tech != "DDR5") {
+            std::cerr << "[config] WARNING: " << m->cfg_path << ".memory.dram.ddr5_speed_grade = " << host->host_ddr5_speed_grade
+                      << " is ignored: the memory is " << host->host_mem_tech << ", and the grade is a DDR5 part's (1.12.10)." << std::endl;
+            host->host_ddr5_speed_grade = 0;
+        }
+    }
+    for (const auto& kv : m->dev_keys) {   // what the host memory model reads: the technology and the DDR5 grade
+        const std::string& k = kv.first;
+        if (k == "name" || k == "attachment" || k == "is_default_mem" || k == "tech_node_nm" || k == "frequency_mhz" ||
+            k == "memory.technology" || k == "memory.dram.ddr5_speed_grade" || k.compare(0, 9, "workload.") == 0) continue;
+        std::cerr << "[config] WARNING: " << m->cfg_path << "." << k << " is ignored: the host memory model reads the memory's"
+                     " technology and memory.dram.ddr5_speed_grade (1.12.10); bandwidth and channel overrides are the host's"
+                     " system.hosts[].memory.bandwidth_mbs / channels." << std::endl;
+    }
+    std::cout << "[config] NOTE: system memory '" << m->name << "' (" << host->host_mem_tech
+              << (host->host_ddr5_speed_grade > 0 ? ", DDR5 grade " + std::to_string(host->host_ddr5_speed_grade) : std::string())
+              << ") is the host's main memory: the host memory controller runs its technology and grade, and its address window is"
+                 " laid out first, the device's after it (1.12.10; the user's layout rule)." << std::endl;
+}
+
 /* 1.11.107: the system model and the device nodes' resolved configurations.
  * The model builds ONE device -- the first compute device with PEs, whose
  * configuration the run adopts (its node keys in the adoption block after the
@@ -16952,6 +17048,7 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
     for (size_t i = 0; i < config.system_nodes.size(); ++i) {
         const auto& n = config.system_nodes[i];
         if (n.role != SN::DEVICE || !n.dev) continue;
+        if (n.device_type == SN::MEMORY_ONLY) { separate_host_mem = true; continue; }   // 1.12.10: the host's own main memory; its keys are its own (resolveMemoryTopology)
         devs.push_back(i);
         if (built < 0 && n.device_type == SN::COMPUTE && n.num_pes > 0) built = static_cast<int>(i);
         if (!n.is_default_mem) separate_host_mem = true;
@@ -18174,43 +18271,12 @@ int main(int argc, char** argv) {
                          * per node, so neither side's setting leaks. */
                         node.pe_has_fpu = yamlBool(h["floating_point"], node.pe_has_fpu, hpath + ".floating_point");
                         node.pe_fp_emul_cycles = yamlU32(h["fp_emulation_cycles"], node.pe_fp_emul_cycles, hpath + ".fp_emulation_cycles");
-                        if (h["mem"]) {
-                            node.host_mem_present = true;
-                            if (h["mem"]["technology"])
-                                node.host_mem_tech = canonicalMemTech(
-                                    yamlStringReq(h["mem"]["technology"], hpath + ".mem.technology"));
-                            /* 1.11.57 (latent B034): REJECT host.mem.capacity_gb.
-                             *
-                             * It was parsed into a field whose own declaration
-                             * comment called it "advisory" and which nothing
-                             * ever read. There is nowhere for it to go: host
-                             * nodes are given NO address range at all (the
-                             * range assignment hands 4 GB windows to devices
-                             * and 0..0 to hosts), and no bandwidth, latency or
-                             * energy term in this model has a capacity
-                             * dimension. So a config declaring 16 GB of host
-                             * memory got exactly the same run as one declaring
-                             * none, with nothing said. Wiring it up would mean
-                             * inventing a host address-space model; refusing
-                             * the key is the honest half of that choice. */
-                            if (h["mem"]["capacity_gb"]) {
-                                std::cerr << "[config] FATAL: host.mem.capacity_gb"
-                                             " is NOT IMPLEMENTED -- host nodes "
-                                             "carry no address range and no term "
-                                             "in this model scales with memory "
-                                             "capacity, so the key would change "
-                                             "nothing. Remove it rather than run "
-                                             "with a capacity that is not "
-                                             "simulated." << std::endl;
-                                std::exit(2);
-                            }
-                            if (h["mem"]["bandwidth_gbs"]) {
-                                double gbs = h["mem"]["bandwidth_gbs"].as<double>();
-                                node.host_mem_bandwidth_mbs =
-                                    (int)std::llround(gbs * 1000.0);  // GB/s -> per-channel MB/s
-                            }
-                            node.host_mem_channels =
-                                yamlInt(h["mem"]["channels"], node.host_mem_channels, hpath + ".mem.channels");
+                        if (h["mem"]) {   /* 1.12.10 (ruling 2): retired. The host's own main memory is a system.memories[] entry
+                                           * (a memory without PEs) -- its technology and memory.dram.ddr5_speed_grade are the memory's.
+                                           * The block that named it from 1.7.4 to 1.12.9 is dropped with a warning. */
+                            std::cerr << "[config] WARNING: " << hpath << ".mem is retired (1.12.10): the host's own main memory is a"
+                                         " system.memories[] entry (its memory.technology and memory.dram.ddr5_speed_grade are the"
+                                         " memory's); the block is ignored." << std::endl;
                         }
                         // Host NoC (analytic crossbar): topology/model/hop_cycles.
                         if (h["noc"]) {
@@ -18526,6 +18592,7 @@ int main(int argc, char** argv) {
                         // false: accelerator-side memory only -- the host MUST
                         // supply a host.mem block (resolveMemoryTopology enforces).
                         node.is_default_mem = yamlBool(d["is_default_mem"], node.is_default_mem, dpath + ".is_default_mem");
+                        node.is_default_mem_given = static_cast<bool>(d["is_default_mem"]);   // 1.12.10
 
                         // PIM config (only for compute devices)
                         if (compute) {
@@ -18599,6 +18666,7 @@ int main(int argc, char** argv) {
                         config.system_nodes.push_back(node);
                     }
                     adoptSystemDeviceNodes(config, yaml_cfg);   // 1.11.107: before the run-wide DRAM knobs are recorded
+                    resolveHostMemoryNode(config);              // 1.12.10: a system.memories[] entry is the host's main memory, not a network node
                 }
                 // Parse system network
                 if (sys["network"]) {

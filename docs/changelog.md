@@ -7,6 +7,35 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.10 -- the host's own main memory is a memory in the system, with its own DDR5 speed grade
+
+Ruling 2 of the configuration-shape rulings of 2026-10-15 (the user: "allow speed grade per mem or per device, so mem with
+hetero speeds are possible"; "it is a memory in the system"), within the one-host + one-device bound the user kept ("multi host
+and multi device support are future items, after 1.12 and cal subm").
+
+**(1) A `system.memories[]` entry is the host's own main memory.** A memory without PEs declared beside the device is the host's
+main memory: its `memory.technology` and `memory.dram.ddr5_speed_grade` (`3200` / `4800` / `5600`) are honoured in the host
+memory's idle latency (the tRCD + tCAS of that part), its per-channel bandwidth (the M/D/1 service rate every host access queues
+against) and its array energy (the host-side pricing). The device is then not the host's memory: `is_default_mem` is derived
+(a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`).
+The memory keeps a node-map entry and takes the FIRST address window, the device's follows (the user's layout rule: memory,
+then device; hosts and a memory alone describe a host-only system whose run-time behaviour is 1.13 work). One host, one device and one memory in this
+build: a second host, device or memory is refused by name (the user: refusal for an unsupported multi-node configuration;
+1.13 is the multi-host / multi-device / multi-memory implementation). A key
+on the memory that the host memory model does not read (`memory.banks`, ...) is dropped with a warning naming it; the host's
+bandwidth and channel overrides stay `system.hosts[].memory.bandwidth_mbs` / `channels`. Through 1.12.9 a memory without PEs
+beside a device was refused by the one-memory-per-role bound, and the host's separate memory took the device's grade.
+
+**(2) `system.hosts[].mem` is retired**: the block that named the host's separate memory (1.7.4 to 1.12.9) is dropped with a
+warning; the memory is written as a `system.memories[]` entry.
+
+**(3) The device node's `memory.dram.ddr5_speed_grade` stays the run's DRAM part**, as before; a memory's grade is the host
+memory's alone and does not reach the run-wide knobs. On a non-DDR5 memory the grade is dropped with a warning.
+
+**Data impact.** None: no corpus cell or example declares a memory without PEs or a `hosts[].mem` block (gate E1, 396 identical;
+parity EXACT). Gate W1 shows the host memory at 3200 against the device at 4800: the emitted host memory block's latency and
+bandwidth move, the device keys do not.
+
 ## 1.12.9 -- the scope key is retired: the nodes decide (hosts present = co-simulation, none = device run)
 
 Ruling 3 of the configuration-shape rulings of 2026-10-15 (the user: "scope retires"; "need restructure under new conf
