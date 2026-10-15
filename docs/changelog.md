@@ -7,6 +7,41 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.12 -- the address configuration layer: a device or memory declares its window, a host or device what it may address
+
+The configuration keys for the address map arrive, as 1.12.10 announced ("We make its conf ready at 12, we make it
+perfect at 13"); the multi-host / multi-device / multi-memory wiring that enforces them is 1.13. Rulings of 2026-10-15:
+the address declares base and size; an unaligned base is refused; a partial declaration is refused; an allowed range is
+written as an explicit range.
+
+**(1) `system.devices[].address` and `system.memories[].address`** declare the node's window: a map `{ base, size }` of
+byte counts, each written as an integer (bytes), a `0x` hex integer, or a decimal with a binary suffix `K` / `M` / `G` /
+`T` (`KiB` to `TiB` accepted), e.g. `{ base: 0x100000000, size: 4G }`. Every device and memory declares one or none does:
+a partial declaration is refused naming the nodes without one (the undeclared could not be laid out around the declared
+without deciding for the user). Base and size are multiples of the 4 GB window granularity the node map decodes at, and
+the size is not 0; two windows may not overlap; a window that leaves the 64-bit space is refused. The declared windows are
+the emitted node map's (`addrStart` / `addrEnd`), and the run prints the resulting address map. Without declarations the
+1.12.10 layout stands unchanged: the memories without PEs take the first 4 GB windows, the devices follow.
+
+**(2) `system.hosts[].allowed_address_ranges` and `system.devices[].allowed_address_ranges`** declare what the node may
+address: a list of `{ base, size }` ranges. Absent, a host addresses every window of the run (today's behaviour) and a
+device its own window. Given, they are checked against the node map and accepted where this build already behaves that
+way: a host's ranges must contain every device's and memory's window (a host that does not reach a node is the 1.13
+multi-host wiring; refused naming the node), and a device's ranges must stay inside its own window and cover it (a device
+that reaches another node's memory, or free address space, is the 1.13 wiring; refused naming 1.13). A host range that
+covers addresses no node owns is kept with a WARNING. A memory does not address anything: `allowed_address_ranges` on a
+`system.memories[]` entry is refused by name, as is `address` on a host (a host has no window of its own; the memory it
+owns is the `system.memories[]` entry, which declares the address). In a device run (no hosts) both keys are refused by
+name: a device run has one memory and no address map.
+
+**(3) The example `examples/cosim/host_memory_device_addressed.yaml`**: a host, its own DDR5 main memory and a DDR4 PIM
+device, with the two windows and the two allowed-range lists declared (the default layout, written out). **(4) Docs**:
+`docs/yaml_reference.md` gains the "Address map (1.12.12)" subsection and the key rows; `docs/examples.md` lists the
+example.
+
+Every existing configuration emits identically (gate E1): the new keys are optional, and the layout without them is
+1.12.10's. The Docker image tooling is untouched here; 1.12.13 polishes it for this shape and the image is built from it.
+
 ## 1.12.11 -- the Docker image tooling polished for the 1.12 shape; the image is built from this release
 
 Item 5 of the pre-fleet sequencing (the user: "12.11 is ... the polishing of docker file and then the image is a result of

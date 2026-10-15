@@ -28,6 +28,7 @@ with each suite under `benchmarks/` (see [benchmarks.md](benchmarks.md)).
 |---|---|
 | `host_device_basic.yaml` | Minimal host + PIM device, `attachment: internal` (the device is host main memory). |
 | `multi_device.yaml` | Host + PCIe-attached PIM device; the second device is kept commented as the multi-device reference layout. This build prices ONE memory per role (1.11.45 E27), so a second DEVICE node is refused at config load -- see the file header. |
+| `host_memory_device_addressed.yaml` | Host + its own DDR5 main memory + a DDR4 PIM device with the address map declared (1.12.12): the two windows (`address: { base, size }`) and the two allowed-range lists, written out as the default layout. |
 | `baseline_host_1core.yaml` | Host-only NO_OFFLOAD baseline: 1 OoO core @2GHz, no fabric (1-core crossbar is degenerate). |
 | `baseline_host_4core.yaml` | Host-only NO_OFFLOAD baseline: 4 OoO cores, analytic crossbar fabric (`hop_cycles: 4`). |
 | `baseline_host_16core.yaml` | Host-only NO_OFFLOAD baseline: 16 OoO cores, analytic crossbar fabric. |

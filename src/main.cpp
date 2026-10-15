@@ -1741,6 +1741,8 @@ static T yamlScalarAs(const YAML::Node& n, const T& def,
     yamlRefuseScalar(path, n, expected);
 }
 
+/* 1.12.12: an address in messages, 0x hex */
+static std::string hexAddr(uint64_t a) { char b[32]; std::snprintf(b, sizeof b, "0x%llx", static_cast<unsigned long long>(a)); return b; }
 static int yamlInt(const YAML::Node& n, int def, const std::string& path) {
     return yamlScalarAs<int>(n, def, path, "an integer");
 }
@@ -1909,6 +1911,14 @@ static const char* kSchemaPaths[] = {
     /* system.memories[] (1.12.7): a memory without PEs -- its node keys and every memory.* path (schemaPathsAll). */
     "system.memories[].attachment", "system.memories[].frequency_mhz", "system.memories[].is_default_mem", "system.memories[].name",
     "system.memories[].tech_node_nm", "system.memories[].workload.args", "system.memories[].workload.binary", "system.memories[].workload.env",
+    /* 1.12.12: the address configuration layer. A device or memory declares its window; a host or device what it may
+     * address. hosts[].address and memories[].allowed_address_ranges are listed so the loader refuses them by name. */
+    "system.devices[].address.base", "system.devices[].address.size",
+    "system.devices[].allowed_address_ranges[].base", "system.devices[].allowed_address_ranges[].size",
+    "system.memories[].address.base", "system.memories[].address.size",
+    "system.memories[].allowed_address_ranges[].base", "system.memories[].allowed_address_ranges[].size",
+    "system.hosts[].address.base", "system.hosts[].address.size",
+    "system.hosts[].allowed_address_ranges[].base", "system.hosts[].allowed_address_ranges[].size",
     "system.hosts[].branch_predictor", "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
     "system.hosts[].cache.l1i_kb", "system.hosts[].cache.l1i_latency_ns", "system.hosts[].cache.l1i_ways", "system.hosts[].cache.l2_banks", "system.hosts[].cache.l2_kb",
     "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
@@ -2879,6 +2889,13 @@ struct UnifiedConfig {
         double freq_scale = 1.0;       // reference_freq / node_freq
         uint64_t addr_start = 0;       // address range start (auto-assigned)
         uint64_t addr_end = 0;         // address range end (exclusive)
+        /* 1.12.12 (the address configuration layer): the window the node declares (address: { base, size }) and the
+         * ranges it declares it may address (allowed_address_ranges: [{ base, size }, ...]); the layout step checks them
+         * against the node map and applies the window. Enforcement of what a node reaches beyond its own window is 1.13. */
+        bool addr_declared = false;
+        uint64_t addr_base_decl = 0, addr_size_decl = 0;
+        bool allowed_declared = false;
+        std::vector<std::pair<uint64_t, uint64_t>> allowed_ranges;   // {base, size}
         int node_network_id = 0;       // position in system network topology
     };
 
@@ -7319,17 +7336,142 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
             n.addr_end = 0;
         }
     }
-    /* 1.12.10 (the user's layout rule: "if host mem device, then the addr is mem then device"): the memories without PEs
-     * take the first windows, the devices follow; explicit addresses and their enforcement are 1.12.12 / 1.13. */
-    for (int pass = 0; pass < 2; ++pass)
-        for (auto& n : config.system_nodes) {
-            if (n.role != UnifiedConfig::SystemNode::DEVICE) continue;
-            const bool mem_only = (n.device_type == UnifiedConfig::SystemNode::MEMORY_ONLY);
-            if ((pass == 0) != mem_only) continue;
-            n.addr_start = addr;
-            n.addr_end = addr + RANGE_SIZE;
-            addr += RANGE_SIZE;
+    /* 1.12.12 (the address configuration layer; rulings of 2026-10-15): a device or a memory may declare its window,
+     * address: { base, size }. All of them or none (a partial declaration is refused naming the nodes without one: the
+     * undeclared could not be laid out around the declared without deciding for the user); base and size multiples of the
+     * 4 GB window granularity the node map decodes at (an unaligned one is refused); no two windows overlap. A declared
+     * map is printed. Without declarations the 1.12.10 layout stands (the user's layout rule: "if host mem device, then
+     * the addr is mem then device"): the memories without PEs take the first windows, the devices follow. What a node may
+     * reach beyond its own window is validated below and enforced in 1.13. */
+    {
+        typedef UnifiedConfig::SystemNode SN;
+        int n_nodes = 0, n_decl = 0; std::string undeclared;
+        for (const auto& n : config.system_nodes) {
+            if (n.role != SN::DEVICE) continue;
+            ++n_nodes;
+            if (n.addr_declared) ++n_decl; else undeclared += " " + n.cfg_path + " ('" + n.name + "')";
         }
+        if (n_decl > 0 && n_decl < n_nodes) {
+            std::cerr << "[config] FATAL: " << n_decl << " of " << n_nodes << " devices and memories declare an address, and" << undeclared
+                      << (n_nodes - n_decl == 1 ? " does" : " do") << " not. Every device and memory declares address: { base, size }"
+                         " or none does (1.12.12; the ruling: a partial declaration is refused -- the undeclared cannot be laid out around"
+                         " the declared without deciding for you). Declare the missing window" << (n_nodes - n_decl == 1 ? "" : "s")
+                      << ", or remove every address key to take the default layout (the memory first, then the device)." << std::endl;
+            std::exit(2);
+        }
+        if (n_decl == 0) {
+            for (int pass = 0; pass < 2; ++pass)
+                for (auto& n : config.system_nodes) {
+                    if (n.role != SN::DEVICE) continue;
+                    const bool mem_only = (n.device_type == SN::MEMORY_ONLY);
+                    if ((pass == 0) != mem_only) continue;
+                    n.addr_start = addr;
+                    n.addr_end = addr + RANGE_SIZE;
+                    addr += RANGE_SIZE;
+                }
+        } else {
+            for (auto& n : config.system_nodes) {
+                if (n.role != SN::DEVICE) continue;
+                const char* off = (n.addr_base_decl % RANGE_SIZE) ? "base" : (n.addr_size_decl % RANGE_SIZE) ? "size" : nullptr;
+                if (off) {
+                    std::cerr << "[config] FATAL: " << n.cfg_path << ".address." << off << " = "
+                              << hexAddr(std::string(off) == "base" ? n.addr_base_decl : n.addr_size_decl)
+                              << " is not a multiple of " << hexAddr(RANGE_SIZE) << " (4 GB), the window granularity the node map"
+                                 " decodes at (1.12.12; the ruling: an unaligned address is refused). Align it." << std::endl;
+                    std::exit(2);
+                }
+                n.addr_start = n.addr_base_decl;
+                n.addr_end = n.addr_base_decl + n.addr_size_decl;
+            }
+            for (size_t i = 0; i < config.system_nodes.size(); ++i)
+                for (size_t j = i + 1; j < config.system_nodes.size(); ++j) {
+                    const SN& a = config.system_nodes[i]; const SN& b = config.system_nodes[j];
+                    if (a.role != SN::DEVICE || b.role != SN::DEVICE) continue;
+                    if (a.addr_start < b.addr_end && b.addr_start < a.addr_end) {
+                        std::cerr << "[config] FATAL: the windows of " << a.cfg_path << " ('" << a.name << "', [" << hexAddr(a.addr_start)
+                                  << ", " << hexAddr(a.addr_end) << ")) and " << b.cfg_path << " ('" << b.name << "', ["
+                                  << hexAddr(b.addr_start) << ", " << hexAddr(b.addr_end) << ")) overlap: one address would name two"
+                                     " memories (1.12.12). Move one window." << std::endl;
+                        std::exit(2);
+                    }
+                }
+            std::vector<const SN*> order;
+            for (const auto& n : config.system_nodes) if (n.role == SN::DEVICE) order.push_back(&n);
+            std::sort(order.begin(), order.end(), [](const SN* a, const SN* b) { return a->addr_start < b->addr_start; });
+            std::cout << "[config] NOTE: address map (1.12.12, declared):";
+            for (const SN* n : order)
+                std::cout << " " << n->name << " [" << hexAddr(n->addr_start) << ", " << hexAddr(n->addr_end) << ")"
+                          << (n->device_type == SN::MEMORY_ONLY ? " memory" : " device") << ";";
+            std::cout << " the windows are the declared ones, not the default layout. What each node reaches beyond its own window"
+                         " is enforced in 1.13." << std::endl;
+        }
+        /* the allowed ranges against the node map: accepted where this build already behaves that way */
+        for (const auto& n : config.system_nodes) {
+            if (!n.allowed_declared) continue;
+            auto inside = [](uint64_t b, uint64_t sz, uint64_t lo, uint64_t hi) { return b >= lo && b + sz <= hi; };
+            if (n.role == SN::HOST) {
+                for (const auto& w : config.system_nodes) {
+                    if (w.role != SN::DEVICE) continue;
+                    bool covered = false;
+                    for (const auto& r : n.allowed_ranges) if (inside(w.addr_start, w.addr_end - w.addr_start, r.first, r.first + r.second)) { covered = true; break; }
+                    if (!covered) {
+                        std::cerr << "[config] FATAL: " << n.cfg_path << ".allowed_address_ranges leave out " << w.cfg_path << " ('" << w.name
+                                  << "', [" << hexAddr(w.addr_start) << ", " << hexAddr(w.addr_end) << ")): in this build the host addresses"
+                                     " every node of the run; a host that does not reach a node is the 1.13 wiring (the multi-host /"
+                                     " multi-device / multi-memory implementation). Add a range containing the window, or remove the key"
+                                     " (1.12.12)." << std::endl;
+                        std::exit(2);
+                    }
+                }
+                int i = -1;
+                for (const auto& r : n.allowed_ranges) {
+                    ++i;
+                    /* covered by the union of the windows (adjacent windows count together) */
+                    std::vector<std::pair<uint64_t, uint64_t>> ws;
+                    for (const auto& w : config.system_nodes) if (w.role == SN::DEVICE) ws.emplace_back(w.addr_start, w.addr_end);
+                    std::sort(ws.begin(), ws.end());
+                    uint64_t cur = r.first; const uint64_t end = r.first + r.second; bool any = false;
+                    for (const auto& w : ws) {
+                        if (w.second <= cur) continue;
+                        if (w.first > cur) break;
+                        any = true; cur = w.second;
+                        if (cur >= end) break;
+                    }
+                    for (const auto& w : ws) if (r.first < w.second && w.first < end) any = true;
+                    const bool owned = (cur >= end);
+                    if (!owned) {
+                        std::cerr << "[config] WARNING: " << n.cfg_path << ".allowed_address_ranges[" << i << "] = [" << hexAddr(r.first) << ", "
+                                  << hexAddr(r.first + r.second) << ") covers addresses no node of the run owns"
+                                  << (any ? " besides a node's window" : "") << "; nothing answers there (1.12.12)." << std::endl;
+                    }
+                }
+            } else {
+                for (size_t i = 0; i < n.allowed_ranges.size(); ++i) {
+                    const auto& r = n.allowed_ranges[i];
+                    if (!inside(r.first, r.second, n.addr_start, n.addr_end)) {
+                        std::cerr << "[config] FATAL: " << n.cfg_path << ".allowed_address_ranges[" << i << "] = [" << hexAddr(r.first) << ", "
+                                  << hexAddr(r.first + r.second) << ") reaches beyond the device's own window [" << hexAddr(n.addr_start) << ", "
+                                  << hexAddr(n.addr_end) << "): a device that addresses another node's memory, or free address space, is the"
+                                     " 1.13 wiring (the multi-host / multi-device / multi-memory implementation); in this build a device"
+                                     " addresses its own window, the default. Keep the ranges inside the window, or remove the key (1.12.12)."
+                                  << std::endl;
+                        std::exit(2);
+                    }
+                }
+                uint64_t covered_to = n.addr_start; bool gap = false;
+                std::vector<std::pair<uint64_t, uint64_t>> rs = n.allowed_ranges;
+                std::sort(rs.begin(), rs.end());
+                for (const auto& r : rs) { if (r.first > covered_to) { gap = true; break; } covered_to = std::max(covered_to, r.first + r.second); }
+                if (gap || covered_to < n.addr_end) {
+                    std::cerr << "[config] FATAL: " << n.cfg_path << ".allowed_address_ranges do not cover the device's own window ["
+                              << hexAddr(n.addr_start) << ", " << hexAddr(n.addr_end) << "): a device always addresses its own memory, and"
+                                 " a device that reaches only part of it is not modelled (1.12.12). Cover the window, or remove the key."
+                              << std::endl;
+                    std::exit(2);
+                }
+            }
+        }
+    }
 
     // 4. Inherit top-level workload for nodes without explicit workload
     for (auto& n : config.system_nodes) {
@@ -16778,6 +16920,7 @@ static std::string nodeCanonicalPath(const std::string& p) {
 static bool nodePathPerNode(const std::string& c) {
     static const std::set<std::string> kPerNode = {
         "name", "type", "attachment", "is_default_mem",
+        "address.base", "address.size", "allowed_address_ranges",   // 1.12.12: a node's own window and reach
         "frequency_mhz", "tech_node_nm", "pe_type", "num_pes", "memory.technology",
         "pim.pe.compute_factor", "pim.pe.access_factor", "pim.pe.throughput_factor", "pim.pe.operand_width",
         "pim.pe.energy_factor", "pim.pe.bit_serial", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles",
@@ -16939,6 +17082,93 @@ static void dropPeKeysOnNonPeNodes(YAML::Node& yaml_cfg) {
 /* 1.11.107: device-scope keys a system node cannot honour, refused with the
  * reason (they were refused as unknown keys in 1.11.106 and ignored in silence
  * before it). */
+/* 1.12.12 (the address configuration layer). A byte count as YAML: an integer (bytes), or a string -- decimal, 0x hex,
+ * or a decimal with a binary suffix K / M / G / T (KiB ... TiB accepted). Anything else is refused naming the forms. */
+static uint64_t yamlBytes(const YAML::Node& n, const std::string& path) {
+    auto bad = [&](const std::string& got, const char* why) {
+        std::cerr << "[config] FATAL: " << path << " = " << got << " is not a byte count (" << why << "): write an integer"
+                     " (bytes), a 0x hex integer, or a decimal with a binary suffix K, M, G or T (KiB, MiB, GiB, TiB accepted),"
+                     " e.g. 4G or 0x100000000 (1.12.12)." << std::endl;
+        std::exit(2);
+    };
+    if (!n.IsDefined()) bad("<missing>", "the key is absent");
+    if (!n.IsScalar()) bad("<a map or a list>", "a byte count is one scalar");
+    std::string t = n.Scalar();
+    while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) t.pop_back();
+    size_t b0 = 0; while (b0 < t.size() && std::isspace(static_cast<unsigned char>(t[b0]))) ++b0;
+    t = t.substr(b0);
+    const std::string shown = "'" + t + "'";
+    if (t.empty()) bad(shown, "empty");
+    uint64_t mult = 1;
+    std::string low = t; for (auto& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (low.size() > 3 && low.compare(low.size() - 2, 2, "ib") == 0) { low.erase(low.size() - 2); t.erase(t.size() - 2); }
+    if (!low.empty() && std::isalpha(static_cast<unsigned char>(low.back()))) {
+        switch (low.back()) {
+            case 'k': mult = 1ULL << 10; break;
+            case 'm': mult = 1ULL << 20; break;
+            case 'g': mult = 1ULL << 30; break;
+            case 't': mult = 1ULL << 40; break;
+            default: bad(shown, "the suffix is not K, M, G or T");
+        }
+        low.pop_back(); t.pop_back();
+        while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) { t.pop_back(); low.pop_back(); }
+    }
+    if (t.empty()) bad(shown, "no digits before the suffix");
+    uint64_t v = 0;
+    if (low.size() > 2 && low.compare(0, 2, "0x") == 0) {
+        if (low.size() > 18) bad(shown, "more than 16 hex digits");
+        for (size_t i = 2; i < low.size(); ++i) {
+            const char c = low[i]; int d;
+            if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = 10 + (c - 'a'); else bad(shown, "a non-hex digit after 0x");
+            v = (v << 4) | static_cast<uint64_t>(d);
+        }
+    } else {
+        for (char c : t) {
+            if (c < '0' || c > '9') bad(shown, "a non-decimal character");
+            const uint64_t d = static_cast<uint64_t>(c - '0');
+            if (v > (UINT64_MAX - d) / 10) bad(shown, "larger than 64 bits");
+            v = v * 10 + d;
+        }
+    }
+    if (mult > 1 && v > UINT64_MAX / mult) bad(shown, "larger than 64 bits with its suffix");
+    return v * mult;
+}
+/* an address range written as { base, size } */
+static void yamlAddrRange(const YAML::Node& m, const std::string& path, uint64_t& base, uint64_t& size) {
+    if (!m.IsDefined() || !m.IsMap() || !m["base"] || !m["size"]) {
+        std::cerr << "[config] FATAL: " << path << " is written as a map with two keys, base and size (byte counts: an integer,"
+                     " a 0x hex integer, or a decimal with a binary suffix K / M / G / T), e.g. { base: 0x100000000, size: 4G }"
+                     " (1.12.12)." << std::endl;
+        std::exit(2);
+    }
+    base = yamlBytes(m["base"], path + ".base");
+    size = yamlBytes(m["size"], path + ".size");
+    if (size == 0) {
+        std::cerr << "[config] FATAL: " << path << ".size = 0: a window has a size (1.12.12)." << std::endl;
+        std::exit(2);
+    }
+    if (base > UINT64_MAX - size) {
+        std::cerr << "[config] FATAL: " << path << " = [" << hexAddr(base) << ", " << hexAddr(base) << " + " << hexAddr(size)
+                  << ") leaves the 64-bit address space (1.12.12)." << std::endl;
+        std::exit(2);
+    }
+}
+static void parseAllowedRanges(const YAML::Node& l, const std::string& path, UnifiedConfig::SystemNode& node) {
+    if (!l.IsDefined() || !l.IsSequence() || l.size() == 0) {
+        std::cerr << "[config] FATAL: " << path << " is a list of address ranges, each written { base, size } (1.12.12); an"
+                     " empty list would let the node address nothing. Remove the key to keep the default (a host addresses every"
+                     " window of the run, a device its own)." << std::endl;
+        std::exit(2);
+    }
+    int i = -1;
+    for (const auto& e : l) {
+        uint64_t b = 0, sz = 0;
+        yamlAddrRange(e, path + "[" + std::to_string(++i) + "]", b, sz);
+        node.allowed_ranges.emplace_back(b, sz);
+    }
+    node.allowed_declared = true;
+}
+
 static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath, bool device_run) {
     auto refuse = [&](const std::string& key, const char* why) {
         std::cerr << "[config] FATAL: " << dpath << "." << key << " is not a setting a system device node can carry: "
@@ -16950,6 +17180,14 @@ static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath, b
             refuse(k, "it configures the run's characterization cache, one for the run and not a device's; write it at the top level");
     if (yamlAt(d, "cache.cacti").IsDefined())
         refuse("cache.cacti", "it sets CACTI's design-space search for every cache and array the run characterises, the host's included; write it at the top level");
+    if (device_run)   // 1.12.12: a device run has one memory, the device's, and no node map to place it in
+        for (const char* k : {"address", "allowed_address_ranges"})
+            if (yamlAt(d, k).IsDefined()) {
+                std::cerr << "[config] FATAL: " << dpath << "." << k << " is given in a device run (a system with no hosts): the"
+                             " run has one memory, the device's, and no address map to place it in. The address keys describe a"
+                             " co-simulation's node map (1.12.12). Remove it, or add a host." << std::endl;
+                std::exit(2);
+            }
     if (device_run) return;   // 1.12.8: in a device run (a system with no hosts) the node IS the device-scope configuration
     if (yamlAt(d, "cache.l2.count").IsDefined())
         refuse("cache.l2.count", "a system node is built with one L2 per PE; a clustered L2 is a device-scope configuration");
@@ -17021,7 +17259,8 @@ static void resolveHostMemoryNode(UnifiedConfig& config) {
     for (const auto& kv : m->dev_keys) {   // what the host memory model reads: the technology and the DDR5 grade
         const std::string& k = kv.first;
         if (k == "name" || k == "attachment" || k == "is_default_mem" || k == "tech_node_nm" || k == "frequency_mhz" ||
-            k == "memory.technology" || k == "memory.dram.ddr5_speed_grade" || k.compare(0, 9, "workload.") == 0) continue;
+            k == "memory.technology" || k == "memory.dram.ddr5_speed_grade" || k.compare(0, 9, "workload.") == 0 ||
+            k == "address.base" || k == "address.size") continue;   // 1.12.12: the window is read by the layout step
         std::cerr << "[config] WARNING: " << m->cfg_path << "." << k << " is ignored: the host memory model reads the memory's"
                      " technology and memory.dram.ddr5_speed_grade (1.12.10); bandwidth and channel overrides are the host's"
                      " system.hosts[].memory.bandwidth_mbs / channels." << std::endl;
@@ -18192,6 +18431,14 @@ int main(int argc, char** argv) {
                             node.inorder_branch_predictor_src = hpath + ".branch_predictor";
                         }
                         node.num_cores = yamlInt(h["num_cores"], 4, hpath + ".num_cores");
+                        if (h["address"]) {   // 1.12.12
+                            std::cerr << "[config] FATAL: " << hpath << ".address is given, but a host has no window of its own in the"
+                                         " node map (it reaches the nodes through the system network). The memory a host owns is the"
+                                         " system.memories[] entry, which declares the address (1.12.12). Remove it." << std::endl;
+                            std::exit(2);
+                        }
+                        if (h["allowed_address_ranges"])   // 1.12.12: what the host may address; checked against the node map in the layout step
+                            parseAllowedRanges(h["allowed_address_ranges"], hpath + ".allowed_address_ranges", node);
                         node.frequency_mhz = yamlDouble(h["frequency_mhz"], 3000.0, hpath + ".frequency_mhz");
                         // Host node process node: explicit YAML wins; else the
                         // resolved host default (power.host_tech_node_nm if set, else
@@ -18650,6 +18897,21 @@ int main(int argc, char** argv) {
                         }
                         nodeLeafTexts(d, "", node.dev_keys);
                         node.dev = dev;
+                        /* 1.12.12 (the address configuration layer): the node's window and, for a device, what it may address.
+                         * The layout step (normalize) checks the declarations against the node map and applies the window. */
+                        if (given("address")) {
+                            yamlAddrRange(d["address"], dpath + ".address", node.addr_base_decl, node.addr_size_decl);
+                            node.addr_declared = true;
+                        }
+                        if (given("allowed_address_ranges")) {
+                            if (!compute) {
+                                std::cerr << "[config] FATAL: " << dpath << ".allowed_address_ranges is given, but " << dpath
+                                          << " is a memory (no PEs): a memory addresses nothing, so the key would be ignored. The allowed"
+                                             " ranges are the host's and the device's (1.12.12). Remove it." << std::endl;
+                                std::exit(2);
+                            }
+                            parseAllowedRanges(d["allowed_address_ranges"], dpath + ".allowed_address_ranges", node);
+                        }
 
                         if (d["workload"]) {
                             node.workload_binary = yamlString(d["workload"]["binary"], "", dpath + ".workload.binary");

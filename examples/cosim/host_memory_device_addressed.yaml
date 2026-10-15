@@ -1,0 +1,68 @@
+# Host + its own DDR5 main memory + a DDR4 PIM device, with the ADDRESS MAP
+# declared (1.12.12, the address configuration layer).
+#
+# A device or a memory declares its window with address: { base, size } (byte
+# counts: an integer, a 0x hex integer, or a decimal with a binary suffix K /
+# M / G / T). Every device and memory declares one, or none does; base and
+# size are multiples of the 4 GB window granularity; windows do not overlap.
+# A host or a device says what it may address with allowed_address_ranges, a
+# list of { base, size } ranges: a host's must contain every node's window, a
+# device's must stay inside its own window (reaching another node's memory is
+# the 1.13 multi-node wiring). The values below write out the default layout
+# (the memory first, then the device), so the run matches a file without the
+# keys; change the bases to lay the space out differently.
+#
+# Run (co-simulation; the ROI region executes on the device):
+#   ./build/pimid --method exec \
+#       --config examples/cosim/host_memory_device_addressed.yaml \
+#       --workload benchmarks/pim_kernels/stream_triad/stream_triad_omp \
+#       --size 4096 --workload-type openmp
+
+system:
+  hosts:
+    - name: host
+      core_type: in_order_core
+      num_cores: 1
+      frequency_mhz: 2000
+      tech_node_nm: 22
+      cache:
+        l1d_kb: 32
+        l1i_kb: 32
+        l2_kb: 256
+      allowed_address_ranges:        # the host reaches both windows
+        - { base: 0x0, size: 8G }
+
+  memories:
+    - name: main_memory              # the host's own main memory (1.12.10)
+      attachment: external
+      tech_node_nm: 22
+      memory:
+        technology: DDR5
+        dram:
+          ddr5_speed_grade: 4800
+      address: { base: 0x0, size: 4G }
+
+  devices:
+    - name: device
+      attachment: internal
+      frequency_mhz: 500
+      tech_node_nm: 22
+      pe_type: alu_core
+      num_pes: 8
+      pim:
+        placement:
+          level: BANK
+        mc:
+          type: simple
+      memory:
+        technology: DDR4
+        banks: 16
+      noc:
+        model: detailed
+      address: { base: 0x100000000, size: 4G }
+      allowed_address_ranges:        # its own window (the default, written out)
+        - { base: 0x100000000, size: 4G }
+
+  network:
+    topology: crossbar
+    model: detailed

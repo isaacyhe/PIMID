@@ -98,6 +98,10 @@ already in shape. The key tables below describe each block as written in its
 node; the device-scope-only cache keys (`cache.l2.count`, the `energy_nj` /
 `static_power_mw` overrides, `cache.pg`) are accepted in the device node of a
 device run and stay refused in a co-simulation node.
+A device or a memory may declare its address window and a host or a device
+what it may address (1.12.12, the address configuration layer; see Address
+map below): optional keys, checked against the node map; without them the
+layout is 1.12.10's.
 
 ## Loader Rules
 
@@ -994,6 +998,7 @@ system:
 | `system.hosts[].name` | string | - | Host node name (required). Under `scope: cosim` the [`host:` block](#host-block-host-scope-cosim) is `system.hosts[0]`, named `host`, and its keys are the keys below written without the `system.hosts[]` prefix (1.12.2). |
 | `system.hosts[].core_type` | string | `"ooo_core"` | Host core type. |
 | `system.hosts[].num_cores` | int | `4` | Number of host cores. |
+| `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window of the run | What the host may address (1.12.12). Given, the ranges must contain every device's and memory's window (a host that does not reach a node is the 1.13 wiring; refused naming the node); a range covering addresses no node owns is kept with a WARNING. `system.hosts[].address` is refused by name: a host has no window of its own. |
 | `system.hosts[].frequency_mhz` | double | `3000.0` | Host frequency. |
 | `system.hosts[].tech_node_nm` | int | inherits device (`22`) | Host technology node. Valid: 22/32/45/65/90 positive list -- any other value is a fatal error (see Process-node resolution). |
 | `system.hosts[].memory.technology` | string | `"DDR4"` | Host memory technology. Under `is_default_mem: true` (default) it is forced = the device tech; under `false` it is set from `system.hosts[].mem.technology`. |
@@ -1201,6 +1206,65 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | `system.devices[].workload` | map | - | Per-device workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
 | `system.devices[].workload.env` | map | `{}` | As `system.hosts[].workload.env`: joins the one simulated process's environment (1.11.106). |
 
+### Address map (1.12.12)
+
+The address configuration layer (1.12.12; rulings of 2026-10-15). A device or
+a memory declares its window with `address: { base, size }`; a host or a
+device declares what it may address with `allowed_address_ranges`, a list of
+`{ base, size }` ranges. A byte count is written as an integer (bytes), a
+`0x` hex integer, or a decimal with a binary suffix `K` / `M` / `G` / `T`
+(`KiB` to `TiB` accepted): `4G`, `0x100000000` and `4294967296` are the same
+window. The keys are optional and checked against the node map; what a node
+reaches beyond its own window is enforced in 1.13 (the multi-host /
+multi-device / multi-memory implementation).
+
+```yaml
+system:
+  hosts:
+    - name: host
+      allowed_address_ranges:
+        - { base: 0x0, size: 8G }          # both windows
+  memories:
+    - name: main_memory
+      memory: { technology: DDR5 }
+      address: { base: 0x0, size: 4G }
+  devices:
+    - name: device
+      pe_type: alu_core
+      num_pes: 8
+      memory: { technology: DDR4 }
+      address: { base: 0x100000000, size: 4G }
+      allowed_address_ranges:
+        - { base: 0x100000000, size: 4G }  # its own window (the default)
+```
+
+- **All or none.** Every device and memory declares an `address`, or none
+  does; a partial declaration is refused naming the nodes without one.
+  Without declarations the 1.12.10 layout stands: the memories without PEs
+  take the first 4 GB windows, the devices follow.
+- **Aligned, disjoint.** `base` and `size` are multiples of the 4 GB window
+  granularity the node map decodes at (`0x100000000`); `size` is not 0; a
+  window that leaves the 64-bit space, or two windows that overlap, are
+  refused naming the nodes. The declared windows are the emitted node map's
+  (`addrStart` / `addrEnd`), and the run prints the resulting address map.
+- **Reach.** Absent, a host addresses every window of the run and a device its
+  own. Given, a host's ranges must contain every node's window (a host that
+  does not reach a node is the 1.13 wiring); a device's ranges must stay
+  inside its own window and cover it (a device that reaches another node's
+  memory, or free address space, is the 1.13 wiring). A host range that
+  covers addresses no node owns is kept with a WARNING.
+- **Refused by name.** `allowed_address_ranges` on a memory (a memory
+  addresses nothing); `address` on a host (a host has no window of its own;
+  the memory it owns is the `system.memories[]` entry); either key in a
+  device run (one memory, no address map).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `system.devices[].address` | `{ base, size }` | laid out | The device's window (1.12.12): base and size as byte counts, multiples of 4 GB. All devices and memories declare one, or none does. |
+| `system.devices[].allowed_address_ranges` | list of `{ base, size }` | its own window | What the device may address (1.12.12): inside its own window and covering it; beyond it is the 1.13 wiring (refused). |
+| `system.memories[].address` | `{ base, size }` | laid out | The memory's window (1.12.12), as `system.devices[].address`. |
+| `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window | What the host may address (1.12.12): must contain every node's window. |
+
 ### Memories
 
 A memory is a memory without PEs (1.12.7; the `type: memory` device of
@@ -1222,9 +1286,10 @@ The node lists say what the run is and how the address space is laid out
 (1.12.10): devices only is a device run; hosts and devices alone make the
 device the host's main memory; hosts, a memory and a device lay the address
 space memory first, then device (the node map's windows); hosts and a memory
-alone describe a host-only system, whose run-time behaviour, explicit
-addresses, allowed address ranges and several hosts, devices or memories are
-1.13 work (the configuration keys for addresses arrive in 1.12.12).
+alone describe a host-only system, whose run-time behaviour and several
+hosts, devices or memories are 1.13 work. Every device and memory may declare
+its window, and a host or a device what it may address (1.12.12, Address map
+below); what a node reaches beyond its own window is enforced in 1.13.
 
 ```yaml
 system:
@@ -1241,6 +1306,7 @@ system:
 |-----|------|---------|-------------|
 | `system.memories[].name` | string | - | Memory name (required). |
 | `system.memories[].attachment` | string | `"external"` | `internal` or `external`, as `system.devices[].attachment`. |
+| `system.memories[].address` | `{ base, size }` | laid out | The memory's window (1.12.12; see Address map). `allowed_address_ranges` on a memory is refused by name: a memory addresses nothing. |
 | `system.memories[].memory.technology` | string | `"DDR4"` | The host memory's technology (one of the 11). |
 | `system.memories[].memory.dram.ddr5_speed_grade` | int | the run's | The host memory's own DDR5 speed grade (1.12.10). Dropped with a warning on a non-DDR5 memory. |
 | `system.memories[].frequency_mhz` | double | `1000` | The node clock (the memory's own, for its timing conversions). |
