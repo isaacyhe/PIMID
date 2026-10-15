@@ -76,8 +76,10 @@ const char* env(const char* name) {
  * Located from the RUNNING BINARY, not the working directory: readlink
  * /proc/self/exe, take its directory, and drop a trailing /build so both
  * `pimid/build/pimid` and an installed `pimid/bin/pimid` resolve to
- * `pimid/cache`. --cache-dir / PIMID_CACHE_DIR still override, and HOME is
- * the last resort when /proc is unavailable. */
+ * `pimid/cache`. --cache-dir / PIMID_CACHE_DIR still override; without them
+ * and without /proc the run is refused (1.12.5, ruling F5: no wrong folders
+ * and no old cache files -- the pre-1.11.52 per-user store ~/.cache/pimid is
+ * neither a default nor a fallback any more). */
 std::string exeDir() {
     char buf[4096];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -103,18 +105,10 @@ std::string defaultRoot() {
         }
         return d + "/cache";
     }
-    const char* home = env("HOME");
-    if (home) return std::string(home) + "/.cache/pimid";
-    return std::string("/tmp/pimid-cache");
-}
-
-/* The pre-1.11.52 location, kept as a READ-ONLY fallback so the expensive
- * characterizations already on disk are not thrown away: a miss in the tree
- * cache looks here, and a hit is copied forward. Writes always go to the
- * tree. */
-std::string legacyRoot() {
-    const char* home = env("HOME");
-    return home ? (std::string(home) + "/.cache/pimid") : std::string();
+    std::cerr << "[cache] FATAL: the cache warehouse root could not be located from the running binary"
+                 " (/proc/self/exe unreadable) and none was given. Pass --cache-dir <path> or set"
+                 " PIMID_CACHE_DIR; no home-directory store stands in (1.12.5, ruling F5)." << std::endl;
+    std::exit(2);
 }
 
 // mkdir -p
@@ -188,11 +182,12 @@ void configure(const std::string& cli_mode, const std::string& cli_dir,
     if (!cli_dir.empty())                  dir = cli_dir;
     else if (env("PIMID_CACHE_DIR"))       dir = env("PIMID_CACHE_DIR");
     else if (env("PIMID_NVSIM_CACHE_DIR")) {
-        // Back-compat: this historically pointed at the nvsim *subdir*. Treat
-        // its parent as the warehouse root so the new per-backend layout holds.
-        std::string legacy = env("PIMID_NVSIM_CACHE_DIR");
-        size_t slash = legacy.find_last_of('/');
-        dir = (slash != std::string::npos) ? legacy.substr(0, slash) : legacy;
+        /* 1.12.5 (ruling F5): the pre-1.11.52 variable named the nvsim subdir of
+         * the old per-user store. It is no longer a location: refused, so a stale
+         * environment cannot point a run at old cache files in silence. */
+        std::cerr << "[cache] FATAL: PIMID_NVSIM_CACHE_DIR is set. It named the pre-1.11.52 per-user store, which this"
+                     " build does not read; give the warehouse root with PIMID_CACHE_DIR or --cache-dir (1.12.5)." << std::endl;
+        std::exit(2);
     }
     else if (!yaml_dir.empty())            dir = yaml_dir;
     else                                   dir = defaultRoot();
@@ -225,12 +220,6 @@ std::string backendDir(const std::string& backend) {
     std::string d = warehouseRoot() + "/" + backend;
     ensureDir(d);
     return d;
-}
-
-std::string legacyBackendDir(const std::string& backend) {
-    const std::string lr = legacyRoot();
-    if (lr.empty() || lr == warehouseRoot()) return std::string();
-    return lr + "/" + backend;   // read-only: never created here
 }
 
 std::string toolVersion() {

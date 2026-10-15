@@ -1062,7 +1062,9 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   KB caches and no L3, ...). The node keys the built device carries into the
   run -- `pim.placement`, `pim.mc.type` / `pes_per_mc`, `noc.topology`,
   `memory.ports_per_bank` -- take this table's defaults (`BANK`, `simple`, 1,
-  `MESH_2D`, 1) when the node does not give them. Every other device-scope key
+  `MESH_2D`, 1) when the node does not give them; a top-level value for one of
+  these five keys that the node does not match is refused (rc 2), naming both
+  (1.12.5; it was overridden in silence before). Every other device-scope key
   takes the top-level value, else the built-in default -- so a top-level
   `memory.dram.ddr5_speed_grade` still reaches the device, as before. A host
   node takes none of these: its keys are its own `system.hosts[]` keys.

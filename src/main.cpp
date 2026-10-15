@@ -3698,8 +3698,26 @@ weave_upgrade:
     // interaction. Ramulator already handles this internally.
     {
         std::string ct = config.zsim_mem_controller_type;
-        bool weave_core = (config.pe_type == "in_order_core" ||
-                           config.pe_type == "ooo_core");
+        /* 1.12.5 (ruling F2 (a), user 2026-10-15): the core that runs on this
+         * controller. In system scope that is the first compute device node's
+         * PE type; config.pe_type there is the top-level pim.pe.type (default
+         * in_order_core), which the adoption never syncs, so a device of alu
+         * PEs on SRAM/NVM derived WeaveSimple. Where it shows: with a host node
+         * the emitted sys.mem block is the HOST main memory (emitHostMemBlock,
+         * keyed on the host's core type -- WeaveSimple for an OoO/in-order host
+         * is right) and this field reaches no emitted block; without a host
+         * node the device controller block is emitted from it (WeaveSimple
+         * through 1.12.4, Simple now). DRAM devices take Ramulator and never
+         * reached this upgrade. */
+        std::string weave_pe_type = config.pe_type;
+        if (config.scope == "system") {
+            for (const auto& n : config.system_nodes) {
+                if (n.role == UnifiedConfig::SystemNode::DEVICE &&
+                    n.device_type == UnifiedConfig::SystemNode::COMPUTE) { weave_pe_type = n.pe_type; break; }
+            }
+        }
+        bool weave_core = (weave_pe_type == "in_order_core" ||
+                           weave_pe_type == "ooo_core");
         if (weave_core && ct == "simple") {
             config.zsim_mem_controller_type = "weavesimple";
         }
@@ -4971,10 +4989,20 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
          * by the memory latency path as before. */
         {
             const double ns = getHostPathAdderNs(config.memory_tech);
-            const double ghz = (config.frequency_mhz > 0 ? config.frequency_mhz : 2000.0) / 1000.0;
+            /* 1.12.5 (ruling F4 (a), user 2026-10-15: "host clock is host clock,
+             * device clock is device clock, both need to be correct"). This rung
+             * is a level latency zsim ticks at the DEVICE clock (levelLatency7,
+             * summed with the rungs below it), so the nanoseconds convert at the
+             * device clock like every other rung since 1.11.57. They converted at
+             * config.frequency_mhz, which in system scope is the top-level
+             * system.frequency_mhz (2000 against a 500 MHz device: a 4x
+             * overcharge), the defect 1.11.57 removed from the rungs below. In
+             * device scope the two clocks are the same number. */
+            const double hostmc_clk_mhz = deviceCycleClockMHz(config);
+            const double ghz = hostmc_clk_mhz / 1000.0;
             config.hierarchy_hostmc_latency = std::max(1, static_cast<int>(std::ceil(ns * ghz)));
             std::cout << "  [hierarchy] HOST_MC rung 7: " << ns << " ns host path = "
-                      << config.hierarchy_hostmc_latency << " cycles at " << config.frequency_mhz << " MHz" << std::endl;
+                      << config.hierarchy_hostmc_latency << " cycles at " << hostmc_clk_mhz << " MHz" << std::endl;
         }
         config.total_mem_orgs = config.num_pes;  // 1:1 identity for mapping
         config.hierarchy_banks_per_bg = 1;
@@ -18466,6 +18494,35 @@ int main(int argc, char** argv) {
                             if (parseDeviceCoreCacheNocBlocks(dn, *dev, nsc) != 0) return 1;
                             if (parseDeviceMemoryBlocks(dn, *dev, nsc) != 0) return 1;
                         }
+                        /* 1.12.5 (ruling F3 (a), user 2026-10-15): the node keys the built device
+                         * carries into the run (pim.placement.level, pim.mc.type, pim.mc.pes_per_mc,
+                         * noc.topology, memory.ports_per_bank) are reset to this table's defaults
+                         * above and then read from the node, so a top-level value was overridden in
+                         * silence (a top-level pim.placement.level: CHIP ran the device at BANK). A
+                         * top-level value the node does not match is refused, naming both. */
+                        {
+                            auto upperS = [](std::string s) { for (auto& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); return s; };
+                            auto lowerS = [](std::string s) { for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return s; };
+                            auto topText = [&](const char* canon) { auto it = top_keys.find(canon); return it == top_keys.end() ? std::string() : it->second; };
+                            struct BuiltKey { const char* canon; std::string top; std::string node; const char* dflt; };
+                            std::vector<BuiltKey> chk;
+                            if (compute) {
+                                if (topGives("pim.placement.level")) chk.push_back({"pim.placement.level", upperS(topText("pim.placement.level")), upperS(dev->placement_level), "BANK"});
+                                if (topGives("pim.mc.type")) chk.push_back({"pim.mc.type", lowerS(topText("pim.mc.type")), lowerS(dev->pe_mc_type), "simple"});
+                                if (topGives("pim.mc.pes_per_mc")) chk.push_back({"pim.mc.pes_per_mc", topText("pim.mc.pes_per_mc"), std::to_string(dev->pes_per_mc), "1"});
+                                if (topGives("noc.topology")) { std::string t = upperS(topText("noc.topology")); if (t == "MESH") t = "MESH_2D"; chk.push_back({"noc.topology", t, upperS(dev->noc_topology), "MESH_2D"}); }
+                            }
+                            if (topGives("memory.ports_per_bank")) chk.push_back({"memory.ports_per_bank", topText("memory.ports_per_bank"), std::to_string(dev->ports_per_bank), "1"});
+                            for (const auto& k : chk) {
+                                if (k.top == k.node) continue;
+                                std::cerr << "[config] FATAL: the top-level " << k.canon << " is '" << k.top << "', but " << dpath
+                                          << " builds its device with " << k.canon << " '" << k.node << "' (" << dpath << "." << k.canon
+                                          << "; default " << k.dflt << "). " << k.canon << " is a key of the built device, not a per-node default:"
+                                             " the top-level value was overridden in silence through 1.12.4. Give " << dpath << "." << k.canon
+                                          << ", or remove the top-level key (1.12.5, ruling F3 (a))." << std::endl;
+                                std::exit(2);
+                            }
+                        }
                         // The nested cache sizes follow the node's rule too: a level is present when its size is above 0.
                         if (given("cache.l2.size_kb") && !given("cache.l2.enabled")) dev->enable_l2 = (dev->l2_size_kb > 0);
                         if (given("cache.l3.size_kb") && !given("cache.l3.enabled")) dev->enable_l3 = (dev->l3_size_kb > 0);
@@ -21374,7 +21431,16 @@ int main(int argc, char** argv) {
                 // Power analysis
                 if (config.enable_power &&
                     (sys_stats.cycles > 0 || sys_stats.instrs > 0)) {
-                    runPowerAnalysis(config, sys_stats, output_dir);
+                    /* 1.12.5 (ruling F1 (a), user 2026-10-15): the system trace
+                     * path prices the nodes the way exec does. runPowerAnalysis
+                     * priced the DEVICE from the run configuration -- the
+                     * top-level pim.pe.type (default in_order_core), the
+                     * device-scope default caches, config.frequency_mhz (the top
+                     * level's) and the alu factors, so host_device_basic's
+                     * alu_core device at 500 MHz was described as an in-order
+                     * core at 2000 MHz -- and the host always as an ooo_core.
+                     * The per-node path reads each node's own fields. */
+                    runPerNodePowerAnalysis(config, sys_stats, output_dir);
                 }
             }
 

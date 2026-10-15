@@ -76,6 +76,18 @@ added around that same region.
 co-sim run agree with a standalone device-scope run of the same kernel. If
 they ever diverge, a second device model has crept in -- file a bug.
 
+**Clocks.** Every nanosecond-to-cycle conversion uses the clock of the node
+that ticks the cycles: the host's caches and memory path at the host node's
+clock, the device's hierarchy ladder (every rung, the `HOST_MC` rung included
+since 1.12.5) at the device node's. In the flat form (`scope: cosim`, a `host:`
+block and the device as the top-level configuration) the top-level clock IS
+the device's and `host.frequency_mhz` the host's; with declared nodes the
+top-level `system.frequency_mhz` is only the run's reference clock.
+
+**Power.** `--method exec` and `--method trace` in system scope price the
+nodes the same way, each from its own fields (the per-node path; trace since
+1.12.5).
+
 ## The measurement window (task region)
 
 Co-sim vs baseline compares the **task region**, not device-kernel-only and

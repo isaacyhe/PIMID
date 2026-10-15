@@ -412,7 +412,7 @@ namespace {
     // Persistent (on-disk, XML) NVSim characterization cache. NVSim's design-space
     // search costs minutes; each sweep cell is a separate process, so an in-memory
     // cache alone does not help across cells. We persist results to one XML file
-    // per (type, capacity, node) under ~/.cache/pimid/nvsim so the first cell
+    // per design key in the warehouse's nvsim/ directory (cache_warehouse.cpp) so the first cell
     // characterizes a config and all later cells (and the power path) reuse it.
     static std::string nvsimCacheDir() {
         // Routed through the centralized cache warehouse so --cache-dir /
@@ -477,32 +477,15 @@ namespace {
     static bool nvsimDiskLoad(const NVMCacheKey& k, NVMCacheVal& v) {
         std::string path = nvsimCachePath(k);
         std::ifstream f(path);
-        /* 1.11.52 (user ruling: the cache ships with pimid, initially empty):
-         * on a miss in the TREE store, consult the pre-1.11.52 per-user
-         * location once. A characterization costs a full design-space search
-         * (584k-1.16M valid points in this tree's own logs), so silently
-         * regenerating entries that already exist would be the expensive
-         * kind of wrong. A hit is copied forward and announced; the legacy
-         * store is never written. */
-        std::string from_legacy;
-        if (!f.good()) {
-            const std::string ldir = pimid::cache::legacyBackendDir("nvsim");
-            if (ldir.empty()) return false;
-            std::string base = path.substr(path.find_last_of('/') + 1);
-            from_legacy = ldir + "/" + base;
-            f.open(from_legacy);
-            if (!f.good()) return false;
-        }
+        /* 1.12.5 (ruling F5, user 2026-10-15: "no wrong folders and old cache
+         * files"): the warehouse is the only store. From 1.11.52 to 1.12.4 a miss
+         * consulted the pre-1.11.52 per-user location (~/.cache/pimid/nvsim) and
+         * copied a passing entry forward (1.12.2 checked before copying). That
+         * read is gone: a miss is characterized and stored in the warehouse. */
+        if (!f.good()) return false;
         std::string xml((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        /* 1.12.2 (ruling 3a, user 2026-10-07): a legacy entry is copied into the
-         * tree cache only after it has passed every check below (the copy-forward
-         * is at the end of this function), so the messages name the file that
-         * was read. Through 1.12.1 it was copied first and checked after, so a
-         * stale entry -- 6-significant-digit values, no subarray geometry -- was
-         * planted in the tree cache and served from there on, and the run then
-         * refused (a PCM cell: "NVSim reported no wordlines per mat"). */
-        const std::string& src = from_legacy.empty() ? path : from_legacy;
+        const std::string& src = path;
         auto get = [&](const char* tag, double& out) -> bool {
             std::string open = std::string("<") + tag + ">";
             std::string close = std::string("</") + tag + ">";
@@ -554,28 +537,6 @@ namespace {
             out = xml.substr(a, b - a);
             return true;
         };
-        /* 1.12.2 (ruling 3a): a LEGACY entry (the pre-1.11.52 per-user store) is
-         * migrated only in the current format -- full-precision values
-         * (<value_format>g17</value_format>, 1.11.94) and the subarray geometry
-         * (<subarray_rows> / <subarray_cols>, 1.11.102). Anything older is not
-         * copied: one line says so and the query is a miss, recharacterized and
-         * stored in the tree cache. (A tree-cache entry keeps the 1.11.94 /
-         * 1.11.102 rules below: read with a note, PIMID_NVSIM_CACHE_REQUIRE_FULL=1
-         * makes it a miss.) */
-        if (!from_legacy.empty()) {
-            std::string fmt;
-            double rows = 0.0, cols = 0.0;
-            const bool g17 = getStr("value_format", fmt) && fmt == "g17";
-            const bool geom = get("subarray_rows", rows) && get("subarray_cols", cols) && rows > 0.0 && cols > 0.0;
-            if (!g17 || !geom) {
-                std::cout << "[NVSimWrapper] legacy cache entry " << from_legacy << " is "
-                          << (!geom ? "pre-1.11.102 (no subarray geometry)" : "")
-                          << (!geom && !g17 ? " and " : "")
-                          << (!g17 ? "6-significant-digit (pre-1.11.94, no <value_format>g17</value_format>)" : "")
-                          << ": not migrated; recharacterizing" << std::endl;
-                return false;
-            }
-        }
         /* 1.11.60 (audit round 4, C013): THE PRODUCING VERSION IS READ, so the
          * stamp stops being a line of manifest text nobody consults.
          *
@@ -595,9 +556,9 @@ namespace {
          * whole store -- minutes per cell, for entries that are not known to
          * be wrong. So the check binds forward: files written from 1.11.60
          * onwards carry their version and a mismatch refuses them. Entries
-         * older than that still ride on their filename, and the legacy
-         * copy-forward above still imports them on a name match, exactly as
-         * the finding says. That half is closed by regeneration, not by code.
+         * older than that still ride on their filename (the legacy copy-forward
+         * that imported such entries on a name match is gone since 1.12.5,
+         * ruling F5: the warehouse is the only store).
          */
         {
             std::string ver;
@@ -711,19 +672,11 @@ namespace {
                       << " carries no subarray geometry (pre-1.11.102 format); the array architecture cannot be built from it:"
                          " delete it, or set PIMID_NVSIM_CACHE_REQUIRE_FULL=1, to recharacterize" << std::endl;
         }
-        if (!from_legacy.empty()) {   // 1.12.2 (ruling 3a): copied forward only now, every check passed
-            std::ofstream out(path);
-            if (out.good()) {
-                out << xml;
-                std::cout << "[NVSimWrapper] migrated cached characterization "
-                          << "into the tree cache (" << path << ")" << std::endl;
-            }
-        }
         return true;
     }
     static void nvsimDiskStore(const NVMCacheKey& k, const NVMCacheVal& v) {
         std::string dir = nvsimCacheDir();
-        // best-effort mkdir -p (~/.cache, ~/.cache/pimid, ~/.cache/pimid/nvsim)
+        // best-effort mkdir -p of the warehouse's nvsim directory
         std::string acc;
         for (size_t i = 0; i <= dir.size(); ++i) {
             if (i == dir.size() || dir[i] == '/') {

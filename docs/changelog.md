@@ -7,6 +7,89 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.5 -- the five open findings of 1.12.2 (F1-F5): both nodes priced from their own fields, both clocks correct, one cache store
+
+Rulings F1-F5 of 2026-10-15, the third of the pre-fleet rulings: (a) on each.
+The findings were recorded in the 1.12.2 change notes as code reading; each
+is now fixed and proved by a gate arm.
+
+**F1 -- the system `--method trace` path prices per node.** The system
+trace-replay path called the single-configuration power analysis, which
+priced the DEVICE from the run configuration -- the top-level `pim.pe.type`
+(default `in_order_core`), the device-scope default caches, the top-level
+clock and the alu factors -- and the host always as an `ooo_core`. On the
+shipped `examples/cosim/host_device_basic.yaml` the 8 alu PEs at 500 MHz were
+priced as an in-order core at 2000 MHz, and the in-order host as out-of-order.
+The path now calls the per-node analysis exec uses (`runPerNodePowerAnalysis`),
+so each node is priced from its own fields and trace figures are comparable to
+exec figures. The device and host areas of a trace replay now equal the exec
+run's.
+
+**F2 -- the WeaveSimple upgrade keys on the device node's PE type.** The
+controller derivation upgraded Simple to WeaveSimple when `config.pe_type` was
+`in_order_core` or `ooo_core`. In system scope that field is the top-level
+`pim.pe.type` (default `in_order_core`), never synced from the node, so a
+device of alu PEs on SRAM or NVM derived a weave controller its cores cannot
+use. The upgrade now reads the first compute device node's PE type. Where it
+shows: with a host node, the one `mem` block of the emitted zsim configuration
+is the host's main memory, emitted from the host node and keyed on the host's
+core type (WeaveSimple for an OoO or in-order host is right), so
+`examples/cosim/multi_device.yaml` emits an identical configuration; without a
+host node the device controller block is emitted from this field, and an SRAM
+device of alu PEs now gets `Simple` instead of `WeaveSimple`. DRAM devices take
+Ramulator and were never affected.
+
+**F3 -- a top-level built-device key the node does not match is refused.**
+The keys the built device carries into the run -- `pim.placement.level`,
+`pim.mc.type`, `pim.mc.pes_per_mc`, `noc.topology`, `memory.ports_per_bank`
+-- were reset to the node defaults and then read from the node, so a top-level
+`pim.placement.level: CHIP` in a system configuration ran the device at `BANK`
+in silence. A top-level value for one of these keys that the node's effective
+value does not match is refused (rc 2), naming the top-level value, the node's
+value and the node key to give. Equal values pass. No corpus configuration
+carries such a key (10 system cells carry a top-level `memory.dram`, which is
+not one of them).
+
+**F4 -- the `HOST_MC` rung converts at the device clock.** The user's rule:
+host clock is host clock, device clock is device clock, both must be correct.
+Every hierarchy rung has converted nanoseconds at the device clock since
+1.11.57; the `HOST_MC` rung added in 1.11.94 still converted at
+`config.frequency_mhz`, which in system scope is the top-level
+`system.frequency_mhz` (2000 MHz against a 500 MHz device), and zsim summed
+the result with the other rungs as device cycles -- a 4x overcharge on the
+host-path latency of a co-sim device placed at `HOST_MC`. It now asks
+`deviceCycleClockMHz` like the others. Device scope is unchanged (one clock).
+The host side already converted at the host node's clock (its caches, its
+memory controller). `docs/cosim.md` states the clock rule and the two meanings
+of the top-level clock (flat `scope: cosim` form: the device's; declared
+nodes: the reference clock).
+
+**F5 -- one cache store, no old cache files.** The simulator's warehouse has
+been `<pimid>/cache`, located from the running binary, since 1.11.52; the
+pre-1.11.52 per-user store `~/.cache/pimid` was read as a fallback and a
+passing entry copied forward. The inspector `pimid-cache` lived outside the
+shipped tree and defaulted to that old store, so a bare `pimid-cache list`
+described a store no binary writes, and the shipped documentation named a
+tool the public tree did not carry. Now: nothing reads `~/.cache/pimid`
+(the NVSim fallback and copy-forward are gone; a miss is characterized and
+stored in the warehouse); a binary that cannot locate itself refuses instead
+of falling back to the home directory; `PIMID_NVSIM_CACHE_DIR` is refused
+instead of silently redirecting a run; the tool ships at `scripts/pimid-cache`
+and resolves its default root as the binary does, from the tree it sits in;
+its `stale` default version is the stamp the binary writes (`1.11.57`), not
+`1.0.0`. `docs/cache_warehouse.md` follows.
+
+**DATA IMPACT.** No corpus cell moves: every corpus and example configuration
+emits an identical zsim configuration and identical stdout on 1.12.4 and
+1.12.5 (gate arm E1), and the device-scope and co-sim exec parity arms are
+EXACT. A host-less system configuration with an SRAM or NVM device of alu PEs
+changes its controller from WeaveSimple to Simple (F2; none in the corpus or
+the examples). System-scope `--method trace` power figures move
+(F1; no corpus cell uses trace). A system configuration with a device at
+`HOST_MC` placement moves its rung-7 latency (F4; none in the corpus). The
+corpus NVM cells (PCM, ReRAM, STT-MRAM) hit the tree warehouse; F5 changes no
+figure.
+
 ## 1.12.4 -- the LPDDR5 part record is the four-channel package: four independent x16 channels, one die each
 
 Ruling 2 (c) of 2026-10-15, the second of the pre-fleet rulings. One record

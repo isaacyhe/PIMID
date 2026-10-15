@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""pimid-cache: inspector / maintenance CLI for the PIMID cache warehouse.
+
+The warehouse memoizes slow, deterministic backend characterizations (e.g.
+NVSim design-space searches). Its layout is:
+
+    <root>/                     warehouse root
+    <root>/<backend>/           per-backend artifact subdir (e.g. nvsim/*.xml)
+    <root>/index.jsonl          append-only manifest, one JSON object per line
+
+Because the manifest is append-only, the same (backend, key) may appear on
+multiple lines; the last occurrence (highest timestamp) is authoritative and
+earlier lines are superseded history.
+
+Uses only the Python 3 standard library.
+
+1.12.5 (ruling F5, user 2026-10-15): the tool ships in the tree (scripts/) and
+resolves its default root the way the binary does -- the cache/ directory of
+the tree it sits in. It defaulted to the pre-1.11.52 per-user store
+~/.cache/pimid, which no PIMID binary has written since 1.11.52.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+
+# = cache::kToolVersion in src/util/cache_warehouse.cpp (the stamp the binary
+# writes into index.jsonl); moves with it. Was "1.0.0", which no entry carries.
+DEFAULT_VERSION = "1.11.57"
+MANIFEST_NAME = "index.jsonl"
+
+
+# --------------------------------------------------------------------------
+# root resolution
+# --------------------------------------------------------------------------
+def tree_root():
+    """The PIMID tree this script sits in: <tree>/scripts/pimid-cache -> <tree>."""
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def resolve_root(cli_dir):
+    """Resolve the warehouse root.
+
+    Precedence (1.12.5): --dir arg > $PIMID_CACHE_DIR > <tree>/cache, the
+    same rule the binary applies from its own location (cache_warehouse.cpp,
+    defaultRoot). PIMID_NVSIM_CACHE_DIR is refused, as the binary refuses it.
+    """
+    if cli_dir:
+        return os.path.abspath(os.path.expanduser(cli_dir))
+
+    env = os.environ.get("PIMID_CACHE_DIR")
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+
+    if os.environ.get("PIMID_NVSIM_CACHE_DIR"):
+        sys.exit("pimid-cache: PIMID_NVSIM_CACHE_DIR is set. It named the pre-1.11.52 per-user "
+                 "store, which PIMID does not read; use PIMID_CACHE_DIR or --dir (1.12.5).")
+
+    return os.path.join(tree_root(), "cache")
+
+
+def manifest_path(root):
+    return os.path.join(root, MANIFEST_NAME)
+
+
+# --------------------------------------------------------------------------
+# manifest loading
+# --------------------------------------------------------------------------
+def read_lines(root):
+    """Yield (lineno, rawline, record_or_None) for every manifest line.
+
+    Malformed JSON lines yield record None and emit a warning to stderr.
+    Blank lines are skipped silently.
+    """
+    path = manifest_path(root)
+    # The manifest file's presence is authoritative. Gate solely on the file
+    # itself: if it exists and is readable, the warehouse is usable regardless
+    # of how os.path.isdir() reports the parent (which can be False on some
+    # network/symlinked mounts even when the file inside stats fine). A genuinely
+    # empty/absent warehouse has no manifest file, so this still returns None.
+    if not os.path.isfile(path):
+        return None  # signal "not found" to caller
+
+    out = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for i, raw in enumerate(fh, start=1):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                rec = json.loads(stripped)
+                if not isinstance(rec, dict):
+                    raise ValueError("not a JSON object")
+            except (ValueError, json.JSONDecodeError) as exc:
+                sys.stderr.write(
+                    "warning: skipping malformed manifest line %d: %s\n" % (i, exc)
+                )
+                rec = None
+            out.append((i, raw.rstrip("\n"), rec))
+    return out
+
+
+def latest_by_key(lines, backend=None):
+    """Collapse manifest lines to the authoritative record per (backend, key).
+
+    Last occurrence wins; ties on appearance order resolve to the later line.
+    Returns an ordered list of (identity, record) by first-seen order.
+    """
+    latest = {}
+    order = []
+    for _lineno, _raw, rec in lines:
+        if rec is None:
+            continue
+        b = rec.get("backend", "?")
+        k = rec.get("key", "?")
+        if backend and b != backend:
+            continue
+        ident = (b, k)
+        if ident not in latest:
+            order.append(ident)
+        else:
+            # keep the one with the higher timestamp; on a tie the later
+            # line (current) wins since we are iterating in file order.
+            prev = latest[ident]
+            if _ts(rec) < _ts(prev):
+                continue
+        latest[ident] = rec
+    return [(ident, latest[ident]) for ident in order]
+
+
+def _ts(rec):
+    try:
+        return float(rec.get("timestamp", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fmt_ts(rec):
+    ts = _ts(rec)
+    if not ts:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def short_params(rec):
+    params = rec.get("params") or {}
+    if not isinstance(params, dict):
+        return ""
+    # show up to two params for the table; prefer common NVSim keys
+    preferred = ["nvm_type", "capacity_bytes", "process_node_nm"]
+    items = []
+    for k in preferred:
+        if k in params:
+            items.append("%s=%s" % (k, params[k]))
+        if len(items) >= 2:
+            break
+    if not items:
+        for k in list(params)[:2]:
+            items.append("%s=%s" % (k, params[k]))
+    return ",".join(items)
+
+
+# --------------------------------------------------------------------------
+# output helpers
+# --------------------------------------------------------------------------
+def warehouse_missing(root):
+    sys.stderr.write("warehouse empty / not found: %s\n" % root)
+
+
+def print_table(rows, headers):
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    fmt = "  ".join("%-" + str(w) + "s" for w in widths)
+    print(fmt % tuple(headers))
+    print(fmt % tuple("-" * w for w in widths))
+    for row in rows:
+        print(fmt % tuple(str(c) for c in row))
+
+
+# --------------------------------------------------------------------------
+# subcommands
+# --------------------------------------------------------------------------
+def cmd_path(args):
+    root = resolve_root(args.dir)
+    print("root:     %s" % root)
+    print("manifest: %s" % manifest_path(root))
+    exists = os.path.isfile(manifest_path(root))
+    print("exists:   %s" % ("yes" if exists else "no"))
+    return 0
+
+
+def cmd_list(args):
+    root = resolve_root(args.dir)
+    lines = read_lines(root)
+    if lines is None:
+        warehouse_missing(root)
+        return 1
+    entries = latest_by_key(lines, backend=args.backend)
+    if not entries:
+        print("(no entries)")
+        return 0
+    rows = []
+    for (b, k), rec in entries:
+        rows.append([
+            b,
+            k,
+            rec.get("tool_version", "-"),
+            fmt_ts(rec),
+            short_params(rec),
+        ])
+    print_table(rows, ["backend", "key", "tool_version", "timestamp", "params"])
+    return 0
+
+
+def cmd_show(args):
+    root = resolve_root(args.dir)
+    lines = read_lines(root)
+    if lines is None:
+        warehouse_missing(root)
+        return 1
+    entries = latest_by_key(lines, backend=args.backend)
+    matches = [rec for (b, k), rec in entries if k == args.key]
+    if not matches:
+        sys.stderr.write("no record found for key: %s\n" % args.key)
+        return 1
+    if len(matches) > 1:
+        sys.stderr.write(
+            "note: key %r exists under multiple backends; showing all "
+            "(use --backend to disambiguate)\n" % args.key
+        )
+    for rec in matches:
+        print(json.dumps(rec, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_stale(args):
+    root = resolve_root(args.dir)
+    lines = read_lines(root)
+    if lines is None:
+        warehouse_missing(root)
+        return 1
+    current = args.current_version
+    entries = latest_by_key(lines, backend=args.backend)
+    rows = []
+    for (b, k), rec in entries:
+        ver = rec.get("tool_version", "-")
+        if ver != current:
+            rows.append([b, k, ver, fmt_ts(rec), short_params(rec)])
+    if not rows:
+        print("no stale entries (all match tool_version %s)" % current)
+        return 0
+    print("stale entries (tool_version != %s) — refresh with `--cache wo`:"
+          % current)
+    print_table(rows, ["backend", "key", "tool_version", "timestamp", "params"])
+    return 0
+
+
+def _artifact_candidates(root, rec):
+    """Best-effort locate artifact files belonging to a record.
+
+    Layout puts artifacts in <root>/<backend>/. NVSim names look like
+    nvm_t<type>_c<capacity>_n<node>.xml. We try a few derivations and only
+    return paths that actually exist inside the backend subdir.
+    """
+    found = []
+    b = rec.get("backend")
+    if not b:
+        return found
+    bdir = os.path.join(root, b)
+    if not os.path.isdir(bdir):
+        return found
+    params = rec.get("params") or {}
+    names = set()
+    if all(p in params for p in ("nvm_type", "capacity_bytes", "process_node_nm")):
+        names.add("nvm_t%s_c%s_n%s.xml" % (
+            params["nvm_type"], params["capacity_bytes"], params["process_node_nm"]))
+    # also key-derived guess: "t1_c8388608_n22" -> nvm_t1_c8388608_n22.xml
+    key = rec.get("key")
+    if key:
+        names.add("nvm_%s.xml" % key)
+        names.add("%s.xml" % key)
+    for n in names:
+        cand = os.path.join(bdir, n)
+        # safety: ensure the resolved path stays inside the warehouse root
+        if os.path.isfile(cand) and os.path.abspath(cand).startswith(
+                os.path.abspath(root) + os.sep):
+            found.append(cand)
+    return found
+
+
+def cmd_prune(args):
+    root = resolve_root(args.dir)
+    lines = read_lines(root)
+    if lines is None:
+        warehouse_missing(root)
+        return 1
+
+    # Determine, in file order, which raw lines to KEEP.
+    # Keep the authoritative (latest) line per (backend,key); drop the rest.
+    # First find the keeper lineno for each identity.
+    keeper_lineno = {}
+    for lineno, _raw, rec in lines:
+        if rec is None:
+            # malformed lines: drop them during a prune (they carry no value)
+            continue
+        ident = (rec.get("backend", "?"), rec.get("key", "?"))
+        prev = keeper_lineno.get(ident)
+        if prev is None:
+            keeper_lineno[ident] = (lineno, _ts(rec))
+        else:
+            if _ts(rec) >= prev[1]:
+                keeper_lineno[ident] = (lineno, _ts(rec))
+    keep_set = {ln for (ln, _t) in keeper_lineno.values()}
+
+    current = args.current_version
+    backend = args.backend
+
+    kept_lines = []
+    dropped_dupe = []
+    dropped_malformed = []
+    dropped_stale = []
+    deleted_artifacts = []
+
+    for lineno, raw, rec in lines:
+        if rec is None:
+            dropped_malformed.append((lineno, raw))
+            continue
+        b = rec.get("backend", "?")
+        if backend and b != backend:
+            kept_lines.append((lineno, raw, rec))
+            continue
+        ident = (b, rec.get("key", "?"))
+        is_keeper = lineno in keep_set
+        if not is_keeper:
+            dropped_dupe.append((lineno, raw))
+            continue
+        # keeper line — but maybe stale-prune it
+        if args.stale and rec.get("tool_version", "-") != current:
+            dropped_stale.append((lineno, raw, rec))
+            continue
+        kept_lines.append((lineno, raw, rec))
+
+    # Report plan
+    print("warehouse: %s" % root)
+    print("manifest:  %s" % manifest_path(root))
+    print("plan (%s):" % ("DRY-RUN" if not args.force else "APPLY"))
+    print("  superseded/duplicate lines to remove: %d" % len(dropped_dupe))
+    print("  malformed lines to remove:            %d" % len(dropped_malformed))
+    if args.stale:
+        print("  stale entries to remove (ver != %s):  %d"
+              % (current, len(dropped_stale)))
+    for ln, raw in dropped_dupe:
+        print("    - dup  line %d: %s" % (ln, _trunc(raw)))
+    for ln, raw in dropped_malformed:
+        print("    - bad  line %d: %s" % (ln, _trunc(raw)))
+    for ln, raw, rec in dropped_stale:
+        print("    - stale line %d: %s" % (ln, _trunc(raw)))
+
+    # Compute artifact deletions for stale removals
+    stale_artifacts = []
+    if args.stale:
+        for _ln, _raw, rec in dropped_stale:
+            stale_artifacts.extend(_artifact_candidates(root, rec))
+        for p in stale_artifacts:
+            print("    - artifact: %s" % p)
+
+    if not args.force:
+        print("\n(dry-run; re-run with --force to apply)")
+        return 0
+
+    # Apply: rewrite manifest atomically.
+    new_path = manifest_path(root)
+    tmp = new_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for _ln, raw, _rec in kept_lines:
+            fh.write(raw + "\n")
+    os.replace(tmp, new_path)
+    # delete stale artifacts
+    for p in stale_artifacts:
+        try:
+            os.remove(p)
+            deleted_artifacts.append(p)
+        except OSError as exc:
+            sys.stderr.write("warning: could not delete %s: %s\n" % (p, exc))
+
+    print("\napplied: kept %d line(s), removed %d line(s), deleted %d artifact(s)."
+          % (len(kept_lines),
+             len(dropped_dupe) + len(dropped_malformed) + len(dropped_stale),
+             len(deleted_artifacts)))
+    return 0
+
+
+def _trunc(s, n=80):
+    s = s.strip()
+    return s if len(s) <= n else s[:n - 3] + "..."
+
+
+# --------------------------------------------------------------------------
+# argument parsing
+# --------------------------------------------------------------------------
+def build_parser():
+    # A shared parent parser so --dir/--cache-dir is accepted BOTH before the
+    # subcommand (pimid-cache --dir X list) and after it (pimid-cache list --dir X).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--dir", "--cache-dir", dest="dir", default=None,
+        help="warehouse root (overrides $PIMID_CACHE_DIR; default: the cache/ directory of the tree this script sits in)",
+    )
+
+    p = argparse.ArgumentParser(
+        prog="pimid-cache",
+        description="Inspect and maintain the PIMID cache warehouse.",
+        parents=[common],
+    )
+    sub = p.add_subparsers(dest="cmd")
+
+    sp = sub.add_parser("path", parents=[common],
+                        help="print resolved warehouse root and manifest path")
+    sp.set_defaults(func=cmd_path)
+
+    sp = sub.add_parser("list", parents=[common],
+                        help="list unique (backend,key) entries (latest each)")
+    sp.add_argument("--backend", default=None, help="filter by backend (e.g. nvsim)")
+    sp.set_defaults(func=cmd_list)
+
+    sp = sub.add_parser("show", parents=[common],
+                        help="show full latest record for a key")
+    sp.add_argument("key", help="cache key, e.g. t1_c8388608_n22")
+    sp.add_argument("--backend", default=None, help="disambiguate by backend")
+    sp.set_defaults(func=cmd_show)
+
+    sp = sub.add_parser("stale", parents=[common],
+                        help="list entries whose tool_version != current")
+    sp.add_argument("--current-version", default=DEFAULT_VERSION,
+                    help="current tool version (default %s)" % DEFAULT_VERSION)
+    sp.add_argument("--backend", default=None, help="filter by backend")
+    sp.set_defaults(func=cmd_stale)
+
+    sp = sub.add_parser("prune", parents=[common],
+                        help="remove superseded/duplicate manifest lines")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="show what would change (default unless --force)")
+    sp.add_argument("--force", action="store_true",
+                    help="actually apply the changes")
+    sp.add_argument("--stale", action="store_true",
+                    help="also remove entries (and artifacts) with mismatched version")
+    sp.add_argument("--backend", default=None, help="restrict pruning to one backend")
+    sp.add_argument("--current-version", default=DEFAULT_VERSION,
+                    help="current tool version for --stale (default %s)"
+                         % DEFAULT_VERSION)
+    sp.set_defaults(func=cmd_prune)
+
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "cmd", None):
+        parser.print_help()
+        return 2
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

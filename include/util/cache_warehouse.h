@@ -51,19 +51,16 @@ Mode mode();
 bool readEnabled();   ///< true for RW, RO  (may consult the warehouse)
 bool writeEnabled();  ///< true for RW, WO  (may persist new entries)
 
-/// Resolved warehouse root (e.g. ~/.cache/pimid). Valid after configure();
+/// Resolved warehouse root (e.g. <pimid>/cache). Valid after configure();
 /// if configure() was never called, lazily resolves defaults+env on first use.
 const std::string& warehouseRoot();
 
 /// "<root>/<backend>" -- created (mkdir -p) on demand. e.g. backendDir("nvsim").
 std::string backendDir(const std::string& backend);
 
-/* 1.11.52: the pre-1.11.52 warehouse (~/.cache/pimid/<backend>), READ-ONLY.
- * The cache now ships with pimid and starts empty; a miss in the tree store
- * consults this so characterizations that already cost minutes are reused
- * (and copied forward) instead of regenerated. Returns "" when there is no
- * legacy location or it coincides with the active root. */
-std::string legacyBackendDir(const std::string& backend);
+/* 1.12.5 (ruling F5, user 2026-10-15): the warehouse is the only store. The
+ * pre-1.11.52 per-user location (~/.cache/pimid/<backend>) was read as a
+ * fallback from 1.11.52 to 1.12.4 (legacyBackendDir); nothing reads it now. */
 
 /// Version stamp written into manifest records (for staleness detection).
 std::string toolVersion();

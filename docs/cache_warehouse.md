@@ -58,40 +58,34 @@ highest first: CLI > environment > YAML config > built-in default.**
    ```yaml
    cache:
      mode: rw          # rw | ro | wo | off
-     dir: ~/.cache/pimid
+     dir: /path/to/warehouse
      enabled: true     # false is equivalent to mode: off
    ```
 
 4. **Defaults**
    - mode: `rw`
-   - dir: `<pimid>/cache`, located from the running binary (since 1.11.52;
-     `~/.cache/pimid` before -- see the per-user store below)
+   - dir: `<pimid>/cache`, located from the running binary (since 1.11.52).
+     When the binary cannot locate itself (no `/proc`) and no root is given,
+     the run is refused (1.12.5): pass `--cache-dir` or set `PIMID_CACHE_DIR`.
 
-### The pre-1.11.52 per-user store
+### One store (1.12.5)
 
-`~/.cache/pimid` is read as a READ-ONLY fallback: an NVSim query that misses
-the warehouse looks there, and an entry it finds is copied into the warehouse
-("migrated cached characterization into the tree cache"). Since 1.12.2 an
-entry is migrated only if it passes every check a warehouse entry passes and
-is in the current format -- full-precision values (`<value_format>g17`,
-1.11.94) and the subarray geometry (`<subarray_rows>` / `<subarray_cols>`,
-1.11.102). An older entry is not copied: the run prints
-
-    [NVSimWrapper] legacy cache entry <path> is pre-1.11.102 (no subarray geometry) [and 6-significant-digit (...)]: not migrated; recharacterizing
-
-and the query is recharacterized and stored in the warehouse. Through 1.12.1
-the entry was copied first and checked after, so a stale one was planted in
-the warehouse and served from there on (a PCM cell then refused: "NVSim
-reported no wordlines per mat").
+The warehouse is the only store the simulator reads or writes. From 1.11.52
+to 1.12.4 a miss consulted the pre-1.11.52 per-user location `~/.cache/pimid`
+read-only and copied a passing entry forward ("migrated cached
+characterization into the tree cache"). Since 1.12.5 (ruling F5, user
+2026-10-15: no wrong folders and no old cache files) nothing is read from it:
+a miss is characterized and stored in the warehouse. Entries elsewhere are
+reached only by naming their root (`--cache-dir`, `PIMID_CACHE_DIR`,
+`cache.dir`).
 
 ### Back-compat
 
-The previous, NVSim-specific environment variables are still honored:
+The previous, NVSim-specific environment variables:
 
-- `PIMID_NVSIM_CACHE_DIR` -- legacy location of the NVSim cache. The warehouse
-  treats its **parent directory** as the warehouse root (the legacy dir was the
-  per-backend `nvsim/` subdir). Honored only when the generic
-  `PIMID_CACHE_DIR` is unset.
+- `PIMID_NVSIM_CACHE_DIR` -- refused (rc 2) since 1.12.5. It named the
+  `nvsim/` subdir of the old per-user store, and a stale environment must not
+  point a run at old cache files in silence. Use `PIMID_CACHE_DIR`.
 - `PIMID_NVSIM_CACHE_DISABLE` -- legacy disable switch, treated like
   `PIMID_CACHE_DISABLE`.
 
@@ -154,10 +148,12 @@ occurrence) is **authoritative**; earlier lines are superseded history. The
 
 ## The `pimid-cache` tool
 
-A standalone Python 3 (stdlib-only) inspector/maintenance CLI lives at
-`scripts/pimid-cache`. It resolves the warehouse root using
-`--dir`/`--cache-dir` > `$PIMID_CACHE_DIR` > (legacy parent of
-`$PIMID_NVSIM_CACHE_DIR`) > `~/.cache/pimid`.
+A standalone Python 3 (stdlib-only) inspector/maintenance CLI ships at
+`scripts/pimid-cache` (in the tree since 1.12.5; before that it was dev-side
+tooling that defaulted to the old per-user store). It resolves the warehouse
+root the way the binary does: `--dir`/`--cache-dir` > `$PIMID_CACHE_DIR` >
+the `cache/` directory of the tree the script sits in. Run from any tree, a
+bare `pimid-cache list` shows that tree's warehouse.
 
 ### Subcommands
 
@@ -166,7 +162,8 @@ A standalone Python 3 (stdlib-only) inspector/maintenance CLI lives at
   (latest each): backend, key, tool_version, human timestamp, key params.
 - `pimid-cache show <key> [--backend B]` -- pretty-printed full latest record.
 - `pimid-cache stale [--current-version X] [--backend B]` -- entries whose
-  `tool_version` differs from the current version (default `1.0.0`). These are
+  `tool_version` differs from the current version (default: the stamp this
+  tree's binary writes, `kToolVersion` in `src/util/cache_warehouse.cpp`). These are
   refresh candidates -- re-run them with `--cache wo`.
 - `pimid-cache prune [--dry-run] [--force] [--stale] [--backend B] [--current-version X]`
   -- compact the manifest by removing superseded/duplicate (and malformed) lines,
