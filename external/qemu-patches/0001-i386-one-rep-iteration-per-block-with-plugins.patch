@@ -1,0 +1,28 @@
+PIMID: run one REP string iteration per block execution while a TCG plugin is loaded
+
+QEMU 10 and later translate a REP MOVS/STOS/LODS/CMPS/SCAS as a loop that runs up to
+65535 iterations inside one execution of the block. A plugin then sees one block (and
+one instruction) followed by up to 65535 memory accesses. ZSim ends a phase, and frees
+the timing events of the last one, only at a block boundary, so a large memset or
+memcpy piled all its events into one phase and overflowed ZSim's 256 MB global heap
+(PIMID gate 12216A). With a plugin loaded, this makes the translator take the
+one-iteration path it already uses for icount and single-step: each iteration ends
+the block and re-enters the instruction, as QEMU 9.2 always did.
+
+Applies to QEMU v11.1.2 (PIMID 1.12.16). Apply inside external/qemu:
+    git apply ../qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch
+
+diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
+index 2115c5c..42345a2 100644
+--- a/target/i386/tcg/translate.c
++++ b/target/i386/tcg/translate.c
+@@ -1329,7 +1329,8 @@ static void do_gen_rep(DisasContext *s, MemOp ot, TCGv dshift,
+      */
+     bool can_loop =
+         (!(tb_cflags(s->base.tb) & (CF_USE_ICOUNT | CF_SINGLE_STEP))
+-	 && !(s->flags & (HF_TF_MASK | HF_INHIBIT_IRQ_MASK)));
++	 && !(s->flags & (HF_TF_MASK | HF_INHIBIT_IRQ_MASK))
++	 && !s->base.plugin_enabled);
+     bool had_rf = s->flags & HF_RF_MASK;
+ 
+     /*

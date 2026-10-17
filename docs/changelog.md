@@ -7,6 +7,62 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.16 -- QEMU 11.1.2: a parallel workload on fewer simulated cores than threads no longer deadlocks at its first thread; a host baseline's OpenMP team is its host core count; QEMU runs a REP string one iteration per block under a plugin (patch carried in the repo)
+
+The user: "while the re-sim is going, please try to fix these issues", then "If you are sure the issue is qemu side, please
+move to newer qemu in both repos"; a/b/c rulings: ship the source now and rebuild the release tree's QEMU and the image after
+the 1.12.15 re-simulation; the layout effect is documented only. Gate 12216A then failed on a ZSim heap overflow; "try to locate and fix it", and a/b/c: carry the QEMU
+fix as a patch file in the repo (a).
+
+**(1) QEMU 9.2.0 -> 11.1.2.** In QEMU 9.2 linux-user, the guest's first `clone()` of a thread set `CF_PARALLEL` and then
+called `tb_flush()`. With the flag already set the flush is no longer in serial context, so it was queued as exclusive work on
+the parent vCPU and taken at the parent's next `cpu_loop` pass. If the child was already inside `cpu_exec` by then and ZSim
+blocked it there waiting for a simulated core the parent held (more threads than simulated cores), `start_exclusive()` waited
+for the child forever. Found as the 1-core OpenMP baseline hang (8 threads on 1 core: 3 of 12 runs stalled after "Thread 1
+starting"); a backtrace of a stalled run shows the parent in `start_exclusive()` and the child in `Scheduler::join()` under
+`cpu_exec`. Flushing first removes it: under the conditions that reproduced it (12 concurrent runs per node, 36 runs each) 9.2
+stalled 7 times, 9.2 with the two lines swapped never. QEMU made the same change upstream in 10.2.0 (`begin_parallel_context()`:
+flush, then set `CF_PARALLEL`), so the submodule moves to the current stable release, 11.1.2, which also carries the glibc 2.41
+`struct sched_attr` guard `docs/build.md` used to ask for. 11.1.2 accepts plugin API 7 and up, so the ZSim and trace plugins
+move to it: the vendored `qemu-plugin.h` is 11.1.2's (it includes `<glib.h>`; the plugin targets take the glib include path
+from `pkg-config glib-2.0`), callbacks lose the plugin id and gain a userdata pointer, `qemu_plugin_read_register()` returns
+bool, and the register API comes from the header instead of a local shim (whose descriptor lacked API 7's `is_readonly`).
+QEMU is a submodule; the release tree's built QEMU (which the 1.12.15 re-simulation runs) and the image are rebuilt after it.
+
+**(2) A system co-sim host baseline's OpenMP team is the host core count.** The two system co-sim launch paths sized the
+team to the largest device PE count even under `PIMID_COSIM_NO_OFFLOAD`, where the host cores run the kernel: a 1-core
+baseline ran 8 threads time-sliced on one core. The other launch paths and the ZSim `parallelism` line already used
+`host.num_cores`, and `docs/architecture.md` documents it; these two paths now do too. An explicit `OMP_NUM_THREADS` or
+`workload.env` still wins.
+
+**(3) ALU factors reach the core model exactly.** The ALU `compute`, `access`, `throughput` and `energy` factors were
+written into the ZSim configuration with two decimals (a configured 0.125 became 0.12). A value two decimals hold exactly
+keeps that text; any other is written exactly. No corpus configuration sets a factor (all are 1.0, "1.00"), so no emitted
+configuration changes (gate E1).
+
+**(4) QEMU 11 and `REP` strings; a ZSim panic under QEMU fails instead of hanging.** Gate 12216A failed one smoke cell
+(`cosim_HBM3_omp_gemv`): ZSim stopped with "gm_memalign(): Out of global heap memory" just after the host thread
+started, and the process then hung until the cell's 3000 s timeout. QEMU 10 and later translate a `REP` string instruction
+as a loop of up to 65535 iterations inside one execution of its block; QEMU 9.2 ended the block after each iteration. ZSim
+ends a phase, and frees the last phase's timing events, only at a block boundary, so a large `memset` before the offload
+piled all its events into one phase: 64 MB of the 256 MB global heap in an unloaded run, and the whole heap under load (96
+concurrent runs on 88 cores: 94 of 96 overflowed). `external/qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch`
+makes QEMU take its existing one-iteration path while a plugin is loaded; `docs/build.md` applies it after the clone and the
+image's QEMU is built with it. Under the same load: 0 of 240 runs overflowed, and 216 of 216 at a load where runs finish
+completed rc 0, the timing events staying under 16 MB. The submodule stays at upstream v11.1.2. Both plugins tag `REP`
+string instructions and stop with a message naming the patch if one runs more than one iteration per block execution. The
+hang: ZSim's `panic()` called `exit()`, which runs QEMU's atexit hook, which re-enters the plugin's `plugin_exit` and
+`SimEnd` from the panicking thread and deadlocks; `panic()` now flushes its message and calls `_exit()`, as the plugin's own
+exit path already did.
+
+**Documented (no code change): the launch environment and a parallel workload's spread.** `docs/architecture.md`
+Reproducibility gains two 1.12.15 measurements. The path of the build tree is part of the environment the guest inherits:
+one binary with 0 / 64 / 4096 bytes of extra environment gave 540746 / 540951 / 540805 cycles (in-order gemv, one PE, each
+repeated exactly), and two builds of one source in folders whose paths differ in length differed the same way. And a 16-PE
+OpenMP run repeats its work, not its time: six runs executed the same instructions per core (apart from which thread took
+which chunk) and spanned 0.38% in cycles; with `simulation.parallel: false` four runs still spanned 3.9%, since the order in
+which the threads take the simulated cores follows the host's wake-ups.
+
 ## 1.12.15 -- an in-order core's power no longer overflows on some runs, and a number prints at the precision its own line chose
 
 The user: "please locate and fix the mcpat overflow shit" (a longstanding McPAT defect), and both fixes in one release.

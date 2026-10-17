@@ -31,6 +31,7 @@
 #include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 void __log_lock();
 void __log_unlock();
@@ -126,7 +127,10 @@ class PrintExpr {
     fprintf(logFdErr, "\n"); \
     fflush(logFdErr); \
     /**reinterpret_cast<int*>(0L) = 42;*/ /*SIGSEGVs*/ \
-    exit(PANIC_EXIT_CODE); \
+    /* PIMID 1.12.16: _exit, not exit: under QEMU, exit() runs QEMU's atexit hook, which re-enters the \
+     * plugin's plugin_exit -> SimEnd from the panicking thread and deadlocks (the run then hangs until \
+     * its timeout instead of failing). */ \
+    _exit(PANIC_EXIT_CODE); \
 }
 
 #define warn(args...) \

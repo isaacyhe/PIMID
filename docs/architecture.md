@@ -96,7 +96,11 @@ row, a channel. The instruction stream does not change; a memory-bound
 result can. Measured: 500 more bytes of environment moved a 65536-element
 serial `stream_triad` on HBM3 by 0.36% with identical instruction streams;
 small shapes (`bfs` 4096 vertices, `stream_triad` 1000, `gemv` 256) did not
-move. So:
+move. In 1.12.15 an in-order `gemv` 256 with one PE did: one binary with
+0 / 64 / 4096 bytes of extra environment gave 540746 / 540951 / 540805 cycles
+(each repeated exactly). The path of the build tree is part of that environment, so
+two builds of one source in folders whose paths differ in length differ the
+same way. So:
 
 - **Results from different jobs are compared no finer than 0.5%.** Two jobs
   rarely share an environment byte for byte (the job id, the working
@@ -116,6 +120,13 @@ machine, and how loaded the machine is -- measurements of the same configuration
 on one node have ranged from a fraction of a percent to several percent depending
 on what else was running. Quote it as a measured bound for the specific study,
 not as a property of the simulator.
+
+Measured in 1.12.15 (16-PE OpenMP `gemv` 256, six runs): every core executed the
+same instructions (apart from which thread took which loop chunk), and the
+reported cycles spanned 0.38%. With `simulation.parallel: false` (one simulator
+thread) four runs still spanned 3.9%: the spread comes from the order in which the
+threads take the simulated cores, which follows the host's wake-ups, not from
+simulating cores concurrently.
 
 Two things follow:
 

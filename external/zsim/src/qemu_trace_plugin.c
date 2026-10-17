@@ -23,8 +23,14 @@
 #include <stdatomic.h>
 #include <time.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include "qemu/qemu-plugin.h"
+
+/* 1.12.16: the API-2 vendored header carried this helper; QEMU itself has only qemu_plugin_mem_size_shift(). */
+static inline unsigned int qemu_plugin_mem_size(qemu_plugin_meminfo_t info) {
+    return 1u << qemu_plugin_mem_size_shift(info);
+}
 
 /* Must be defined for QEMU to recognize the plugin */
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
@@ -148,7 +154,28 @@ static void emit_roi_event(unsigned int vcpu_index, uint64_t op) {
     if (op == ZSIM_MAGIC_OP_ROI_END) atomic_store(&in_roi, false);
 }
 
+/* PIMID 1.12.16: QEMU 10 and later run a REP string instruction for up to 65535 iterations inside
+ * one block execution. ZSim (replaying this trace) ends a phase only at a block boundary, so a long memset or memcpy then
+ * piled its timing events into one phase and overflowed the 256 MB global heap. PIMID builds QEMU
+ * with external/qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch, under which
+ * every iteration is its own block execution (as in QEMU 9.2): at most two memory accesses (MOVS,
+ * CMPS) between block callbacks. More than that means the patch is missing, and trace generation stops. */
+static int rep_string_tag;
+static uint32_t rep_mem_since_bbl[MAX_VCPUS];
+static bool isRepString(const uint8_t* b, size_t n) {
+    bool rep = false;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = b[i];
+        if (c == 0xf2 || c == 0xf3) { rep = true; continue; }
+        if (c == 0x66 || c == 0x67 || c == 0x26 || c == 0x2e || c == 0x36 || c == 0x3e ||
+            c == 0x64 || c == 0x65 || (c >= 0x40 && c <= 0x4f)) continue;
+        return rep && c >= 0xa4 && c <= 0xaf && c != 0xa8 && c != 0xa9;
+    }
+    return false;
+}
+
 static void tb_exec_cb(unsigned int vcpu_index, void *userdata) {
+    if (vcpu_index < MAX_VCPUS) rep_mem_since_bbl[vcpu_index] = 0;
     if (!in_roi) return;
     const TbRec *rec = (const TbRec *)userdata;
     uint32_t idx = vcpu_index < MAX_VCPUS ? vcpu_index : 0;
@@ -213,6 +240,13 @@ static void mem_cb(unsigned int vcpu_index,
                    uint64_t vaddr,
                    void *userdata) {
     if (!in_roi) return;
+    if (userdata == &rep_string_tag && vcpu_index < MAX_VCPUS && ++rep_mem_since_bbl[vcpu_index] > 2) {
+        fprintf(stderr, "[trace] FATAL: QEMU ran a REP string instruction for several iterations inside one block "
+                "execution: this QEMU lacks external/qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch "
+                "(docs/build.md)\n");
+        fflush(stderr);
+        _exit(2);
+    }
 
     TraceEvent evt;
     memset(&evt, 0, sizeof(evt));
@@ -251,13 +285,12 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
  * Syscall callback -- emit BARRIER events for thread-creating syscalls.
  * clone/fork/vfork (syscall numbers 56, 57, 58 on x86_64).
  */
-static void syscall_cb(qemu_plugin_id_t id,
-                       unsigned int vcpu_index,
+static void syscall_cb(unsigned int vcpu_index,
                        int64_t num,
                        uint64_t a1, uint64_t a2,
                        uint64_t a3, uint64_t a4,
                        uint64_t a5, uint64_t a6,
-                       uint64_t a7, uint64_t a8) {
+                       uint64_t a7, uint64_t a8, void *userdata) {
     /* clone=56, fork=57, vfork=58 on x86_64 */
     if (num == 56 || num == 57 || num == 58) {
         TraceEvent evt;
@@ -390,7 +423,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
  *   1. An instruction count callback on the first instruction
  *   2. Memory callbacks on each instruction
  */
-static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
+static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
     size_t n_insns = qemu_plugin_tb_n_insns(tb);
     bool insn_count_registered = false;
     /* PIMID 1.11.100 (C6 / H37): the block's record for the per-execution
@@ -496,7 +529,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
         /* Register memory callback for every instruction */
         qemu_plugin_register_vcpu_mem_cb(
             insn, mem_cb, QEMU_PLUGIN_CB_NO_REGS,
-            QEMU_PLUGIN_MEM_RW, NULL);
+            QEMU_PLUGIN_MEM_RW, isRepString(bytes, insn_sz) ? (void *)&rep_string_tag : NULL);
     }
 
     /* If the TB ends with a mov $imm, %rcx that wasn't consumed by an xchg
@@ -513,7 +546,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
  * Plugin exit -- flush remaining events, emit final COMPUTE_INT summary,
  * write header, and close file.
  */
-static void plugin_exit(qemu_plugin_id_t id, void *userdata) {
+static void plugin_exit(void *userdata) {
     (void)userdata;
     /* PIMID 1.11.100 (C6): no summary COMPUTE at exit -- every executed block
      * was emitted during the run (tb_exec_cb); the per-vcpu instruction
@@ -673,8 +706,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     fwrite(zeros, 1, 512, trace_file);
 
     /* Register callbacks */
-    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb);
-    qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb, NULL);
+    qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb, NULL);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
     char msg[256];

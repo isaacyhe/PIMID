@@ -76,6 +76,17 @@
 // ZSim trace driver library (in-process trace replay)
 #include "zsim_trace_api.h"
 
+#include <cstdio>  // 1.12.16: alu_factor_text (snprintf)
+/* 1.12.16: an ALU factor as the ZSim configuration text. Two decimals when they hold the value exactly (the text every emission so far
+ * used, "1.00"), otherwise the exact value: through 1.12.15 a configured 0.125 was written as 0.12 (the tie rounds to even). */
+static std::string alu_factor_text(double v) {
+    char b[64];
+    std::snprintf(b, sizeof(b), "%.2f", v);
+    if (std::strtod(b, nullptr) == v) return b;
+    std::snprintf(b, sizeof(b), "%.17g", v);
+    return b;
+}
+
 // Helper to get PIMID root directory (from executable path or environment)
 static std::string getPimidRoot() {
     // Check environment variable first
@@ -14378,15 +14389,15 @@ public:
         if (core_type == "ALU") {
             pimid::StreamFormatGuard fmt_guard_14378(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
-            cfg << "            computeFactor = " << config_.alu_compute_factor << ";\n";
-            cfg << "            accessFactor = " << config_.alu_access_factor << ";\n";
-            cfg << "            throughputFactor = " << config_.alu_throughput_factor << ";\n";
+            cfg << "            computeFactor = " << alu_factor_text(config_.alu_compute_factor) << ";\n";
+            cfg << "            accessFactor = " << alu_factor_text(config_.alu_access_factor) << ";\n";
+            cfg << "            throughputFactor = " << alu_factor_text(config_.alu_throughput_factor) << ";\n";
             cfg << std::defaultfloat;
             cfg << "            operandWidth = " << config_.alu_operand_width << ";\n";
             cfg << "            bitSerial = " << (config_.alu_bit_serial ? "true" : "false") << ";\n";
             pimid::StreamFormatGuard fmt_guard_14385(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
-            cfg << "            energyFactor = " << config_.alu_energy_factor << ";\n";
+            cfg << "            energyFactor = " << alu_factor_text(config_.alu_energy_factor) << ";\n";
             cfg << std::defaultfloat;
         } else if (core_has_caches) {
             cfg << "            dcache = \"l1d\";\n";
@@ -15128,9 +15139,9 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             double scaled_access = node.alu_access_factor;
             pimid::StreamFormatGuard fmt_guard_15126(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
-            cfg << "            computeFactor = " << scaled_compute << ";\n";
-            cfg << "            accessFactor = " << scaled_access << ";\n";
-            cfg << "            throughputFactor = " << node.alu_throughput_factor << ";\n";
+            cfg << "            computeFactor = " << alu_factor_text(scaled_compute) << ";\n";
+            cfg << "            accessFactor = " << alu_factor_text(scaled_access) << ";\n";
+            cfg << "            throughputFactor = " << alu_factor_text(node.alu_throughput_factor) << ";\n";
             cfg << std::defaultfloat;
             cfg << "            operandWidth = " << node.alu_operand_width << ";\n";
             /* 1.11.56 (audit B054): the datapath shape, which device scope has
@@ -15139,7 +15150,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             cfg << "            bitSerial = " << (node.alu_bit_serial ? "true" : "false") << ";\n";
             pimid::StreamFormatGuard fmt_guard_15136(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
-            cfg << "            energyFactor = " << node.alu_energy_factor << ";\n";
+            cfg << "            energyFactor = " << alu_factor_text(node.alu_energy_factor) << ";\n";
             cfg << std::defaultfloat;
         } else {
             std::string dcache = node.name + "_l1d";
@@ -21478,6 +21489,10 @@ int main(int argc, char** argv) {
                             }
                             if (omp_threads <= 0)
                                 omp_threads = (config.num_pes > 0) ? config.num_pes : 1;
+                            /* 1.12.16: a no-offload host baseline runs the kernel on the HOST cores, so the team is the host core count (as the
+                             * device-scope launch paths and the zsim parallelism line use); through 1.12.15 it was the device PE count. */
+                            if (getenv("PIMID_COSIM_NO_OFFLOAD") != nullptr && config.host_num_cores > 0)
+                                omp_threads = config.host_num_cores;
                             setenv("OMP_NUM_THREADS", std::to_string(omp_threads).c_str(), 0);
                             setenv("OMP_DYNAMIC", "FALSE", 0);
                             setenv("OMP_WAIT_POLICY", "PASSIVE", 0);
@@ -21593,6 +21608,10 @@ int main(int argc, char** argv) {
                         }
                         if (omp_threads <= 0)
                             omp_threads = (config.num_pes > 0) ? config.num_pes : 1;
+                        /* 1.12.16: a no-offload host baseline runs the kernel on the HOST cores, so the team is the host core count (as the
+                         * device-scope launch paths and the zsim parallelism line use); through 1.12.15 it was the device PE count. */
+                        if (getenv("PIMID_COSIM_NO_OFFLOAD") != nullptr && config.host_num_cores > 0)
+                            omp_threads = config.host_num_cores;
                         setenv("OMP_NUM_THREADS", std::to_string(omp_threads).c_str(), 0);
                         setenv("OMP_DYNAMIC", "FALSE", 0);
                         setenv("OMP_WAIT_POLICY", "PASSIVE", 0);

@@ -15,16 +15,26 @@ not include it. The build expects it at `external/qemu/build/qemu-x86_64`:
 
 ```bash
 cd external/qemu
-git clone --depth 1 --branch v9.2.0 https://gitlab.com/qemu-project/qemu.git .
+git clone --depth 1 --branch v11.1.2 https://gitlab.com/qemu-project/qemu.git .
+git apply ../qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch
 mkdir build && cd build
 ../configure --target-list=x86_64-linux-user --enable-plugins --enable-tcg \
              --disable-docs --disable-werror
 ninja -j$(nproc) qemu-x86_64
 ```
 
-> **glibc >= 2.41:** glibc defines `struct sched_attr`, clashing with QEMU
-> 9.2's copy in `linux-user/syscall.c` (~line 361). Wrap QEMU's definition in
-> `#ifndef SCHED_ATTR_SIZE_VER0 ... #endif` and rebuild.
+> **QEMU 11.1.2 is required (since PIMID 1.12.16).** The ZSim and trace plugins are built
+> against its plugin API (version 7; QEMU 9.2 refuses them), and from 10.2.0 QEMU flushes its
+> translations *before* entering parallel mode at a guest's first thread. 9.2 queued that flush
+> as exclusive work, which deadlocked under ZSim when a program had more threads than simulated
+> cores. Its plugin header includes `<glib.h>`, so building PIMID's plugins needs the glib
+> development headers (found through `pkg-config glib-2.0`), which building QEMU needs anyway.
+>
+> **The patch in `external/qemu-patches/` is required.** QEMU 10 and later run a `REP` string
+> instruction (`memset`, `memcpy`) for up to 65535 iterations inside one block execution; ZSim
+> ends a phase only at a block boundary, so a long one piled its timing events into one phase and
+> overflowed ZSim's global heap. With a plugin loaded the patch runs one iteration per block
+> execution, as QEMU 9.2 did. Both plugins stop with a message naming the patch if it is missing.
 
 ## Build PIMID
 

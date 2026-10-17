@@ -631,30 +631,12 @@ static std::atomic<uint64_t> pending_magic_op[MAX_THREADS];
  * registered with QEMU_PLUGIN_CB_R_REGS.  The register handle is resolved once
  * (per-vCPU context) and cached; a reusable GByteArray avoids per-op alloc.
  *
- * NOTE: the vendored qemu-plugin.h in this tree (external/zsim/include) is a
- * minimal subset that predates the register-read API and does NOT pull in
- * <glib.h>, whose include dir is also absent from the build flags.  We are
- * constrained to edit only this .cpp, so we locally declare the small glib ABI
- * (matching system glib-2.0 struct layouts) and the QEMU register API.  These
- * symbols are provided at runtime by qemu-x86_64 (which links libglib-2.0 and
- * exports qemu_plugin_get_registers / qemu_plugin_read_register). */
-extern "C" {
-typedef struct PimidGArray { char* data; unsigned int len; } PimidGArray;
-typedef struct PimidGByteArray { uint8_t* data; unsigned int len; } PimidGByteArray;
-struct qemu_plugin_register;
-typedef struct {
-    struct qemu_plugin_register* handle;
-    const char* name;
-    const char* feature;
-} pimid_qemu_plugin_reg_descriptor;
-
-PimidGArray* qemu_plugin_get_registers(void);
-int qemu_plugin_read_register(struct qemu_plugin_register* handle,
-                              PimidGByteArray* buf);
-PimidGByteArray* g_byte_array_sized_new(unsigned int reserved_size);
-PimidGByteArray* g_byte_array_set_size(PimidGByteArray* array, unsigned int length);
-char* g_array_free(PimidGArray* array, int free_segment);
-}
+ * 1.12.16: the vendored qemu-plugin.h is QEMU 11.1.2's (plugin API 7), which declares the register API and
+ * includes <glib.h>; the local glib / register shim this file carried for the API-2 header is gone. The names
+ * below alias the real types so the code that follows is unchanged. */
+typedef GArray PimidGArray;
+typedef GByteArray PimidGByteArray;
+typedef qemu_plugin_reg_descriptor pimid_qemu_plugin_reg_descriptor;
 
 #define PIMID_GARRAY_INDEX(a, t, i) \
     (((t*)(void*)(a)->data)[(i)])
@@ -693,7 +675,8 @@ static bool readGuestReg(struct qemu_plugin_register* h, uint64_t* out) {
     if (!h) return false;
     if (!rcx_buf) rcx_buf = g_byte_array_sized_new(16);
     g_byte_array_set_size(rcx_buf, 0);
-    int n = qemu_plugin_read_register(h, rcx_buf);
+    if (!qemu_plugin_read_register(h, rcx_buf)) return false;  /* API 7: bool; the size is the buffer length */
+    int n = (int)rcx_buf->len;
     if (n <= 0) return false;
     uint64_t v = 0;
     int bytes = (n < 8) ? n : 8;
@@ -1370,12 +1353,36 @@ static uint64_t g_ctrlRet[MAX_THREADS];
 /**
  * Memory access callback -- dispatches to ZSim's load/store function pointers.
  */
+/* PIMID 1.12.16: QEMU 10 and later run a REP string instruction for up to 65535 iterations inside
+ * one block execution. ZSim ends a phase only at a block boundary, so a long memset or memcpy then
+ * piled its timing events into one phase and overflowed the 256 MB global heap. PIMID builds QEMU
+ * with external/qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch, under which
+ * every iteration is its own block execution (as in QEMU 9.2): at most two memory accesses (MOVS,
+ * CMPS) between block callbacks. More than that means the patch is missing, and the run stops. */
+static int rep_string_tag;
+static uint32_t rep_mem_since_bbl[MAX_VCPUS];
+static bool isRepString(const uint8_t* b, size_t n) {
+    bool rep = false;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = b[i];
+        if (c == 0xf2 || c == 0xf3) { rep = true; continue; }
+        if (c == 0x66 || c == 0x67 || c == 0x26 || c == 0x2e || c == 0x36 || c == 0x3e ||
+            c == 0x64 || c == 0x65 || (c >= 0x40 && c <= 0x4f)) continue;
+        return rep && c >= 0xa4 && c <= 0xaf && c != 0xa8 && c != 0xa9;
+    }
+    return false;
+}
+
 static void mem_cb(unsigned int vcpu_index,
                    qemu_plugin_meminfo_t info,
                    uint64_t vaddr,
                    void *userdata) {
     if (!in_roi) return;
     if (vcpu_index < MAX_VCPUS && vcpu_is_internal[vcpu_index]) return;
+    if (userdata == &rep_string_tag && vcpu_index < MAX_VCPUS && ++rep_mem_since_bbl[vcpu_index] > 2)
+        panic("QEMU ran a REP string instruction for several iterations inside one block execution: this QEMU "
+              "lacks external/qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch "
+              "(docs/build.md), without which a long memset or memcpy overflows the ZSim global heap");
 
     uint32_t tid = getOrAssignTid(vcpu_index);
     if (tid >= MAX_THREADS) return;
@@ -1448,6 +1455,7 @@ static void detachThreadForMigration(uint32_t tid, int domain) {
  * Drives the BBL function pointer which triggers phase counting.
  */
 static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
+    if (vcpu_index < MAX_VCPUS) rep_mem_since_bbl[vcpu_index] = 0;
     if (!in_roi) return;
     if (vcpu_index < MAX_VCPUS && vcpu_is_internal[vcpu_index]) return;
 
@@ -3462,7 +3470,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
  *   1. A BBL callback on the first instruction
  *   2. Memory callbacks on each instruction
  */
-static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
+static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
     size_t n_insns = qemu_plugin_tb_n_insns(tb);
     uint64_t tb_addr = qemu_plugin_tb_vaddr(tb);
 
@@ -3651,10 +3659,10 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
             bbl_registered = true;
         }
 
-        /* Register memory callback for every instruction */
+        /* Register memory callback for every instruction (REP strings tagged for the guard above) */
         qemu_plugin_register_vcpu_mem_cb(
             insn, mem_cb, QEMU_PLUGIN_CB_NO_REGS,
-            QEMU_PLUGIN_MEM_RW, NULL);
+            QEMU_PLUGIN_MEM_RW, isRepString(bytes, insn_sz) ? (void *)&rep_string_tag : NULL);
     }
 
     /* If the TB ends with a mov $imm, %rcx that wasn't consumed by an xchg
@@ -3671,7 +3679,7 @@ static void tb_trans_cb(qemu_plugin_id_t id, struct qemu_plugin_tb *tb) {
  * vCPU init callback -- assigns tid but defers SimThreadStart until first
  * execution callback, so we know the thread's domain (HOST vs DEVICE).
  */
-static void vcpu_init_cb(qemu_plugin_id_t id, unsigned int vcpu_index) {
+static void vcpu_init_cb(unsigned int vcpu_index, void *userdata) {
     /* vCPUs created during SimInit are ZSim-internal (watchdog, contention sim).
      * They must not participate in the phase barrier. */
     if (!sim_initialized && vcpu_index > 0) {
@@ -3694,7 +3702,7 @@ static void vcpu_init_cb(qemu_plugin_id_t id, unsigned int vcpu_index) {
 /**
  * vCPU exit callback -- thread finish.
  */
-static void vcpu_exit_cb(qemu_plugin_id_t id, unsigned int vcpu_index) {
+static void vcpu_exit_cb(unsigned int vcpu_index, void *userdata) {
     if (vcpu_index < MAX_VCPUS && vcpu_is_internal[vcpu_index]) return;
     if (vcpu_index < MAX_VCPUS) {
         uint32_t tid = vcpuToTid[vcpu_index];
@@ -3715,13 +3723,12 @@ static void vcpu_exit_cb(qemu_plugin_id_t id, unsigned int vcpu_index) {
  * For thread-creating syscalls (clone/fork), we don't need special
  * handling since QEMU fires vcpu_init for new threads.
  */
-static void syscall_cb(qemu_plugin_id_t id,
-                       unsigned int vcpu_index,
+static void syscall_cb(unsigned int vcpu_index,
                        int64_t num,
                        uint64_t a1, uint64_t a2,
                        uint64_t a3, uint64_t a4,
                        uint64_t a5, uint64_t a6,
-                       uint64_t a7, uint64_t a8) {
+                       uint64_t a7, uint64_t a8, void *userdata) {
     if (vcpu_index >= MAX_VCPUS) return;
     if (vcpu_is_internal[vcpu_index]) return;
     /* Guard: skip if we're already inside ZSim code (e.g., reentrant
@@ -3812,7 +3819,7 @@ static void syscall_cb(qemu_plugin_id_t id,
 /**
  * Plugin exit -- dump stats and clean up.
  */
-static void plugin_exit(qemu_plugin_id_t id, void *userdata) {
+static void plugin_exit(void *userdata) {
     (void)userdata;
     /* Shared detailed-MPI Garnet: mark this rank EXITED first, so peers'
      * merged-replay cuts stop including it immediately (no wait on the dead). */
@@ -3913,8 +3920,8 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     /* Register vcpu init/exit BEFORE SimInit so that internal threads
      * (watchdog, contention sim) created by SimInit() get vcpu_init_cb
      * and are marked as internal vCPUs. */
-    qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb);
-    qemu_plugin_register_vcpu_exit_cb(id, vcpu_exit_cb);
+    qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb, NULL);
+    qemu_plugin_register_vcpu_exit_cb(id, vcpu_exit_cb, NULL);
 
     if (argProcIdx == 0) {
         /* Primary process: create shared memory and run SimInit */
@@ -4143,8 +4150,8 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_outs(msg);
 
     /* Register remaining QEMU callbacks (vcpu_init/exit already registered above) */
-    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb);
-    qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb, NULL);
+    qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb, NULL);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
     return 0;

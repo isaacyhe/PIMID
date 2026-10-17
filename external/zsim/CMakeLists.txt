@@ -20,8 +20,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# QEMU plugin include directory (vendored header)
-set(QEMU_PLUGIN_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# QEMU plugin include directory (vendored header). 1.12.16: QEMU 11.1.2 plugin API 7 -- its qemu-plugin.h includes glib.h
+# (register access uses GArray / GByteArray), so the glib headers join the include path; the symbols resolve from QEMU at load.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLIB REQUIRED glib-2.0)
+set(QEMU_PLUGIN_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/include ${GLIB_INCLUDE_DIRS})
 
 # ============================================================
 # Target 1: libpimid_trace.so (lightweight trace generation)
