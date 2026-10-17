@@ -484,6 +484,12 @@ SchedulerU::SchedulerU(ParseXML* XML_interface, int ithCore_, InputParameter* in
  ithCore(ithCore_),
  interface_ip(*interface_ip_),
  coredynp(dyn_p_),
+ /* PIMID 1.12.15: zero unless a window/ROB below sets them. Only an in-order multithreaded or OOO core builds an
+  * instruction window (and only OOO a ROB); a single-threaded in-order core left these uninitialised, and EXECU's
+  * in-order bypass wires add Iw_height -- heap garbage priced them at ~1e+206 W / 1e+208 mm^2 on some runs. */
+ Iw_height(0),
+ fp_Iw_height(0),
+ ROB_height(0),
  int_inst_window(0),
  fp_inst_window(0),
  ROB(0),

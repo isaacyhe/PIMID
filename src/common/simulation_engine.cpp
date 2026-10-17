@@ -1,4 +1,5 @@
 #include "common/simulation_engine.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include "memory/memory_model.h"
 #include <iostream>
 #include <iomanip>
@@ -53,6 +54,7 @@ void SimulationEngine::printStats() const {
     std::cout << "Total Instructions: " << stats_.total_instructions << std::endl;
     std::cout << "Memory Accesses:    " << stats_.memory_accesses << std::endl;
     std::cout << "Network Packets:    " << stats_.network_packets << std::endl;
+    pimid::StreamFormatGuard fmt_guard_56(std::cout);  // 1.12.15: restores at the end of this block
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "Total Energy:       " << stats_.total_energy_j << " J" << std::endl;
     std::cout << "  Compute:          " << stats_.compute_energy_j << " J" << std::endl;

@@ -1,4 +1,5 @@
 #include "scheduler/scheduler.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include <iostream>
 #include <algorithm>
 #include <limits>
@@ -245,6 +246,7 @@ void LoadBalancedScheduler::resetStats() {
 void LoadBalancedScheduler::printStats() const {
     std::cout << "\n=== Load Balanced Scheduler Statistics ===" << std::endl;
     std::cout << "Total Tasks Scheduled: " << stats_.total_tasks_scheduled << std::endl;
+    pimid::StreamFormatGuard fmt_guard_248(std::cout);  // 1.12.15: restores at the end of this block
     std::cout << std::fixed << std::setprecision(4);
     std::cout << "Load Balance Factor: " << stats_.load_balance_factor << std::endl;
     std::cout << "==========================================\n" << std::endl;

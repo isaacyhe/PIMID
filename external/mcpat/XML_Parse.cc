@@ -1673,7 +1673,7 @@ void ParseXML::initialize() //Initialize all
 		for (j=0; j<20; j++) sys.L1Directory[i].Dir_config[j]=1;
 		for (j=0; j<20; j++) sys.L1Directory[i].buffer_sizes[j]=1;
 		sys.L1Directory[i].clockrate=1;
-		sys.L1Directory[i].ports[20]=1;
+		for (j=0; j<20; j++) sys.L1Directory[i].ports[j]=1;  // PIMID 1.12.15: was ports[20]=1, one past int[20]
 		sys.L1Directory[i].device_type=1;
 		sys.L1Directory[i].vdd =0;
 		sys.L1Directory[i].power_gating_vcc = -1;
@@ -1689,7 +1689,7 @@ void ParseXML::initialize() //Initialize all
 		for (j=0; j<20; j++) sys.L2Directory[i].Dir_config[j]=1;
 		for (j=0; j<20; j++) sys.L2Directory[i].buffer_sizes[j]=1;
 		sys.L2Directory[i].clockrate=1;
-		sys.L2Directory[i].ports[20]=1;
+		for (j=0; j<20; j++) sys.L2Directory[i].ports[j]=1;  // PIMID 1.12.15: was ports[20]=1, one past int[20]
 		sys.L2Directory[i].device_type=1;
 		sys.L2Directory[i].vdd =0;
 		sys.L2Directory[i].power_gating_vcc = -1;
@@ -1809,7 +1809,7 @@ void ParseXML::initialize() //Initialize all
 		sys.NoC[i].xbar0.number_of_outputs_of_crossbars=1;
 		sys.NoC[i].xbar0.flit_bits=1;
 		sys.NoC[i].xbar0.input_buffer_entries_per_port=1;
-		sys.NoC[i].xbar0.ports_of_input_buffer[20]=1;
+		for (j=0; j<20; j++) sys.NoC[i].xbar0.ports_of_input_buffer[j]=1;  // PIMID 1.12.15: was [20]=1, one past int[20]
 		sys.NoC[i].xbar0.crossbar_accesses=1;
 	}
 	//system_mem

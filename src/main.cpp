@@ -54,6 +54,7 @@
 
 // Trace infrastructure
 #include "trace/trace_writer.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 
 // External model wrappers for querying real memory timing
 #include "memory/nvsim_wrapper.h"
@@ -6778,7 +6779,7 @@ static void emitZSimPcieBlock(std::ostream& out, const UnifiedConfig& config,
     out << "        pcieEnabled = 1;\n";
     out << "        pcieBaseLatencyCycles = " << base_lat_cycles << ";\n";
     out << "        pcieModel = 0;\n";
-    out << "        pcieBytesPerCycle = \"" << std::fixed << std::setprecision(4)
+    pimid::fmt_scoped(out) << "        pcieBytesPerCycle = \"" << std::fixed << std::setprecision(4)
         << bytes_per_cycle << "\";\n" << std::defaultfloat;
     out << "        pcieHeaderBytes = " << config.pcie_header_bytes << ";\n";
     uint32_t coh_cycles = static_cast<uint32_t>(
@@ -7064,7 +7065,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         out << "        pcieBaseLatencyCycles = " << base_lat_cycles << ";\n";
         out << "        pcieModel = 0;\n";  // always SIMPLE (includes M/D/1 queuing)
         // Emit as string so ZSim config parser can read it as const char*
-        out << "        pcieBytesPerCycle = \"" << std::fixed << std::setprecision(4)
+        pimid::fmt_scoped(out) << "        pcieBytesPerCycle = \"" << std::fixed << std::setprecision(4)
             << bytes_per_cycle << "\";\n" << std::defaultfloat;
 
         /* Protocol overhead and coherence.
@@ -9842,7 +9843,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * scope, so the very runs that carry remoteAcc never printed it. */
     if (zsim_stats.pemi_local_acc + zsim_stats.pemi_remote_acc > 0) {
         uint64_t tot = zsim_stats.pemi_local_acc + zsim_stats.pemi_remote_acc;
-        std::cout << "  [locality] PE-MI accesses: "
+        pimid::fmt_scoped(std::cout) << "  [locality] PE-MI accesses: "
                   << zsim_stats.pemi_local_acc << " local + "
                   << zsim_stats.pemi_remote_acc << " remote ("
                   << std::fixed << std::setprecision(1)
@@ -10083,7 +10084,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                         const int cf = pimid::params::dramPartRecord(config.memory_tech).cell_factor_f2;   // 1.11.101: the record's cell factor
                         if (F3 > 0.0 && dens_mb > 0.0 && cf > 0) {
                             const double eff = cf * F3 * F3 * dens_mb / 128000.0;
-                            std::cout << "; implied array efficiency "
+                            pimid::fmt_scoped(std::cout) << "; implied array efficiency "
                                       << std::fixed << std::setprecision(0) << (eff * 100.0)
                                       << std::defaultfloat << "% = " << cf << "F^2 x measured die density";
                         }
@@ -10582,7 +10583,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         // Verbose: per-component area table
         if (detail_verbose) {
             std::cout << "\nPer-Component Area Breakdown:" << std::endl;
-            std::cout << "  Cores:              " << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  Cores:              " << std::fixed << std::setprecision(3)
                       << mcpat.getComponentArea(McPAT::ComponentType::CORE) << " mm^2" << std::endl;
             std::cout << "  L2 Caches:          "
                       << mcpat.getComponentArea(McPAT::ComponentType::L2_CACHE) << " mm^2" << std::endl;
@@ -11139,7 +11140,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                        + iddq_wr_nj * zsim_stats.mem_wr;   // 1.11.91 (R8-8)
 
             std::cout << "  Technology:      " << config.memory_tech << " (Ramulator2 energy model)" << std::endl;
-            std::cout << "  Per-access:      read=" << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  DQ interface:    rd=" << iface_term_rd_nj
                       << " nJ, wr=" << iface_term_wr_nj << " nJ per access ("
@@ -11235,7 +11236,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 std::cout << " +stack=" << stack_mw << " mW (per-stack floor, included in Background)";
             std::cout << std::endl;
             if (ref_energy_measured_mw >= 0.0)
-                std::cout << "    of which refresh: " << ref_energy
+                pimid::fmt_scoped(std::cout) << "    of which refresh: " << ref_energy
                           << " mW MEASURED (ruling (c)): " << zsim_stats.ctrl_refreshes
                           << " refresh commands over " << std::setprecision(1) << ((double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs() / 1000.0)
                           << " us of replayed DRAM time (" << std::setprecision(3) << ref_rate_measured_per_us << " per us) x "
@@ -11246,7 +11247,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                           << " mW (a component of Background, not an addition to it;"
                              " quoted at the IDD3N baseline)" << std::endl;
             if (zsim_stats.ctrl_ticks > 0)
-                std::cout << "    controller:       idle " << std::setprecision(1) << (100.0 * (double)zsim_stats.ctrl_idle_ticks / (double)zsim_stats.ctrl_ticks)
+                pimid::fmt_scoped(std::cout) << "    controller:       idle " << std::setprecision(1) << (100.0 * (double)zsim_stats.ctrl_idle_ticks / (double)zsim_stats.ctrl_ticks)
                           << "% of " << zsim_stats.ctrl_ticks << " replayed DRAM cycles (nothing in flight; row 28 MEASURED); PHY static "
                           << std::setprecision(3) << phy_static_mw << " mW from the IO model"
                           << (phy_static_mw > 0.0 ? " (the controller-side background McPAT's 10%-of-peak convention stood in for; McPAT's term is OFF in this run)" : " (no exact IO map for this technology: 0)")
@@ -11267,7 +11268,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * "term=" column, attributes the entire 4.2x interface correction
              * to termination. It was invisible because the label kept working:
              * the column still parses, it just means something else now. */
-            std::cout << "  Total dynamic:   " << std::setprecision(1)
+            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(1)
                       << (total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj
                           + total_iddq_nj) / 1e6
                       << " mJ (rd=" << total_rd_nj / 1e6 << " + wr=" << total_wr_nj / 1e6
@@ -11367,7 +11368,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     cacti_eff.getArea() > 0.0) {
                     double die_area = cacti_eff.getArea() * ca_ref.k;
                     die_area_reported = die_area;
-                    std::cout << "  Area:            " << std::fixed << std::setprecision(2)
+                    pimid::fmt_scoped(std::cout) << "  Area:            " << std::fixed << std::setprecision(2)
                               << die_area << " mm^2/die (CACTI x k, k="
                               << std::setprecision(3) << ca_ref.k
                               << " JEDEC-calibrated, FULL-DIE basis"
@@ -11384,7 +11385,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     double die_area = pimid::CACTIWrapper::vendorAnchorAreaMM2(
                         config.memory_tech, chip_bytes);
                     die_area_reported = die_area;
-                    std::cout << "  Area:            " << std::fixed << std::setprecision(2)
+                    pimid::fmt_scoped(std::cout) << "  Area:            " << std::fixed << std::setprecision(2)
                               << die_area << " mm^2/die (JEDEC density fallback)"
                               << std::endl;
                 }
@@ -11408,7 +11409,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 if (die_area_reported > 0.0) {
                     const double io_area = ram_oracle.getInterfaceAreaMM2();
                     if (io_area > 0.0) {
-                        std::cout << "    CACTI-IO channel IO area: " << std::fixed
+                        pimid::fmt_scoped(std::cout) << "    CACTI-IO channel IO area: " << std::fixed
                                   << std::setprecision(3) << io_area
                                   << " mm^2/CHANNEL [INFORMATIONAL, NOT in any"
                                      " total -- 1.11.60: the full-die JEDEC"
@@ -11485,7 +11486,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                                     config.dram_device_width,
                                                     config.hierarchy_ranks_per_channel,
                                                     config.hierarchy_dram_channels);
-                    std::cout << "  With memory:     " << std::fixed
+                    pimid::fmt_scoped(std::cout) << "  With memory:     " << std::fixed
                               << std::setprecision(2)
                               << (mcpat.getTotalArea() + die_area_reported * dies)
                               << " mm^2 (device silicon + " << dies
@@ -11667,13 +11668,13 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
 
             std::cout << "  Technology:      SRAM (CACTI 7)" << std::endl;
-            std::cout << "  Per-access:      read=" << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  Leakage:         " << leakage << " mW" << std::endl;
-            std::cout << "  Total dynamic:   " << std::setprecision(1)
+            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(1)
                       << (total_rd_nj + total_wr_nj) / 1e6 << " mJ"
                       << std::defaultfloat << std::endl;
-            std::cout << "  Area:            " << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  Area:            " << std::fixed << std::setprecision(3)
                       << area << " mm^2" << std::defaultfloat << std::endl;
             /* 1.11.57 (audit round 3, A009): the SYSTEM-COMPARABLE total, for
              * SRAM and NVM too. 1.11.51 (L243) added this line so device and
@@ -11683,7 +11684,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * while the same machine in system scope reported McPAT silicon
              * plus the array. The array area is printed on the line above; it
              * was simply never added to anything here. */
-            std::cout << "  With memory:     " << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  With memory:     " << std::fixed << std::setprecision(3)
                       << (mcpat.getTotalArea() + area)
                       << " mm^2 (device silicon + the array above"
                          " -- the system-scope comparable total)"
@@ -11774,13 +11775,13 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
 
             std::cout << "  Technology:      " << config.memory_tech << " (NVSim)" << std::endl;
-            std::cout << "  Per-access:      read=" << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  Leakage:         " << leakage << " mW" << std::endl;
-            std::cout << "  Total dynamic:   " << std::setprecision(1)
+            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(1)
                       << (total_rd_nj + total_wr_nj) / 1e6 << " mJ"
                       << std::defaultfloat << std::endl;
-            std::cout << "  Area:            " << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  Area:            " << std::fixed << std::setprecision(3)
                       << area << " mm^2" << std::defaultfloat << std::endl;
             /* 1.11.57 (audit round 3, A009): the SYSTEM-COMPARABLE total, for
              * SRAM and NVM too. 1.11.51 (L243) added this line so device and
@@ -11790,7 +11791,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * while the same machine in system scope reported McPAT silicon
              * plus the array. The array area is printed on the line above; it
              * was simply never added to anything here. */
-            std::cout << "  With memory:     " << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "  With memory:     " << std::fixed << std::setprecision(3)
                       << (mcpat.getTotalArea() + area)
                       << " mm^2 (device silicon + the array above"
                          " -- the system-scope comparable total)"
@@ -12178,7 +12179,7 @@ static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
             if (cacti_eff.isValid() && cacti_eff.getArea() > 0.0) {
                 double die = cacti_eff.getArea() * ca.k;
                 if (print) {
-                    std::cout << "  Die area:      " << std::fixed
+                    pimid::fmt_scoped(std::cout) << "  Die area:      " << std::fixed
                               << std::setprecision(2) << die
                               << " mm^2/die (CACTI x k at EFFECTIVE org "
                               << effective_banks << " banks, k="
@@ -12201,7 +12202,7 @@ static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
          * CACTI figure beside it is labelled as the divergence it measures. */
         if (print) {
             const bool anchor_only = (effective_banks <= 0);
-            std::cout << "  Die area:      " << std::fixed << std::setprecision(2)
+            pimid::fmt_scoped(std::cout) << "  Die area:      " << std::fixed << std::setprecision(2)
                       << ca.area_mm2 << " mm^2/die ("
                       << (anchor_only
                             ? "VENDOR ANCHOR: capacity / measured die density; "
@@ -12477,10 +12478,10 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
 
             std::cout << "  " << c.who << " accesses: rd=" << c.rd
                       << " wr=" << c.wr << std::endl;
-            std::cout << "    Per-access:    read=" << std::fixed << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "    Per-access:    read=" << std::fixed << std::setprecision(3)
                       << rd_nj << " nJ, write=" << wr_nj << " nJ (incl act+col)"
                       << std::endl;
-            std::cout << "    DQ interface:  " << std::setprecision(3)
+            pimid::fmt_scoped(std::cout) << "    DQ interface:  " << std::setprecision(3)
                       << "rd=" << iface_term_rd_nj << " nJ, wr=" << iface_term_wr_nj
                       << " nJ per access (" << c.dq_why << ")";
             if (!iddq_published)
@@ -12524,7 +12525,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         }
         ram_oracle.setRowMissFraction(-1.0);
 
-        std::cout << "  Background:    " << std::fixed << std::setprecision(3) << bg_mw
+        pimid::fmt_scoped(std::cout) << "  Background:    " << std::fixed << std::setprecision(3) << bg_mw
                   << " mW (standby+refresh over " << bg_units << " "
                   << (memory_tech.substr(0, 3) == "HBM" ? "channels/stack"
                                                         : "chips/rank")
@@ -12542,7 +12543,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         /* 1.11.89 (fix 2): the same descent line device scope prints, so a
          * reader (and a gate) sees the two scopes' background the same way. */
         if (r_idle > 0.0) {
-            std::cout << "  [pg] DRAM idle residency " << std::defaultfloat << r_idle
+            pimid::fmt_scoped(std::cout) << "  [pg] DRAM idle residency " << std::defaultfloat << r_idle
                       << " -> background " << std::fixed << std::setprecision(3)
                       << ram_oracle.getBackgroundPowerMW() * bg_units
                          + (stack_mw > 0.0 ? stack_mw : 0.0)   // 1.11.91 (item 12)
@@ -12562,7 +12563,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         /* 1.11.60 (audit round 4, A011): same mislabel as device scope, same
          * correction -- what is printed here is the whole DQ interface since
          * 1.11.58, not the termination component of it. */
-        std::cout << "  Array dynamic: " << std::setprecision(3)
+        pimid::fmt_scoped(std::cout) << "  Array dynamic: " << std::setprecision(3)
                   << (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj)
                   << " mJ (rd=" << total_rd_mj
                   << " + wr=" << total_wr_mj
@@ -13692,7 +13693,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             result.area = mcpat.getTotalArea();
             result.valid = true;
 
-            std::cout << "  " << node.name << " (" << result.core_desc
+            pimid::fmt_scoped(std::cout) << "  " << node.name << " (" << result.core_desc
                       << ", " << static_cast<int>(node.frequency_mhz) << "MHz"
                       << ", " << node.tech_node_nm << "nm): "
                       << std::fixed << std::setprecision(2) << result.total_power << " W ("
@@ -13752,7 +13753,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
     reportFpWithoutFpu(config, zsim_stats);
     if (zsim_stats.pemi_local_acc + zsim_stats.pemi_remote_acc > 0) {
         uint64_t tot = zsim_stats.pemi_local_acc + zsim_stats.pemi_remote_acc;
-        std::cout << "  [locality] PE-MI accesses: "
+        pimid::fmt_scoped(std::cout) << "  [locality] PE-MI accesses: "
                   << zsim_stats.pemi_local_acc << " local + "
                   << zsim_stats.pemi_remote_acc << " remote ("
                   << std::fixed << std::setprecision(1)
@@ -14194,14 +14195,14 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
      * node's McPAT power (1.9.10 single time base); shared memory counted
      * once, like area; split printed so the addition is auditable. */
     sys_power += mem_power_total;
-    std::cout << "  Power: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(2)
               << sys_power << " W (" << sys_dyn << " dyn + " << sys_leak << " leak";
     if (mem_power_total > 0.0) {
         std::cout << " + " << mem_power_total << " memory";
         /* 1.11.51 (E31 residue): the wall clock the memory watts are priced
          * over, printed so an external reader can reconstruct the term
          * (energy / wall + background rate) from the report alone. */
-        std::cout << " over " << std::setprecision(6) << wall_seconds
+        pimid::fmt_scoped(std::cout) << " over " << std::setprecision(6) << wall_seconds
                   << " s" << std::setprecision(2);
     }
     std::cout << ")" << std::endl;
@@ -14375,6 +14376,7 @@ public:
         cfg << "            hasFpu = " << (config_.pe_has_fp ? "true" : "false") << ";\n";
         cfg << "            fpEmulCycles = " << config_.pe_fp_emul_cycles << ";\n";
         if (core_type == "ALU") {
+            pimid::StreamFormatGuard fmt_guard_14378(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
             cfg << "            computeFactor = " << config_.alu_compute_factor << ";\n";
             cfg << "            accessFactor = " << config_.alu_access_factor << ";\n";
@@ -14382,6 +14384,7 @@ public:
             cfg << std::defaultfloat;
             cfg << "            operandWidth = " << config_.alu_operand_width << ";\n";
             cfg << "            bitSerial = " << (config_.alu_bit_serial ? "true" : "false") << ";\n";
+            pimid::StreamFormatGuard fmt_guard_14385(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
             cfg << "            energyFactor = " << config_.alu_energy_factor << ";\n";
             cfg << std::defaultfloat;
@@ -14793,7 +14796,7 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
     // false it is host.mem.technology (decoupled from the device / bridge tech).
     if (host.host_ddr5_speed_grade > 0)
         out << "    // host main memory DDR5 grade (1.12.10): " << host.host_ddr5_speed_grade << " (the system's memory's own; the device's part is the run's)\n";
-    out << "    // host main memory (1.7.4): tech=" << host.memory_tech
+    pimid::fmt_scoped(out) << "    // host main memory (1.7.4): tech=" << host.memory_tech
         << " idle=" << std::fixed << std::setprecision(1)
         << (mem_latency * 1000.0 / host_freq) << "ns" << std::defaultfloat
         << " (" << mem_latency << " cy @ " << static_cast<int>(host_freq) << "MHz)\n";
@@ -14961,7 +14964,7 @@ static void emitZSimBridgeBlock(std::ostream& out, const BridgeDefaults& d,
     out << "        phyLatencyCycles = " << phy_cyc << ";\n";
     out << "        protocolOverheadCycles = " << proto_cyc << ";\n";
     out << "        channels = " << d.channels << ";\n";
-    out << "        bytesPerCycle = \"" << std::fixed << std::setprecision(4)
+    pimid::fmt_scoped(out) << "        bytesPerCycle = \"" << std::fixed << std::setprecision(4)
         << bytes_per_cycle << "\";\n" << std::defaultfloat;
     out << "        uncachedCycles = " << unc_cyc << ";\n";
     out << "    };\n";
@@ -14986,7 +14989,7 @@ static void emitZSimCoherenceBlock(std::ostream& out, const UnifiedConfig& confi
     out << "        enabled = 1;\n";
     out << "        mode = " << (unified ? 0 : 1) << ";  // 0=unified(flush) 1=separate(bypass)\n";
     out << "        footprintBytes = \"" << config.coherence_footprint_bytes << "\";\n";
-    out << "        writebackBytesPerCycle = \"" << std::fixed << std::setprecision(4)
+    pimid::fmt_scoped(out) << "        writebackBytesPerCycle = \"" << std::fixed << std::setprecision(4)
         << wb_bytes_per_cycle << "\";\n" << std::defaultfloat;
     out << "        flushFixedCycles = " << fixed_cyc << ";\n";
     out << "    };\n";
@@ -15123,6 +15126,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             // would double-count the device model.
             double scaled_compute = node.alu_compute_factor;
             double scaled_access = node.alu_access_factor;
+            pimid::StreamFormatGuard fmt_guard_15126(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
             cfg << "            computeFactor = " << scaled_compute << ";\n";
             cfg << "            accessFactor = " << scaled_access << ";\n";
@@ -15133,6 +15137,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
              * emitted since the key existed. Without it a bit-serial element
              * was co-simulated as a parallel one. */
             cfg << "            bitSerial = " << (node.alu_bit_serial ? "true" : "false") << ";\n";
+            pimid::StreamFormatGuard fmt_guard_15136(cfg);  // 1.12.15: restores at the end of this block
             cfg << std::fixed << std::setprecision(2);
             cfg << "            energyFactor = " << node.alu_energy_factor << ";\n";
             cfg << std::defaultfloat;
@@ -15595,7 +15600,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
     if (config.system_network.model == "detailed") model_id = 2;
     cfg << "        model = " << model_id << ";\n";
     cfg << "        linkWidthBits = " << config.system_network.link_width_bits << ";\n";
-    cfg << "        frequencyGHz = \"" << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(cfg) << "        frequencyGHz = \"" << std::fixed << std::setprecision(2)
         << config.system_network.frequency_ghz << "\";\n" << std::defaultfloat;
     cfg << "        latencyCycles = " << config.system_network.latency_cycles << ";\n";
     cfg << "        routerLatency = " << config.system_network.router_latency << ";\n";
@@ -20161,7 +20166,7 @@ int main(int argc, char** argv) {
             std::cout << "========================================" << std::endl;
             std::cout << "  Trace:     " << config.trace_file << std::endl;
             if (core_type == "ALU") {
-                std::cout << "  Core:      ALU (compute=" << std::fixed << std::setprecision(2)
+                pimid::fmt_scoped(std::cout) << "  Core:      ALU (compute=" << std::fixed << std::setprecision(2)
                           << config.alu_compute_factor << ", access=" << config.alu_access_factor
                           << ", throughput=" << config.alu_throughput_factor
                           << ", energy=" << config.alu_energy_factor << std::defaultfloat
@@ -20347,7 +20352,7 @@ int main(int argc, char** argv) {
 
                 // PCIe/CXL interconnect info
                 if (config.pcie_timing_configured && config.pcie_enabled) {
-                    std::cout << "    Interconnect: " << config.pcie_link_type
+                    pimid::fmt_scoped(std::cout) << "    Interconnect: " << config.pcie_link_type
                               << (config.pcie_link_type == "dram_channel" ? std::string(" (the device's DRAM channels)") : " x" + std::to_string(config.pcie_num_lanes))   // 1.11.103
                               << " (base=" << std::fixed << std::setprecision(0)
                               << config.pcie_base_latency_ns << "ns, BW="
@@ -20391,19 +20396,19 @@ int main(int argc, char** argv) {
                     if (zsim_stats.l1d_hits() + zsim_stats.l1d_misses() > 0) {
                         double l1d_rate = 100.0 * zsim_stats.l1d_hits() /
                             (zsim_stats.l1d_hits() + zsim_stats.l1d_misses());
-                        std::cout << "  L1D hit rate: " << std::fixed << std::setprecision(1)
+                        pimid::fmt_scoped(std::cout) << "  L1D hit rate: " << std::fixed << std::setprecision(1)
                                   << l1d_rate << "%" << std::endl;
                     }
                     if (zsim_stats.l1i_hits() + zsim_stats.l1i_misses() > 0) {
                         double l1i_rate = 100.0 * zsim_stats.l1i_hits() /
                             (zsim_stats.l1i_hits() + zsim_stats.l1i_misses());
-                        std::cout << "  L1I hit rate: " << std::fixed << std::setprecision(1)
+                        pimid::fmt_scoped(std::cout) << "  L1I hit rate: " << std::fixed << std::setprecision(1)
                                   << l1i_rate << "%" << std::endl;
                     }
                     if (zsim_stats.l2_hits() + zsim_stats.l2_misses() > 0) {
                         double l2_rate = 100.0 * zsim_stats.l2_hits() /
                             (zsim_stats.l2_hits() + zsim_stats.l2_misses());
-                        std::cout << "  L2 hit rate:  " << std::fixed << std::setprecision(1)
+                        pimid::fmt_scoped(std::cout) << "  L2 hit rate:  " << std::fixed << std::setprecision(1)
                                   << l2_rate << "%" << std::endl;
                     }
                 }
@@ -20745,7 +20750,7 @@ int main(int argc, char** argv) {
 
             // Display core info
             if (exec_core_type == "ALU") {
-                std::cout << "  Core:      ALU (compute=" << std::fixed << std::setprecision(2)
+                pimid::fmt_scoped(std::cout) << "  Core:      ALU (compute=" << std::fixed << std::setprecision(2)
                           << config.alu_compute_factor << ", access=" << config.alu_access_factor
                           << ", throughput=" << config.alu_throughput_factor
                           << ", energy=" << config.alu_energy_factor << std::defaultfloat
@@ -21371,7 +21376,7 @@ int main(int argc, char** argv) {
             int num_nodes = (int)config.system_nodes.size();
             double avg_hops = avgHopsForTopology(config.system_network.topology, num_nodes);
             uint32_t example_lat = computeSystemNetLatency(config, 0, num_nodes > 1 ? 1 : 0);
-            std::cout << "  System Network: " << config.system_network.topology
+            pimid::fmt_scoped(std::cout) << "  System Network: " << config.system_network.topology
                       << " [" << config.system_network.model << "]"
                       << ", " << example_lat << " ref-cycles (avg "
                       << std::fixed << std::setprecision(1) << avg_hops << std::defaultfloat << " hops)"
@@ -21712,7 +21717,7 @@ int main(int argc, char** argv) {
             int num_nodes = (int)config.system_nodes.size();
             double avg_hops = avgHopsForTopology(config.system_network.topology, num_nodes);
             uint32_t example_lat = computeSystemNetLatency(config, 0, num_nodes > 1 ? 1 : 0);
-            std::cout << "  System Network: " << config.system_network.topology
+            pimid::fmt_scoped(std::cout) << "  System Network: " << config.system_network.topology
                       << " [" << config.system_network.model << "]"
                       << ", " << example_lat << " ref-cycles (avg "
                       << std::fixed << std::setprecision(1) << avg_hops << std::defaultfloat << " hops)"

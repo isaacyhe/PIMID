@@ -7,6 +7,35 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.15 -- an in-order core's power no longer overflows on some runs, and a number prints at the precision its own line chose
+
+The user: "please locate and fix the mcpat overflow shit" (a longstanding McPAT defect), and both fixes in one release.
+Found in the 1.12.14 letter resimulation: 9 of 56 finished device cells reported a total power of 1e+206 to 1e+218 W
+and an area near 1e+208 mm^2, and the 4 subarray placement cells reported their power to one significant digit.
+
+**(1) McPAT: an in-order core's instruction-window height is zero, not uninitialised.** McPAT's scheduler unit sets
+its instruction-window height only for an in-order multithreaded core or an out-of-order core (and its ROB and FP
+window heights only for out-of-order). A single-threaded in-order core -- PIMID's `in_order_core` and `alu_core`
+device profiles -- left them uninitialised, and the execution unit adds the window height to the length of three
+in-order bypass wires. The scheduler is heap-allocated, so the height was whatever the reused block held: usually 0,
+sometimes garbage, which priced the bypass at the figures above. It came and went between runs of one configuration
+(three full-size repeats of each failing cell were clean). With the heap pre-filled by `MALLOC_PERTURB_`, the 1.12.14
+McPAT failed on all 14 kept inputs (7 assertions in the bypass interconnect, 7 overflows) and the 1.12.14 binary
+overflowed on every in-order and ALU cell while its out-of-order control did not; with the fix McPAT's output is
+byte-identical to 1.12.14's on an unperturbed heap and unchanged by the perturbation. The out-of-order core is
+unaffected. Also in McPAT's input parser: three initialisers wrote element 20 of a 20-element array (UBSan); they now
+fill the 20 entries, as their neighbours do. That write changed no result.
+
+**(2) A stream's number format no longer leaks.** Sixty sites (53 statements and 7 blocks) set `std::fixed` / `std::setprecision(n)` on
+standard output, standard error or a ZSim configuration stream and never restored it (a trailing `std::defaultfloat`
+restores the float style, not the precision), so later numbers printed under whatever the last one left: the subarray
+cells' total power printed as "0.02". A statement that prints and sets a format now
+restores the stream at its end (`pimid::fmt_scoped`, `src/common/format_scope.h`), and a statement that sets a format
+for the lines below it restores at the end of its block (`pimid::StreamFormatGuard`). No format a statement asks for
+changes. Every number the run prints keeps its value; numbers that printed under a leaked precision now print at the
+default (gate E1 checks each changed line agrees with the old at the old precision). The device ZSim configurations
+are unchanged: the ALU factors are still written with two decimals, as before.
+
 ## 1.12.14 -- the non-DRAM memory models no longer report a configuration fallback that does not happen; the image is rebuilt from this release
 
 The user: "The sram model shit" -> "14, then remake the image". The four non-DRAM plugin memory models (SRAM, STT-MRAM, PCM,

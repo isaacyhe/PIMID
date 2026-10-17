@@ -1,4 +1,5 @@
 #include "address_translation/pe_statistics.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -207,11 +208,11 @@ void PEStatisticsManager::printPEStats(uint32_t pe_id) const {
               << stats.tasks_failed << " failed" << std::endl;
     std::cout << "Execution: " << stats.total_execution_cycles << " cycles, "
               << stats.idle_cycles << " idle" << std::endl;
-    std::cout << "Utilization: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Utilization: " << std::fixed << std::setprecision(2)
               << calculateUtilization(stats) << "%" << std::endl;
     std::cout << "Memory: " << stats.local_accesses << " local, "
               << stats.remote_accesses << " remote" << std::endl;
-    std::cout << "Locality: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Locality: " << std::fixed << std::setprecision(2)
               << (calculateLocalityRatio(stats) * 100.0) << "%" << std::endl;
     std::cout << "Bandwidth: avg=" << stats.avg_bandwidth_utilization << "%, "
               << "peak=" << stats.peak_bandwidth_utilization << "%" << std::endl;
@@ -230,13 +231,13 @@ void PEStatisticsManager::printSystemStats() const {
               << system_stats_.total_tasks_failed << " failed" << std::endl;
     std::cout << "Total accesses: " << system_stats_.total_local_accesses << " local, "
               << system_stats_.total_remote_accesses << " remote" << std::endl;
-    std::cout << "Average PE utilization: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Average PE utilization: " << std::fixed << std::setprecision(2)
               << system_stats_.avg_pe_utilization << "%" << std::endl;
-    std::cout << "Average bandwidth utilization: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Average bandwidth utilization: " << std::fixed << std::setprecision(2)
               << system_stats_.avg_bandwidth_utilization << "%" << std::endl;
-    std::cout << "Average locality ratio: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Average locality ratio: " << std::fixed << std::setprecision(2)
               << (system_stats_.avg_locality_ratio * 100.0) << "%" << std::endl;
-    std::cout << "Load balance factor: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Load balance factor: " << std::fixed << std::setprecision(2)
               << system_stats_.load_balance_factor << std::endl;
     std::cout << "Most loaded PE: " << system_stats_.most_loaded_pe << std::endl;
     std::cout << "Least loaded PE: " << system_stats_.least_loaded_pe << std::endl;

@@ -16,6 +16,7 @@
  */
 
 #include "memory/pim_controller_plugin.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include <iostream>
 #include <iomanip>
 
@@ -306,7 +307,7 @@ void PIMControllerPlugin::printStats() const {
     if (total_pim_requests_ + total_normal_requests_ > 0) {
         double pim_ratio = 100.0 * total_pim_requests_ /
                           (total_pim_requests_ + total_normal_requests_);
-        std::cout << "PIM Request Ratio:     " << std::fixed << std::setprecision(2)
+        pimid::fmt_scoped(std::cout) << "PIM Request Ratio:     " << std::fixed << std::setprecision(2)
                   << pim_ratio << "%\n";
     }
 

@@ -1,4 +1,5 @@
 #include "wire.h"   // 1.11.106: pimid_cacti_wire_zeroed_count (the CACTI zeroed-wire ledger)
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include "power/mcpat_wrapper.h"
 #include <iostream>
 #include <fstream>
@@ -2258,7 +2259,7 @@ void McPATWrapper::warnUnsourcedMix(const char* which, const char* frac) const {
 
 void McPATWrapper::printSummaryLine() const {
     if (!power_computed_) return;
-    std::cout << "Power: " << std::fixed << std::setprecision(2)
+    pimid::fmt_scoped(std::cout) << "Power: " << std::fixed << std::setprecision(2)
               << system_power_.total_power << "W ("
               << system_power_.total_dynamic << "W dynamic + "
               << system_power_.total_leakage << "W leakage), Area: "

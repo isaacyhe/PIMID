@@ -1,4 +1,5 @@
 #include "power/power_model.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -253,6 +254,7 @@ void McPATModel::updateActivity(PowerComponent component,
 void McPATModel::printStats() const {
     std::cout << "\n=== McPAT Power Model Statistics ===" << std::endl;
 
+    pimid::StreamFormatGuard fmt_guard_256(std::cout);  // 1.12.15: restores at the end of this block
     std::cout << std::fixed << std::setprecision(3);
 
     for (const auto& pair : component_metrics_) {

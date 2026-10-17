@@ -4,6 +4,7 @@
  */
 
 #include "memory/pim_bandwidth_tracker.h"
+#include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -323,7 +324,7 @@ void PIMBandwidthTracker::printStats() const {
     for (const auto& [key, usage] : bandwidth_usage_) {
         PIMRequestPayload dummy;
         dummy.granularity = key.first;
-        std::cout << "  " << std::setw(20) << std::left << dummy.getGranularityName()
+        pimid::fmt_scoped(std::cout) << "  " << std::setw(20) << std::left << dummy.getGranularityName()
                   << " [ID " << key.second << "]: "
                   << std::fixed << std::setprecision(2)
                   << usage.utilization * 100.0 << "% ("
