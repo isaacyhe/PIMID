@@ -38,7 +38,7 @@ McPAT, and Garnet for timing, power, and area.
   co-sim-specific workloads) -> [docs/benchmarks.md](docs/benchmarks.md)
 - **Power/area** via McPAT -> [docs/power.md](docs/power.md)
 
-## What 1.12 simulates, and what 1.13 adds
+## What 1.12 simulates
 
 Every hardware block is written under `system:` as `hosts`, `devices` (a
 memory with PEs) and `memories` (a memory without PEs). 1.12 simulates these
@@ -55,12 +55,10 @@ device what they may address (`address`, `allowed_address_ranges`, 1.12.12);
 without them the memory takes the first 4 GB window and the device the next.
 See [docs/yaml_reference.md](docs/yaml_reference.md).
 
-**Multi-node systems are 1.13.** Several hosts, several devices, several
-memories, a host-only system (a host with no device), and a device or host
-reaching other nodes' memory beyond the 1.12 wiring are provided in 1.13 (the
-multi-host / multi-device / multi-memory implementation). 1.12 refuses such a
-configuration by name, with a message naming 1.13, rather than run it on a
-model that does not exist yet.
+**Multi-node systems are not supported.** Several hosts, several devices,
+several memories, a host-only system (a host with no device), and a device or
+host reaching other nodes' memory beyond the wiring above are refused at load,
+by name, rather than run on a model that does not exist.
 
 ## Project layout
 

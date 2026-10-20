@@ -998,7 +998,7 @@ system:
 | `system.hosts[].name` | string | - | Host node name (required). Under `scope: cosim` the [`host:` block](#host-block-host-scope-cosim) is `system.hosts[0]`, named `host`, and its keys are the keys below written without the `system.hosts[]` prefix (1.12.2). |
 | `system.hosts[].core_type` | string | `"ooo_core"` | Host core type. |
 | `system.hosts[].num_cores` | int | `4` | Number of host cores. |
-| `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window of the run | What the host may address (1.12.12). Given, the ranges must contain every device's and memory's window (a host that does not reach a node is the 1.13 wiring; refused naming the node); a range covering addresses no node owns is kept with a WARNING. `system.hosts[].address` is refused by name: a host has no window of its own. |
+| `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window of the run | What the host may address (1.12.12). Given, the ranges must contain every device's and memory's window (a host that does not reach a node is not supported; refused naming the node); a range covering addresses no node owns is kept with a WARNING. `system.hosts[].address` is refused by name: a host has no window of its own. |
 | `system.hosts[].frequency_mhz` | double | `3000.0` | Host frequency. |
 | `system.hosts[].tech_node_nm` | int | inherits device (`22`) | Host technology node. Valid: 22/32/45/65/90 positive list -- any other value is a fatal error (see Process-node resolution). |
 | `system.hosts[].memory.technology` | string | `"DDR4"` | Host memory technology. Under `is_default_mem: true` (default) it is forced = the device tech; under `false` it is set from `system.hosts[].mem.technology`. |
@@ -1214,9 +1214,8 @@ device declares what it may address with `allowed_address_ranges`, a list of
 `{ base, size }` ranges. A byte count is written as an integer (bytes), a
 `0x` hex integer, or a decimal with a binary suffix `K` / `M` / `G` / `T`
 (`KiB` to `TiB` accepted): `4G`, `0x100000000` and `4294967296` are the same
-window. The keys are optional and checked against the node map; what a node
-reaches beyond its own window is enforced in 1.13 (the multi-host /
-multi-device / multi-memory implementation).
+window. The keys are optional and checked against the node map; a node
+reaching beyond its own window is not supported.
 
 ```yaml
 system:
@@ -1249,9 +1248,9 @@ system:
   (`addrStart` / `addrEnd`), and the run prints the resulting address map.
 - **Reach.** Absent, a host addresses every window of the run and a device its
   own. Given, a host's ranges must contain every node's window (a host that
-  does not reach a node is the 1.13 wiring); a device's ranges must stay
+  does not reach a node is not supported); a device's ranges must stay
   inside its own window and cover it (a device that reaches another node's
-  memory, or free address space, is the 1.13 wiring). A host range that
+  memory, or free address space, is not supported). A host range that
   covers addresses no node owns is kept with a WARNING.
 - **Refused by name.** `allowed_address_ranges` on a memory (a memory
   addresses nothing); `address` on a host (a host has no window of its own;
@@ -1261,7 +1260,7 @@ system:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `system.devices[].address` | `{ base, size }` | laid out | The device's window (1.12.12): base and size as byte counts, multiples of 4 GB. All devices and memories declare one, or none does. |
-| `system.devices[].allowed_address_ranges` | list of `{ base, size }` | its own window | What the device may address (1.12.12): inside its own window and covering it; beyond it is the 1.13 wiring (refused). |
+| `system.devices[].allowed_address_ranges` | list of `{ base, size }` | its own window | What the device may address (1.12.12): inside its own window and covering it; beyond it is not supported (refused). |
 | `system.memories[].address` | `{ base, size }` | laid out | The memory's window (1.12.12), as `system.devices[].address`. |
 | `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window | What the host may address (1.12.12): must contain every node's window. |
 
@@ -1286,10 +1285,10 @@ The node lists say what the run is and how the address space is laid out
 (1.12.10): devices only is a device run; hosts and devices alone make the
 device the host's main memory; hosts, a memory and a device lay the address
 space memory first, then device (the node map's windows); hosts and a memory
-alone describe a host-only system, whose run-time behaviour and several
-hosts, devices or memories are 1.13 work. Every device and memory may declare
-its window, and a host or a device what it may address (1.12.12, Address map
-below); what a node reaches beyond its own window is enforced in 1.13.
+alone describe a host-only system, which, like several hosts, devices or
+memories, is not supported. Every device and memory may declare its window,
+and a host or a device what it may address (1.12.12, Address map below); a
+node reaching beyond its own window is not supported.
 
 ```yaml
 system:

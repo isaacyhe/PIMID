@@ -89,9 +89,9 @@ hardware block under `system:`, 1.12.8), the benchmark workloads, the
 characterization cache warehouse with the tree's NVM entries, and the two tools
 `pimid-cache` and `pimid-migrate-config` (1.12.11). The sweep runs the
 addressed co-simulation example (`cosim/host_memory_device_addressed.yaml`, the
-address map of 1.12.12) and checks that a configuration needing the 1.13
-multi-node wiring (a second host; a device reaching beyond its own window) is
-refused naming 1.13 (1.12.13). A co-simulation needs no
+address map of 1.12.12) and checks that a multi-node configuration (a second
+host; a device reaching beyond its own window) is refused (1.12.13). A
+co-simulation needs no
 `--scope` flag (retired in 1.12.9): the nodes in the file decide. The image is
 built from the dev repository root as the context (`-f docker/Dockerfile .`),
 with the tree built and `PIMID_SRC_ROOT` naming the tree the binaries came from.

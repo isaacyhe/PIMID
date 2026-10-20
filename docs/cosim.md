@@ -392,12 +392,9 @@ regenerated. Device-scope sweeps were never affected.
   is one host and one PIM device, optionally with the host's own main memory
   as one `system.memories[]` entry (1.12.10). Multi-node systems -- several
   hosts, devices or memories, a host-only system, a node reaching another
-  node's memory beyond the 1.12 wiring -- are provided in 1.13 (the
-  multi-host / multi-device / multi-memory implementation); 1.12 refuses
-  them at load, naming 1.13. The address keys (`address`,
-  `allowed_address_ranges`, 1.12.12) are accepted and checked now, and
-  enforced in 1.13. See the README, "What 1.12 simulates, and what 1.13
-  adds".
+  node's memory beyond the 1.12 wiring -- are not supported and are refused
+  at load. The address keys (`address`, `allowed_address_ranges`, 1.12.12)
+  are accepted and checked. See the README, "What 1.12 simulates".
 - **Detailed host NoC not wired** (decision 3 note above): the host fabric is
   the analytic crossbar; any other host topology or model warns (1.11.106) and
   runs the crossbar. A host NoC model is a planned 1.1x release.

@@ -8,7 +8,7 @@
 # A host or a device says what it may address with allowed_address_ranges, a
 # list of { base, size } ranges: a host's must contain every node's window, a
 # device's must stay inside its own window (reaching another node's memory is
-# the 1.13 multi-node wiring). The values below write out the default layout
+# not supported). The values below write out the default layout
 # (the memory first, then the device), so the run matches a file without the
 # keys; change the bases to lay the space out differently.
 #
