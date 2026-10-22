@@ -414,10 +414,13 @@ regenerated. Device-scope sweeps were never affected.
 `libpimid_mpi.so` provides the MPI ABI (Init, Send/Recv, Sendrecv, Bcast,
 Reduce/Allreduce, Barrier, Scatter/Gather, Allgather/Allgatherv, Alltoall)
 over a POSIX shared-memory mailbox. `MPI_PROC_NULL` send/recv are no-ops per
-the standard, so halo-exchange patterns run without deadlock. Collectives are
-**timing-faithful, not numerics-faithful**: reduce-style ops transmit all
-chunks but do not apply the reduction operator -- workloads needing actual
-reduced values should compute them on the root from received chunks.
+the standard, so halo-exchange patterns run without deadlock. Collectives run
+MPICH's algorithms, chosen as MPICH's intra-communicator selection does with its
+default thresholds (binomial, scatter-allgather, recursive doubling, Bruck,
+ring, Rabenseifner, pairwise; Thakur, Rabenseifner and Gropp, IJHPCA 2005), and
+reduce-style ops apply the builtin reduction operators. The shim's own transport
+memory (mailboxes, staging) is not priced: a message costs the sender's read of
+its buffer, the Garnet transfer and the receiver's write (1.12.17).
 
 Under `noc.model: detailed`, all ranks drive ONE logical Garnet network:
 message payloads and every rank's memory traffic contend on the same tree.
@@ -447,8 +450,8 @@ device window**, not a single host-driven offload:
 - **Window close -- ZERO migrations (1.8.6/1.8.7).** No rank migrates back to
   the host at the closing barrier. The ranks are device-resident PEs, so the
   post-ROI inter-PE collective tail (closing barrier + Reduce + Finalize)
-  **executes ON THE DEVICE**: rank 0 collects on its PE; ranks `1..N-1` wait
-  there. The host's only remaining role is reading back the result. Removing
+  **executes ON THE DEVICE**: the ranks reduce among their PEs (1.12.17:
+  MPICH's binomial or Rabenseifner reduce) and rank 0 holds the result. The host's only remaining role is reading back the result. Removing
   the device->host closing legs is also what eliminates the 1.8.6 exit race by
   construction (below). Since 1.12.3 the tail is reported and **not priced**
   (counting contract below).

@@ -288,6 +288,19 @@ public:
         return v == 1;
     }
 
+    /* 1.12.17 (M1): see access(). */
+    static bool mpiTransportAccess(const MemReq& req) {
+        if (req.srcId < zinfo->numCores && zinfo->cores[req.srcId] &&
+            zinfo->cores[req.srcId]->pimidCommParked)
+            return true;
+        const uint32_t n = zinfo->mpiTransportRanges;
+        if (n == 0) return false;
+        const uint64_t a = (uint64_t)req.lineAddr << 6;
+        for (uint32_t i = 0; i < n; i++)
+            if (a >= zinfo->mpiTransportLo[i] && a < zinfo->mpiTransportHi[i]) return true;
+        return false;
+    }
+
     static uint64_t phaseStamp(uint64_t coreCycle) {
         uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
         // Stamp on numPhases -- THE SAME counter that gates batch claims -- not
@@ -511,6 +524,22 @@ public:
          * PUTS was an access and every GETX a write, so a cached element's
          * read stream was priced with the row-miss and energy of writes. */
         if (req.type == PUTS) { *req.state = I; return req.cycle; }
+        /* 1.12.17 (M1, user 2026-10-22): a message-passing message costs one
+         * read of the sender's buffer, the injected Garnet transfer and one
+         * write of the receiver's buffer. The emulation transport's own work --
+         * any access made while the core is parked in an MPI comm window (its
+         * time is rewound at COMM_END) and any access to the registered
+         * transport memory (mailboxes, staging) -- is not PE memory traffic:
+         * it returns at once, unpriced and uncounted. */
+        if (mpiTransportAccess(req)) {
+            switch (req.type) {
+                case PUTX: *req.state = I; break;
+                case GETS: *req.state = req.is(MemReq::NOEXCL) ? S : E; break;
+                case GETX: *req.state = M; break;
+                default: break;
+            }
+            return req.cycle + 1;
+        }
         const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
         if (isWrite) DqMix::writes.fetch_add(1, std::memory_order_relaxed);
         else         DqMix::reads.fetch_add(1, std::memory_order_relaxed);
@@ -1184,12 +1213,33 @@ protected:
         } else {
             profReads_.inc();
         }
-        if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay) {
+        /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
+         * well"): under exec-method message passing (thread-MPI) the replay runs
+         * in cut mode -- stamped on this core's ROI-relative cycle (the axis the
+         * thread-MPI NoC pricing uses), keyed by that stamp's epoch, replayed
+         * only at the phase barrier once the consistent cut has passed the
+         * epoch, and read kNocReadLagEpochs back, as the NoC reads. Before the
+         * ROI baseline nothing is recorded (as for the NoC) and the access keeps
+         * the analytical service below. Shared memory is unchanged. */
+        const bool replayCut = zinfo->dramReplay && zinfo->dramReplay->cutMode();
+        if (zinfo->dramReplay && replayCut != (mpiThreadDetPricing() && !sharedNoc()))
+            panic("DRAM epoch replay: cut mode %d disagrees with the thread-MPI pricing mode %d",
+                  (int)replayCut, (int)(mpiThreadDetPricing() && !sharedNoc()));
+        if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay &&
+            (!replayCut || zinfo->hierarchy.mpiNocBaselined)) {
             uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
             if (E < 1) E = 1;
-            uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
-            uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
-            uint64_t curEpoch = rel / E;
+            uint64_t curEpoch, stamp;
+            if (replayCut) {
+                const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+                stamp = perCoreRoiRel(req.srcId, req.cycle);
+                curEpoch = stamp / ((uint64_t)pl * E);
+            } else {
+                uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
+                uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
+                curEpoch = rel / E;
+                stamp = phaseStamp(req.cycle);
+            }
             const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
             /* 1.11.98 (gate 1208A): the TARGET bank -- the unit the address
              * belongs to, and the bank slot and row the interface's own row
@@ -1203,8 +1253,9 @@ protected:
             } else {
                 row = (uint64_t)(req.lineAddr << 6) / 1024;   // no row model armed: 1 KB rows, stated
             }
-            zinfo->dramReplay->record(curEpoch, phaseStamp(req.cycle), unit, slot, row, req.lineAddr, isWrite, mcId_);
-            uint32_t v = zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
+            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_);
+            uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, kNocReadLagEpochs)
+                                   : zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
             zinfo->dramReplay->notePriced(v > 0);
             if (v > 0) { if (byReplay) *byReplay = true; return v; }
         }
@@ -1503,6 +1554,32 @@ protected:
         uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0)
                        ? zinfo->hierarchy.pagesPerUnit : 1;
         uint32_t unit = (page / ppu) % totalUnits_;
+        // 1.12.17: a thread's stack lives in its PE's own memory. A registered
+        // stack (zsim.h stackLo) maps into its owner's coverage; the owner is the
+        // first PE-MI that touches it below the thread's initial stack pointer.
+        const uint64_t byteAddr = (uint64_t)lineAddr << 6;
+        if (zinfo->stackRanges && byteAddr >= zinfo->stackMin && byteAddr < zinfo->stackMax) {
+            const uint32_t n = zinfo->stackRanges;
+            for (uint32_t i = 0; i < n; i++) {
+                const uint64_t lo = zinfo->stackLo[i];
+                if (byteAddr < lo || byteAddr >= zinfo->stackHi[i]) continue;
+                int32_t own = zinfo->stackOwner[i];
+                if (own == 0 && byteAddr < zinfo->stackSp[i] &&
+                    __sync_bool_compare_and_swap(&zinfo->stackOwner[i], 0, -1)) {
+                    if (nonContiguous_ || coverageEnd_ <= coverageStart_)
+                        panic("[%s] stack ownership needs a contiguous PE coverage", name_.c_str());
+                    zinfo->stackCovLo[i] = coverageStart_;
+                    zinfo->stackCovN[i] = coverageEnd_ - coverageStart_;
+                    __sync_synchronize();
+                    zinfo->stackOwner[i] = (int32_t)mcId_ + 1;
+                    own = zinfo->stackOwner[i];
+                }
+                if (own > 0)
+                    return zinfo->stackCovLo[i] +
+                           (uint32_t)(((byteAddr - lo) >> 12) / ppu % zinfo->stackCovN[i]);
+                break;
+            }
+        }
         // MPI: each rank is a SEPARATE guest process with its own (identical-
         // looking) VA space. Without an offset, every rank's pages would map to
         // the SAME units -- N processes falsely stacked on one region. Offset

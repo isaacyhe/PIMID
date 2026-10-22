@@ -11,6 +11,8 @@
 #include "dram_epoch_replay.h"
 #include "hierarchy_util.h"
 #include <algorithm>
+#include <cstdlib>
+#include <iterator>
 #include "log.h"
 #include "zsim.h"
 
@@ -22,6 +24,10 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     : name_(name), numMIs_(numInterfaces), burstsPerLine_(burstsPerLine < 1 ? 1 : burstsPerLine),
       lineBits_(lineBits) {
     futex_init(&lock_);
+    {   /* 1.12.17: message passing (thread-MPI) replays in cut mode */
+        const char* r = getenv("PIMID_MPI_RANKS");
+        cutMode_ = (r && atoi(r) > 1 && !getenv("PIMID_MPI_RANK"));
+    }
     YAML::Node config = YAML::LoadFile(configFile);
     /* 1.11.98 (gate 1208A): ONE instance for the whole DEVICE. The device's
      * Ramulator YAML (written for one controller per channel) declares one
@@ -38,6 +44,12 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     if (hasRankLevel)
         config["MemorySystem"]["DRAM"]["org"]["rank"] = (int)((zinfo->hierarchy.ranksPerChannel > 0) ? zinfo->hierarchy.ranksPerChannel : 1);
     config["MemorySystem"]["AddrMapper"]["impl"] = "ChRaBaRoCo";
+    /* 1.12.17: a PE placed below the channel tier (0 SUBARRAY, 1 BANK,
+     * 2 BANK_GROUP) drives its own bank: the controller serves it bank-parallel
+     * (no shared command or data bus); see the constraint filter below. */
+    const uint32_t plv = zinfo->hierarchy.placementLevel;
+    const bool bankPar = (plv <= 2);
+    if (bankPar) config["MemorySystem"]["Controller"]["pimid_bank_parallel"] = true;
     fe_  = Ramulator::Factory::create_frontend(config);
     sys_ = Ramulator::Factory::create_memory_system(config);
     fe_->connect_memory_system(sys_);
@@ -53,6 +65,46 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         while ((1u << txBits_) < txBytes) txBits_++;
         banksPerChannel_ = 1;
         for (int i = 1; i < rowIdx_; i++) banksPerChannel_ *= (uint64_t)std::max(1, counts_[i]);
+        if (bankPar) {
+            /* 1.12.17: remove the bus constraints a PE below the channel tier does
+             * not cross. Above the PE's tier (the bank for SUBARRAY/BANK, the bank
+             * group for BANK_GROUP): every column-to-column constraint (data bus
+             * nBL, nCCDS/nCCDL, read/write turnaround, rank switching); at the
+             * channel level also the command-bus occupancy after ACT and column
+             * commands. Kept: ACT-to-ACT (tRRD, tFAW), bank timing, precharge-all
+             * and refresh. */
+            const int bankLv = d->m_levels("bank");
+            int keepLv = bankLv;
+            if (plv == 2) {
+                int bg = -1;
+                for (int l = 0; l < bankLv; l++) if (std::string(d->m_levels(l)) == "bankgroup") bg = l;
+                if (bg >= 0) keepLv = bg;
+            }
+            auto cmdId = [d](const char* n) -> int {
+                for (int c = 0; c < (int)d->m_commands.size(); c++) if (std::string(d->m_commands(c)) == n) return c;
+                return -1;
+            };
+            std::vector<int> col;
+            for (const char* n : {"RD", "WR", "RDA", "WRA"}) { const int c = cmdId(n); if (c >= 0) col.push_back(c); }
+            const int act = cmdId("ACT");
+            auto isCol = [&col](int c) { return std::find(col.begin(), col.end(), c) != col.end(); };
+            uint64_t removed = 0, kept = 0;
+            for (int l = 0; l < keepLv; l++) {
+                for (int pc = 0; pc < (int)d->m_timing_cons[l].size(); pc++) {
+                    auto& v = d->m_timing_cons[l][pc];
+                    const size_t before = v.size();
+                    v.erase(std::remove_if(v.begin(), v.end(), [&](const Ramulator::TimingConsEntry& t) {
+                        if (isCol(pc) && isCol(t.cmd)) return true;                 // data bus / CCD / turnaround
+                        if (l == 0 && (pc == act || isCol(pc))) return true;       // channel command bus
+                        return false;
+                    }), v.end());
+                    removed += before - v.size();
+                    kept += v.size();
+                }
+            }
+            info("[mem] %s: PE placement tier %u is below the channel: bank-parallel controller, %lu bus constraint(s) above the %s tier removed, %lu kept (activation limits, refresh, precharge-all) [1.12.17]",
+                 name, plv, (unsigned long)removed, plv == 2 ? "bank-group" : "bank", (unsigned long)kept);
+        }
         const uint32_t cpr = zinfo->hierarchy.chipsPerRank;
         foldedChannels_ = (nch > 1 && cpr == nch);
         perChan_.assign((size_t)std::max(1, counts_[0]), 0);
@@ -132,6 +184,12 @@ void DramEpochReplay::record(uint64_t epoch, uint64_t stamp, uint32_t unit, uint
     uint32_t ch = 0;
     const uint64_t addr = composeAddr(unit, slot, row, lineAddr, &ch);
     futex_lock(&lock_);
+    /* 1.12.17 cut mode: a record for an epoch the cut has already folded (a
+     * core that was exempt from the cut while parked in an MPI wait) joins
+     * the next unfolded epoch -- its stamp is behind the replay clock, so it
+     * issues at the clock, as the shared-memory replay does with a late
+     * stamp; a folded epoch is never replayed twice. */
+    if (cutMode_ && anyFolded_ && epoch <= lastFolded_) { epoch = lastFolded_ + 1; late_++; }
     pending_[epoch].push_back(Rec{stamp, addr, mi, (uint8_t)(isWrite ? 1 : 0)});
     if (ch < perChan_.size()) perChan_[ch]++;
     futex_unlock(&lock_);
@@ -159,6 +217,40 @@ uint32_t DramEpochReplay::serviceLatency(uint32_t mi, uint64_t curEpoch) {
      * (1208B) evicted every new ROI epoch: the ROI snapshot restarts epoch
      * numbering at 0 while stale pre-ROI keys were larger. */
     while (!frozen_.empty() && frozen_.begin()->first + 8 < curEpoch) frozen_.erase(frozen_.begin());
+    futex_unlock(&lock_);
+    return v;
+}
+
+void DramEpochReplay::foldByCut(uint64_t cut, uint64_t epochLen) {
+    if (!cutMode_ || epochLen == 0) return;
+    futex_lock(&lock_);
+    /* every epoch whose whole span is at or below the cut is final: no active
+     * core can record into it any more. Replay them in order. */
+    while (!pending_.empty()) {
+        const uint64_t ep = pending_.begin()->first;
+        if (cut != ~0ull && (ep + 1) * epochLen > cut) break;
+        replayEpoch(ep);
+        pending_.erase(ep);
+    }
+    futex_unlock(&lock_);
+}
+
+uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_t lag) {
+    if (!cutMode_ || mi >= numMIs_ || epoch < lag) return 0;
+    const uint64_t r = epoch - lag;
+    futex_lock(&lock_);
+    uint32_t v = 0;
+    /* the latest folded epoch at or before r: r itself once the cut has
+     * passed it (the lag is chosen so it has, as for the NoC); an earlier one
+     * when the cut trails further (counted: stale_) */
+    auto it = carried_.upper_bound(r);
+    if (it != carried_.begin()) {
+        --it;
+        if (it->first != r) stale_++;
+        if (mi < it->second.size()) v = it->second[mi];
+    }
+    while (carried_.size() > 1 && carried_.begin()->first + 16 < r && std::next(carried_.begin())->first <= r)
+        carried_.erase(carried_.begin());
     futex_unlock(&lock_);
     return v;
 }
@@ -192,6 +284,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
     for (size_t i = 0; i < recs.size(); ++i) {
         const Rec& r = recs[i];
         uint64_t target = (uint64_t)((double)r.stamp * ticksPerCycle_);
+        if (cutMode_) target += roiTick0_;   // 1.12.17: ROI-relative stamps start at the ROI's DRAM tick
         tickTo(target);   // monotone: a stamp behind the clock issues now
         inflight_.push_back(Inflight{burstsPerLine_, curTick_, r.mi, r.wr != 0});
         const size_t idx = inflight_.size() - 1;
@@ -230,6 +323,12 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
     for (uint32_t m = 0; m < numMIs_; ++m)
         if (cntLat_[m] > 0) perMi[m] = (uint32_t)((sumLat_[m] + cntLat_[m] / 2) / cntLat_[m]);
     frozen_[epoch] = perMi;
+    if (cutMode_) {   // 1.12.17: an interface idle in this epoch keeps its last measured value
+        std::vector<uint32_t> c = perMi;
+        for (uint32_t m = 0; m < numMIs_ && m < lastValue_.size(); ++m) if (c[m] == 0) c[m] = lastValue_[m];
+        carried_[epoch] = c;
+        lastFolded_ = epoch; anyFolded_ = true;
+    }
     for (uint32_t m = 0; m < numMIs_ && m < lastValue_.size(); ++m) if (perMi[m] > 0) lastValue_[m] = perMi[m];
     lastReplayed_ = epoch; anyReplayed_ = true;
     raw_.epochs++;
@@ -251,6 +350,24 @@ void DramEpochReplay::markRoi() {
      * frozen pre-ROI epochs are on the old axis and must not be found, or
      * pruned instead of the new ones (gate 1208B) */
     frozen_.clear();
+    if (cutMode_) {   // 1.12.17: the ROI-relative axis starts here
+        roiTick0_ = curTick_;
+        carried_.clear();
+        anyFolded_ = false; lastFolded_ = 0;
+    } else {
+        /* 1.12.17: open the window AT the ROI start. Records are stamped on the
+         * phase clock (numPhases x phase length + the core's offset), so the
+         * first ROI record is at or after numPhases x phase length now. The
+         * DRAM clock sat at the last pre-ROI request (0 when the device had no
+         * pre-ROI traffic, as in co-simulation), and the first ROI replay then
+         * ticked through the whole pre-ROI span INSIDE the window: co-sim
+         * cosim_HBM3_omp_gemv counted 9.49e9 DRAM ticks (2.96e9 core cycles)
+         * against a 3.53e8-cycle ROI, with its idle ticks and refreshes. The
+         * same ticks are run either way (bank and refresh state are unchanged);
+         * only the window boundary moves. */
+        const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        tickTo((uint64_t)((double)((uint64_t)zinfo->numPhases * pl) * ticksPerCycle_));
+    }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);
     base_ = raw_;
     basePriced_ = rawPriced_.load(); baseBoot_ = rawBoot_.load();
@@ -296,7 +413,12 @@ void DramEpochReplay::finalize() {
     for (uint64_t v : perChan_) { if (v) used++; if (v > mx) mx = v; tot += v; }
     profChannelsUsed_.set(used);
     profMaxChanPermille_.set(tot ? (mx * 1000 + tot / 2) / tot : 0);
+    const uint64_t late = late_, stale = stale_;
     futex_unlock(&lock_);
+    if (cutMode_)
+        info("[mem] %s: message-passing epoch replay (1.12.17): ROI-relative stamps, epochs folded at the consistent cut; "
+             "%lu record(s) joined a later epoch, %lu read(s) took an epoch before the lag", name_.c_str(),
+             (unsigned long)late, (unsigned long)stale);
     if (getenv("PIMID_DEBUG_REPLAY"))
         info("[replaydbg] window%s: requests=%lu hits=%lu misses=%lu conflicts=%lu refreshes=%lu ticks=%lu idle=%lu channels=%lu max=%lu permille",
              roiMarked_ ? " (ROI)" : " (whole run: no roi_begin seen)",
@@ -319,4 +441,6 @@ void DramEpochReplay::finalize() {}
 void DramEpochReplay::replayEpoch(uint64_t) {}
 void DramEpochReplay::tickTo(uint64_t) {}
 void DramEpochReplay::tickOnce() {}
+void DramEpochReplay::foldByCut(uint64_t, uint64_t) {}
+uint32_t DramEpochReplay::serviceLatencyCut(uint32_t, uint64_t, uint64_t) { return 0; }
 #endif

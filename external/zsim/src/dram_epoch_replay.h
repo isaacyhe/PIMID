@@ -60,6 +60,25 @@ class DramEpochReplay {
      * epoch): the caller keeps its analytical service. */
     uint32_t serviceLatency(uint32_t mi, uint64_t curEpoch);
 
+    /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
+     * well"): the exec-method message-passing mode (thread-MPI: every rank a
+     * thread of one process). The global phase clock keeps advancing while
+     * ranks sit parked in their MPI waits, so stamping on it replayed mostly
+     * dead time (gate 1208A: 317 M DRAM cycles inside a ~6 M ROI). In this
+     * mode a record is stamped on the recording core's ROI-relative cycle --
+     * the axis the thread-MPI NoC pricing uses -- and keyed by that stamp's
+     * epoch; an epoch is replayed only by foldByCut, at the phase barrier, once
+     * the consistent cut (the minimum ROI-relative cycle over the active cores)
+     * has passed its end; never on an access path. Set at construction from
+     * the same environment test as PEMemoryInterface::mpiThreadDetPricing(). */
+    bool cutMode() const { return cutMode_; }
+    void foldByCut(uint64_t cut, uint64_t epochLen);
+    /* The service latency interface `mi` charges for an access in epoch
+     * `epoch` (cut mode): the value folded for epoch - lag, carried over the
+     * epochs in which `mi` had no access; 0 = nothing folded yet (the caller
+     * keeps its analytical service). */
+    uint32_t serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_t lag);
+
     void initStats(AggregateStat* parentStat);
     /* 1.11.98 (gate 1208A): open the statistics window at roi_begin, where the
      * traffic counters are rebased (1.11.90). Everything recorded so far is
@@ -107,6 +126,13 @@ class DramEpochReplay {
     std::map<uint64_t, std::vector<Rec>> pending_;           // epoch -> records
     std::map<uint64_t, std::vector<uint32_t>> frozen_;      // epoch -> per-MI mean latency (core cycles)
     uint64_t lastReplayed_ = 0; bool anyReplayed_ = false;
+    // 1.12.17 cut mode (message passing): see cutMode()
+    bool cutMode_ = false;
+    uint64_t roiTick0_ = 0;                                  // DRAM tick of the ROI-relative origin (set at markRoi)
+    uint64_t lastFolded_ = 0; bool anyFolded_ = false;
+    std::map<uint64_t, std::vector<uint32_t>> carried_;     // epoch -> per-MI latency, idle interfaces carried
+    uint64_t late_ = 0, stale_ = 0;
+                          // records re-keyed past the cut; reads ahead of the cut
 
     // replay scratch
     std::vector<Inflight> inflight_;

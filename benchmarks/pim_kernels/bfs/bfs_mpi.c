@@ -4,9 +4,12 @@
  * all ranks perform identical dedup to maintain consistent state.
  *
  * Device-organization aware (PIMID), mirroring bfs_omp.c's choice of WHICH
- * arrays get slotted: the CSR (row_ptr, col_idx) and dist go in the PE slot;
- * the frontier/candidate work queues stay host-side (they ARE the shared
- * structure). D1 identity mapping -- rank r owns PE r's slot (enforced ranks ==
+ * arrays get slotted: the CSR (row_ptr, col_idx) and dist go in the PE slot.
+ * 1.12.17: unlike bfs_omp, where the frontier IS the shared structure, every
+ * rank here has its OWN private frontier, candidates, all_candidates (the
+ * Allgatherv receive buffer), recvcounts and displs, so they go in the rank's
+ * PE slot too (they used to stay in the shared heap, which put all ranks'
+ * copies on a few heap units). D1 identity mapping -- rank r owns PE r's slot (enforced ranks ==
  * num_pes). STRUCTURAL NOTE: unlike bfs_omp (which owner-partitions the CSR by
  * vertex range because OMP threads share one address space), bfs_mpi replicates
  * the FULL graph + dist on every rank (its Allgatherv model), so each rank
@@ -36,11 +39,21 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     return def;
 }
 
+/* Candidate buffer bound (1.11.94, ruling H43): ceil(V/nprocs)*deg, never below V. */
+static size_t bfs_mpi_cand_cap(long v, int deg, int nprocs) {
+    size_t cap = (size_t)((v + nprocs - 1) / nprocs) * (size_t)deg;
+    return cap < (size_t)v ? (size_t)v : cap;
+}
+
 /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the full replicated
- * [row_ptr V+1][col_idx V*deg][dist V] every rank slots. */
+ * [row_ptr V+1][col_idx V*deg][dist V] every rank slots; 1.12.17: plus the rank's
+ * private [frontier V][candidates cap][all_candidates V*deg][recvcounts n][displs n]. */
+typedef struct { int deg, nprocs; } bfs_mpi_geom_t;
 static size_t bfs_mpi_need(long v, const void* c) {
-    int deg = *(const int*)c;
-    return ((size_t)(v + 1) + (size_t)v * (size_t)deg + (size_t)v) * sizeof(int);
+    const bfs_mpi_geom_t* g = (const bfs_mpi_geom_t*)c;
+    return ((size_t)(v + 1) + (size_t)v * (size_t)g->deg + (size_t)v
+            + (size_t)v + bfs_mpi_cand_cap(v, g->deg, g->nprocs) + (size_t)v * (size_t)g->deg
+            + 2 * (size_t)g->nprocs) * sizeof(int);
 }
 
 int main(int argc, char* argv[]) {
@@ -78,8 +91,7 @@ int main(int argc, char* argv[]) {
      * bound, never below the old V, so runs with nprocs >= deg keep the same
      * allocation and the ROI is unchanged (a local visited-bitmap dedup would
      * add work to the ROI of every cell). */
-    size_t cand_cap = (size_t)((V + nprocs - 1) / nprocs) * (size_t)deg;
-    if (cand_cap < (size_t)V) cand_cap = (size_t)V;
+    size_t cand_cap = bfs_mpi_cand_cap(V, deg, nprocs);
     int* candidates = (int*)malloc(cand_cap * sizeof(int));
     int* all_candidates = (int*)malloc(V * deg * sizeof(int));
     int* recvcounts = (int*)malloc(nprocs * sizeof(int));
@@ -101,19 +113,27 @@ int main(int argc, char* argv[]) {
     int fsize = 1;
 
     /* ---- DATA PREP (before ROI, not timed): this rank's full replicated CSR +
-     * dist -> its PE slot. Slot layout: [row_ptr V+1][col_idx V*deg][dist V].
-     * rp/ci/ds are the working pointers (slot-resident when prepped).
+     * dist -> its PE slot, followed by its private work buffers (1.12.17). Slot
+     * layout: [row_ptr V+1][col_idx V*deg][dist V][frontier V][candidates cap]
+     * [all_candidates V*deg][recvcounts n][displs n]. rp/ci/ds/fr/cd/ac/rc/dp are
+     * the working pointers (slot-resident when prepped).
      * Assumes thread-MPI (the default/only supported mode): slot r maps to PE
      * r's units directly. Under the retired PIMID_MPI_PROCESS=1 legacy mode the
      * simulator's per-rank unit rotation (pe_memory_interface.h) would
      * double-shift these prepped slots. */
     int prep = pimid_devorg_needs_prep(&dev);
-    size_t need = ((size_t)(V + 1) + (size_t)V * deg + (size_t)V) * sizeof(int);
+    bfs_mpi_geom_t geom = { deg, nprocs };
+    size_t need = bfs_mpi_need(V, &geom);
     size_t slot_bytes = 0;
     int* dbuf = NULL;
     int* rp = row_ptr;
     int* ci = col_idx;
     int* ds = dist;
+    int* fr = frontier;
+    int* cd = candidates;
+    int* ac = all_candidates;
+    int* rc = recvcounts;
+    int* dp = displs;
     if (prep) {
         /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
@@ -122,7 +142,7 @@ int main(int argc, char* argv[]) {
             char who[32];
             snprintf(who, sizeof who, "rank %d: ", rank);
             pimid_devorg_report_slot_refusal(who, "bfs", &dev, need, slot_bytes, "--vertices",
-                pimid_devorg_largest_fit(bfs_mpi_need, &deg, V, slot_bytes));
+                pimid_devorg_largest_fit(bfs_mpi_need, &geom, V, slot_bytes));
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
         dbuf = (int*)pimid_devorg_alloc(&dev, &slot_bytes);
@@ -137,9 +157,15 @@ int main(int argc, char* argv[]) {
         rp = slot;
         ci = slot + (V + 1);
         ds = slot + (V + 1) + (size_t)V * deg;
+        fr = ds + V;
+        cd = fr + V;
+        ac = cd + cand_cap;
+        rc = ac + (size_t)V * deg;
+        dp = rc + nprocs;
         memcpy(rp, row_ptr, (size_t)(V + 1) * sizeof(int));
         memcpy(ci, col_idx, (size_t)V * deg * sizeof(int));
         memcpy(ds, dist, (size_t)V * sizeof(int));
+        fr[0] = frontier[0];
     }
 
     if (prep)
@@ -163,32 +189,32 @@ int main(int argc, char* argv[]) {
         /* Expand: collect candidate neighbors (may have duplicates) */
         int ncand = 0;
         for (int f = my_start; f < my_start + my_count; f++) {
-            int u = frontier[f];
+            int u = fr[f];
             for (int e = rp[u]; e < rp[u + 1]; e++) {
                 int v = ci[e];
                 if (ds[v] == -1)
-                    candidates[ncand++] = v;
+                    cd[ncand++] = v;
             }
         }
 
         /* Gather all candidates */
-        MPI_Allgather(&ncand, 1, MPI_INT, recvcounts, 1, MPI_INT, MPI_COMM_WORLD);
-        displs[0] = 0;
+        MPI_Allgather(&ncand, 1, MPI_INT, rc, 1, MPI_INT, MPI_COMM_WORLD);
+        dp[0] = 0;
         for (int i = 1; i < nprocs; i++)
-            displs[i] = displs[i - 1] + recvcounts[i - 1];
-        int total_cand = displs[nprocs - 1] + recvcounts[nprocs - 1];
+            dp[i] = dp[i - 1] + rc[i - 1];
+        int total_cand = dp[nprocs - 1] + rc[nprocs - 1];
 
-        MPI_Allgatherv(candidates, ncand, MPI_INT,
-                       all_candidates, recvcounts, displs, MPI_INT,
+        MPI_Allgatherv(cd, ncand, MPI_INT,
+                       ac, rc, dp, MPI_INT,
                        MPI_COMM_WORLD);
 
         /* All ranks deduplicate identically */
         int new_fsize = 0;
         for (int i = 0; i < total_cand; i++) {
-            int v = all_candidates[i];
+            int v = ac[i];
             if (ds[v] == -1) {
                 ds[v] = level;
-                frontier[new_fsize++] = v;
+                fr[new_fsize++] = v;
             }
         }
         fsize = new_fsize;

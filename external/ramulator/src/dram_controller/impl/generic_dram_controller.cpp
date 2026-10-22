@@ -19,6 +19,16 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     float m_wr_high_watermark;
     bool  m_is_write_mode = false;
 
+    /* PIMID 1.12.17: bank-parallel mode for processing elements placed below the
+     * channel tier. Each element drives its own bank, so there is no shared
+     * command bus (one command per BANK per cycle, not per channel) and no shared
+     * data bus to turn around (reads and writes both served). The DRAM's
+     * remaining timing constraints decide readiness, re-evaluated after every
+     * command issued in the cycle, so activation limits (tRRD, tFAW) still hold
+     * across banks. Off by default: the shipped behaviour is unchanged. */
+    bool m_pimid_bank_parallel = false;
+    int  m_pimid_banks_per_channel = 1;
+
     size_t s_row_hits = 0;
     size_t s_row_misses = 0;
     size_t s_row_conflicts = 0;
@@ -54,6 +64,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     void init() override {
       m_wr_low_watermark =  param<float>("wr_low_watermark").desc("Threshold for switching back to read mode.").default_val(0.2f);
       m_wr_high_watermark = param<float>("wr_high_watermark").desc("Threshold for switching to write mode.").default_val(0.8f);
+      m_pimid_bank_parallel = param<bool>("pimid_bank_parallel").desc("PIMID: one command per bank per cycle, no shared bus (processing elements below the channel tier).").default_val(false);
 
       m_scheduler = create_child_ifce<IScheduler>();
       m_refresh = create_child_ifce<IRefreshManager>();    
@@ -71,6 +82,16 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       m_dram = memory_system->get_ifce<IDRAM>();
       m_bank_addr_idx = m_dram->m_levels("bank");
       m_priority_buffer.max_size = 512*3 + 32;
+      if (m_pimid_bank_parallel) {
+        /* every bank has its own requester: the buffers hold one default-sized
+         * queue per bank rather than one per channel */
+        m_pimid_banks_per_channel = 1;
+        for (int l = 1; l <= m_bank_addr_idx; l++)
+          m_pimid_banks_per_channel *= std::max(1, m_dram->m_organization.count[l]);
+        m_read_buffer.max_size   *= m_pimid_banks_per_channel;
+        m_write_buffer.max_size  *= m_pimid_banks_per_channel;
+        m_active_buffer.max_size *= m_pimid_banks_per_channel;
+      }
 
       m_num_cores = frontend->get_num_cores();
 
@@ -182,6 +203,11 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
 
       m_refresh->tick();
 
+      if (m_pimid_bank_parallel) {
+        pimid_tick_bank_parallel();
+        return;
+      }
+
       // 2. Try to find a request to serve.
       ReqBuffer::iterator req_it;
       ReqBuffer* buffer = nullptr;
@@ -233,6 +259,113 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
 
 
   private:
+    /* PIMID 1.12.17: the bank-parallel tick (see m_pimid_bank_parallel). */
+    bool pimid_same_bank(const AddrVec_t& a, const AddrVec_t& b) const {
+      for (int i = 0; i <= m_bank_addr_idx; i++)
+        if (a[i] != b[i] && a[i] != -1 && b[i] != -1) return false;
+      return true;
+    }
+
+    /* the best READY request of `buf` whose bank has not issued this cycle:
+     * row hits first, then the oldest (FR-FCFS per bank); a closing command
+     * that would close a row a request in the active buffer is opening is
+     * skipped, as schedule_request does */
+    bool pimid_best(ReqBuffer& buf, const std::vector<AddrVec_t>& used, ReqBuffer::iterator& out) {
+      ReqBuffer::iterator cand = buf.end();
+      bool cand_hit = false;
+      for (auto it = buf.begin(); it != buf.end(); ++it) {
+        bool taken = false;
+        for (const auto& k : used) if (pimid_same_bank(k, it->addr_vec)) { taken = true; break; }
+        if (taken) continue;
+        it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
+        if (!m_dram->check_ready(it->command, it->addr_vec)) continue;
+        if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing) {
+          bool blocks = false;
+          for (auto a = m_active_buffer.begin(); a != m_active_buffer.end(); ++a)
+            if (pimid_same_bank(a->addr_vec, it->addr_vec)) { blocks = true; break; }
+          if (blocks) continue;
+        }
+        const bool hit = (it->command == it->final_command);
+        if (cand == buf.end() || (hit && !cand_hit) || (hit == cand_hit && it->arrive < cand->arrive)) {
+          cand = it;
+          cand_hit = hit;
+        }
+      }
+      if (cand == buf.end()) return false;
+      out = cand;
+      return true;
+    }
+
+    /* issue req_it from buffer: the same steps as tick() step 4 */
+    void pimid_issue(ReqBuffer::iterator req_it, ReqBuffer* buffer) {
+      if (req_it->is_stat_updated == false) {
+        update_request_stats(req_it);
+      }
+      m_dram->issue_command(req_it->command, req_it->addr_vec);
+      if (req_it->command == req_it->final_command) {
+        if (req_it->type_id == Request::Type::Read) {
+          req_it->depart = m_clk + m_dram->m_read_latency;
+          pending.push_back(*req_it);
+        } else if (req_it->type_id == Request::Type::Write) {
+          req_it->depart = m_clk + m_dram->m_read_latency;   /* as tick(): 1.11.96 H12 */
+          if (req_it->callback) {
+            req_it->callback(*req_it);
+          }
+        }
+        buffer->remove(req_it);
+      } else {
+        if (m_dram->m_command_meta(req_it->command).is_opening) {
+          if (m_active_buffer.enqueue(*req_it)) {
+            buffer->remove(req_it);
+          }
+        }
+      }
+    }
+
+    void pimid_tick_bank_parallel() {
+      std::vector<AddrVec_t> used;
+      int issued = 0;
+      for (int n = 0; n < m_pimid_banks_per_channel; n++) {
+        ReqBuffer::iterator req_it;
+        ReqBuffer* buffer = nullptr;
+        bool found = false;
+        // 1. requests already activating
+        if (pimid_best(m_active_buffer, used, req_it)) { buffer = &m_active_buffer; found = true; }
+        // 2. maintenance (refresh) keeps schedule_request's rule: when its head is
+        //    not ready nothing else issues; it is served only as the cycle's first command
+        if (!found && m_priority_buffer.size() != 0) {
+          if (issued > 0) break;
+          req_it = m_priority_buffer.begin();
+          req_it->command = m_dram->get_preq_command(req_it->final_command, req_it->addr_vec);
+          if (!m_dram->check_ready(req_it->command, req_it->addr_vec)) break;
+          buffer = &m_priority_buffer;
+          found = true;
+        }
+        // 3. reads and writes: no shared data bus, so both are candidates
+        if (!found) {
+          ReqBuffer::iterator r, w;
+          const bool fr = pimid_best(m_read_buffer, used, r);
+          const bool fw = pimid_best(m_write_buffer, used, w);
+          if (fr && fw) {
+            const bool hr = (r->command == r->final_command), hw = (w->command == w->final_command);
+            if ((hr && !hw) || (hr == hw && r->arrive <= w->arrive)) { req_it = r; buffer = &m_read_buffer; }
+            else { req_it = w; buffer = &m_write_buffer; }
+            found = true;
+          } else if (fr) { req_it = r; buffer = &m_read_buffer; found = true; }
+          else if (fw) { req_it = w; buffer = &m_write_buffer; found = true; }
+        }
+        m_rowpolicy->update(found, req_it);
+        for (auto plugin : m_plugins) plugin->update(found, req_it);
+        if (!found) break;
+        const bool maintenance = (buffer == &m_priority_buffer);
+        AddrVec_t key = req_it->addr_vec;
+        pimid_issue(req_it, buffer);
+        used.push_back(key);
+        issued++;
+        if (maintenance) break;   // a maintenance command may span every bank of its scope
+      }
+    }
+
     /**
      * @brief    Helper function to check if a request is hitting an open row
      * @details

@@ -6832,16 +6832,21 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
      * unless pim.mc.epoch_replay is false; the Ramulator YAML is the one the
      * mem block names. */
     {
-        /* 1.11.98 (gate 1208A): not under MPI. The replay stamps requests on
+        /* 1.11.98 (gate 1208A) left MPI out: the replay stamped requests on
          * the global phase clock, which under thread-MPI keeps advancing
          * while ranks sit parked in their waits (the wall-clock-pumped floor
          * of the 1.6 notes): the probe's 4-rank stencil replayed 317 M DRAM
-         * cycles inside a ROI worth ~6 M. Thread-MPI device cells keep the
-         * deterministic epoch-frozen M/D/1 service until the replay stamps on
-         * the per-rank ROI clock with the consistent cut the NoC uses. */
+         * cycles inside a ROI worth ~6 M. 1.12.17 (user 2026-10-22: "we need
+         * message passing side measured as well"): exec-method message passing
+         * (thread-MPI, the only exec MPI model since 1.8.3) replays in cut
+         * mode -- stamped on each rank's ROI-relative clock and folded at the
+         * consistent cut the NoC uses (DramEpochReplay::cutMode). The trace
+         * method runs one process per rank, where a replay would see one
+         * rank's traffic only: it keeps the analytical service. */
         const bool mpi_workload = (config.workload_type == "mpi");
         const bool replay_on = config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator"
-                               && !config.ramulator_config_file.empty() && !mpi_workload;
+                               && !config.ramulator_config_file.empty()
+                               && !(mpi_workload && config.method != "exec");
         out << "        dramEpochReplay = " << (replay_on ? 1 : 0) << ";\n";
         if (replay_on) {
             /* the replay's own Ramulator config and column commands per line:
@@ -6849,8 +6854,10 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
             out << "        dramReplayConfigFile = \"" << config.ramulator_config_file << "\";\n";
             out << "        dramReplayBurstsPerLine = " << dramBurstsPerLine(config.memory_tech, config) << ";\n";
         }
-        std::cout << "  [mem] device DRAM controller: " << (replay_on ? "Ramulator2 EPOCH REPLAY (ruling 4 (c)): every interface's requests replayed per epoch, the previous epoch's measured service latency priced"
-                                                                        : (mpi_workload && config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator") ? "analytical service: the epoch replay is not applied to MPI workloads yet (its stamp axis under thread-MPI; 1.11.98 OPEN)"
+        std::cout << "  [mem] device DRAM controller: " << (replay_on ? (mpi_workload
+                                                                            ? "Ramulator2 EPOCH REPLAY (ruling 4 (c)), message passing (1.12.17): every interface's requests replayed per epoch on each rank's ROI-relative clock, epochs final at the consistent cut, the measured service latency two epochs back priced"
+                                                                            : "Ramulator2 EPOCH REPLAY (ruling 4 (c)): every interface's requests replayed per epoch, the previous epoch's measured service latency priced")
+                                                                        : (mpi_workload && config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator") ? "analytical service: the epoch replay is not applied to trace-method MPI (one process per rank would replay one rank's traffic; 1.12.17)"
                                                                         : (config.mc_epoch_replay ? "analytical service (no Ramulator preset for this technology)" : "analytical service (pim.mc.epoch_replay: false)")) << std::endl;
     }
     out << "        nocAggBandwidthMBs = " << config.hierarchy_agg_bandwidth_mbs << ";\n";

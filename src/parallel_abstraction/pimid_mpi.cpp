@@ -119,6 +119,7 @@ static inline void zsim_magic_op(uint64_t op) {
 
 #define PIMID_MPI_MAX_MSG_BYTES   (64 * 1024)   /* 64 KB per slot */
 #define PIMID_MPI_RING_SLOTS      16            /* per mailbox */
+#define ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE 2060   /* 1.12.17 (M1): register transport memory */
 
 struct MessageSlot {
     int       src;
@@ -405,6 +406,58 @@ static void register_mpi_params(void) {
 #endif
 }
 
+/* 1.12.17 (M1, user 2026-10-22): the transport's own memory is registered with
+ * the simulator, and PE accesses inside it are not priced: a message costs one
+ * read of the sender's buffer, the injected Garnet transfer and one write of the
+ * receiver's buffer. Thread mode only (the exec-method MPI model). */
+static void register_transport_range(const void* base, size_t bytes) {
+#ifdef __x86_64__
+    static volatile uint64_t r[2];
+    r[0] = (uint64_t)(uintptr_t)base;
+    r[1] = (uint64_t)bytes;
+    COMPILER_BARRIER();
+    __asm__ __volatile__("xchg %%rcx, %%rcx;"
+                         : : "c"((uint64_t)ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE), "d"((void*)r)
+                         : "memory");
+    COMPILER_BARRIER();
+#else
+    (void)base; (void)bytes;
+#endif
+}
+
+/* 1.12.17 (M1): thread-mode staging (messages evicted from a full ring while the
+ * receiver waits for another source) lives in one transport arena, so it is
+ * registered transport memory too: per rank, cap slots, an arrival-order list
+ * and a used map. Capacity: every other rank's full ring. Overflow refuses. */
+static MessageSlot* g_stage_slots = nullptr;
+static int32_t*     g_stage_order = nullptr;   /* [rank][cap]: slot index, arrival order */
+static uint32_t*    g_stage_n     = nullptr;   /* [rank]: staged count */
+static uint8_t*     g_stage_used  = nullptr;   /* [rank][cap] */
+static void*        g_stage_arena = nullptr;
+static size_t       g_stage_arena_bytes = 0;
+static uint32_t     g_stage_cap = 0;
+
+static bool stage_arena_create(int nranks) {
+    g_stage_cap = (uint32_t)PIMID_MPI_RING_SLOTS * (uint32_t)nranks;
+    const size_t ns = (size_t)nranks * g_stage_cap;
+    const size_t b_slots = ns * sizeof(MessageSlot);
+    const size_t b_order = ns * sizeof(int32_t);
+    const size_t b_n     = (size_t)nranks * sizeof(uint32_t);
+    const size_t b_used  = ns;
+    g_stage_arena_bytes = b_slots + b_order + b_n + b_used;
+    g_stage_arena = calloc(1, g_stage_arena_bytes);
+    if (!g_stage_arena) {
+        fprintf(stderr, "[pimid_mpi] thread-mode staging arena alloc failed (%zu bytes)\n", g_stage_arena_bytes);
+        return false;
+    }
+    char* p = (char*)g_stage_arena;
+    g_stage_slots = (MessageSlot*)p; p += b_slots;
+    g_stage_order = (int32_t*)p;     p += b_order;
+    g_stage_n     = (uint32_t*)p;    p += b_n;
+    g_stage_used  = (uint8_t*)p;
+    return true;
+}
+
 static size_t shared_bytes_for(int nranks) {
     return sizeof(SharedHeader) + (size_t)nranks * sizeof(Mailbox);
 }
@@ -441,6 +494,9 @@ static bool create_heap_region(int nranks) {
     }
     __sync_synchronize();
     g_shared->barrier_gen = 1;   /* >0 == initialized (same sentinel as shm) */
+    if (!stage_arena_create(nranks)) return false;
+    register_transport_range(g_shared, g_shared_bytes);
+    register_transport_range(g_stage_arena, g_stage_arena_bytes);
     return true;
 }
 
@@ -546,7 +602,9 @@ static void trace_init(int rank) {
 
 /* ---- Send / Recv core ---- */
 
-/* Push one chunk to the dest mailbox. Blocks if ring is full. */
+static void ring_evict_head(Mailbox* mb, int r);   /* 1.12.17, below */
+
+/* Push one chunk to the dest mailbox. A full ring moves its oldest message to the receiver staging (1.12.17). */
 static int send_chunk(int dest, int tag, const char* data, uint32_t size,
                       uint32_t chunk_idx, uint32_t n_chunks, uint32_t msg_id,
                       uint64_t send_time, uint64_t contend_wait) {
@@ -567,7 +625,7 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
         mpi_comm_begin();   /* frozen-clock bracket: plugin rewinds at END */
         pthread_mutex_lock(&mb->mtx);
         while (mb->count >= PIMID_MPI_RING_SLOTS)
-            pthread_cond_wait(&mb->can_send, &mb->mtx);
+            ring_evict_head(mb, dest);   /* 1.12.17: never block on a full ring */
         MessageSlot* slot = &mb->slots[mb->tail];
         slot->src           = g_rank;
         slot->tag           = tag;
@@ -577,7 +635,12 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
         slot->msg_id           = msg_id;
         slot->sim_send_time    = send_time;
         slot->sim_contend_wait = contend_wait;
+        mpi_comm_end();
+        /* 1.12.17 (M1): outside the comm window, so the read of the sender's
+         * buffer is priced; the slot is registered transport memory, so the
+         * write into it is not. The mailbox mutex stays held. */
         if (data && size > 0) memcpy(slot->payload, data, size);
+        mpi_comm_begin();
         mb->tail = (mb->tail + 1) % PIMID_MPI_RING_SLOTS;
         mb->count++;
         pthread_cond_signal(&mb->can_recv);
@@ -617,6 +680,118 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
 /* Pop one message from the local mailbox. Blocks if empty. Thread mode
  * matches want_src (MPI_ANY_SOURCE = any); process mode keeps its historical
  * FIFO-pop and ignores want_src. */
+/* 1.12.17 (M1): thread-mode receive in two halves around the payload copy.
+ * recv_acquire_thread finds the next message from want_src (staging first, then
+ * the ring, evicting the ring head to staging when the ring is full and the
+ * wanted source is absent -- the same matching and FIFO order as recv_slot) and
+ * returns its slot with the comm window CLOSED and the mailbox mutex HELD
+ * (staging included, since 1.12.17 senders also evict into it).
+ * recv_release_thread frees it. */
+struct RecvRef { bool staged; int pos; uint32_t ring_idx; };
+
+static MessageSlot* stage_slot_at(int r, uint32_t i) {
+    return &g_stage_slots[(size_t)r * g_stage_cap + i];
+}
+
+static void stage_push(int r, const MessageSlot* src) {
+    uint32_t n = g_stage_n[r];
+    if (n >= g_stage_cap) {
+        fprintf(stderr, "[pimid_mpi] rank %d: message staging full (%u messages evicted from a full ring and not yet "
+                "received); refusing to drop or reorder a message\n", r, n);
+        abort();
+    }
+    uint32_t i = 0;
+    uint8_t* used = &g_stage_used[(size_t)r * g_stage_cap];
+    while (used[i]) i++;
+    used[i] = 1;
+    MessageSlot* d = stage_slot_at(r, i);
+    d->src = src->src; d->tag = src->tag; d->size = src->size;
+    d->chunk_idx = src->chunk_idx; d->n_chunks = src->n_chunks; d->msg_id = src->msg_id;
+    d->sim_send_time = src->sim_send_time; d->sim_contend_wait = src->sim_contend_wait;
+    if (src->size > 0) memcpy(d->payload, src->payload, src->size);
+    g_stage_order[(size_t)r * g_stage_cap + n] = (int32_t)i;
+    g_stage_n[r] = n + 1;
+}
+
+/* Move the ring head -- the oldest message -- of rank r's mailbox to r's
+ * staging (mailbox mutex held). Staging stays older than the ring, so each
+ * source's messages keep their order. Used by the receiver and, when the ring
+ * is full, by a sender (1.12.17), so a send never blocks on a full ring. */
+static void ring_evict_head(Mailbox* mb, int r) {
+    stage_push(r, &mb->slots[mb->head]);
+    mb->consumed[mb->head] = 0;
+    mb->head = (mb->head + 1) % PIMID_MPI_RING_SLOTS;
+    mb->count--;
+    while (mb->count > 0 && mb->consumed[mb->head]) {
+        mb->consumed[mb->head] = 0;
+        mb->head = (mb->head + 1) % PIMID_MPI_RING_SLOTS;
+        mb->count--;
+    }
+    pthread_cond_broadcast(&mb->can_send);
+}
+
+static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref) {
+    Mailbox* mb = &g_shared->mailboxes[g_rank];
+    int32_t* order = &g_stage_order[(size_t)g_rank * g_stage_cap];
+    mpi_comm_begin();   /* frozen-clock bracket: plugin rewinds at END */
+    pthread_mutex_lock(&mb->mtx);
+    for (;;) {
+        /* Staging first (it is older than the ring); a sender may have moved
+         * the wanted message there while this rank waited. */
+        for (uint32_t k = 0; k < g_stage_n[g_rank]; k++) {
+            MessageSlot* s = stage_slot_at(g_rank, (uint32_t)order[k]);
+            if (want_src < 0 || s->src == want_src) {
+                ref->staged = true; ref->pos = (int)k; ref->ring_idx = 0;
+                mpi_comm_end();
+                MPITRACE("recv_done src=%d tag=%d (stage)", s->src, s->tag);
+                return s;   /* mailbox mutex held */
+            }
+        }
+        int found = -1;
+        for (uint32_t k = 0; k < mb->count; k++) {
+            uint32_t idx = (mb->head + k) % PIMID_MPI_RING_SLOTS;
+            if (mb->consumed[idx]) continue;
+            if (want_src < 0 || mb->slots[idx].src == want_src) { found = (int)idx; break; }
+        }
+        if (found >= 0) {
+            ref->staged = false; ref->pos = -1; ref->ring_idx = (uint32_t)found;
+            mpi_comm_end();
+            return &mb->slots[found];   /* mailbox mutex held */
+        }
+        if (mb->count >= PIMID_MPI_RING_SLOTS) {
+            ring_evict_head(mb, g_rank);
+            MPITRACE("recv_EVICT_to_stage want=%d", want_src);
+            continue;
+        }
+        MPITRACE("recv_WAIT_src=%d", want_src);
+        pthread_cond_wait(&mb->can_recv, &mb->mtx);
+    }
+}
+
+static void recv_release_thread(const RecvRef* ref) {
+    Mailbox* mb = &g_shared->mailboxes[g_rank];
+    mpi_comm_begin();
+    if (ref->staged) {
+        int32_t* order = &g_stage_order[(size_t)g_rank * g_stage_cap];
+        const uint32_t i = (uint32_t)order[ref->pos];
+        g_stage_used[(size_t)g_rank * g_stage_cap + i] = 0;
+        const uint32_t n = g_stage_n[g_rank];
+        for (uint32_t k = (uint32_t)ref->pos; k + 1 < n; k++) order[k] = order[k + 1];
+        g_stage_n[g_rank] = n - 1;
+        pthread_mutex_unlock(&mb->mtx);
+    } else {
+        mb->consumed[ref->ring_idx] = 1;
+        while (mb->count > 0 && mb->consumed[mb->head]) {
+            mb->consumed[mb->head] = 0;
+            mb->head = (mb->head + 1) % PIMID_MPI_RING_SLOTS;
+            mb->count--;
+            pthread_cond_signal(&mb->can_send);
+        }
+        pthread_mutex_unlock(&mb->mtx);
+    }
+    mpi_comm_end();
+}
+
 static void recv_slot(MessageSlot* out, int want_src = -1) {
     Mailbox* mb = &g_shared->mailboxes[g_rank];
     MPITRACE("recv_enter");
@@ -821,22 +996,21 @@ int MPI_Comm_size(MPI_Comm comm, int *size) {
 
 /* ---- Point-to-point ---- */
 
-int MPI_Send(const void *buf, int count, MPI_Datatype datatype,
-             int dest, int tag, MPI_Comm comm) {
-    (void)comm;
-    if (g_nranks <= 1) return MPI_SUCCESS;
-    if (dest < 0 || dest >= g_nranks) return MPI_SUCCESS;
+/* 1.12.17: byte-level point-to-point under MPI_Send / MPI_Recv / MPI_Sendrecv
+ * and the collectives. send_bytes and recv_bytes are the former bodies of
+ * MPI_Send and MPI_Recv; xchg_bytes is the exchange step of the collective
+ * algorithms (and of MPI_Sendrecv). */
+struct SendStamp { uint64_t send_time; uint64_t contend_wait; uint32_t msg_id; };
 
-    size_t nbytes = (size_t)count * dtype_size(datatype);
-    const char* p = (const char*)buf;
-
+static SendStamp send_prelude(int dest, size_t nbytes) {
     /* Emit the SEND timing op FIRST: it charges send latency on this core and
      * (under instrumentation) writes the current simulated time into
      * tl_mpi_params.sim_now, which we then stamp onto every chunk so the
      * receiver can rendezvous in simulated time. msg_id is incremented here. */
     inject_timing_send(g_rank, dest, nbytes);
-    uint64_t send_time = tl_mpi_params.sim_now;
-    uint32_t msg_id    = (uint32_t)tl_mpi_params.msg_id;
+    SendStamp st;
+    st.send_time = tl_mpi_params.sim_now;
+    st.msg_id    = (uint32_t)tl_mpi_params.msg_id;
 
     /* Reserve the shared contention point at the message's sim send-time and
      * charge the resulting queueing wait on this (sender) core. The reservation
@@ -848,55 +1022,85 @@ int MPI_Send(const void *buf, int count, MPI_Datatype datatype,
      * of it is counted -> instr counts stay pure compute and deterministic.
      * Applied ONLY in detailed mode (noc_detailed): analytical/simple -- the one
      * intentional approximation -- and native runs skip it automatically. */
-    uint64_t contend_wait = 0;
+    st.contend_wait = 0;
     if (tl_mpi_params.noc_detailed) {
         uint64_t dur = tl_mpi_params.noc_lat;
         mpi_comm_begin();
-        contend_wait = contend_reserve(dest, send_time, dur);
-        inject_contend(contend_wait);
+        st.contend_wait = contend_reserve(dest, st.send_time, dur);
+        inject_contend(st.contend_wait);
         mpi_comm_end();
     }
+    return st;
+}
 
-    if (nbytes == 0) {
-        send_chunk(dest, tag, nullptr, 0, 0, 1, msg_id, send_time, contend_wait);
-    } else {
-        uint32_t n_chunks = (uint32_t)((nbytes + PIMID_MPI_MAX_MSG_BYTES - 1)
-                                       / PIMID_MPI_MAX_MSG_BYTES);
-        size_t left = nbytes;
-        for (uint32_t i = 0; i < n_chunks; i++) {
-            uint32_t take = (uint32_t)((left < PIMID_MPI_MAX_MSG_BYTES) ? left : PIMID_MPI_MAX_MSG_BYTES);
-            send_chunk(dest, tag, p, take, i, n_chunks, msg_id, send_time, contend_wait);
-            p += take; left -= take;
-        }
-    }
+static uint32_t chunks_of(size_t nbytes) {
+    return nbytes == 0 ? 1u
+                       : (uint32_t)((nbytes + PIMID_MPI_MAX_MSG_BYTES - 1) / PIMID_MPI_MAX_MSG_BYTES);
+}
 
+static void send_chunk_at(int dest, int tag, const char* p, size_t nbytes,
+                          uint32_t i, uint32_t n, const SendStamp& st) {
+    const size_t off = (size_t)i * PIMID_MPI_MAX_MSG_BYTES;
+    const size_t left = (nbytes > off) ? nbytes - off : 0;
+    const uint32_t take = (uint32_t)((left < PIMID_MPI_MAX_MSG_BYTES) ? left : PIMID_MPI_MAX_MSG_BYTES);
+    send_chunk(dest, tag, take ? p + off : nullptr, take, i, n, st.msg_id, st.send_time, st.contend_wait);
+}
+
+static int send_bytes(const void* buf, size_t nbytes, int dest, int tag) {
+    if (g_nranks <= 1) return MPI_SUCCESS;
+    if (dest < 0 || dest >= g_nranks) return MPI_SUCCESS;
+    const SendStamp st = send_prelude(dest, nbytes);
+    const uint32_t n = chunks_of(nbytes);
+    for (uint32_t i = 0; i < n; i++) send_chunk_at(dest, tag, (const char*)buf, nbytes, i, n, st);
     return MPI_SUCCESS;
 }
 
-int MPI_Recv(void *buf, int count, MPI_Datatype datatype,
-             int source, int tag, MPI_Comm comm, MPI_Status *status) {
-    (void)comm; (void)status; (void)source; (void)tag;
-    if (g_nranks <= 1) return MPI_SUCCESS;
+/* Receive progress of one message (thread mode). */
+struct RecvState { int want; int src; size_t written; uint64_t send_time; uint64_t contend_wait; bool done; };
+
+/* 1.12.17 (M1): only the message bytes move, straight from the slot
+ * (registered transport memory, not priced) into the user buffer
+ * (the receiver's write, priced, outside the comm window). The old
+ * path copied the whole 64 KB MessageSlot onto the stack per chunk. */
+static void recv_chunk_thread(RecvState* r, char* p, size_t nbytes) {
+    RecvRef ref;
+    MessageSlot* s = recv_acquire_thread(r->want, &ref);
+    if (r->src < 0) { r->src = s->src; r->want = s->src; }
+    r->send_time    = s->sim_send_time;     /* all chunks share the stamp */
+    r->contend_wait = s->sim_contend_wait;  /* and the contention wait */
+    size_t space = (nbytes > r->written) ? (nbytes - r->written) : 0;
+    size_t take = (s->size < space) ? s->size : space;
+    if (p && take > 0) memcpy(p + r->written, s->payload, take);
+    r->written += take;
+    r->done = (s->chunk_idx + 1 >= s->n_chunks);
+    recv_release_thread(&ref);
+}
+
+/* Returns the bytes received. */
+static size_t recv_bytes(void* buf, size_t nbytes, int source) {
+    if (g_nranks <= 1) return 0;
     /* MPI_PROC_NULL (-1) recv is a no-op in real MPI; without this guard an
      * edge rank (e.g. stencil halo exchange) blocks forever on a mailbox no
      * rank will ever send to. Mirrors the dest guard in MPI_Send. */
-    if (source < 0 || source >= g_nranks) return MPI_SUCCESS;
-
-    size_t nbytes = (size_t)count * dtype_size(datatype);
+    if (source < 0 || source >= g_nranks) return 0;
     char* p = (char*)buf;
-    size_t written = 0;
-    int last_src = -1;
-
+    if (g_thread_mode) {   /* thread mode: honor source */
+        RecvState r = { source, -1, 0, 0, 0, false };
+        do recv_chunk_thread(&r, p, nbytes); while (!r.done);
+        inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);
+        return r.written;
+    }
     /* Receive until we've assembled a complete message (1+ chunks). For
      * the FIFO-matching policy this implementation has always used, we
      * receive chunks of the next message in order. */
-    MessageSlot slot;
+    size_t written = 0;
+    int last_src = -1;
     uint64_t send_time = 0;
     uint64_t contend_wait = 0;
-    int want = g_thread_mode ? source : -1;   /* thread mode: honor source */
+    MessageSlot slot;
     do {
-        recv_slot(&slot, want);
-        if (last_src < 0) { last_src = slot.src; want = g_thread_mode ? slot.src : want; }
+        recv_slot(&slot, -1);
+        if (last_src < 0) last_src = slot.src;
         send_time    = slot.sim_send_time;     /* all chunks share the stamp */
         contend_wait = slot.sim_contend_wait;  /* and the contention wait */
         size_t space = (nbytes > written) ? (nbytes - written) : 0;
@@ -906,6 +1110,47 @@ int MPI_Recv(void *buf, int count, MPI_Datatype datatype,
     } while (slot.chunk_idx + 1 < slot.n_chunks);
 
     inject_timing_recv(last_src, g_rank, written, send_time, contend_wait);
+    return written;
+}
+
+/* One exchange step: send to dest and receive from source, chunk by chunk in
+ * a fixed order (send chunk i, then receive chunk i). A step in which every
+ * rank sends before it receives (ring, recursive doubling, pairwise) can then
+ * never fill a peer's ring and deadlock, and the order does not depend on wall
+ * time. The timing ops are those of MPI_Send followed by MPI_Recv. Returns the
+ * bytes received. */
+static size_t xchg_bytes(const void* sbuf, size_t sbytes, int dest,
+                         void* rbuf, size_t rbytes, int source) {
+    if (g_nranks <= 1) return 0;
+    if (!g_thread_mode || dest < 0 || dest >= g_nranks || source < 0 || source >= g_nranks) {
+        send_bytes(sbuf, sbytes, dest, 0);
+        return recv_bytes(rbuf, rbytes, source);
+    }
+    const SendStamp st = send_prelude(dest, sbytes);
+    const uint32_t ns = chunks_of(sbytes);
+    RecvState r = { source, -1, 0, 0, 0, false };
+    for (uint32_t i = 0; i < ns || !r.done; i++) {
+        if (i < ns) send_chunk_at(dest, 0, (const char*)sbuf, sbytes, i, ns, st);
+        if (!r.done) recv_chunk_thread(&r, (char*)rbuf, rbytes);
+    }
+    inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);
+    return r.written;
+}
+
+int MPI_Send(const void *buf, int count, MPI_Datatype datatype,
+             int dest, int tag, MPI_Comm comm) {
+    (void)comm;
+    if (g_nranks <= 1) return MPI_SUCCESS;
+    if (dest < 0 || dest >= g_nranks) return MPI_SUCCESS;
+    return send_bytes(buf, (size_t)count * dtype_size(datatype), dest, tag);
+}
+
+int MPI_Recv(void *buf, int count, MPI_Datatype datatype,
+             int source, int tag, MPI_Comm comm, MPI_Status *status) {
+    (void)comm; (void)status; (void)tag;
+    if (g_nranks <= 1) return MPI_SUCCESS;
+    if (source < 0 || source >= g_nranks) return MPI_SUCCESS;
+    recv_bytes(buf, (size_t)count * dtype_size(datatype), source);
     return MPI_SUCCESS;
 }
 
@@ -914,8 +1159,11 @@ int MPI_Sendrecv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                  void *recvbuf, int recvcount, MPI_Datatype recvtype,
                  int source, int recvtag,
                  MPI_Comm comm, MPI_Status *status) {
-    MPI_Send(sendbuf, sendcount, sendtype, dest, sendtag, comm);
-    MPI_Recv(recvbuf, recvcount, recvtype, source, recvtag, comm, status);
+    (void)sendtag; (void)recvtag; (void)comm; (void)status;
+    if (g_nranks <= 1) return MPI_SUCCESS;
+    const size_t sb = (dest >= 0 && dest < g_nranks) ? (size_t)sendcount * dtype_size(sendtype) : 0;
+    const size_t rb = (source >= 0 && source < g_nranks) ? (size_t)recvcount * dtype_size(recvtype) : 0;
+    xchg_bytes(sendbuf, sb, dest, recvbuf, rb, source);
     return MPI_SUCCESS;
 }
 
@@ -1011,123 +1259,607 @@ int MPI_Barrier(MPI_Comm comm) {
     return MPI_SUCCESS;
 }
 
+/* ---- 1.12.17 (ruling 3a): MPICH's collective algorithms ----
+ * The collectives run the algorithms of MPICH, chosen the way MPICH's
+ * intra-communicator "auto" selection chooses them with its default
+ * thresholds (Thakur, Rabenseifner and Gropp, "Optimization of Collective
+ * Communication Operations in MPICH", IJHPCA 19(1):49-66, 2005; the MPICH 4
+ * MPIR_CVAR_* defaults below). They used to route all data through rank 0,
+ * one rank at a time. MPI_Reduce and MPI_Allreduce now also apply the
+ * reduction operation at every step (they used to move the data only), as
+ * MPICH does; MPI_Gatherv stays linear, as in MPICH. Every step is built on
+ * send_bytes / recv_bytes / xchg_bytes, so it is priced like any message. */
+static const size_t kBcastShortMsg    = 12288;    /* MPIR_CVAR_BCAST_SHORT_MSG_SIZE */
+static const size_t kBcastLongMsg     = 524288;   /* MPIR_CVAR_BCAST_LONG_MSG_SIZE */
+static const int    kBcastMinProcs    = 8;        /* MPIR_CVAR_BCAST_MIN_PROCS */
+static const size_t kAllgatherShort   = 81920;    /* MPIR_CVAR_ALLGATHER_SHORT_MSG_SIZE */
+static const size_t kAllgatherLong    = 524288;   /* MPIR_CVAR_ALLGATHER_LONG_MSG_SIZE */
+static const size_t kReduceShort      = 2048;     /* MPIR_CVAR_REDUCE_SHORT_MSG_SIZE */
+static const size_t kAllreduceShort   = 2048;     /* MPIR_CVAR_ALLREDUCE_SHORT_MSG_SIZE */
+static const size_t kAlltoallShort    = 256;      /* MPIR_CVAR_ALLTOALL_SHORT_MSG_SIZE */
+static const size_t kAlltoallMedium   = 32768;    /* MPIR_CVAR_ALLTOALL_MEDIUM_MSG_SIZE */
+static const int    kAlltoallMinProcs = 8;        /* MPICH uses Bruck's alltoall from 8 processes */
+static const void* const kInPlace = (const void*)-1;   /* MPICH's MPI_IN_PLACE */
+
+static bool is_pof2(int n) { return n > 0 && (n & (n - 1)) == 0; }
+static int pof2_floor(int n) { int p = 1; while (p * 2 <= n) p *= 2; return p; }
+
+/* ---- reduction operations (MPI_Reduce_local) ---- */
+enum RedOp { RO_SUM, RO_PROD, RO_MAX, RO_MIN, RO_LAND, RO_LOR, RO_LXOR, RO_BAND, RO_BOR, RO_BXOR };
+enum RedType { RT_I8, RT_U8, RT_I16, RT_U16, RT_I32, RT_U32, RT_I64, RT_U64, RT_F32, RT_F64 };
+
+static RedOp red_op(MPI_Op op) {
+    switch ((uint32_t)op) {
+        /* include/parallel_abstraction/pimid_mpi.h */
+        case 1: return RO_SUM;  case 2: return RO_MAX;  case 3: return RO_MIN;  case 4: return RO_PROD;
+        case 5: return RO_LAND; case 6: return RO_LOR;  case 7: return RO_BAND; case 8: return RO_BOR;
+        /* MPICH mpi.h */
+        case 0x58000001u: return RO_MAX;  case 0x58000002u: return RO_MIN;
+        case 0x58000003u: return RO_SUM;  case 0x58000004u: return RO_PROD;
+        case 0x58000005u: return RO_LAND; case 0x58000006u: return RO_BAND;
+        case 0x58000007u: return RO_LOR;  case 0x58000008u: return RO_BOR;
+        case 0x58000009u: return RO_LXOR; case 0x5800000au: return RO_BXOR;
+        default: break;
+    }
+    fprintf(stderr, "[pimid_mpi] FATAL: MPI_Op handle 0x%08x is not supported by the shim's reductions "
+            "(MPI_SUM/PROD/MAX/MIN/LAND/LOR/LXOR/BAND/BOR/BXOR of MPICH or pimid_mpi.h).\n", (unsigned)op);
+    abort();
+}
+
+static RedType red_type(MPI_Datatype dt) {
+    switch ((uint32_t)dt) {
+        /* include/parallel_abstraction/pimid_mpi.h */
+        case 1: return RT_I8;  case 2: return RT_I32; case 3: return RT_F32; case 4: return RT_F64;
+        case 5: return RT_I64; case 6: return RT_U32; case 7: return RT_U64; case 8: return RT_U8;
+        case 9: return RT_I64;
+        /* MPICH mpi.h */
+        case 0x4c000101u: case 0x4c000118u: case 0x4c000137u: return RT_I8;
+        case 0x4c000102u: case 0x4c00010du: case 0x4c00013bu: case 0x4c00013fu: return RT_U8;
+        case 0x4c000203u: case 0x4c000238u: return RT_I16;
+        case 0x4c000204u: case 0x4c00023cu: return RT_U16;
+        case 0x4c000405u: case 0x4c000439u: return RT_I32;
+        case 0x4c000406u: case 0x4c00043du: return RT_U32;
+        case 0x4c000807u: case 0x4c000809u: case 0x4c00083au: return RT_I64;
+        case 0x4c000808u: case 0x4c000819u: case 0x4c00083eu: return RT_U64;
+        case 0x4c00040au: return RT_F32;
+        case 0x4c00080bu: return RT_F64;
+        default: break;
+    }
+    fprintf(stderr, "[pimid_mpi] FATAL: MPI datatype handle 0x%08x cannot be reduced by the shim "
+            "(integer, float and double builtins only).\n", (unsigned)dt);
+    abort();
+}
+
+extern "C++" {   /* templates inside the shim's extern "C" block */
+template <typename T> static void red_arith(RedOp o, const T* in, T* io, size_t n) {
+    switch (o) {
+        case RO_SUM:  for (size_t i = 0; i < n; i++) io[i] = in[i] + io[i]; return;
+        case RO_PROD: for (size_t i = 0; i < n; i++) io[i] = in[i] * io[i]; return;
+        case RO_MAX:  for (size_t i = 0; i < n; i++) if (in[i] > io[i]) io[i] = in[i]; return;
+        case RO_MIN:  for (size_t i = 0; i < n; i++) if (in[i] < io[i]) io[i] = in[i]; return;
+        case RO_LAND: for (size_t i = 0; i < n; i++) io[i] = (T)((in[i] != 0) && (io[i] != 0)); return;
+        case RO_LOR:  for (size_t i = 0; i < n; i++) io[i] = (T)((in[i] != 0) || (io[i] != 0)); return;
+        case RO_LXOR: for (size_t i = 0; i < n; i++) io[i] = (T)((in[i] != 0) != (io[i] != 0)); return;
+        default: break;
+    }
+    fprintf(stderr, "[pimid_mpi] FATAL: bitwise MPI_Op on a floating-point datatype\n");
+    abort();
+}
+}
+
+extern "C++" {   /* templates inside the shim's extern "C" block */
+template <typename T> static void red_int(RedOp o, const T* in, T* io, size_t n) {
+    switch (o) {
+        case RO_BAND: for (size_t i = 0; i < n; i++) io[i] = in[i] & io[i]; return;
+        case RO_BOR:  for (size_t i = 0; i < n; i++) io[i] = in[i] | io[i]; return;
+        case RO_BXOR: for (size_t i = 0; i < n; i++) io[i] = in[i] ^ io[i]; return;
+        default: red_arith<T>(o, in, io, n); return;
+    }
+}
+}
+
+/* io = in (op) io, over n elements (MPI_Reduce_local; all supported ops commute). */
+static void reduce_local(const void* in, void* io, size_t n, MPI_Datatype dt, MPI_Op op) {
+    const RedOp o = red_op(op);
+    switch (red_type(dt)) {
+        case RT_I8:  red_int<int8_t>(o, (const int8_t*)in, (int8_t*)io, n); return;
+        case RT_U8:  red_int<uint8_t>(o, (const uint8_t*)in, (uint8_t*)io, n); return;
+        case RT_I16: red_int<int16_t>(o, (const int16_t*)in, (int16_t*)io, n); return;
+        case RT_U16: red_int<uint16_t>(o, (const uint16_t*)in, (uint16_t*)io, n); return;
+        case RT_I32: red_int<int32_t>(o, (const int32_t*)in, (int32_t*)io, n); return;
+        case RT_U32: red_int<uint32_t>(o, (const uint32_t*)in, (uint32_t*)io, n); return;
+        case RT_I64: red_int<int64_t>(o, (const int64_t*)in, (int64_t*)io, n); return;
+        case RT_U64: red_int<uint64_t>(o, (const uint64_t*)in, (uint64_t*)io, n); return;
+        case RT_F32: red_arith<float>(o, (const float*)in, (float*)io, n); return;
+        case RT_F64: red_arith<double>(o, (const double*)in, (double*)io, n); return;
+    }
+}
+
+/* ---- MPI_Bcast ---- */
+static void bcast_binomial(char* buf, size_t nbytes, int root) {
+    const int P = g_nranks, rel = (g_rank - root + P) % P;
+    int mask = 1;
+    while (mask < P) {
+        if (rel & mask) { recv_bytes(buf, nbytes, (g_rank - mask + P) % P); break; }
+        mask <<= 1;
+    }
+    mask >>= 1;
+    while (mask > 0) {
+        if (rel + mask < P) send_bytes(buf, nbytes, (g_rank + mask) % P, 0);
+        mask >>= 1;
+    }
+}
+
+/* Binomial scatter of P pieces of ss bytes (the last ones short or empty).
+ * Returns how many bytes this rank holds from the start of its own piece. */
+static size_t bcast_scatter(char* buf, size_t nbytes, size_t ss, int root) {
+    const int P = g_nranks, rel = (g_rank - root + P) % P;
+    size_t curr = (rel == 0) ? nbytes : 0;
+    int mask = 1;
+    while (mask < P) {
+        if (rel & mask) {
+            const size_t off = (size_t)rel * ss;
+            curr = (off < nbytes) ? recv_bytes(buf + off, nbytes - off, (g_rank - mask + P) % P) : 0;
+            break;
+        }
+        mask <<= 1;
+    }
+    mask >>= 1;
+    while (mask > 0) {
+        if (rel + mask < P) {
+            const size_t keep = ss * (size_t)mask;
+            if (curr > keep) {
+                send_bytes(buf + (size_t)(rel + mask) * ss, curr - keep, (g_rank + mask) % P, 0);
+                curr = keep;
+            }
+        }
+        mask >>= 1;
+    }
+    return curr;
+}
+
+static void bcast_scatter_rd_allgather(char* buf, size_t nbytes, int root) {   /* P a power of two */
+    const int P = g_nranks, rel = (g_rank - root + P) % P;
+    const size_t ss = (nbytes + P - 1) / P;
+    size_t curr = bcast_scatter(buf, nbytes, ss, root);
+    for (int mask = 1, i = 0; mask < P; mask <<= 1, i++) {
+        const int rdst = rel ^ mask, dst = (rdst + root) % P;
+        const size_t soff = (size_t)((rel >> i) << i) * ss;
+        const size_t roff = (size_t)((rdst >> i) << i) * ss;
+        curr += xchg_bytes(buf + (soff < nbytes ? soff : 0), curr, dst,
+                           buf + (roff < nbytes ? roff : 0), roff < nbytes ? nbytes - roff : 0, dst);
+    }
+}
+
+static void bcast_scatter_ring_allgather(char* buf, size_t nbytes, int root) {
+    const int P = g_nranks;
+    const size_t ss = (nbytes + P - 1) / P;
+    bcast_scatter(buf, nbytes, ss, root);
+    const int left = (P + g_rank - 1) % P, right = (g_rank + 1) % P;
+    int j = g_rank, jnext = left;
+    for (int i = 1; i < P; i++) {
+        const size_t rj = (size_t)((j - root + P) % P) * ss, rjn = (size_t)((jnext - root + P) % P) * ss;
+        const size_t rcount = rj < nbytes ? (nbytes - rj < ss ? nbytes - rj : ss) : 0;
+        const size_t lcount = rjn < nbytes ? (nbytes - rjn < ss ? nbytes - rjn : ss) : 0;
+        xchg_bytes(buf + (rcount ? rj : 0), rcount, right, buf + (lcount ? rjn : 0), lcount, left);
+        j = jnext;
+        jnext = (P + jnext - 1) % P;
+    }
+}
+
 int MPI_Bcast(void *buffer, int count, MPI_Datatype datatype,
               int root, MPI_Comm comm) {
-    size_t nbytes = (size_t)count * dtype_size(datatype);
-    if (g_rank == root) {
-        for (int i = 0; i < g_nranks; i++) {
-            if (i != root) MPI_Send(buffer, count, datatype, i, 0, comm);
-        }
-    } else {
-        MPI_Recv(buffer, count, datatype, root, 0, comm, MPI_STATUS_IGNORE);
-    }
-    (void)nbytes;
+    (void)comm;
+    if (g_nranks <= 1) return MPI_SUCCESS;
+    const size_t nbytes = (size_t)count * dtype_size(datatype);
+    char* buf = (char*)buffer;
+    if (nbytes < kBcastShortMsg || g_nranks < kBcastMinProcs) bcast_binomial(buf, nbytes, root);
+    else if (nbytes < kBcastLongMsg && is_pof2(g_nranks)) bcast_scatter_rd_allgather(buf, nbytes, root);
+    else bcast_scatter_ring_allgather(buf, nbytes, root);
     return MPI_SUCCESS;
 }
 
-int MPI_Reduce(const void *sendbuf, void *recvbuf, int count,
-               MPI_Datatype datatype, MPI_Op op, int root, MPI_Comm comm) {
-    (void)op;
-    size_t nbytes = (size_t)count * dtype_size(datatype);
+/* ---- MPI_Allgather / MPI_Allgatherv (byte counts and displacements) ---- */
+static void allgatherv_rd(char* rbuf, const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {   /* P a power of two */
+    const int P = g_nranks, rank = g_rank;
+    /* MPICH gathers into a contiguous buffer laid out by rank; when the
+     * displacements already are that layout, the receive buffer is used. */
+    std::vector<size_t> pos(P + 1, 0);
+    for (int j = 0; j < P; j++) pos[j + 1] = pos[j] + cnt[j];
+    bool contiguous = true;
+    for (int j = 0; j < P; j++) if (dsp[j] != dsp[0] + pos[j]) contiguous = false;
+    std::vector<char> tmp;
+    char* w = rbuf + dsp[0];
+    if (!contiguous) { tmp.resize(pos[P] ? pos[P] : 1); w = tmp.data(); memcpy(w + pos[rank], rbuf + dsp[rank], cnt[rank]); }
+    size_t curr = cnt[rank];
+    for (int mask = 1, i = 0; mask < P; mask <<= 1, i++) {
+        const int dst = rank ^ mask, dtr = (dst >> i) << i, mtr = (rank >> i) << i;
+        curr += xchg_bytes(w + pos[mtr], curr, dst, w + pos[dtr], pos[P] - pos[dtr], dst);
+    }
+    if (!contiguous)
+        for (int j = 0; j < P; j++) if (j != rank) memcpy(rbuf + dsp[j], w + pos[j], cnt[j]);
+}
 
-    if (g_rank != root) {
-        MPI_Send(sendbuf, count, datatype, root, 0, comm);
-    } else {
-        if (sendbuf && recvbuf) memcpy(recvbuf, sendbuf, nbytes);
-        /* Receive from each non-root rank in turn. Reduction op not applied
-         * -- this is a timing-accurate simulation, not a numerics oracle.
-         * Workloads that need actual reduction values should compute them
-         * on rank 0 from the received chunks. */
-        char* tmp = (char*)malloc(nbytes ? nbytes : 1);
-        for (int i = 0; i < g_nranks; i++) {
-            if (i != root) {
-                MPI_Recv(tmp, count, datatype, i, 0, comm, MPI_STATUS_IGNORE);
+static void allgatherv_bruck(char* rbuf, const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {
+    const int P = g_nranks, rank = g_rank;
+    std::vector<size_t> rpos(P + 1, 0);   /* block j of the work buffer is rank (rank + j) % P's */
+    for (int j = 0; j < P; j++) rpos[j + 1] = rpos[j] + cnt[(rank + j) % P];
+    char w[kAllgatherShort];              /* total < kAllgatherShort: on this rank's own stack */
+    memcpy(w, rbuf + dsp[rank], cnt[rank]);
+    int pof2 = 1;
+    while (pof2 <= P / 2) {
+        xchg_bytes(w, rpos[pof2], (rank - pof2 + P) % P, w + rpos[pof2], rpos[2 * pof2] - rpos[pof2], (rank + pof2) % P);
+        pof2 *= 2;
+    }
+    const int rem = P - pof2;
+    if (rem)
+        xchg_bytes(w, rpos[rem], (rank - pof2 + P) % P, w + rpos[pof2], rpos[pof2 + rem] - rpos[pof2], (rank + pof2) % P);
+    for (int j = 1; j < P; j++) memcpy(rbuf + dsp[(rank + j) % P], w + rpos[j], cnt[(rank + j) % P]);
+}
+
+static void allgatherv_ring(char* rbuf, const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {
+    const int P = g_nranks;
+    const int left = (P + g_rank - 1) % P, right = (g_rank + 1) % P;
+    int j = g_rank, jnext = left;
+    for (int i = 1; i < P; i++) {
+        xchg_bytes(rbuf + dsp[j], cnt[j], right, rbuf + dsp[jnext], cnt[jnext], left);
+        j = jnext;
+        jnext = (P + jnext - 1) % P;
+    }
+}
+
+static void allgatherv_bytes(const void* sendbuf, size_t sbytes, char* rbuf,
+                             const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {
+    if (sendbuf != kInPlace && sendbuf && rbuf)
+        memcpy(rbuf + dsp[g_rank], sendbuf, sbytes < cnt[g_rank] ? sbytes : cnt[g_rank]);
+    if (g_nranks <= 1) return;
+    size_t total = 0;
+    for (int j = 0; j < g_nranks; j++) total += cnt[j];
+    if (total < kAllgatherLong && is_pof2(g_nranks)) allgatherv_rd(rbuf, cnt, dsp);
+    else if (total < kAllgatherShort) allgatherv_bruck(rbuf, cnt, dsp);
+    else allgatherv_ring(rbuf, cnt, dsp);
+}
+
+int MPI_Allgather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
+                  void *recvbuf, int recvcount, MPI_Datatype recvtype,
+                  MPI_Comm comm) {
+    (void)comm;
+    const size_t blk = (size_t)recvcount * dtype_size(recvtype);
+    const size_t sb = (sendbuf == kInPlace) ? 0 : (size_t)sendcount * dtype_size(sendtype);
+    std::vector<size_t> cnt(g_nranks, blk), dsp(g_nranks);
+    for (int j = 0; j < g_nranks; j++) dsp[j] = (size_t)j * blk;
+    allgatherv_bytes(sendbuf, sb, (char*)recvbuf, cnt, dsp);
+    return MPI_SUCCESS;
+}
+
+int MPI_Allgatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
+                   void *recvbuf, const int *recvcounts, const int *displs,
+                   MPI_Datatype recvtype, MPI_Comm comm) {
+    (void)comm;
+    const size_t ext = dtype_size(recvtype);
+    const size_t sb = (sendbuf == kInPlace) ? 0 : (size_t)sendcount * dtype_size(sendtype);
+    std::vector<size_t> cnt(g_nranks), dsp(g_nranks);
+    for (int j = 0; j < g_nranks; j++) { cnt[j] = (size_t)recvcounts[j] * ext; dsp[j] = (size_t)displs[j] * ext; }
+    allgatherv_bytes(sendbuf, sb, (char*)recvbuf, cnt, dsp);
+    return MPI_SUCCESS;
+}
+
+/* ---- MPI_Reduce / MPI_Allreduce ---- */
+/* Piece layout of the reduce-scatter (Rabenseifner) algorithms, in elements. */
+static void rs_pieces(int count, int pof2, std::vector<int>& cnts, std::vector<int>& disps) {
+    cnts.assign(pof2, count / pof2);
+    for (int i = 0; i < count % pof2; i++) cnts[i]++;
+    disps.assign(pof2, 0);
+    for (int i = 1; i < pof2; i++) disps[i] = disps[i - 1] + cnts[i - 1];
+}
+static size_t rs_sum(const std::vector<int>& cnts, int a, int b) { size_t s = 0; for (int i = a; i < b; i++) s += (size_t)cnts[i]; return s; }
+
+/* The piece range [send_idx, last_idx) survivor newrank holds after the recursive halving below. */
+static void halving_final_idx(int newrank, int pof2, int* send_idx_out, int* last_idx_out) {
+    int send_idx = 0, recv_idx = 0, last_idx = pof2;
+    for (int mask = 1; mask < pof2; ) {
+        if (newrank < (newrank ^ mask)) send_idx = recv_idx + pof2 / (mask * 2);
+        else recv_idx = send_idx + pof2 / (mask * 2);
+        send_idx = recv_idx;
+        mask <<= 1;
+        if (mask < pof2) last_idx = recv_idx + pof2 / mask;
+    }
+    *send_idx_out = send_idx;
+    *last_idx_out = last_idx;
+}
+
+/* Recursive halving among the pof2 survivors (real rank of survivor k: realOf).
+ * On return [send_idx, last_idx) of acc holds this rank's reduced pieces. */
+extern "C++" {   /* templates inside the shim's extern "C" block */
+template <typename RealOf>
+static void reduce_scatter_halving(char* acc, char* tmp, int newrank, int pof2, const std::vector<int>& cnts,
+                                   const std::vector<int>& disps, size_t ext, MPI_Datatype dt, MPI_Op op,
+                                   RealOf realOf, int* send_idx_out, int* last_idx_out) {
+    int send_idx = 0, recv_idx = 0, last_idx = pof2;
+    for (int mask = 1; mask < pof2; ) {
+        const int newdst = newrank ^ mask, dst = realOf(newdst);
+        size_t send_cnt, recv_cnt;
+        if (newrank < newdst) {
+            send_idx = recv_idx + pof2 / (mask * 2);
+            send_cnt = rs_sum(cnts, send_idx, last_idx);
+            recv_cnt = rs_sum(cnts, recv_idx, send_idx);
+        } else {
+            recv_idx = send_idx + pof2 / (mask * 2);
+            send_cnt = rs_sum(cnts, send_idx, recv_idx);
+            recv_cnt = rs_sum(cnts, recv_idx, last_idx);
+        }
+        xchg_bytes(acc + (size_t)disps[send_idx] * ext, send_cnt * ext, dst,
+                   tmp + (size_t)disps[recv_idx] * ext, recv_cnt * ext, dst);
+        reduce_local(tmp + (size_t)disps[recv_idx] * ext, acc + (size_t)disps[recv_idx] * ext, recv_cnt, dt, op);
+        send_idx = recv_idx;
+        mask <<= 1;
+        if (mask < pof2) last_idx = recv_idx + pof2 / mask;
+    }
+    *send_idx_out = send_idx;
+    *last_idx_out = last_idx;
+}
+}
+
+static void allreduce_bytes(char* acc, int count, MPI_Datatype dt, size_t ext, MPI_Op op) {
+    const int P = g_nranks, rank = g_rank;
+    const size_t n = (size_t)count * ext;
+    const int pof2 = pof2_floor(P), rem = P - pof2;
+    std::vector<char> tmpv(n ? n : 1);
+    char* tmp = tmpv.data();
+    int newrank;
+    if (rank < 2 * rem) {   /* the first 2*rem ranks fold pairwise; the odd one survives */
+        if (rank % 2 == 0) { send_bytes(acc, n, rank + 1, 0); newrank = -1; }
+        else { recv_bytes(tmp, n, rank - 1); reduce_local(tmp, acc, count, dt, op); newrank = rank / 2; }
+    } else newrank = rank - rem;
+    auto realOf = [rem](int nr) { return (nr < rem) ? nr * 2 + 1 : nr + rem; };
+    if (newrank != -1) {
+        if (n <= kAllreduceShort || count < pof2) {   /* recursive doubling */
+            for (int mask = 1; mask < pof2; mask <<= 1) {
+                const int dst = realOf(newrank ^ mask);
+                xchg_bytes(acc, n, dst, tmp, n, dst);
+                reduce_local(tmp, acc, count, dt, op);
+            }
+        } else {                                      /* Rabenseifner: reduce-scatter + allgather */
+            std::vector<int> cnts, disps;
+            rs_pieces(count, pof2, cnts, disps);
+            int send_idx, last_idx;
+            reduce_scatter_halving(acc, tmp, newrank, pof2, cnts, disps, ext, dt, op, realOf, &send_idx, &last_idx);
+            int recv_idx = 0;
+            for (int mask = pof2 >> 1; mask > 0; mask >>= 1) {
+                const int newdst = newrank ^ mask, dst = realOf(newdst);
+                size_t send_cnt, recv_cnt;
+                if (newrank < newdst) {
+                    if (mask != pof2 / 2) last_idx = last_idx + pof2 / (mask * 2);
+                    recv_idx = send_idx + pof2 / (mask * 2);
+                    send_cnt = rs_sum(cnts, send_idx, recv_idx);
+                    recv_cnt = rs_sum(cnts, recv_idx, last_idx);
+                } else {
+                    recv_idx = send_idx - pof2 / (mask * 2);
+                    send_cnt = rs_sum(cnts, send_idx, last_idx);
+                    recv_cnt = rs_sum(cnts, recv_idx, send_idx);
+                }
+                xchg_bytes(acc + (size_t)disps[send_idx] * ext, send_cnt * ext, dst,
+                           acc + (size_t)disps[recv_idx] * ext, recv_cnt * ext, dst);
+                if (newrank > newdst) send_idx = recv_idx;
             }
         }
-        free(tmp);
     }
-    return MPI_SUCCESS;
+    if (rank < 2 * rem) {   /* hand the result back to the folded ranks */
+        if (rank % 2) send_bytes(acc, n, rank - 1, 0);
+        else recv_bytes(acc, n, rank + 1);
+    }
 }
 
 int MPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
                   MPI_Datatype datatype, MPI_Op op, MPI_Comm comm) {
-    MPI_Reduce(sendbuf, recvbuf, count, datatype, op, 0, comm);
-    MPI_Bcast(recvbuf, count, datatype, 0, comm);
+    (void)comm;
+    const size_t ext = dtype_size(datatype);
+    if (sendbuf != kInPlace && sendbuf && recvbuf) memcpy(recvbuf, sendbuf, (size_t)count * ext);
+    if (g_nranks <= 1) return MPI_SUCCESS;
+    allreduce_bytes((char*)recvbuf, count, datatype, ext, op);
+    return MPI_SUCCESS;
+}
+
+static void reduce_binomial(char* acc, int count, MPI_Datatype dt, size_t ext, MPI_Op op, int root) {
+    const int P = g_nranks, rel = (g_rank - root + P) % P;
+    const size_t n = (size_t)count * ext;
+    std::vector<char> tmp(n ? n : 1);
+    for (int mask = 1; mask < P; mask <<= 1) {
+        if ((mask & rel) == 0) {
+            const int src = rel | mask;
+            if (src < P) {
+                recv_bytes(tmp.data(), n, (src + root) % P);
+                reduce_local(tmp.data(), acc, count, dt, op);
+            }
+        } else {
+            send_bytes(acc, n, ((rel & ~mask) + root) % P, 0);
+            break;
+        }
+    }
+}
+
+static void reduce_scatter_gather(char* acc, int count, MPI_Datatype dt, size_t ext, MPI_Op op, int root) {
+    const int P = g_nranks, rank = g_rank;
+    const size_t n = (size_t)count * ext;
+    const int pof2 = pof2_floor(P), rem = P - pof2;
+    std::vector<char> tmpv(n ? n : 1);
+    char* tmp = tmpv.data();
+    int newrank;
+    if (rank < 2 * rem) {   /* the first 2*rem ranks fold pairwise; the even one survives */
+        if (rank % 2 != 0) { send_bytes(acc, n, rank - 1, 0); newrank = -1; }
+        else { recv_bytes(tmp, n, rank + 1); reduce_local(tmp, acc, count, dt, op); newrank = rank / 2; }
+    } else newrank = rank - rem;
+    auto realOf = [rem](int nr) { return (nr < rem) ? nr * 2 : nr + rem; };
+    std::vector<int> cnts, disps;
+    rs_pieces(count, pof2, cnts, disps);
+    int send_idx = 0, last_idx = pof2;
+    if (newrank != -1)
+        reduce_scatter_halving(acc, tmp, newrank, pof2, cnts, disps, ext, dt, op, realOf, &send_idx, &last_idx);
+    /* The root's survivor is newroot. A folded (odd) root takes over its
+     * partner's role: the partner hands it the pieces it reduced and leaves. */
+    const bool rootFolded = (root < 2 * rem) && (root % 2 != 0);
+    const int newroot = (root < 2 * rem) ? root / 2 : root - rem;
+    if (rootFolded) {
+        int ps = 0, pl = pof2;
+        halving_final_idx(newroot, pof2, &ps, &pl);
+        const size_t off = (size_t)disps[ps] * ext, nb = rs_sum(cnts, ps, pl) * ext;
+        if (rank == root) {
+            recv_bytes(acc + off, nb, root - 1);
+            newrank = newroot; send_idx = ps; last_idx = pl;
+        } else if (rank == root - 1) {
+            send_bytes(acc + off, nb, root, 0);
+            newrank = -1;
+        }
+    }
+    if (newrank == -1) return;
+    int j = 0, mask = 1;
+    while (mask < pof2) { mask <<= 1; j++; }
+    mask >>= 1; j--;
+    int recv_idx = 0;
+    while (mask > 0) {
+        const int newdst = newrank ^ mask;
+        int dst = realOf(newdst);
+        if (rootFolded && newdst == newroot) dst = root;
+        const int newdst_tree_root = (newdst >> j) << j, newroot_tree_root = (newroot >> j) << j;
+        size_t send_cnt, recv_cnt;
+        if (newrank < newdst) {
+            if (mask != pof2 / 2) last_idx = last_idx + pof2 / (mask * 2);
+            recv_idx = send_idx + pof2 / (mask * 2);
+            send_cnt = rs_sum(cnts, send_idx, recv_idx);
+            recv_cnt = rs_sum(cnts, recv_idx, last_idx);
+        } else {
+            recv_idx = send_idx - pof2 / (mask * 2);
+            send_cnt = rs_sum(cnts, send_idx, last_idx);
+            recv_cnt = rs_sum(cnts, recv_idx, send_idx);
+        }
+        if (newdst_tree_root == newroot_tree_root) {
+            send_bytes(acc + (size_t)disps[send_idx] * ext, send_cnt * ext, dst, 0);
+            break;
+        }
+        recv_bytes(acc + (size_t)disps[recv_idx] * ext, recv_cnt * ext, dst);
+        if (newrank > newdst) send_idx = recv_idx;
+        mask >>= 1; j--;
+    }
+}
+
+int MPI_Reduce(const void *sendbuf, void *recvbuf, int count,
+               MPI_Datatype datatype, MPI_Op op, int root, MPI_Comm comm) {
+    (void)comm;
+    const size_t ext = dtype_size(datatype), n = (size_t)count * ext;
+    const bool isRoot = (g_rank == root);
+    if (g_nranks <= 1) {
+        if (sendbuf != kInPlace && sendbuf && recvbuf) memcpy(recvbuf, sendbuf, n);
+        return MPI_SUCCESS;
+    }
+    /* The running result: the root's recvbuf, a scratch buffer elsewhere. */
+    std::vector<char> accv;
+    char* acc;
+    if (isRoot && recvbuf) acc = (char*)recvbuf;
+    else { accv.resize(n ? n : 1); acc = accv.data(); }
+    if (!(isRoot && sendbuf == kInPlace) && sendbuf) memcpy(acc, sendbuf, n);
+    if (n > kReduceShort && count >= pof2_floor(g_nranks)) reduce_scatter_gather(acc, count, datatype, ext, op, root);
+    else reduce_binomial(acc, count, datatype, ext, op, root);
+    return MPI_SUCCESS;
+}
+
+/* ---- MPI_Gather / MPI_Scatter (binomial) and MPI_Gatherv (linear) ---- */
+int MPI_Gather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
+               void *recvbuf, int recvcount, MPI_Datatype recvtype,
+               int root, MPI_Comm comm) {
+    (void)comm;
+    const int P = g_nranks, rel = (g_rank - root + P) % P;
+    const size_t blk = (g_rank == root) ? (size_t)recvcount * dtype_size(recvtype)
+                                        : (size_t)sendcount * dtype_size(sendtype);
+    char* rbuf = (char*)recvbuf;
+    if (P <= 1) {
+        if (sendbuf != kInPlace && sendbuf && rbuf) memcpy(rbuf, sendbuf, blk);
+        return MPI_SUCCESS;
+    }
+    /* This rank's subtree, in relative rank order, starts with its own block. */
+    int sub = 1;
+    while (sub < P && !(rel & sub)) sub <<= 1;
+    if (rel == 0) sub = P;
+    else if (sub > P - rel) sub = P - rel;
+    std::vector<char> tmp;
+    char* w;
+    if (rel == 0 && root == 0) w = rbuf;
+    else if (sub == 1) w = (char*)sendbuf;   /* a leaf sends its own block */
+    else { tmp.resize((size_t)sub * blk); w = tmp.data(); }
+    const char* own = (sendbuf == kInPlace) ? rbuf + (size_t)root * blk : (const char*)sendbuf;
+    if (w != own && w != (char*)sendbuf && own) memcpy(w, own, blk);
+    size_t curr = 1;
+    for (int mask = 1; mask < P; mask <<= 1) {
+        if ((rel & mask) == 0) {
+            const int src = rel | mask;
+            if (src < P) {
+                const size_t nb = (size_t)((mask < P - src) ? mask : P - src);
+                recv_bytes(w + (size_t)mask * blk, nb * blk, (src + root) % P);
+                curr += nb;
+            }
+        } else {
+            send_bytes(w, curr * blk, ((rel & ~mask) + root) % P, 0);
+            break;
+        }
+    }
+    if (rel == 0 && root != 0)
+        for (int j = 0; j < P; j++) memcpy(rbuf + (size_t)((j + root) % P) * blk, w + (size_t)j * blk, blk);
     return MPI_SUCCESS;
 }
 
 int MPI_Scatter(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                 void *recvbuf, int recvcount, MPI_Datatype recvtype,
                 int root, MPI_Comm comm) {
-    size_t send_sz = (size_t)sendcount * dtype_size(sendtype);
-    if (g_rank == root) {
-        const char* sbuf = (const char*)sendbuf;
-        for (int i = 0; i < g_nranks; i++) {
-            if (i == root) {
-                if (recvbuf && sbuf) memcpy(recvbuf, sbuf + (size_t)i * send_sz, send_sz);
-            } else {
-                MPI_Send(sbuf + (size_t)i * send_sz, sendcount, sendtype, i, 0, comm);
-            }
-        }
-    } else {
-        MPI_Recv(recvbuf, recvcount, recvtype, root, 0, comm, MPI_STATUS_IGNORE);
-    }
-    return MPI_SUCCESS;
-}
-
-int MPI_Gather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
-               void *recvbuf, int recvcount, MPI_Datatype recvtype,
-               int root, MPI_Comm comm) {
-    size_t recv_sz = (size_t)recvcount * dtype_size(recvtype);
-
-    if (g_rank != root) {
-        MPI_Send(sendbuf, sendcount, sendtype, root, 0, comm);
-    } else {
-        char* rbuf = (char*)recvbuf;
-        if (sendbuf && rbuf) {
-            size_t send_sz = (size_t)sendcount * dtype_size(sendtype);
-            memcpy(rbuf + (size_t)root * recv_sz, sendbuf, send_sz);
-        }
-        for (int i = 0; i < g_nranks; i++) {
-            if (i != root) {
-                MPI_Recv(rbuf + (size_t)i * recv_sz, recvcount, recvtype,
-                         i, 0, comm, MPI_STATUS_IGNORE);
-            }
-        }
-    }
-    return MPI_SUCCESS;
-}
-
-int MPI_Alltoall(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
-                 void *recvbuf, int recvcount, MPI_Datatype recvtype,
-                 MPI_Comm comm) {
-    size_t send_sz = (size_t)sendcount * dtype_size(sendtype);
-    size_t recv_sz = (size_t)recvcount * dtype_size(recvtype);
+    (void)comm;
+    const int P = g_nranks, rel = (g_rank - root + P) % P;
+    const size_t blk = (g_rank == root) ? (size_t)sendcount * dtype_size(sendtype)
+                                        : (size_t)recvcount * dtype_size(recvtype);
     const char* sbuf = (const char*)sendbuf;
-    char* rbuf = (char*)recvbuf;
-
-    for (int i = 0; i < g_nranks; i++) {
-        if (i == g_rank) {
-            if (sbuf && rbuf) {
-                memcpy(rbuf + (size_t)i * recv_sz,
-                       sbuf + (size_t)i * send_sz, send_sz);
-            }
-        } else {
-            MPI_Send(sbuf + (size_t)i * send_sz, sendcount, sendtype, i, 0, comm);
+    if (P <= 1) {
+        if (recvbuf != kInPlace && recvbuf && sbuf) memcpy(recvbuf, sbuf, blk);
+        return MPI_SUCCESS;
+    }
+    int sub = 1;
+    while (sub < P && !(rel & sub)) sub <<= 1;
+    if (rel == 0) sub = P;
+    else if (sub > P - rel) sub = P - rel;
+    std::vector<char> tmp;
+    const char* w;
+    size_t curr;
+    if (rel == 0) {
+        if (root == 0) w = sbuf;
+        else {
+            tmp.resize((size_t)P * blk);
+            for (int j = 0; j < P; j++) memcpy(tmp.data() + (size_t)j * blk, sbuf + (size_t)((j + root) % P) * blk, blk);
+            w = tmp.data();
+        }
+        curr = (size_t)P;
+    } else {
+        int mask = 1;
+        while (!(rel & mask)) mask <<= 1;
+        const int parent = (g_rank - mask + P) % P;
+        if (sub == 1) { recv_bytes(recvbuf, blk, parent); return MPI_SUCCESS; }   /* a leaf */
+        tmp.resize((size_t)sub * blk);
+        recv_bytes(tmp.data(), (size_t)sub * blk, parent);
+        w = tmp.data();
+        curr = (size_t)sub;
+    }
+    int mask = 1;
+    while (mask < P && !(rel & mask)) mask <<= 1;
+    for (mask >>= 1; mask > 0; mask >>= 1) {
+        if (rel + mask < P && curr > (size_t)mask) {
+            send_bytes(w + (size_t)mask * blk, (curr - (size_t)mask) * blk, (g_rank + mask) % P, 0);
+            curr = (size_t)mask;
         }
     }
-    for (int i = 0; i < g_nranks; i++) {
-        if (i != g_rank) {
-            MPI_Recv(rbuf + (size_t)i * recv_sz, recvcount, recvtype,
-                     i, 0, comm, MPI_STATUS_IGNORE);
-        }
-    }
+    if (recvbuf != kInPlace && recvbuf) memcpy(recvbuf, w, blk);
     return MPI_SUCCESS;
 }
 
 int MPI_Gatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                 void *recvbuf, const int *recvcounts, const int *displs,
                 MPI_Datatype recvtype, int root, MPI_Comm comm) {
+    (void)comm;
+    /* Linear, as MPICH's MPIR_Gatherv_allcomm_linear. */
     size_t rtsz = dtype_size(recvtype);
     if (g_rank != root) {
         MPI_Send(sendbuf, sendcount, sendtype, root, 0, comm);
@@ -1135,15 +1867,10 @@ int MPI_Gatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
         char* rbuf = (char*)recvbuf;
         for (int i = 0; i < g_nranks; i++) {
             if (i == root) {
-                if (sendbuf && rbuf)
+                if (sendbuf && sendbuf != kInPlace && rbuf)
                     memcpy(rbuf + (size_t)displs[i] * rtsz, sendbuf,
                            (size_t)sendcount * dtype_size(sendtype));
             } else {
-                /* FIFO-matched recv (source-agnostic, like the other
-                 * collectives): every rank rebuilds the same recvcounts/displs
-                 * from the preceding Allgather + Bcast, so all ranks agree on
-                 * the layout and the dedup stays consistent. Timing shim, not a
-                 * numerics oracle. */
                 MPI_Recv(rbuf + (size_t)displs[i] * rtsz, recvcounts[i], recvtype,
                          i, 0, comm, MPI_STATUS_IGNORE);
             }
@@ -1152,27 +1879,48 @@ int MPI_Gatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
     return MPI_SUCCESS;
 }
 
-int MPI_Allgather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
-                  void *recvbuf, int recvcount, MPI_Datatype recvtype,
-                  MPI_Comm comm) {
-    /* Gather every rank's contribution onto rank 0, then broadcast the full
-     * concatenation back so all ranks hold it. Built on the shim's Send/Recv
-     * so it participates in the sim-time rendezvous / NoC-contention model. */
-    MPI_Gather(sendbuf, sendcount, sendtype, recvbuf, recvcount, recvtype, 0, comm);
-    MPI_Bcast(recvbuf, g_nranks * recvcount, recvtype, 0, comm);
-    return MPI_SUCCESS;
-}
-
-int MPI_Allgatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
-                   void *recvbuf, const int *recvcounts, const int *displs,
-                   MPI_Datatype recvtype, MPI_Comm comm) {
-    MPI_Gatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, displs,
-                recvtype, 0, comm);
-    /* Broadcast the assembled buffer. displs are contiguous from 0 in the
-     * common case (e.g. bfs frontier gather), so [0,total) covers all data. */
-    int total = 0;
-    for (int i = 0; i < g_nranks; i++) total += recvcounts[i];
-    MPI_Bcast(recvbuf, total, recvtype, 0, comm);
+/* ---- MPI_Alltoall: Bruck (short), scattered (medium), pairwise (long) ---- */
+int MPI_Alltoall(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
+                 void *recvbuf, int recvcount, MPI_Datatype recvtype,
+                 MPI_Comm comm) {
+    (void)comm;
+    const int P = g_nranks, rank = g_rank;
+    const size_t sblk = (size_t)sendcount * dtype_size(sendtype);
+    const size_t rblk = (size_t)recvcount * dtype_size(recvtype);
+    const char* sbuf = (const char*)sendbuf;
+    char* rbuf = (char*)recvbuf;
+    if (sbuf && rbuf) memcpy(rbuf + (size_t)rank * rblk, sbuf + (size_t)rank * sblk, sblk);
+    if (P <= 1) return MPI_SUCCESS;
+    if (sblk <= kAlltoallShort && P >= kAlltoallMinProcs) {
+        /* Bruck: rotate up by rank, log2(P) exchanges of the blocks whose index
+         * has bit k set, then block j came from rank (rank - j). */
+        std::vector<char> w((size_t)P * sblk), pk((size_t)P * sblk), rk((size_t)P * sblk);
+        for (int j = 0; j < P; j++) memcpy(w.data() + (size_t)j * sblk, sbuf + (size_t)((rank + j) % P) * sblk, sblk);
+        for (int pof2 = 1; pof2 < P; pof2 <<= 1) {
+            size_t nb = 0;
+            for (int j = 0; j < P; j++)
+                if (j & pof2) { memcpy(pk.data() + nb * sblk, w.data() + (size_t)j * sblk, sblk); nb++; }
+            xchg_bytes(pk.data(), nb * sblk, (rank + pof2) % P, rk.data(), nb * sblk, (rank - pof2 + P) % P);
+            nb = 0;
+            for (int j = 0; j < P; j++)
+                if (j & pof2) { memcpy(w.data() + (size_t)j * sblk, rk.data() + nb * sblk, sblk); nb++; }
+        }
+        for (int j = 1; j < P; j++) memcpy(rbuf + (size_t)((rank - j + P) % P) * rblk, w.data() + (size_t)j * sblk, rblk);
+    } else if (sblk <= kAlltoallMedium) {
+        /* Scattered: step i sends to rank - i and receives from rank + i. */
+        for (int i = 1; i < P; i++) {
+            const int dst = (rank - i + P) % P, src = (rank + i) % P;
+            xchg_bytes(sbuf + (size_t)dst * sblk, sblk, dst, rbuf + (size_t)src * rblk, rblk, src);
+        }
+    } else {
+        /* Pairwise exchange (XOR partners when P is a power of two). */
+        for (int i = 1; i < P; i++) {
+            int src, dst;
+            if (is_pof2(P)) src = dst = rank ^ i;
+            else { src = (rank - i + P) % P; dst = (rank + i) % P; }
+            xchg_bytes(sbuf + (size_t)dst * sblk, sblk, dst, rbuf + (size_t)src * rblk, rblk, src);
+        }
+    }
     return MPI_SUCCESS;
 }
 

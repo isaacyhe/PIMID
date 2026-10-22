@@ -653,6 +653,30 @@ struct GlobSimInfo {
 
     // Per-thread MPI parameter block addresses (registered via magic op)
     uint64_t mpiParamsAddr[MAX_THREADS] = {};
+    /* 1.12.17 (M1): address ranges of the MPI emulation transport's own memory
+     * (mailboxes, staging), registered by libpimid_mpi through
+     * ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE. A PE access inside one is transport
+     * and is not priced (PEMemoryInterface::mpiTransportAccess). */
+    static constexpr uint32_t kMaxMpiTransportRanges = 8;
+    uint64_t mpiTransportLo[kMaxMpiTransportRanges] = {};
+    uint64_t mpiTransportHi[kMaxMpiTransportRanges] = {};
+    volatile uint32_t mpiTransportRanges = 0;
+
+    /* 1.12.17: guest thread stacks [stackLo, stackHi), registered by the plugin
+     * (thread stacks at clone, the main stack at roi_begin). stackSp is the
+     * thread's initial stack pointer: the first PE-MI to touch the stack below
+     * it is the owner (stackOwner = MI id + 1; 0 = not yet touched, -1 = being
+     * claimed), and stackCovLo/stackCovN its coverage. addrToUnit maps the
+     * stack's pages into that coverage, so a PE's stack is in its own memory. */
+    static const uint32_t kMaxStackRanges = 1024;
+    uint64_t stackLo[kMaxStackRanges] = {};
+    uint64_t stackHi[kMaxStackRanges] = {};
+    uint64_t stackSp[kMaxStackRanges] = {};
+    uint32_t stackCovLo[kMaxStackRanges] = {};
+    uint32_t stackCovN[kMaxStackRanges] = {};
+    volatile int32_t stackOwner[kMaxStackRanges] = {};
+    volatile uint32_t stackRanges = 0;
+    volatile uint64_t stackMin = ~0ull, stackMax = 0;
 };
 
 

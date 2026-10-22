@@ -228,6 +228,7 @@ static std::atomic<uint64_t> roi_transition_count{0};
 #define ZSIM_MAGIC_OP_WORK_BEGIN    1029
 #define ZSIM_MAGIC_OP_WORK_END      1030
 #define ZSIM_MAGIC_OP_MPI_REGISTER  2048
+#define ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE 2060   /* 1.12.17 (M1): %rdx -> {base, bytes} of transport memory */
 #define ZSIM_MAGIC_OP_MPI_SEND      2049
 #define ZSIM_MAGIC_OP_MPI_RECV      2050
 #define ZSIM_MAGIC_OP_MPI_BARRIER   2051
@@ -643,6 +644,8 @@ typedef qemu_plugin_reg_descriptor pimid_qemu_plugin_reg_descriptor;
 
 static std::atomic<struct qemu_plugin_register*> rcx_handle{nullptr};
 static std::atomic<struct qemu_plugin_register*> rdx_handle{nullptr};
+static std::atomic<struct qemu_plugin_register*> rsp_handle{nullptr};   /* 1.12.17: main stack at roi_begin */
+static void stackAtRoiBegin();   /* 1.12.17: defined with the stack registry below */
 static std::atomic<bool> rcx_lookup_done{false};
 static __thread PimidGByteArray* rcx_buf = nullptr;  /* per-host-thread reusable buf */
 
@@ -660,6 +663,8 @@ static void resolveRcxHandle() {
                 rcx_handle.store(d->handle, std::memory_order_release);
             } else if (d->name && strcmp(d->name, "rdx") == 0) {
                 rdx_handle.store(d->handle, std::memory_order_release);
+            } else if (d->name && strcmp(d->name, "rsp") == 0) {
+                rsp_handle.store(d->handle, std::memory_order_release);
             }
         }
         g_array_free(regs, 1 /* TRUE */);
@@ -806,9 +811,13 @@ void EndOfPhaseActions() {
      * access threads raced first -- the root of the 1.8.x epoch-membership
      * nondeterminism. No-op for OMP/process-MPI (they drain inline / via the shm
      * cut). */
-    if (g_mpi_thread_mode && zinfo->garnetNetwork &&
-        zinfo->garnetNetwork->isCycleAccurate() &&
-        zinfo->hierarchy.mpiNocBaselined) {
+    /* 1.12.17: the same cut also folds the device DRAM epoch replay under
+     * message passing (DramEpochReplay cut mode). */
+    const bool foldNoc = g_mpi_thread_mode && zinfo->garnetNetwork &&
+                         zinfo->garnetNetwork->isCycleAccurate();
+    const bool foldDram = g_mpi_thread_mode && zinfo->dramReplay &&
+                          zinfo->hierarchy.dramEpochReplay && zinfo->dramReplay->cutMode();
+    if ((foldNoc || foldDram) && zinfo->hierarchy.mpiNocBaselined) {
         // Consistent cut = min per-core roiRel over ACTIVE cores. All cores are
         // synced at this barrier, so their roiRel snapshots are a pure function of
         // simulated state. A core that has EXITED (finished its ROI) or is QUIESCENT
@@ -819,15 +828,26 @@ void EndOfPhaseActions() {
         // roiRel-phase bucket is <= cut are final and get folded (foldByCut). No
         // blocking spin -> deadlock-free.
         uint64_t cut = ~0ull;
+        /* 1.12.17: the DRAM replay cut also holds at a QUIESCENT core (parked in
+         * an MPI wait). Its clock is frozen there, and the accesses it issues when
+         * it resumes are stamped from that point on; exempting it, as the NoC cut
+         * does, let the cut run past it, and its later records then belonged to
+         * epochs already replayed (smoke t1217a: 4.17 M of 8.09 M stencil records,
+         * which then issued as one burst). Only EXITED and VACATED cores are
+         * exempt here, so no record can arrive behind this cut. */
+        uint64_t cutDram = ~0ull;
         int dbgCutCore = -1, dbgActive = 0;
         for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++) {
             Core* co = zinfo->cores[c];
             if (!co) continue;
-            if (g_coreRoiState[c].load(std::memory_order_acquire) != 0) continue;
+            const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
+            if (st != 0 && st != 1) continue;   // EXITED / VACATED: exempt from both cuts
             uint64_t base = co->getRoiBaseCycle();
             uint64_t cyc  = co->getCycles();
             uint64_t rr   = (cyc > base) ? cyc - base : 0;
             if (rr == 0) continue;       // baselined but no ROI traffic yet
+            if (rr < cutDram) cutDram = rr;
+            if (st != 0) continue;       // QUIESCENT: exempt from the NoC cut only
             if (rr < cut) { cut = rr; dbgCutCore = (int)c; }
             dbgActive++;
         }
@@ -841,7 +861,13 @@ void EndOfPhaseActions() {
                 lastCut = (cut == ~0ull) ? lastCut : cut; lastCore = dbgCutCore;
             }
         }
-        zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
+        if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
+        if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
+            uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
+            if (E < 1) E = 1;
+            const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            zinfo->dramReplay->foldByCut(cutDram, (uint64_t)pl * E);
+        }
     }
 
     CheckForTermination();
@@ -1587,6 +1613,30 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
 static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     if (tid >= MAX_THREADS) return;
 
+    if (op == ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) {
+        /* 1.12.17 (M1): libpimid_mpi registers the memory of its own transport
+         * (mailboxes, staging). PE accesses inside it are not priced: the
+         * message transfer is priced once, as the injected Garnet message, and
+         * the sender's read and the receiver's write of the user buffers are
+         * the only memory traffic a message makes. */
+        uint64_t addr = 0;
+        if (zinfo && readRdx(&addr) && addr != 0) {
+            const uint64_t* r = (const uint64_t*)addr;
+            const uint64_t lo = r[0], bytes = r[1];
+            const uint32_t i = zinfo->mpiTransportRanges;
+            if (bytes == 0) return;
+            if (i >= GlobSimInfo::kMaxMpiTransportRanges)
+                panic("MPI transport: more than %u transport ranges registered", GlobSimInfo::kMaxMpiTransportRanges);
+            zinfo->mpiTransportLo[i] = lo;
+            zinfo->mpiTransportHi[i] = lo + bytes;
+            __sync_synchronize();
+            zinfo->mpiTransportRanges = i + 1;
+            info("[mpi] transport range %u registered: [0x%lx, 0x%lx) %lu bytes -- PE accesses inside are transport, not priced (1.12.17 M1)",
+                 i, (unsigned long)lo, (unsigned long)(lo + bytes), (unsigned long)bytes);
+        }
+        return;
+    }
+
     if (op == ZSIM_MAGIC_OP_MPI_REGISTER) {
         /* Registration: the caller put the address of its thread-local
          * PimidMpiParams block in %rdx (opcode is in %rcx).  Record it so
@@ -2330,7 +2380,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
  * Check if a magic op code is an MPI op.
  */
 static inline bool isMpiMagicOp(uint64_t op) {
-    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_ADVANCE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */;
+    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */;
 }
 
 /**
@@ -2875,6 +2925,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t opcode = static_cast<uint32_t>(op & 0xFFFFFFFF);
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin();   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
         // OWN roi_begin (the process-mode contract, per-rank deterministic).
@@ -3218,6 +3269,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t opcode = static_cast<uint32_t>(op & 0xFFFFFFFF);
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin();   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
         // OWN roi_begin (the process-mode contract, per-rank deterministic).
@@ -3675,6 +3727,113 @@ static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
     }
 }
 
+/* ---- 1.12.17: guest thread stacks (zsim.h stackLo) ----
+ * glibc maps each thread's stack with mmap(MAP_STACK) and clone()s the thread
+ * onto it; the main thread's stack is the mapping holding its stack pointer at
+ * roi_begin. Guest and host share the address space (guest_base 0), so that
+ * mapping is found in /proc/self/maps. */
+static std::mutex g_stackMu;
+static uint64_t g_stackMapLen[MAX_VCPUS];          /* pending mmap(MAP_STACK) length per vCPU */
+static const uint32_t kStackMaps = 256;            /* recent MAP_STACK mappings, a ring */
+static uint64_t g_stackMapLo[kStackMaps], g_stackMapHi[kStackMaps];
+static uint32_t g_stackMapNext = 0;
+
+/* Caller holds g_stackMu. A stack glibc reuses for a new thread is re-armed. */
+static void stackRangeAdd(uint64_t lo, uint64_t hi, uint64_t sp, const char* what) {
+    uint32_t n = zinfo->stackRanges, slot = n;
+    for (uint32_t i = 0; i < n; i++) {
+        if (zinfo->stackLo[i] == lo && zinfo->stackHi[i] == hi) {
+            zinfo->stackSp[i] = sp;
+            __sync_synchronize();
+            zinfo->stackOwner[i] = 0;
+            return;
+        }
+        if (slot == n && zinfo->stackLo[i] == 0 && zinfo->stackHi[i] == 0) slot = i;
+    }
+    if (slot == n && n >= GlobSimInfo::kMaxStackRanges)
+        panic("[stack] more than %u guest thread stacks registered", GlobSimInfo::kMaxStackRanges);
+    zinfo->stackSp[slot] = sp;
+    zinfo->stackOwner[slot] = 0;
+    zinfo->stackHi[slot] = hi;
+    zinfo->stackLo[slot] = lo;
+    if (lo < zinfo->stackMin) zinfo->stackMin = lo;
+    if (hi > zinfo->stackMax) zinfo->stackMax = hi;
+    __sync_synchronize();
+    if (slot == n) zinfo->stackRanges = n + 1;
+    info("[stack] %s stack [0x%lx, 0x%lx) registered: its pages map into the PE that runs on it (1.12.17)",
+         what, (unsigned long)lo, (unsigned long)hi);
+}
+
+static void stackOnClone(uint64_t sp) {
+    std::lock_guard<std::mutex> g(g_stackMu);
+    for (uint32_t i = 0; i < kStackMaps; i++)
+        if (g_stackMapHi[i] && sp > g_stackMapLo[i] && sp <= g_stackMapHi[i]) {
+            stackRangeAdd(g_stackMapLo[i], g_stackMapHi[i], sp, "thread");
+            return;
+        }
+    for (uint32_t i = 0; i < zinfo->stackRanges; i++)
+        if (sp > zinfo->stackLo[i] && sp <= zinfo->stackHi[i]) {
+            stackRangeAdd(zinfo->stackLo[i], zinfo->stackHi[i], sp, "thread");
+            return;
+        }
+    info("[stack] WARNING: clone onto stack pointer 0x%lx outside any MAP_STACK mapping: "
+         "that thread's stack keeps the global address map", (unsigned long)sp);
+}
+
+static void stackOnUnmap(uint64_t addr, uint64_t len) {
+    std::lock_guard<std::mutex> g(g_stackMu);
+    const uint64_t end = addr + len;
+    for (uint32_t i = 0; i < kStackMaps; i++)
+        if (g_stackMapHi[i] && g_stackMapLo[i] < end && addr < g_stackMapHi[i])
+            g_stackMapLo[i] = g_stackMapHi[i] = 0;
+    for (uint32_t i = 0; i < zinfo->stackRanges; i++)
+        if (zinfo->stackHi[i] && zinfo->stackLo[i] < end && addr < zinfo->stackHi[i]) {
+            zinfo->stackOwner[i] = 0;
+            zinfo->stackLo[i] = zinfo->stackHi[i] = 0;
+        }
+}
+
+/* The main thread's stack: the mapping that holds its stack pointer. */
+static void stackAtRoiBegin() {
+    uint64_t sp = 0;
+    if (!zinfo) return;
+    if (!readGuestReg(rsp_handle.load(std::memory_order_acquire), &sp) || sp == 0) {
+        info("[stack] WARNING: stack pointer unreadable at roi_begin: the main stack keeps the global address map");
+        return;
+    }
+    std::lock_guard<std::mutex> g(g_stackMu);
+    for (uint32_t i = 0; i < zinfo->stackRanges; i++)
+        if (sp > zinfo->stackLo[i] && sp <= zinfo->stackHi[i]) return;   /* a registered thread stack */
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) { info("[stack] WARNING: /proc/self/maps unreadable: the main stack keeps the global address map"); return; }
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long lo = 0, hi = 0;
+        if (sscanf(line, "%lx-%lx", &lo, &hi) == 2 && sp >= lo && sp < hi) {
+            stackRangeAdd(lo, hi, sp, "main");
+            found = true;
+            break;
+        }
+    }
+    fclose(f);
+    if (!found)
+        info("[stack] WARNING: stack pointer 0x%lx at roi_begin is in no mapping: the main stack keeps the global address map",
+             (unsigned long)sp);
+}
+
+static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
+    if (vcpu_index >= MAX_VCPUS || num != 9 /* mmap */) return;
+    const uint64_t len = g_stackMapLen[vcpu_index];
+    if (!len) return;
+    g_stackMapLen[vcpu_index] = 0;
+    if (ret < 0 && ret > -4096) return;   /* the mmap failed */
+    std::lock_guard<std::mutex> g(g_stackMu);
+    g_stackMapLo[g_stackMapNext] = (uint64_t)ret;
+    g_stackMapHi[g_stackMapNext] = (uint64_t)ret + len;
+    g_stackMapNext = (g_stackMapNext + 1) % kStackMaps;
+}
+
 /**
  * vCPU init callback -- assigns tid but defers SimThreadStart until first
  * execution callback, so we know the thread's domain (HOST vs DEVICE).
@@ -3734,6 +3893,10 @@ static void syscall_cb(unsigned int vcpu_index,
     /* Guard: skip if we're already inside ZSim code (e.g., reentrant
      * callback from barrier/scheduler futex operations). */
     if (in_zsim[vcpu_index]) return;
+    /* 1.12.17: guest thread stacks (MAP_STACK = 0x20000, CLONE_THREAD = 0x10000) */
+    if (num == 9 && (a4 & 0x20000)) g_stackMapLen[vcpu_index] = a2;
+    else if (num == 56 && (a1 & 0x10000) && a2 && zinfo) stackOnClone(a2);
+    else if (num == 11 && zinfo && zinfo->stackRanges) stackOnUnmap(a1, a2);
     uint32_t tid = vcpuToTid[vcpu_index];
     if (tid == UNINITIALIZED_CID || tid >= MAX_THREADS) return;
     if (!thread_initialized[tid]) return;  // not yet started
@@ -4152,6 +4315,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     /* Register remaining QEMU callbacks (vcpu_init/exit already registered above) */
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb, NULL);
     qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb, NULL);
+    qemu_plugin_register_vcpu_syscall_ret_cb(id, syscall_ret_cb, NULL);   /* 1.12.17: MAP_STACK mappings */
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
     return 0;

@@ -7,6 +7,74 @@ sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages; deeper design rationale for 1.9.0 is in
 `docs-dev/DESIGN_190_PDES.md`.
 
+## 1.12.17 -- message passing: its device DRAM is replayed through the controller, a message moves only its own bytes, collectives run MPICH's algorithms and reductions reduce; a PE below the channel is served bank-parallel; a thread's stack is in its own PE's memory
+
+The user: "we need message passing side measured as well", "make sure it is on par with omp", "a of course, this is stupid
+mistake by always serializing", "let us bring that timing work to 17 and fix it now", "make sure you fix this in 17", then
+a/b/c rulings: a message costs the sender's read, the network transfer and the receiver's write (M1); thread stacks and
+bfs_mpi's per-rank buffers live in the PE's own memory; the collectives run MPICH's algorithms; every kernel is rebuilt with
+one toolchain.
+
+**(1) Message-passing device DRAM is replayed through Ramulator2.** The per-epoch DRAM replay (1.11.98) served only
+shared-memory runs; a message-passing run priced its device DRAM with the McPAT convention. Thread-MPI ranks run on their
+own simulated clocks between rendezvous, so the replay now folds an epoch at the consistent cut: the earliest ROI-relative
+time over the cores that are running or waiting in an MPI call (exited and vacated cores are exempt). A request is stamped
+on its core's ROI-relative clock; a record that arrives after its epoch was folded joins the next epoch, and both counts are
+printed. The memory controller's dynamic and background energy of a message-passing run are now measured, as in shared
+memory.
+
+**(2) The replay's statistics window is the ROI.** At `roi_begin` the replay first ticks the controller up to the current
+phase, so pre-ROI traffic no longer lands inside the ROI window (a co-simulation reported seven times its ROI in controller
+ticks).
+
+**(3) A PE below the channel is served bank-parallel.** At BANK, BANK_GROUP and SUBARRAY placement each PE has its own
+memory interface at its tier, but the controller still serialised every command on the channel's shared command and data
+buses, as a host controller does. Ramulator2's generic controller gains a bank-parallel mode (`pimid_bank_parallel`): up
+to one command per bank per cycle, FR-FCFS within each bank, refresh and priority commands first. The bus timing
+constraints above the PE's tier (column-to-column across banks, and channel constraints that follow an ACT or a column
+command) are removed and listed; the activation limits (tRRD, tFAW), bank timing, precharge-all and refresh are kept.
+CHANNEL and coarser placements are unchanged.
+
+**(4) A message moves only its own bytes (M1).** The MPI shim's transport (mailboxes, staging) is emulation, not device
+traffic: a receive used to copy a whole 64 KB slot onto the stack, so a 512-byte halo cost about 130 KB of DRAM traffic on
+a few heap banks, and the transfer was also charged as the Garnet message. The shim now registers its transport memory with
+the simulator (magic op 2060); PE accesses inside it, and accesses made while a rank waits inside an MPI call, are not
+priced. A send reads the user buffer outside the wait (priced), a receive copies only the message's bytes into the user
+buffer outside the wait (priced), and the network transfer is priced once, as the Garnet message. The staging queue is a
+fixed arena inside the registered memory; if it fills, the run stops with a message.
+
+**(5) A thread's stack is in its own PE's memory.** Every thread's stack used to map wherever its address fell, which put
+all sixteen stacks on one bank (about 6% of a shared-memory run's DRAM requests). The ZSim plugin registers each guest
+thread stack exactly: glibc maps it with `mmap(MAP_STACK)` and `clone()`s the thread onto it, and the main thread's stack
+is the mapping that holds its stack pointer at `roi_begin`. The stack's pages map into the coverage of the first PE that
+touches it below the thread's initial stack pointer (only the thread itself grows its stack there); `munmap` drops it.
+
+**(6) bfs_mpi keeps its per-rank work buffers in its PE slot.** Its frontier, candidate and receive buffers and the
+Allgatherv counts are private to each rank, but stayed in the shared heap (a note carried over from bfs_omp, where the
+frontier is shared), so all ranks' copies sat on three heap banks. They now follow the rank's graph and `dist` in its slot.
+The per-rank need roughly doubles; a size that no longer fits is refused with the largest that does, as before.
+
+**(7) The collectives run MPICH's algorithms, and reductions reduce.** The shim routed every collective through rank 0,
+one rank at a time, and `MPI_Reduce`/`MPI_Allreduce` moved data without applying the operation, so a kernel's reduced
+result was rank 0's share. They now choose as MPICH's intra-communicator selection does with its default thresholds
+(Thakur, Rabenseifner and Gropp, IJHPCA 19(1), 2005): Bcast binomial, or scatter plus recursive-doubling or ring
+allgather; Allgather and Allgatherv recursive doubling, Bruck or ring; Reduce binomial or Rabenseifner; Allreduce recursive
+doubling or Rabenseifner; Gather and Scatter binomial; Gatherv linear; Alltoall Bruck, scattered or pairwise. The reduction
+operations are the builtin SUM, PROD, MAX, MIN and the logical and bitwise ones on integer and floating types; any other is
+refused with a message. `MPI_Sendrecv` and the exchange steps send and receive chunk by chunk, and a sender that finds the
+receiver's ring full moves the ring's oldest message to the receiver's staging instead of waiting (only a receiver used to,
+so two ranks sending to each other could wait forever once a third rank filled their rings). Native check: every
+collective at 1 to 64 ranks, sizes across each threshold; every message-passing kernel's checksum now equals its serial and
+OpenMP checksum (six of eight differed).
+
+**(8) Every tracked kernel binary is rebuilt with GCC 13.3 and MPICH 4.2.** The previous builds came from a GCC 11.5
+toolchain that no longer exists on the build hosts. Native runs give the same checksums with both builds, serial, OpenMP
+and message passing.
+
+**Data impact.** Message-passing results change (device DRAM measured, transport not priced, collectives, stacks), and
+every placement below the channel changes (bank-parallel controller, stacks in the PE's memory). CHANNEL and coarser
+placements change only through the stack mapping and, for message passing, the items above.
+
 ## 1.12.16 -- QEMU 11.1.2: a parallel workload on fewer simulated cores than threads no longer deadlocks at its first thread; a host baseline's OpenMP team is its host core count; QEMU runs a REP string one iteration per block under a plugin (patch carried in the repo)
 
 The user: "while the re-sim is going, please try to fix these issues", then "If you are sure the issue is qemu side, please
