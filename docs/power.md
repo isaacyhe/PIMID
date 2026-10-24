@@ -226,11 +226,28 @@ buffer outputs and register pins are gated by the measured activity
 ratio of its local load (nets + buffer outputs + pins) to the global
 network itself (wire + repeaters), beside the published observation that
 the local clock buffers' load is generally more than ~10x the clock
-network's own (arXiv 1401.0015): printed, not judged. The cores print
-6.5-7.5x (PEs) and 4.7x (host); McPAT's register clock pin (0.113 fF at
-22 nm for a PE) is below published library pins (Nangate 45 nm DFF_X1
-0.95 fF; ASAP7 DFFHQNx1 0.47 fF), and the pin is McPAT's pipeline register
-model, left as is. The die-level trunk keeps one leaf per
+network's own (arXiv 1401.0015): printed, not judged.
+
+(next, user ruling 2026-10-25 A) THE FLIP-FLOP is re-sourced from two
+published open standard-cell libraries, node-scaled: Nangate 45 nm Open
+Cell Library DFF_X1 (1.10 V) and ASAP7 DFFHQNx1 RVT (0.70 V), from their
+liberty files (CK and D pin capacitance; CK internal energy per cycle with
+Q held and with Q toggling; Q/QN and D internal energy per transition; the
+smallest slew/load entry). Energies scale with Stillmaker & Baas 2017
+Eq. (6)/(9), Table 5 (the nearest row: 22 nm -> 20 nm), capacitances as
+energy / V^2; the value applied is the midpoint over the device-type row
+pairs of the library NEAREST the node (Nangate at 22 and 32 nm, ASAP7 below
+17.7 nm), and the bracket over both libraries is printed (`[mcpat dff]`).
+Per register per cycle the clock costs C_CK V^2 + the CK internal energy
+with Q held; a toggling cycle adds the CK difference, the Q and D internal
+energies and half C_D V^2 (the next register's D pin). The same register
+is used by McPAT's pipeline registers and by the clock tree's pins (one
+cell for every core, an X1 flop); liberty energy includes short-circuit,
+so no sckt factor is applied to it; leakage and area stay McPAT's. 22 nm:
+CK pin 0.224 fF (McPAT's NAND2 register: 0.113 fF in a PE, 1.57 fF in the
+host), clock 1.01 fJ/cycle (0.082 / 1.14), bracket over both libraries
+CK [0.185, 1.31] fF, clock [0.83, 3.02] fJ/cycle. Core clock trees print a
+local/global load ratio of 7.4-9.2x (PEs) and 3.2x (host). The die-level trunk keeps one leaf per
 component tree root (its leaves are not registers). Runtime clock energy is gated by each component's MEASURED
 activity (Wattch's conditional-clocking style cc2: clock power scales with
 measured port usage), and the ungated value is printed beside it as a

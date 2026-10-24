@@ -147,6 +147,7 @@ public:
 
 	double fpfp_node_cap(unsigned int fan_in, unsigned int fan_out);
 	void compute_DFF_cell(void);
+	bool published;   /* PIMID (1.12.31): clock/toggle energies from the published libraries (no sckt) */
 	};
 
 class Pipeline : public Component{
@@ -383,6 +384,13 @@ public:
  * ae2 V^2 + ae1 V + ae0 with the Table 5 coefficients of node nm (45/32 nm: HP and LP rows;
  * 20 nm: HP and LSTP rows). Returns the number of rows written to f[] (0: no Table 5 row). */
 int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2]);
+/* PIMID (next, user ruling 2026-10-25 A): the published flip-flop (Nangate 45 nm DFF_X1, ASAP7 DFFHQNx1), node-scaled
+ * with Stillmaker & Baas 2017 (logic.cc). Energies in J, capacitances in F. */
+struct PimidDffPub {
+	const char *lib; double lib_nm; int row_nm; double ratio, ratio_lo, ratio_hi;
+	double c_ck, c_d, e_clock, e_switch, c_ck_lo, c_ck_hi, e_clock_lo, e_clock_hi;
+};
+bool pimid_dff_published(double nm, double v, PimidDffPub &o);
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0, double *c_run = 0,
                                double *v_run = 0, double *v_src_cacti = 0);
 

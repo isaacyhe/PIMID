@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.31 -- the flip-flop from published open libraries, node-scaled
+
+- **Register clock pin and register energy re-sourced** (user ruling 2026-10-25 A; external/mcpat/logic.cc
+  pimid_dff_published, DFFCell::compute_DFF_cell): Nangate 45 nm OCL DFF_X1 and ASAP7 DFFHQNx1 liberty data (pin
+  capacitances, internal energies), Stillmaker & Baas 2017 scaling, the nearest library's device-row midpoint
+  applied and the two-library bracket printed (`[mcpat dff]`). Used consistently by McPAT's pipeline registers and
+  the clock tree's pins; no sckt on liberty energy. Replaces McPAT's six-NAND2 register energies (leakage, area kept).
+- 22 nm: CK pin 0.113 -> 0.224 fF (PE), 1.57 -> 0.224 fF (host); clock per register 0.082 -> 1.01 fJ/cycle (PE),
+  1.14 -> 1.01 (host); toggle 0.78 -> 1.44 fJ (PE). 32 nm: CK 0.249 -> 0.635 fF, clock 0.224 -> 3.61 fJ/cycle.
+- Core clock pJ/cycle at activity 1: 22 nm alu PE 0.808 -> 1.00, in_order 1.28 -> 1.32, OOO PE 3.01 -> 3.13, 32 nm
+  alu 1.54 -> 2.29, host 18.8 -> 16.9. PE non-clock 22 nm 8.71 -> 9.14 pJ/instr, 32 nm 12.82 -> 14.27; host core
+  155.9 -> 150.9 pJ/instr. Local/global clock load ratio: PEs 7.4-9.2x, host 3.2x. Cycles and checksums unchanged.
+
 ## 1.12.30 -- clock trees: clocked-logic span, leaf clusters of 30 sinks, stage registers derived from their contents
 
 - **Tree span, DERIVED** (user ruling 2026-10-25, F1; external/mcpat/core.cc): the core's H-tree spans the

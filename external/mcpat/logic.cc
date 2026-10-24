@@ -32,6 +32,7 @@
 #include "logic.h"
 #include <vector>      /* PIMID 1.12.18: guard lists */
 #include <algorithm>
+#include <set>       /* PIMID (1.12.31): print each published register once */
 #include "wire.h"   /* PIMID 1.12.18: ClockNetwork prices its tree with CACTI wires */
 void init_tech_params(double tech, bool is_tag);   /* PIMID 1.12.18: cacti/technology.cc (Ucache.h) */
 
@@ -61,6 +62,88 @@ int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2]
 	for (size_t i = 0; i < sizeof(rows)/sizeof(rows[0]) && n < 2; i++)
 		if (rows[i].nm == nm) { f[n] = rows[i].a2*v*v + rows[i].a1*v + rows[i].a0; type[n] = rows[i].t; n++; }
 	return n;
+}
+
+/* PIMID (next, user ruling 2026-10-25 A): THE FLIP-FLOP FROM PUBLISHED OPEN LIBRARIES, node-scaled.
+ * Two published standard-cell D flip-flops (liberty files, typical corner, smallest input slew and output load
+ * table entry; capacitance in fF, internal energy in fJ = V x fF):
+ *  - Nangate 45 nm Open Cell Library (FreePDK45), NangateOpenCellLibrary_typical.lib, cell DFF_X1, 1.10 V:
+ *    CK pin 0.949653 fF, D pin 1.140290 fF; CK internal energy per cycle with Q held (rise + fall, mean of the
+ *    two held states) 6.916056 fJ; with Q toggling (fall only; the rising edge's energy is on Q/QN) 7.559952 fJ;
+ *    Q + QN internal energy per output transition (related CK) 8.334629 fJ; D internal energy per D transition
+ *    (mean over the CK states and edges) 1.879522 fJ.
+ *  - ASAP7 7.5-track RVT (Clark et al., Microelectronics Journal 53, 2016), asap7sc7p5t_SEQ_RVT_TT_nldm_220123.lib,
+ *    cell DFFHQNx1_ASAP7_75t_R, 0.70 V (VDD rows): CLK 0.474736 fF, D 0.558822 fF; CLK held 0.604924 fJ; CLK
+ *    toggling 0.535838 fJ; QN per transition 0.497347 fJ; D per transition 0.097081 fJ.
+ * Scaling (Stillmaker & Baas, Integration 58 (2017) 74-81, Eq. (6)/(9), Table 5): an energy E_t = E_s x
+ * EF_t(V_t) / EF_s(V_s); a capacitance C_t = C_s x (EF_t / V_t^2) / (EF_s / V_s^2). A node without a Table 5 row
+ * uses the NEAREST row (22 nm -> 20 nm). Every (source, target) device-type row pair is evaluated; the value
+ * APPLIED is the midpoint of the pair range of the library NEAREST the run's node (log distance; 22 and 32 nm:
+ * Nangate 45 nm; below sqrt(45 x 7) = 17.7 nm: ASAP7), and the bracket over BOTH libraries is printed (DERIVED
+ * rule, stated). Per register per cycle: e_clock = C_CK V^2 + E_CK(held); a toggling cycle adds
+ * e_switch = E_CK(toggling) - E_CK(held) + E_Q + E_D + 0.5 C_D V^2 (the next register's D pin). Liberty internal
+ * energy includes short-circuit, so no sckt_co_eff is applied to it. Leakage and area stay McPAT's. */
+static int pimid_sb17_rows_nearest(double nm, double v, double f[2], int *row_nm)
+{
+	struct Row { int nm; double a2, a1, a0; };
+	static const Row rows[] = {
+		{180, 0.0, 24.64, -17.98}, {130, 7.171, -6.709, 2.904}, {90, 4.762, -4.781, 2.092}, {65, 3.755, -4.398, 1.975},
+		{45, 1.018, -0.3107, 0.1539}, {45, 1.103, -0.362, 0.2767}, {32, 0.8367, -0.4341, 0.1701}, {32, 0.9559, -0.7823, 0.471},
+		{20, 0.373, -0.1582, 0.04104}, {20, 0.2632, -0.14, 0.06841}, {16, 0.2958, -0.1241, 0.03024}, {16, 0.2139, -0.1187, 0.05639},
+		{14, 0.2363, -0.09675, 0.02239}, {14, 0.1556, -0.06472, 0.03066}, {10, 0.2068, -0.09311, 0.02375}, {10, 0.1261, -0.0518, 0.02769},
+		{7, 0.1776, -0.09097, 0.02447}, {7, 0.09365, -0.03409, 0.02043},
+	};
+	int best = 0; double bd = 1e9;
+	for (size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); i++)
+	{
+		const double d = fabs(log(nm / rows[i].nm));
+		if (d < bd - 1e-12) { bd = d; best = rows[i].nm; }
+	}
+	int n = 0;
+	for (size_t i = 0; i < sizeof(rows)/sizeof(rows[0]) && n < 2; i++)
+		if (rows[i].nm == best) { f[n++] = rows[i].a2*v*v + rows[i].a1*v + rows[i].a0; }
+	if (row_nm) *row_nm = best;
+	return n;
+}
+
+bool pimid_dff_published(double nm, double v, PimidDffPub &o)
+{
+	struct Lib { const char *name; double nm, v, c_ck, c_d, e_held, e_tog, e_q, e_d; };
+	static const Lib libs[2] = {
+		{"Nangate 45 nm OCL DFF_X1", 45, 1.10, 0.949653e-15, 1.140290e-15, 6.916056e-15, 7.559952e-15, 8.334629e-15, 1.879522e-15},
+		{"ASAP7 DFFHQNx1 (RVT)", 7, 0.70, 0.474736e-15, 0.558822e-15, 0.604924e-15, 0.535838e-15, 0.497347e-15, 0.097081e-15},
+	};
+	if (!(nm > 0) || !(v > 0)) return false;
+	double ft[2]; int trow = 0;
+	const int nt = pimid_sb17_rows_nearest(nm, v, ft, &trow);
+	if (nt < 1) return false;
+	const int pick = (fabs(log(nm / libs[0].nm)) <= fabs(log(nm / libs[1].nm))) ? 0 : 1;
+	o.c_ck_lo = o.e_clock_lo = 1e9; o.c_ck_hi = o.e_clock_hi = 0;
+	for (int li = 0; li < 2; li++)
+	{
+		double fs[2]; int srow = 0;
+		const int ns = pimid_sb17_rows_nearest(libs[li].nm, libs[li].v, fs, &srow);
+		double rlo = 1e9, rhi = 0;
+		for (int a = 0; a < ns; a++) for (int b = 0; b < nt; b++)
+		{
+			const double r = ft[b] / fs[a];
+			rlo = std::min(rlo, r); rhi = std::max(rhi, r);
+		}
+		const double ec_s = libs[li].c_ck * libs[li].v * libs[li].v + libs[li].e_held;
+		const double cr = (libs[li].v * libs[li].v) / (v * v);   /* C = E / V^2 */
+		o.c_ck_lo = std::min(o.c_ck_lo, libs[li].c_ck * rlo * cr); o.c_ck_hi = std::max(o.c_ck_hi, libs[li].c_ck * rhi * cr);
+		o.e_clock_lo = std::min(o.e_clock_lo, ec_s * rlo); o.e_clock_hi = std::max(o.e_clock_hi, ec_s * rhi);
+		if (li == pick)
+		{
+			const double r = 0.5 * (rlo + rhi);
+			o.lib = libs[li].name; o.lib_nm = libs[li].nm; o.row_nm = trow; o.ratio = r; o.ratio_lo = rlo; o.ratio_hi = rhi;
+			o.c_ck = libs[li].c_ck * r * cr;
+			o.c_d  = libs[li].c_d * r * cr;
+			o.e_clock  = o.c_ck * v * v + libs[li].e_held * r;
+			o.e_switch = (libs[li].e_tog - libs[li].e_held + libs[li].e_q + libs[li].e_d) * r + 0.5 * o.c_d * v * v;
+		}
+	}
+	return true;
 }
 
 /* PIMID 1.12.18: see logic.h. */
@@ -324,7 +407,8 @@ DFFCell::DFFCell(
 :is_dram(_is_dram),
 cell_load(_cell_load),
 WdecNANDn(_WdecNANDn),
-WdecNANDp(_WdecNANDp)
+WdecNANDp(_WdecNANDp),
+published(false)
 {//this model is based on the NAND2 based DFF.
 			l_ip=*configure_interface;
 //			area.set_area(730*l_ip.F_sz_um*l_ip.F_sz_um);
@@ -368,6 +452,35 @@ void DFFCell::compute_DFF_cell()
 	   e_keep_0.readOp.dynamic += c2 * g_tp.peri_global.Vdd * g_tp.peri_global.Vdd ;
 	   e_clock.readOp.dynamic += clock_cap* g_tp.peri_global.Vdd * g_tp.peri_global.Vdd;;
 
+	   /* PIMID (next, user ruling 2026-10-25 A): the clock pin, the clock energy and the toggle energy from the
+	    * published libraries, node-scaled (pimid_dff_published above); McPAT's NAND2 values are printed beside. */
+	   {
+		   PimidDffPub pub;
+		   if (g_ip && pimid_dff_published(g_ip->F_sz_nm, g_tp.peri_global.Vdd, pub))
+		   {
+			   const double v2 = g_tp.peri_global.Vdd * g_tp.peri_global.Vdd;
+			   static std::set<std::pair<long, long> > shown;
+			   const std::pair<long, long> key((long)(g_ip->F_sz_nm * 100), (long)(g_tp.peri_global.Vdd * 1000));
+			   if (shown.insert(key).second)
+				   std::cerr << "[mcpat dff] register at " << g_ip->F_sz_nm << " nm, " << g_tp.peri_global.Vdd << " V: "
+				             << pub.lib << " (the nearest published library), Stillmaker & Baas row " << pub.row_nm
+				             << " nm, energy ratio " << pub.ratio << " (pair range [" << pub.ratio_lo << ", " << pub.ratio_hi
+				             << "], midpoint): CK pin " << pub.c_ck*1e15 << " fF, D pin " << pub.c_d*1e15
+				             << " fF, clock " << pub.e_clock*1e15 << " fJ/cycle, toggle +" << pub.e_switch*1e15
+				             << " fJ; bracket over both libraries: CK pin [" << pub.c_ck_lo*1e15 << ", " << pub.c_ck_hi*1e15
+				             << "] fF, clock [" << pub.e_clock_lo*1e15 << ", " << pub.e_clock_hi*1e15 << "] fJ/cycle."
+				             << " McPAT's NAND2 register was: CK pin " << clock_cap*1e15 << " fF, clock "
+				             << clock_cap*v2*g_tp.sckt_co_eff*1e15 << " fJ/cycle (x sckt), toggle/keep "
+				             << e_switch.readOp.dynamic*g_tp.sckt_co_eff*1e15 << " / " << e_keep_0.readOp.dynamic*g_tp.sckt_co_eff*1e15
+				             << " / " << e_keep_1.readOp.dynamic*g_tp.sckt_co_eff*1e15 << " fJ" << std::endl;
+			   clock_cap = pub.c_ck;
+			   e_clock.readOp.dynamic  = pub.e_clock;
+			   e_switch.readOp.dynamic = pub.e_switch;
+			   e_keep_0.readOp.dynamic = 0;   /* a held cycle's energy is all in e_clock */
+			   e_keep_1.readOp.dynamic = 0;
+			   published = true;
+		   }
+	   }
 	   /* static power */
 	   e_switch.readOp.leakage +=  (cmos_Isub_leakage(WdecNANDn, WdecNANDp, 2, nand)*5//5 NAND2 and 1 NAND3 in a DFF
                                            + cmos_Isub_leakage(WdecNANDn, WdecNANDn, 3, nand))*g_tp.peri_global.Vdd;
@@ -421,7 +534,7 @@ double Pipeline::reg_clock_energy(bool embedded, double F_sz_um)
 	InputParameter dummy;   /* DFFCell keeps a copy only */
 	DFFCell reg(false, wn, wp, 2*gate_C(wn + wp, 0, false), &dummy);
 	reg.compute_DFF_cell();
-	return reg.e_clock.readOp.dynamic * g_tp.sckt_co_eff;
+	return reg.e_clock.readOp.dynamic * (reg.published ? 1.0 : g_tp.sckt_co_eff);   /* (1.12.31): liberty energy includes sc */
 }
 
 void Pipeline::compute()
@@ -431,7 +544,7 @@ void Pipeline::compute()
 	pipe_reg.compute_DFF_cell();
 
 	double clock_power_pipereg = num_piperegs * pipe_reg.e_clock.readOp.dynamic;
-	clock_energy_per_reg = pipe_reg.e_clock.readOp.dynamic * g_tp.sckt_co_eff;   /* PIMID 1.12.18: as scaled below */
+	clock_energy_per_reg = pipe_reg.e_clock.readOp.dynamic * (pipe_reg.published ? 1.0 : g_tp.sckt_co_eff);   /* PIMID 1.12.18: as scaled below */
 	//******************pipeline power: currently, we average all the possibilities of the states of DFFs in the pipeline. A better way to do it is to consider
 	//the harming distance of two consecutive signals, However McPAT does not have plan to do this in near future as it focuses on worst case power.
 	double pipe_reg_power = num_piperegs * (pipe_reg.e_switch.readOp.dynamic+pipe_reg.e_keep_0.readOp.dynamic+pipe_reg.e_keep_1.readOp.dynamic)/3+clock_power_pipereg;
@@ -452,7 +565,7 @@ void Pipeline::compute()
 
 
 
-	double sckRation = g_tp.sckt_co_eff;
+	double sckRation = pipe_reg.published ? 1.0 : g_tp.sckt_co_eff;   /* (1.12.31): published liberty energy includes sc */
 	power.readOp.dynamic *= sckRation;
 	power.writeOp.dynamic *= sckRation;
 	power.searchOp.dynamic *= sckRation;
@@ -625,7 +738,11 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	tree_len_um   = (n_clusters > 1) ? 1.5*side_um*(sqrt(n_clusters) - 1.0) : 0;   /* the GLOBAL tree */
 
 	Pipeline::reg_widths(!embedded_, l_ip.F_sz_um, wn, wp);
-	c_pin     = 2 * gate_C(wn + wp, 0, false);   /* DFFCell::compute_DFF_cell clock_cap */
+	{   /* DFFCell::compute_DFF_cell clock_cap ((1.12.31): the published, node-scaled CK pin) */
+		DFFCell pin_reg(false, wn, wp, 2*gate_C(wn + wp, 0, false), &l_ip);
+		pin_reg.compute_DFF_cell();
+		c_pin = pin_reg.clock_cap;
+	}
 	e_pin_reg = (e_pin_per_reg_ >= 0) ? e_pin_per_reg_ : Pipeline::reg_clock_energy(embedded_, l_ip.F_sz_um);
 
 	double e_global = 0.0;
