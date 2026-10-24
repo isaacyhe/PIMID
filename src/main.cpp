@@ -2228,6 +2228,7 @@ static const char* kSchemaPaths[] = {
     "power.models.mcpat_fu_base_energy", "power.models.fpu_published", "power.models.frontend_from_timing",   // 1.12.18
     "power.models.int_alu_published", "power.models.clock_global_local", "power.models.l1d_access_width",
     "power.models.tlb_btb_measured",   // PIMID 1.12.18
+    "power.models.fu_area_published",   // 1.12.19
     "power.models.mcpat_layout_energy_overhead",   // 1.12.18 (ruling 2026-10-24)
     "power.models.tlb_published_geometry", "power.models.iddq_write_termination_once",   // 1.12.18
     "power.models.host_mc_phy_static",   // 1.12.18: (user ruling: system-scope host MC PHY static)
@@ -2631,6 +2632,7 @@ struct UnifiedConfig {
     bool pm_clock_global_local = true;      // power.models.clock_global_local (ruling 4)
     bool pm_l1d_access_width = true;        // power.models.l1d_access_width (ruling 6)
     bool pm_tlb_btb_measured = true;        // power.models.tlb_btb_measured (ruling 5)
+    bool pm_fu_area_published = true;       // 1.12.29: power.models.fu_area_published (ruling 2026-10-25)
     bool pm_mcpat_layout_energy_overhead = false;   // 1.12.18 (ruling 2026-10-24) power.models.mcpat_layout_energy_overhead
     bool pm_tlb_published_geometry = true;  // 1.12.18: power.models.tlb_published_geometry
     bool pm_iddq_write_termination_once = true;   // 1.12.18: power.models.iddq_write_termination_once
@@ -21000,6 +21002,7 @@ int main(int argc, char** argv) {
                 config.pm_clock_global_local = yamlBool(pmn["clock_global_local"], true, "power.models.clock_global_local");
                 config.pm_l1d_access_width = yamlBool(pmn["l1d_access_width"], true, "power.models.l1d_access_width");
                 config.pm_tlb_btb_measured = yamlBool(pmn["tlb_btb_measured"], true, "power.models.tlb_btb_measured");
+                config.pm_fu_area_published = yamlBool(pmn["fu_area_published"], true, "power.models.fu_area_published");   // 1.12.19
                 /* 1.12.18: */
                 config.pm_mcpat_layout_energy_overhead = yamlBool(pmn["mcpat_layout_energy_overhead"], false, "power.models.mcpat_layout_energy_overhead");   // 1.12.18 (ruling 2026-10-24)
                 config.pm_tlb_published_geometry = yamlBool(pmn["tlb_published_geometry"], true, "power.models.tlb_published_geometry");
@@ -21021,6 +21024,7 @@ int main(int argc, char** argv) {
             pimid::mcpatClockGlobalLocalDefault() = config.pm_clock_global_local;
             pimid::mcpatL1dAccessWidthDefault() = config.pm_l1d_access_width;
             pimid::mcpatTlbBtbMeasuredDefault() = config.pm_tlb_btb_measured;
+            pimid::mcpatFuAreaPublishedDefault() = config.pm_fu_area_published;   // 1.12.19
             pimid::mcpatTlbPublishedGeometryDefault() = config.pm_tlb_published_geometry;   // 1.12.18
             pimid::mcpatLayoutEnergyOverheadDefault() = config.pm_mcpat_layout_energy_overhead;   // 1.12.18 (ruling 2026-10-24)
             if (config.pm_mcpat_layout_energy_overhead)
@@ -21134,6 +21138,9 @@ int main(int argc, char** argv) {
             if (!config.pm_tlb_btb_measured)
                 std::cout << "  [power] TLB accesses 0 and BTB = indirect resolutions BY USER OPTION"
                              " (power.models.tlb_btb_measured: false)" << std::endl;
+            if (!config.pm_fu_area_published)   // 1.12.19
+                std::cout << "  [power] functional-unit area (FPU, ALU, MUL): McPAT's literals BY USER OPTION"
+                             " (power.models.fu_area_published: false)" << std::endl;
             pimid::mcpatSharerBitsFromChildrenDefault() = config.model_sharer_bits_from_children;   // 1.12.18
             if (!config.model_sharer_bits_from_children)
                 std::cout << "  [power] SBT directory sharer bits: McPAT's ceil(number_of_cores/8)*8 BY USER OPTION"

@@ -1229,6 +1229,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     for (uint64_t v : meas_iops_) f(v);                                             // PIMID 1.12.18
     f(config_.int_alu_published ? 1 : 0); f(config_.clock_global_local ? 1 : 0);
     f(config_.l1d_access_width ? 1 : 0);  f(config_.tlb_btb_measured ? 1 : 0);
+    f(config_.fu_area_published ? 1 : 0);                                          // 1.12.19
     f(config_.tlb_published_geometry ? 1 : 0);                                     // 1.12.18
     f(config_.layout_energy_overhead ? 1 : 0);                                     // 1.12.18 (ruling 2026-10-24)
     f(config_.itlb_entries); f(config_.dtlb_entries); f(config_.tlb_assoc);
@@ -2906,6 +2907,7 @@ std::string McPATWrapper::generateXMLConfig() const {
      * gates (pg flags), 0 otherwise -- the only thing that stops the global
      * part of a clock tree. */
     xml << "    <param name=\"pimid_int_alu_published\" value=\"" << (config_.int_alu_published ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_fu_area_published\" value=\"" << (config_.fu_area_published ? 1 : 0) << "\"/>\n";   // 1.12.19
     xml << "    <param name=\"pimid_clock_split\" value=\"" << (config_.clock_global_local ? 1 : 0) << "\"/>\n";
     /* PIMID 1.12.18 (user rulings 2026-10-23: idle halt, per-die process,
      * per-die clock trunk): switches and STRUCTURE only; the models are the

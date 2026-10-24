@@ -29,6 +29,9 @@ inline bool& mcpatIntAluPublishedDefault() { static bool v = true; return v; }
 inline bool& mcpatClockGlobalLocalDefault() { static bool v = true; return v; }
 inline bool& mcpatL1dAccessWidthDefault() { static bool v = true; return v; }
 inline bool& mcpatTlbBtbMeasuredDefault() { static bool v = true; return v; }
+/* 1.12.29: (user ruling 2026-10-25) power.models.fu_area_published (default
+ * true): published functional-unit areas in the McPAT fork (logic.cc). */
+inline bool& mcpatFuAreaPublishedDefault() { static bool v = true; return v; }
 /* 1.12.18 (user ruling 2026-10-24): power.models.mcpat_layout_energy_overhead
  * (default false = McPAT's layout area overheads do not scale array energy). */
 inline bool& mcpatLayoutEnergyOverheadDefault() { static bool v = false; return v; }
@@ -512,6 +515,7 @@ public:
         bool clock_global_local = mcpatClockGlobalLocalDefault();
         bool l1d_access_width = mcpatL1dAccessWidthDefault();
         bool tlb_btb_measured = mcpatTlbBtbMeasuredDefault();
+        bool fu_area_published = mcpatFuAreaPublishedDefault();   // 1.12.29: sys param pimid_fu_area_published
         /* 1.12.18: the first-level TLB geometry the core
          * record gives an OOO core (describeTimingCore(); 0 = none: McPAT's
          * 1-entry floor). Emitted only for a HOST core whose translations

@@ -920,8 +920,9 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 	 *   50 pJ; Galal's own Pmin (lower bounds) for FP64 add/mult.
 	 *  Divide/sqrt and x87: NO PUBLISHED SOURCE FOUND (Galal and FPnew report
 	 *   none): McPAT's per-op energy kept.
-	 * McPAT's FPU area and leakage are untouched; only the per-operation
-	 * dynamic energy of the operations listed is replaced (computeEnergy). */
+	 * Only the per-operation dynamic energy of the operations listed is
+	 * replaced here (computeEnergy); the FPU AREA (and with it the leakage)
+	 * is set below (pimid_fu_area_published, 1.12.29:). */
 	if (fu_type == FPU && XML->sys.pimid_fpu_published)
 	{
 		struct PubSrc { const char *name; double pj, nm, vdd; const char *cite; };
@@ -977,7 +978,8 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 	 * row; no peer-reviewed per-op value found), and no published rule
 	 * composes a 64-bit value from the 32-bit one, so those keep McPAT's
 	 * per-op energy, as do moves, LEA and NOPs (no adder value applies).
-	 * McPAT's ALU/MUL area and leakage are kept. */
+	 * The ALU/MUL AREA (and with it the leakage) is set below
+	 * (pimid_fu_area_published, 1.12.29:). */
 	if ((fu_type == ALU || fu_type == MUL) && XML->sys.pimid_int_alu_published)
 	{
 		double c_src = 0, c_run = 0, v_run = 0;
@@ -995,6 +997,107 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		std::cerr << "[mcpat int] core" << ithCore << " NO PUBLISHED SOURCE FOUND for " << (alu ? "16- and 64-bit add/logic"
 		          : "16- and 64-bit multiply and integer divide") << ": McPAT's per-op energy kept (no published composition"
 		          << " from the 32-bit value is used)" << std::endl;
+	}
+
+	/* PIMID 1.12.29: (user ruling 2026-10-25) PUBLISHED FUNCTIONAL-UNIT AREA
+	 * (power.models.fu_area_published, sys param pimid_fu_area_published).
+	 * McPAT's unit areas above are literals: FPU 4.47 mm^2 (embedded, ARM
+	 * VFP+NEON) / 8.47 mm^2 (server) at 90 nm x (F/90)^2, ALU 280 x 260 um^2
+	 * (x2 server), MUL 3x the ALU, x logic_scaling_co_eff. At 22 nm the
+	 * embedded FPU alone is ~0.29 mm^2, against a whole RI5CY core of
+	 * 0.068 mm^2 at 65 nm (Gautschi et al., TVLSI 2017, Table V). Replaced,
+	 * per unit, by published areas:
+	 *  [M21] S. Mach, F. Schuiki, F. Zaruba, L. Benini, "FPnew: an open-source
+	 *   multiformat floating-point unit architecture for energy-proportional
+	 *   transprecision computing", IEEE TVLSI 29(4), 2021 (arXiv 2007.01530),
+	 *   GF 22FDX, cell area in kGE with 1 GE = 0.199 um^2 (Fig. 4 and Fig. 6
+	 *   captions):
+	 *   - FP datapath 32 bit: Sec. IV-A.2 / Fig. 4, RI5CY with the TP-FPU
+	 *     (W_fpu = 32, Table I: FP32 + FP16 + FP16alt merged FMA, COMP,
+	 *     CONV, DIVSQRT disabled): FPU 69 kGE = 13731 um^2.
+	 *   - FP datapath 64 bit (device scope): Sec. IV-B.2 / Fig. 6 and Table
+	 *     IV, Ariane TP-FPU (W_fpu = 64, Table II: FP64 + FP32 + FP16 +
+	 *     FP16alt + FP8, DIVSQRT, COMP, CONV): FPU 247 kGE = 0.049 mm^2.
+	 *   - Integer, 32 bit: Fig. 4, RI5CY "Int ALU" 10 kGE = 1990 um^2 (the
+	 *     iterative divider lives in the ALU: it reuses the ALU's
+	 *     comparators, shifters and adders, 2 kGE, Gautschi 2017 Sec. IV-E.4),
+	 *     "Int Mult" 18 kGE = 3582 um^2 (32x32 multiplier incl. the 16b/8b
+	 *     dot-product units, Gautschi 2017 Sec. IV-F). The divider is counted
+	 *     once, in the ALU.
+	 *  NO PUBLISHED SOURCE FOUND: 64-bit integer ALU/MUL (FPnew Fig. 6 does
+	 *   not break Ariane's integer units out), and the host (server scope)
+	 *   FPU, whose x86-64 FP/SIMD datapath is at least 128 bit (SSE2): no
+	 *   FPnew configuration matches. Those keep McPAT's literal, printed.
+	 * NODE SCALING: area x (F_run / 22 nm)^2, the feature-size-squared rule
+	 * McPAT applies to its own FPU literal (CACTI/McPAT feature-size scaling;
+	 * 22FDX taken as 22 nm). McPAT's macro layout overhead is applied after,
+	 * as to every unit (the published figures are cell area), and the
+	 * DRAM-periphery area factor where the unit sits on DRAM silicon
+	 * (processor.cc) -- both are process/layout factors, not FU literals.
+	 * LEAKAGE follows the area: McPAT's leakage is area x tx density x
+	 * Isub/Ig per unit area, so it is rescaled by the same ratio (nothing
+	 * else of McPAT's leakage model changes). FU_height (bypass wire length)
+	 * and the per-access energy are unchanged. GUARDS (printed, not used):
+	 * Gautschi 2017 Sec. IV-F text, 65 nm, "8.3 kGE ALU, 12.6 kGE multiplier"
+	 * with 1 GE = 0.077 mm^2 / 53.5 kGE (Table V, extended core), node-scaled
+	 * (F/65)^2; DERIVED FP32-only RI5CY FPU = 69 - (147 - 147/1.29) kGE
+	 * ([M21] Sec. IV-A.2: the TP-FPU core is 147 kGE, 29% above the
+	 * FP32-only core). */
+	if (XML->sys.pimid_fu_area_published)
+	{
+		const char *fu_nm = (fu_type == FPU) ? "FPU" : (fu_type == ALU) ? "ALU" : "MUL";
+		const int    w     = (fu_type == FPU) ? coredynp.fp_data_width : coredynp.int_data_width;
+		const double F     = g_ip->F_sz_nm;
+		const double ge22  = 0.199;   /* um^2 per GE, GF 22FDX ([M21] Fig. 4, Fig. 6) */
+		const double k22   = (F / 22.0) * (F / 22.0);
+		double kge = 0;
+		const char *cite = "";
+		if (fu_type == FPU)
+		{
+			if (w == 32) { kge = 69.0;  cite = "FPnew (Mach et al., TVLSI 2021) Sec. IV-A.2 / Fig. 4: RI5CY TP-FPU, W_fpu 32 (FP32+FP16+FP16alt FMA, COMP, CONV; no DIVSQRT), 69 kGE, 22FDX"; }
+			else if (w == 64 && XML->sys.Embedded) { kge = 247.0; cite = "FPnew (Mach et al., TVLSI 2021) Sec. IV-B.2 / Fig. 6 / Table IV: Ariane TP-FPU, W_fpu 64 (FP64..FP8, DIVSQRT, COMP, CONV), 247 kGE = 0.049 mm^2, 22FDX"; }
+		}
+		else if (w == 32)
+		{
+			if (fu_type == ALU) { kge = 10.0; cite = "FPnew (Mach et al., TVLSI 2021) Fig. 4: RI5CY Int ALU (incl. the iterative divider, Gautschi 2017 Sec. IV-E.4), 10 kGE, 22FDX"; }
+			else                { kge = 18.0; cite = "FPnew (Mach et al., TVLSI 2021) Fig. 4: RI5CY Int Mult (32x32 + dot-product units), 18 kGE, 22FDX"; }
+		}
+		if (kge > 0 && area_t > 0)
+		{
+			const double a_pub = kge * 1e3 * ge22 * k22;   /* um^2, one unit, run node */
+			const double r = a_pub / area_t;
+			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
+			          << (XML->sys.Embedded ? "embedded" : "server") << " scope): McPAT literal " << area_t*1e-6
+			          << " mm^2 per unit (reference) -> PUBLISHED " << kge << " kGE x " << ge22 << " um^2/GE x (" << F
+			          << "/22)^2 = " << a_pub*1e-6 << " mm^2 per unit (USED; " << cite << "); ratio " << r
+			          << "; leakage " << leakage << " -> " << leakage*r << " W, gate " << gate_leakage << " -> "
+			          << gate_leakage*r << " W per unit; x " << num_fu << " units, x macro layout overhead "
+			          << g_tp.macro_layout_overhead << std::endl;
+			if (fu_type == FPU && w == 32)
+				std::cerr << "[mcpat fu area] core" << ithCore << " FPU guard (not used): DERIVED FP32-only RI5CY FPU"
+				          << " 69 - (147 - 147/1.29) = " << 69.0 - (147.0 - 147.0/1.29) << " kGE = "
+				          << (69.0 - (147.0 - 147.0/1.29))*1e3*ge22*k22*1e-6 << " mm^2 at the run node (the published"
+				          << " TP-FPU also carries FP16/FP16alt lanes; it has no DIVSQRT)" << std::endl;
+			if (fu_type != FPU)
+			{
+				const double ge65 = 0.077e6 / 53.5e3;   /* um^2 per GE, Gautschi 2017 Table V (65 nm) */
+				const double g = ((fu_type == ALU) ? 8.3 : 12.6) * 1e3 * ge65 * (F / 65.0) * (F / 65.0);
+				std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " guard (not used): Gautschi et al."
+				          << " 2017 Sec. IV-F, 65 nm, " << ((fu_type == ALU) ? "8.3" : "12.6") << " kGE x " << ge65
+				          << " um^2/GE (Table V) x (" << F << "/65)^2 = " << g*1e-6 << " mm^2 (USED / guard = "
+				          << a_pub/g << ")" << std::endl;
+			}
+			leakage      *= r;
+			gate_leakage *= r;
+			area_t        = a_pub;
+			pimid_area_pub = a_pub;
+		}
+		else
+			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
+			          << (XML->sys.Embedded ? "embedded" : "server") << " scope): NO PUBLISHED SOURCE FOUND ("
+			          << ((fu_type == FPU) ? "no FPnew configuration matches this FP datapath; the host x86-64 FP/SIMD datapath is >= 128 bit"
+			                               : "64-bit integer units are not broken out in FPnew Fig. 6 or Gautschi 2017")
+			          << "): McPAT's area literal kept, " << area_t*1e-6 << " mm^2 per unit" << std::endl;
 	}
 
 	//IEXEU, simple ALU and FPU
@@ -1229,18 +1332,21 @@ void FunctionalUnit::leakage_feedback(double temperature)
 	area_t = 4.47*1e6*(g_ip->F_sz_nm*g_ip->F_sz_nm/90.0/90.0);//this is um^2 The base number
 	if (g_ip->F_sz_nm>90)
 		area_t = 4.47*1e6*g_tp.scaling_factor.logic_scaling_co_eff;//this is um^2
+	if (pimid_area_pub > 0) area_t = pimid_area_pub;   /* PIMID 1.12.29: published area (constructor) */
 	leakage = area_t *(g_tp.scaling_factor.core_tx_density)*cmos_Isub_leakage(5*g_tp.min_w_nmos_, 5*g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd/2;//unit W
 	gate_leakage = area_t *(g_tp.scaling_factor.core_tx_density)*cmos_Ig_leakage(5*g_tp.min_w_nmos_, 5*g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd/2;//unit W
   }
   else if (fu_type == ALU)
   {
     area_t = 280*260*2*num_fu*g_tp.scaling_factor.logic_scaling_co_eff;//this is um^2 ALU + MUl
+    if (pimid_area_pub > 0) area_t = pimid_area_pub;   /* PIMID 1.12.29: published area per unit (constructor) */
     leakage = area_t *(g_tp.scaling_factor.core_tx_density)*cmos_Isub_leakage(20*g_tp.min_w_nmos_, 20*g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd/2;//unit W
     gate_leakage = area_t*(g_tp.scaling_factor.core_tx_density)*cmos_Ig_leakage(20*g_tp.min_w_nmos_, 20*g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd/2;
   }
   else if (fu_type == MUL)
   {
     area_t = 280*260*2*3*num_fu*g_tp.scaling_factor.logic_scaling_co_eff;//this is um^2 ALU + MUl
+    if (pimid_area_pub > 0) area_t = pimid_area_pub;   /* PIMID 1.12.29: published area per unit (constructor) */
     leakage = area_t *(g_tp.scaling_factor.core_tx_density)*cmos_Isub_leakage(20*g_tp.min_w_nmos_, 20*g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd/2;//unit W
     gate_leakage = area_t*(g_tp.scaling_factor.core_tx_density)*cmos_Ig_leakage(20*g_tp.min_w_nmos_, 20*g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd/2;
   }

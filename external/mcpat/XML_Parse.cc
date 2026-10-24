@@ -113,6 +113,7 @@ void ParseXML::parse(char* filepath)
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fu_base_energy")==0) {sys.pimid_fu_base_energy=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #1) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fpu_published")==0) {sys.pimid_fpu_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #2) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_int_alu_published")==0) {sys.pimid_int_alu_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #3) */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fu_area_published")==0) {sys.pimid_fu_area_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.29: (ruling 2026-10-25) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_core")==0) {sys.pimid_clock_pg_core=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #4) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_cache")==0) {sys.pimid_clock_pg_cache=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_noc")==0) {sys.pimid_clock_pg_noc=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
@@ -1975,6 +1976,7 @@ void ParseXML::initialize() //Initialize all
 	sys.pimid_fu_base_energy=1;  /* PIMID 1.12.18 (ruling #1): upstream behaviour unless the input says otherwise */
 	sys.pimid_fpu_published=0;   /* PIMID 1.12.18 (ruling #2): McPAT's per-op FPU energy unless the input says otherwise */
 	sys.pimid_int_alu_published=0;   /* PIMID 1.12.18 (ruling #3): McPAT's per-op ALU/MUL energy unless the input says otherwise */
+	sys.pimid_fu_area_published=0;   /* PIMID 1.12.29: (ruling 2026-10-25) McPAT's FU area literals unless the input says otherwise */
 	sys.pimid_clock_pg_core = sys.pimid_clock_pg_cache = sys.pimid_clock_pg_noc = sys.pimid_clock_pg_mc = 0;   /* PIMID 1.12.18 (ruling #4): always powered */
 	sys.pimid_clock_split = 1;   /* PIMID 1.12.18 (ruling #4) */
 	/* PIMID 1.12.18: upstream behaviour unless the input says otherwise. */

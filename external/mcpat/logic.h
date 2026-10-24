@@ -404,6 +404,11 @@ public:
 	 * unit {8-bit mult, 32-bit mult}; set with pimid_int_alu_published. */
 	bool   pimid_int_pub = false;
 	double pimid_int_e[2] = {0, 0};
+	/* PIMID 1.12.29: (ruling 2026-10-25) the published area of ONE unit at
+	 * the run's node (um^2, before McPAT's macro layout overhead) that
+	 * replaced McPAT's literal; 0 = McPAT's literal (switch off, or no
+	 * published source for this unit and width). Reused by leakage_feedback. */
+	double pimid_area_pub = 0;
 	bool  is_default;
 	enum FU_type fu_type;
 	statsDef       tdp_stats;

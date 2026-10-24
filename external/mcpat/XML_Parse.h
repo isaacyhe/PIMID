@@ -718,6 +718,7 @@ typedef struct{
 	int  pimid_fu_base_energy;  /* PIMID 1.12.18 (ruling 2026-10-23 #1): 0 = the OOO FU fixed base energy is not charged */
 	int  pimid_fpu_published;   /* PIMID 1.12.18 (ruling 2026-10-23 #2): 1 = published per-op FP energies (logic.cc) */
 	int  pimid_int_alu_published;   /* PIMID 1.12.18 (ruling 2026-10-23 #3): 1 = published per-op integer energies (logic.cc) */
+	int  pimid_fu_area_published;   /* PIMID 1.12.29: (ruling 2026-10-25) 1 = published functional-unit areas (logic.cc) */
 	/* PIMID 1.12.18 (ruling 2026-10-23 #4): measured power-gated residency
 	 * (fraction of the run) of the components the described design gates,
 	 * 0 = always powered; stops the GLOBAL part of their clock tree

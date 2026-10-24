@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.29 -- McPAT's functional-unit area literals are re-sourced from published areas
+
+- **Changed (user ruling 2026-10-25): FPU, integer ALU and multiplier AREA** (and with it their leakage) is taken from
+  published cell areas instead of McPAT's literals (`external/mcpat/logic.cc` FunctionalUnit: FPU 4.47 mm^2 embedded /
+  8.47 mm^2 server at 90 nm x (F/90)^2, ALU 280 x 260 um^2, MUL 3x). At 22 nm the in-order PE's FPU alone was
+  0.294 mm^2 of a 0.431 mm^2 core, against a whole RI5CY core of 0.068 mm^2 at 65 nm (Gautschi et al., TVLSI 2017,
+  Table V). Sources, per unit, by datapath width: S. Mach et al., "FPnew", IEEE TVLSI 29(4) 2021 (arXiv 2007.01530),
+  GF 22FDX, 1 GE = 0.199 um^2: FP 32 bit = RI5CY transprecision FPU 69 kGE (Sec. IV-A.2, Fig. 4, Table I); FP 64 bit
+  (device scope) = Ariane transprecision FPU 247 kGE = 0.049 mm^2 (Sec. IV-B.2, Fig. 6, Table II, Table IV); 32-bit
+  "Int ALU" 10 kGE (holds RI5CY's iterative divider, Gautschi 2017 Sec. IV-E.4: the divider is counted once) and
+  "Int Mult" 18 kGE (Fig. 4). Node scaling x (F / 22 nm)^2, the feature-size-squared rule McPAT applies to its own
+  FPU literal. McPAT's macro layout overhead and the DRAM-periphery area factor still apply; leakage is rescaled by the
+  same area ratio; FU_height (bypass wires) and per-access energies are unchanged.
+- **NO PUBLISHED SOURCE FOUND** (printed; McPAT's literal kept): 64-bit integer ALU/MUL; the host FPU (x86-64 FP/SIMD
+  datapath >= 128 bit, no FPnew configuration matches).
+- Guards printed, not used: Gautschi et al. 2017 Sec. IV-F (65 nm: 8.3 kGE ALU, 12.6 kGE multiplier; 1 GE = 0.077 mm^2
+  / 53.5 kGE, Table V); DERIVED FP32-only RI5CY FPU 69 - (147 - 147/1.29) = 36 kGE (Sec. IV-A.2).
+- New switch `power.models.fu_area_published` (default `true`; `false` = McPAT's literals, printed BY USER OPTION).
+- Data impact: device PEs with a 32-bit datapath (gemv serial, 16 PEs, BANK, 22 nm): McPAT area per core (pre DRAM-periphery
+  factor) alu_core 1.053 -> 0.157 mm^2, in_order_core 1.950 -> 1.013, ooo_core 3.262 -> 1.470 (DDR3, 32 nm,
+  in_order_core 4.030 -> 2.228); core leakage per core x0.21 / x0.60 / x0.50 / x0.55; the area-derived clock trees
+  shrink with the area. Non-clock dynamic energy per instruction is unchanged. Host cores (64-bit, x86): unchanged
+  (no published source; McPAT's literals). Cycles and checksums unchanged.
+
 ## 1.12.28 -- McPAT's instruction decode is derived from the core: output load, x86 decode, no double-counted operand decoder
 
 - **The decoder output load is DERIVED** (user ruling 2026-10-24): each decoded line drives the pipeline-register

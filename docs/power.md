@@ -359,6 +359,21 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   divide/sqrt, x87, 16/64-bit integer operations and integer divide have no
   published value (the run prints NO PUBLISHED SOURCE FOUND) and keep McPAT's
   per-operation energy.
+- **Functional-unit area (1.12.19, `power.models.fu_area_published`).**
+  McPAT's FPU/ALU/MUL areas are literals (an ARM VFP+NEON block of 4.47 mm^2
+  at 90 nm for an embedded FPU: 0.29 mm^2 at 22 nm with layout overhead,
+  four times a whole 65 nm RI5CY core). They are replaced per unit by
+  published cell areas chosen by datapath width: FP 32 bit 69 kGE (RI5CY
+  transprecision FPU), FP 64 bit 247 kGE (Ariane transprecision FPU, device
+  scope), 32-bit ALU 10 kGE and multiplier 18 kGE (S. Mach et al., "FPnew",
+  IEEE TVLSI 2021, GF 22FDX, 1 GE = 0.199 um^2, Fig. 4 and Fig. 6, Table IV),
+  scaled x (F / 22 nm)^2 (the feature-size rule McPAT uses for its own
+  literal). Leakage follows the area. The divider is counted once (in the
+  RI5CY ALU). 64-bit integer units and the host x86 FPU (FP/SIMD datapath >=
+  128 bit) have no matching published area (NO PUBLISHED SOURCE FOUND) and
+  keep McPAT's literal. The RI5CY FPU carries FP16 lanes and no divide/sqrt;
+  the multiplier includes RI5CY's dot-product units: both printed. Every run
+  prints the McPAT literal (reference) beside the value used.
 - **Interface energy** per access is an inherited constant, not a measurement.
 - **Power gating** has no temporal weighting of its own.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
