@@ -55,6 +55,7 @@ Processor::Processor(ParseXML *XML_interface)
  flashcontroller(0)
 {
   ClockNetwork::split_enabled = (XML->sys.pimid_clock_split != 0);   /* PIMID 1.12.18 (ruling #4) */
+  ClockNetwork::leaf_cluster_sinks = (XML->sys.pimid_clock_leaf_sinks > 0) ? XML->sys.pimid_clock_leaf_sinks : 30;   /* PIMID (next, F2) */
   /*
    *  placement and routing overhead is 10%, core scales worse than cache 40% is accumulated from 90 to 22nm
    *  There is no point to have heterogeneous memory controller on chip,

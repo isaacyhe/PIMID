@@ -482,12 +482,22 @@ void Pipeline::compute_stage_vector()
 		num_piperegs += coredynp.fetchW*(coredynp.instruction_length + coredynp.pc_width)*coredynp.num_hthreads;
 		/* pipe stage IF/ThreadSEL */
 		if (coredynp.multithreaded) num_piperegs += coredynp.num_hthreads*coredynp.perThreadState; //8 bit thread states
-		/* pipe stage ID/EXE */
-		num_piperegs += coredynp.decodeW*(coredynp.instruction_length + coredynp.pc_width + pow(2.0,opcode_length)+ 2*coredynp.int_data_width)*coredynp.num_hthreads;
-		/* pipe stage EXE/MEM */
-		num_piperegs += coredynp.issueW*(3 * coredynp.arch_ireg_width + pow(2.0,opcode_length) + 8*2*coredynp.int_data_width/*+2*powers (2,reg_length)*/);
-		/* pipe stage MEM/WB the 2^opcode_length means the total decoded signal for the opcode*/
-		num_piperegs += coredynp.issueW*(2*coredynp.int_data_width + pow(2.0,opcode_length) + 8*2*coredynp.int_data_width/*+2*powers (2,reg_length)*/);
+		/* PIMID (next, user rulings 2026-10-25): each later stage register is DERIVED from what it carries,
+		 * the field set of the textbook pipelined datapath (Patterson & Hennessy, Computer Organization and
+		 * Design, the 5-stage pipeline-register figure: ID/EX = control + PC + two source operands + the
+		 * sign-extended immediate + register specifiers; EX/MEM = control + branch target + zero flag + ALU
+		 * result + store data + destination register; MEM/WB = control + load data + ALU result +
+		 * destination register), with the control field the ENCODED micro-op (opcode_length bits, the
+		 * micro_opcode_width on x86) and the data fields this core's int_data_width. Upstream McPAT carried
+		 * the whole instruction into ID/EXE and 8*2*int_data_width extra bits (16 data words, unsourced) into
+		 * each of EXE/MEM and MEM/WB, i.e. 2048 of a 64-bit core's latches. RI5CY (Gautschi et al., TVLSI 2017)
+		 * is an IF/ID/EX/WB pipeline; McPAT's six-stage count is kept. */
+		/* pipe stage ID/EXE: control, PC, 2 source operands + immediate, 3 register specifiers (rs1, rs2, rd) */
+		num_piperegs += coredynp.decodeW*(opcode_length + coredynp.pc_width + 3*coredynp.int_data_width + 3*coredynp.arch_ireg_width)*coredynp.num_hthreads;
+		/* pipe stage EXE/MEM: control, branch target, zero flag, ALU result, store data, destination register */
+		num_piperegs += coredynp.issueW*(opcode_length + coredynp.pc_width + 1 + 2*coredynp.int_data_width + coredynp.arch_ireg_width);
+		/* pipe stage MEM/WB: control, load data, ALU result, destination register */
+		num_piperegs += coredynp.issueW*(opcode_length + 2*coredynp.int_data_width + coredynp.arch_ireg_width);
 //		/* pipe stage 5/6 */
 //		num_piperegs += issueWidth*(data_width + powers (2,opcode_length)/*+2*powers (2,reg_length)*/);
 //		/* pipe stage 6/7 */
@@ -517,13 +527,14 @@ void Pipeline::compute_stage_vector()
 		num_piperegs += coredynp.issueW*(coredynp.instruction_length + 3 * coredynp.phy_ireg_width);
 		/* pipe stage Dispatch/EXE */
 
-		num_piperegs += coredynp.issueW*(3 * coredynp.phy_ireg_width + coredynp.pc_width + pow(2.0,opcode_length)/*+2*powers (2,reg_length)*/);
+		/* PIMID (1.12.30): encoded micro-op field, as in the in-order case */
+		num_piperegs += coredynp.issueW*(3 * coredynp.phy_ireg_width + coredynp.pc_width + opcode_length/*+2*powers (2,reg_length)*/);
 		/* 2^opcode_length means the total decoded signal for the opcode*/
-		num_piperegs += coredynp.issueW*(2*coredynp.int_data_width + pow(2.0,opcode_length)/*+2*powers (2,reg_length)*/);
+		num_piperegs += coredynp.issueW*(2*coredynp.int_data_width + opcode_length/*+2*powers (2,reg_length)*/);
 		/*2 source operands in EXE; Assume 2EXE stages* since we do not really distinguish OP*/
-		num_piperegs += coredynp.issueW*(2*coredynp.int_data_width + pow(2.0,opcode_length)/*+2*powers (2,reg_length)*/);
+		num_piperegs += coredynp.issueW*(2*coredynp.int_data_width + opcode_length/*+2*powers (2,reg_length)*/);
 		/* pipe stage EXE/MEM, data need to be read/write, address*/
-		num_piperegs += coredynp.issueW*(coredynp.int_data_width + coredynp.v_address_width + pow(2.0,opcode_length)/*+2*powers (2,reg_length)*/);//memory Opcode still need to be passed
+		num_piperegs += coredynp.issueW*(coredynp.int_data_width + coredynp.v_address_width + opcode_length/*+2*powers (2,reg_length)*/);//memory Opcode still need to be passed
 		/* pipe stage MEM/WB; result data, writeback regs */
 		num_piperegs += coredynp.issueW*(coredynp.int_data_width + coredynp.phy_ireg_width /* powers (2,opcode_length) + (2,opcode_length)+2*powers (2,reg_length)*/);
 		/* pipe stage WB/CM ; result data, regs need to be updated, address for resolve memory ops in ROB's top*/
@@ -536,8 +547,9 @@ void Pipeline::compute_stage_vector()
 
 	}
 
-	/* assume 50% extra in control registers and interrupt registers (rule of thumb) */
-	num_piperegs = num_piperegs * 1.5;
+	/* PIMID (next, user ruling 2026-10-25): upstream McPAT multiplied the count by 1.5 here ("assume 50% extra
+	 * in control registers and interrupt registers (rule of thumb)"), an unsourced factor; removed. The
+	 * count is the stage fields above. */
 	tot_stage_vector=num_piperegs;
 	per_stage_vector=tot_stage_vector/num_stages;
 
@@ -564,6 +576,8 @@ ClockNetwork::ClockNetwork()
 : built(false), enabled(true), tree_area_um2(0), side_um(0), n_sinks(0), h_levels(0), tree_len_um(0),
   c_wire_per_um(0), c_eff_per_um(0), repeater_spacing_um(0), repeater_size(0),
   e_tree_cycle(0), e_pin_reg(0), c_pin(0), vdd(0), clock_hz(0), sckt(0),
+  n_clusters(0), a_reg_um2(0), cluster_side_um(0), c_local_per_um(0), wn(0), wp(0),   /* PIMID (next, F2) */
+  span_is_clocked_logic(false), cluster_area_um2(0), c_lcb_in(0), c_lcb_out(0), lcb_wn(0), lcb_wp(0),
   leak(0), gate_leak(0), lc_reduction(0), pg_reduction(0), activity(1), rt_ungated(0),
   global_len_um(0), local_len_um(0), e_tree_global_cycle(0), e_tree_local_cycle(0),
   powered(1), powered_source("always powered (no power gating)"), rt_global(0),   /* PIMID 1.12.18 (ruling #4) */
@@ -596,39 +610,81 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	vdd           = g_tp.peri_global.Vdd;
 	sckt          = g_tp.sckt_co_eff;
 	side_um       = sqrt(tree_area_um2);
-	/* H-tree reaching every sink: 4^n = N, L = 1.5 D (sqrt(N) - 1) (logic.h). */
-	h_levels      = (n_sinks > 1) ? log(n_sinks)/log(4.0) : 0;
-	tree_len_um   = (n_sinks > 1) ? 1.5*side_um*(sqrt(n_sinks) - 1.0) : 0;
+	/* PIMID (next, user ruling 2026-10-25, F2): LEAF CLUSTERS. The sinks are grouped into clusters of
+	 * k = leaf_cluster_sinks (power.clock.leaf_cluster_sinks, default 30: the OpenROAD TritonCTS sink-cluster
+	 * cap, "default 30"; IBM US 8,458,634 B2: a local clock buffer drives "at most 24, 26, or 32 latches").
+	 * The GLOBAL H-tree (Global_30, repeated) spans the tree area and reaches the n_cl = ceil(N / k) cluster
+	 * buffers: L_g = 1.5 D (sqrt(n_cl) - 1) (Bakoglu 1990 ch. 8). Each cluster's LOCAL net is unrepeated local
+	 * wire (CACTI wire_local) over the cluster's own register area, k_eff x one register cell (McPAT's DFF):
+	 * an H-tree to its k_eff sinks, l_c = 1.5 d (sqrt(k_eff) - 1), d = sqrt(k_eff x a_reg).
+	 * The die-level trunk (processor.cc; no register pins, e_pin_per_reg_ 0) has component TREE ROOTS as leaves,
+	 * not registers: one leaf per cluster, no local nets (its model is unchanged). */
+	const double k_leaf = (e_pin_per_reg_ != 0.0) ? leaf_cluster_sinks : 1.0;
+	n_clusters    = (n_sinks > 0) ? ceil(n_sinks / k_leaf) : 0;
+	h_levels      = (n_clusters > 1) ? log(n_clusters)/log(4.0) : 0;
+	tree_len_um   = (n_clusters > 1) ? 1.5*side_um*(sqrt(n_clusters) - 1.0) : 0;   /* the GLOBAL tree */
 
-	double wn, wp;
 	Pipeline::reg_widths(!embedded_, l_ip.F_sz_um, wn, wp);
 	c_pin     = 2 * gate_C(wn + wp, 0, false);   /* DFFCell::compute_DFF_cell clock_cap */
 	e_pin_reg = (e_pin_per_reg_ >= 0) ? e_pin_per_reg_ : Pipeline::reg_clock_energy(embedded_, l_ip.F_sz_um);
 
-	e_tree_cycle = leak = gate_leak = 0;
+	double e_global = 0.0;
+	leak = gate_leak = 0;
 	if (tree_len_um > 0)
 	{
 		Wire w(l_ip.wt, tree_len_um);
-		e_tree_cycle = w.power.readOp.dynamic * sckt;
+		e_global = w.power.readOp.dynamic * sckt;
 		leak         = w.power.readOp.leakage;
 		gate_leak    = w.power.readOp.gate_leakage;
 		repeater_spacing_um = w.repeater_spacing;
 		repeater_size       = w.repeater_size;
 		c_wire_per_um = w.wire_cap(1e-6, true);
-		c_eff_per_um  = e_tree_cycle / (tree_len_um * vdd * vdd);
+		c_eff_per_um  = e_global / (tree_len_um * vdd * vdd);
 	}
-	/* PIMID 1.12.18 (user ruling 2026-10-23 #4): global = every H-tree
-	 * level but the last, local = the last level (logic.h). The repeated
-	 * wire's energy is linear in its length (cacti/wire.cc), so the split
-	 * of E_tree is the split of L. */
-	global_len_um = (n_sinks > 4 && split_enabled) ? 1.5*side_um*(sqrt(n_sinks)/2.0 - 1.0) : 0.0;
+	/* the local nets: unrepeated local wire over each cluster's area. (next, user ruling 2026-10-25 on the
+	 * local nets) A tree whose area IS clocked logic (a core: F1) has its flops interleaved with that logic,
+	 * so each cluster's net spans the cluster's SHARE of the tree area, A / n_cl (the clusters tile the area
+	 * the global tree spans). Other trees (caches, controllers, routers, links: area = the whole component,
+	 * arrays included) keep k x one McPAT register cell (their registers sit together at the ports). */
+	{
+		DFFCell cell(false, wn, wp, 2*gate_C(wn + wp, 0, false), &l_ip);
+		a_reg_um2 = cell.area.get_area();
+	}
+	const double k_eff = (n_clusters > 0) ? n_sinks / n_clusters : 0.0;
+	cluster_area_um2 = (span_is_clocked_logic && n_clusters > 0) ? tree_area_um2 / n_clusters : k_eff * a_reg_um2;
+	cluster_side_um = sqrt(cluster_area_um2);
+	local_len_um    = (k_eff > 1) ? n_clusters * 1.5 * cluster_side_um * (sqrt(k_eff) - 1.0) : 0.0;
+	c_local_per_um  = g_tp.wire_local.C_per_um;
+	const double c_net_local = local_len_um * c_local_per_um;
+	/* (1.12.30) the LOCAL CLOCK BUFFER of each cluster, absent until now (the global wire ended unloaded and the
+	 * cluster nets were undriven): an inverting driver at stage effort 4 (logical effort's best stage effort
+	 * is about 4: Sutherland, Sproull, Harris, "Logical Effort", 1999), DERIVED input C = (net + pins) / 4,
+	 * CACTI devices at this node (P/N ratio, drain capacitance, leakage). Its input is the global tree's
+	 * load (every powered cycle); its output diffusion switches with the cluster (gated). */
+	c_lcb_in = c_lcb_out = 0.0;
+	if (k_leaf > 1 && n_clusters > 0 && k_eff > 0)
+	{
+		const double c_load = (c_net_local + k_eff * n_clusters * c_pin) / n_clusters;
+		const double c_per_um = gate_C(1.0, 0, false) - gate_C(0.0, 0, false);
+		const double w_tot = (c_per_um > 0) ? (c_load / 4.0) / c_per_um : 0.0;
+		const double r = pmos_to_nmos_sz_ratio();
+		lcb_wn = w_tot / (1.0 + r); lcb_wp = w_tot * r / (1.0 + r);
+		c_lcb_in  = gate_C(lcb_wn + lcb_wp, 0, false);
+		c_lcb_out = drain_C_(lcb_wn, NCH, 1, 1, g_tp.cell_h_def) + drain_C_(lcb_wp, PCH, 1, 1, g_tp.cell_h_def);
+		leak      += n_clusters * cmos_Isub_leakage(lcb_wn, lcb_wp, 1, inv) * vdd;
+		gate_leak += n_clusters * cmos_Ig_leakage(lcb_wn, lcb_wp, 1, inv) * vdd;
+	}
+	e_global += n_clusters * c_lcb_in * vdd * vdd * sckt;
+	const double e_local = (c_net_local + n_clusters * c_lcb_out) * vdd * vdd * sckt;
+	global_len_um = tree_len_um;
+	tree_len_um   = global_len_um + local_len_um;
+	e_tree_cycle  = e_global + e_local;
+	/* PIMID 1.12.18 (user ruling 2026-10-23 #4), with (1.12.30) F2: GLOBAL = the H-tree to the cluster
+	 * buffers (every powered cycle), LOCAL = the cluster nets + the register pins (gated by activity). */
 	if (!split_enabled)
 		std::cerr << "[mcpat clock] " << owner << ": global/local split OFF BY USER OPTION (power.models.clock_global_local:"
 		          << " false): the whole tree is gated by the measured activity" << std::endl;
-	if (global_len_um < 0) global_len_um = 0;
-	if (global_len_um > tree_len_um) global_len_um = tree_len_um;
-	local_len_um  = tree_len_um - global_len_um;
-	e_tree_global_cycle = (tree_len_um > 0) ? e_tree_cycle * global_len_um / tree_len_um : 0.0;
+	e_tree_global_cycle = split_enabled ? e_global : 0.0;
 	e_tree_local_cycle  = e_tree_cycle - e_tree_global_cycle;
 	lc_reduction = longer_channel_device_reduction(device_ty_, core_ty_);
 	pg_reduction = power_gating_leakage_reduction(false);
@@ -636,7 +692,7 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 
 	std::cerr << "[mcpat clock] " << owner << ": area " << tree_area_um2*1e-6 << " mm^2 (D "
 	          << side_um << " um), sinks N " << n_sinks << " (" << sink_source << "), H-tree "
-	          << h_levels << " levels, L = 1.5 D (sqrt(N)-1) = " << tree_len_um << " um; wire "
+	          << h_levels << " levels to " << n_clusters << " cluster buffers, L = global + local = " << tree_len_um << " um; global wire "
 	          << (l_ip.wt == Global ? "Global" : (l_ip.wt == Global_30 ? "Global_30" : "other"))
 	          << " C_wire " << c_wire_per_um*1e15 << " fF/um, repeaters x" << repeater_size
 	          << " every " << repeater_spacing_um << " um, C_eff (wire+repeaters+sc, x sckt "
@@ -645,11 +701,35 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	          << " MHz; per cycle: tree " << e_tree_cycle << " J + pins (ungated) "
 	          << n_sinks*e_pin_reg << " J; repeater leakage " << leak << " W, gate "
 	          << gate_leak << " W" << std::endl;
-	std::cerr << "[mcpat clock] " << owner << ": split (ruling 2026-10-23 #4, rule: GLOBAL = all H-tree levels but the last,"
-	          << " LOCAL = the last level + the register pins): global L 1.5 D (sqrt(N)/2 - 1) = " << global_len_um
-	          << " um -> " << e_tree_global_cycle << " J/cycle, every powered cycle; local L " << local_len_um
-	          << " um -> " << e_tree_local_cycle << " J/cycle + pins " << n_sinks*e_pin_reg
+	std::cerr << "[mcpat clock] " << owner << ": split (" << ((k_leaf > 1) ? "F2 leaf clusters of k = " : "")
+	          << ((k_leaf > 1) ? std::to_string((int)k_leaf) : std::string("no leaf clusters: the leaves are component tree roots, not registers"))
+	          << ((k_leaf > 1) ? " sinks [OpenROAD TritonCTS sink-cluster cap 30; IBM US 8,458,634 B2: 24-32 latches per local clock buffer]" : "")
+	          << "): GLOBAL H-tree to " << n_clusters << " cluster buffers L 1.5 D (sqrt(N/k) - 1) = " << global_len_um
+	          << " um (repeated, wire above) -> " << e_tree_global_cycle << " J/cycle, every powered cycle; LOCAL "
+	          << n_clusters << " cluster nets of " << k_eff << " sinks over " << cluster_side_um << " um ("
+	          << (span_is_clocked_logic ? "the cluster's share of the clocked-logic area, " : "k register cells, ")
+	          << cluster_area_um2 << " um^2; register cell " << a_reg_um2 << " um^2) = " << local_len_um
+	          << " um of local wire (" << c_local_per_um*1e15 << " fF/um, unrepeated) + " << n_clusters
+	          << " local clock buffers (FO4-sized: in " << c_lcb_in*1e15 << " fF on the global side, out "
+	          << c_lcb_out*1e15 << " fF) -> " << e_tree_local_cycle << " J/cycle + pins " << n_sinks*e_pin_reg
 	          << " J/cycle, gated by measured activity" << std::endl;
+	if (k_leaf > 1)
+	{
+		/* printed check: local load (cluster nets + register clock pins) vs the global tree's switched
+		 * capacitance, against "the effective load-capacitance faced by the LCBs is generally more than
+		 * ~10x higher than that of the clock-mesh itself" (arXiv 1401.0015, citing its ref. [23]). */
+		/* "global" = the network itself (wire + repeaters), as the observation compares the LCBs' load
+		 * with the clock mesh itself; the LCB inputs are printed apart. */
+		const double c_lcb_in_all = n_clusters * c_lcb_in;
+		const double c_glob = (vdd > 0 && sckt > 0) ? e_global / (sckt * vdd * vdd) - c_lcb_in_all : 0.0;
+		const double c_loc  = c_net_local + n_clusters * c_lcb_out + n_sinks * c_pin;
+		std::cerr << "[mcpat clock] " << owner << ": local/global load ratio " << ((c_glob > 0) ? c_loc / c_glob : 0.0)
+		          << " (local " << c_loc*1e15 << " fF = nets " << c_net_local*1e15 << " + LCB outputs "
+		          << n_clusters * c_lcb_out*1e15 << " + " << n_sinks << " pins " << n_sinks*c_pin*1e15
+		          << "; global network " << c_glob*1e15 << " fF, LCB inputs " << c_lcb_in_all*1e15
+		          << " fF beside it); published observation > ~10x (arXiv 1401.0015)" << ((c_glob > 0 && c_loc / c_glob < 10.0)
+		          ? " -- BELOW it (printed, not judged)" : " -- consistent") << std::endl;
+	}
 }
 
 void ClockNetwork::set_powered(double r_gated, const string &src)
@@ -662,6 +742,7 @@ void ClockNetwork::set_powered(double r_gated, const string &src)
 }
 
 bool ClockNetwork::split_enabled = true;   /* PIMID 1.12.18 (ruling #4) */
+double ClockNetwork::leaf_cluster_sinks = 30.0;   /* PIMID (next, F2): power.clock.leaf_cluster_sinks */
 
 double ClockNetwork::gated_cycle(double a, double pins_e) const
 {

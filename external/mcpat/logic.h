@@ -339,6 +339,7 @@ public:
 	 * measured activity (the pre-ruling model). Set once per McPAT run
 	 * (Processor constructor), before any component is built. */
 	static bool split_enabled;
+	static double leaf_cluster_sinks;   /* PIMID (next, F2): sinks per local clock buffer (power.clock.leaf_cluster_sinks) */
 	string activity_source;
 	bool built, enabled;   /* enabled: XML sys.pimid_clock_network (YAML power.models.clock_network) */
 	string owner, sink_source;
@@ -349,6 +350,9 @@ public:
 	double e_tree_cycle;       /* J per cycle per instance */
 	double e_pin_reg;          /* J per register per cycle (x sckt) */
 	double c_pin;              /* F: DFFCell clock_cap */
+	double n_clusters, a_reg_um2, cluster_side_um, c_local_per_um, wn, wp;   /* PIMID (next, F2) */
+	bool   span_is_clocked_logic;   /* PIMID (1.12.30): set by the owner when the tree area is clocked logic (a core) */
+	double cluster_area_um2, c_lcb_in, c_lcb_out, lcb_wn, lcb_wp;   /* PIMID (1.12.30): local nets, local clock buffers */
 	double vdd, clock_hz, sckt;
 	double leak, gate_leak;    /* W per instance (repeaters) */
 	double lc_reduction, pg_reduction;

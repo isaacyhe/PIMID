@@ -2141,7 +2141,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
    * presets, is not used). Model: Wattch (D. Brooks, V. Tiwari,
    * M. Martonosi, ISCA 2000, clocking section) with CACTI wires; see
    * logic.h ClockNetwork.
-   *   Tree area: this core's McPAT area (its private L2 has its own tree).
+   *   Tree area: the clocked logic (PIMID (1.12.30), below); was this core's McPAT area.
    *   Sinks: the pipeline registers McPAT builds for the units that exist
    *   -- corepipe holds num_piperegs per pipeline and Core distributes it
    *   num_pipelines/num_units per unit (computeEnergy below), so the
@@ -2155,12 +2155,29 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  if (coredynp.core_ty==OOO && rnu && rnu->exist) n_exist += 1;
 	  clk_pipe_regs  = corepipe->num_piperegs * coredynp.num_pipelines * n_exist / nu;
 	  clk_extra_regs = (lsu->exist && lsu->dma_regs) ? 3.0 * lsu->dma_regs->l_ip.out_w : 0.0;
-	  double a = area.get_area();
-	  if (XML->sys.Private_L2 && l2cache) a -= l2cache->area.get_area();
+	  /* PIMID (next, user ruling 2026-10-25, F1): the tree spans the CLOCKED LOGIC only -- DERIVED as the
+	   * pipeline-register area McPAT builds for the units that exist (corepipe area x num_pipelines x
+	   * existing/num_units) plus the logic units: the integer ALU(s), the complex ALU (mul/div) and the
+	   * instruction decoders. Excluded: the FPU and every array (instruction/data store, register files,
+	   * queues, TLBs, predictors), which time their own accesses inside CACTI and whose area put the
+	   * flops ~18 um of repeated global wire apart (until this release the tree spanned the whole core
+	   * area: 0.431 mm^2 on a 22 nm alu_core PE, 68% of it the FPU). */
+	  const double a_pipe = corepipe->area.get_area() * coredynp.num_pipelines * n_exist / nu;
+	  const double a_alu  = (exu && exu->exist && exu->exeu) ? exu->exeu->area.get_area() : 0.0;
+	  const double a_mul  = (exu && exu->exist && exu->mul) ? exu->mul->area.get_area() : 0.0;
+	  const double a_dec  = (ifu && ifu->exist && ifu->ID_inst)
+	      ? ifu->ID_inst->area.get_area() + (ifu->ID_operand ? ifu->ID_operand->area.get_area() : 0.0)
+	        + (ifu->ID_misc ? ifu->ID_misc->area.get_area() : 0.0) : 0.0;
+	  const double a = a_pipe + a_alu + a_mul + a_dec;
 	  std::ostringstream src;
 	  src << "pipeline registers " << clk_pipe_regs << " (corepipe " << corepipe->num_piperegs
 	      << " x " << coredynp.num_pipelines << " pipeline(s) x " << n_exist << "/" << nu << " units)";
 	  if (clk_extra_regs > 0) src << " + DMA registers " << clk_extra_regs;
+	  std::cerr << "[mcpat clock] core" << ithCore << ": tree span DERIVED = clocked logic " << a*1e-6 << " mm^2 = pipeline"
+	            << " registers " << a_pipe*1e-6 << " + integer ALU " << a_alu*1e-6 << " + mul/div " << a_mul*1e-6
+	            << " + decoders " << a_dec*1e-6 << " mm^2 (core area " << area.get_area()*1e-6
+	            << " mm^2; FPU and arrays excluded)" << std::endl;
+	  clockNetwork.span_is_clocked_logic = true;   /* PIMID (1.12.30): the span above is clocked logic */
 	  clockNetwork.compute(&interface_ip, "core" + std::to_string(ithCore), a,
 	                       clk_pipe_regs + clk_extra_regs, src.str(),
 	                       corepipe->clock_energy_per_reg, clockRate, XML->sys.Embedded,

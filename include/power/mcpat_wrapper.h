@@ -27,6 +27,7 @@ inline bool& mcpatFrontendFromTimingDefault() { static bool v = true; return v; 
  * (all default true), set the same way. */
 inline bool& mcpatIntAluPublishedDefault() { static bool v = true; return v; }
 inline bool& mcpatClockGlobalLocalDefault() { static bool v = true; return v; }
+inline int& mcpatClockLeafSinksDefault() { static int v = 30; return v; }   /* PIMID (next, F2): power.clock.leaf_cluster_sinks */
 inline bool& mcpatL1dAccessWidthDefault() { static bool v = true; return v; }
 inline bool& mcpatTlbBtbMeasuredDefault() { static bool v = true; return v; }
 /* 1.12.29: (user ruling 2026-10-25) power.models.fu_area_published (default
@@ -513,6 +514,7 @@ public:
          * statistics. The models live in the fork. */
         bool int_alu_published = mcpatIntAluPublishedDefault();
         bool clock_global_local = mcpatClockGlobalLocalDefault();
+        int clock_leaf_sinks = mcpatClockLeafSinksDefault();   /* PIMID (next, F2) */
         bool l1d_access_width = mcpatL1dAccessWidthDefault();
         bool tlb_btb_measured = mcpatTlbBtbMeasuredDefault();
         bool fu_area_published = mcpatFuAreaPublishedDefault();   // 1.12.29: sys param pimid_fu_area_published

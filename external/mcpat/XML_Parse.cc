@@ -119,6 +119,7 @@ void ParseXML::parse(char* filepath)
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_noc")==0) {sys.pimid_clock_pg_noc=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_mc")==0) {sys.pimid_clock_pg_mc=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_split")==0) {sys.pimid_clock_split=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_leaf_sinks")==0) {sys.pimid_clock_leaf_sinks=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		/* PIMID 1.12.18 (user rulings: idle halt, per-die process, per-die clock trunk) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_idle_halt")==0) {sys.pimid_idle_halt=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_logic_die_node")==0) {sys.pimid_logic_die_node=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
@@ -1979,6 +1980,7 @@ void ParseXML::initialize() //Initialize all
 	sys.pimid_fu_area_published=0;   /* PIMID 1.12.29: (ruling 2026-10-25) McPAT's FU area literals unless the input says otherwise */
 	sys.pimid_clock_pg_core = sys.pimid_clock_pg_cache = sys.pimid_clock_pg_noc = sys.pimid_clock_pg_mc = 0;   /* PIMID 1.12.18 (ruling #4): always powered */
 	sys.pimid_clock_split = 1;   /* PIMID 1.12.18 (ruling #4) */
+	sys.pimid_clock_leaf_sinks = 30;   /* PIMID (next, F2) */
 	/* PIMID 1.12.18: upstream behaviour unless the input says otherwise. */
 	sys.pimid_idle_halt = 0;
 	sys.pimid_logic_die_node = 0; sys.pimid_logic_die_device_type = -1;

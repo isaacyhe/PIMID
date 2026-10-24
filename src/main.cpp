@@ -2226,7 +2226,7 @@ static const char* kSchemaPaths[] = {
     "power.models.vector_moves_split", "power.models.dram_io_share_split", "power.models.dram_vpp_dynamic",   // 1.12.18: power bug batch H
     "power.models.flush_writebacks_replayed",
     "power.models.mcpat_fu_base_energy", "power.models.fpu_published", "power.models.frontend_from_timing",   // 1.12.18
-    "power.models.int_alu_published", "power.models.clock_global_local", "power.models.l1d_access_width",
+    "power.models.int_alu_published", "power.models.clock_global_local", "power.clock.leaf_cluster_sinks", "power.models.l1d_access_width",
     "power.models.tlb_btb_measured",   // PIMID 1.12.18
     "power.models.fu_area_published",   // 1.12.19
     "power.models.mcpat_layout_energy_overhead",   // 1.12.18 (ruling 2026-10-24)
@@ -2630,6 +2630,7 @@ struct UnifiedConfig {
     /* PIMID 1.12.18: (user rulings 2026-10-23 #3-#6), all default true. */
     bool pm_int_alu_published = true;       // power.models.int_alu_published (ruling 3)
     bool pm_clock_global_local = true;      // power.models.clock_global_local (ruling 4)
+    int pm_clock_leaf_sinks = 30;           // power.clock.leaf_cluster_sinks (next, F2): sinks per local clock buffer
     bool pm_l1d_access_width = true;        // power.models.l1d_access_width (ruling 6)
     bool pm_tlb_btb_measured = true;        // power.models.tlb_btb_measured (ruling 5)
     bool pm_fu_area_published = true;       // 1.12.29: power.models.fu_area_published (ruling 2026-10-25)
@@ -21022,6 +21023,17 @@ int main(int argc, char** argv) {
             pimid::mcpatFrontendFromTimingDefault() = config.pm_frontend_from_timing;
             pimid::mcpatIntAluPublishedDefault() = config.pm_int_alu_published;    // PIMID 1.12.18
             pimid::mcpatClockGlobalLocalDefault() = config.pm_clock_global_local;
+            /* (next, user ruling 2026-10-25, F2): sinks per leaf clock cluster; default 30 = the OpenROAD TritonCTS
+             * sink-cluster cap (IBM US 8,458,634 B2: 24-32 latches per local clock buffer). */
+            if (yaml_cfg["power"] && yaml_cfg["power"]["clock"] && yaml_cfg["power"]["clock"]["leaf_cluster_sinks"]) {
+                config.pm_clock_leaf_sinks = yamlInt(yaml_cfg["power"]["clock"]["leaf_cluster_sinks"], 30, "power.clock.leaf_cluster_sinks");
+                if (config.pm_clock_leaf_sinks < 1) {
+                    std::cerr << "[config] FATAL: power.clock.leaf_cluster_sinks = " << config.pm_clock_leaf_sinks
+                              << " must be at least 1 (sinks per local clock buffer)." << std::endl;
+                    std::exit(2);
+                }
+            }
+            pimid::mcpatClockLeafSinksDefault() = config.pm_clock_leaf_sinks;
             pimid::mcpatL1dAccessWidthDefault() = config.pm_l1d_access_width;
             pimid::mcpatTlbBtbMeasuredDefault() = config.pm_tlb_btb_measured;
             pimid::mcpatFuAreaPublishedDefault() = config.pm_fu_area_published;   // 1.12.19

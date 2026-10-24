@@ -178,7 +178,60 @@ only structure counts McPAT/CACTI already make: a core's pipeline registers,
 a cache's or controller's array port registers (McPAT's own shared-cache
 rule), a router's matrix-arbiter flip-flops, a link's inserted pipeline
 registers. Pin energy McPAT already charges inside the pipeline is not
-charged again. Runtime clock energy is gated by each component's MEASURED
+charged again.
+
+(next, user rulings 2026-10-25) A CORE's tree spans its CLOCKED LOGIC only,
+DERIVED as the pipeline-register area McPAT builds for the units that exist
+plus the integer ALU(s), the multiplier/divider and the instruction decoders
+(the `[mcpat clock] coreN: tree span` line prints the parts). The FPU and the
+arrays (instruction and data stores, register files, queues, TLBs,
+predictors) are not spanned: they time their own accesses inside CACTI, and
+until this release their area put a 22 nm alu_core PE's flops about 18 um of
+repeated global wire apart (core area 0.431 mm^2, 68% of it the FPU). The
+pipeline-register count no longer carries upstream McPAT's unsourced x1.5
+"control and interrupt registers" rule of thumb, and each stage latches the
+opcode as an encoded micro-op field (its bit width) instead of one line per
+opcode value. An in-order core's later stage registers are DERIVED from
+what they carry, the field set of the textbook pipelined datapath (Patterson
+& Hennessy, Computer Organization and Design, the five-stage
+pipeline-register figure): ID/EX = control + PC + two source operands +
+immediate + three register specifiers; EX/MEM = control + branch target +
+zero flag + ALU result + store data + destination register; MEM/WB =
+control + load data + ALU result + destination register, with the data
+fields the core's integer width and the control field the encoded micro-op.
+Upstream McPAT latched the whole instruction into ID/EX and 8*2*int_data_width
+extra bits (sixteen data words, unsourced) into each of EX/MEM and MEM/WB.
+The OOO branch has no such term (its stage registers already follow the
+renamed operands and tags).
+
+(next, user ruling 2026-10-25, F2) LEAF CLUSTERS. The register sinks of a
+tree are grouped into leaf clusters of k = `power.clock.leaf_cluster_sinks`
+(default 30, the OpenROAD TritonCTS sink-cluster size cap; IBM US 8,458,634
+B2: a local clock buffer drives at most 24, 26 or 32 latches). The GLOBAL
+H-tree, CACTI's repeated global wire, spans the tree area and ends at the
+ceil(N/k) cluster buffers: L_g = 1.5 D (sqrt(N/k) - 1). Each cluster's LOCAL
+net is unrepeated CACTI local wire, an H-tree to its k sinks, 1.5 d
+(sqrt(k) - 1), over the cluster's area d^2. In a core the tree area is
+clocked logic (the flops sit among that logic), so a cluster's area is its
+share of it, A / ceil(N/k); in the other trees (caches, controllers,
+routers, links, whose area includes their arrays) it is k McPAT register
+cells. Each cluster has a LOCAL CLOCK BUFFER, an inverting driver sized at
+stage effort 4 (logical effort's best stage effort is about 4: Sutherland,
+Sproull, Harris, Logical Effort, 1999), input C = (net + pins) / 4, CACTI
+devices at the node: its input loads the global tree, its output diffusion
+switches with the cluster, its leakage is charged. The global part (wire,
+repeaters, buffer inputs) switches every powered cycle; the local nets,
+buffer outputs and register pins are gated by the measured activity
+(`power.models.clock_global_local`). Each tree prints the split and the
+ratio of its local load (nets + buffer outputs + pins) to the global
+network itself (wire + repeaters), beside the published observation that
+the local clock buffers' load is generally more than ~10x the clock
+network's own (arXiv 1401.0015): printed, not judged. The cores print
+6.5-7.5x (PEs) and 4.7x (host); McPAT's register clock pin (0.113 fF at
+22 nm for a PE) is below published library pins (Nangate 45 nm DFF_X1
+0.95 fF; ASAP7 DFFHQNx1 0.47 fF), and the pin is McPAT's pipeline register
+model, left as is. The die-level trunk keeps one leaf per
+component tree root (its leaves are not registers). Runtime clock energy is gated by each component's MEASURED
 activity (Wattch's conditional-clocking style cc2: clock power scales with
 measured port usage), and the ungated value is printed beside it as a
 reference; peak power is ungated. Not priced: the memory-controller

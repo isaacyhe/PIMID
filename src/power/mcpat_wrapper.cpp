@@ -1227,7 +1227,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.vector_moves_split ? 1 : 0);
     for (uint64_t v : meas_fpc_) f(v);                                              // 1.12.18
     for (uint64_t v : meas_iops_) f(v);                                             // PIMID 1.12.18
-    f(config_.int_alu_published ? 1 : 0); f(config_.clock_global_local ? 1 : 0);
+    f(config_.int_alu_published ? 1 : 0); f(config_.clock_global_local ? 1 : 0); f(config_.clock_leaf_sinks);   /* (next, F2) */
     f(config_.l1d_access_width ? 1 : 0);  f(config_.tlb_btb_measured ? 1 : 0);
     f(config_.fu_area_published ? 1 : 0);                                          // 1.12.19
     f(config_.tlb_published_geometry ? 1 : 0);                                     // 1.12.18
@@ -2909,6 +2909,7 @@ std::string McPATWrapper::generateXMLConfig() const {
     xml << "    <param name=\"pimid_int_alu_published\" value=\"" << (config_.int_alu_published ? 1 : 0) << "\"/>\n";
     xml << "    <param name=\"pimid_fu_area_published\" value=\"" << (config_.fu_area_published ? 1 : 0) << "\"/>\n";   // 1.12.19
     xml << "    <param name=\"pimid_clock_split\" value=\"" << (config_.clock_global_local ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_clock_leaf_sinks\" value=\"" << config_.clock_leaf_sinks << "\"/>\n";   /* (next, F2) */
     /* PIMID 1.12.18 (user rulings 2026-10-23: idle halt, per-die process,
      * per-die clock trunk): switches and STRUCTURE only; the models are the
      * fork's (logic.h ClockNetwork, processor.cc). */

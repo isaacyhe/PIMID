@@ -6,6 +6,39 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.30 -- clock trees: clocked-logic span, leaf clusters of 30 sinks, stage registers derived from their contents
+
+- **Tree span, DERIVED** (user ruling 2026-10-25, F1; external/mcpat/core.cc): the core's H-tree spans the
+  pipeline-register area plus the integer ALU(s), the multiplier/divider and the instruction decoders, not the
+  whole core area. The FPU and the arrays are excluded (they time their own accesses inside CACTI). 22 nm alu_core
+  PE: span 0.431 -> 0.078 mm^2, tree 57.1 -> 16.5 mm.
+- **Sink count** (F3; external/mcpat/logic.cc Pipeline::compute_stage_vector): upstream McPAT's unsourced x1.5
+  control/interrupt-register rule of thumb is removed, and each stage latches the opcode as an encoded micro-op field
+  (8 bits on x86) instead of 2^width one-hot lines. The instruction decoder's DERIVED output load follows the count.
+- **Stage registers DERIVED from their contents** (user ruling 2026-10-25; in-order branch): ID/EX = control + PC +
+  two operands + immediate + three register specifiers; EX/MEM = control + branch target + zero flag + ALU result +
+  store data + destination register; MEM/WB = control + load data + ALU result + destination register (Patterson &
+  Hennessy, the five-stage pipeline-register contents). Upstream carried the whole instruction into ID/EX and an
+  unsourced 8*2*int_data_width bits (sixteen data words) into each of EX/MEM and MEM/WB. The OOO branch has no such
+  term. Sinks: alu_core 3474 -> 733, in_order_core 7490 -> 1150, OOO PE 12064 -> 3744, host OOO 13520 -> 4715.
+- **Leaf clusters** (user ruling 2026-10-25, F2; logic.cc ClockNetwork): the register sinks of every component tree
+  are grouped into clusters of k = `power.clock.leaf_cluster_sinks` (default 30: the OpenROAD TritonCTS sink-cluster
+  cap; IBM US 8,458,634 B2: 24-32 latches per local clock buffer). The global H-tree (CACTI repeated global wire,
+  every powered cycle) ends at the ceil(N/k) cluster buffers; each cluster's net is unrepeated CACTI local wire over
+  the cluster's area: in a core its share of the clocked-logic area (flops among the logic), elsewhere k register
+  cells. Each cluster has a local clock buffer sized at stage effort 4 (Sutherland, Sproull, Harris 1999; input on
+  the global side, output diffusion gated with the cluster, leakage charged). Each tree prints its split and its
+  local/global load ratio beside the published "> ~10x" observation (arXiv 1401.0015): cores 6.5-7.5x (PEs), 4.7x
+  (host), printed, not judged. The die-level trunk is not clustered (its leaves are component tree roots).
+- Clock per cycle at activity 1, one core (before -> after this release): 22 nm alu_core PE 3.95 -> 0.808 pJ,
+  in_order_core 14.7 -> 1.28, OOO PE 22.6 -> 3.01, 32 nm (DDR3 die) alu_core 6.94 -> 1.54, host OOO core
+  126 -> 18.8. Host core 211 -> 156 pJ/instr; DDR5 1-core baseline 3.18 -> 2.81 W. Other trees: the host L3 170 ->
+  30.2 pJ/cycle, L2 42.2 -> 11.7, the device controller 8.67 -> 1.36. Serial cycles and checksums unchanged.
+- The 22 nm PE references use the nearest Stillmaker & Baas Table 5 row, 20 nm (user ruling 2026-10-25; the
+  checker states it). The decode + clock comparison stays INFORMATION (not judged) until this release lands, and
+  pe.nonclock_pJ_instr / pe.mW_at_ipc1 become INFORMATION (band printed, not judged) pending the PE non-clock energy
+  investigation (user ruling 2026-10-25).
+
 ## 1.12.29 -- McPAT's functional-unit area literals are re-sourced from published areas
 
 - **Changed (user ruling 2026-10-25): FPU, integer ALU and multiplier AREA** (and with it their leakage) is taken from
