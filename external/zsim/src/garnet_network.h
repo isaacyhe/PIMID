@@ -571,7 +571,24 @@ public:
 
     // -- Main interface ---------------------------------------
 
+    /* 1.12.22: getRTT runs under garnetLock_. A cycle-accurate query resets the
+     * whole network and drives the process-global gem5 EventQueue
+     * (getCycleAccurateLatency -> resetGarnetState, whose contract is "caller
+     * holds garnetLock_"), and an unknown name inserts into nodeMap_. The
+     * thread-MPI sender's pricing probe (getRTTProbe in its counted default)
+     * came here from its own vcpu thread with no lock, concurrently with the
+     * phase-barrier batch drain, the barrier's accessNetwork and the
+     * receivers' locked probes: the event queue and the message buffers were
+     * mutated by two threads at once (cosim_DDR5_mpi_bfs: "malloc(): unaligned
+     * tcache chunk detected", "double free or corruption", QEMU internal
+     * SIGSEGV, preceded by "[GarnetNetwork] Drain timeout"; 6 of 6 runs). */
     uint32_t getRTT(const char* src, const char* dst) override {
+        futex_lock(&garnetLock_);
+        const uint32_t rtt = getRTTLocked_(src, dst);
+        futex_unlock(&garnetLock_);
+        return rtt;
+    }
+    uint32_t getRTTLocked_(const char* src, const char* dst) {
         if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
         if (nodeMap_.find(dst) == nodeMap_.end()) autoRegisterNode(dst);
 
@@ -632,10 +649,12 @@ public:
      * must add no packet in either knob setting (same latency either way). */
     uint32_t getRTTProbe(const char* src, const char* dst, bool uncounted = false) {
         if ((!probeUncounted() && !uncounted) || !cycleAccurate_) return getRTT(src, dst);
+        futex_lock(&garnetLock_);   // 1.12.22: nodeMap_ is shared (see getRTT)
         if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
         if (nodeMap_.find(dst) == nodeMap_.end()) autoRegisterNode(dst);
         uint32_t srcId = nodeMap_[src];
         uint32_t dstId = nodeMap_[dst];
+        futex_unlock(&garnetLock_);
 #ifdef HAVE_GARNET
         /* Serialised with the batch replay: the probe resets the network and
          * re-snaps the router counters, which must not interleave with a
@@ -658,12 +677,15 @@ public:
      * total_packets++ / countPacket_ that getRTT adds. Analytic network only;
      * a cycle-accurate network has getRTTProbe for this. */
     uint32_t getRTTAnalyticUncounted(const char* src, const char* dst) {
+        futex_lock(&garnetLock_);   // 1.12.22: nodeMap_ / latencyCache_ are shared with getRTT
         if (nodeMap_.find(src) == nodeMap_.end()) autoRegisterNode(src);
         if (nodeMap_.find(dst) == nodeMap_.end()) autoRegisterNode(dst);
         std::string key = std::string(src) + " " + dst;
         auto it = latencyCache_.find(key);
-        if (it != latencyCache_.end()) return it->second;
-        return 2 * getAnalyticalLatency(nodeMap_[src], nodeMap_[dst], false);
+        const uint32_t v = (it != latencyCache_.end()) ? it->second
+                                                       : 2 * getAnalyticalLatency(nodeMap_[src], nodeMap_[dst], false);
+        futex_unlock(&garnetLock_);
+        return v;
     }
 
     // -- Phase-sync injection/dequeue interface -----------------

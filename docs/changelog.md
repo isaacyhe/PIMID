@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.22 -- the Garnet network's latency query takes the network lock (co-simulation message-passing crash fixed)
+
+- **Fixed: heap corruption / QEMU SIGSEGV in co-simulation message-passing runs** (seen on DDR5 MPI bfs during the
+  ranks' entry to the kernel). `GarnetNetwork::getRTT` ran its cycle-accurate branch without the network lock:
+  that branch resets every router and buffer and drives the process-global gem5 event queue, and it also inserted
+  into the node and latency caches. The thread-MPI sender's pricing probe calls it on the rank's own thread while
+  the phase-barrier drain, the barrier's network access and the receivers' probes hold the lock, so two threads
+  mutated the same event queue and buffers (a Garnet drain-timeout warning, then "malloc(): unaligned tcache chunk"
+  or a SIGSEGV). Root cause: an unlocked entry point into state whose contract requires the lock. `getRTT` now takes
+  `garnetLock_`; the uncounted probe registers nodes and the analytic path reads its caches under the lock. No
+  caller holds the lock on entry, so no self-deadlock. The long kernel-entry flush only widened the window.
+- **Data impact.** None on runs that completed: the query returns the same latency; runs that crashed now finish.
+
 ## 1.12.21 -- wake-ups and lock handoffs synchronise in-order and out-of-order cores as well
 
 - **Same rule for every core type.** A thread woken by a futex wake, or a core taking a lock, now takes its
