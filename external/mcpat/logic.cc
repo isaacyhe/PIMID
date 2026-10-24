@@ -55,9 +55,18 @@ double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src_o, d
 	const double c_run = pimid_min_inv_switch_cap();
 	const double v_run = g_tp.peri_global.Vdd;
 	const TechnologyParameter tp_saved = g_tp;
+	/* PIMID 1.12.24: the source node's minimum inverter is drawn at the SOURCE node's feature size.
+	 * TechnologyParameter::init sizes every device from g_ip->F_sz_um (min_w_nmos_ = 1.5 F,
+	 * cell_h_def = 50 F, parameter.cc), not from the table it loads, so the source inverter used to
+	 * be the run node's width with the source node's per-um capacitance: the linear shrink
+	 * F_run/F_src was missing from k (45 -> 32 nm 0.876 instead of ~0.62; 45 -> 22 nm 0.541 instead
+	 * of ~0.26), and C_inv(45 nm) came out 0.371 fF in a 32 nm run but 0.252 fF in a 22 nm run. */
+	const double f_um_saved = g_ip->F_sz_um, f_nm_saved = g_ip->F_sz_nm;
+	g_ip->F_sz_um = src_nm/1000.0; g_ip->F_sz_nm = src_nm;
 	init_tech_params(src_nm/1000.0, false);
 	const double c_src = pimid_min_inv_switch_cap();
 	const double v_src_cacti = g_tp.peri_global.Vdd;
+	g_ip->F_sz_um = f_um_saved; g_ip->F_sz_nm = f_nm_saved;
 	g_tp = tp_saved;   /* the run's tables, exactly as they were */
 	if (c_src_o) *c_src_o = c_src;
 	if (c_run_o) *c_run_o = c_run;

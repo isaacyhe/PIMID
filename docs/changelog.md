@@ -6,6 +6,17 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.24 -- published logic energies are node-scaled with the source node's own transistor widths
+
+- **Fixed: the node scaling of published logic energies omitted the linear shrink.** McPAT's
+  pimid_node_energy_scale (external/mcpat/logic.cc) drew the SOURCE node's minimum inverter at the RUN node's feature
+  size: CACTI's TechnologyParameter::init sizes every device from the input's F (min_w_nmos_ = 1.5 F, cell_h_def =
+  50 F; external/cacti/parameter.cc), not from the table it loads, so C_inv(45 nm) came out 0.371 fF in a 32 nm run
+  and 0.252 fF in a 22 nm run (0.531 fF in both now). The factor 45 -> 32 nm moves 0.876 -> 0.613 and 45 -> 22 nm
+  0.541 -> 0.256 (cross-check: Stillmaker & Baas, Integration 58 (2017), Table 5 HP, 0.654 and 0.219 to 20 nm).
+- Data impact: the Horowitz / Galal ALU, multiplier and FPU energies and their guards fall 30% at 32 nm and 53% at
+  22 nm; PE execution-unit power falls 2-3%, PE totals in the 5th digit; cycles unchanged.
+
 ## 1.12.23 -- host on-chip fabric
 
 - Host CPU on-chip network, timing and power (user ruling 2026-10-24): `system.hosts[].noc.topology` is `ring` (default; the published Nehalem-EX ring: a stop per core/L3-slice pair and per memory controller, 1 cycle per stop, the shorter direction, zero-load), `crossbar` (the former uniform hop, now on the L2<->L3 path too) or `bus` (one shared bus with arbitration); other words are refused. The host L2s no longer take the device Garnet's distance between auto-registered nodes as their L3 latency. `power.models.host_noc` (default true) prices the same topology in McPAT from the measured data messages and hops (256-b flits, the Nehalem-EX data ring); ledger `<host>.noc`, which through 1.12.18 carried a leakage-only placeholder. Control messages are not priced on the ring and crossbar; a 1-core host has no fabric. Host run time and totals change.
