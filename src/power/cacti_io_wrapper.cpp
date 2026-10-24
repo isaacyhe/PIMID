@@ -358,7 +358,7 @@ double CactiIOWrapper::dramRateMTs(const std::string& t) {
      * row's job is to agree with the default so the default run is quiet, and
      * to make a non-default grade say that the table is ignored. */
     /* 1.12.18 (user ruling 2026-10-23/24): the row is the part record's grade
-     * (DDR5_5600B by default), not a literal, so the default run stays quiet
+     * (DDR5_4800B by default since 1.12.19), not a literal, so the default run stays quiet
      * whatever grade the record names. */
     if (t == "DDR5") { const int g = pimid::params::dramRecordGradeMTs("DDR5"); return g > 0 ? g : -1.0; }
     if (t == "LPDDR5") return 6400;

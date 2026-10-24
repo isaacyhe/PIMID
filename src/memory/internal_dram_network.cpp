@@ -489,7 +489,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
     // L0: Subarray network: 16n prefetch buffer
     network_configs_[0].link_width_bits = 512;  // ~153 GB/s
     /* 1.12.18: the provisional clock is the run's DDR5 data rate / 2 (the knob, else the part
-     * record's grade: 2.8 GHz at the default DDR5-5600B), not the literal 2.4 GHz of 4800; the
+     * record's grade: 2.4 GHz at the default DDR5-4800B since 1.12.19), not a literal; the
      * sourced ladder supersedes it. */
     const double ddr5_clk_GHz = RamulatorWrapper::runDdr5GradeMTs() / 2000.0;
     network_configs_[0].frequency_GHz = ddr5_clk_GHz;

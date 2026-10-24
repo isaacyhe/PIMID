@@ -1595,8 +1595,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     /* 1.11.72: the two literals above describe the 8 Gb part and are the
      * FALLBACK ONLY. RamulatorWrapper::applyPresetBankGroupingToArchitecture()
      * stamps the simulated preset's grouping at runtime -- 4 banks/BG for the
-     * 16 Gb part the 4800B/5600B grades select (5600B the default since
-     * 1.12.18) (JESD79-5D Table 4), 2 for
+     * 16 Gb part the 4800B/5600B grades select (4800B the default; 5600B
+     * was in 1.12.18 only) (JESD79-5D Table 4), 2 for
      * the 8 Gb part at grade 3200 -- so every consumer of getBanksPerBankGroup()
      * sees the part the cycles are counted for. */
     arch->organization.chips_per_rank = 8;  // x8 organization

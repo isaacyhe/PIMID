@@ -6,6 +6,17 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.19 -- DDR5 defaults to 4800 again (16 Gb x8 die Rev A)
+
+- **DDR5 default grade: DDR5-4800B on the Micron MT60B 16 Gb x8 die Rev A** (core sheet Rev A Table 6, x8 4800
+  column; user ruling 2026-10-24). 1.12.18 moved the default to 5600 (Rev D Table 8) because Rev D publishes no
+  4800 column; Rev A publishes it for the same 16 Gb x8 part and organisation, so only the grade and the current
+  table change. `memory.dram.ddr5_speed_grade: 5600` (Rev D) and `3200` stay selectable. A default run reproduces a
+  1.12.18 run pinned to `ddr5_speed_grade: 4800` exactly (device scope). The co-simulation host-device bridge's DDR5
+  bandwidth now follows the grade in force x the record's 64-bit channel (38.4 GB/s at 4800; it was a 25.6 GB/s
+  DDR5-3200 literal at every grade). Data impact: every DDR5 cell run with 1.12.18 at the default grade (5600)
+  moves back to the 4800 numbers; co-simulation DDR5 cells also move by the bridge bandwidth.
+
 ## 1.12.18 -- the power report is complete and checked: every component is priced once and summed into its total; run time is the ROI wall clock; a page lives where it is first touched; the compute-unit PE gets a scratchpad; DDR5 defaults to 5600 (Rev D)
 
 **Summary.** Every physical component of a device, host or co-simulation is now priced from measured activity

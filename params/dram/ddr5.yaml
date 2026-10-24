@@ -7,10 +7,14 @@
 # To model another part: copy this file, change every field with its own source,
 # and point PIMID_PARAMS at the directory holding it. Partial records are refused.
 technology: DDR5
-# 1.12.18: user ruling 2026-10-23 (confirmed 2026-10-24): "DDR5 default = Micron MT60B 16 Gb Die Rev D Table 8, 4800 column; else move the default to 5600 and say so." Rev D Table 8 publishes only 5600/6400/7200, so the default moved to 5600
-# (DDR5-5600B, the MT60B2G8RZ-56B:D part, 16 Gb x8, 46-45-45; Rev D addendum Table 1 p.1). 4800 (Rev A) and
-# 3200 stay selectable with memory.dram.ddr5_speed_grade.
-part: "MT60B 16 Gb DDR5-5600B Die Rev D (default grade since 1.12.18; 4800 and 3200 select other presets)"
+# 1.12.19: user ruling 2026-10-24: the DDR5 DEFAULT is DDR5-4800 on the 16 Gb x8 die Rev A (Micron MT60B core sheet
+# Rev A, 16gb_ddr5_sdram_dierevA.pdf Rev. D 02/2023, Table 6, pp.17-20, x8 DDR5-4800 column; part MT60B2G8HB-48B:A,
+# 2 Gig x 8, 4800B 40-39-39, p.1). Why: the 1.12.18 ruling asked for a 4800 default; the Rev D addendum (Table 8)
+# publishes no 4800 column, so 1.12.18 moved to 5600 -- but the Rev A addendum publishes the 4800 column for the
+# same 16 Gb x8 part and organisation, so the 4800 default is datasheet-backed there. Only the grade and the
+# current table change; 5600 (Rev D) and 3200 stay selectable with memory.dram.ddr5_speed_grade.
+# (1.12.18 had the default at DDR5-5600B, Rev D Table 8, under the 2026-10-23 ruling "else move the default to 5600".)
+part: "MT60B 16 Gb DDR5-4800B Die Rev A (default grade since 1.12.19; 5600 and 3200 select other presets)"
 vendor: "Micron"
 generation: "1a"            # vendor generation label of the DENSITY part (sweep-94 row 13)
 feature_nm: 14.0                  # mid-value of the published range for this generation
@@ -18,7 +22,7 @@ cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline
 density_mb_per_mm2: 40.32  # measured FULL-DIE density, user capacity basis (D11)
 density_source: "Micron D1a (1-alpha) 8 Gb DDR5, 8 Gb / 25.41 mm^2 = 0.315 Gb/mm^2 (TechInsights) x 128"
 organization_preset: "DDR5_16Gb_x8"   # Ramulator org preset the run instantiates (default knobs)
-timing_preset: "DDR5_5600B"         # Ramulator timing preset (default knobs); 1.12.18: 5600B per the user ruling (was DDR5_4800B)
+timing_preset: "DDR5_4800B"         # Ramulator timing preset (default knobs); 1.12.19: 4800B per the user ruling 2026-10-24 (1.12.18: DDR5_5600B)
 channels: 2                   # 1.11.97 (review R1): the 64-bit DIMM channel is two independent 32-bit sub-channels (JESD79-5B 2.1); the preset instantiates both
 channel_width_bits: 32   # 1.11.101 (step 2): JESD79-5B 2.1: each of the two independent sub-channels is 32 bits wide; one sub-channel rank = 32 / device width devices (the DIMM rank spans both: 64 / width)
 refresh_ladder:                    # JEDEC JESD79-5: 2x refresh above 85 C (the model applies one step)
@@ -58,7 +62,7 @@ idd:
       idd2p: 88.0
       trfc_ns: 295.0
       trefi_ns: 3900.0
-      source: "Micron MT60B 16 Gb DDR5 core sheet Rev A Table 6, pp.17-19 (DDR5-4800B; the record grade until 1.12.18, selectable with memory.dram.ddr5_speed_grade: 4800), MAXIMA; typical via the component factors"
+      source: "Micron MT60B 16 Gb DDR5 core sheet Rev A (16gb_ddr5_sdram_dierevA.pdf Rev. D 02/2023) Table 6, pp.17-19, x8 DDR5-4800 column (DDR5-4800B, part MT60B2G8HB-48B:A; THE RECORD GRADE since 1.12.19, user ruling 2026-10-24; it was also the grade before 1.12.18), MAXIMA (worst-case process, temperature, voltage); power ruling: TYPICAL where a published ratio exists (VDD: via the component factors), MAXIMUM where none exists (VDDQ: the iddq row, VPP: the ipp row, both charged at the published maxima)"
       iddq: { iddq3n: 31.0, iddq4r: 57.0, iddq4w: 198.0, vddq: 1.1, source: "Rev A T6 pp.18-19 (VDDQ rail)", wr_includes_rtt_wr: true, wr_rtt_source: "Micron DDR5 core sheet Rev D Table 387 pp.449-452 (IDD4W/IDDQ4W: Output Buffer and RTT Enabled) + notes 2-4 p.452 (RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2 = 120 ohm); IDDQ on the VDDQ balls (p.448)" }
       ipp: { ipp2n: 6.0, ipp3n: 7.0, vpp: 1.8, ipp0: 8.0, ipp4r: 9.0, ipp4w: 37.0, ipp5b: 28.0, source: "Rev A T6 pp.17-18 (VPP rail); 1.12.18: x8 DDR5-4800 IPP0 8 (p.17), IPP4R 9 and IPP4W 37 (p.19), IPP5B 28 (p.20)" }
     5600:
@@ -73,7 +77,7 @@ idd:
       idd2p: 47.0
       trfc_ns: 295.0
       trefi_ns: 3900.0
-      source: "Micron MT60B 16 Gb DDR5 core sheet Rev D (16gb_ddr5_sdram_dierevD.pdf Rev. F 04/2024) Table 8, pp.18-20, x8 DDR5-5600 column (DDR5-5600B; THE RECORD GRADE since 1.12.18, user ruling 2026-10-23/24), MAXIMA (worst-case process, temperature, voltage); power ruling: TYPICAL where a published ratio exists (VDD: via the component factors), MAXIMUM where none exists (VDDQ: the iddq row, VPP: the ipp row, both charged at the published maxima)"
+      source: "Micron MT60B 16 Gb DDR5 core sheet Rev D (16gb_ddr5_sdram_dierevD.pdf Rev. F 04/2024) Table 8, pp.18-20, x8 DDR5-5600 column (DDR5-5600B; the record grade in 1.12.18 only, selectable with memory.dram.ddr5_speed_grade: 5600), MAXIMA (worst-case process, temperature, voltage); power ruling: TYPICAL where a published ratio exists (VDD: via the component factors), MAXIMUM where none exists (VDDQ: the iddq row, VPP: the ipp row, both charged at the published maxima)"
       iddq: { iddq3n: 70.0, iddq4r: 218.0, iddq4w: 271.0, vddq: 1.1, source: "Rev D T8 pp.19-20", wr_includes_rtt_wr: true, wr_rtt_source: "Micron DDR5 core sheet Rev D Table 387 pp.449-452 (IDD4W/IDDQ4W: Output Buffer and RTT Enabled) + notes 2-4 p.452 (RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2 = 120 ohm); IDDQ on the VDDQ balls (p.448)" }
       ipp: { ipp2n: 7.0, ipp3n: 8.0, vpp: 1.8, ipp0: 9.0, ipp4r: 10.0, ipp4w: 23.0, ipp5b: 33.0, source: "Rev D T8 pp.18-19; 1.12.18: x8 DDR5-5600 IPP0 9 (p.18), IPP4R 10 (p.19), IPP4W 23 and IPP5B 33 (p.20)" }
     3200:

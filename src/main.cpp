@@ -3793,7 +3793,7 @@ static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string
  * every DRAM technology this run names and cross-check it against the code
  * tables. A missing record, a missing field or a disagreement REFUSES the run:
  * in step 1 the record and the code must be one fact. The preset names are
- * compared only when the run uses the record's default knobs (DDR5 grade unset -- 5600B since 1.12.18,
+ * compared only when the run uses the record's default knobs (DDR5 grade unset -- 4800B since 1.12.19,
  * device width unset); other knobs legitimately select other presets, and the
  * run says so in one line. Nothing priced in this release reads the record. */
 static int checkDramPartRecords(const UnifiedConfig& config) {
@@ -17223,6 +17223,7 @@ static BridgeDefaults bridgeDefaultsForTech(const std::string& tech_in) {
     if (t == "DDR4")     return {"native",    "pcb",        19.2, 20.0,  1,  0.0, 200.0};
     // 1.11.57 (latent B044): "DRAM" removed -- resolved to DDR4 upstream, and
     // this table classed it with DDR5 while the MC table classed it with DDR4.
+    // 1.12.19: DDR5's bandwidth here is a placeholder; resolveBridge() replaces it with the grade in force x the record's channel width
     if (t == "DDR5")     return {"native",    "pcb",        25.6, 18.0,  1,  0.0, 200.0};
     if (t == "LPDDR5")   return {"native",    "pcb",        12.8, 12.0,  1,  0.0, 200.0};
     if (t == "GDDR6")    return {"native",    "pcb",        32.0, 10.0,  2,  0.0, 200.0};
@@ -17284,6 +17285,19 @@ static std::string bridgeValidityError(const std::string& protocol,
 static BridgeDefaults resolveBridge(UnifiedConfig& config,
                                     const std::string& device_tech) {
     BridgeDefaults d = bridgeDefaultsForTech(device_tech);
+    /* 1.12.19: DDR5's per-channel bandwidth follows the grade in force (the knob, else the part record's)
+     * x the record's 64-bit DIMM channel (2 sub-channels x 32 bits, JESD79-5B 2.1) -- the same rate x
+     * width the DDR3/DDR4 rows carry (1600 / 2400 MT/s x 8 B = 12.8 / 19.2 GB/s). The table's 25.6 was
+     * DDR5-3200's (3200 MT/s x 8 B), a grade this tree does not default to; 4800 gives 38.4 GB/s. */
+    {
+        std::string t = device_tech;
+        std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+        const int g = (t == "DDR5") ? effectiveDdr5Grade(config) : 0;
+        if (g > 0) {
+            const auto& rec = pimid::params::dramPartRecord("DDR5");
+            d.bandwidth_gbs = static_cast<double>(g) * rec.channels * rec.channel_width_bits / 8.0 / 1000.0;
+        }
+    }
     // Protocol / phy: user override or tech default.
     std::string protocol = config.bridge_protocol.empty() ? d.protocol
                                                            : config.bridge_protocol;

@@ -39,7 +39,7 @@ system:
       memory:
         technology: DDR5
         dram:
-          ddr5_speed_grade: 4800
+          ddr5_speed_grade: 4800       # the knob, written out: 4800 is also the default since 1.12.19 (5600 / 3200 select other parts)
       address: { base: 0x0, size: 4G }
 
   devices:

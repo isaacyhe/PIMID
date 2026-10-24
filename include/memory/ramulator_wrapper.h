@@ -227,8 +227,8 @@ public:
      * both correct. */
     void setDeviceWidth(const std::string& w);  // 1.11.46; 1.11.59 (C018)
     /* 1.11.66 (round 5 F6, user ruling R8 #9): DDR5 SPEED GRADE as a
-     * setting -- 3200, 4800 or 5600 MT/s (1.12.18: default = the part
-     * record's grade, 5600 per the 2026-10-23 ruling). The grade selects ONE
+     * setting -- 3200, 4800 or 5600 MT/s (default = the part record's
+     * grade: 4800 since 1.12.19, user ruling 2026-10-24). The grade selects ONE
      * PART: timing preset (DDR5_3200AN / DDR5_4800B / DDR5_5600B), org (8 Gb
      * at 3200 -- the only 3200 datasheet class held -- and the 16 Gb Micron
      * MT60B die at 4800/5600), IDD row (Rev A = 4800B, Rev D = 5600B), the
@@ -266,7 +266,7 @@ public:
     static void setRunWideKnobs(const std::string& device_width, int ddr5_grade_mtps,
                                 int temperature_k, double termination_pj_per_bit);
     /* 1.12.18: the DDR5 grade this run simulates -- the run-wide knob when set, else the part
-     * record's (5600 by default) -- for code that holds no wrapper instance. */
+     * record's (4800 by default since 1.12.19) -- for code that holds no wrapper instance. */
     static int runDdr5GradeMTs();
     /* The key the energy layer selects an IDD row by: the technology, plus a
      * "-<grade>" suffix for DDR5 (pimid_energy.h baseTech() strips it for
@@ -635,7 +635,7 @@ private:
     int row_idle_timeout_ = 128;   // 1.12.18 (row policy ruling)
     double wr_high_ = kWriteHighWatermark, wr_low_ = kWriteLowWatermark;   // 1.12.18 (write drain)
     std::string row_closed_mode_ = "auto_precharge";
-    int ddr5_grade_mtps_ = 0;    // 1.11.66 (R8 #9): 3200 | 4800 | 5600; 1.12.18: 0 = the part record's grade (5600 since the 2026-10-23 ruling)
+    int ddr5_grade_mtps_ = 0;    // 1.11.66 (R8 #9): 3200 | 4800 | 5600; 1.12.18: 0 = the part record's grade (4800 since 1.12.19, user ruling 2026-10-24)
     // 1.11.67: the run-wide values setRunWideKnobs() recorded; consulted by
     // the constructor when s_run_knobs_set_ is true.
     static bool        s_run_knobs_set_;

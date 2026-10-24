@@ -564,8 +564,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * (8 Gb, DDR5_3200AN) keeps its previous currents with the gap STATED:
      * no held datasheet publishes a 3200 column, so that row's IDD is
      * unsourced (lane C F6 measured it 2-3x below either addendum on
-     * standby). Default grade is the part record's: 5600 since 1.12.18 (user
-     * ruling 2026-10-23/24). The energy caller passes the grade;
+     * standby). Default grade is the part record's: 4800 (Rev A) since
+     * 1.12.19 (user ruling 2026-10-24). The energy caller passes the grade;
      * the tRFC column is 195 ns at 8 Gb and 295 ns at 16 Gb. */
     /* 1.11.91 (audit R8-8, user ruling (a)): the IDDQ and IPP rows of the
      * SAME two addenda, x8 column, read page-ranged. VDDQ = VDD = 1.1 V and
