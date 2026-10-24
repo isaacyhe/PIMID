@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.27 -- the 22 nm UCIe digital interface is node-scaled with each node's own transistor widths
+
+- **Fixed: the UCIe 22 nm digital-interface chain omitted the 22/32 nm linear shrink.** The CACTI step of the
+  published chain (0.10 pJ/b [Microsoft ISSCC 2026 8.3, 3 nm] x E22/E32 [CACTI C_inv x Vdd^2] x E32/E7 [Stillmaker &
+  Baas, Integration 58 (2017), Table 2: 0.51 / 0.111 fJ]) drew both minimum inverters at the run's feature size
+  (CACTI sizes devices from the input's F; external/mcpat/iocontrollers.cc), so C_inv(32 nm) read 0.220 fF instead
+  of 0.325 fF. E22/E32 moves 0.618 -> 0.418; the 22 nm digital interface 0.284 -> 0.192 pJ/bit; the 22 nm links
+  0.953 -> 0.862 (advanced) and 1.484 -> 1.392 (standard) pJ/bit. The 3 nm row (measured) is unchanged.
+- **Guard references (user ruling 2026-10-24):** the TSMC-press reference was derived from the applied value itself
+  (circular) and is removed. The band is now [SB17] Table 2's own 20 nm row, 0.10 x 0.198 / 0.111 = 0.178 pJ/bit,
+  and the analog node ratio 0.10 x 1.2 / 0.52 = 0.231 pJ/bit; the applied 0.192 lies inside it.
+- Data impact: interposer-class (UCIe) links at the 22 nm row only: link energy x0.904. Cycles unchanged.
+
 ## 1.12.26 -- code no simulator path ever reached is removed
 
 After a history and reachability investigation: none of this was ever constructed by the simulator (the `pimid`

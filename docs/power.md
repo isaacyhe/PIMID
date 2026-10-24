@@ -227,30 +227,29 @@ PHY + DIGITAL INTERFACE, from the row of the die's node (pJ/bit):
 |---|---|---|---|---|
 | 3 nm | advanced | 0.29 [CDN26] | 0.10 [MS26] | 0.39 |
 | 3 nm | standard | 0.52 [CDN26] | 0.10 [MS26] | 0.62 |
-| 22 nm | standard | 1.2 [INT26] | 0.284 DERIVED (lower bound) | 1.484 |
-| 22 nm | advanced | 0.669 DERIVED | 0.284 DERIVED (lower bound) | 0.953 |
+| 22 nm | standard | 1.2 [INT26] | 0.192 DERIVED (lower bound) | 1.392 |
+| 22 nm | advanced | 0.669 DERIVED | 0.192 DERIVED (lower bound) | 0.862 |
 
 - digital, 3 nm = 0.33 - 0.23 = 0.10 [MS26]. It is a UCIe-LIKE digital
   interface (flow control, calibration, error correction, repair), not the
   UCIe D2D adapter itself.
-- digital, 22 nm DERIVED = 0.10 x E22/E7 = 0.10 x 2.840 = 0.284, the
+- digital, 22 nm DERIVED = 0.10 x E22/E7 = 0.10 x 1.923 = 0.192, the
   published DIGITAL chain (user ruling: "use the most accurate one, the other
   two as internal reference, calibrations, and guards"): CACTI C_inv x Vdd^2
-  22 nm (0.172 fF, 0.8 V) / 32 nm (0.220 fF, 0.9 V) = 0.618, times [SB17]
+  22 nm (0.172 fF, 0.8 V) / 32 nm (0.325 fF, 0.9 V) = 0.418 (each node's minimum
+  inverter at its own feature size; until this release both were drawn at the
+  run's 22 nm, giving 0.220 fF, 0.618 and 0.284), times [SB17]
   Table 2 FO4 inverter energy 32 nm 0.51 fJ / 7 nm 0.111 fJ = 4.595 ([SB17]
   has no 22 nm row). It is a LOWER BOUND: the published chain stops at 7 nm,
   and the 7 -> 3 nm step is taken as 1.
-- Internal references, printed and never applied: (a) the analog node ratio,
-  0.10 x 1.2 / 0.52 = 0.231; (b) the TSMC PRESS chain, 0.284 / (0.70 x 0.725)
-  = 0.559 (0.541 .. 0.580 for N3/N5 25-30%), from [PRESS20] P. Alcorn, "TSMC
-  Dishes on 5nm and 3nm Process Nodes, Introduces 3DFabric Tech", Tom's
-  Hardware, 2020-08-24 (TSMC Technology Symposium 2020): "TSMC claims the N5
-  process offers up to 15% more performance (at the same power) or 30% power
-  reduction at the same performance"; N3 "will bring up to a 10-15%
-  performance improvement or 25-30% power reduction". These are press figures:
-  TSMC's own pages state only N7 vs N16 ("55% power saving") and N3E vs N5
-  ("over 30% power savings"). Guard: the run prints a WARNING (not fatal) when
-  the applied value falls outside [min, max] of the references (0.231 .. 0.580).
+- Internal references, printed and never applied (user ruling 2026-10-24): (a)
+  the analog node ratio, 0.10 x 1.2 / 0.52 = 0.231; (b) [SB17] Table 2's own
+  20 nm row (Multi-Gate, 0.9 V, FO4 inverter 0.198 fJ), the nearest published
+  node to 22 nm, in place of the CACTI step: 0.10 x 0.198 / 0.111 = 0.178. The
+  former reference (b), a TSMC press chain, was derived from the applied value
+  itself (circular) and is removed. Guard: the run prints a WARNING (not fatal)
+  when the applied value falls outside [min, max] of the references
+  (0.178 .. 0.231).
 - analog, 22 nm advanced DERIVED = 1.2 x (0.29 / 0.52): Cadence's same-node
   advanced/standard package ratio applied to Intel's 22 nm standard package.
   Caveats, printed at runtime: 48 vs 16 Gb/s, PLL not integrated (Intel) vs

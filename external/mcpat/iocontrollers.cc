@@ -757,20 +757,16 @@ void PCIeController::set_pcie_param()
 		   *               row, hence the CACTI step at 32 nm).
 		   *   It is a LOWER BOUND: the published chain stops at 7 nm and 3 nm
 		   *   logic costs no more than 7 nm logic (the 7 -> 3 nm step is taken
-		   *   as 1). Two INTERNAL REFERENCES are printed beside it, never applied:
-		   *     (a) the analog node ratio, 0.10 x 1.2 / 0.52 [INT26]/[CDN26];
-		   *     (b) the TSMC PRESS chain: the applied value / (E5/E7 x E3/E5),
-		   *         E5/E7 = 0.70, E3/E5 = 0.70..0.75 (midpoint 0.725), from P.
-		   *         Alcorn, "TSMC Dishes on 5nm and 3nm Process Nodes, Introduces
-		   *         3DFabric Tech", Tom's Hardware, 2020-08-24 (TSMC Technology
-		   *         Symposium 2020): "TSMC claims the N5 process offers up to 15%
-		   *         more performance (at the same power) or 30% power reduction
-		   *         at the same performance"; N3 "will bring up to a 10-15%
-		   *         performance improvement or 25-30% power reduction". PRESS, not
-		   *         TSMC: TSMC's own pages state only N7 vs N16 ("55% power
-		   *         saving") and N3E vs N5 ("over 30% power savings").
+		   *   as 1). Two INTERNAL REFERENCES are printed beside it, never applied
+		   *   (user ruling 2026-10-24; the former TSMC-press reference was derived
+		   *   from the applied value itself, i.e. circular, and is removed):
+		   *     (a) the analog node ratio, 0.10 x 1.2 / 0.52 [INT26]/[CDN26]
+		   *         = 0.231 pJ/bit;
+		   *     (b) [SB17] Table 2's own 20 nm row (Multi-Gate, 0.9 V, 0.198 fJ),
+		   *         the nearest published node to 22 nm, in place of the CACTI
+		   *         step: 0.10 x 0.198 / 0.111 = 0.178 pJ/bit.
 		   *   GUARD: a WARNING (not fatal) when the applied value falls outside
-		   *   [min, max] of the references.
+		   *   [min, max] of the two references.
 		   * analog, 22 nm advanced DERIVED: Cadence's same-node AP/SP ratio
 		   *   applied to Intel's 22 nm SP (caveats printed at runtime).
 		   * NODE: link_node_nm (PIMID: power.link.process_node_nm); <= 0 = the
@@ -827,10 +823,19 @@ void PCIeController::set_pcie_param()
 				   * init_tech_params reads it; the constructor re-initialises after. */
 				  init_interface(&interface_ip);
 				  const TechnologyParameter tp_saved = g_tp;
+				  /* PIMID (next): each node's minimum inverter at that node's OWN feature size. CACTI's
+				   * TechnologyParameter::init sizes every device from g_ip->F_sz_um (min_w_nmos_ = 1.5 F,
+				   * cell_h_def = 50 F; external/cacti/parameter.cc), not from the table it loads, so both
+				   * inverters used to be drawn at the run's F and the 22/32 nm ratio lacked the 22/32 linear
+				   * shrink (the defect logic.cc pimid_node_energy_scale had, fixed there before this). */
+				  const double f_um_saved = g_ip->F_sz_um, f_nm_saved = g_ip->F_sz_nm;
+				  g_ip->F_sz_um = 0.022; g_ip->F_sz_nm = 22;
 				  init_tech_params(0.022, false);
 				  const double c22 = pimid_io_min_inv_switch_cap(), v22 = g_tp.peri_global.Vdd;
+				  g_ip->F_sz_um = 0.032; g_ip->F_sz_nm = 32;
 				  init_tech_params(0.032, false);
 				  const double c32 = pimid_io_min_inv_switch_cap(), v32 = g_tp.peri_global.Vdd;
+				  g_ip->F_sz_um = f_um_saved; g_ip->F_sz_nm = f_nm_saved;
 				  g_tp = tp_saved;   /* the run's tables, exactly as they were */
 				  const double k_cacti = (c32 > 0 && v32 > 0) ? (c22 * v22 * v22) / (c32 * v32 * v32) : 0.0;
 				  const double k_sb = 0.51 / 0.111;              /* [SB17] Table 2, 32 nm / 7 nm */
@@ -842,10 +847,7 @@ void PCIeController::set_pcie_param()
 				  }
 				  ucie_digital_pj = ms_dig * k_22_7;
 				  const double ref_analog = ms_dig * node_ratio;
-				  const double e57 = 0.70, e35_lo = 0.70, e35_hi = 0.75, e35_mid = 0.725;
-				  const double ref_press_mid = ucie_digital_pj / (e57 * e35_mid);
-				  const double ref_press_lo  = ucie_digital_pj / (e57 * e35_hi);
-				  const double ref_press_hi  = ucie_digital_pj / (e57 * e35_lo);
+				  const double ref_sb20 = ms_dig * (0.198 / 0.111);   /* [SB17] Table 2: 20 nm 0.198 fJ / 7 nm 0.111 fJ */
 				  if (pkg == 1)
 					  std::cerr << "[link] UCIe 22 nm advanced package (McPAT PIMID 1.12.18): analog PHY "
 					            << ucie_analog_pj << " pJ/bit DERIVED = 1.2 pJ/b [Mondal et al. (Intel), ISSCC 2026"
@@ -871,15 +873,11 @@ void PCIeController::set_pcie_param()
 				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (a), not applied: analog node"
 				               " ratio 0.10 x (1.2 / 0.52 = " << node_ratio << ") = " << ref_analog
 				            << " pJ/bit [Intel ISSCC 2026 8.1 SP / Cadence JSSC 2026 SP]" << std::endl;
-				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (b), not applied: TSMC PRESS chain "
-				            << ucie_digital_pj << " / (E5/E7 0.70 x E3/E5 0.725) = " << ref_press_mid
-				            << " pJ/bit (range " << ref_press_lo << " .. " << ref_press_hi << " for E3/E5 0.75 .. 0.70)"
-				               " [P. Alcorn, Tom's Hardware, 2020-08-24, TSMC Technology Symposium 2020: N5 \"30% power"
-				               " reduction at the same performance\" vs N7; N3 \"25-30% power reduction\" vs N5]. PRESS"
-				               " figures: TSMC's own pages state only N7 vs N16 (\"55% power saving\") and N3E vs N5"
-				               " (\"over 30% power savings\")." << std::endl;
-				  const double ref_min = std::min(ref_analog, ref_press_lo);
-				  const double ref_max = std::max(ref_analog, ref_press_hi);
+				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (b), not applied: Stillmaker & Baas,"
+				               " Integration 58 (2017) 74-81, Table 2's own 20 nm row (Multi-Gate, 0.9 V, FO4 inverter 0.198 fJ),"
+				               " the nearest published node to 22 nm: 0.10 x (0.198 / 0.111) = " << ref_sb20 << " pJ/bit" << std::endl;
+				  const double ref_min = std::min(ref_analog, ref_sb20);
+				  const double ref_max = std::max(ref_analog, ref_sb20);
 				  if (ucie_digital_pj < ref_min || ucie_digital_pj > ref_max)
 					  std::cerr << "[link] WARNING (McPAT PIMID 1.12.18, guard): applied 22 nm digital interface "
 					            << ucie_digital_pj << " pJ/bit is OUTSIDE the internal references [" << ref_min

@@ -245,7 +245,7 @@ refused); the class list, with `pcie_gen3` added in 1.11.106, is in
 
 **The interposer link is a UCIe link (1.12.18).** Its energy is computed inside
 the McPAT fork: measured crossing bytes x 8 x (analog PHY + digital interface)
-pJ/bit from the row of the die's process node -- 22 nm (default: 0.669 + 0.284,
+pJ/bit from the row of the die's process node -- 22 nm (default: 0.669 + 0.192,
 both DERIVED -- from Intel ISSCC 2026 8.1 and Cadence JSSC 2026, and from
 Microsoft ISSCC 2026 8.3 scaled by CACTI and Stillmaker & Baas 2017) or 3 nm (`power.link.process_node_nm: 3`: 0.29 + 0.10, measured);
 any other node is refused. Sources and derivations in
