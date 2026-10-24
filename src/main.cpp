@@ -1038,6 +1038,7 @@ struct ZSimParsedOutput {
      * interfaces' private open-row registers when present. */
     uint64_t ctrl_row_hits = 0, ctrl_row_misses = 0, ctrl_row_conflicts = 0, ctrl_refreshes = 0, ctrl_requests = 0;
     uint64_t ctrl_ticks = 0, ctrl_idle_ticks = 0;   // 1.11.98 (row 28): replayed DRAM cycles, and those with nothing in flight
+    uint64_t ctrl_pd_cycles = 0, ctrl_pd_units = 0, ctrl_pd_exits = 0;   // 1.12.20: replayed precharge power-down
     uint64_t ctrl_activates = 0; bool ctrl_act_present = false;   // 1.12.18: ACT commands the replayed controller issued
     /* 1.12.18 (user ruling R1 2026-10-24): replayed requests stamped after
      * the ROI end -- not priced, not in any count above; reported apart. */
@@ -1148,6 +1149,7 @@ struct ZSimParsedOutput {
          * instance has its array-wide counters in the device's. */
         uint64_t ctrl_row_hits = 0, ctrl_row_misses = 0, ctrl_row_conflicts = 0, ctrl_refreshes = 0;
         uint64_t ctrl_ticks = 0, ctrl_idle_ticks = 0, ctrl_activates = 0, ctrl_requests = 0, ctrl_lat_sum = 0;
+        uint64_t ctrl_pd_cycles = 0, ctrl_pd_units = 0, ctrl_pd_exits = 0;   // 1.12.19
         uint64_t ctrl_priced = 0, ctrl_bootstrap = 0;
         bool ctrl_present = false, ctrl_shared = false, ctrl_act_present = false;
         bool ctrlRowMeasured() const { return (ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts) > 0; }
@@ -1870,6 +1872,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                     ZSimParsedOutput::GroupCounters& hg = out.host;
                     if (key == "ctrlRefreshes")        hg.ctrl_refreshes += val;
                     else if (key == "ctrlTicks")       hg.ctrl_ticks += val;
+                    else if (key == "ctrlPdUnitCycles") hg.ctrl_pd_cycles += val;   // 1.12.19
+                    else if (key == "ctrlPdUnits")     hg.ctrl_pd_units += val;
+                    else if (key == "ctrlPdExits")     hg.ctrl_pd_exits += val;
                     else if (key == "ctrlIdleTicks")   hg.ctrl_idle_ticks += val;
                     else if (key == "bankOpenCycles")  { hg.bank_open_cycles += val; hg.bank_open_present = true; }
                     else if (key == "bankOpenWindow")  { hg.bank_open_window += val; hg.bank_open_present = true; }
@@ -1894,6 +1899,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "ctrlRowConflicts") { out.ctrl_row_conflicts += val; }
                 else if (key == "ctrlRefreshes")    { out.ctrl_refreshes += val; }
                 else if (key == "ctrlTicks")        { out.ctrl_ticks += val; }
+                else if (key == "ctrlPdUnitCycles") { out.ctrl_pd_cycles += val; }   // 1.12.19
+                else if (key == "ctrlPdUnits")      { out.ctrl_pd_units += val; }
+                else if (key == "ctrlPdExits")      { out.ctrl_pd_exits += val; }
                 else if (key == "ctrlIdleTicks")    { out.ctrl_idle_ticks += val; }
                 else if (key == "ctrlRequests")     { out.ctrl_requests += val; }
                 else if (key == "ctrlActivates")    { out.ctrl_activates += val; out.ctrl_act_present = true; }   // 1.12.18
@@ -2176,7 +2184,7 @@ static const char* kSchemaPaths[] = {
     "core.in_order.branch_predictor", "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
-    "memory.array_pg", "memory.bank_kb", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down",
+    "memory.array_pg", "memory.bank_kb", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
@@ -3078,6 +3086,12 @@ struct UnifiedConfig {
      * they meant, and the reported saving mixed them. */
     bool pg_mc = false;         // pim.mc.pg          controller LOGIC gating
     bool mem_power_down = false; // memory.power_down  DRAM JEDEC power-down (IDD2P)
+    /* 1.12.20 (user rulings 2026-10-23 "1 and 3", 2026-10-24): -1 = not given, the per-technology default
+     * (resolveDramPowerDown); 0/1 = the user's value. memory.power_down_idle_clocks: the controller idle timer
+     * before precharge power-down entry, memory clocks (default 64: AMD BKDG 42301 Rev 3.14 D18F2x248
+     * PchgPDEnDelay / AggrPDDelay, p.366, BIOS defaults 00h = 64 clocks). */
+    int mem_power_down_given = -1;
+    int power_down_idle_clocks = 64;
     /* 1.11.52 (user ask "the n and temp of mcpat need fixed"): the McPAT /
      * factor-derivation temperature, previously a hardcoded 350 at three
      * sites with no config surface. 350 K = 77 C is the value every corpus
@@ -3508,6 +3522,66 @@ static int dramPeChipSplit(const UnifiedConfig& c, const std::string& tech) {
 }
 /* the shared/device array's split for reportSharedMemoryArrayEnergy (set around its device-side calls only) */
 static int s_array_pe_chip_split = 1;
+/* 1.12.20 (user rulings 2026-10-23 "1 and 3", 2026-10-24): DRAM PRECHARGE POWER-DOWN.
+ * tXP per technology = max(nck x tCK, ns), the published power-down exit time; returns false (and says why) when
+ * none is published. memory.power_down_threshold_ns overrides it (the user's tXP).
+ *   DDR3   max(3 nCK, 6 ns)     JESD79-3D
+ *   DDR4   max(4 nCK, 6 ns)     JESD79-4
+ *   DDR5   7.5 ns               JESD79-5
+ *   LPDDR5 7.5 ns               JESD209-5
+ *   GDDR6  12 nCK               SK hynix H56G42A 16 Gb GDDR6 data sheet rev 1.1, AC timing table "POWER-DOWN exit
+ *                               time tXP 12 tCK" (PDF p.164); JESD250D lists tXP without a value
+ *   HBM3   max(10 nCK, 7.5 ns)  JESD238B.01 AC timing table, Power-Down Timings, "POWER-DOWN EXIT time tXP
+ *                               MAX(10 x tCK, 7.5) ns" (PDF p.178)
+ *   HBM2   NO PUBLISHED SOURCE FOUND: JESD235D Table (PDF p.117) lists "Power-down exit time tXP" with no value */
+static bool dramPdTxp(const UnifiedConfig& c, const std::string& t, double& ns, int& nck, std::string& src) {
+    ns = 0.0; nck = 0;
+    if (c.power_down_threshold_ns > 0.0) { ns = c.power_down_threshold_ns; src = "memory.power_down_threshold_ns (user)"; return true; }
+    if      (t == "DDR3")   { ns = 6.0; nck = 3;  src = "tXP max(3nCK,6ns), JESD79-3D"; }
+    else if (t == "DDR4")   { ns = 6.0; nck = 4;  src = "tXP max(4nCK,6ns), JESD79-4"; }
+    else if (t == "DDR5")   { ns = 7.5;           src = "tXP 7.5ns, JESD79-5"; }
+    else if (t == "LPDDR5") { ns = 7.5;           src = "tXP 7.5ns, JESD209-5"; }
+    else if (t == "GDDR6")  { nck = 12;           src = "tXP 12 tCK, SK hynix H56G42A GDDR6 rev 1.1 p.164"; }
+    else if (t == "HBM3")   { ns = 7.5; nck = 10; src = "tXP max(10nCK,7.5ns), JESD238B.01 p.178"; }
+    else { src = "NO PUBLISHED SOURCE FOUND (JESD235D lists HBM2 tXP without a value)"; return false; }
+    return true;
+}
+/* The default (ruling: ON only where a published vendor document shows controllers enable power-down by default):
+ *   DDR3  AMD BKDG for Family 15h Models 00h-0Fh (42301 Rev 3.14), Table 81 p.162-163: D18F2x94 PowerDownEn = 1 in
+ *         Normal Operation (precharge power-down; the BIOS enables it)
+ *   DDR4  Lenovo Press LP1267 (AMD EPYC 7002/7003, DDR4) p.34: "Memory Power Down Enable ... Enable (default)"
+ *   DDR5  Lenovo Press LP1977 (4th Gen AMD EPYC, DDR5) p.27: "Memory Power Down Enable ... Enabled (default)"
+ * LPDDR5, GDDR6, HBM2/HBM3: no published controller default found (AMD PG313 / PG276 and Intel UG-20031 / the
+ * Agilex HBM2E IP guide make power-down an option with a programmable idle count and state no default): OFF
+ * unless memory.power_down: true. */
+static void resolveDramPowerDown(UnifiedConfig& config) {
+    const std::string& t = config.memory_tech;
+    const bool dram = (t == "DDR3" || t == "DDR4" || t == "DDR5" || t == "LPDDR5" || t == "GDDR6" || t == "HBM2" || t == "HBM3");
+    if (!dram) return;
+    const char* why = "";
+    if (config.mem_power_down_given >= 0) {
+        config.mem_power_down = (config.mem_power_down_given == 1);
+        why = "memory.power_down (user)";
+    } else if (t == "DDR3") { config.mem_power_down = true; why = "default ON: AMD BKDG 42301 Table 81 p.162-163, PowerDownEn = 1 in normal operation"; }
+    else if (t == "DDR4")   { config.mem_power_down = true; why = "default ON: Lenovo Press LP1267 p.34, Memory Power Down Enable (default)"; }
+    else if (t == "DDR5")   { config.mem_power_down = true; why = "default ON: Lenovo Press LP1977 p.27, Memory Power Down Enable (default)"; }
+    else { config.mem_power_down = false; why = "default OFF: no published controller default found for this technology (set memory.power_down: true to enable)"; }
+    double ns = 0.0; int nck = 0; std::string src;
+    const bool have_txp = dramPdTxp(config, t, ns, nck, src);
+    if (config.mem_power_down && !have_txp) {
+        std::cout << "  [mem] precharge power-down for " << t << " NOT modelled: power-down exit time tXP " << src
+                  << "; set memory.power_down_threshold_ns to supply it. No IDD2P credit, no exit latency." << std::endl;
+        config.mem_power_down = false;
+        return;
+    }
+    std::cout << "  [mem] precharge power-down " << (config.mem_power_down ? "ON" : "OFF") << " for " << t << " (" << why << ")";
+    if (config.mem_power_down)
+        std::cout << ": the replayed controller powers a rank (a channel without a rank level) down after "
+                  << config.power_down_idle_clocks << " idle memory clocks (memory.power_down_idle_clocks; default 64 = AMD BKDG "
+                     "42301 D18F2x248 PchgPDEnDelay/AggrPDDelay p.366, a DDR3-era controller, the only published timer value) and "
+                     "delays the first command after it by tXP (" << src << "); the energy model credits the residency at IDD2P";
+    std::cout << std::endl;
+}
 static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& config) {
     w.setDeviceWidth(config.dram_device_width);
     if (config.ddr5_speed_grade > 0) w.setDdr5SpeedGrade(config.ddr5_speed_grade);   // 1.11.101: unset -> the record's grade
@@ -7627,6 +7701,14 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         }
         out << "        dramRowBytes = " << row_bytes << ";\n";
         out << "        dramRowStrideBytes = " << row_stride << ";\n";   // 1.11.91 (R8-1)
+        {   // 1.12.20: precharge power-down in the replayed controller
+            double pd_ns = 0.0; int pd_nck = 0; std::string pd_src;
+            const bool pd = is_dram && config.mem_power_down && dramPdTxp(config, mt, pd_ns, pd_nck, pd_src);
+            out << "        dramPowerDown = " << (pd ? "true" : "false") << ";\n";
+            out << "        dramPdIdleClocks = " << config.power_down_idle_clocks << ";\n";
+            out << "        dramPdTxpNs = " << pd_ns << ";\n";
+            out << "        dramPdTxpNck = " << pd_nck << ";\n";
+        }
     }
     out << "        assumeLocal = 1;\n";  // perfect data prep: device computes local (both scopes)
     out << "        chargePrep = " << ((config.scope == "system") ? 1 : 0) << ";\n";  // co-sim: first-touch reorg+transfer
@@ -11069,12 +11151,11 @@ static double gapPowerDownResidency(const UnifiedConfig& config,
     }
     double th_ns = config.power_down_threshold_ns;
     const char* src = "memory.power_down_threshold_ns (user override)";
+    static std::string s_src;   // 1.12.20: the tXP table is dramPdTxp's (one table)
     if (th_ns <= 0.0) {
         const std::string& t = config.memory_tech;
-        if      (t == "DDR3")   { th_ns = 6.0; src = "tXP max(3nCK,6ns), JESD79-3D"; }
-        else if (t == "DDR4")   { th_ns = 6.0; src = "tXP max(4nCK,6ns), JESD79-4"; }
-        else if (t == "DDR5")   { th_ns = 7.5; src = "tXP 7.5ns, JESD79-5"; }
-        else if (t == "LPDDR5") { th_ns = 7.5; src = "tXP 7.5ns, JESD209-5"; }
+        double ns = 0.0; int nck = 0;
+        if (dramPdTxp(config, t, ns, nck, s_src) && ns > 0.0) { th_ns = ns; src = s_src.c_str(); }
         else {
             std::cout << "  [pg] gap-measured power-down residency NOT used for "
                       << t << ": no power-down exit time (tXP) is tabulated here "
@@ -12834,6 +12915,18 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     mc_r_idle = r_gap;
                 }
             }
+            /* 1.12.20: the replayed controller's own precharge power-down residency (entry after the idle timer,
+             * every exit charged tXP in its timing) supersedes both estimates: one measurement for timing and
+             * energy. */
+            if (config.mem_power_down && zsim_stats.ctrl_pd_units > 0 && zsim_stats.ctrl_ticks > 0) {
+                const double r_pd = std::min(1.0, static_cast<double>(zsim_stats.ctrl_pd_cycles)
+                    / (static_cast<double>(zsim_stats.ctrl_pd_units) * static_cast<double>(zsim_stats.ctrl_ticks)));
+                std::cout << "  [mem] precharge power-down residency MEASURED by the replayed controller: " << r_pd
+                          << " (" << zsim_stats.ctrl_pd_cycles << " unit-cycles over " << zsim_stats.ctrl_pd_units
+                          << " units x " << zsim_stats.ctrl_ticks << " DRAM cycles; " << zsim_stats.ctrl_pd_exits
+                          << " exits, each delaying the next command by tXP); was " << mc_r_idle << std::endl;
+                mc_r_idle = r_pd;
+            }
             /* 1.11.20 (D13): population-scaled. One DDR chip / one HBM
              * channel is the unit the JEDEC IDD table is written against. */
             const int bg_units =
@@ -12870,6 +12963,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                               bank_open.measured && config.mem_power_down
                                   && pd_used < mc_r_idle,
                               mc_r_idle, pd_used);
+            if (config.mem_power_down && mc_r_idle > 0.0) {   // 1.12.20: the credit, printed (the ledger carries the reduced background)
+                const double bg_nopd = bank_open.measured
+                    ? ram_oracle.getBackgroundSystemStatesMW(bank_open.active_frac, mc_r_idle, false, config.dram_device_width,
+                          config.hierarchy_ranks_per_channel, config.hierarchy_dram_channels, nullptr)
+                    : ram_oracle.getBackgroundSystemMW(mc_r_idle, false, config.dram_device_width,
+                          config.hierarchy_ranks_per_channel, config.hierarchy_dram_channels);
+                std::cout << "  [mem] power-down credit: background " << bg_nopd << " mW without power-down -> " << bg_power_mw
+                          << " mW with IDD2P over the power-down share " << pd_used << " (credit " << (bg_nopd - bg_power_mw)
+                          << " mW; Background below is the reduced figure, not a separate negative entry)" << std::endl;
+            }
             /* 1.11.91 (audit R8-8): the VPP rail's standby, same state split. */
             const double ipp_mw = ram_oracle.getIppSystemMW(
                 bg_active_frac, config.dram_device_width,
@@ -16092,6 +16195,22 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                              "records device-MC events only; this array uses "
                              "the phase-granular residency." << std::endl;
             }
+            /* 1.12.20: the replayed controller's precharge power-down residency supersedes the estimates: the
+             * device instance (shared or device array) or the decoupled host memory's own instance. */
+            if (config.mem_power_down) {
+                const bool own_host = !use_dev && use_host && zsim_stats.host.ctrl_pd_units > 0;
+                const uint64_t pc = own_host ? zsim_stats.host.ctrl_pd_cycles : zsim_stats.ctrl_pd_cycles;
+                const uint64_t pu = own_host ? zsim_stats.host.ctrl_pd_units : zsim_stats.ctrl_pd_units;
+                const uint64_t pt = own_host ? zsim_stats.host.ctrl_ticks : zsim_stats.ctrl_ticks;
+                const uint64_t px = own_host ? zsim_stats.host.ctrl_pd_exits : zsim_stats.ctrl_pd_exits;
+                if (pu > 0 && pt > 0 && (use_dev || own_host)) {
+                    const double r_pd = std::min(1.0, static_cast<double>(pc) / (static_cast<double>(pu) * static_cast<double>(pt)));
+                    std::cout << "  [mem] " << array_name << ": precharge power-down residency MEASURED by the replayed controller "
+                              << r_pd << " (" << pc << " unit-cycles over " << pu << " units x " << pt << " DRAM cycles; " << px
+                              << " exits, each delaying the next command by tXP); supersedes " << r << std::endl;
+                    r = r_pd;
+                }
+            }
             return r;
         };
         /* 1.11.52 (audit A018/A019): the shared predicate, and it is asked
@@ -19112,7 +19231,17 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
 static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const DeviceParseScope& sc) {
     if (root["memory"]) {
         if (root["memory"]["power_down"])
+        {   // 1.12.20: given = the user's value; not given = the per-technology default (resolveDramPowerDown)
             config.mem_power_down = yamlBool(root["memory"]["power_down"], config.mem_power_down, sc.pfx + "memory.power_down");
+            config.mem_power_down_given = config.mem_power_down ? 1 : 0;
+        }
+        if (root["memory"]["power_down_idle_clocks"]) {   // 1.12.19
+            config.power_down_idle_clocks = yamlInt(root["memory"]["power_down_idle_clocks"], 64, sc.pfx + "memory.power_down_idle_clocks");
+            if (config.power_down_idle_clocks < 1) {
+                std::cerr << "[config] FATAL: memory.power_down_idle_clocks must be >= 1 memory clock" << std::endl;
+                std::exit(2);
+            }
+        }
         if (root["memory"]["power_down_threshold_ns"])   // 1.11.51 (E17)
             config.power_down_threshold_ns =
                 yamlDouble(root["memory"]["power_down_threshold_ns"], -1.0, sc.pfx + "memory.power_down_threshold_ns");
@@ -19924,6 +20053,8 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.network_level_overrides = d.network_level_overrides;
         config.bridge_overrides = d.bridge_overrides;
         config.mem_power_down = d.mem_power_down;
+        config.mem_power_down_given = d.mem_power_down_given;   // 1.12.19
+        config.power_down_idle_clocks = d.power_down_idle_clocks;
         config.power_down_threshold_ns = d.power_down_threshold_ns;
         config.memory_channels_per_die = d.memory_channels_per_die;   // 1.12.18
         config.mem_array_pg = d.mem_array_pg;
@@ -22256,6 +22387,7 @@ int main(int argc, char** argv) {
         }
     }
     if (config.scope != "system") {
+        resolveDramPowerDown(config);   // 1.12.19
         computeHierarchyLatencies(config);
     } else {
         for (const auto& n : config.system_nodes) {
@@ -22331,6 +22463,7 @@ int main(int argc, char** argv) {
              * anywhere), the run's first bandwidth line read
              * "SRAM M/D/1 cap = ... 512000 MB/s". */
             getMemControllerConfig(config);
+            resolveDramPowerDown(config);   // 1.12.19
             computeHierarchyLatencies(config);
             break;  // first compute device defines the (single) device model for now
         }

@@ -296,6 +296,12 @@ struct GlobSimInfo {
          * by the emitter from the same rule the array energy uses. 0 = not
          * sent -> the row model claims no measurement. */
         uint32_t dramRowStrideBytes = 0;
+        /* 1.12.20: DRAM precharge power-down in the replayed controller (src/main.cpp resolves the per-technology
+         * default and the cited idle timer / tXP): entry after dramPdIdleClocks memory clocks idle, exit tXP =
+         * max(dramPdTxpNck, dramPdTxpNs). */
+        bool dramPowerDown = false;
+        uint32_t dramPdIdleClocks = 64, dramPdTxpNck = 0;
+        double dramPdTxpNs = 0.0;
         bool assumeLocal = false;         // perfect data prep: device computes on its local working set
         bool chargePrep = false;          // co-sim: first touch of a line pays reorg (cross-unit) + transfer
         uint32_t hostLinkXferCycles = 0;  // per first-touch host->device link transfer (0 = internal/on-package)

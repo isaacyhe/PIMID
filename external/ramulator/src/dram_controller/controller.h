@@ -61,6 +61,9 @@ class IDRAMController : public Clocked<IDRAMController> {
     /* PIMID 1.12.18 (user ruling 2026-10-24): ACTs of the host lockstep shadow copies (source_id 4/6) and the
      * candidate-cycles a host command waited for the DIMM CA bus */
     virtual void pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/) const {}
+    /* PIMID 1.12.20: precharge power-down -- unit-cycles spent in power-down (an open interval counted to now),
+     * the power-down units this controller holds, and the power-down exits (each cost tXP) */
+    virtual void pimid_pd_totals(uint64_t& /*pdUnitCycles*/, uint64_t& /*units*/, uint64_t& /*exits*/) const {}
     /* PIMID 1.12.18 (ruling 17 / R0605): the row hits / misses / conflicts and
      * activates of the requests sent with source_id 1 (the host's), cumulative. */
     virtual void pimid_src_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,

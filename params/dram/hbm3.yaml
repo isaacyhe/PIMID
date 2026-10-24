@@ -38,7 +38,7 @@ idd:
   idd4w: 1018.4   # 1.12.18: 89 + 836.3 array (unchanged) + 93.1 I/O; was 1059.0 = 89 + 836.3 + 133.7
   idd5: 194.0
   # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
-  idd2p: 22.25
+  idd2p: 62.3000   # 1.12.20 (user ruling 2026-10-23, point 3): DERIVED precharge power-down current = IDD2N x 28/40 -- the IDD2P/IDD2N ratio of the HBM stack IDD table in N. Chatterjee et al., 'Architecting an Energy-Efficient DRAM System for GPUs', HPCA-23 2017, Table II (IDD2P 28, IDD2N 40 mA); no HBM IDD2P is published by a vendor or JEDEC (NO PUBLISHED SOURCE FOUND for a measured value). Was the un-sourced rule of thumb 22.25 mA
   trfc_ns: 260.0
   trefi_ns: 3900.0
   source: "1.11.91 derivation from the SAFARI HBM2 measurement (docs/derivations/hbm_gddr6_idd.md sec. 1.3), JESD238B.01 Table 83 conditions, at the HBM2 measured per-channel standby of 89 mA: IDD0 = 89 + 7.2 (ONE 1 KB pseudo-channel activation per tRC: 389 pJ / (1.1 V x 49.4 ns); the SAFARI loop ran on PC0 only, so this is NOT the JESD238B.01 Table 85 IDD0 loop, which activates PC0 and PC1 every nRC -- see idd0_loop; 1.12.18 wording), IDD4R = 89 + 1443, IDD4W = 89 + 970, IDD5 = 89 + 105; IDD2P = 0.25 x 89 (the idd2p column is a precharge-power-down rule of thumb, not a datasheet read -- stated); tRFCab 260 ns (JESD238B.01, 4 Gb/channel), tREFI 3.9 us; 16 channels per stack"

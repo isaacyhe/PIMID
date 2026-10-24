@@ -99,6 +99,11 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       for (auto controller : m_controllers) controller->pimid_chip_totals(shadowActs, caWaits);
       return true;
     }
+    bool pimid_pd_totals(uint64_t& pdUnitCycles, uint64_t& units, uint64_t& exits) override {   // PIMID 1.12.19
+      pdUnitCycles = units = exits = 0;
+      for (auto controller : m_controllers) controller->pimid_pd_totals(pdUnitCycles, units, exits);
+      return true;
+    }
     bool pimid_cmd_totals(uint64_t& activates) override {   // PIMID 1.12.18
       activates = 0;
       for (auto controller : m_controllers) controller->pimid_cmd_totals(activates);

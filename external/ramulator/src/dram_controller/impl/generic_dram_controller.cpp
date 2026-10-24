@@ -1,3 +1,4 @@
+#include <cmath>
 #include "dram_controller/controller.h"
 #include "memory_system/memory_system.h"
 
@@ -40,6 +41,57 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     std::vector<int> m_pimid_ca_occ;
     long m_pimid_ca_free = 0;
     uint64_t s_pimid_shadow_acts = 0, s_pimid_ca_waits = 0;
+    /* PIMID 1.12.20: PRECHARGE POWER-DOWN in the replayed controller. A power-down unit (the rank -- with the
+     * per-chip split, one chip -- or the whole channel on a standard without a rank level: HBM, GDDR6) with no
+     * request queued and no command for pimid_pd_idle_clocks memory clocks enters power-down (CKE low). The first
+     * request or refresh that needs it wakes it, and no command may issue to it for pimid_pd_txp_clocks (tXP)
+     * after the wake: the exit latency the access pays. The unit-cycles spent in power-down are counted for the
+     * energy model, which credits them at IDD2P instead of the standby current (one measurement for timing and
+     * energy). Off unless the replay sets pimid_power_down. */
+    bool m_pimid_pd = false;
+    int m_pimid_pd_idle = 64, m_pimid_pd_txp = 0, m_pimid_pd_level = 0, m_pimid_pd_txp_nck = 0;
+    double m_pimid_pd_txp_ns = 0.0;
+    std::vector<int> m_pimid_pd_radix;
+    std::vector<uint8_t> m_pd_in, m_pd_busy;
+    std::vector<Clk_t> m_pd_since, m_pd_last, m_pd_wake;
+    uint64_t s_pimid_pd_cycles = 0, s_pimid_pd_exits = 0;
+    int pd_unit(const AddrVec_t& a) const {
+      if (m_pimid_pd_level <= 0) return 0;
+      int u = 0;
+      for (int l = 1; l <= m_pimid_pd_level; l++) { if (a[l] < 0) return -1; u = u * m_pimid_pd_radix[l - 1] + a[l]; }
+      return u;
+    }
+    bool pd_ok(const AddrVec_t& a) const {
+      if (!m_pimid_pd) return true;
+      const int u = pd_unit(a);
+      if (u >= 0) return !m_pd_in[u] && m_clk >= m_pd_wake[u];
+      for (size_t i = 0; i < m_pd_in.size(); i++) if (m_pd_in[i] || m_clk < m_pd_wake[i]) return false;
+      return true;
+    }
+    bool pimid_ready(int cmd, const AddrVec_t& a) { return pd_ok(a) && m_dram->check_ready(cmd, a); }
+    void pd_mark(const AddrVec_t& a, std::vector<uint8_t>& v) {
+      const int u = pd_unit(a);
+      if (u >= 0) v[u] = 1; else std::fill(v.begin(), v.end(), 1);
+    }
+    void pd_issued(const AddrVec_t& a) {
+      if (!m_pimid_pd) return;
+      const int u = pd_unit(a);
+      if (u >= 0) m_pd_last[u] = m_clk; else std::fill(m_pd_last.begin(), m_pd_last.end(), m_clk);
+    }
+    void pd_tick() {
+      if (!m_pimid_pd) return;
+      std::fill(m_pd_busy.begin(), m_pd_busy.end(), 0);
+      for (ReqBuffer* b : {&m_read_buffer, &m_write_buffer, &m_active_buffer, &m_priority_buffer})
+        for (auto it = b->begin(); it != b->end(); ++it) pd_mark(it->addr_vec, m_pd_busy);
+      for (size_t u = 0; u < m_pd_in.size(); u++) {
+        if (m_pd_busy[u]) {
+          if (m_pd_in[u]) { m_pd_in[u] = 0; s_pimid_pd_cycles += (uint64_t)(m_clk - m_pd_since[u]); s_pimid_pd_exits++; m_pd_wake[u] = m_clk + m_pimid_pd_txp; }
+          m_pd_last[u] = m_clk;
+        } else if (!m_pd_in[u] && m_clk - m_pd_last[u] >= m_pimid_pd_idle) {
+          m_pd_in[u] = 1; m_pd_since[u] = m_clk;
+        }
+      }
+    }
     static int pimid_sid(int s) { return (s >= 4) ? s - 3 : s; }
     bool pimid_ca_host(const Request& r) const { return m_pimid_host_ca && (r.source_id == 1 || r.source_id == 3); }
 
@@ -80,6 +132,11 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       m_wr_high_watermark = param<float>("wr_high_watermark").desc("Threshold for switching to write mode.").default_val(0.8f);
       m_pimid_bank_parallel = param<bool>("pimid_bank_parallel").desc("PIMID: one command per bank per cycle, no shared bus (processing elements below the channel tier).").default_val(false);
 
+      m_pimid_pd = param<bool>("pimid_power_down").desc("PIMID 1.12.20: precharge power-down after an idle timer, tXP exit.").default_val(false);
+      m_pimid_pd_idle = param<int>("pimid_pd_idle_clocks").desc("PIMID 1.12.20: memory clocks idle before power-down entry.").default_val(64);
+      m_pimid_pd_txp = param<int>("pimid_pd_txp_clocks").desc("PIMID 1.12.20: power-down exit time tXP, memory clocks (0: from the ns/nCK pair).").default_val(0);
+      m_pimid_pd_txp_ns = param<double>("pimid_pd_txp_ns").desc("PIMID 1.12.20: tXP, ns part of max(nCK, ns).").default_val(0.0);
+      m_pimid_pd_txp_nck = param<int>("pimid_pd_txp_nck").desc("PIMID 1.12.20: tXP, nCK part of max(nCK, ns).").default_val(0);
       m_pimid_host_ca = param<bool>("pimid_host_ca_bus").desc("PIMID 1.12.18: host commands obey the DIMM CA bus; lockstep shadow copies (source_id 4/6).").default_val(false);
       m_scheduler = create_child_ifce<IScheduler>();
       m_refresh = create_child_ifce<IRefreshManager>();    
@@ -119,6 +176,18 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           for (int pc = 0; pc < ncmd && pc < (int)m_dram->m_timing_cons[0].size(); pc++)
             for (const auto& t : m_dram->m_timing_cons[0][pc])
               if (t.cmd == act && t.val > m_pimid_ca_occ[pc]) m_pimid_ca_occ[pc] = t.val;
+      }
+      if (m_pimid_pd) {   /* PIMID 1.12.20: the power-down unit is the rank where the standard has one, else the channel */
+        m_pimid_pd_level = m_dram->m_levels.contains("rank") ? m_dram->m_levels("rank") : 0;
+        int nu = 1;
+        for (int l = 1; l <= m_pimid_pd_level; l++) { const int c = std::max(1, m_dram->m_organization.count[l]); m_pimid_pd_radix.push_back(c); nu *= c; }
+        m_pd_in.assign(nu, 0); m_pd_busy.assign(nu, 0); m_pd_since.assign(nu, 0); m_pd_last.assign(nu, 0); m_pd_wake.assign(nu, 0);
+        if (m_pimid_pd_txp <= 0) {   // tXP = max(nCK, ns) at this standard's own clock
+          const int tck_ps = m_dram->m_timings.contains("tCK_ps") ? m_dram->m_timing_vals("tCK_ps") : 0;
+          int c = m_pimid_pd_txp_nck;
+          if (tck_ps > 0 && m_pimid_pd_txp_ns > 0.0) c = std::max(c, (int)std::ceil(m_pimid_pd_txp_ns * 1000.0 / (double)tck_ps));
+          m_pimid_pd_txp = std::max(1, c);
+        }
       }
       m_num_cores = frontend->get_num_cores();
 
@@ -229,6 +298,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       serve_completed_reads();
 
       m_refresh->tick();
+      pd_tick();   // PIMID 1.12.19
 
       if (m_pimid_bank_parallel) {
         pimid_tick_bank_parallel();
@@ -255,6 +325,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           update_request_stats(req_it);
         }
         pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
+        pd_issued(req_it->addr_vec);   // PIMID 1.12.19
         m_dram->issue_command(req_it->command, req_it->addr_vec);
         if (m_dram->m_command_meta(req_it->command).is_opening) { const int sid_ = pimid_sid(req_it->source_id); s_pimid_activates++; if (req_it->source_id >= 4) s_pimid_shadow_acts++; if (sid_ == 1) s_pimid_src_acts++; if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; } }   /* PIMID 1.12.18: a lockstep shadow (4/6) is a chip ACT of the host (1/3) */   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
 
@@ -307,7 +378,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         for (const auto& k : used) if (pimid_same_bank(k, it->addr_vec)) { taken = true; break; }
         if (taken) continue;
         it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
-        if (!m_dram->check_ready(it->command, it->addr_vec)) continue;
+        if (!pimid_ready(it->command, it->addr_vec)) continue;
         if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
         if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing) {
           bool blocks = false;
@@ -354,7 +425,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       if (pimid_pending_hit(m_read_buffer, req_it) || pimid_pending_hit(m_write_buffer, req_it) ||
           pimid_pending_hit(m_active_buffer, req_it)) return;   // a queued hit keeps the row open
       const int ap = m_dram->m_commands(req_it->command == rd ? "RDA" : "WRA");
-      if (!m_dram->check_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
+      if (!pimid_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
       req_it->command = ap;
       req_it->final_command = ap;
     }
@@ -364,6 +435,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         update_request_stats(req_it);
       }
       pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
+      pd_issued(req_it->addr_vec);   // PIMID 1.12.19
       m_dram->issue_command(req_it->command, req_it->addr_vec);
       if (pimid_ca_host(*req_it) && req_it->command >= 0 && req_it->command < (int)m_pimid_ca_occ.size())   // PIMID 1.12.18
         m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
@@ -430,7 +502,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
             for (const auto& k : blocked) if (pimid_same_bank(k, it->addr_vec)) { taken = true; break; }
             if (taken) continue;
             it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
-            if (m_dram->check_ready(it->command, it->addr_vec)) { req_it = it; buffer = &m_priority_buffer; found = true; break; }
+            if (pimid_ready(it->command, it->addr_vec)) { req_it = it; buffer = &m_priority_buffer; found = true; break; }
             blocked.push_back(it->addr_vec);   // its bank waits for it
           }
         }
@@ -442,7 +514,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           if (issued > 0) break;
           req_it = m_priority_buffer.begin();
           req_it->command = m_dram->get_preq_command(req_it->final_command, req_it->addr_vec);
-          if (!m_dram->check_ready(req_it->command, req_it->addr_vec)) break;
+          if (!pimid_ready(req_it->command, req_it->addr_vec)) break;
           buffer = &m_priority_buffer;
           found = true;
         }
@@ -503,6 +575,12 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     }
     uint64_t s_pimid_activates = 0;   // PIMID 1.12.18
     void pimid_cmd_totals(uint64_t& activates) const override { activates += s_pimid_activates; }
+    void pimid_pd_totals(uint64_t& pdUnitCycles, uint64_t& units, uint64_t& exits) const override {   // PIMID 1.12.19
+      if (!m_pimid_pd) return;
+      uint64_t c = s_pimid_pd_cycles;
+      for (size_t u = 0; u < m_pd_in.size(); u++) if (m_pd_in[u]) c += (uint64_t)(m_clk - m_pd_since[u]);
+      pdUnitCycles += c; units += m_pd_in.size(); exits += s_pimid_pd_exits;
+    }
     void pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits) const override { shadowActs += s_pimid_shadow_acts; caWaits += s_pimid_ca_waits; }   // PIMID 1.12.18
     /* PIMID 1.12.18 (ruling 17 / R0605): the host's share (source_id 1). */
     uint64_t s_pimid_src_hits = 0, s_pimid_src_misses = 0, s_pimid_src_conflicts = 0, s_pimid_src_acts = 0;
@@ -622,7 +700,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       bool request_found = false;
       // 2.1    First, check the act buffer to serve requests that are already activating (avoid useless ACTs)
       if (req_it= m_scheduler->get_best_request(m_active_buffer); req_it != m_active_buffer.end()) {
-        if (m_dram->check_ready(req_it->command, req_it->addr_vec)) {
+        if (pimid_ready(req_it->command, req_it->addr_vec)) {
           request_found = true;
           req_buffer = &m_active_buffer;
         }
@@ -636,7 +714,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           req_it = m_priority_buffer.begin();
           req_it->command = m_dram->get_preq_command(req_it->final_command, req_it->addr_vec);
           
-          request_found = m_dram->check_ready(req_it->command, req_it->addr_vec);
+          request_found = pimid_ready(req_it->command, req_it->addr_vec);
           if (!request_found & m_priority_buffer.size() != 0) {
             return false;
           }
@@ -648,7 +726,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           set_write_mode();
           auto& buffer = m_is_write_mode ? m_write_buffer : m_read_buffer;
           if (req_it = m_scheduler->get_best_request(buffer); req_it != buffer.end()) {
-            request_found = m_dram->check_ready(req_it->command, req_it->addr_vec);
+            request_found = pimid_ready(req_it->command, req_it->addr_vec);
             req_buffer = &buffer;
           }
         }

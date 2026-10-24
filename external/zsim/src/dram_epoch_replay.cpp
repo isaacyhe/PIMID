@@ -67,6 +67,13 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
      * (no shared command or data bus); see the constraint filter below. */
     const uint32_t plv = zinfo->hierarchy.placementLevel;
     const bool bankPar = !hostOnly_ && (plv <= 2);   // 1.12.18: never for the host memory
+    if (zinfo->hierarchy.dramPowerDown) {   /* 1.12.20: precharge power-down in the controller (every instance) */
+        config["MemorySystem"]["Controller"]["pimid_power_down"] = true;
+        config["MemorySystem"]["Controller"]["pimid_pd_idle_clocks"] = (int)zinfo->hierarchy.dramPdIdleClocks;
+        config["MemorySystem"]["Controller"]["pimid_pd_txp_ns"] = zinfo->hierarchy.dramPdTxpNs;
+        config["MemorySystem"]["Controller"]["pimid_pd_txp_nck"] = (int)zinfo->hierarchy.dramPdTxpNck;
+        pdOn_ = true;
+    }
     if (bankPar) config["MemorySystem"]["Controller"]["pimid_bank_parallel"] = true;
     fe_  = Ramulator::Factory::create_frontend(config);
     sys_ = Ramulator::Factory::create_memory_system(config);
@@ -216,6 +223,11 @@ void DramEpochReplay::initStats(AggregateStat* parentStat) {
     profRowMisses_.init("ctrlRowMisses", "Controller row misses (a closed bank)"); s->append(&profRowMisses_);
     profRowConflicts_.init("ctrlRowConflicts", "Controller row conflicts (another row open: precharge + activate)"); s->append(&profRowConflicts_);
     profRefreshes_.init("ctrlRefreshes", "Refresh commands the controller issued over the replayed run (row 28: measured background)"); s->append(&profRefreshes_);
+    if (pdOn_) {   // 1.12.19
+        profPdCycles_.init("ctrlPdUnitCycles", "Replayed DRAM cycles x power-down units spent in precharge power-down (ROI window)"); s->append(&profPdCycles_);
+        profPdUnits_.init("ctrlPdUnits", "Power-down units (ranks, or channels without a rank level) of the replayed controller"); s->append(&profPdUnits_);
+        profPdExits_.init("ctrlPdExits", "Power-down exits in the ROI window (each delays the next command by tXP)"); s->append(&profPdExits_);
+    }
     profTicks_.init("ctrlTicks", "DRAM clock cycles the controller was replayed for"); s->append(&profTicks_);
     profIdleTicks_.init("ctrlIdleTicks", "Replayed DRAM cycles with no request in flight (row 28: measured idle)"); s->append(&profIdleTicks_);
     profChannelsUsed_.init("ctrlChannelsUsed", "Channels of the device that received replayed requests"); s->append(&profChannelsUsed_);
@@ -481,6 +493,7 @@ void DramEpochReplay::bankTotals() {
     uint64_t w = 0, o = 0, a = 0;
     if (sys_ && bankTracked_ && sys_->pimid_bank_open_totals(w, o)) { raw_.bankW = w; raw_.bankO = o; }
     if (sys_ && sys_->pimid_cmd_totals(a)) raw_.acts = a;   // 1.12.18
+    if (pdOn_ && sys_) sys_->pimid_pd_totals(raw_.pdC, raw_.pdU, raw_.pdX);   // 1.12.19
     uint64_t sh = 0, sm = 0, sc = 0, sa = 0;   // 1.12.18 (R0605): the host requests' share (source_id 1)
     if (sys_ && hostMis_ > 0 && sys_->pimid_src_totals(sh, sm, sc, sa)) {
         raw_.hhits = sh; raw_.hmisses = sm; raw_.hconflicts = sc; raw_.hacts = sa;
@@ -619,11 +632,13 @@ void DramEpochReplay::takeSnap(Snap& s) {
     s.bankW = raw_.bankW; s.bankO = raw_.bankO;
     uint64_t w = 0, o = 0;
     if (sys_ && bankTracked_ && sys_->pimid_bank_open_totals(w, o)) { s.bankW = w; s.bankO = o; }
+    if (pdOn_ && sys_) { uint64_t u = 0; sys_->pimid_pd_totals(s.pdC, u, s.pdX); }   // 1.12.19
 }
 
 void DramEpochReplay::applySnap(const Snap& s) {
     snapTicks_ = s.ticks; snapIdle_ = s.idle; snapRefreshes_ = s.refreshes;
     snapBankW_ = s.bankW; snapBankO_ = s.bankO;
+    snapPdC_ = s.pdC; snapPdX_ = s.pdX;   // 1.12.19
     closeSnapped_ = true;
 }
 
@@ -957,6 +972,11 @@ void DramEpochReplay::finalize() {
     profOHostActivates_.set(raw_.ohacts - base_.ohacts);
     applyOutside();
     profRefreshes_.set((snap ? snapRefreshes_ : raw_.refreshes) - base_.refreshes);
+    if (pdOn_) {   // 1.12.20: the power-down unit-cycles over the same window as ctrlTicks
+        profPdCycles_.set((snap ? snapPdC_ : raw_.pdC) - base_.pdC);
+        profPdUnits_.set(raw_.pdU);
+        profPdExits_.set((snap ? snapPdX_ : raw_.pdX) - base_.pdX);
+    }
     profPriced_.set(rawPriced_.load() - basePriced_);
     profBootstrap_.set(rawBoot_.load() - baseBoot_);
     uint64_t used = 0, mx = 0, tot = 0;

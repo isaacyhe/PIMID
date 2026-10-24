@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.20 -- DRAM precharge power-down is modelled in the replayed controller (on by default for DDR3, DDR4, DDR5)
+
+- **Power-down in the replayed Ramulator2 controller.** A power-down unit (a rank, one chip under the per-chip
+  split, or the whole channel for HBM and GDDR6) enters precharge power-down after an idle timer with no queued
+  request and no command; the first request or refresh that needs it wakes it and nothing issues to it for tXP.
+  The residency is measured over the ROI window (ctrlPdUnitCycles, ctrlPdUnits, ctrlPdExits) and priced at IDD2P;
+  it replaces the earlier gap estimates. Counted refresh interrupts power-down as before. The ledger shows the
+  reduced background with a separate "power-down credit" line (no negative entry).
+- **Defaults.** On by default where a published controller default enables it: DDR3 (AMD BKDG 42301 Rev 3.14,
+  Table 81, PowerDownEn = 1), DDR4 (Lenovo Press LP1267, AMD EPYC 7002/7003, "Memory Power Down Enable: Enable
+  (default)") and DDR5 (Lenovo Press LP1977, 4th Gen EPYC, "Enabled (default)"). Off by default for LPDDR5, GDDR6
+  and HBM: vendor documents make it an option without a stated default. `memory.power_down` overrides the default.
+- **Idle timer.** `memory.power_down_idle_clocks`, default 64 memory clocks (AMD BKDG 42301, PchgPDEnDelay /
+  AggrPDDelay, BIOS default 00h = 64 clocks; the only published value found).
+- **tXP and IDD2P.** tXP: DDR3 max(3 nCK, 6 ns) (JESD79-3D), DDR4 max(4 nCK, 6 ns) (JESD79-4), DDR5 7.5 ns
+  (JESD79-5), LPDDR5 7.5 ns (JESD209-5), GDDR6 12 tCK (SK hynix H56G42A rev 1.1), HBM3 max(10 tCK, 7.5 ns)
+  (JESD238B.01); HBM2: NO PUBLISHED SOURCE FOUND (not modelled unless `memory.power_down_threshold_ns` supplies
+  a tXP). IDD2P from each part record; HBM IDD2P DERIVED as IDD2N x 28/40 (the IDD2P/IDD2N pair of Chatterjee et
+  al., HPCA 2017, Table II).
+- **Data impact.** Background power falls by the power-down residency x (IDD2N - IDD2P): small on DDR5 (IDD2P is
+  close to IDD2N), larger on DDR4; the first access after each power-down waits tXP (device latency sums +7 to
+  +10% on idle-heavy serial cells, run time +0.2 to +0.5%). Not comparable with 1.12.19 for DDR3/DDR4/DDR5
+  background power and memory timing.
+
 ## 1.12.19 -- DDR5 defaults to 4800 again (16 Gb x8 die Rev A)
 
 - **DDR5 default grade: DDR5-4800B on the Micron MT60B 16 Gb x8 die Rev A** (core sheet Rev A Table 6, x8 4800

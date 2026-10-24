@@ -631,6 +631,10 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.pagesPerUnit = config.get<uint32_t>("sys.hierarchy.pagesPerUnit", 32);
         zinfo->hierarchy.dramRowBytes = config.get<uint32_t>("sys.hierarchy.dramRowBytes", 0);  // 1.11.52 (D003)
         zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91 (R8-1)
+        zinfo->hierarchy.dramPowerDown = config.get<bool>("sys.hierarchy.dramPowerDown", false);   // 1.12.19
+        zinfo->hierarchy.dramPdIdleClocks = config.get<uint32_t>("sys.hierarchy.dramPdIdleClocks", 64);
+        zinfo->hierarchy.dramPdTxpNck = config.get<uint32_t>("sys.hierarchy.dramPdTxpNck", 0);
+        zinfo->hierarchy.dramPdTxpNs = config.get<double>("sys.hierarchy.dramPdTxpNs", 0.0);
         zinfo->hierarchy.assumeLocal = config.get<uint32_t>("sys.hierarchy.assumeLocal", 0) != 0;
         zinfo->hierarchy.chargePrep = config.get<uint32_t>("sys.hierarchy.chargePrep", 0) != 0;
         zinfo->hierarchy.hostLinkXferCycles = config.get<uint32_t>("sys.hierarchy.hostLinkXferCycles", 0);

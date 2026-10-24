@@ -224,6 +224,7 @@ class DramEpochReplay {
     struct Raw { uint64_t req = 0, rd = 0, wr = 0, lat = 0, epochs = 0, unserved = 0, ticks = 0, idle = 0,
                  hits = 0, misses = 0, conflicts = 0, refreshes = 0,
                  bankW = 0, bankO = 0, acts = 0,     // 1.12.18: bank-open unit cycles (window, open)
+                 pdC = 0, pdU = 0, pdX = 0,          // 1.12.20: power-down unit-cycles, units, exits
                  hreq = 0, hrd = 0, hwr = 0, hlat = 0,                       // 1.12.18 (R0605): the host interfaces' share
                  hhits = 0, hmisses = 0, hconflicts = 0, hacts = 0,         //   (source_id 1 in the controller)
                  /* 1.12.18 (user ruling R1 2026-10-24): requests stamped after
@@ -242,7 +243,7 @@ class DramEpochReplay {
     /* 1.12.18 (shift by lag): the window's time-based counters every
      * kSnapEvery DRAM cycles until the close is armed, so a close the clock
      * has already passed takes its counters at the close, not at "now". */
-    struct Snap { uint64_t tick = 0, ticks = 0, idle = 0, refreshes = 0, bankW = 0, bankO = 0; };
+    struct Snap { uint64_t tick = 0, ticks = 0, idle = 0, refreshes = 0, bankW = 0, bankO = 0, pdC = 0, pdX = 0; };   // pd*: 1.12.19
     static constexpr uint64_t kSnapEvery = 1024;
     std::vector<Snap> hist_;
     void takeSnap(Snap& s);
@@ -273,6 +274,9 @@ class DramEpochReplay {
     uint64_t closeLate_ = 0;        // ticks the clock already stood past the end when the end became known
     uint64_t pastEndRecs_ = 0;      // records issued at a stamp past the ROI end (counted as requests)
     uint64_t snapTicks_ = 0, snapIdle_ = 0, snapRefreshes_ = 0, snapBankW_ = 0, snapBankO_ = 0;
+    uint64_t snapPdC_ = 0, snapPdX_ = 0;   // 1.12.19
+    bool pdOn_ = false;
+    Counter profPdCycles_, profPdUnits_, profPdExits_;
     std::atomic<uint64_t> hostCoreStamps_{0};    // 1.12.18 (R2): host records stamped on the host core's own ROI-relative clock
     std::atomic<uint64_t> hostPhaseStamps_{0};   // 1.12.18: host records stamped on the ROI-relative phase grid (no core ROI baseline)
     void ctrlTotals(uint64_t& h, uint64_t& m, uint64_t& c, uint64_t& r);
