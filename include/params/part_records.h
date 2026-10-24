@@ -106,6 +106,11 @@ struct ReadEnergyGuardRec {
     std::string gain_source;
 };
 
+/* 1.12.25: a voltage variant of the part (record block 'variants'; memory.dram.ddr3_variant selects one). */
+struct VariantRec { double vdd = 0.0, vddq = 0.0; std::string source; };
+/* 1.12.25: one tRFC basis (record block 'trfc_bases'; memory.dram.trfc_basis selects one). */
+struct TrfcBasisRec { double trfc_ns = 0.0; std::string source; };
+
 /* The DRAM part record. Field names mirror the YAML keys. */
 struct DramPartRecord {
     std::string file;              // the record file that was loaded
@@ -129,6 +134,12 @@ struct DramPartRecord {
     TerminationRec termination;
     IddqBandRec iddq_band;
     ReadEnergyGuardRec read_energy_guard;   // 1.12.18: optional (HBM3)
+    /* 1.12.25 (DDR3): optional voltage variants and tRFC bases; 'variant' / 'trfc_basis' name the ones in force
+     * (empty when the record has no such block) -- the record's idd rows and termination already carry them. */
+    std::string variant_default, variant;
+    std::map<std::string, VariantRec> variants;
+    std::string trfc_basis_default, trfc_basis;
+    std::map<std::string, TrfcBasisRec> trfc_bases;
 };
 
 /* The directory the records are read from: $PIMID_PARAMS when set, else the
@@ -147,6 +158,10 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
 void registerDramPartRecord(const DramPartRecord& rec);
 const DramPartRecord& dramPartRecord(const std::string& tech);
 bool hasDramPartRecord(const std::string& tech);
+/* 1.12.25: the run's choice of a record's voltage variant and tRFC basis ("" = the record's default), applied
+ * whenever the record is loaded from then on (checkDramPartRecords sets it before it loads). A name the record
+ * does not carry refuses at load. */
+void setDramRecordSelection(const std::string& tech, const std::string& variant, const std::string& trfc_basis);
 /* 1.12.18: the data rate (MT/s) the record's timing preset names ("DDR5_5600B" -> 5600); 0 when the name
  * carries none. The one place a code site that is not a Ramulator wrapper reads the record's DDR5 grade. */
 int dramRecordGradeMTs(const std::string& tech);

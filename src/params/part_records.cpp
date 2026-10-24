@@ -50,6 +50,15 @@ std::string fmt(double v) { std::ostringstream o; o.precision(10); o << v; retur
 
 } // namespace
 
+namespace {
+std::map<std::string, std::pair<std::string, std::string>>& selection() {   // 1.12.25: tech -> (variant, trfc basis)
+    static std::map<std::string, std::pair<std::string, std::string>> m; return m;
+}
+}
+void setDramRecordSelection(const std::string& tech, const std::string& variant, const std::string& trfc_basis) {
+    selection()[tech] = {variant, trfc_basis};
+}
+
 bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::string& error) {
     std::string t = tech;
     for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -259,6 +268,80 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         error = "part record " + path + " says technology '" + r.technology + "' but was loaded for '" + tech + "'";
         return false;
     }
+    /* 1.12.25: optional voltage variants and tRFC bases. The record's own values are the default's; the run's
+     * selection (setDramRecordSelection) replaces them here, so every reader of the record sees one part. */
+    if (n["variants"]) {
+        const YAML::Node v = n["variants"];
+        if (!v.IsMap() || !need(v, "default", r.variant_default, error)) { error = "part record " + path + ": variants: " + error; return false; }
+        for (const auto& kv : v) {
+            const std::string name = kv.first.as<std::string>();
+            if (name == "default") continue;
+            VariantRec vr;
+            if (!need(kv.second, "vdd", vr.vdd, error) || !need(kv.second, "vddq", vr.vddq, error) || !need(kv.second, "source", vr.source, error)) {
+                error = "part record " + path + ": variants." + name + ": " + error; return false;
+            }
+            r.variants[name] = vr;
+        }
+        const auto d = r.variants.find(r.variant_default);
+        if (d == r.variants.end()) { error = "part record " + path + ": variants.default '" + r.variant_default + "' names no variant"; return false; }
+        for (const auto& kv : r.idd.by_grade)
+            if (!close(kv.second.vdd, d->second.vdd) || !close(r.termination.vddq, d->second.vddq)) {
+                error = "part record " + path + ": idd vdd / termination.vddq (" + fmt(kv.second.vdd) + " / " + fmt(r.termination.vddq) +
+                        ") must be the default variant's (" + r.variant_default + ": " + fmt(d->second.vdd) + " / " + fmt(d->second.vddq) + ")";
+                return false;
+            }
+    }
+    if (n["trfc_bases"]) {
+        const YAML::Node v = n["trfc_bases"];
+        if (!v.IsMap() || !need(v, "default", r.trfc_basis_default, error)) { error = "part record " + path + ": trfc_bases: " + error; return false; }
+        for (const auto& kv : v) {
+            const std::string name = kv.first.as<std::string>();
+            if (name == "default") continue;
+            TrfcBasisRec tb;
+            if (!need(kv.second, "trfc_ns", tb.trfc_ns, error) || !need(kv.second, "source", tb.source, error)) {
+                error = "part record " + path + ": trfc_bases." + name + ": " + error; return false;
+            }
+            r.trfc_bases[name] = tb;
+        }
+        const auto d = r.trfc_bases.find(r.trfc_basis_default);
+        if (d == r.trfc_bases.end()) { error = "part record " + path + ": trfc_bases.default '" + r.trfc_basis_default + "' names no basis"; return false; }
+        for (const auto& kv : r.idd.by_grade)
+            if (!close(kv.second.trfc_ns, d->second.trfc_ns)) {
+                error = "part record " + path + ": idd trfc_ns " + fmt(kv.second.trfc_ns) + " must be the default tRFC basis's (" +
+                        r.trfc_basis_default + ": " + fmt(d->second.trfc_ns) + " ns)";
+                return false;
+            }
+    }
+    {
+        const auto sit = selection().find(r.technology);
+        const std::string want_v  = (sit != selection().end()) ? sit->second.first : std::string();
+        const std::string want_tb = (sit != selection().end()) ? sit->second.second : std::string();
+        if (!r.variants.empty()) {
+            r.variant = want_v.empty() ? r.variant_default : want_v;
+            const auto it = r.variants.find(r.variant);
+            if (it == r.variants.end()) {
+                error = "part record " + path + " has no voltage variant '" + r.variant + "' (variants:";
+                for (const auto& kv : r.variants) error += " " + kv.first;
+                error += ")"; return false;
+            }
+            for (auto& kv : r.idd.by_grade) kv.second.vdd = it->second.vdd;
+            r.termination.vddq = it->second.vddq;
+            if (r.variant != r.variant_default) r.termination.source += "; 1.12.25: variant " + r.variant + ": " + it->second.source;
+        } else if (!want_v.empty()) {
+            error = "part record " + path + " has no voltage variants, so '" + want_v + "' cannot be selected"; return false;
+        }
+        if (!r.trfc_bases.empty()) {
+            r.trfc_basis = want_tb.empty() ? r.trfc_basis_default : want_tb;
+            const auto it = r.trfc_bases.find(r.trfc_basis);
+            if (it == r.trfc_bases.end()) {
+                error = "part record " + path + " has no tRFC basis '" + r.trfc_basis + "' (trfc_bases:";
+                for (const auto& kv : r.trfc_bases) error += " " + kv.first;
+                error += ")"; return false;
+            }
+            for (auto& kv : r.idd.by_grade) kv.second.trfc_ns = it->second.trfc_ns;
+        }
+        /* a basis named for a record without trfc_bases is refused by the caller, which knows every record of the run */
+    }
     out = r;
     return true;
 }
@@ -427,6 +510,14 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
     o << ") -- the only source (step 2 of the parameter-file migration, 1.11.101)";
     o << "; idd: " << rec.idd.provenance << " row (" << rec.idd.basis << ", " << rec.idd.idd3n_bank_state << ", "
       << rec.idd.by_grade.size() << " grade row(s)) the source (IDD-RECORDS step 2, 1.11.105)";
+    if (!rec.variant.empty() && rec.variants.count(rec.variant)) {   // 1.12.19
+        const VariantRec& v = rec.variants.at(rec.variant);
+        o << "; variant " << rec.variant << " (VDD " << v.vdd << " V, VDDQ " << v.vddq << " V)"
+          << (rec.variant == rec.variant_default ? " (the record's default)" : " (memory.dram.ddr3_variant)");
+    }
+    if (!rec.trfc_basis.empty() && rec.trfc_bases.count(rec.trfc_basis))
+        o << "; tRFC " << rec.trfc_bases.at(rec.trfc_basis).trfc_ns << " ns (" << rec.trfc_basis << ")"
+          << (rec.trfc_basis == rec.trfc_basis_default ? " (the record's default)" : " (memory.dram.trfc_basis)");
     return o.str();
 }
 

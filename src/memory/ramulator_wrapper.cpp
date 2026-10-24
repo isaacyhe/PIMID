@@ -58,6 +58,20 @@ int         RamulatorWrapper::s_run_ddr5_grade_mtps_ = 0;   // 1.12.18: 0 = the 
 int         RamulatorWrapper::s_run_temperature_k_ = 358;
 double      RamulatorWrapper::s_run_termination_pj_per_bit_ = -1.0;
 
+std::string RamulatorWrapper::recordTimingOverrideYaml(const std::string& tech, const std::string& before, const std::string& after) {
+    /* 1.12.25: a record that carries tRFC bases (DDR3) times its refresh at the selected one: Ramulator's
+     * own tRFC table is JESD79-3E's (4 Gb 300 ns), so the record's value is written as a timing override
+     * (DDR3.cpp set_timing_vals: a 'tRFC' in ns replaces the table, JEDEC-rounded to whole clocks). */
+    std::string t = tech;
+    std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+    if (!pimid::params::hasDramPartRecord(t) && t != "DDR3") return "";
+    const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(t);
+    if (rec.trfc_basis.empty() || rec.idd.by_grade.empty()) return "";
+    std::ostringstream o;
+    o << before << "tRFC: " << rec.idd.by_grade.begin()->second.trfc_ns << after;
+    return o.str();
+}
+
 int RamulatorWrapper::runDdr5GradeMTs() {   // 1.12.18
     if (s_run_knobs_set_ && s_run_ddr5_grade_mtps_ > 0) return s_run_ddr5_grade_mtps_;
     return pimid::params::dramRecordGradeMTs("DDR5");
@@ -369,6 +383,14 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/DDR3.cpp org_presets",
                                     1024, ww, 1, 8, ro, co, false,
                                     /* JESD79-3D 2.11: 8 banks, NO bank groups */ 1, 8);
+    } else if (dt == "DDR3" && cap_gb == 4 && (ww == 4 || ww == 8 || ww == 16)) {
+        /* 1.12.25: the 4 Gb die (DDR3.cpp DDR3_4Gb_x4/x8/x16 = {1<<16, 1<<11} / {1<<16, 1<<10} / {1<<15, 1<<10};
+         * MT41K 4 Gb Table 2 p.2: x4 64K rows x 2K columns, x8 64K x 1K (1 KB page), x16 32K x 1K (2 KB page)). */
+        const uint64_t ro = (ww == 16) ? 32768ULL : 65536ULL;
+        const uint64_t co = (ww == 4) ? 2048ULL : 1024ULL;
+        preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/DDR3.cpp org_presets",
+                                    512, ww, 1, 8, ro, co, false,
+                                    /* JESD79-3E 2.11: 8 banks, NO bank groups */ 1, 8);
     } else if (dt == "DDR4" && cap_gb == 8 && (ww == 4 || ww == 8 || ww == 16)) {
         const int banks = (ww == 16) ? 8 : 16;
         const uint64_t ro = (ww == 4) ? 131072ULL : 65536ULL;
@@ -1557,7 +1579,7 @@ void RamulatorWrapper::parseConfiguration() {
             return "Frontend:\n  impl: GEM5\n\nMemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n"
                    "  DRAM:\n    impl: " + dram_impl + "\n    org:\n      preset: " + org_preset +
                    "\n      channel_width: " + cw +
-                   "\n    timing:\n      preset: " + timing_preset + rfm +
+                   "\n    timing:\n      preset: " + timing_preset + recordTimingOverrideYaml(dram_impl, "\n      ", "") + rfm +   // 1.12.19
                    "\n  Controller:\n    impl: Generic\n" + writeDrainYaml(wr_high_, wr_low_) +   // 1.12.18 (write drain)
                    "    Scheduler:\n      impl: FRFCFS\n"
                    "    RefreshManager:\n      impl: AllBank\n"

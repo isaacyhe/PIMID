@@ -268,6 +268,9 @@ public:
     /* 1.12.18: the DDR5 grade this run simulates -- the run-wide knob when set, else the part
      * record's (4800 by default since 1.12.19) -- for code that holds no wrapper instance. */
     static int runDdr5GradeMTs();
+    /* 1.12.25: the Ramulator timing override lines the part record asks for ("tRFC: <ns>" when the record
+     * carries tRFC bases -- DDR3), each wrapped in before/after; "" when it asks for none. */
+    static std::string recordTimingOverrideYaml(const std::string& tech, const std::string& before, const std::string& after);
     /* The key the energy layer selects an IDD row by: the technology, plus a
      * "-<grade>" suffix for DDR5 (pimid_energy.h baseTech() strips it for
      * every family-level decision). */

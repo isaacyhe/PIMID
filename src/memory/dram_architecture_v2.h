@@ -687,12 +687,12 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
 
     // ===== DATAPATH STAGES =====
 
+    /* 1.12.25: the 4 Gb x8 part the record now defaults to (DDR3_4Gb_x8): 1 KB page. */
     arch->datapath.row_buffer_bits = {
-        16384,  // 2 KB page x 8 bits
+        8192,  // 1 KB page x 8 bits
         VerificationStatus::VERIFIED,
-        "JEDEC JESD79-3D 2.11.5: 8Gb x8 page size 2 KB; page size = 2^COLBITS x ORG / 8",
-        "Activated row in the bitline sense amplifiers. TWICE DDR4's x8 page, "
-        "because DDR3 x8 carries 11 column bits to DDR4's 10."
+        "JEDEC JESD79-3E 2.11: 4Gb x8 page size 1 KB (A0-A9 columns); Micron MT41K 4Gb Table 2 p.2",
+        "Activated row in the bitline sense amplifiers; the same 1 KB x8 page as DDR4."
     };
     arch->datapath.gsa_datapath_bits = {
         256,
@@ -742,20 +742,20 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
     arch->bandwidth_limits.confidence_level =
         "Medium - external widths are JEDEC-verified, internal port widths are estimates";
 
-    // ===== ORGANIZATION (preset DDR3_8Gb_x8, JESD79-3D 2.11.5) =====
-    // 8 Gb / 8 banks = 128 MB per bank; 65536 rows x 2 KB = 128 MB confirms it.
-    // A 512-row subarray at a 2 KB page is 1 MB, so 128 MB / 1 MB = 128
+    // ===== ORGANIZATION (preset DDR3_4Gb_x8 since 1.12.19, JESD79-3E 2.11) =====
+    // 4 Gb / 8 banks = 64 MB per bank; 65536 rows x 1 KB = 64 MB confirms it.
+    // A 512-row subarray at a 1 KB page is 512 KB, so 64 MB / 512 KB = 128
     // subarrays, which is also the live count main.cpp derives as
     // bank_rows / subarray_height = 65536 / 512.
-    arch->organization.subarrays_per_bank = 128;   // DERIVED: 128 MB bank / 1 MB subarray
+    arch->organization.subarrays_per_bank = 128;   // DERIVED: 64 MB bank / 512 KB subarray
     arch->organization.banks_per_bank_group = 8;   // JESD79-3D: 8 banks, no grouping
     arch->organization.bank_groups_per_chip = 1;   // DDR3 HAS NO BANK GROUPS
     arch->organization.chips_per_rank = 8;         // x8 organization
     arch->organization.ranks_per_channel = 2;      // Typical DIMM
-    arch->organization.subarray_size_kb = 1024;    // DERIVED: 512 rows x 2 KB page
-    arch->organization.bank_size_mb = 128;         // DERIVED: 8 Gb / 8 banks
-    arch->organization.chip_size_mb = 1024;        // preset DDR3_8Gb_x8: 8 Gb device
-    arch->organization.rank_size_gb = 8;           // DERIVED: 8 x 1024 MB
+    arch->organization.subarray_size_kb = 512;     // DERIVED: 512 rows x 1 KB page (1.12.25)
+    arch->organization.bank_size_mb = 64;          // DERIVED: 4 Gb / 8 banks (1.12.25)
+    arch->organization.chip_size_mb = 512;         // preset DDR3_4Gb_x8: 4 Gb device (1.12.25)
+    arch->organization.rank_size_gb = 4;           // DERIVED: 8 x 512 MB (1.12.25)
 
     // ===== TIMING (preset DDR3_1600H; tCK = 1E6 / (1600/2) = 1250 ps) =====
     // The bin is CL9: nCL/nRCD/nRP 9, nRAS 28. Written as the arithmetic so

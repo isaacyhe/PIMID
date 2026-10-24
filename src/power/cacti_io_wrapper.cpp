@@ -275,7 +275,14 @@ bool pimidElectricalFor(const std::string& t, PimidElectrical& e) {
      * p.315; DDR5 core sheet p.453). The old DDR5 tag "POD11" named a
      * standard that does not exist -- the POD family is 18/15/135/125/12/10,
      * all in misc/; DDR5's 1.1 V POD point is defined by JESD79-5 itself. */
-    if (t == "DDR3")   { e = {1.35, 40, 120, 34, true,  "SSTL-135 (JESD79-3-1 T38/T41, RZQ=240); trio 34/40/120 = MT41K p.32 IDD conditions; DDR3L, the part the IDD row describes"}; return true; }
+    /* 1.12.25: DDR3's electricals are the part record's termination (the selected voltage variant: SSTL-15 at
+     * 1.5 V by default, SSTL-135 at 1.35 V for DDR3L), so the interface and the IDD row describe one part. */
+    if (t == "DDR3")   {
+        const auto& tr = pimid::params::dramPartRecord("DDR3").termination;
+        static std::string note;
+        note = "record termination (" + tr.source + ")";
+        e = {tr.vddq, tr.rtt_rd, tr.rtt_wr, tr.ron_rd, true, note.c_str()}; return true;
+    }
     if (t == "DDR4")   { e = {1.2,  40, 120, 34, true,  "POD12 (JESD8-24); trio 34/40/120 = MT40A p.315 IDD conditions"}; return true; }
     if (t == "DDR5")   { e = {1.1,  40, 120, 34, true,  "POD at 1.1 V per JESD79-5 (no JESD8-* exists for 1.1 V); trio 34/40/120 = Micron DDR5 core sheet p.453 IDD conditions"}; return true; }
     if (t == "GDDR6")  { e = {1.35, 60, 120, 40, true,  "POD135; rd 40+60 = Samsung K4Z80325BC p.166 driver/termination characteristics; wr 120 = p.144 IDD conditions (All ODTs at ZQ/2, ZQ=240); MR1 default is termination DISABLED (p.49) -- the IDD operating point is priced for layer-consistency"}; return true; }

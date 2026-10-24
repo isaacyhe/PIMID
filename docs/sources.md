@@ -63,7 +63,9 @@ DERIVED / CALIBRATED).
 | GDDR6 density | 8Gb/37.03mm^2 (Samsung K4Z80165BC) | TechInsights floorplan | same |
 | HBM3 density | 0.160 Gb/mm^2 (SK Hynix) | SemiAnalysis | same |
 | HBM2 density | 8Gb user / 96mm^2 (12x8mm, 20nm) | Sohn et al., ISSCC 2016 18.2 / JSSC 52(1) (misc/sohn2016.pdf, misc/sohn2017.pdf) | same |
-| DDR3 density | 4Gb/30.9mm^2 (SK Hynix 23nm) | ISSCC 2012 paper 2.3 press kit | same |
+| DDR3 density | 4Gb/30.9mm^2 (SK Hynix 23nm) | ISSCC 2012 paper 2.3 press kit | same; 1.12.25: now the same density as the simulated die (DDR3_4Gb_x8), so the die area is this die's 30.9 mm^2. The current source is Micron's 4 Gb die Rev E: same density, other vendor -- NO PUBLISHED SOURCE FOUND for the Micron Rev E die area |
+| DDR3 default part (1.12.19, user rulings 2026-10-24) | 4 Gb x8 DDR3-1600 at VDD = VDDQ = 1.5 V, SSTL-15; DDR3L 1.35 V selectable (`memory.dram.ddr3_variant`) | Micron MT41K 4Gb_DDR3L Rev. R Table 20 p.44 "Die Rev. E for 1.35/1.5V Operation" = MT41J 4 Gb automotive DDR3 Rev. B Table 20 p.44 (identical x8 1600 column); JESD79-3E Tables 22/38/41, Figure 10 | Org DDR3_4Gb_x8 (was DDR3_8Gb_x8 against 4 Gb currents) |
+| DDR3 tRFC (1.12.25) | 260 ns default (`trfc_basis: datasheet`), 300 ns (`jedec`) | MT41K Rev. R Table 58 p.86 "tRFC - 4Gb MIN = 260"; JESD79-3E Table 61 p.158 | Timing (Ramulator tRFC override) and refresh energy; was 350 ns (the 8 Gb value) |
 | Array fraction of die | BLSA 8-15%, LWD 5-10% (structure statement) | Vogelsang, MICRO 2010 (misc/vogelsang2010.pdf) | on-pitch boundary rationale (L116/N1) |
 
 ## DRAM-process compute (the family + pitch model)
@@ -193,7 +195,7 @@ that deck as its provenance.
 | DDR5 IDD, 3200 / 8 Gb | 55 / 34 / 42 / 148 / 168 / 120 / 20 mA | UNSOURCED (no held datasheet publishes a 3200 column) | Stated; 2-3x below either addendum on standby |
 | DDR4 IDD5B | 457.4 mA (1.11.91) | Derived from Micron MT40A Rev B Table 148 p.332 IDD5R 53 / IDD2N 34 at tRFC/tREFI 350/7800 | 1.11.66 had 362 from a Rev A IDD5R against another revision's standby (R8-9) |
 | DDR4 IDD row, x8 2400 (1.11.91) | IDD0 48, IDD2N 34, IDD3N 43, IDD4R 135, IDD4W 123, IDD2P 25 mA; IPP2N = IPP3N 3 mA at VPP 2.5 V | Micron MT40A (8gb_ddr4_dram.pdf Rev. N) Table 148 Die Rev. B p.332; IPP3N applies to all IDD2x/3x/4x per note 22 p.334; VPP p.1 | User ruling R8-9. No IDDQ rows published (n/a) |
-| DDR3 IDD row, x8 1600 (1.11.91) | IDD0 55, IDD2N 32, IDD3N 38, IDD4R 157, IDD4W 125, IDD5B 235, IDD2P1 (fast exit) 32 mA | Micron MT41K (4Gb_DDR3L.pdf Rev. Q) Table 20 Die Rev. E p.43 | User ruling R8-9. No VPP rail, no IDDQ rows |
+| DDR3 IDD row, x8 1600 (1.11.91) | IDD0 55, IDD2N 32, IDD3N 38, IDD4R 157, IDD4W 125, IDD5B 235, IDD2P1 (fast exit) 32 mA | Micron MT41K (4Gb_DDR3L.pdf Rev. Q) Table 20 Die Rev. E p.43 (Rev. R p.44; 1.12.25: priced at 1.5 V by default, the table being for 1.35/1.5 V) | User ruling R8-9. No VPP rail, no IDDQ rows |
 | IDD3N basis (1.11.91) | ALL_BANKS DDR3/4/5; ONE_BANK HBM2/HBM3/GDDR6; UNVERIFIED LPDDR5 | DDR5 core sheet Table 387 p.450; MT40A Table 136 p.317; MT41K Table 13 note 3 p.36; JESD235D PDF p.109; JESD238B.01 Table 83 PDF p.165; JESD250D Table 65 PDF p.165 | User ruling R8-2 (a); LPDDR5 condition table (JESD209-5C) not readable here |
 | DDR5 IDDQ / IPP, 4800B (1.11.91) | IDDQ3N 31, IDDQ4R 57, IDDQ4W 198 mA at VDDQ 1.1 V; IPP2N 6, IPP3N 7 mA at VPP 1.8 V | MT60B Rev A Table 6 pp.17-19; VDDQ/VPP core sheet p.1 | User ruling R8-8 (a). Core sheet p.448: IDDQ "cannot be directly used to calculate IO power" (stated) |
 | DDR5 IDDQ / IPP, 5600B (1.11.91) | IDDQ3N 70, IDDQ4R 218, IDDQ4W 271; IPP2N 7, IPP3N 8 mA | MT60B Rev D Table 8 pp.18-20 | |

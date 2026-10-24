@@ -2197,7 +2197,7 @@ static const char* kSchemaPaths[] = {
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
-    "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.row_policy.host_idle_timeout_clocks", "memory.row_policy.host_closed_mode", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
+    "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.dram.ddr3_variant", "memory.dram.trfc_basis", "memory.row_policy.host_idle_timeout_clocks", "memory.row_policy.host_closed_mode", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
     "memory.organization.bank_groups", "memory.organization.banks_per_group", "memory.power.static_power_mw",
     "memory.timing.read_latency_ns", "memory.timing.subarray_read_ns", "memory.timing.subarray_write_ns", "memory.timing.write_latency_ns",
     "noc.bridges.<name>.count", "noc.bridges.<name>.fifo_depth", "noc.bridges.<name>.input_buffer_depth", "noc.bridges.<name>.latency_cycles", "noc.bridges.<name>.latency_ns",
@@ -2465,6 +2465,8 @@ struct UnifiedConfig {
     // so the timing model and the in-memory hierarchy stay consistent.
     std::string dram_device_width;
     int ddr5_speed_grade = 0;      // 1.11.66 (R8 #9): memory.dram.ddr5_speed_grade, 3200|4800|5600; 1.11.101: 0 = unset, the part record's grade
+    std::string dram_ddr3_variant;  // 1.12.25: memory.dram.ddr3_variant, DDR3 (1.5 V) | DDR3L (1.35 V); "" = the record's default
+    std::string dram_trfc_basis;    // 1.12.25: memory.dram.trfc_basis, datasheet | jedec; "" = the record's default
     /* 1.12.18 (user ruling 2026-10-24, row policy): memory.row_policy.host_idle_timeout_clocks (DDR4/DDR3 host
      * adaptive open page; default 128 = AMD BKDG 42301 p.307-308) and memory.row_policy.host_closed_mode
      * (DDR5 host closed page: auto_precharge (default) | explicit_pre) */
@@ -3907,6 +3909,19 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
      * registry from here on), then validate the record's own consistency
      * through the wrapper it now configures. A missing record, a missing
      * field or an inconsistent record refuses; nothing is substituted. */
+    /* 1.12.25: the run's record knobs. memory.dram.ddr3_variant selects the DDR3 record's voltage variant;
+     * memory.dram.trfc_basis every run record's tRFC basis that has one. A knob that reaches no record refuses. */
+    {
+        const bool has_ddr3 = std::find(techs.begin(), techs.end(), std::string("DDR3")) != techs.end();
+        if (!config.dram_ddr3_variant.empty() && !has_ddr3) {
+            std::cerr << "[config] FATAL: memory.dram.ddr3_variant = " << config.dram_ddr3_variant
+                      << " is given, but this run has no DDR3 memory; remove it (1.12.25)." << std::endl;
+            return 1;
+        }
+        for (const auto& t : techs)
+            pimid::params::setDramRecordSelection(t, t == "DDR3" ? config.dram_ddr3_variant : std::string(), config.dram_trfc_basis);
+    }
+    bool trfc_reached = false;
     for (const auto& t : techs) {
         pimid::params::DramPartRecord rec; std::string err;
         if (!pimid::params::loadDramPartRecord(t, rec, err)) {
@@ -3922,10 +3937,16 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
             for (const auto& e : errors) std::cerr << "  - " << e << std::endl;
             return 1;
         }
+        if (!rec.trfc_bases.empty()) trfc_reached = true;   // 1.12.19
         std::cout << pimid::params::describeDramPartRecord(rec);
         if (config.ddr5_speed_grade > 0 || !config.dram_device_width.empty())
             std::cout << " [knobs: the run's DDR5 grade / device width select other presets of the same part]";
         std::cout << std::endl;
+    }
+    if (!config.dram_trfc_basis.empty() && !trfc_reached) {   // 1.12.19
+        std::cerr << "[config] FATAL: memory.dram.trfc_basis = " << config.dram_trfc_basis
+                  << " is given, but no part record of this run carries tRFC bases (only DDR3 does); remove it (1.12.25)." << std::endl;
+        return 1;
     }
     return 0;
 }
@@ -8726,7 +8747,8 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
      * RamulatorWrapper::rowPolicyYaml (the oracle's makeConfig uses it too). Was: ClosedRowPolicy cap 4
      * for DDR4/DDR5 here and for every technology in the oracle. */
     ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: " << tech << "\n"
-        << "    org:\n      preset: " << org_p << "\n    timing:\n      preset: " << tim_p << "\n";
+        << "    org:\n      preset: " << org_p << "\n    timing:\n      preset: " << tim_p << "\n"
+        << pimid::RamulatorWrapper::recordTimingOverrideYaml(tech, "      ", "\n");   // 1.12.25: the record's tRFC (DDR3)
     if (tech == "DDR5") ofs << "    RFM:\n      BRC: 2\n";
     ofs << "  Controller:\n    impl: Generic\n"
         << pimid::RamulatorWrapper::writeDrainYaml(config.write_high_watermark, config.write_low_watermark)   // 1.12.18 (write drain)
@@ -19518,6 +19540,11 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
             std::cerr << "[config] FATAL: " << sc.pfx << "memory.ports_per_bank = " << config.ports_per_bank << " must be at least 1." << std::endl;
             std::exit(2);
         }
+        /* 1.12.25: the DDR3 record's voltage variant and the tRFC basis (run-wide: they select the part record) */
+        if (root["memory"]["dram"] && root["memory"]["dram"]["ddr3_variant"])
+            config.dram_ddr3_variant = yamlString(root["memory"]["dram"]["ddr3_variant"], config.dram_ddr3_variant, sc.pfx + "memory.dram.ddr3_variant");
+        if (root["memory"]["dram"] && root["memory"]["dram"]["trfc_basis"])
+            config.dram_trfc_basis = yamlString(root["memory"]["dram"]["trfc_basis"], config.dram_trfc_basis, sc.pfx + "memory.dram.trfc_basis");
         if (root["memory"]["dram"] && root["memory"]["dram"]["device_width"]) {
             config.dram_device_width =
                 yamlString(root["memory"]["dram"]["device_width"], config.dram_device_width, sc.pfx + "memory.dram.device_width");
@@ -20110,7 +20137,9 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         for (const auto& kv : config.system_nodes[i].dev_keys)
             if (!nodePathPerNode(kv.first)) paths.insert(kv.first);
     for (const auto& c : paths) {
-        const bool grade = (c == "memory.dram.ddr5_speed_grade"), width = (c == "memory.dram.device_width");
+        const bool grade = (c == "memory.dram.ddr5_speed_grade");
+        /* 1.12.25: the record knobs are run-wide like the width (the part record is one per technology) */
+        const bool width = (c == "memory.dram.device_width" || c == "memory.dram.ddr3_variant" || c == "memory.dram.trfc_basis");
         const bool core_io = c.compare(0, 14, "core.in_order.") == 0, core_ooo = c.compare(0, 9, "core.ooo.") == 0;
         const bool run_wide = grade || width || core_io || core_ooo;
         if (!run_wide && built < 0) {
@@ -20250,6 +20279,8 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         const auto& k = n.dev_keys;
         if (k.count("memory.dram.ddr5_speed_grade")) config.ddr5_speed_grade = n.dev->ddr5_speed_grade;
         if (k.count("memory.dram.device_width")) config.dram_device_width = n.dev->dram_device_width;
+        if (k.count("memory.dram.ddr3_variant")) config.dram_ddr3_variant = n.dev->dram_ddr3_variant;   // 1.12.19
+        if (k.count("memory.dram.trfc_basis")) config.dram_trfc_basis = n.dev->dram_trfc_basis;         // 1.12.19
         if (k.count("core.in_order.mispredict_penalty_cycles")) config.core_inorder_mispredict_penalty = n.dev->core_inorder_mispredict_penalty;
         if (k.count("core.in_order.resteer_penalty_cycles")) config.core_inorder_resteer_penalty = n.dev->core_inorder_resteer_penalty;
         if (k.count("core.ooo.mispredict_penalty_cycles")) config.core_ooo_mispredict_penalty = n.dev->core_ooo_mispredict_penalty;

@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.25 -- DDR3 is one 4 Gb die at 1.5 V; DDR3L and the JEDEC tRFC are selectable
+
+- **DDR3 default: one consistent 4 Gb x8 die at 1.5 V** (user rulings 2026-10-24). The record priced Micron's 4 Gb
+  die Rev E currents on an 8 Gb organisation (DDR3_8Gb_x8, 2 KB page, the 8 Gb tRFC 350 ns) at 1.35 V. It now
+  instantiates DDR3_4Gb_x8 (the wrapper gains the 4 Gb DDR3 transcription), runs at VDD = VDDQ = 1.5 V with SSTL-15
+  termination (JESD79-3E), and keeps the same currents: Table 20 is titled for 1.35/1.5 V operation and the 1.5 V
+  MT41J sheet prints the identical column. The CACTI-IO DDR3 electricals read the record's termination.
+- **`memory.dram.ddr3_variant: DDR3L`** selects the 1.35 V / SSTL-135 variant of the same die (record block
+  `variants`). **`memory.dram.trfc_basis: jedec`** selects JESD79-3E's 300 ns; the default is the sheet's 260 ns
+  (record block `trfc_bases`). The selected tRFC is written into the Ramulator timing (a `tRFC` override) and is the
+  refresh energy's tRFC.
+- Data impact: every DDR3 cell moves (half the capacity per device, 1 KB page, tRFC 260 ns, 1.5 V rails).
+- Known finding: bank-level PEs on a DDR3 die are priced at the die's 32 nm node; their per-instruction energy
+  (about 27.5 pJ, clock excluded) lies above published small-core figures scaled to 32 nm (Stillmaker & Baas 2017).
+  The excess is model-wide (McPAT's instruction decoder dominates PE energy) and is stated, not tuned.
+
 ## 1.12.24 -- published logic energies are node-scaled with the source node's own transistor widths
 
 - **Fixed: the node scaling of published logic energies omitted the linear shrink.** McPAT's
