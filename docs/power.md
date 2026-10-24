@@ -82,6 +82,42 @@ set is overstated by that floor) and one integer adder. Per line moved it charge
 a write and a read of each of the buffer's 16 words, three register reads and
 writes and three adder operations.
 
+## Instruction decode (1.12.28)
+
+User rulings 2026-10-24. McPAT's instruction decoders were the largest single
+cost of a processing element (13 pJ per instruction at 32 nm, 5.8 at 22 nm),
+because upstream McPAT loads every decoded line with 1024 maximum-width gates
+(100 F NMOS each; its own note: "TODO: this number 1024 needs to be
+revisited") -- more switched capacitance per instruction than a whole small
+RISC core (RI5CY, Gautschi et al., IEEE TVLSI 2017, Table V: 26.28 uW/MHz at
+65 nm and 1.08 V for the entire core).
+
+- **Decoder output load: DERIVED.** A decoded line drives the core's own
+  control structure: the pipeline-register sink count McPAT builds the core's
+  clock tree over (`num_piperegs x num_pipelines`, the "pipeline registers" of
+  the `[mcpat clock]` line), each a minimum-size gate.
+- **Every core is an x86 core.** The workloads are x86 binaries the timing
+  cores execute, in-order `alu_core` processing elements included, so McPAT
+  decodes in two sequencer passes, keeps its x86 prefix decoder, and latches
+  the micro-opcode in the pipeline.
+- **No separate operand decoder.** McPAT's operand decoder re-decodes the
+  register specifier that the register file's own row predecoder and decoder
+  already decode inside every read and write CACTI charges; it is priced at
+  zero, and each run prints the register file's decoder share as the evidence.
+- **Guard.** Each core prints `[mcpat decode]`: decode energy per instruction
+  plus the core's clock network per cycle at activity 1 (per instruction at
+  IPC 1, the basis of the published figure; the run's own clock per
+  instruction would charge idle and stalled cycles to the instructions) against Horowitz, ISSCC 2014, Fig. 1.1.9 (45 nm, 0.9 V: a simple
+  in-order processor at 70 pJ/instruction, of which I-cache 25, register file 6
+  and "Control" 39 pJ), scaled with Stillmaker & Baas, Integration 58 (2017),
+  Eq. (6)/(9), Table 5 (45 nm HP/LP at 0.9 V to the run node's rows at its Vdd;
+  22 nm uses the nearest row, 20 nm). The value is McPAT's, at the logic table,
+  before any DRAM-periphery family factor. Until the clock-tree model is
+  reviewed (user ruling 2026-10-25) the comparison is INFORMATION: the line
+  prints the reference band and the ratio to it, and the checker reports
+  `core.decode_clock_pJ_instr` unjudged (NOREF). Out-of-order cores have no
+  reference (the figure is an in-order core).
+
 ## The memory array
 
 **There is one memory, and it is charged once.** This build models one host and

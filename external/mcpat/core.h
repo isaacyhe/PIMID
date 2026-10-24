@@ -82,6 +82,8 @@ class InstFetchU :public Component {
 	inst_decoder * ID_inst;
 	inst_decoder * ID_operand;
 	inst_decoder * ID_misc;
+	double id_operand_e_access;   /* PIMID (1.12.28): the removed operand decoder's per-access energy (evidence print) */
+	double decode_fanout;         /* PIMID (1.12.28): DERIVED decoder output load, in minimum-size gates */
 	bool exist;
 
 	InstFetchU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, bool exsit=true);

@@ -54,6 +54,8 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
  ID_inst  (0),
  ID_operand  (0),
  ID_misc  (0),
+ id_operand_e_access(0.0),
+ decode_fanout(0.0),
  exist(exist_)
 {
 	  if (!exist) return;
@@ -326,20 +328,40 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
     	  area.set_area(area.get_area()+ BPT->area.get_area());
       }
 
+      /* PIMID (next, user ruling 2026-10-24): the decoders' output load is DERIVED from this core's
+       * control structure -- the pipeline-register sink count the core's clock tree is built over
+       * (Core: corepipe->num_piperegs x num_pipelines x existing/num_units; every unit exists on the
+       * cores PIMID emits, so it is num_piperegs x num_pipelines), at minimum-size gates. The
+       * pipeline is the core's own (same input and dynamic parameters as Core's corepipe). */
+      {
+    	  Pipeline pipe_probe(&interface_ip, coredynp);
+    	  decode_fanout = pipe_probe.num_piperegs * coredynp.num_pipelines;
+      }
       ID_inst = new inst_decoder(is_default, &interface_ip,
     		  coredynp.opcode_length, 1/*Decoder should not know how many by itself*/,
     		  coredynp.x86,
-    		  Core_device, coredynp.core_ty);
+    		  Core_device, coredynp.core_ty, decode_fanout);
 
       ID_operand = new inst_decoder(is_default, &interface_ip,
     		  coredynp.arch_ireg_width, 1,
     		  coredynp.x86,
-    		  Core_device, coredynp.core_ty);
+    		  Core_device, coredynp.core_ty, decode_fanout);
+      /* PIMID (next, user ruling 2026-10-24, "remove it only if it double-counts"): it does.
+       * ID_operand decodes the arch_ireg_width-bit register specifier into 2^width lines; the
+       * register file McPAT prices (RegFU IRF/FRF, a CACTI array) decodes the SAME index with its
+       * own row predecoder + decoder inside every read/write energy it charges (the CACTI
+       * mem_array power_row_predecoder_* and power_row_decoders terms, printed by Core as
+       * evidence). A register specifier is wired to the register file's address port; there is no
+       * second decoder for it. The object is kept for the code paths that reference it, and
+       * priced at zero: no dynamic, no leakage, no area. */
+      id_operand_e_access = ID_operand->power.readOp.dynamic;
+      ID_operand->power.reset();
+      ID_operand->area.set_area(0.0);
 
       ID_misc = new inst_decoder(is_default, &interface_ip,
     		  8/* Prefix field etc upto 14B*/, 1,
     		  coredynp.x86,
-    		  Core_device, coredynp.core_ty);
+    		  Core_device, coredynp.core_ty, decode_fanout);
       //TODO: X86 decoder should decode the inst in cyclic mode under the control of squencer.
       //So the dynamic power should be multiplied by a few times.
       area.set_area(area.get_area()+ (ID_inst->area.get_area()
@@ -2102,6 +2124,18 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 //  clockNetwork.start_wiring_level =5;//toplevel metal
 //  clockNetwork.num_regs           = corepipe.tot_stage_vector;
 //  clockNetwork.optimize_wire();
+  /* PIMID (1.12.28): evidence for the removed operand decoder (InstFetchU): the integer register
+   * file's own read energy and the row predecoder + decoder share of it (CACTI mem_array). */
+  if (ifu && ifu->exist && exu && exu->exist && exu->rfu && exu->rfu->IRF && exu->rfu->IRF->local_result.data_array2)
+  {
+	  const mem_array *m = exu->rfu->IRF->local_result.data_array2;
+	  const double rd = exu->rfu->IRF->local_result.power.readOp.dynamic;
+	  const double dec = m->power_row_predecoder_drivers.readOp.dynamic + m->power_row_predecoder_blocks.readOp.dynamic
+	                   + m->power_row_decoders.readOp.dynamic;
+	  std::cerr << "[mcpat decode] core" << ithCore << ": operand decoder REMOVED (would be " << ifu->id_operand_e_access*1e12
+	            << " pJ per instruction): the integer register file's read already decodes the register index -- CACTI"
+	            << " read " << rd*1e12 << " pJ, of which row predecoder + decoder " << dec*1e12 << " pJ" << std::endl;
+  }
   /* PIMID 1.12.18: THE CORE'S CLOCK NETWORK (the block above, which upstream
    * never enabled and whose 1.1 placement factor and fixed metal level are
    * presets, is not used). Model: Wattch (D. Brooks, V. Tiwari,
@@ -4593,6 +4627,57 @@ void Core::computeEnergy(bool is_tdp)
 			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
 			          << e_gat << std::endl;
 			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
+			/* PIMID (next, user ruling 2026-10-24): DECODE + CLOCK GUARD. The instruction decoders'
+			 * runtime energy per instruction plus this core's clock network per cycle at activity 1
+			 * (ungated, one core: per instruction at IPC 1, the basis of the published figure -- the
+			 * run's own clock per instruction would charge idle and stalled cycles to the instructions),
+			 * against Horowitz,
+			 * ISSCC 2014, Fig. 1.1.9 (45 nm, 0.9 V): a simple in-order processor, 70 pJ/instruction =
+			 * I-cache 25 + register file 6 + "Control" 39 pJ (decode, pipeline and clocking). Scaled to
+			 * this node with Stillmaker & Baas 2017 Eq. (6)/(9), Table 5 (45 nm HP/LP at 0.9 V ->
+			 * the run node's rows at its Vdd; 22 nm has no row, the nearest, 20 nm Multi-Gate HP/LSTP,
+			 * is used and named). McPAT-priced at the run's logic table, BEFORE any DRAM-periphery
+			 * family factor (PIMID applies that after McPAT). Printed as INFORMATION, not judged, until
+			 * the clock-tree model is reviewed (user ruling 2026-10-25): the clock dominates the sum. */
+			if (!is_tdp && ifu->exist && ifu->ID_inst && ifu->ID_misc && XML->sys.core[ithCore].total_instructions > 0)
+			{
+				const double ni = XML->sys.core[ithCore].total_instructions;
+				const double e_dec = ifu->ID_inst->rt_power.readOp.dynamic + ifu->ID_operand->rt_power.readOp.dynamic
+				                   + ifu->ID_misc->rt_power.readOp.dynamic;
+				const double dec_pj = e_dec / ni * 1e12;
+				const double clk_pj = clockNetwork.power.readOp.dynamic * 1e12;   /* peak: J per cycle of one core, ungated */
+				const int node = (int)(interface_ip.F_sz_nm + 0.5);
+				const int row = (node == 22) ? 20 : node;
+				const double v = g_tp.peri_global.Vdd;
+				double fs[2], ft[2]; const char *ts[2], *tt[2];
+				const int ns = pimid_sb17_energy_factors(45, 0.9, fs, ts);
+				const int nt = pimid_sb17_energy_factors(row, v, ft, tt);
+				const bool ooo = (coredynp.core_ty == OOO);
+				std::cerr << "[mcpat decode] core" << ithCore << (ooo ? " (OOO)" : " (in-order)") << " runtime: decode " << dec_pj << " pJ/instr + clock at activity 1 "
+				          << clk_pj << " pJ/cycle = " << dec_pj + clk_pj << " pJ/instr at IPC 1 (" << ni << " instructions; x86 "
+				          << (coredynp.x86 ? 1 : 0) << ", decoder output load " << ifu->decode_fanout
+				          << " minimum-size gates DERIVED = the clock tree's pipeline-register sinks; McPAT-priced at "
+				          << node << " nm, " << v << " V, before any DRAM-periphery family factor)";
+				if (ooo)
+					std::cerr << "; reference: Horowitz ISSCC 2014 Fig. 1.1.9 is a simple IN-ORDER processor -- NO PUBLISHED SOURCE FOUND"
+					             " for an out-of-order core's decode + clock (not judged)";
+				else if (ns > 0 && nt > 0)
+				{
+					double lo = 1e300, hi = 0;
+					for (int a = 0; a < ns; a++) for (int b = 0; b < nt; b++)
+					{ const double r = ft[b] / fs[a]; lo = std::min(lo, r); hi = std::max(hi, r); }
+					std::cerr << "; reference band (not judged until the clock-tree model is reviewed): Horowitz ISSCC 2014"
+					          << " Fig. 1.1.9 Control 39 pJ (45 nm 0.9 V) x Stillmaker & Baas 2017"
+					          << " Table 5 " << row << " nm" << ((row != node) ? " (nearest row to " + std::to_string(node) + " nm)" : std::string())
+					          << " at " << v << " V / 45 nm at 0.9 V [" << lo << ", " << hi << "] = [" << 39.0*lo << ", "
+					          << 39.0*hi << "] pJ/instr";
+					const double t = dec_pj + clk_pj;
+					std::cerr << " (ratio to the band: " << t / (39.0*lo) << " x its low end, " << t / (39.0*hi) << " x its high end)";
+				}
+				else
+					std::cerr << "; reference: NO PUBLISHED SOURCE FOUND for a Stillmaker & Baas Table 5 row at " << node << " nm";
+				std::cerr << std::endl;
+			}
 		}
 //		cout << "EXE = " << exu->power.readOp.dynamic*clockRate  << " W" << endl;
 		if (XML->sys.Private_L2)

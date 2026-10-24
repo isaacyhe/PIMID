@@ -99,7 +99,8 @@ public:
 			int num_decoders_,
 			bool x86_,
 			enum Device_ty device_ty_=Core_device,
-			enum Core_type core_ty_=Inorder);
+			enum Core_type core_ty_=Inorder,
+			double out_fanout_=-1.0);   /* PIMID (1.12.28): > 0 = DERIVED output load (minimum-size gates) */
 	inst_decoder();
 	bool is_default;
 	int  opcode_length;
@@ -374,6 +375,10 @@ public:
  * g_tp must be current (the caller's init_interface); it is restored.
  * Optional outputs: C_inv at both nodes (F), the run's Vdd, CACTI's own Vdd
  * at the source node. */
+/* PIMID (1.12.28): Stillmaker & Baas, Integration 58 (2017) 74-81, Eq. (6) energy factor
+ * ae2 V^2 + ae1 V + ae0 with the Table 5 coefficients of node nm (45/32 nm: HP and LP rows;
+ * 20 nm: HP and LSTP rows). Returns the number of rows written to f[] (0: no Table 5 row). */
+int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2]);
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0, double *c_run = 0,
                                double *v_run = 0, double *v_src_cacti = 0);
 

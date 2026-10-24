@@ -2707,7 +2707,11 @@ std::string McPATWrapper::generateXMLConfig() const {
     const int  lanes  = (config_.pe_lanes > 0) ? config_.pe_lanes : 1;
 
     int machine_type = is_ooo ? 0 : 1;
-    int x86 = is_ooo ? 1 : 0;
+    /* PIMID (next, user ruling 2026-10-24, "x86 for all"): every core is priced as an x86 core --
+     * the workloads are x86 binaries the timing cores execute (QEMU user mode), in-order alu_core
+     * PEs included. McPAT then decodes in two sequencer passes and keeps the x86 prefix decoder
+     * (real x86 hardware), and the pipeline latches the micro-opcode (micro_opcode_width). */
+    int x86 = 1;
     /* 1.11.93 (F8): the OUT-OF-ORDER structures are zsim OOOCore's, the core
      * the timing side simulates -- the power side described a different,
      * larger machine (ROB 192, window 64, depth 19):

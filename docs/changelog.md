@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.28 -- McPAT's instruction decode is derived from the core: output load, x86 decode, no double-counted operand decoder
+
+- **The decoder output load is DERIVED** (user ruling 2026-10-24): each decoded line drives the pipeline-register
+  sinks the core's clock tree is built over, at minimum-size gates, instead of upstream McPAT's placeholder of 1024
+  maximum-width gates (external/mcpat/logic.cc inst_decoder; "TODO: this number 1024 needs to be revisited").
+- **x86 for every core** (src/power/mcpat_wrapper.cpp): the in-order alu_core / in_order_core PEs are priced as x86
+  cores too (two decode sequencer passes, the x86 prefix decoder kept, micro-opcode latched).
+- **The operand decoder is removed**: it re-decoded the register specifier the register file's own CACTI row decoder
+  already decodes in every access it charges (evidence printed per run).
+- **Reference, printed, not judged:** `[mcpat decode]` prints decode energy per instruction plus the core's clock
+  per cycle at activity 1 against Horowitz ISSCC 2014 Fig. 1.1.9 "Control" 39 pJ (45 nm, 0.9 V) scaled with
+  Stillmaker & Baas 2017 Table 5. It is INFORMATION until the clock-tree model is reviewed (user ruling 2026-10-25;
+  the clock dominates: 10.2 pJ/cycle for a 22 nm alu_core PE, 20.5 for an in_order_core PE); power_sanity reports
+  `core.decode_clock_pJ_instr` unjudged.
+- Data impact: PE and core dynamic power and clock-tree sinks move on every run. Decode falls to 0.59 pJ/instr
+  (22 nm) and 1.60 (32 nm) from about 5.8 and 13; PE non-clock energy 15.3 -> 10.3 pJ/instr (22 nm alu_core),
+  27.5 -> 16.0 (32 nm, DDR3 BANK); host OOO core 222 -> 211 pJ/instr. Cycles unchanged.
+- **Known finding (stated, not fixed):** the DDR3 BANK alu_core PE (on the DDR3 die, 32 nm) still sits above the
+  node-scaled published references: pe.nonclock_pJ_instr 16.0 pJ against 7.5-10.1 and pe.mW_at_ipc1 14.0 mW
+  against 3.7-4.8 (RI5CY, Gautschi et al. TVLSI 2017, scaled 65 -> 32 nm with Stillmaker & Baas 2017); the six
+  power_sanity flags on the DDR3 bank cells remain.
+
 ## 1.12.27 -- the 22 nm UCIe digital interface is node-scaled with each node's own transistor widths
 
 - **Fixed: the UCIe 22 nm digital-interface chain omitted the 22/32 nm linear shrink.** The CACTI step of the

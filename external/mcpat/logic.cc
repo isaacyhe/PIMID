@@ -48,6 +48,21 @@ static double pimid_min_inv_switch_cap()
 	return gate_C(wn + wp, 0) + drain_C_(wn, NCH, 1, 1, g_tp.cell_h_def) + drain_C_(wp, PCH, 1, 1, g_tp.cell_h_def);
 }
 
+/* PIMID (1.12.28): see logic.h. Coefficients transcribed from Stillmaker & Baas 2017 Table 5. */
+int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2])
+{
+	struct Row { int nm; const char *t; double a2, a1, a0; };
+	static const Row rows[] = {
+		{45, "HP", 1.018, -0.3107, 0.1539}, {45, "LP", 1.103, -0.362, 0.2767},
+		{32, "HP", 0.8367, -0.4341, 0.1701}, {32, "LP", 0.9559, -0.7823, 0.471},
+		{20, "HP", 0.373, -0.1582, 0.04104}, {20, "LSTP", 0.2632, -0.14, 0.06841},
+	};
+	int n = 0;
+	for (size_t i = 0; i < sizeof(rows)/sizeof(rows[0]) && n < 2; i++)
+		if (rows[i].nm == nm) { f[n] = rows[i].a2*v*v + rows[i].a1*v + rows[i].a0; type[n] = rows[i].t; n++; }
+	return n;
+}
+
 /* PIMID 1.12.18: see logic.h. */
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src_o, double *c_run_o,
                                double *v_run_o, double *v_src_cacti_o)
@@ -1395,7 +1410,8 @@ inst_decoder::inst_decoder(
 		int num_decoders_,
 		bool x86_,
 	    enum Device_ty device_ty_,
-	    enum Core_type core_ty_)
+	    enum Core_type core_ty_,
+	    double out_fanout_)
 :is_default(_is_default),
  opcode_length(opcode_length_),
  num_decoders(num_decoders_),
@@ -1443,7 +1459,21 @@ inst_decoder::inst_decoder(
 			pmos_to_nmos_sizing_r = pmos_to_nmos_sz_ratio();
 			load_nmos_width=g_tp.max_w_nmos_ /2;
 			load_pmos_width= g_tp.max_w_nmos_ * pmos_to_nmos_sizing_r;
-			C_driver_load = 1024*gate_C(load_nmos_width + load_pmos_width, 0, is_dram); //TODO: this number 1024 needs to be revisited
+			if (out_fanout_ > 0)
+			{
+				/* PIMID (next, user ruling 2026-10-24): the decoded output's load is DERIVED from the
+				 * core's own control structure -- out_fanout_ minimum-size gates (min_w_nmos_ NMOS +
+				 * the McPAT P/N ratio PMOS), out_fanout_ = the pipeline-register sink count the clock
+				 * tree is built over (core.cc InstFetchU). Upstream McPAT's placeholder,
+				 * 1024 x a maximum-width gate (100 F NMOS; "TODO: this number 1024 needs to be
+				 * revisited"), put ~68k minimum-transistor widths on every decoded line: about
+				 * 4.7 pF at 32 nm, 3.8 pJ per decoder per instruction, more than a whole RI5CY core
+				 * (Gautschi et al., TVLSI 2017, Table V: 26.28 uW/MHz at 65 nm) node-scaled. */
+				const double wn_min = g_tp.min_w_nmos_;
+				C_driver_load = out_fanout_ * gate_C(wn_min + wn_min * pmos_to_nmos_sizing_r, 0, is_dram);
+			}
+			else
+				C_driver_load = 1024*gate_C(load_nmos_width + load_pmos_width, 0, is_dram); //TODO: this number 1024 needs to be revisited
 			R_wire_load   = 3000*l_ip.F_sz_um * g_tp.wire_outside_mat.R_per_um;
 
 			final_dec = new Decoder(
