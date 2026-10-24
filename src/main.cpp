@@ -1122,6 +1122,8 @@ struct ZSimParsedOutput {
         uint64_t branches = 0;          // conditional branches resolved
         uint64_t mispredBranches = 0;   // of those, mispredicted
         uint64_t indirBranches = 0;     // indirect jmp/call resolutions
+        uint64_t directBranches = 0;    // (1.12.32): taken direct branches looked up in the BTB (ROI, in-order cores)
+        bool directPresent = false;     // (1.12.32): the dump carried roiDirectBranches
         uint64_t rasReturns = 0;        // returns resolved against the RAS
         uint64_t bpHistWrites = 0;      // 1.11.97 (R2476): predictor history-table writes (ROI)
         uint64_t bpPhtWrites = 0;       // 1.11.97 (R2476): predictor counter-table writes (ROI)
@@ -1215,6 +1217,8 @@ struct ZSimParsedOutput {
     uint64_t branches = 0;          // conditional branches resolved
     uint64_t mispredBranches = 0;   // of those, mispredicted
     uint64_t indirBranches = 0;     // indirect jmp/call resolutions (ROI, 1.11.93)
+    uint64_t directBranches = 0;    // (1.12.32): taken direct branches looked up in the BTB (ROI, in-order cores)
+    bool directPresent = false;     // (1.12.32): the dump carried roiDirectBranches
     uint64_t rasReturns = 0;        // returns resolved against the RAS (ROI, 1.11.93)
     uint64_t bpHistWrites = 0;      // 1.11.97 (R2476): predictor history-table writes (ROI)
     uint64_t bpPhtWrites = 0;       // 1.11.97 (R2476): predictor counter-table writes (ROI)
@@ -1759,6 +1763,10 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                      * WHOLE-RUN and are no longer read: nothing priced on
                      * the ROI may be fed a whole-run count. */
                     out.indirBranches += val; if (grp) grp->indirBranches += val;
+                } else if (key == "roiDirectBranches") {
+                    /* (next, user ruling 2026-10-25 (1)): taken direct branches through the in-order core's BTB. */
+                    out.directBranches += val; out.directPresent = true;
+                    if (grp) { grp->directBranches += val; grp->directPresent = true; }
                 } else if (key == "roiRasReturns") {
                     out.rasReturns += val; if (grp) grp->rasReturns += val;
                 } else if (key == "roiBpHistWrites") {
@@ -12235,6 +12243,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(0));
     mcpat.setPerCoreRunCycles(zsim_stats.runCyclesPerCore(0));   // PIMID 1.12.18 (idle halt)
     mcpat.setMeasuredControlFlow(zsim_stats.indirBranches, zsim_stats.rasReturns);
+    mcpat.setMeasuredDirectBranches(zsim_stats.directBranches, zsim_stats.directPresent);   // (1.12.32)
     /* 1.11.98 (sweep-94 row 28, user ruling (c)): when the run MEASURED its
      * controller (epoch replay: refresh commands and idle cycles counted, PHY
      * static from the IO model, printed in the memory report), McPAT's
@@ -15882,6 +15891,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             mcpat.setPerCoreRunCycles(zsim_stats.runCyclesPerCore(   // PIMID 1.12.18 (idle halt)
                 (node.role == UnifiedConfig::SystemNode::HOST) ? 1 : 2));
             mcpat.setMeasuredControlFlow(grp->indirBranches, grp->rasReturns);
+            mcpat.setMeasuredDirectBranches(grp->directBranches, grp->directPresent);   // (1.12.32)
             /* 1.9.28: node_instrs was computed and then never handed to McPAT,
              * so total_instructions_ kept its constructor value of zero and
              * EVERY core activity stat in the generated XML was zero --

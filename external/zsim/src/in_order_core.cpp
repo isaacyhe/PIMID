@@ -230,6 +230,12 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zbm)>* roiBtbMissStat = new LambdaStat<decltype(zbm)>(zbm);
     roiBtbMissStat->init("roiBtbMisses", "Direct-branch BTB misses (ROI)");
     coreStat->append(roiBtbMissStat);
+    /* PIMID (next, user ruling 2026-10-25 (1)): the taken direct branches looked up in the BTB, ROI-windowed --
+     * with roiIndirBranches, the BTB reads the power model prices for an in-order core. */
+    auto zdb = [this]() -> uint64_t { return directBranches - roiBaseDirect; };
+    LambdaStat<decltype(zdb)>* roiDirectStat = new LambdaStat<decltype(zdb)>(zdb);
+    roiDirectStat->init("roiDirectBranches", "Taken direct branches (jcc taken, call rel) looked up in the BTB (ROI)");
+    coreStat->append(roiDirectStat);
     /* 1.11.97 (R2476) / 1.11.98 (ruling (a)): measured predictor table writes (one per update,
      * updates, BranchPredictorPAg::predict in ooo_core.h), ROI-windowed --
      * McPAT's level-1 / level-2 local predictor write counts. */

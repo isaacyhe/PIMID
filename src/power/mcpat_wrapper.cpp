@@ -158,6 +158,12 @@ void McPATWrapper::setPerCoreRunCycles(const std::vector<uint64_t>& cycles) {
     power_computed_ = false;
 }
 
+void McPATWrapper::setMeasuredDirectBranches(uint64_t direct_branches, bool present) {
+    meas_direct_ = direct_branches;   // (next, user ruling 2026-10-25 (1))
+    meas_direct_present_ = present;
+    power_computed_ = false;
+}
+
 void McPATWrapper::setMeasuredControlFlow(uint64_t indirect_branches,
                                           uint64_t ras_returns) {
     meas_indir_ = indirect_branches;   // 1.11.93 (F6)
@@ -1217,6 +1223,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(static_cast<uint64_t>(per_core_instrs_.size()));
     for (uint64_t v : per_core_instrs_) f(v);
     f(meas_indir_);     f(meas_ras_);
+    f(meas_direct_);    f(meas_direct_present_ ? 1 : 0);   // (1.12.32)
     f(config_.l2_instances);  f(config_.has_branch_predictor);
     f(meas_uops_);      f(meas_branches_); f(meas_mispred_);
     f(meas_bp_hist_writes_); f(meas_bp_pht_writes_); f(meas_bp_writes_present_);   // 1.11.97 (R2476)
@@ -3822,7 +3829,22 @@ std::string McPATWrapper::generateXMLConfig() const {
              * target) + zsim's measured indirect target rewrites
              * (ooo_core.h IndirectPredictor::update). power.models.
              * tlb_btb_measured: false restores the indirect-only counts. */
-            const uint64_t btb_r = config_.tlb_btb_measured ? br_all : meas_indir_;
+            /* (next, user ruling 2026-10-25 (1)): an IN-ORDER device PE reads its BTB on the timing model's
+             * MEASURED lookups: the taken direct branches (zsim InOrderCore looks each up, 1.11.98) plus the
+             * indirect resolutions (roiDirectBranches + roiIndirBranches); the direction predictor stays per
+             * branch. OOO cores and the host keep the per-branch lookup. A dump without the direct count
+             * keeps the per-branch lookup and says so. */
+            const bool inorder_pe_btb = config_.device_scope && !is_ooo;
+            uint64_t btb_r = config_.tlb_btb_measured ? br_all : meas_indir_;
+            if (config_.tlb_btb_measured && inorder_pe_btb) {
+                if (meas_direct_present_) btb_r = meas_direct_ + meas_indir_;
+                if (diagnostics_live_)
+                    std::cerr << "[power] in-order PE BTB reads: " << (meas_direct_present_
+                                  ? "MEASURED taken direct lookups " + std::to_string(meas_direct_) + " + indirect resolutions "
+                                    + std::to_string(meas_indir_) + " = " + std::to_string(btb_r)
+                                  : std::string("no roiDirectBranches in the dump: per-branch lookup kept, ") + std::to_string(btb_r))
+                              << " (per-branch count " << br_all << ")" << std::endl;
+            }
             const uint64_t btb_w = config_.tlb_btb_measured ? mispred_all + meas_indir_ : meas_indir_;
             xml << "        <stat name=\"read_accesses\" value=\"" << btb_r << "\"/>\n";
             xml << "        <stat name=\"write_accesses\" value=\"" << btb_w << "\"/>\n";

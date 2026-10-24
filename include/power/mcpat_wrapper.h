@@ -762,6 +762,8 @@ public:
      * and RAS returns, measured by zsim (roiIndirBranches / roiRasReturns).
      * They drive the BTB and RAS McPAT now builds for cores that have them. */
     void setMeasuredControlFlow(uint64_t indirect_branches, uint64_t ras_returns);
+    /* (next, user ruling 2026-10-25 (1)): the in-order core's measured taken direct BTB lookups (ROI). */
+    void setMeasuredDirectBranches(uint64_t direct_branches, bool present);
     /* 1.11.93 (F3): the pipeline duty the XML carries, with its parts, for
      * the core-description line. `per_core` says whether per-core counts
      * were supplied. */
@@ -924,6 +926,7 @@ private:
     std::vector<TrunkDie> trunk_dies_;           // PIMID 1.12.18 (per-die trunk)
     PowerMetrics trunk_power_;
     uint64_t meas_indir_ = 0, meas_ras_ = 0;     // 1.11.93 (F6), ROI-windowed
+    uint64_t meas_direct_ = 0; bool meas_direct_present_ = false;   // (1.12.32): in-order taken direct BTB lookups, ROI
     uint64_t meas_bp_hist_writes_ = 0, meas_bp_pht_writes_ = 0;   // 1.11.97 (R2476), ROI-windowed
     bool meas_bp_writes_present_ = false;
     /* 1.11.93 (F3/F6): the issue width McPAT is handed (the peak IPC the

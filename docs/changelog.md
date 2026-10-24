@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.32 -- a PE core's integer ops, bypass buses and store buffer, from published and derived values
+
+- Diagnosed first (kept McPAT XML, standalone McPAT at print level 5, 22 nm alu_core PE): of the core's 3.96 mW
+  runtime, integer ALU 0.547, results bypass bus 1.069, load/store queue 0.702 mW.
+- **64-bit integer add/logic** (user ruling 2026-10-25 #1; external/mcpat/logic.cc FunctionalUnit): linear in width
+  from Horowitz ISSCC 2014's published 8- and 32-bit points (16 bit on the line between them; 64 bit = 2 x 32 bit),
+  DERIVED. An unclassified ALU access (move, LEA, NOP) is one 64-bit add. McPAT's Wattch-derived "1.15 nJ" per-op
+  literal is no longer used for the ALU or the DMA adder. 22 nm: 5.01 -> 0.051 pJ per 64-bit op.
+- **Bypass buses** (#2; logic.cc, core.cc): a unit's height = sqrt of its published area (FPnew / Gautschi, 1.12.29),
+  DERIVED (ALU 137 -> 45 um, FPU 411 -> 117 um, MUL 205 -> 60 um at 22 nm); units without a published area keep
+  McPAT's literal, printed. The in-order FP bypass bus is fp_data_width bits (was machine_bits x 1.5, unsourced).
+- **Store buffer** (#3; core.cc LoadStoreU): an in-order device PE's LSQ structure is a store buffer only: one write
+  and one read per store, none per load (`[mcpat lsq]`), DERIVED. OOO cores and the host keep McPAT's queue.
+- **In-order PE BTB reads, measured** (user ruling 2026-10-25 (1); external/zsim/src/in_order_core.*, src/main.cpp,
+  src/power/mcpat_wrapper.cpp): the timing core's taken direct-branch BTB lookups (new ROI counter
+  `roiDirectBranches`, next to `roiBtbMisses`) plus its indirect resolutions, instead of one read per branch; the
+  direction predictor stays per branch; OOO cores and the host keep the per-branch lookup. 22 nm in_order gemv:
+  65794 -> 65535 reads.
+- New print `[mcpat stores]`: a device PE's instruction store, data store and DMA energy, so the PE references are
+  judged on the CORE-ONLY quantity (RI5CY Table V is core-only).
+- 22 nm alu_core PE (McPAT core, runtime): 3.96 -> 1.92 mW; ALU 0.547 -> 0.006, bypass 1.069 -> 0.325, LSQ 0.702
+  -> 0.002 mW. Core-only non-clock 2.28 pJ/instr (instruction store 1.18 and scratchpad 0.49 reported apart; RI5CY
+  Table V at the 20 nm row [2.04, 2.74]); 32 nm 4.52. Host core 150.9 -> 140.8 pJ/instr (its 64-bit adds). Cycles
+  and checksums unchanged.
+
 ## 1.12.31 -- the flip-flop from published open libraries, node-scaled
 
 - **Register clock pin and register energy re-sourced** (user ruling 2026-10-25 A; external/mcpat/logic.cc

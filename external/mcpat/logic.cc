@@ -1184,17 +1184,33 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		const double k45 = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run);
 		pimid_int_pub = (k45 > 0);
 		const bool alu = (fu_type == ALU);
+		const double mcpat_ref_op = per_access_energy * g_tp.sckt_co_eff;   /* McPAT's per-op, for the prints */
 		pimid_int_e[0] = (alu ? 0.03e-12 : 0.2e-12) * k45;
 		pimid_int_e[1] = (alu ? 0.1e-12 : 3.1e-12) * k45;
+		/* PIMID (next, user ruling 2026-10-25 #1): ADD/LOGIC LINEAR IN WIDTH from Horowitz's two published points
+		 * (8 bit 0.03 pJ, 32 bit 0.1 pJ): 16 bit on the line between them, 0.03 + 8 x 0.07/24 = 0.0533 pJ; 64 bit
+		 * = 2 x 32 bit (two 32-bit slices), 0.2 pJ (DERIVED, stated). An ALU access the decoder does not classify
+		 * by width (moves, LEA, NOP, other) is priced as one machine-word (64-bit) add, and McPAT's Wattch-derived
+		 * "1.15 nJ" per-op literal is no longer used for the ALU (nor for the DMA adder, the same unit). */
+		if (alu)
+		{
+			pimid_int_e16 = (0.03e-12 + 8.0 * (0.1e-12 - 0.03e-12) / 24.0) * k45;
+			pimid_int_e64 = 2.0 * pimid_int_e[1];
+			per_access_energy = pimid_int_e64 / g_tp.sckt_co_eff;   /* x sckt below = the 64-bit add */
+			std::cerr << "[mcpat int] core" << ithCore << " ALU add/logic LINEAR in width (DERIVED from the two published"
+			          << " points): 16 bit " << pimid_int_e16*1e12 << " pJ, 64 bit = 2 x 32 bit " << pimid_int_e64*1e12
+			          << " pJ (USED, also for unclassified ALU accesses); McPAT's per-op literal " << mcpat_ref_op*1e12
+			          << " pJ no longer used" << std::endl;
+		}
 		std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " published (Horowitz ISSCC 2014"
 		          << " Fig. 1.1.9, 45 nm 0.9 V): " << (alu ? "Add 8 bit 0.03 pJ, 32 bit 0.1 pJ" : "Mult 8 bit 0.2 pJ, 32 bit 3.1 pJ")
 		          << "; node scaling 45 -> " << interface_ip.F_sz_nm << " nm: C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
 		          << " fF, Vdd 0.9 V -> " << v_run << " V => factor " << k45 << ": 8 bit " << pimid_int_e[0]*1e12
 		          << " pJ, 32 bit " << pimid_int_e[1]*1e12 << " pJ (USED); McPAT per-op (reference) "
-		          << per_access_energy*g_tp.sckt_co_eff*1e12 << " pJ" << std::endl;
-		std::cerr << "[mcpat int] core" << ithCore << " NO PUBLISHED SOURCE FOUND for " << (alu ? "16- and 64-bit add/logic"
-		          : "16- and 64-bit multiply and integer divide") << ": McPAT's per-op energy kept (no published composition"
-		          << " from the 32-bit value is used)" << std::endl;
+		          << mcpat_ref_op*1e12 << " pJ" << std::endl;
+		if (!alu)
+			std::cerr << "[mcpat int] core" << ithCore << " NO PUBLISHED SOURCE FOUND for 16- and 64-bit multiply and integer"
+			          << " divide: McPAT's per-op energy kept" << std::endl;
 	}
 
 	/* PIMID 1.12.29: (user ruling 2026-10-25) PUBLISHED FUNCTIONAL-UNIT AREA
@@ -1289,13 +1305,21 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			gate_leakage *= r;
 			area_t        = a_pub;
 			pimid_area_pub = a_pub;
+			/* PIMID (next, user ruling 2026-10-25 #2): the unit's HEIGHT (the bypass buses' length, core.cc)
+			 * = sqrt of its published area (a square unit, DERIVED), not McPAT's "Sun's data" literal. */
+			const double h_mcpat = FU_height;
+			FU_height = sqrt(a_pub) * num_fu;
+			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " height (bypass length): McPAT literal "
+			          << h_mcpat << " um -> sqrt(published area) x " << num_fu << " unit(s) = " << FU_height
+			          << " um (USED, DERIVED)" << std::endl;
 		}
 		else
 			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
 			          << (XML->sys.Embedded ? "embedded" : "server") << " scope): NO PUBLISHED SOURCE FOUND ("
 			          << ((fu_type == FPU) ? "no FPnew configuration matches this FP datapath; the host x86-64 FP/SIMD datapath is >= 128 bit"
 			                               : "64-bit integer units are not broken out in FPnew Fig. 6 or Gautschi 2017")
-			          << "): McPAT's area literal kept, " << area_t*1e-6 << " mm^2 per unit" << std::endl;
+			          << "): McPAT's area literal kept, " << area_t*1e-6 << " mm^2 per unit, and its height literal "
+			          << FU_height << " um (bypass length)" << std::endl;
 	}
 
 	//IEXEU, simple ALU and FPU
@@ -1424,19 +1448,24 @@ void FunctionalUnit::computeEnergy(bool is_tdp)
 			const double* ops = XML->sys.core[ithCore].pimid_int_ops;
 			const bool alu = (fu_type == ALU);
 			const double n8 = alu ? ops[0] : ops[4], n32 = alu ? ops[2] : ops[6];
-			const double nnp = alu ? ops[1] + ops[3] : ops[5] + ops[7] + ops[8];
+			/* (next, ruling #1): the ALU's 16- and 64-bit add/logic are priced (linear in width) */
+			const double n16 = alu ? ops[1] : 0.0, n64 = alu ? ops[3] : 0.0;
+			const double nnp = alu ? 0.0 : ops[5] + ops[7] + ops[8];
 			const double acc = stats_t.readAc.access;
-			const double rep = n8 + n32;
+			const double rep = n8 + n32 + n16 + n64;
 			if (rep > 0 && rep <= acc)
 			{
 				const double before = rt_power.readOp.dynamic;
-				const double pub = pimid_int_e[0]*n8 + pimid_int_e[1]*n32;
+				const double pub = pimid_int_e[0]*n8 + pimid_int_e[1]*n32 + pimid_int_e16*n16 + pimid_int_e64*n64;
 				rt_power.readOp.dynamic = (per_access_energy*(acc - rep) + base_energy*executionTime)*sckRation + pub;
 				std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: " << acc
 				          << " accesses; published: 8 bit " << n8 << " x " << pimid_int_e[0]*1e12 << " pJ + 32 bit " << n32
-				          << " x " << pimid_int_e[1]*1e12 << " pJ = " << pub << " J; McPAT per-op "
+				          << " x " << pimid_int_e[1]*1e12 << " pJ" << (alu ? " + DERIVED 16 bit " : "") << (alu ? n16 : 0.0)
+				          << (alu ? " x " : "") << (alu ? pimid_int_e16*1e12 : 0.0) << (alu ? " pJ + 64 bit " : "") << (alu ? n64 : 0.0)
+				          << (alu ? " x " : "") << (alu ? pimid_int_e64*1e12 : 0.0) << " = " << pub << " J; "
+				          << (alu ? "unclassified at the 64-bit add " : "McPAT per-op ")
 				          << per_access_energy*sckRation*1e12 << " pJ x " << (acc - rep) << " other (" << nnp
-				          << (alu ? " 16/64-bit add/logic" : " 16/64-bit mult + divide") << " -- NO PUBLISHED SOURCE FOUND; "
+				          << (alu ? " -" : " 16/64-bit mult + divide -- NO PUBLISHED SOURCE FOUND") << "; "
 				          << (acc - rep - nnp) << (alu ? " moves/LEA/NOP/other" : " other") << "); McPAT-only reference " << before
 				          << " J -> " << rt_power.readOp.dynamic << " J" << std::endl;
 			}

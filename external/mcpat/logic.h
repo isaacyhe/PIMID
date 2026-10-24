@@ -416,6 +416,7 @@ public:
 	 * unit {8-bit mult, 32-bit mult}; set with pimid_int_alu_published. */
 	bool   pimid_int_pub = false;
 	double pimid_int_e[2] = {0, 0};
+	double pimid_int_e16 = 0, pimid_int_e64 = 0;   /* PIMID (next, ruling #1): ALU add/logic linear in width */
 	/* PIMID 1.12.29: (ruling 2026-10-25) the published area of ONE unit at
 	 * the run's node (um^2, before McPAT's macro layout overhead) that
 	 * replaced McPAT's literal; 0 = McPAT's literal (switch off, or no

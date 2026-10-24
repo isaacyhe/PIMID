@@ -244,6 +244,7 @@ class InOrderCore : public Core {
         uint64_t roiBaseIndir    = 0;
         uint64_t roiBaseRas      = 0;
         uint64_t roiBaseBtbMiss  = 0;   // 1.11.98: direct-branch BTB misses
+        uint64_t roiBaseDirect   = 0;   // PIMID (1.12.32): taken direct branches looked up in the BTB
         uint64_t roiBaseBpHist   = 0;   // 1.11.97 (R2476): predictor table writes
         uint64_t roiBaseBpPht    = 0;
         uint64_t roiBaseCycle  = 0;
@@ -318,6 +319,7 @@ class InOrderCore : public Core {
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseTaken = takenBranches;                        // 1.12.1
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns; roiBaseBtbMiss = btbMisses;   // 1.11.93 (F6)
+            roiBaseDirect = directBranches;                      // PIMID (next, ruling 2026-10-25 (1))
             roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10

@@ -158,6 +158,25 @@ the NVMs, per-access energy on the measured accesses of every class plus the
 array leakage (x banks, after any measured array gating), in watts on the run's
 wall clock. Their area was already in System Total Area and is not added twice.
 
+## PE core energy: integer ops, bypass, store buffer (1.12.32)
+
+(user rulings 2026-10-25, after a diagnostic run of standalone McPAT at
+print level 5 on the kept XML.) Integer add/logic energy is linear in
+width from Horowitz ISSCC 2014 Fig. 1.1.9's published 8- and 32-bit add
+(0.03 / 0.1 pJ at 45 nm, node-scaled): 16 bit on the line between the
+points, 64 bit = 2 x 32 bit (DERIVED); an ALU access the decoder does not
+classify by width is one 64-bit add, and McPAT's Wattch-derived "1.15 nJ"
+per-op literal is no longer used for the ALU or the DMA adder (multiply
+keeps the published 8/32-bit points and McPAT's value elsewhere). The
+bypass buses' length uses each unit's height = sqrt of its published area
+(DERIVED; units without a published area keep McPAT's literal), and the
+in-order FP bypass bus is one FP datum wide. An in-order device PE's
+load/store structure is a store buffer: one write and one read per store,
+none per load (DERIVED); OOO cores keep McPAT's queue. A device PE's
+instruction store, data store and DMA energy are printed
+(`[mcpat stores]`) so the PE is judged on its core alone, as RI5CY's
+Table V is.
+
 ## Clock distribution (1.12.18)
 
 Upstream McPAT ships its clock-network calls commented out and the class they

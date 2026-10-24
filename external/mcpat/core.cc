@@ -1404,7 +1404,9 @@ EXECU::EXECU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 
 		  if (coredynp.num_fpus>0)
 		  {
-			  fp_bypass    = new interconnect("FP Bypass Data" , Core_device, 1, 1, int(ceil(XML->sys.machine_bits/32.0)*32*1.5),
+			  /* PIMID (next, user ruling 2026-10-25 #2): the FP bus carries one FP datum, fp_data_width bits
+			   * (upstream: machine_bits x 1.5, unsourced); the OOO branch below already uses fp_data_width. */
+			  fp_bypass    = new interconnect("FP Bypass Data" , Core_device, 1, 1, int(ceil(coredynp.fp_data_width)),
 					  rfu->fp_regfile_height + fp_u->FU_height, &interface_ip, 3,
 					  false, 1.0, coredynp.opt_local, coredynp.core_ty);
 			  bypass.area.set_area(bypass.area.get_area()  +fp_bypass->area.get_area());
@@ -3541,6 +3543,30 @@ void SchedulerU::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
  * three register reads and writes and three adder operations (each register
  * steps once). Peak (TDP): the RAM at McPAT's 2:1 read/write port mix, the
  * engine at one line per cycle. */
+/* PIMID (next, user ruling 2026-10-25 #3): an IN-ORDER device PE has no load/store queue to search: its LSQ
+ * structure is a STORE BUFFER only -- one write and one read per store (the store enters, then drains to the
+ * memory), none per load (a load goes to the scratchpad / data store directly, as in RI5CY's LSU). DERIVED,
+ * stated. OOO cores (and the host) keep McPAT's queue: 2 x (search + read) + 2 x write per load and store. */
+bool LoadStoreU::pimid_store_buffer() const
+{
+	return coredynp.core_ty == Inorder && XML->sys.Embedded;
+}
+
+void LoadStoreU::pimid_store_buffer_stats()
+{
+	if (!pimid_store_buffer()) return;
+	const double ld = XML->sys.core[ithCore].load_instructions, st = XML->sys.core[ithCore].store_instructions;
+	const double before = LSQ->stats_t.readAc.access*(LSQ->local_result.power.searchOp.dynamic + LSQ->local_result.power.readOp.dynamic)
+		+ LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;
+	LSQ->stats_t.readAc.access  = st;
+	LSQ->stats_t.writeAc.access = st;
+	const double after = st*(LSQ->local_result.power.readOp.dynamic + LSQ->local_result.power.writeOp.dynamic);
+	std::cerr << "[mcpat lsq] core" << ithCore << " in-order PE: store buffer only (ruling 2026-10-25 #3): " << st
+	          << " stores x (write " << LSQ->local_result.power.writeOp.dynamic*1e12 << " + read "
+	          << LSQ->local_result.power.readOp.dynamic*1e12 << " pJ), none of the " << ld << " loads = " << after
+	          << " J (McPAT queue, 2 x (search + read) + 2 x write per load and store: " << before << " J)" << std::endl;
+}
+
 void LoadStoreU::computeEnergyPimid(bool is_tdp)
 {
 	double dma_lines = 0.0, dma_cmd_rd = 0.0, dma_cmd_wr = 0.0;
@@ -3570,6 +3596,7 @@ void LoadStoreU::computeEnergyPimid(bool is_tdp)
 		}
 		LSQ->stats_t.readAc.access  = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
 		LSQ->stats_t.writeAc.access = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
+		pimid_store_buffer_stats();   /* PIMID (next, ruling #3) */
 		LSQ->rtp_stats = LSQ->stats_t;
 		if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
 		{
@@ -3593,8 +3620,8 @@ void LoadStoreU::computeEnergyPimid(bool is_tdp)
 		LoadQ->power_t.readOp.dynamic += LoadQ->stats_t.readAc.access*(LoadQ->local_result.power.searchOp.dynamic+ LoadQ->local_result.power.readOp.dynamic)+
 			LoadQ->stats_t.writeAc.access*LoadQ->local_result.power.writeOp.dynamic;
 	}
-	LSQ->power_t.readOp.dynamic += LSQ->stats_t.readAc.access*(LSQ->local_result.power.searchOp.dynamic + LSQ->local_result.power.readOp.dynamic)
-		+ LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;
+	LSQ->power_t.readOp.dynamic += LSQ->stats_t.readAc.access*((pimid_store_buffer() ? 0.0 : LSQ->local_result.power.searchOp.dynamic) + LSQ->local_result.power.readOp.dynamic)
+		+ LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;   /* (next, ruling #3): a store buffer is not searched */
 
 	powerDef dma_t;
 	if (dma_lbuf)
@@ -3730,6 +3757,7 @@ void LoadStoreU::computeEnergy(bool is_tdp)
 
 	    	LSQ->stats_t.readAc.access  = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;//flush overhead considered
 	    	LSQ->stats_t.writeAc.access = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
+	    	pimid_store_buffer_stats();   /* PIMID (next, ruling #3) */
 	    	LSQ->rtp_stats = LSQ->stats_t;
 
 	    	if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
@@ -3787,7 +3815,7 @@ void LoadStoreU::computeEnergy(bool is_tdp)
     }
     else
     {
-    	LSQ->power_t.readOp.dynamic  +=  LSQ->stats_t.readAc.access*(LSQ->local_result.power.searchOp.dynamic + LSQ->local_result.power.readOp.dynamic)
+    	LSQ->power_t.readOp.dynamic  +=  LSQ->stats_t.readAc.access*((pimid_store_buffer() ? 0.0 : LSQ->local_result.power.searchOp.dynamic) + LSQ->local_result.power.readOp.dynamic)
     		        + LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;//every memory access invloves at least two operations on LSQ
 
     }
@@ -4473,6 +4501,14 @@ void Core::computeEnergy(bool is_tdp)
 			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
 			          << e_gat << std::endl;
 			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
+			/* PIMID (next, user ruling 2026-10-25): a device PE's instruction store and data store (scratchpad)
+			 * energy, printed so the PE references can be judged on the CORE-only quantity (RI5CY Table V is
+			 * core-only; its I$ and TCDM are separate). McPAT-priced, before any DRAM-periphery factor. */
+			if (!is_tdp && XML->sys.Embedded)
+				std::cerr << "[mcpat stores] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
+				          << " DRAM-periphery factor): instruction store " << ((ifu && ifu->exist) ? ifu->icache.rt_power.readOp.dynamic : 0.0)
+				          << " J; data store " << ((lsu && lsu->exist) ? lsu->dcache.rt_power.readOp.dynamic : 0.0)
+				          << " J; DMA " << ((lsu && lsu->exist) ? lsu->dma.rt_power.readOp.dynamic : 0.0) << " J" << std::endl;
 		}
 
 		if (XML->sys.Private_L2)
@@ -4644,6 +4680,14 @@ void Core::computeEnergy(bool is_tdp)
 			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
 			          << e_gat << std::endl;
 			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
+			/* PIMID (next, user ruling 2026-10-25): a device PE's instruction store and data store (scratchpad)
+			 * energy, printed so the PE references can be judged on the CORE-only quantity (RI5CY Table V is
+			 * core-only; its I$ and TCDM are separate). McPAT-priced, before any DRAM-periphery factor. */
+			if (!is_tdp && XML->sys.Embedded)
+				std::cerr << "[mcpat stores] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
+				          << " DRAM-periphery factor): instruction store " << ((ifu && ifu->exist) ? ifu->icache.rt_power.readOp.dynamic : 0.0)
+				          << " J; data store " << ((lsu && lsu->exist) ? lsu->dcache.rt_power.readOp.dynamic : 0.0)
+				          << " J; DMA " << ((lsu && lsu->exist) ? lsu->dma.rt_power.readOp.dynamic : 0.0) << " J" << std::endl;
 			/* PIMID (next, user ruling 2026-10-24): DECODE + CLOCK GUARD. The instruction decoders'
 			 * runtime energy per instruction plus this core's clock network per cycle at activity 1
 			 * (ungated, one core: per instruction at IPC 1, the basis of the published figure -- the
