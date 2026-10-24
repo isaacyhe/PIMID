@@ -644,7 +644,10 @@ static inline uint64_t roiWallStamp(uint32_t tid) {
  * waiter's clock to the stamp of the word it waited on, at its next Join.
  * Only device PEs stamp and sync (Core::wakeStampable): their clocks are
  * their own timelines; the host cores re-base to the global phase clock on
- * join already. A requeued waiter (FUTEX_CMP_REQUEUE / WAKE_OP) syncs to
+ * join already. 1.12.21 (user ruling 2026-10-24): the in-order / OOO cores
+ * stamp and sync as well, in their own table (clkStampPut below): a waiter
+ * that rejoins inside the phase of its wake still resumes no earlier than
+ * the release. A requeued waiter (FUTEX_CMP_REQUEUE / WAKE_OP) syncs to
  * the requeue/wake-op stamp on its original word -- a lower bound on the
  * release it was finally woken by. futex_waitv (449) is not tracked (its
  * words live in a guest array); none of the shipped kernels' runtimes use
@@ -670,6 +673,33 @@ static void wakeStampPut(uint64_t addr, uint64_t cyc, uint64_t org = 0) {
     s.addr = addr; s.cyc = cyc; s.org = org;   // the latest release on this word (a collision evicts: no sync, never a wrong one)
     g_wakeStampN.fetch_add(1, std::memory_order_relaxed);
 }
+/* 1.12.21 (user ruling 2026-10-24): the in-order / OOO cores (lock clock
+ * domain 1: host cores, and device PEs of those models) stamp and sync too,
+ * in their OWN table (their raw clock is on the global phase axis, not
+ * comparable with an ALU PE's own timeline; a separate table also leaves the
+ * ALU PEs' stamps and collisions exactly as they were). rel = the waker's
+ * ROI-relative clock at the release (single-process cut), the origin the
+ * waiter takes with the clock. */
+struct ClkStampSlot { uint64_t addr; uint64_t cyc; uint64_t rel; };
+static ClkStampSlot g_clkStamp[kWakeSlots];
+static uint32_t g_waitDom[MAX_THREADS];           // the waiter's clock domain (2 = ALU PE table, 1 = clk table)
+static uint64_t g_clkSyncTo[MAX_THREADS], g_clkSyncRel[MAX_THREADS];
+static void clkStampPut(uint64_t addr, uint64_t cyc, uint64_t rel) {
+    if (!addr) return;
+    std::lock_guard<std::mutex> g(g_wakeMu);
+    ClkStampSlot& s = g_clkStamp[wakeSlotOf(addr)];
+    s.addr = addr; s.cyc = cyc; s.rel = rel;
+    g_wakeStampN.fetch_add(1, std::memory_order_relaxed);
+}
+static bool clkStampGet(uint64_t addr, uint64_t& cyc, uint64_t& rel) {
+    std::lock_guard<std::mutex> g(g_wakeMu);
+    const ClkStampSlot& s = g_clkStamp[wakeSlotOf(addr)];
+    if (s.addr != addr) return false;
+    cyc = s.cyc; rel = s.rel; return true;
+}
+static inline uint64_t clkRelOf(uint32_t cid, uint64_t raw) {   // the ROI-relative clock a domain-1 release carries
+    return (g_spCut && zinfo->hierarchy.mpiNocBaselined) ? PEMemoryInterface::cutRoiRel(cid, raw) : 0;
+}
 static bool wakeStampGet(uint64_t addr, uint64_t& cyc, uint64_t* org = nullptr) {
     std::lock_guard<std::mutex> g(g_wakeMu);
     const WakeStampSlot& s = g_wakeStamp[wakeSlotOf(addr)];
@@ -690,7 +720,24 @@ static void wakeSyncOnFutexEntry(uint32_t tid, uint32_t cid, uint64_t uaddr, uin
             g_coreRoiState[cid].compare_exchange_strong(a, 1);
         }
     }
+    if (tid < MAX_THREADS && cid < zinfo->numCores && zinfo->cores[cid] && !zinfo->cores[cid]->wakeStampable() &&
+        zinfo->cores[cid]->lockClockDomain() == 1) {   // 1.12.21: in-order / OOO core
+        Core* co = zinfo->cores[cid];
+        const uint64_t raw = co->lockClock();
+        switch ((uint32_t)(op & 0x7f)) {
+            case 1: case 10: case 7:
+                clkStampPut(uaddr, raw, clkRelOf(cid, raw)); break;
+            case 3: case 4: case 5: case 12:
+                clkStampPut(uaddr, raw, clkRelOf(cid, raw));
+                clkStampPut(uaddr2, raw, clkRelOf(cid, raw)); break;
+            case 0: case 9: case 6: case 11: case 13:
+                g_waitWord[tid] = uaddr; g_waitDom[tid] = 1; break;
+            default: break;
+        }
+        return;
+    }
     if (tid >= MAX_THREADS || cid >= zinfo->numCores || !zinfo->cores[cid] || !zinfo->cores[cid]->wakeStampable()) return;
+    if (tid < MAX_THREADS) g_waitDom[tid] = 2;   // 1.12.19
     const uint32_t cmd = (uint32_t)(op & 0x7f);
     switch (cmd) {
         case 1: case 10: case 7:          // WAKE, WAKE_BITSET, UNLOCK_PI
@@ -709,11 +756,26 @@ static void wakeSyncOnFutexReturn(uint32_t tid, int64_t ret) {
     if (!w) return;
     g_waitWord[tid] = 0;
     if (ret != 0) return;   // EAGAIN/ETIMEDOUT/EINTR: not woken, nothing to sync to
+    if (g_waitDom[tid] == 1) {   // 1.12.21: an in-order / OOO waiter
+        uint64_t c = 0, rel = 0;
+        if (clkStampGet(w, c, rel)) { if (c > g_clkSyncTo[tid]) { g_clkSyncTo[tid] = c; g_clkSyncRel[tid] = rel; } }
+        else g_wakeMissN.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     uint64_t c = 0, org = 0;
     if (wakeStampGet(w, c, &org)) { if (c > g_wakeSyncTo[tid]) { g_wakeSyncTo[tid] = c; g_wakeSyncOrg[tid] = org; } }
     else g_wakeMissN.fetch_add(1, std::memory_order_relaxed);
 }
 static void wakeSyncApply(uint32_t tid, uint32_t cid) {
+    if (tid < MAX_THREADS && g_clkSyncTo[tid]) {   // 1.12.21: an in-order / OOO waiter takes its waker's clock and origin
+        const uint64_t t = g_clkSyncTo[tid], rel = g_clkSyncRel[tid];
+        g_clkSyncTo[tid] = 0;
+        if (cid < zinfo->numCores && zinfo->cores[cid] && !zinfo->cores[cid]->wakeStampable() && zinfo->cores[cid]->lockClockDomain() == 1) {
+            const uint64_t sk = zinfo->cores[cid]->syncToWaker(t);
+            if (sk) { g_wakeSyncN.fetch_add(1, std::memory_order_relaxed); g_wakeSyncSkip.fetch_add(sk, std::memory_order_relaxed); }
+            if (sk && g_spCut && zinfo->hierarchy.mpiNocBaselined) PEMemoryInterface::clkAdoptRel(cid, rel);
+        }
+    }
     if (tid >= MAX_THREADS || !g_wakeSyncTo[tid]) return;
     const uint64_t t = g_wakeSyncTo[tid];
     g_wakeSyncTo[tid] = 0;
@@ -760,7 +822,7 @@ static bool g_lockSync = true;
 static int lock_rmw_tag;   // mem-cb userdata of an atomic read-modify-write instruction
 static const uint32_t kLockSlots = 4096;   // power of two
 static const uint32_t kNoHolder = ~0u;
-struct LockWord { uint64_t addr, freeVal, relVal, relClk, relOrg; uint32_t holder, relTid, relDom; bool relValid; };   // 1.12.18: relOrg = the releaser's ROI origin
+struct LockWord { uint64_t addr, freeVal, relVal, relClk, relOrg, relRel; uint32_t holder, relTid, relDom; bool relValid; };   // 1.12.21: relRel = a domain-1 releaser's ROI-relative clock   // 1.12.18: relOrg = the releaser's ROI origin
 static LockWord g_lockWord[kLockSlots];
 static std::atomic<uint64_t> g_lockKey[kLockSlots];   // lock-free filter for the plain-store path
 static std::atomic<bool> g_lockAny{false};
@@ -800,10 +862,13 @@ static inline Core* lockCoreOf(uint32_t tid) {
     if (cid >= zinfo->numCores || !zinfo->cores[cid] || !zinfo->cores[cid]->lockClockDomain()) return nullptr;
     return zinfo->cores[cid];
 }
-static void lockSyncApply(Core* c, uint64_t t, uint32_t cid = ~0u, uint64_t org = 0) {
+static void lockSyncApply(Core* c, uint64_t t, uint32_t cid = ~0u, uint64_t org = 0, uint64_t rel = 0) {
     const uint64_t sk = c->syncToLock(t);
     if (sk) { g_lockSyncN.fetch_add(1, std::memory_order_relaxed); g_lockSyncSkip.fetch_add(sk, std::memory_order_relaxed); }
-    if (sk && g_spCut && cid != ~0u && zinfo->hierarchy.mpiNocBaselined) PEMemoryInterface::spSetOrigin(cid, org);   // 1.12.18: the releaser's origin
+    if (sk && g_spCut && cid != ~0u && zinfo->hierarchy.mpiNocBaselined) {
+        if (c->lockClockDomain() == 1) PEMemoryInterface::clkAdoptRel(cid, rel);   // 1.12.21: an in-order / OOO acquirer
+        else PEMemoryInterface::spSetOrigin(cid, org);   // 1.12.18: the releaser's origin
+    }
 }
 /* the R and W halves of a tagged atomic RMW (after the access is timed) */
 static void lockRmw(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
@@ -815,7 +880,7 @@ static void lockRmw(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
     Core* c = lockCoreOf(tid);
     if (!c) return;
     const uint32_t dom = c->lockClockDomain();
-    uint64_t syncTo = 0, syncOrg = 0;
+    uint64_t syncTo = 0, syncOrg = 0, syncRel = 0;
     {
         std::lock_guard<std::mutex> g(g_lockMu);
         const uint32_t s = lockSlotOf(addr);
@@ -830,16 +895,17 @@ static void lockRmw(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
         if (w.holder == tid && newv == w.freeVal) {   // release by the holder
             w.relValid = true; w.relTid = tid; w.relDom = dom; w.relClk = c->lockClock(); w.relVal = newv;
             w.relOrg = PEMemoryInterface::spOriginOf(cids[tid]);
+            w.relRel = (dom == 1) ? clkRelOf(cids[tid], w.relClk) : 0;   // 1.12.19
             w.holder = kNoHolder;
             g_lockRelN.fetch_add(1, std::memory_order_relaxed);
         } else if (oldv == w.freeVal && w.holder != tid) {   // acquire: took the word from its free value
             if (w.holder != kNoHolder) g_lockRaceN.fetch_add(1, std::memory_order_relaxed);   // its release callback is late
-            else if (w.relValid && w.relTid != tid && w.relDom == dom && oldv == w.relVal) { syncTo = w.relClk; syncOrg = w.relOrg; }
+            else if (w.relValid && w.relTid != tid && w.relDom == dom && oldv == w.relVal) { syncTo = w.relClk; syncOrg = w.relOrg; syncRel = w.relRel; }
             w.holder = tid;
             g_lockAcqN.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    if (syncTo) lockSyncApply(c, syncTo, cids[tid], syncOrg);
+    if (syncTo) lockSyncApply(c, syncTo, cids[tid], syncOrg, syncRel);
 }
 /* a plain store: a release if it writes the free value of a word this thread holds */
 static void lockStore(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
@@ -853,6 +919,7 @@ static void lockStore(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
     if (w.addr != addr || w.holder != tid || v != w.freeVal) return;
     w.relValid = true; w.relTid = tid; w.relDom = c->lockClockDomain(); w.relClk = c->lockClock(); w.relVal = v;
     w.relOrg = PEMemoryInterface::spOriginOf(cids[tid]);   // 1.12.18
+    w.relRel = (w.relDom == 1) ? clkRelOf(cids[tid], w.relClk) : 0;   // 1.12.19
     w.holder = kNoHolder;
     g_lockRelN.fetch_add(1, std::memory_order_relaxed);
 }
@@ -921,7 +988,9 @@ static void roiWallEnd(uint32_t tid, const char* how) {
                  * cores read, 676 ROI records outside). A core that ran
                  * nothing in the ROI reads 0 below. */
                 if (pass == 1 && c >= MAX_THREADS) continue;
-                const uint64_t v = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18 (W9): the raw clock, as a request carries it (cutRoiRel moves it to the wall-free clock)
+                uint64_t v = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the raw clock, as a request carries it (cutRoiRel moves it to the wall-free clock)
+                if (pass == 1 && c < PEMemoryInterface::kSpOrigins)   // 1.12.21: or its latest request, if that lies later
+                    v = std::max<uint64_t>(v, PEMemoryInterface::clkLastRec()[c].load(std::memory_order_relaxed));
                 if (v == 0) continue;   // ran nothing in the ROI
                 if (endCore == ~0u || v > mx) { mx = v; endCore = c; }
                 n++;
@@ -4204,6 +4273,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (g_spCut) {   // 1.12.18 (ruling 2026-10-24): each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
             for (uint32_t c = 0; c < zinfo->numCores; c++)
                 if (zinfo->cores[c] && zinfo->cores[c]->wakeStampable()) PEMemoryInterface::spSetOrigin(c, zinfo->cores[c]->getRoiBaseCycle());
+            PEMemoryInterface::clkClearOrigins();   // 1.12.21: in-order / OOO cores start on their snapshot origin
         }
         roiRebaseTrafficCounters("roi_begin");   // 1.11.90
         // Co-sim: the ROI IS the offload region. The launching thread (and
@@ -4564,6 +4634,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (g_spCut) {   // 1.12.18 (ruling 2026-10-24): each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
             for (uint32_t c = 0; c < zinfo->numCores; c++)
                 if (zinfo->cores[c] && zinfo->cores[c]->wakeStampable()) PEMemoryInterface::spSetOrigin(c, zinfo->cores[c]->getRoiBaseCycle());
+            PEMemoryInterface::clkClearOrigins();   // 1.12.21: in-order / OOO cores start on their snapshot origin
         }
         roiRebaseTrafficCounters("roi_begin");   // 1.11.90
         // Co-sim: ROI = offload region (see the twin handler above).

@@ -199,6 +199,7 @@ class Core : public GlobAlloc {
              * moved the residency without moving the work it prices. */
             roiBasePgActive = pgAct.activePhases;
             roiBaseLockSyncs = lockSyncs; roiBaseLockSyncCycles = lockSyncCycles;   // 1.12.18 (model the lock word)
+            roiBaseClkWakeSyncs = clkWakeSyncs; roiBaseClkWakeSyncCycles = clkWakeSyncCycles;   // 1.12.19
         }
         uint64_t roiBasePgActive = 0;
         inline void mixInitStats(AggregateStat* coreStat) {
@@ -267,6 +268,12 @@ class Core : public GlobAlloc {
             /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): see lockClockDomain above. */
             add("lockSyncs", "Lock handoffs that moved this core's clock to the releaser's release (ROI)", &lockSyncs, &roiBaseLockSyncs);
             add("lockSyncCycles", "Cycles this core's clock jumped forward to a lock releaser's release (ROI; waiting)", &lockSyncCycles, &roiBaseLockSyncCycles);
+            /* 1.12.21 (user ruling 2026-10-24): sync to waker on the in-order /
+             * OOO cores (the ALU PE keeps its own wakeSyncs / wakeSyncCycles). */
+            if (!wakeStampable() && lockClockDomain() == 1) {
+                add("wakeSyncs", "Futex wakes that moved this core's clock to its waker's release (ROI)", &clkWakeSyncs, &roiBaseClkWakeSyncs);
+                add("wakeSyncCycles", "Cycles this core's clock jumped forward to its waker's release on futex wakes (ROI; waiting, counted with the halted cycles)", &clkWakeSyncCycles, &roiBaseClkWakeSyncCycles);
+            }
         }
 
         explicit Core(g_string& _name) : lastUpdateCycles(0), lastUpdateInstrs(0), name(_name) {}
@@ -307,7 +314,10 @@ class Core : public GlobAlloc {
          * not stampable, no-op -- the in-order/OOO host cores already
          * re-base their clock to the global phase clock on every join
          * (cRec.notifyJoin: curCycle := globPhaseCycles), so they never
-         * carry the stale own clock this ruling fixes. */
+         * carry the stale own clock this ruling fixes. 1.12.21: they still
+         * sync to a release later than that phase start (InOrderCore /
+         * OOOCore::syncToWaker; the plugin keeps their stamps apart, and
+         * wakeStampable stays the ALU PE's own-timeline flag). */
         virtual bool wakeStampable() const { return false; }
         virtual uint64_t syncToWaker(uint64_t t) { (void)t; return 0; }
 
@@ -329,6 +339,20 @@ class Core : public GlobAlloc {
         virtual uint64_t syncToLock(uint64_t t) { (void)t; return 0; }
         uint64_t lockSyncs = 0, lockSyncCycles = 0;                 // 1.12.18 (model the lock word)
         uint64_t roiBaseLockSyncs = 0, roiBaseLockSyncCycles = 0;
+        /* 1.12.21 (user ruling 2026-10-24): an in-order / OOO core (lock clock
+         * domain 1, the global phase axis) takes its waker's clock too:
+         * syncToWaker(t) advances its clock to t like syncToLock (the
+         * whole pipeline moves; a jump past the phase end takes the barrier at
+         * the next block). A core that rejoins from HALTED starts at the phase
+         * start (CoreRecorder::notifyJoin), so only a wake inside that phase
+         * moves it. The jump (and a lock handoff's) is waiting: it is added
+         * to the halted cycles (pimidAddWait), so the unhalted clock -- the
+         * busy cycles and the wall-free clock the records and the run time
+         * use -- carries only activity, as on the ALU PE; the axes meet
+         * through the origin the core takes with the clock. Counted here,
+         * not in the ALU PE's counters. */
+        uint64_t clkWakeSyncs = 0, clkWakeSyncCycles = 0;
+        uint64_t roiBaseClkWakeSyncs = 0, roiBaseClkWakeSyncCycles = 0;
 
         virtual InstrFuncPtrs GetFuncPtrs() = 0;
 

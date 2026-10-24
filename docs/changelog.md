@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.21 -- wake-ups and lock handoffs synchronise in-order and out-of-order cores as well
+
+- **Same rule for every core type.** A thread woken by a futex wake, or a core taking a lock, now takes its
+  waker's or releaser's clock and ROI-relative time origin on `in_order_core` and `ooo_core` too (device PEs of
+  those models and the host cores, e.g. host OpenMP baselines), as `alu_core` PEs already did. The out-of-order
+  core advances its instruction window and decode cursor together; the in-order core moves its issue cursor (its
+  pipeline is drained at join). A jump past the phase end takes the barrier at the next block. Lifts the 1.12.18
+  known limitation on in-order / out-of-order synchronisation.
+- **Waiting is counted as waiting.** Wake and lock-handoff jumps on these cores are added to the halted cycles; the
+  unhalted clock (busy cycles, record stamps, run time) carries activity only, as on `alu_core`. Their run time
+  ends at the later of the core's clock and its latest memory record (these cores issue requests ahead of their
+  clock).
+- **Data impact.** OpenMP cells with `in_order_core` / `ooo_core` PEs and multi-core host OpenMP baselines change
+  (wake syncs now occur on those cores; e.g. OpenMP gemv with ooo PEs 33444 -> 36198 cycles); `alu_core` and
+  thread-MPI cells are unchanged; serial cells are unchanged except serial histogram with ooo PEs (+1 cycle, the
+  run-end rule). Not comparable with 1.12.20 for those cells.
+
 ## 1.12.20 -- DRAM precharge power-down is modelled in the replayed controller (on by default for DDR3, DDR4, DDR5)
 
 - **Power-down in the replayed Ramulator2 controller.** A power-down unit (a rank, one chip under the per-chip

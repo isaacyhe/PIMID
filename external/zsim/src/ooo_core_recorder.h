@@ -112,6 +112,10 @@ class OOOCoreRecorder {
 
         //Stats (called fully synchronized)
         uint64_t getUnhaltedCycles(uint64_t curCycle) const;
+        /* 1.12.21 (user ruling 2026-10-24): a clock jump to a waker's or a
+         * lock releaser's release is waiting, not activity (as on the ALU PE):
+         * it is counted with the halted cycles, out of the unhalted clock. */
+        void pimidAddWait(uint64_t c) { totalHaltedCycles += c; }
         uint64_t getContentionCycles() const;
 
         const g_string& getName() const {return name;}

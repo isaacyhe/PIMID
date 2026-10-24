@@ -682,6 +682,7 @@ class OOOCore : public Core {
         uint32_t lockClockDomain() const override { return 1; }
         uint64_t lockClock() const override { return curCycle; }
         uint64_t syncToLock(uint64_t t) override;   // ooo_core.cpp
+        uint64_t syncToWaker(uint64_t t) override;  // 1.12.19, ooo_core.cpp
 
         InstrFuncPtrs GetFuncPtrs();
 

@@ -380,7 +380,36 @@ public:
         const uint64_t off = (r > a) ? r - a : 0;
         return (raw > off) ? raw - off : 0;
     }
+    /* 1.12.21 (user ruling 2026-10-24): an in-order / OOO core synced to a
+     * waker or a lock releaser takes that core's origin: the origin that puts
+     * it at the releaser's ROI-relative clock at the sync (its wall-free clock
+     * then, minus the releaser's ROI-relative clock at the release). Cleared
+     * at roi_begin; until set the snapshot origin below applies. */
+    static std::atomic<uint64_t>* clkOrigins() { static std::atomic<uint64_t> o[kSpOrigins]; return o; }
+    static std::atomic<uint8_t>* clkOriginSet() { static std::atomic<uint8_t> f[kSpOrigins]; return f; }
+    static void clkClearOrigins() {
+        for (uint32_t c = 0; c < kSpOrigins; c++) { clkOriginSet()[c].store(0, std::memory_order_relaxed); clkLastRec()[c].store(0, std::memory_order_relaxed); }
+    }
+    /* 1.12.21: the latest ROI-relative stamp an in-order / OOO core put on a
+     * DRAM replay record: such a core issues a request at its dispatch cycle,
+     * which can lie past its clock at the ROI end, so its ROI end (the run
+     * time, source 3) is the later of the two -- no request of the ROI falls
+     * outside the window. Not used for the ALU PE (a request returns before
+     * its clock moves on). */
+    static std::atomic<uint64_t>* clkLastRec() { static std::atomic<uint64_t> l[kSpOrigins]; return l; }
+    static void clkNoteRec(uint32_t c, uint64_t stamp) {
+        if (c >= kSpOrigins) return;
+        uint64_t o = clkLastRec()[c].load(std::memory_order_relaxed);
+        while (stamp > o && !clkLastRec()[c].compare_exchange_weak(o, stamp, std::memory_order_relaxed)) {}
+    }
+    static void clkAdoptRel(uint32_t c, uint64_t rel) {
+        if (c >= kSpOrigins || c >= zinfo->numCores || !zinfo->cores[c]) return;
+        const uint64_t wf = zinfo->cores[c]->getCycles();
+        clkOrigins()[c].store((wf > rel) ? wf - rel : 0, std::memory_order_relaxed);
+        clkOriginSet()[c].store(1, std::memory_order_release);
+    }
     static uint64_t roiOriginOf(uint32_t c) {
+        if (c < kSpOrigins && clkOriginSet()[c].load(std::memory_order_acquire)) return clkOrigins()[c].load(std::memory_order_relaxed);   // 1.12.19
         Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
         uint64_t base = co ? co->getRoiBaseCycle() : 0;
         if (base == 0 && zinfo->hierarchy.mpiRoiBaseCyc && c < zinfo->hierarchy.mpiRoiBaseCycN)
@@ -1373,6 +1402,8 @@ protected:
             if (replayCut) {
                 const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
                 stamp = cutRoiRel(req.srcId, req.cycle);   // 1.12.18: perCoreRoiRel under thread-MPI
+                if (singleProcCut() && req.srcId < zinfo->numCores && zinfo->cores[req.srcId] && !zinfo->cores[req.srcId]->wakeStampable())
+                    clkNoteRec(req.srcId, stamp);   // 1.12.19
                 curEpoch = stamp / ((uint64_t)pl * E);
             } else {
                 uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;

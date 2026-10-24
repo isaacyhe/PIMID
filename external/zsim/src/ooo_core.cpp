@@ -782,10 +782,20 @@ void OOOCore::leave() {
     cRec.notifyLeave(curCycle);
 }
 
+uint64_t OOOCore::syncToWaker(uint64_t t) {   /* 1.12.21 (user ruling 2026-10-24), see core.h */
+    if (t <= curCycle) return 0;
+    const uint64_t skip = t - curCycle;
+    advance(t);   // as syncToLock: window and decode cursor move together
+    cRec.pimidAddWait(skip);   // waiting, not unhalted (see core.h)
+    clkWakeSyncCycles += skip; clkWakeSyncs++;
+    return skip;
+}
+
 uint64_t OOOCore::syncToLock(uint64_t t) {   /* 1.12.18 (model the lock word), see core.h */
     if (t <= curCycle) return 0;
     const uint64_t skip = t - curCycle;
     advance(t);   // as addDelay: the whole core moves in lockstep; a jump past phaseEndCycle takes the barrier at the next BBL
+    cRec.pimidAddWait(skip);   // 1.12.21: waiting, not unhalted (as the ALU PE)
     lockSyncCycles += skip; lockSyncs++;
     return skip;
 }

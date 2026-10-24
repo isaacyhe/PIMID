@@ -296,6 +296,16 @@ class InOrderCore : public Core {
             if (t <= curCycle) return 0;
             const uint64_t skip = t - curCycle;
             curCycle = t; lockSyncCycles += skip; lockSyncs++;
+            cRec.pimidAddWait(skip);   // 1.12.21: waiting, not unhalted (as the ALU PE)
+            return skip;
+        }
+        /* 1.12.21 (user ruling 2026-10-24): the waker's release, as syncToLock
+         * (the issue cursor; the pipeline was drained at join). */
+        uint64_t syncToWaker(uint64_t t) override {
+            if (t <= curCycle) return 0;
+            const uint64_t skip = t - curCycle;
+            curCycle = t; clkWakeSyncCycles += skip; clkWakeSyncs++;
+            cRec.pimidAddWait(skip);   // waiting, not unhalted
             return skip;
         }
 
