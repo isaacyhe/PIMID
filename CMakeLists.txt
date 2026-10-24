@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.12.25 LANGUAGES CXX)
+project(PIMID VERSION 1.12.26 LANGUAGES CXX)
 
 # The reported version is taken FROM the project version, so the two cannot
 # drift apart again (see release 1.10.2).
@@ -132,9 +132,7 @@ set(PIMID_SOURCES
     # Common
     src/common/simulation_engine.cpp
     src/common/event_queue.cpp
-    src/common/config_parser.cpp
     src/config/config_parser.cpp
-    src/config/config_manager.cpp
     src/config/config_schema.cpp
     src/config/config_validator.cpp
     src/config/network_config_parser.cpp
@@ -176,7 +174,7 @@ set(PIMID_SOURCES
     # createHBM2, createHBM3 or DRAMArchitecture::printSummary referenced
     # outside those two files. Everything live goes through
     # src/memory/dram_architecture_v2.h's create*_Verified() creators
-    # (dram_model.cpp, ramulator_wrapper.cpp, pe_placement.h).
+    # (dram_model.cpp, ramulator_wrapper.cpp).
     #
     # It was deleted rather than repaired because it carried the same drifted
     # HBM access-time literals that 1.11.57 had just corrected in the v2
@@ -210,16 +208,8 @@ set(PIMID_SOURCES
     # Model registry - NEW PATH
     src/model_registry.cpp
 
-    # Address translation
-    src/address_translation/pe_placement.cpp
-    src/address_translation/address_translator.cpp
-    src/address_translation/pe_statistics.cpp
-
-    # Scheduler
-    src/scheduler/scheduler.cpp
-    src/scheduler/nearest_scheduler.cpp
-    src/scheduler/roundrobin_scheduler.cpp
-    src/scheduler/loadbalanced_scheduler.cpp
+    # 1.12.26: address translation (PEPlacementManager, AddressTranslator, pe_statistics) and the four PE
+    # schedulers are removed: no simulator code ever constructed them (user ruling 2026-10-24).
 
     # Instrumentation (PIMID API for workloads)
     src/instrumentation/pimid_api.cpp
@@ -230,7 +220,7 @@ set(PIMID_SOURCES
 set(PIMID_PLUGIN_SOURCES
     src/plugin/plugin_interface.cpp
     src/plugin/memory_model_plugin.cpp
-    src/plugin/scheduler_plugin.cpp
+    # 1.12.26: scheduler_plugin.cpp removed with the PE schedulers (its createScheduler exports are gone)
 )
 
 # PIMID core library

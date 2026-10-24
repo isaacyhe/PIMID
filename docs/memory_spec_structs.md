@@ -36,7 +36,6 @@ HBM but not on commodity DDR.
 | `sttmram_architecture.h` | STT-MRAM specs with read/write asymmetry |
 | `pcm_architecture.h` | PCM (phase-change memory) specs |
 | `reram_architecture.h` | ReRAM/memristor specs with analog-compute support |
-| `dram_config_example.json` | Example config for hypothetical-architecture studies |
 
 1.11.59 (C016-class): `dram_architecture.h` / `.cpp` -- the legacy v1
 `DRAMArchitecture` object listed here until now -- were DELETED. They were
@@ -92,26 +91,8 @@ inner-bank datapath hidden inside tCAS (column decoder, mux, output driver,
 H-tree segments, global I/O) -- e.g. ~6.65 ns total for DDR4 vs ~3.05 ns for
 HBM2, because TSVs shorten internal paths.
 
-**PE bus constraints (`pe_bus_constraints`)** -- the data bus a PE actually
-sees at each placement level (subarray / bank / chip / rank / logic die):
-`data_bus_width_bits`, `max_bandwidth_gbps`, `has_dedicated_bus`.
-
 **Energy (`DRAMArchitectureV2::energy`)** -- data-movement energy per byte at
 subarray / bank / chip / rank, with an `energy_source` citation string.
-
-## Hypothetical scalability studies
-
-The `port_width_scale` knob answers questions like "at what internal port
-width does bank-level PIM become viable on DDR?":
-
-```cpp
-auto arch = createDDR4_2400_Verified(4.0);   // 4x wider internal ports
-arch->energy_scale = 1.0 + 3.0 * 0.3;        // energy grows sub-linearly
-```
-
-Observed in our studies: DDR needs roughly 8x wider bank ports before
-bank-level PIM matches rank-level PIM, and energy grows sub-linearly with
-port width (4x width -> ~1.5x energy).
 
 ## Specification sources
 

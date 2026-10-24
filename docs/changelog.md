@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.26 -- code no simulator path ever reached is removed
+
+After a history and reachability investigation: none of this was ever constructed by the simulator (the `pimid`
+binary carries none of its symbols; the only intended consumer, the split-process DeviceEngine, held it as a
+commented-out line and was archived in May 2026).
+
+- **Removed:** the PE bus-constraint chain (`DRAMArchitectureV2::pe_bus_constraints`, `port_width_scale`,
+  `energy_scale`, the seven `create*_Verified(double port_width_scale)` overloads, `createPEBusConstraintsFromDRAM`);
+  `PEPlacementManager`, `AddressTranslator`, `pe_statistics`, the four PE schedulers (`PEScheduler`, nearest,
+  round-robin, load-balanced), `ConfigManager`, the unused `common/config_parser` (pimid::ConfigParser; the live
+  parser is `config/config_parser`), the scheduler plugins, and the tests and script lines that only exercised them.
+- **Interface change:** `libpimid_plugin.so` no longer exports `CustomSchedulerPlugin`, `DataLocalitySchedulerPlugin`
+  or `EnergyAwareSchedulerPlugin` (`createScheduler(pimid::PEPlacementManager*)`); `libpimid_lib.a` and the installed
+  headers lose the removed classes. `PluginType::SCHEDULER` stays in `plugin_interface.h` (no ABI renumbering).
+- Data impact: none; simulator outputs are bit-identical.
+
 ## 1.12.25 -- DDR3 is one 4 Gb die at 1.5 V; DDR3L and the JEDEC tRFC are selectable
 
 - **DDR3 default: one consistent 4 Gb x8 die at 1.5 V** (user rulings 2026-10-24). The record priced Micron's 4 Gb

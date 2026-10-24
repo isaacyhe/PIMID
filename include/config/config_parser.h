@@ -15,7 +15,7 @@ namespace config {
 
 /**
  * Generic YAML configuration parser
- * Parses YAML files into flat key-value map for ConfigManager
+ * Parses YAML files into a flat key-value map (1.12.26: ConfigManager, its former consumer, is removed)
  */
 class ConfigParser {
 public:

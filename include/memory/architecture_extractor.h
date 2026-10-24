@@ -1396,39 +1396,6 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
     arch->energy.rank_energy_pJ = ramulator_wrapper.getRankEnergyPerByte();
     arch->energy.energy_source = "Ramulator energy model extraction";
 
-    // ===== PE BUS CONSTRAINTS (derived from extracted values) =====
-
-    // Subarray-level
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 8192 * 8;  // Row buffer
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps =
-        ramulator_wrapper.getSubarrayBandwidth();
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 8192;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-
-    // Bank-level
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = bank_bits;
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps =
-        ramulator_wrapper.getBankBandwidth();
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-
-    // Chip-level
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = chip_io;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps =
-        ramulator_wrapper.getChipIOBandwidth();
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-
-    // Rank-level
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = rank_bits;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps =
-        ramulator_wrapper.getRankBandwidth();
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-
-    // Logic die (for HBM)
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 1024;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps =
-        ramulator_wrapper.getChannelBandwidth();
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = true;
-
     return arch;
 }
 

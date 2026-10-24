@@ -298,50 +298,7 @@ public:
         std::string energy_source;    // Citation
     } energy;
 
-    // PE Bus Constraints (for PE placement at different hierarchy levels)
-    // These values define the data bus characteristics when PEs are placed
-    // at different levels of the memory hierarchy (subarray, bank, chip, etc.)
-    struct {
-        // Subarray-level PE constraints
-        struct {
-            uint64_t data_bus_width_bits;
-            double max_bandwidth_gbps;
-            uint64_t row_buffer_size_bytes;
-            bool has_dedicated_bus;
-        } subarray_level;
 
-        // Bank-level PE constraints
-        struct {
-            uint64_t data_bus_width_bits;
-            double max_bandwidth_gbps;
-            bool has_dedicated_bus;
-        } bank_level;
-
-        // Chip-level PE constraints
-        struct {
-            uint64_t data_bus_width_bits;
-            double max_bandwidth_gbps;
-            bool has_dedicated_bus;
-        } chip_level;
-
-        // Rank-level PE constraints
-        struct {
-            uint64_t data_bus_width_bits;
-            double max_bandwidth_gbps;
-            bool has_dedicated_bus;
-        } rank_level;
-
-        // Logic die level (for HBM/HMC)
-        struct {
-            uint64_t data_bus_width_bits;
-            double max_bandwidth_gbps;
-            bool has_dedicated_bus;
-        } logic_die_level;
-    } pe_bus_constraints;
-
-    // Scalability (for hypothetical studies)
-    double port_width_scale = 1.0;
-    double energy_scale = 1.0;
 
     // Constructor
     DRAMArchitectureV2(const std::string& name, const std::string& tech)
@@ -610,47 +567,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
         "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Approximate values, order-of-magnitude correct.";
 
-    // ===== PE BUS CONSTRAINTS (for PE placement) =====
-
-    // Subarray-level PEs: Direct row buffer access
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 8192 * 8;  // 8KB row buffer
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 8192;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-
-    // Bank-level PEs: Share bank I/O bus
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 64;  // 64-bit bank bus
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 25.0;  // DDR4-2400 per-bank BW
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-
-    // Chip-level PEs: Share chip-level interconnect
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 25.0;
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-
-    // Rank-level PEs: Share rank-level bus
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 25.0;
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-
-    // Logic die level (not applicable for DDR4, but set defaults)
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 1024;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 256.0;
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = true;
-
-    return arch;
-}
-
-/**
- * Create DDR4-2400 with configurable port width scaling
- *
- * @param port_width_scale Scaling factor for all port widths (default 1.0)
- *                         2.0 = 2x wider buses, 0.5 = half-width buses
- * @return Configured DDR4-2400 architecture with scaled port widths
- */
-inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified(double port_width_scale) {
-    auto arch = createDDR4_2400_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
@@ -819,34 +735,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
         "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Order-of-magnitude only; the priced energy path uses the IDD rows.";
 
-    // ===== PE BUS CONSTRAINTS =====
-    // Rank bandwidth is DERIVED, not quoted: 1600 MT/s x 8 B = 12.8 GB/s.
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 16384;  // the 2 KB row
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 2048;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-    /* DDR3 HAS NO LOGIC DIE. The field exists for the HBM stacks; mirroring
-     * the rank rung here means a configuration that places elements at
-     * LOGIC_DIE on DDR3 is not silently handed an HBM-class 1024-bit bus. */
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = false;
-
-    return arch;
-}
-
-inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified(double port_width_scale) {
-    auto arch = createDDR3_1600_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
@@ -1000,33 +888,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
         "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Order-of-magnitude only; the priced energy path uses the IDD rows.";
 
-    // ===== PE BUS CONSTRAINTS =====
-    // Channel bandwidth is DERIVED: 6400 MT/s x 16 bits / 8 = 12.8 GB/s.
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 16384;
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 2048;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-    /* LPDDR5 HAS NO LOGIC DIE; mirror the channel rung so a LOGIC_DIE
-     * placement is not silently handed an HBM-class bus. */
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 12.8;
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = false;
-
-    return arch;
-}
-
-inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified(double port_width_scale) {
-    auto arch = createLPDDR5_6400_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
@@ -1175,32 +1036,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
         "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Order-of-magnitude only; the priced energy path uses the IDD rows.";
 
-    // ===== PE BUS CONSTRAINTS =====
-    // Per-channel bandwidth is DERIVED: 14000 MT/s x 16 bits / 8 = 28 GB/s.
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 16384;
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 10.0;
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 2048;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 28.0;
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 28.0;
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 28.0;
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-    /* GDDR6 HAS NO LOGIC DIE; mirror the channel rung. */
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 16;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 28.0;
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = false;
-
-    return arch;
-}
-
-inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified(double port_width_scale) {
-    auto arch = createGDDR6_14000_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
@@ -1439,47 +1274,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
         "INFERRED from HBM architecture papers. "
         "TSV reduces energy vs long wire routing in DDR4.";
 
-    // ===== PE BUS CONSTRAINTS (for PE placement) =====
-
-    // Subarray-level PEs: Direct row buffer access (similar to DDR4)
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 8192 * 8;  // 8KB row buffer
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 15.0;  // Slightly higher than DDR4
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 8192;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-
-    // Bank-level PEs: Share bank I/O bus (narrower than DDR4 per bank)
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 32;  // HBM has narrower per-bank paths
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 32.0;  // HBM2 per-channel BW / banks
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-
-    // Chip-level PEs: Share chip-level interconnect (via TSV)
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 128;  // Per-channel width
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 128.0;  // HBM2 per-channel (256 GB/s / 2 stacks)
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-
-    // Rank-level PEs: HBM uses stacks, not traditional ranks
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 1024;  // 8 channels x 128 bits
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 256.0;  // Full HBM2 bandwidth
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-
-    // Logic die level: Wide high-bandwidth interface (HBM advantage!)
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 1024;  // Full interface
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 256.0;  // HBM2 peak BW
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = true;
-
-    return arch;
-}
-
-/**
- * Create HBM2 with configurable port width scaling
- *
- * @param port_width_scale Scaling factor for all port widths (default 1.0)
- *                         2.0 = 2x wider buses, 0.5 = half-width buses
- * @return Configured HBM2 architecture with scaled port widths
- */
-inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified(double port_width_scale) {
-    auto arch = createHBM2_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
@@ -1674,40 +1468,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->energy.energy_source =
         "INFERRED from DDR4 with voltage scaling (1.1V vs 1.2V = ~15% lower energy)";
 
-    // ===== PE BUS CONSTRAINTS (for PE placement) =====
-
-    // Subarray-level PEs
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 8192 * 8;
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 12.0;
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 8192;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-
-    // Bank-level PEs
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 38.4;  // DDR5-4800 per-bank BW
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-
-    // Chip-level PEs
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 38.4;
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-
-    // Rank-level PEs
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 38.4;
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-
-    // Logic die level (not applicable for DDR5)
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 1024;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 256.0;
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = true;
-
-    return arch;
-}
-
-inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified(double port_width_scale) {
-    auto arch = createDDR5_4800_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
@@ -1903,40 +1663,6 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->energy.energy_source =
         "INFERRED from HBM2 with process/voltage scaling for advanced nodes";
 
-    // ===== PE BUS CONSTRAINTS (for PE placement) =====
-
-    // Subarray-level PEs
-    arch->pe_bus_constraints.subarray_level.data_bus_width_bits = 8192 * 8;
-    arch->pe_bus_constraints.subarray_level.max_bandwidth_gbps = 20.0;
-    arch->pe_bus_constraints.subarray_level.row_buffer_size_bytes = 8192;
-    arch->pe_bus_constraints.subarray_level.has_dedicated_bus = true;
-
-    // Bank-level PEs
-    arch->pe_bus_constraints.bank_level.data_bus_width_bits = 64;
-    arch->pe_bus_constraints.bank_level.max_bandwidth_gbps = 64.0;
-    arch->pe_bus_constraints.bank_level.has_dedicated_bus = false;
-
-    // Chip-level PEs
-    arch->pe_bus_constraints.chip_level.data_bus_width_bits = 128;
-    arch->pe_bus_constraints.chip_level.max_bandwidth_gbps = 256.0;
-    arch->pe_bus_constraints.chip_level.has_dedicated_bus = false;
-
-    // Rank-level PEs (stack level for HBM)
-    arch->pe_bus_constraints.rank_level.data_bus_width_bits = 1024;
-    arch->pe_bus_constraints.rank_level.max_bandwidth_gbps = 512.0;  // HBM3 peak
-    arch->pe_bus_constraints.rank_level.has_dedicated_bus = false;
-
-    // Logic die level (HBM3 advantage!)
-    arch->pe_bus_constraints.logic_die_level.data_bus_width_bits = 1024;
-    arch->pe_bus_constraints.logic_die_level.max_bandwidth_gbps = 512.0;
-    arch->pe_bus_constraints.logic_die_level.has_dedicated_bus = true;
-
-    return arch;
-}
-
-inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified(double port_width_scale) {
-    auto arch = createHBM3_Verified();
-    arch->port_width_scale = port_width_scale;
     return arch;
 }
 
