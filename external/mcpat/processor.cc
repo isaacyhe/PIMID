@@ -459,7 +459,10 @@ Processor::Processor(ParseXML *XML_interface)
 			  double link_len_scale = (XML->sys.dram_periph_family == 1 &&
 			                           XML->sys.NoC[i].on_dram_die)
 			      ? sqrt(XML->sys.dram_periph_area) : 1.0;
-			  if (XML->sys.NoC[i].link_span_area_mm2 > 0 && XML->sys.NoC[i].link_parent_regions > 0)
+			  if (XML->sys.NoC[i].link_span_processor)   /* 1.12.23: the processor's own area, um^2 */
+				  nocs[i]->init_link_bus(0.5 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage
+				                                    / std::max(1, XML->sys.NoC[i].link_parent_regions)));
+			  else if (XML->sys.NoC[i].link_span_area_mm2 > 0 && XML->sys.NoC[i].link_parent_regions > 0)
 				  nocs[i]->init_link_bus(0.5 * sqrt(XML->sys.NoC[i].link_span_area_mm2 * 1e6
 				                                    / XML->sys.NoC[i].link_parent_regions));   // 1.12.18, um
 			  else

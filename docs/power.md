@@ -170,6 +170,17 @@ component's clock entry, so it overlaps no component tree, and it is its
 own ledger entry per die (`device.<die>.clock_trunk`,
 `<host>.die.clock_trunk`).
 
+PIMID 1.12.19, host on-chip network (`power.models.host_noc`,
+`system.hosts[].noc.topology`): the host CPU's uncore fabric is priced as
+the topology the timing model ran -- by default the published Nehalem-EX
+ring (Kottapalli and Baxter, Hot Chips 21, 2009: two counter-rotating
+rings, stops shared by core/cache, 32 B data ring per direction, one stop
+per clock), optionally the crossbar or a shared bus -- from the data
+messages and hops the timing model measured; flit 256 b. It replaces the
+leakage-only placeholder that `<host>.noc` carried through 1.12.18; control
+messages are not priced on the ring and the crossbar (a lower bound); a
+1-core host has no fabric.
+
 PIMID 1.12.18, per-die process (`system.devices[].process`,
 `power.models.per_die_process`): each component is priced at the die it
 sits on -- the McPAT fork gives every component the InputParameter

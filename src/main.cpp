@@ -1043,6 +1043,9 @@ struct ZSimParsedOutput {
     /* 1.12.18 (user ruling R1 2026-10-24): replayed requests stamped after
      * the ROI end -- not priced, not in any count above; reported apart. */
     uint64_t out_rd = 0, out_wr = 0, out_acts = 0, out_hrd = 0, out_hwr = 0, out_hacts = 0;
+    /* 1.12.23: the host fabric (zsim hostFabric group, ROI-windowed) */
+    uint64_t host_fab_data_msgs = 0, host_fab_data_hops = 0, host_fab_req_msgs = 0, host_fab_bus_wait = 0;
+    bool host_fab_present = false;
     /* 1.12.18: the PE memory interfaces' rd/wr
      * (pe-mi-N groups only: the counts the DRAM energy is priced on) and the
      * device replay's reads/writes (dramReplay group), compared after the
@@ -1128,6 +1131,7 @@ struct ZSimParsedOutput {
         uint64_t l1d_fhGETS = 0, l1d_hGETS = 0, l1d_mGETS = 0;
         uint64_t l1d_fhGETX = 0, l1d_hGETX = 0, l1d_mGETXIM = 0;
         uint64_t l2_hGETS = 0, l2_mGETS = 0, l2_hGETX = 0, l2_mGETXIM = 0;
+        uint64_t l2_PUTX = 0;   // 1.12.23: this node's L2 dirty writebacks (host NoC data traffic)
         uint64_t l3_hGETS = 0, l3_mGETS = 0, l3_hGETX = 0, l3_mGETXIM = 0;
         /* 1.12.18: coherence events each cache RECEIVED from its parent's
          * directory (zsim MESIBottomCC::processInval, coherence_ctrls.cpp:
@@ -1614,6 +1618,11 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
         // Extract scalars within scope
         if (!is_aggregate) {
             uint64_t val = extractScalarValue(line);
+            /* 1.12.23: the host fabric's counters (unique names, any scope) */
+            if (key == "hostFabDataMsgs") { out.host_fab_data_msgs += val; out.host_fab_present = true; continue; }
+            if (key == "hostFabDataHops") { out.host_fab_data_hops += val; continue; }
+            if (key == "hostFabReqMsgs")  { out.host_fab_req_msgs += val; continue; }
+            if (key == "hostFabBusWait")  { out.host_fab_bus_wait += val; continue; }
 
             /* 1.9.29: the group whose counters this line belongs to, or null when
              * the dump is a single-node (device-scope) one, where only the
@@ -1823,7 +1832,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "mGETXIM") { out.l2_mGETXIM += val; if (cgrp) cgrp->l2_mGETXIM += val; }
                 else if (key == "mGETXSM") { out.l2_mGETXIM += val; if (cgrp) cgrp->l2_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
                 else if (key == "PUTS") out.l2_PUTS += val;
-                else if (key == "PUTX") out.l2_PUTX += val;
+                else if (key == "PUTX") { out.l2_PUTX += val; if (cgrp) cgrp->l2_PUTX += val; }   // 1.12.23: per node too
                 else if (key == "INV")  { out.l2_INV  += val; if (cgrp) cgrp->l2_INV  += val; }   // 1.12.18
                 else if (key == "INVX") { out.l2_INVX += val; if (cgrp) cgrp->l2_INVX += val; }
                 else if (key == "FWD")  { out.l2_FWD  += val; if (cgrp) cgrp->l2_FWD  += val; }
@@ -2223,6 +2232,7 @@ static const char* kSchemaPaths[] = {
     "power.models.tlb_published_geometry", "power.models.iddq_write_termination_once",   // 1.12.18
     "power.models.host_mc_phy_static",   // 1.12.18: (user ruling: system-scope host MC PHY static)
     "power.models.idle_halt", "power.models.per_die_process", "power.models.clock_die_trunk",   // PIMID 1.12.18 (rulings 2026-10-23)
+    "power.models.host_noc",   // 1.12.23: host on-chip network power
     "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
     "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
@@ -2632,6 +2642,11 @@ struct UnifiedConfig {
     bool pm_idle_halt = true;               // power.models.idle_halt
     bool pm_per_die_process = true;         // power.models.per_die_process
     bool pm_clock_die_trunk = true;         // power.models.clock_die_trunk
+    /* 1.12.23: the host CPU's on-chip network (cores, L3 slices and memory
+     * controllers on one crossbar, as the timing model's host fabric) is
+     * priced by McPAT from the measured L2/L3/MC data traffic. false = the
+     * pre-1.12.23 leakage-only placeholder. */
+    bool pm_host_noc = true;                // power.models.host_noc
     /* PIMID 1.12.18 (per-die process): system.devices[].process, as given.
      * 0 / -1 / empty = not given (the die keeps today's pricing). */
     bool proc_given = false;
@@ -3344,9 +3359,10 @@ struct UnifiedConfig {
          * memory is priced on its own: its idle latency, its per-channel bandwidth and its array energy. */
         int         host_ddr5_speed_grade = 0;
 
-        // Host NoC config (HOST with num_cores>1): analytic crossbar fabric.
-        // 1-core hosts have no fabric (crossbar degenerates at a single core).
-        std::string host_noc_topology = "crossbar";
+        // Host NoC config (HOST with num_cores>1). 1.12.23: ring (default, the
+        // published Nehalem-EX ring), crossbar or bus -- timing and power alike.
+        // 1-core hosts have no fabric.
+        std::string host_noc_topology = "ring";
         std::string host_noc_model = "analytical";
         int host_noc_hop_cycles = 4;   // core->LLC/MC one-hop latency (core clock)
 
@@ -4125,6 +4141,12 @@ static int arrayChannelLinkTiming(const std::string& tech, int banks, int node_n
  * timed by Ramulator (the generated YAML describes one channel), one
  * otherwise. Every reporting site and McPAT (H32: number_mcs = the built
  * count) ask here. */
+static int hostL3Slices(const UnifiedConfig::SystemNode& n) {   // 1.12.19
+    if (!(n.enable_l3 && n.l3_kb > 0)) return 1;
+    const ReplicatedLLC rl = replicatedLLCFor(n.l3_kb, "host L3");
+    if (rl.slices > 1) return rl.slices;
+    return std::max(1, resolveCacheBanks(n.l3_kb, n.l3_banks, "l3", "host L3"));
+}
 static int hostMemControllerCount(const std::string& tech, const UnifiedConfig& config) {
     if (config.zsim_mem_controller_type != "ramulator") return 1;
     const std::string t = canonicalMemTech(tech);
@@ -5507,7 +5529,7 @@ static void reportStatedConstants(const UnifiedConfig& config) {
         rows.push_back({"host fabric hop",
                         std::to_string(hop_cy) + " cycles (core clock)",
                         "hosts[].noc.hop_cycles",
-                        "the host core->LLC/MC hop"});
+                        "the host core->LLC/MC hop (crossbar topology only; 1.12.23: the ring takes 1 cycle per stop, the bus its beats)"});
         rows.push_back({"system-network latency",
                         std::to_string(config.system_network.latency_cycles) + " cycles",
                         "system.network.latency_cycles",
@@ -15521,7 +15543,143 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                               << std::endl;
                 }
             }
-            if (!noc_from_measurement)
+            /* 1.12.23: THE HOST CPU'S ON-CHIP NETWORK, priced (plan item B3; user
+             * ruling 2026-10-24: the published ring by default, the crossbar and a
+             * bus as options). Until 1.12.18 a host node took the leakage-only
+             * placeholder below (a 1x1 router and a bus, zero accesses; ledger
+             * host.noc), which was not the uncore fabric. The topology is the one the
+             * timing model ran (system.hosts[].noc.topology), and the activity is the
+             * one it MEASURED (zsim hostFabric, ROI): data messages (each moves one
+             * cache line: GET responses and dirty writebacks, L2 <-> L3 and LLC <->
+             * memory controller) and their hops.
+             *   ring (default): Nehalem-EX (Kottapalli and Baxter, Hot Chips 21, 2009,
+             *     "On-die network: Ring Interconnect": two counter-rotating rings,
+             *     ring stops shared by core/cache, data ring 32 bytes per direction,
+             *     one stop per clock). One stop per core and per host memory
+             *     controller; each stop a 3-port router (two directions + local),
+             *     traversed (hops + 1) times per flit; the neighbour links, two per
+             *     stop (one per direction), traversed hops times per flit. Their
+             *     length is McPAT's own 1-D derivation over the host die: the ring's
+             *     physical length is NO PUBLISHED SOURCE FOUND.
+             *   crossbar: one router, a port per core, L3 slice and memory
+             *     controller, once per flit; one port wire per agent each way over
+             *     the processor's area, twice per flit.
+             *   bus: one shared data bus (256 b) carrying every line, and its
+             *     command/address bus carrying one command per access, 48 b (the
+             *     physical address width the cores are described with; a modelling
+             *     choice, no published width).
+             * Flit 256 b: the Nehalem-EX data ring (Westmere-EP's own width: NO
+             * PUBLISHED SOURCE FOUND). Control messages (requests, acknowledgements,
+             * invalidations, snoops) are NOT priced on the ring and the crossbar:
+             * their networks' widths are not published (a lower bound). Buffering:
+             * NO PUBLISHED SOURCE FOUND (the ring wins arbitration; one entry per
+             * port, the least McPAT builds). Clock: the host core clock; McPAT's
+             * clock network applies (global part every powered cycle of the window,
+             * local part gated by the measured duty; the uncore is not halted with
+             * idle cores). */
+            bool host_noc_priced = false;
+            if (node.role == UnifiedConfig::SystemNode::HOST && config.pm_host_noc) {
+                host_noc_priced = true;
+                if (node.num_cores <= 1) {
+                    std::cout << "  [NoC] " << node.name << ": single-core host: the timing model has no host"
+                                 " fabric (core -> caches -> MC direct), so no host NoC is priced"
+                                 " (power.models.host_noc) [1.12.19]" << std::endl;
+                } else {
+                    using NoCLevel = pimid::McPATWrapper::NoCLevelConfig;
+                    const std::string topo = node.host_noc_topology;
+                    const bool l3 = node.enable_l3 && node.l3_kb > 0;
+                    const int l3_ports = l3 ? hostL3Slices(node) : 0;
+                    const int mcs = std::max(1, hostMemControllerCount(node.memory_tech.empty() ? config.host_memory_tech
+                                                                                                : node.memory_tech, config));
+                    const int flit_bits = 256;
+                    const int line_bits = std::max(8, config.cache_line_size) * 8;
+                    const uint64_t fpm = static_cast<uint64_t>((line_bits + flit_bits - 1) / flit_bits);
+                    const uint64_t msgs = zsim_stats.host_fab_data_msgs;
+                    const uint64_t hops = zsim_stats.host_fab_data_hops;
+                    const uint64_t reqs = zsim_stats.host_fab_req_msgs;
+                    const uint64_t flits = msgs * fpm;
+                    if (!zsim_stats.host_fab_present)
+                        std::cerr << "  [NoC] " << node.name << ": WARNING the stats dump carries no hostFabric counters;"
+                                     " the host " << topo << " is priced with zero activity" << std::endl;
+                    double cyc = (wall_seconds > 0.0 && node.frequency_mhz > 0)
+                               ? wall_seconds * node.frequency_mhz * 1e6
+                               : static_cast<double>(zsim_stats.host_wall_cycles);
+                    if (cyc < 1.0) cyc = 1.0;
+                    NoCLevel r;
+                    r.type = 1; r.vertical_nodes = 1;
+                    r.flit_bits = flit_bits;
+                    r.clock_mhz = node.frequency_mhz;
+                    r.chip_coverage = 1.0;
+                    r.on_dram_die = 0;
+                    r.vcs_per_port = 1;
+                    r.vc_buffer_entries = 1;
+                    r.routers_present = 1; r.has_global_link = 0;
+                    std::vector<NoCLevel> lv;
+                    std::ostringstream what;
+                    if (topo == "bus") {
+                        NoCLevel db = r;
+                        db.name = "host_bus_data"; db.type = 0;
+                        db.horizontal_nodes = 1; db.input_ports = 1; db.output_ports = 1;
+                        db.total_accesses = flits;
+                        db.duty_cycle = static_cast<double>(flits) / cyc;
+                        NoCLevel ab = db;
+                        ab.name = "host_bus_cmd"; ab.flit_bits = 48;
+                        ab.total_accesses = reqs;
+                        ab.duty_cycle = static_cast<double>(reqs) / cyc;
+                        lv.push_back(db); lv.push_back(ab);
+                        what << "shared bus: data " << flit_bits << " b, " << flits << " beats; command/address 48 b, "
+                             << reqs << " commands; bus wait " << zsim_stats.host_fab_bus_wait << " cycles";
+                    } else if (topo == "crossbar") {
+                        const int ports = node.num_cores + l3_ports + mcs;
+                        NoCLevel xb = r;
+                        xb.name = "host_xbar";
+                        xb.horizontal_nodes = 1; xb.input_ports = ports; xb.output_ports = ports;
+                        xb.total_accesses = flits;
+                        xb.duty_cycle = static_cast<double>(flits) / cyc;
+                        NoCLevel lk = xb;
+                        lk.name = "host_xbar_links";
+                        lk.routers_present = 0; lk.has_global_link = 1;
+                        lk.horizontal_nodes = ports; lk.input_ports = 2; lk.output_ports = 2;
+                        lk.link_span_processor = 1; lk.link_parent_regions = 1;
+                        lk.link_traversals = static_cast<int64_t>(2 * flits);
+                        lk.total_accesses = 2 * flits;
+                        lk.duty_cycle = static_cast<double>(2 * flits) / (cyc * ports);
+                        lv.push_back(xb); lv.push_back(lk);
+                        what << "crossbar: " << ports << " ports (" << node.num_cores << " cores + " << l3_ports
+                             << " L3 slices + " << mcs << " memory controllers), " << flits << " flit traversals";
+                    } else {   // ring
+                        const int stops = node.num_cores + mcs;
+                        NoCLevel rs = r;
+                        rs.name = "host_ring_stops";
+                        rs.horizontal_nodes = stops; rs.input_ports = 3; rs.output_ports = 3;
+                        rs.total_accesses = (hops + msgs) * fpm;
+                        rs.duty_cycle = static_cast<double>(rs.total_accesses) / (cyc * stops);
+                        NoCLevel rl = rs;
+                        rl.name = "host_ring_links";
+                        rl.routers_present = 0; rl.has_global_link = 1;
+                        rl.input_ports = 2; rl.output_ports = 2;   // one link per direction per stop
+                        rl.link_traversals = static_cast<int64_t>(hops * fpm);
+                        rl.total_accesses = hops * fpm;
+                        rl.duty_cycle = static_cast<double>(hops * fpm) / (cyc * stops);
+                        lv.push_back(rs); lv.push_back(rl);
+                        what << "ring: " << stops << " stops (" << node.num_cores << " core/L3-slice stops + " << mcs
+                             << " memory-controller stops), 3-port stops, 2 links per stop; mean "
+                             << (msgs ? static_cast<double>(hops) / static_cast<double>(msgs) : 0.0)
+                             << " hops per data message (measured); " << rs.total_accesses << " stop traversals, "
+                             << rl.link_traversals << " link traversals";
+                    }
+                    mcpat.setNoCLevels(lv);
+                    std::cout << "  [NoC] " << node.name << ": host " << topo << " priced [1.12.19]: " << what.str()
+                              << "; " << msgs << " data messages x " << fpm << " flits of " << flit_bits
+                              << " b (Nehalem-EX data ring 32 B/direction, Hot Chips 21; Westmere-EP width: NO PUBLISHED"
+                                 " SOURCE FOUND) = " << (flits * static_cast<uint64_t>(flit_bits)) << " data bits over "
+                              << static_cast<uint64_t>(cyc) << " cycles at " << node.frequency_mhz << " MHz; "
+                              << (topo == "bus" ? "commands priced on the command bus"
+                                                : "control messages NOT priced (protocol-network widths unpublished: a lower bound)")
+                              << std::endl;
+                }
+            }
+            if (!noc_from_measurement && !host_noc_priced)
             {
                 using NoCLevel = pimid::McPATWrapper::NoCLevelConfig;
                 std::vector<NoCLevel> two_levels;
@@ -18168,6 +18326,14 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             cfg << "        model = \"" << host_node->host_noc_model << "\";\n";
             cfg << "        hopCycles = "
                 << (host_fabric ? host_node->host_noc_hop_cycles : 0) << ";\n";
+            /* 1.12.23: the fabric's structure (host_fabric.h): its stops are the
+             * cores and the host memory controllers; the L3 slices are spread over
+             * the core stops; a line moves in 256-b beats (the Nehalem-EX data ring). */
+            const bool hl3 = host_node->enable_l3 && host_node->l3_kb > 0;
+            cfg << "        cores = " << std::max(1, host_node->num_cores) << ";\n";
+            cfg << "        hasL3 = " << (hl3 ? 1 : 0) << ";\n";
+            cfg << "        l3Slices = " << (hl3 ? hostL3Slices(*host_node) : 1) << ";\n";
+            cfg << "        dataBeats = " << std::max(1, (std::max(8, config.cache_line_size) * 8 + 255) / 256) << ";\n";
         }
         cfg << "    };\n";
     }
@@ -20812,6 +20978,7 @@ int main(int argc, char** argv) {
                 config.pm_idle_halt = yamlBool(pmn["idle_halt"], true, "power.models.idle_halt");
                 config.pm_per_die_process = yamlBool(pmn["per_die_process"], true, "power.models.per_die_process");
                 config.pm_clock_die_trunk = yamlBool(pmn["clock_die_trunk"], true, "power.models.clock_die_trunk");
+                config.pm_host_noc = yamlBool(pmn["host_noc"], true, "power.models.host_noc");   // 1.12.19
             }
             /* 1.12.18: the backends read these switches (the McPAT wrapper and the
              * DRAM energy model); set once, before any model is built. */
@@ -21494,17 +21661,23 @@ int main(int argc, char** argv) {
                                 yamlString(h["noc"]["topology"], node.host_noc_topology, hpath + ".noc.topology");
                             node.host_noc_model =
                                 yamlString(h["noc"]["model"], node.host_noc_model, hpath + ".noc.model");
-                            {   /* 1.11.106 (ruling R106-2 (b)): the host fabric is modelled as the analytic crossbar
-                                 * (one uniform hop + the host MC queue); any other word is accepted with this warning
-                                 * (this build has no host NoC model). */
+                            {   /* 1.12.23: the host fabric has three models, timing and power alike: ring (default),
+                                 * crossbar, bus. Any other topology word is refused (1.11.106 accepted it with a
+                                 * WARNING and ran the crossbar). The model is analytical: no host Garnet is built; any
+                                 * other word is accepted with a WARNING and runs the analytical model. */
                                 std::string ht = node.host_noc_topology, hm = node.host_noc_model;
                                 for (auto& c : ht) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                                 for (auto& c : hm) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                                if (ht != "crossbar" || hm != "analytical")
-                                    std::cerr << "[config] WARNING: " << hpath << ".noc topology '" << node.host_noc_topology
-                                              << "' / model '" << node.host_noc_model << "' is not modelled: the host fabric runs as the "
-                                                 "analytic crossbar (one uniform hop plus the host memory controller's queue). A host NoC "
-                                                 "model is not part of this build." << std::endl;
+                                if (ht != "ring" && ht != "crossbar" && ht != "bus") {
+                                    std::cerr << "[config] ERROR: " << hpath << ".noc.topology '" << node.host_noc_topology
+                                              << "' is not a host fabric: ring (default; the Nehalem-EX ring), crossbar or bus." << std::endl;
+                                    std::exit(1);
+                                }
+                                node.host_noc_topology = ht;
+                                if (hm != "analytical")
+                                    std::cerr << "[config] WARNING: " << hpath << ".noc.model '" << node.host_noc_model
+                                              << "' is not modelled: the host " << ht << " runs its analytical model (no host"
+                                                 " Garnet instance is built)." << std::endl;
                             }
                             node.host_noc_hop_cycles =
                                 yamlInt(h["noc"]["hop_cycles"], node.host_noc_hop_cycles, hpath + ".noc.hop_cycles");

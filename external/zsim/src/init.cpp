@@ -53,6 +53,7 @@ using namespace std;
 #include "locks.h"
 #include "log.h"
 #include "mem_ctrls.h"
+#include "host_fabric.h"   // 1.12.23: host on-chip fabric (ring | crossbar | bus)
 
 /* 1.11.97 (review H08): routes a request to the requester's home memory
  * interface (core id / elements per MI); the address is passed as is. */
@@ -472,6 +473,7 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
 }
 
 static void InitSystem(Config& config) {
+    HostFabric* hostFabric = nullptr;   // 1.12.23: the host's on-chip fabric (built with the host MCs)
     unordered_map<string, string> parentMap; //child -> parent
     unordered_map<string, vector<vector<string>>> childMap; //parent -> children (a parent may have multiple children)
 
@@ -1342,18 +1344,33 @@ static void InitSystem(Config& config) {
                 }
             }
 
-            // Host crossbar fabric hop (analytic, multi-core host). A 1-core host
-            // emits enabled=0 (no fabric). When enabled, add a fixed one-hop
-            // latency on the host memory path; port contention is already priced
-            // by the host MC M/D/1 above. Wraps the (single) host MC / splitter.
+            /* 1.12.23: the host on-chip fabric (multi-core host; a 1-core host
+             * emits enabled=0: no fabric). Until 1.12.18 this was a fixed
+             * one-hop crossbar latency on the memory path only. Now one fabric
+             * (host_fabric.h) carries both the L2 <-> L3 traffic (a port per L2,
+             * wired below) and the LLC <-> memory-controller traffic (this port,
+             * around the single host MC / splitter); topology ring (default),
+             * crossbar (the old uniform hop, now on both paths) or bus. */
             if (config.get<uint32_t>("sys.hostNetwork.enabled", 0) != 0 &&
                 mems.size() == 1) {
-                uint32_t hop = config.get<uint32_t>("sys.hostNetwork.hopCycles", 0);
-                if (hop > 0) {
-                    g_string hopName("host-xbar");
-                    mems[0] = new CrossbarHopMemory(mems[0], hop, hopName.c_str());
-                    info("[ZSim] Host crossbar fabric: +%u-cycle one-hop on host memory path", hop);
-                }
+                const string topo = config.get<const char*>("sys.hostNetwork.topology", "ring");
+                const HostFabric::Mode mode = (topo == "crossbar") ? HostFabric::CROSSBAR
+                                            : (topo == "bus") ? HostFabric::BUS : HostFabric::RING;
+                if (topo != "ring" && topo != "crossbar" && topo != "bus")
+                    panic("sys.hostNetwork.topology '%s' is not ring, crossbar or bus", topo.c_str());
+                const uint32_t hcores = config.get<uint32_t>("sys.hostNetwork.cores", 1);
+                const uint32_t slices = config.get<uint32_t>("sys.hostNetwork.l3Slices", 1);
+                const bool hasL3 = config.get<uint32_t>("sys.hostNetwork.hasL3", 1) != 0;
+                const uint32_t hop = config.get<uint32_t>("sys.hostNetwork.hopCycles", 0);
+                const uint32_t beats = config.get<uint32_t>("sys.hostNetwork.dataBeats", 2);
+                hostFabric = new HostFabric(mode, hcores, memControllers, slices, hasL3, hop, beats);
+                g_string fn("host-fabric-mem");
+                mems[0] = new HostFabricPort(hostFabric, mems[0], true, 0, fn.c_str());
+                info("[ZSim] Host fabric (1.12.23): %s, %u cores + %u memory controller(s) = %u stops, %u L3 slice(s)%s; %s",
+                     topo.c_str(), hcores, memControllers, hostFabric->stops(), slices, hasL3 ? "" : " (no L3: L2s reach the MCs)",
+                     mode == HostFabric::RING ? "1 cycle per stop, shorter direction, zero-load (no segment contention)"
+                     : mode == HostFabric::CROSSBAR ? "one uniform hop per access (hopCycles), no contention"
+                     : "one shared bus: 1 command beat + the line's data beats per access, accesses wait for the bus, at most one transaction of each other core (round-robin)");
             }
         }
     }
@@ -1500,10 +1517,20 @@ static void InitSystem(Config& config) {
     // Multi-LLC: each top-level group instance connects independently to memory.
     for (const string& llcGrp : llcGroups) {
         CacheGroup& llcCaches = *cMap[llcGrp];
+        /* 1.12.23: a HOST cache never takes this network's RTT. In system
+         * scope the network is the DEVICE's Garnet; it auto-registered
+         * host_l3-0 (and the host memory object) as device nodes and charged
+         * their distance in the device fabric on every LLC miss -- a round
+         * trip through a network the host is not on. The host LLC reaches its
+         * memory through the host fabric (when the host has one) and the host
+         * memory controller; in co-simulation the crossing into the device
+         * memory is timed by the system path (the attachment's link class),
+         * not by this RTT. A 1-core host (no fabric) goes L3 -> MC directly. */
+        const bool hostLlcGrp = (llcGrp.compare(0, 5, "host_") == 0);
         for (uint32_t inst = 0; inst < llcCaches.size(); inst++) {
             uint32_t childId = 0;
             for (BaseCache* llcBank : llcCaches[inst]) {
-                llcBank->setParents(childId++, mems, network);
+                llcBank->setParents(childId++, mems, hostLlcGrp ? nullptr : network);
             }
         }
     }
@@ -1553,9 +1580,27 @@ static void InitSystem(Config& config) {
 
             uint32_t childId = 0;
             g_vector<BaseCache*> childrenVec;
+            /* 1.12.23: the host L2s reach the L3 through the host fabric (a port
+             * per L2 at its core's stop). They used to take this network's RTT --
+             * in system scope the DEVICE's Garnet, which auto-registered host_l2-N
+             * and host_l3-0 as device nodes N and 0 and charged their distance in
+             * the device fabric. With a host fabric the network is not used for
+             * the host L2 <-> L3 pair (requests and responses take the fabric's
+             * latency; invalidations carry none). */
+            const bool hostLLC = hostFabric && hostFabric->l3Present() && strncmp(grp, "host_l3", 7) == 0;
+            const bool hostGrp = strncmp(grp, "host_", 5) == 0;   // 1.12.23: no device-network RTT for host caches (above)
             for (uint32_t c = p*childrenPerParent; c < (p+1)*childrenPerParent; c++) {
                 for (BaseCache* bank : childCaches[c]) {
-                    bank->setParents(childId++, parentsVec, network);
+                    if (hostLLC) {
+                        g_vector<MemObject*> pv;
+                        for (MemObject* pb : parentsVec) {
+                            g_string pn((string("host-fabric-l2-") + std::to_string(c)).c_str());
+                            pv.push_back(new HostFabricPort(hostFabric, pb, false, c, pn.c_str()));
+                        }
+                        bank->setParents(childId++, pv, nullptr);
+                    } else {
+                        bank->setParents(childId++, parentsVec, hostGrp ? nullptr : network);
+                    }
                     childrenVec.push_back(bank);
                 }
             }
@@ -1574,7 +1619,7 @@ static void InitSystem(Config& config) {
             }
 
             for (BaseCache* bank : parentCaches[p]) {
-                bank->setChildren(childrenVec, network);
+                bank->setChildren(childrenVec, (hostLLC || hostGrp) ? nullptr : network);   // 1.12.19
             }
         }
     }
@@ -1875,6 +1920,10 @@ static void InitSystem(Config& config) {
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);
     zinfo->roiRebaseStats->push_back(memStat);   // 1.11.90
+    if (hostFabric) {   // 1.12.23: the host fabric counters, their own ROI-rebased group
+        AggregateStat* hs = hostFabric->initStats(zinfo->rootStat);
+        if (hs) zinfo->roiRebaseStats->push_back(hs);
+    }
     /* 1.9.35: in co-simulation the PE memory interfaces were CONSTRUCTED and
      * then dropped from `mems` (see the cosimMode branch above, which clears the
      * vector so the host's own controllers can occupy it). They survived only in

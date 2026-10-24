@@ -170,6 +170,9 @@ public:
         int link_kind = 0;
         double link_span_area_mm2 = 0.0;
         int link_parent_regions = 0;
+        /* 1.12.23: 1 = the links span the processor's own area, derived in
+         * the McPAT fork once the chip is built (a host crossbar's port wires). */
+        int link_span_processor = 0;
         int tech_node_nm = 0;
         int64_t link_traversals = -1;
         int64_t tsv_die_crossings = -1;

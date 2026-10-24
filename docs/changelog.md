@@ -6,6 +6,13 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.23 -- host on-chip fabric
+
+- Host CPU on-chip network, timing and power (user ruling 2026-10-24): `system.hosts[].noc.topology` is `ring` (default; the published Nehalem-EX ring: a stop per core/L3-slice pair and per memory controller, 1 cycle per stop, the shorter direction, zero-load), `crossbar` (the former uniform hop, now on the L2<->L3 path too) or `bus` (one shared bus with arbitration); other words are refused. The host L2s no longer take the device Garnet's distance between auto-registered nodes as their L3 latency. `power.models.host_noc` (default true) prices the same topology in McPAT from the measured data messages and hops (256-b flits, the Nehalem-EX data ring); ledger `<host>.noc`, which through 1.12.18 carried a leakage-only placeholder. Control messages are not priced on the ring and crossbar; a 1-core host has no fabric. Host run time and totals change.
+- Host caches no longer take the device Garnet RTT: the host L3 reaches its memory through the host fabric and the host memory controller (host-only runs) or the attachment's system path (co-simulation), without a device-network round trip; 1-core hosts go L3 -> MC directly. Host run time changes.
+
+- Not comparable with 1.12.22 for multi-core host baselines and multi-core-host co-simulation (host fabric timing and power, no device-network round trip on the host path; e.g. 16-core OpenMP gemv baseline 25629 -> 17061 cycles); 1-core hosts keep their cycles and lose the former 0.035 W host NoC placeholder.
+
 ## 1.12.22 -- the Garnet network's latency query takes the network lock (co-simulation message-passing crash fixed)
 
 - **Fixed: heap corruption / QEMU SIGSEGV in co-simulation message-passing runs** (seen on DDR5 MPI bfs during the

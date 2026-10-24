@@ -307,7 +307,8 @@ void NoC ::init_link_bus(double link_len_)
 	 * pitch (span / nodes per side / 2); applying them to a length that is
 	 * already per link would shrink it a second time. */
 	const bool explicit_len = (XML->sys.NoC[ithNoC].link_span_area_mm2 > 0 &&
-	                           XML->sys.NoC[ithNoC].link_parent_regions > 0);
+	                           XML->sys.NoC[ithNoC].link_parent_regions > 0)
+	                          || XML->sys.NoC[ithNoC].link_span_processor;   /* 1.12.23 */
 	if (!explicit_len)
 	{
 	link_len /= (nocdynp.horizontal_nodes + nocdynp.vertical_nodes)/2;

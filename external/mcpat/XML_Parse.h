@@ -534,6 +534,12 @@ typedef struct{
 	int link_kind;
 	double link_span_area_mm2;
 	int link_parent_regions;
+	/* 1.12.23: 1 = the links span the PROCESSOR'S OWN area (known only once
+	 * McPAT has built the chip): len = 0.5 x sqrt(area x chip_coverage /
+	 * link_parent_regions), the same H-tree rule as link_span_area_mm2, used
+	 * as is. A host's uncore crossbar: one port wire from each agent to the
+	 * crossbar at the die centre. 0 (default) = upstream / explicit span. */
+	int link_span_processor;
 	/* PIMID 1.12.18: > 0 = the process node (nm) THIS instance is priced
 	 * at; 0 (default) = the processor's core_tech_node. A tree level's
 	 * links lie on the DRAM die or on logic, and each takes its own
