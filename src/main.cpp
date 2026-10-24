@@ -194,7 +194,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                                    int array_temperature_k = 350,   // 1.11.52 (D055)
                                    int access_line_bytes = 64,      // 1.11.56 (B018)
                                    const std::string& device_width = "",   // 1.11.66 (B4)
-                                   int ddr5_speed_grade = 4800,            // 1.11.66 (B4/R8 #9)
+                                   int ddr5_speed_grade = 0,               // 1.11.66 (B4/R8 #9); 1.12.18: 0 = the run's knob, else the record's grade (was 4800)
                                    /* 1.11.75 (audit round 6, R6-2): the tool's OWN nanoseconds,
                                     * for callers that need a time rather than a cycle count.
                                     * The return value is quantised to a whole host cycle --
@@ -552,6 +552,73 @@ static int getCacheLatencyCycles(int size_kb, int ways, int line_size,
 }
 
 
+/* 1.12.18: the access time of the compute unit's scratchpad, in PE cycles
+ * (fractional: the core carries the remainder, as it does accessFactor). The
+ * RAM is priced as what it is -- a plain RAM, no tags, one bank -- with a
+ * 64-bit port (UPMEM's WRAM word), at the PE's logic node. CACTI is the only
+ * source: a geometry it cannot build is refused, never replaced by a number. */
+static double getScratchpadLatencyCycles(int bytes, double frequency_mhz, int tech_node_nm, const std::string& what) {
+    int cacti_tech = validateTechNodeNm(tech_node_nm, "scratchpad-latency query");
+    pimid::CACTIWrapper::SRAMConfig cfg;
+    cfg.capacity_bytes = static_cast<uint64_t>(bytes);
+    cfg.associativity = 1;
+    cfg.line_size = 8;
+    cfg.banks = 1;
+    cfg.is_cache = false;
+    cfg.tech_node_nm = cacti_tech;
+    cfg.output_width_bits = 64;
+    cfg.quiet = true;
+    const char* why = "the query was rejected (isValid() false)";
+    try {
+        pimid::CACTIWrapper wrapper(cfg);
+        wrapper.initialize();
+        if (wrapper.isValid()) {
+            const double ns = wrapper.getAccessTime() * 1e9;
+            const double cyc = ns * frequency_mhz / 1000.0;
+            std::cout << "  [spm] " << what << ": " << bytes << " B RAM, 64-bit port, " << cacti_tech
+                      << " nm: access " << ns << " ns = " << cyc << " PE cycles at " << frequency_mhz
+                      << " MHz (CACTI)" << std::endl;
+            if (cyc > 0.0) return cyc;
+            why = "CACTI returned a zero access time";
+        }
+    } catch (const std::exception& e) {
+        why = e.what();
+    } catch (...) {
+        why = "an unknown exception escaped the CACTI wrapper";
+    }
+    std::cerr << "\n[spm] FATAL: CACTI could not price the " << what << " (" << bytes << " B RAM, 64-bit port, "
+              << cacti_tech << " nm): " << why << ".\n"
+                 "  Its access time is the cost of every scratchpad load and store. Choose a pim.pe.spm_bytes "
+                 "CACTI can build, or 0 for none." << std::endl;
+    std::exit(2);
+}
+
+/* 1.12.18: the PE scratchpad's CACTI access time (ns) at CACTI
+ * periphery device `corner` (0 hp, 1 lstp, 2 lop), for the logic-die corner's
+ * feasibility check; -1 when CACTI has no solution. The timing model's own
+ * scratchpad latency (getScratchpadLatencyCycles) is not changed. */
+static double scratchpadAccessNsAt(int bytes, int tech_node_nm, int corner) {
+    pimid::CACTIWrapper::SRAMConfig cfg;
+    cfg.capacity_bytes = static_cast<uint64_t>(bytes);
+    cfg.associativity = 1;
+    cfg.line_size = 8;
+    cfg.banks = 1;
+    cfg.is_cache = false;
+    cfg.tech_node_nm = validateTechNodeNm(tech_node_nm, "scratchpad feasibility query");
+    cfg.output_width_bits = 64;
+    cfg.quiet = true;
+    cfg.device_corner = corner;
+    try {
+        pimid::CACTIWrapper wrapper(cfg);
+        wrapper.initialize();
+        if (wrapper.isValid()) {
+            const double ns = wrapper.getAccessTime() * 1e9;
+            return (ns > 0.0) ? ns : -1.0;
+        }
+    } catch (...) {}
+    return -1.0;
+}
+
 /* 1.11.57 (latent B021 / B023): ONE refusal for "the DRAM oracle did not
  * answer".
  *
@@ -619,6 +686,23 @@ static void announceUnclampedBandwidth(const std::string& tech,
  * Searches /usr/bin, /usr/local/bin, then PATH.
  * Returns empty string if not found.
  */
+/* 1.12.18 (user ruling 2026-10-24, "bind at load"): the guest's dynamic
+ * linker resolves every symbol before main (LD_BIND_NOW=1, guest-scoped via
+ * qemu -E). Under lazy binding the first call of each library function ran
+ * _dl_runtime_resolve/_dl_fixup (993 guest instructions) on whichever thread
+ * called it first; in thread-MPI the ranks are threads of one process, so the
+ * winner was host-order dependent and the loader work was counted in the ROI
+ * (MPI cells: +-993 instructions per resolution run to run, up to +29% cycles
+ * on reduction_mpi). The kernels are also linked -z now (pim_kernels/Makefile). */
+static const char* const kGuestBindNowEnv = "LD_BIND_NOW=1";
+static void noteGuestBindNow() {
+    static bool said = false;
+    if (said) return;
+    said = true;
+    std::cout << "[guest] symbols bound at load (LD_BIND_NOW=1): the guest's dynamic linker resolves every"
+              << " symbol before main, so no lazy-binding resolution is counted on the thread that first calls a"
+              << " library function [1.12.18, ruling 2026-10-24]" << std::endl;
+}
 static std::string findQemuBinary() {
     /* 1.11.55: an explicit override, first. Without it an A/B comparison
      * between two trees silently uses TWO DIFFERENT GUEST EMULATORS -- each
@@ -883,6 +967,8 @@ static std::string findPimidMpiLib() {
 struct ZSimParsedOutput {
     uint64_t cycles = 0;
     uint64_t instrs = 0;
+    uint64_t spm_reads = 0, spm_writes = 0, dma_lines = 0;   // 1.12.18: the PE scratchpad / DMA engine
+    uint64_t dma_cmd_reads = 0, dma_cmd_writes = 0;          // 1.12.18: its command registers
 
     // 1.9.10 co-sim power-integration fix: contention-INCLUSIVE wall-clock cycle
     // counts, tracked per core group. `cycles` above is the FIRST core's unhalted
@@ -906,6 +992,7 @@ struct ZSimParsedOutput {
     uint64_t xing_d2h_bytes = 0;
     uint64_t xing_count = 0;
     uint64_t xing_flush_bytes = 0;
+    uint64_t xing_flush_mc_lines = 0;   // 1.12.18 (bug 7): of those, the line writebacks sent to the host memory controllers
     /* 1.11.8 (#84): PG residency (latch-last root scalars + per-group
      * per-core sums). r_idle = 1 - activePhases/phases at consumption. */
     uint64_t pg_anycore_active = 0;
@@ -916,6 +1003,14 @@ struct ZSimParsedOutput {
     bool     pg_hostmc_present = false;   // 1.11.89: absent (pre-1.11.8 dump) != zero
     uint64_t pg_devmc_active = 0;
     uint64_t pg_phase_window = 0;   // 1.11.18: ROI-relative denominator (0 = use phases)
+    /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): the
+     * ROI's elapsed time on the global clock, exported by zsim (roiWallCycles;
+     * source 1 = roi_begin..roi_end phase-clock stamps, 2 = thread-MPI, the
+     * max over ranks of the ROI-relative end). runWindowCycles() turns it
+     * into the run's one window; the per-core cycles stay as busy activity. */
+    uint64_t roi_wall_cycles = 0;
+    uint64_t roi_wall_source = 0;
+    bool roi_wall_present = false;
     /* 1.11.51 (E17): the devMC inter-access gap histogram, read back from
      * the stats stream (log2-cycle buckets, counts + cycles, ROI span).
      * The power-down residency derives from THIS at the sourced tXP
@@ -943,6 +1038,16 @@ struct ZSimParsedOutput {
      * interfaces' private open-row registers when present. */
     uint64_t ctrl_row_hits = 0, ctrl_row_misses = 0, ctrl_row_conflicts = 0, ctrl_refreshes = 0, ctrl_requests = 0;
     uint64_t ctrl_ticks = 0, ctrl_idle_ticks = 0;   // 1.11.98 (row 28): replayed DRAM cycles, and those with nothing in flight
+    uint64_t ctrl_activates = 0; bool ctrl_act_present = false;   // 1.12.18: ACT commands the replayed controller issued
+    /* 1.12.18 (user ruling R1 2026-10-24): replayed requests stamped after
+     * the ROI end -- not priced, not in any count above; reported apart. */
+    uint64_t out_rd = 0, out_wr = 0, out_acts = 0, out_hrd = 0, out_hwr = 0, out_hacts = 0;
+    /* 1.12.18: the PE memory interfaces' rd/wr
+     * (pe-mi-N groups only: the counts the DRAM energy is priced on) and the
+     * device replay's reads/writes (dramReplay group), compared after the
+     * parse; a mismatch is warned, never substituted. */
+    uint64_t pemi_rd = 0, pemi_wr = 0, replay_rd = 0, replay_wr = 0;
+    bool pemi_present = false, replay_rw_present = false;
     bool ctrlRowMeasured() const { return (ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts) > 0; }
     double rowMissFraction() const {
         /* 1.11.98 (ruling 4 (c)): the replayed controller's row behaviour when
@@ -971,6 +1076,11 @@ struct ZSimParsedOutput {
      * other activity counter (1.11.9 put instrs on this same base, which is
      * what lets the mix be used at all). */
     uint64_t mix_int = 0, mix_mul = 0, mix_fp = 0, mix_ld = 0, mix_st = 0, mix_br = 0;
+    uint64_t mix_vm_reg = 0, mix_vm_ld = 0, mix_vm_st = 0;   // 1.12.18 (bug 1b): pure vector moves, of mix_fp
+    /* 1.12.18: FP operations by type/precision, of mix_fp -- zsim
+     * fpIns<Cat> at [k], fpLanes<Cat> at [9 + k] (FpOpCensus categories). */
+    uint64_t fp_ops[18] = {};
+    uint64_t int_ops[9] = {};   // PIMID 1.12.18: zsim intOps<Cat>, of mix_int / mix_mul
     /* 1.9.29: per-node measured counters. Everything below this comment that is
      * NOT inside `host`/`dev` is an ALL-NODES total, kept for the device-SCOPE
      * path (runPowerAnalysis), which simulates one node and is correct as-is.
@@ -986,7 +1096,12 @@ struct ZSimParsedOutput {
      * needs its OWN measured counters, so they live here as a set. */
     struct GroupCounters {
         uint64_t pgActivePhases = 0;  // 1.11.8: sum of per-core PG activity
+        uint64_t spm_reads = 0, spm_writes = 0, dma_lines = 0;   // 1.12.18
+        uint64_t dma_cmd_reads = 0, dma_cmd_writes = 0;
         uint64_t mix_int = 0, mix_mul = 0, mix_fp = 0, mix_ld = 0, mix_st = 0, mix_br = 0;  // 1.11.10/.15
+        uint64_t mix_vm_reg = 0, mix_vm_ld = 0, mix_vm_st = 0;   // 1.12.18 (bug 1b)
+        uint64_t fp_ops[18] = {};   // 1.12.18: see the all-nodes field
+        uint64_t int_ops[9] = {};   // PIMID 1.12.18: see the all-nodes field
         uint64_t instrs = 0;
         /* 1.9.33: of `instrs`, the portion that is injected timing charges
          * (coherence flush, kernel launch, barrier latency) rather than executed
@@ -1013,11 +1128,33 @@ struct ZSimParsedOutput {
         uint64_t l1d_fhGETX = 0, l1d_hGETX = 0, l1d_mGETXIM = 0;
         uint64_t l2_hGETS = 0, l2_mGETS = 0, l2_hGETX = 0, l2_mGETXIM = 0;
         uint64_t l3_hGETS = 0, l3_mGETS = 0, l3_hGETX = 0, l3_mGETXIM = 0;
+        /* 1.12.18: coherence events each cache RECEIVED from its parent's
+         * directory (zsim MESIBottomCC::processInval, coherence_ctrls.cpp:
+         * INV invalidate, INVX downgrade, FWD forward). An L1's count is work
+         * done by the directory of the cache above it (the MESITopCC sharer
+         * bitset, coherence_ctrls.h), so the L1 sums price the L2's directory
+         * and the L2 sums price the L3's. */
+        uint64_t l1_INV = 0, l1_INVX = 0, l1_FWD = 0;   // l1i + l1d
+        uint64_t l2_INV = 0, l2_INVX = 0, l2_FWD = 0;
         uint64_t mem_rd = 0, mem_wr = 0;
         /* 1.11.91 (audit R8-7): the Ramulator2 bank-open counters of this
          * node's memory controllers (absent -> present stays false). */
         uint64_t bank_open_cycles = 0, bank_open_window = 0;
         bool bank_open_present = false;
+        /* 1.12.18 (ruling 17 / R0605): this node's replayed memory controller.
+         * HOST: the hostRequests, hostRowHits/Misses/Conflicts and hostActivates share (whichever
+         * instance it rode), and refreshes / ticks / idle ticks only from a
+         * host-only instance (ctrl_shared = false); a host sharing the device's
+         * instance has its array-wide counters in the device's. */
+        uint64_t ctrl_row_hits = 0, ctrl_row_misses = 0, ctrl_row_conflicts = 0, ctrl_refreshes = 0;
+        uint64_t ctrl_ticks = 0, ctrl_idle_ticks = 0, ctrl_activates = 0, ctrl_requests = 0, ctrl_lat_sum = 0;
+        uint64_t ctrl_priced = 0, ctrl_bootstrap = 0;
+        bool ctrl_present = false, ctrl_shared = false, ctrl_act_present = false;
+        bool ctrlRowMeasured() const { return (ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts) > 0; }
+        double ctrlRowMissFraction() const {
+            const uint64_t n = ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts;
+            return n ? static_cast<double>(ctrl_row_misses + ctrl_row_conflicts) / static_cast<double>(n) : -1.0;
+        }
 
         uint64_t l1i_total_reads() const { return l1i_fhGETS + l1i_hGETS + l1i_mGETS; }
         uint64_t l1d_total_reads() const { return l1d_fhGETS + l1d_hGETS + l1d_mGETS; }
@@ -1026,6 +1163,8 @@ struct ZSimParsedOutput {
         uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM; }
         uint64_t l3_total_reads() const { return l3_hGETS + l3_mGETS; }
         uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM; }
+        uint64_t l1_coh_events() const { return l1_INV + l1_INVX + l1_FWD; }   // 1.12.18
+        uint64_t l2_coh_events() const { return l2_INV + l2_INVX + l2_FWD; }   // 1.12.18
         // True when this group carried any measured work at all. A node with no
         // activity must fall back rather than be priced at zero.
         /* 1.9.35: "was this node OBSERVED", not "did it do work".
@@ -1095,6 +1234,19 @@ struct ZSimParsedOutput {
     uint64_t dev_tail_marked = 0;     // device PEs that reported a tail > 0
     uint64_t dev_tail_max = 0;        // the largest tail removed
     uint64_t dev_tail_untrimmed = 0;  // max over device PEs of the cycles as dumped
+    /* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): each core's
+     * RUNNING cycles, for one group (0 = all): the core's own 'cycles' line
+     * -- a device PE's busy cycles (alu_core: without the futex wake / lock
+     * sync jumps, i.e. the time a thread was runnable on it), a host core's
+     * zsim UNHALTED cycles (the core recorder subtracts the time its thread
+     * was descheduled: blocked in a syscall or futex, or none assigned),
+     * ROI-windowed, the co-sim MPI tail trimmed. */
+    std::vector<uint64_t> runCyclesPerCore(int group) const {
+        std::vector<uint64_t> v;
+        for (const auto& r : core_recs)
+            if (group == 0 || r.group == group) v.push_back(r.cycles);
+        return v;
+    }
     /* Executed (non-injected) instructions per core, for one group (0 = all). */
     std::vector<uint64_t> realInstrsPerCore(int group) const {
         std::vector<uint64_t> v;
@@ -1130,6 +1282,10 @@ struct ZSimParsedOutput {
     uint64_t l3_mGETS = 0;
     uint64_t l3_hGETX = 0;
     uint64_t l3_mGETXIM = 0;
+    /* 1.12.18: coherence events received from the parent directory,
+     * all nodes (see GroupCounters). */
+    uint64_t l1_INV = 0, l1_INVX = 0, l1_FWD = 0;
+    uint64_t l2_INV = 0, l2_INVX = 0, l2_FWD = 0;
 
     // Memory controller: rd, wr
     uint64_t mem_rd = 0;
@@ -1143,6 +1299,8 @@ struct ZSimParsedOutput {
     uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM; }
     uint64_t l3_total_reads() const { return l3_hGETS + l3_mGETS; }
     uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM; }
+    uint64_t l1_coh_events() const { return l1_INV + l1_INVX + l1_FWD; }   // 1.12.18
+    uint64_t l2_coh_events() const { return l2_INV + l2_INVX + l2_FWD; }   // 1.12.18
 
     // Legacy compatibility
     uint64_t l1d_hits() const { return l1d_fhGETS + l1d_hGETS + l1d_fhGETX + l1d_hGETX; }
@@ -1221,6 +1379,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
      * own top-level groups, not nested under the core group, so `core_group`
      * cannot answer this -- it needs its own tracker. */
     CoreGroup cache_group = CoreGroup::NONE;
+    bool host_replay_scope = false;   // 1.12.18 (R0605): inside the decoupled host memory's "hostDramReplay" group
+    bool dev_replay_scope = false;    // 1.12.18: inside the device's "dramReplay" group
+    bool pemi_scope = false;          // 1.12.18: inside a device "pe-mi-N"/"pe-mc-N" group
     /* 1.11.93 (F3/F4): the per-core record the current core block writes;
      * reset at every aggregate header so each "<group>-N:" block gets one. */
     int cur_core_rec = -1;
@@ -1399,6 +1560,19 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 scope = Scope::MEM;
                 scope_indent = indent;
                 cache_group = CoreGroup::DEVICE;
+                host_replay_scope = false; dev_replay_scope = true;   // 1.12.18
+                pemi_scope = false;   // 1.12.18
+                continue;
+            } else if (key == "hostDramReplay") {
+                /* 1.12.18 (ruling 17 / R0605): the decoupled host memory's own
+                 * replayed controller. Every counter in it is the HOST's:
+                 * parsed into the host group only, never into the device
+                 * totals the device-scope consumers read. */
+                scope = Scope::MEM;
+                scope_indent = indent;
+                cache_group = CoreGroup::HOST;
+                host_replay_scope = true; dev_replay_scope = false;
+                pemi_scope = false;   // 1.12.18
                 continue;
             } else if (key.substr(0, 4) == "mem-" || key.substr(0, 4) == "mem_"
                        || key.substr(0, 6) == "pe-mc-" || key.substr(0, 6) == "pe-mi-") {
@@ -1429,6 +1603,8 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 bool device_mi = (key.substr(0, 6) == "pe-mc-" ||
                                   key.substr(0, 6) == "pe-mi-");
                 cache_group = device_mi ? CoreGroup::DEVICE : CoreGroup::HOST;
+                host_replay_scope = false; dev_replay_scope = false;   // 1.12.18
+                pemi_scope = device_mi;   // 1.12.18
                 continue;
             }
         }
@@ -1497,6 +1673,12 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                     out.instrs += val;
                     if (grp) { grp->instrs += val; grp->seen = true; }
                 }
+                /* 1.12.18: the compute unit's scratchpad and DMA engine. */
+                else if (key == "spmReads")  { out.spm_reads += val;  if (grp) grp->spm_reads += val; }
+                else if (key == "spmWrites") { out.spm_writes += val; if (grp) grp->spm_writes += val; }
+                else if (key == "dmaLines")  { out.dma_lines += val;  if (grp) grp->dma_lines += val; }
+                else if (key == "dmaCmdReads")  { out.dma_cmd_reads += val;  if (grp) grp->dma_cmd_reads += val; }
+                else if (key == "dmaCmdWrites") { out.dma_cmd_writes += val; if (grp) grp->dma_cmd_writes += val; }
                 /* 1.9.28: accumulate measured activity across cores.
                  * 1.9.29: and per node -- the all-nodes totals below cannot be
                  * split by core-count proportion without making each node's mix
@@ -1505,12 +1687,29 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "xingD2HBytes") { out.xing_d2h_bytes = val; }
                 else if (key == "xingCount") { out.xing_count = val; }
                 else if (key == "xingFlushBytes") { out.xing_flush_bytes = val; }
+                else if (key == "xingFlushMcLines") { out.xing_flush_mc_lines = val; }   // 1.12.18 (bug 7)
                 else if (key == "mixInt") { out.mix_int += val; if (grp) grp->mix_int += val; }
                 else if (key == "mixMul") { out.mix_mul += val; if (grp) grp->mix_mul += val; }
                 else if (key == "mixFp")  { out.mix_fp  += val; if (grp) grp->mix_fp  += val; }
                 else if (key == "mixLd")  { out.mix_ld  += val; if (grp) grp->mix_ld  += val; }
                 else if (key == "mixSt")  { out.mix_st  += val; if (grp) grp->mix_st  += val; }
                 else if (key == "mixBr")  { out.mix_br  += val; if (grp) grp->mix_br  += val; }
+                else if (key == "mixVmovReg") { out.mix_vm_reg += val; if (grp) grp->mix_vm_reg += val; }   // 1.12.18 (bug 1b)
+                else if (key == "mixVmovLd")  { out.mix_vm_ld  += val; if (grp) grp->mix_vm_ld  += val; }
+                else if (key == "mixVmovSt")  { out.mix_vm_st  += val; if (grp) grp->mix_vm_st  += val; }
+                else if (key.compare(0, 6, "intOps") == 0) {   // PIMID 1.12.18: (ruling 2026-10-23 #3)
+                    static const char* const kIc[9] = {"Alu8", "Alu16", "Alu32", "Alu64", "Mul8", "Mul16", "Mul32", "Mul64", "Div"};
+                    const std::string cat = key.substr(6);
+                    for (int k = 0; k < 9; k++)
+                        if (cat == kIc[k]) { out.int_ops[k] += val; if (grp) grp->int_ops[k] += val; break; }
+                }
+                else if (key.compare(0, 5, "fpIns") == 0 || key.compare(0, 7, "fpLanes") == 0) {   // 1.12.18
+                    static const char* const kCat[9] = {"AddS", "MulS", "AddD", "MulD", "FmaS", "FmaD", "DivS", "DivD", "X87"};
+                    const bool lanes = (key.compare(0, 7, "fpLanes") == 0);
+                    const std::string cat = key.substr(lanes ? 7 : 5);
+                    for (int k = 0; k < 9; k++)
+                        if (cat == kCat[k]) { const int j = (lanes ? 9 : 0) + k; out.fp_ops[j] += val; if (grp) grp->fp_ops[j] += val; break; }
+                }
                 else if (key == "pgAnyCoreActivePhases") { out.pg_anycore_active = val; }
                 else if (key == "pgSharedCacheActivePhases") { out.pg_sharedcache_active = val; }
                 else if (key == "pgNocActivePhases") { out.pg_noc_active = val; }
@@ -1522,6 +1721,8 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                  * since roi_begin), matching the now-ROI-relative numerators.
                  * Absent on pre-1.11.18 dumps -> falls back to `phase`. */
                 else if (key == "pgPhaseWindow") { out.pg_phase_window = val; }
+                else if (key == "roiWallCycles") { out.roi_wall_cycles = val; out.roi_wall_present = true; }   // 1.12.18
+                else if (key == "roiWallSource") { out.roi_wall_source = val; }
                 else if (key == "pgDevMCGapSpan") { out.devmc_gap_span = val; }
                 else if (key.rfind("pgDevMCGapCnt_", 0) == 0) {
                     int b = std::atoi(key.c_str() + 14);
@@ -1595,6 +1796,11 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "hGETX") { out.l1d_hGETX += val; if (cgrp) cgrp->l1d_hGETX += val; }
                 else if (key == "mGETXIM") { out.l1d_mGETXIM += val; if (cgrp) cgrp->l1d_mGETXIM += val; }
                 else if (key == "mGETXSM") { out.l1d_mGETXIM += val; if (cgrp) cgrp->l1d_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
+                /* 1.12.18: the parent directory's invalidates, downgrades
+                 * and forwards this L1 received (zsim INV/INVX/FWD). */
+                else if (key == "INV")  { out.l1_INV  += val; if (cgrp) cgrp->l1_INV  += val; }
+                else if (key == "INVX") { out.l1_INVX += val; if (cgrp) cgrp->l1_INVX += val; }
+                else if (key == "FWD")  { out.l1_FWD  += val; if (cgrp) cgrp->l1_FWD  += val; }
             }
 
             // L1I scope
@@ -1602,6 +1808,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 if (key == "fhGETS") { out.l1i_fhGETS += val; if (cgrp) cgrp->l1i_fhGETS += val; }
                 else if (key == "hGETS") { out.l1i_hGETS += val; if (cgrp) cgrp->l1i_hGETS += val; }
                 else if (key == "mGETS") { out.l1i_mGETS += val; if (cgrp) cgrp->l1i_mGETS += val; }
+                else if (key == "INV")  { out.l1_INV  += val; if (cgrp) cgrp->l1_INV  += val; }   // 1.12.18
+                else if (key == "INVX") { out.l1_INVX += val; if (cgrp) cgrp->l1_INVX += val; }
+                else if (key == "FWD")  { out.l1_FWD  += val; if (cgrp) cgrp->l1_FWD  += val; }
             }
 
             // L2 scope
@@ -1613,6 +1822,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "mGETXSM") { out.l2_mGETXIM += val; if (cgrp) cgrp->l2_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
                 else if (key == "PUTS") out.l2_PUTS += val;
                 else if (key == "PUTX") out.l2_PUTX += val;
+                else if (key == "INV")  { out.l2_INV  += val; if (cgrp) cgrp->l2_INV  += val; }   // 1.12.18
+                else if (key == "INVX") { out.l2_INVX += val; if (cgrp) cgrp->l2_INVX += val; }
+                else if (key == "FWD")  { out.l2_FWD  += val; if (cgrp) cgrp->l2_FWD  += val; }
             }
 
             // L3 scope
@@ -1630,6 +1842,39 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
             // added on top -- that double-counted reads and priced remote
             // accesses as writes.
             if (scope == Scope::MEM) {
+                /* 1.12.18 (user ruling R1 2026-10-24): outside the ROI, not priced */
+                if (key == "outsideReads")              { out.out_rd += val; continue; }
+                else if (key == "outsideWrites")        { out.out_wr += val; continue; }
+                else if (key == "outsideActivates")     { out.out_acts += val; continue; }
+                else if (key == "outsideHostReads")     { out.out_hrd += val; continue; }
+                else if (key == "outsideHostWrites")    { out.out_hwr += val; continue; }
+                else if (key == "outsideHostActivates") { out.out_hacts += val; continue; }
+                else if (key.rfind("outside", 0) == 0)  { continue; }
+                /* 1.12.18 (ruling 17 / R0605): the host interfaces' share of a
+                 * replayed controller (either instance). */
+                {
+                    ZSimParsedOutput::GroupCounters& hg = out.host;
+                    bool hk = true;
+                    if (key == "hostRequests")           { hg.ctrl_requests += val; hg.ctrl_present = true; hg.ctrl_shared = dev_replay_scope; }
+                    else if (key == "hostRowHits")       hg.ctrl_row_hits += val;
+                    else if (key == "hostRowMisses")     hg.ctrl_row_misses += val;
+                    else if (key == "hostRowConflicts")  hg.ctrl_row_conflicts += val;
+                    else if (key == "hostActivates")     { hg.ctrl_activates += val; hg.ctrl_act_present = true; }
+                    else if (key == "hostLatencySum")    hg.ctrl_lat_sum += val;
+                    else if (key == "hostPriced")        hg.ctrl_priced += val;
+                    else if (key == "hostBootstrap")     hg.ctrl_bootstrap += val;
+                    else hk = false;
+                    if (hk) continue;
+                }
+                if (host_replay_scope) {   // the decoupled host memory's array-wide counters
+                    ZSimParsedOutput::GroupCounters& hg = out.host;
+                    if (key == "ctrlRefreshes")        hg.ctrl_refreshes += val;
+                    else if (key == "ctrlTicks")       hg.ctrl_ticks += val;
+                    else if (key == "ctrlIdleTicks")   hg.ctrl_idle_ticks += val;
+                    else if (key == "bankOpenCycles")  { hg.bank_open_cycles += val; hg.bank_open_present = true; }
+                    else if (key == "bankOpenWindow")  { hg.bank_open_window += val; hg.bank_open_present = true; }
+                    continue;   // nothing of this group reaches the device totals
+                }
                 /* 1.11.15 (audit): localAcc/remoteAcc are CHILDREN of the
                  * pe-mi-<N> aggregate, i.e. Scope::MEM -- parsing them at ROOT
                  * scope left them zero forever and the locality report never
@@ -1651,8 +1896,14 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "ctrlTicks")        { out.ctrl_ticks += val; }
                 else if (key == "ctrlIdleTicks")    { out.ctrl_idle_ticks += val; }
                 else if (key == "ctrlRequests")     { out.ctrl_requests += val; }
+                else if (key == "ctrlActivates")    { out.ctrl_activates += val; out.ctrl_act_present = true; }   // 1.12.18
                 else if (key == "localAcc")  { out.pemi_local_acc += val; }
                 else if (key == "remoteAcc") { out.pemi_remote_acc += val; }
+                /* 1.12.18: the PE-MI / replay rd-wr cross-check */
+                if (pemi_scope && key == "rd")              { out.pemi_rd += val; out.pemi_present = true; }
+                else if (pemi_scope && key == "wr")         { out.pemi_wr += val; out.pemi_present = true; }
+                else if (dev_replay_scope && key == "reads")  { out.replay_rd += val; out.replay_rw_present = true; }
+                else if (dev_replay_scope && key == "writes") { out.replay_wr += val; out.replay_rw_present = true; }
                 if (key == "rd") { out.mem_rd += val; if (cgrp) cgrp->mem_rd += val; }
                 else if (key == "wr") { out.mem_wr += val; if (cgrp) cgrp->mem_wr += val; }
             }
@@ -1695,7 +1946,57 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                          " window (1.12.3, ruling 1 (a))." << std::endl;
         }
     }
+    /* 1.12.18: the DRAM energy is priced on the
+     * PE memory interfaces' rd/wr; the replayed controller counts the same
+     * requests under its lock. They must agree (both ROI-windowed, both net of
+     * the requests outside the ROI, ruling R1). A difference used to come from
+     * non-atomic interface counters shared by several PEs; it is WARNED, never
+     * substituted (the energy stays on the interface counts). */
+    if (out.pemi_present && out.replay_rw_present) {
+        if (out.pemi_rd != out.replay_rd || out.pemi_wr != out.replay_wr)
+            std::cout << "[mem] WARNING: PE-MI rd/wr " << out.pemi_rd << "/" << out.pemi_wr
+                      << " != replayed reads/writes " << out.replay_rd << "/" << out.replay_wr
+                      << " (the DRAM energy is priced on the PE-MI counts; replayed minus PE-MI = "
+                      << ((long long)out.replay_rd - (long long)out.pemi_rd) << " rd, "
+                      << ((long long)out.replay_wr - (long long)out.pemi_wr) << " wr) [1.12.18]" << std::endl;
+        else
+            std::cout << "[mem] PE-MI rd/wr " << out.pemi_rd << "/" << out.pemi_wr
+                      << " == replayed reads/writes (checked) [1.12.18]" << std::endl;
+    }
     return out;
+}
+
+/* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): the
+ * run's time, in the cycles of the dump's per-core axis. Source 1 (serial,
+ * OpenMP, co-sim OpenMP): the ROI's elapsed phase-clock time, never below
+ * the busy max (no PE is busy longer than the ROI; the stamps resolve the
+ * phase clock to within one phase). Source 2 (thread-MPI): the max over
+ * ranks of the ROI-relative end, i.e. the parsed (trimmed) per-core max --
+ * the message-passing ranks' clocks already include their waits. Without a
+ * closed stamp: the busy max, said so. `src` names which. */
+static uint64_t runWindowCycles(const ZSimParsedOutput& z, std::string* src) {
+    const uint64_t busy = z.max_core_cycles;
+    uint64_t w = busy;
+    std::ostringstream o;
+    if (z.roi_wall_source == 1 && z.roi_wall_cycles > 0) {
+        w = std::max(z.roi_wall_cycles, busy);
+        o << "ROI elapsed wall clock, roi_begin..roi_end on the global phase clock (roiWallCycles "
+          << z.roi_wall_cycles << ")";
+        if (w > z.roi_wall_cycles)
+            o << ", raised to the busy max (within one phase of the stamps)";
+    } else if (z.roi_wall_source == 3 && z.roi_wall_cycles > 0) {   // 1.12.18 (ruling 2026-10-24 (a))
+        w = std::max(z.roi_wall_cycles, busy);
+        o << "ROI elapsed wall clock, the latest ROI end on the cores' own clocks (single-process cut: the device PEs, the host cores when no PE ran; roiWallCycles "
+          << z.roi_wall_cycles << ")";
+    } else if (z.roi_wall_source == 2) {
+        o << "ROI elapsed wall clock, max over ranks of the ROI-relative end (thread-MPI; roiWallCycles "
+          << z.roi_wall_cycles << (z.dev_tail_marked ? ", the 1.12.3 kernel-window trim applied" : "") << ")";
+    } else {
+        o << "busy max: the dump carries no closed ROI wall stamp ("
+          << (z.roi_wall_present ? "roiWallCycles 0" : "no roiWallCycles") << ")";
+    }
+    if (src) *src = o.str();
+    return w;
 }
 
 // Minimal includes to avoid header conflicts
@@ -1876,9 +2177,10 @@ static const char* kSchemaPaths[] = {
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
     "memory.array_pg", "memory.bank_kb", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down",
-    "memory.power_down_threshold_ns", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology",
+    "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
-    "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
+    "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
+    "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.row_policy.host_idle_timeout_clocks", "memory.row_policy.host_closed_mode", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
     "memory.organization.bank_groups", "memory.organization.banks_per_group", "memory.power.static_power_mw",
     "memory.timing.read_latency_ns", "memory.timing.subarray_read_ns", "memory.timing.subarray_write_ns", "memory.timing.write_latency_ns",
     "noc.bridges.<name>.count", "noc.bridges.<name>.fifo_depth", "noc.bridges.<name>.input_buffer_depth", "noc.bridges.<name>.latency_cycles", "noc.bridges.<name>.latency_ns",
@@ -1898,15 +2200,38 @@ static const char* kSchemaPaths[] = {
     "pim.mc.groups", "pim.mc.local_latency", "pim.mc.pes_per_mc", "pim.mc.pg", "pim.mc.placement", "pim.mc.type",
     "pim.pe.access_factor", "pim.pe.arch_fp_regs", "pim.pe.arch_int_regs", "pim.pe.bit_serial", "pim.pe.branch_predictor", "pim.pe.compute_factor", "pim.pe.core_type", "pim.pe.count", "pim.pe.element_bits",
     "pim.pe.energy_factor", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles", "pim.pe.frequency_mhz", "pim.pe.imem_bytes", "pim.pe.issue_width", "pim.pe.lanes",
-    "pim.pe.operand_width", "pim.pe.pg", "pim.pe.placement.connection", "pim.pe.placement.level", "pim.pe.placement.local_link_latency", "pim.pe.throughput_factor", "pim.pe.type",
+    "pim.pe.operand_width", "pim.pe.pg", "pim.pe.placement.connection", "pim.pe.placement.level", "pim.pe.placement.local_link_latency", "pim.pe.spm_bytes", "pim.pe.spm_stack_bytes", "pim.pe.spm_staging", "pim.pe.stack", "pim.pe.throughput_factor", "pim.pe.type",
     "pim.placement.connection", "pim.placement.level", "pim.placement.local_link_latency",
     "power.device_corner", "power.device_tech_node_nm", "power.enabled", "power.host_tech_node_nm", "power.interconnect_projection", "power.logic_reference_mhz", "power.mcpat_overrides",
+    "power.models.clock_network", "power.models.dram_activates_counted", "power.models.dram_bank_open_measured", "power.models.dram_refresh_counted", "power.models.mc_command_ops",
     "power.periphery_device", "power.report_detail", "power.subarray_pitch_factor", "power.tech_node_nm", "power.temperature_c", "power.temperature_k", "power.termination_pj_per_bit",
+    "power.models.fabric_tsv", "power.models.noc_links",   // 1.12.18
+    "power.models.vector_moves_split", "power.models.dram_io_share_split", "power.models.dram_vpp_dynamic",   // 1.12.18: power bug batch H
+    "power.models.flush_writebacks_replayed",
+    "power.models.mcpat_fu_base_energy", "power.models.fpu_published", "power.models.frontend_from_timing",   // 1.12.18
+    "power.models.int_alu_published", "power.models.clock_global_local", "power.models.l1d_access_width",
+    "power.models.tlb_btb_measured",   // PIMID 1.12.18
+    "power.models.mcpat_layout_energy_overhead",   // 1.12.18 (ruling 2026-10-24)
+    "power.models.tlb_published_geometry", "power.models.iddq_write_termination_once",   // 1.12.18
+    "power.models.host_mc_phy_static",   // 1.12.18: (user ruling: system-scope host MC PHY static)
+    "power.models.idle_halt", "power.models.per_die_process", "power.models.clock_die_trunk",   // PIMID 1.12.18 (rulings 2026-10-23)
+    "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
+    "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
     "power.pcie.model", "power.pcie.num_channels", "power.pcie.num_lanes", "power.pcie.num_units", "power.pcie.pj_per_bit_override", "power.pcie.total_load_perc",
+    "power.pcie.controller_clock_mhz", "power.link.controller_clock_mhz", "power.models.ucie_link",   // 1.12.18
+    "power.pcie.process_node_nm", "power.link.process_node_nm",   // 1.12.18: two-node UCIe rows
     "power.link.bandwidth_GBs", "power.link.base_latency_ns", "power.link.coherence_extra_ns", "power.link.duty_cycle", "power.link.enabled", "power.link.header_bytes", "power.link.link_type",
     "power.link.model", "power.link.num_channels", "power.link.num_lanes", "power.link.num_units", "power.link.pj_per_bit_override", "power.link.total_load_perc",
-    "simulation.det_epoch_phases", "simulation.max_instructions", "simulation.mpi_contention_points", "simulation.parallel", "simulation.phase_length", "simulation.stats_interval",
+    "simulation.det_epoch_phases", "simulation.lock_sync", "simulation.max_instructions", "simulation.mpi_contention_points", "simulation.parallel", "simulation.phase_length", "simulation.stats_interval",
+    /* 1.12.18 (user rulings 2026-10-23): PIM runtime primitives */
+    "simulation.pim_runtime.enabled", "simulation.pim_runtime.apply_to", "simulation.pim_runtime.cycle_basis", "simulation.pim_runtime.source_clock_mhz",
+    "simulation.pim_runtime.omp_launch_cycles", "simulation.pim_runtime.omp_launch_scaling", "simulation.pim_runtime.omp_barrier_cycles", "simulation.pim_runtime.omp_barrier_scaling",
+    "simulation.pim_runtime.omp_lock_acquire_cycles", "simulation.pim_runtime.omp_lock_acquire_scaling", "simulation.pim_runtime.omp_lock_release_cycles", "simulation.pim_runtime.omp_lock_release_scaling",
+    "simulation.pim_runtime.omp_loop_dispatch_cycles", "simulation.pim_runtime.omp_loop_dispatch_scaling", "simulation.pim_runtime.omp_reduction_cycles", "simulation.pim_runtime.omp_reduction_scaling",
+    "simulation.pim_runtime.omp_query_cycles", "simulation.pim_runtime.omp_query_scaling", "simulation.pim_runtime.mpi_p2p_protocol_cycles", "simulation.pim_runtime.mpi_p2p_protocol_scaling",
+    "simulation.pim_runtime.mpi_collective_step_cycles", "simulation.pim_runtime.mpi_collective_step_scaling", "simulation.pim_runtime.mpi_reduction_step_cycles", "simulation.pim_runtime.mpi_reduction_step_scaling",
+    "simulation.pim_runtime.mpi_barrier_cycles", "simulation.pim_runtime.mpi_barrier_scaling",
     "synthetic.injection_rate", "synthetic.injection_rate_max", "synthetic.injection_rate_min", "synthetic.injection_rate_step", "synthetic.packets", "synthetic.pattern", "synthetic.power", "synthetic.warmup",
     "system.bridge.bandwidth_gbs", "system.bridge.channels", "system.bridge.latency_ns", "system.bridge.phy", "system.bridge.protocol", "system.bridge.protocol_overhead_ns", "system.bridge.uncached_ns",
     "system.cache_line_size", "system.frequency_mhz", "system.tech_node_nm",
@@ -1915,6 +2240,10 @@ static const char* kSchemaPaths[] = {
      * noc, cache, core, technology) is accepted under system.devices[] as well (schemaPathsAll, 1.11.107). */
     "system.devices[].attachment", "system.devices[].frequency_mhz", "system.devices[].is_default_mem", "system.devices[].name",
     "system.devices[].num_pes", "system.devices[].pe_type", "system.devices[].tech_node_nm", "system.devices[].type",
+    /* PIMID 1.12.18 (user ruling, per-die process): one block per die the device has. */
+    "system.devices[].process.logic_die.node_nm", "system.devices[].process.logic_die.device_type",
+    "system.devices[].process.dram_die.generation", "system.devices[].process.dram_die.node_nm",
+    "system.devices[].process.dram_die.family",
     "system.devices[].cache.l1d_banks", "system.devices[].cache.l1d_kb", "system.devices[].cache.l1d_latency_ns", "system.devices[].cache.l1d_ways",
     "system.devices[].cache.l1i_banks", "system.devices[].cache.l1i_kb", "system.devices[].cache.l1i_latency_ns", "system.devices[].cache.l1i_ways",
     "system.devices[].cache.l2_banks", "system.devices[].cache.l2_kb", "system.devices[].cache.l2_latency_ns", "system.devices[].cache.l2_ways",
@@ -1936,7 +2265,7 @@ static const char* kSchemaPaths[] = {
     "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
     "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz", "system.hosts[].issue_width",
     "system.hosts[].mem.bandwidth_gbs", "system.hosts[].mem.capacity_gb", "system.hosts[].mem.channels", "system.hosts[].mem.technology", "system.hosts[].memory.bandwidth_mbs",
-    "system.hosts[].memory.channels", "system.hosts[].memory.host_path.coherence_ns", "system.hosts[].memory.host_path.fabric_ns", "system.hosts[].memory.host_path.mc_pipeline_ns",
+    "system.hosts[].memory.channels", "system.hosts[].memory.dram_replay", "system.hosts[].memory.host_path.coherence_ns", "system.hosts[].memory.host_path.fabric_ns", "system.hosts[].memory.host_path.mc_pipeline_ns",
     "system.hosts[].memory.host_path.phy_ns", "system.hosts[].memory.latency_adder_ns", "system.hosts[].memory.technology", "system.hosts[].name", "system.hosts[].noc.hop_cycles",
     "system.hosts[].noc.model", "system.hosts[].noc.topology", "system.hosts[].num_cores", "system.hosts[].pg", "system.hosts[].tech_node_nm", "system.hosts[].workload.args",
     "system.hosts[].workload.binary", "system.hosts[].workload.env",
@@ -1948,6 +2277,7 @@ static const char* kSchemaPaths[] = {
     "workload.args", "workload.binary", "workload.env", "workload.mpi_ranks", "workload.mpich_path", "workload.type",
 };
 static const char* kSchemaFreeMaps[] = { "workload.env", "power.mcpat_overrides", "pim.mapping.map", "pim.mc.groups",
+                                         "simulation.pim_runtime.barrier_table", "simulation.pim_runtime.reduction_table",   // 1.12.18
                                          "system.hosts[].workload.env", "system.devices[].workload.env", "system.memories[].workload.env" };
 /* 1.11.107 (ruling R106-7 (c), ONE VOCABULARY): a system.devices[] node takes every device-scope key -- each
  * pim / memory / noc / cache / core / technology path above, under the node -- besides its node keys, and the two
@@ -2117,6 +2447,16 @@ struct UnifiedConfig {
     // so the timing model and the in-memory hierarchy stay consistent.
     std::string dram_device_width;
     int ddr5_speed_grade = 0;      // 1.11.66 (R8 #9): memory.dram.ddr5_speed_grade, 3200|4800|5600; 1.11.101: 0 = unset, the part record's grade
+    /* 1.12.18 (user ruling 2026-10-24, row policy): memory.row_policy.host_idle_timeout_clocks (DDR4/DDR3 host
+     * adaptive open page; default 128 = AMD BKDG 42301 p.307-308) and memory.row_policy.host_closed_mode
+     * (DDR5 host closed page: auto_precharge (default) | explicit_pre) */
+    int row_policy_host_idle_timeout = 128;
+    /* 1.12.18 (user ruling 2026-10-24, write drain): memory.controller.write_high_watermark /
+     * write_low_watermark, fractions of the controller write queue in use; default the
+     * published 32/16 of 48 (Chatterjee et al., HPCA 2012, Table 1 p.2, p.6) */
+    double write_high_watermark = pimid::RamulatorWrapper::kWriteHighWatermark;
+    double write_low_watermark  = pimid::RamulatorWrapper::kWriteLowWatermark;
+    std::string row_policy_host_closed_mode = "auto_precharge";
     int mem_bank_kb = 0;           // 1.11.107: memory.bank_kb as given (0 = not given: 64 KB); the run's bank unit is g_bank_unit_bytes
 
     // Comprehensive memory characteristics (for YAML override of external models)
@@ -2197,6 +2537,7 @@ struct UnifiedConfig {
      * corner for LPDDR5 periphery cannot be derived from tables that do not
      * contain them, so the request is refused there and says why. */
     std::string device_corner = "hp";   // power.device_corner: hp|lstp|lop
+    bool device_corner_given = false;   // 1.12.18: power.device_corner written in the YAML
     int periphery_leakage_device = 1;   // 1.11.97 (sweep-94 row 19 / review item 1 (b)): DRAM periphery leakage natively in CACTI's lstp column (was comm-dram = 4);    // 1.11.94 (item 1): power.periphery_device, CACTI column the DRAM-periphery LEAKAGE ratio is taken from (4 = comm-dram, today's value; R5 moves the default to lstp)
     /* 1.11.30 (user ruling E5): ONE interconnect projection for the whole die.
      * CACTI was pinned to conservative and McPAT defaulted to aggressive, so
@@ -2229,7 +2570,68 @@ struct UnifiedConfig {
      * used, and in device scope the bound is skipped with a printed reason
      * rather than invented. */
     double logic_reference_mhz = 0.0;   // power.logic_reference_mhz
+    bool clock_network = true;           // 1.12.18: power.models.clock_network -- McPAT prices the clock network (logic.h ClockNetwork)
     int  pe_imem_bytes = 4096;
+    /* 1.12.18: the compute unit's scratchpad -- a private RAM beside the
+     * datapath that the kernel fills and drains a block at a time (UPMEM's
+     * WRAM, an HBM-PIM register file). 4096 bytes is the user's default
+     * (2026-10-23); the published reference point is UPMEM's 64 KB WRAM.
+     * 0 = none, only when given. spm_staging: "dma" (a per-PE DMA engine moves
+     * the blocks) or "core" (the PE copies them with its own loads/stores). */
+    int  pe_spm_bytes = 4096;
+    std::string pe_spm_staging = "dma";
+    /* pim.pe.stack: where the PE's own stack lives. "dram" (default): its
+     * DRAM, as in 1.12.17. "spm": in the scratchpad, as UPMEM keeps tasklet
+     * stacks in WRAM; the stack then takes pe_spm_stack_bytes of spm_bytes
+     * and the kernel's buffers the rest (user ruling 2026-10-23; 8192 =
+     * the largest ROI stack measured over the 24 PIM kernels, 8,040 B). */
+    std::string pe_stack = "dram";
+    int  pe_spm_stack_bytes = 8192;
+    /* 1.12.18 (user 2026-10-23: "make new additions as options in param"):
+     * the measured-energy additions of this release, each switchable, all on
+     * by default. Off restores the earlier pricing and the report says so. */
+    bool pm_dram_refresh_counted = true;    // power.models.dram_refresh_counted
+    bool pm_dram_activates_counted = true;  // power.models.dram_activates_counted
+    bool pm_dram_bank_open_measured = true; // power.models.dram_bank_open_measured
+    bool pm_mc_command_ops = true;          // power.models.mc_command_ops
+    /* 1.12.18: (power bug batch H) further switchable additions, all on by
+     * default; off restores the earlier pricing and the run says so. */
+    bool pm_vector_moves_split = true;          // power.models.vector_moves_split (bug 1b)
+    bool pm_dram_io_share_split = true;         // power.models.dram_io_share_split (bug 2b/8a)
+    bool pm_dram_vpp_dynamic = true;            // power.models.dram_vpp_dynamic (bug 3b)
+    bool pm_flush_writebacks_replayed = true;   // power.models.flush_writebacks_replayed (bug 7)
+    /* 1.12.18 (user rulings 2026-10-23): McPAT core enrichments.
+     * mcpat_fu_base_energy defaults FALSE: the ruling REMOVES McPAT's fixed
+     * per-FU base energy (it overlaps the gated clock network); true keeps it. */
+    bool pm_mcpat_fu_base_energy = false;   // power.models.mcpat_fu_base_energy (ruling 1)
+    bool pm_fpu_published = true;           // power.models.fpu_published (ruling 2)
+    bool pm_frontend_from_timing = true;    // power.models.frontend_from_timing (ruling 3)
+    /* PIMID 1.12.18: (user rulings 2026-10-23 #3-#6), all default true. */
+    bool pm_int_alu_published = true;       // power.models.int_alu_published (ruling 3)
+    bool pm_clock_global_local = true;      // power.models.clock_global_local (ruling 4)
+    bool pm_l1d_access_width = true;        // power.models.l1d_access_width (ruling 6)
+    bool pm_tlb_btb_measured = true;        // power.models.tlb_btb_measured (ruling 5)
+    bool pm_mcpat_layout_energy_overhead = false;   // 1.12.18 (ruling 2026-10-24) power.models.mcpat_layout_energy_overhead
+    bool pm_tlb_published_geometry = true;  // 1.12.18: power.models.tlb_published_geometry
+    bool pm_iddq_write_termination_once = true;   // 1.12.18: power.models.iddq_write_termination_once
+    bool pm_host_mc_phy_static = true;      // 1.12.18: power.models.host_mc_phy_static
+    /* PIMID 1.12.18 (user rulings 2026-10-23), all default true:
+     *   idle_halt        a core/PE with nothing to run is halted, its whole
+     *                    clock tree off (McPAT logic.h ClockNetwork);
+     *   per_die_process  system.devices[].process: each component priced at
+     *                    the die it sits on (McPAT processor.cc);
+     *   clock_die_trunk  one die-level clock trunk per die (processor.cc). */
+    bool pm_idle_halt = true;               // power.models.idle_halt
+    bool pm_per_die_process = true;         // power.models.per_die_process
+    bool pm_clock_die_trunk = true;         // power.models.clock_die_trunk
+    /* PIMID 1.12.18 (per-die process): system.devices[].process, as given.
+     * 0 / -1 / empty = not given (the die keeps today's pricing). */
+    bool proc_given = false;
+    int proc_logic_node_nm = 0;             // process.logic_die.node_nm
+    int proc_logic_device_type = -1;        // process.logic_die.device_type: 0 hp, 1 lstp, 2 lop
+    std::string proc_dram_generation;       // process.dram_die.generation (a DRAM technology)
+    int proc_dram_node_nm = 0;              // process.dram_die.node_nm
+    int proc_dram_family = -1;              // process.dram_die.family: 4 comm-dram, 3 lp-dram
     /* Datapath WIDTH is deliberately absent here. It already exists as
      * alu_operand_width (pim.pe.operand_width), which the timing model reads as
      * ALUCore::operandWidth. 1.9.39 added a second field for the power model and
@@ -2523,6 +2925,23 @@ struct UnifiedConfig {
     int htree_level_branch[7]    = {-1,-1,-1,-1,-1,-1,-1};  // 1.11: per-level census
     int htree_level_endpoints[7] = {-1,-1,-1,-1,-1,-1,-1};
     int htree_all_routers    = -1;   // including degenerate single-child pass-throughs
+    /* 1.12.18: ALL routers built at each level (branch and pass-through),
+     * and the level of the ROOT router (router 0, the one with no parent).
+     * A level's up-links number its routers, less the root if it sits there;
+     * the link pricing reads both. -1 = no tree was built. */
+    int htree_level_routers[7]   = {-1,-1,-1,-1,-1,-1,-1};
+    int htree_root_level         = -1;
+    /* 1.12.18 (user ruling, HBM TSV layout): TSV SEGMENTS of the built
+     * tree under the stated channel-to-die layout -- the sum, over the
+     * chip-slot routers it built, of the die index each sits on (a channel
+     * on core die d reaches the base-die hub through d die boundaries).
+     * 0 = not a stacked part, or no layout. */
+    int htree_tsv_segments       = 0;
+    /* PIMID 1.12.18 (per-die clock trunk): the DRAM dies that hold the
+     * device's DRAM-side components in the built fabric -- the distinct
+     * stack core dies of its chip-slot routers on a stacked part, the
+     * chips (chip-slot routers) otherwise. 0 = no census. */
+    int htree_dram_dies          = 0;
     /* 1.11.92 (F6): the widest router built at each level, in ports (router
      * children + the parent link + endpoints attached there). McPAT sizes the
      * crossbar and arbiter from it; the literal 5 it replaces described a
@@ -2625,6 +3044,19 @@ struct UnifiedConfig {
     double pcie_bandwidth_GBs = 63.0;     // peak unidirectional throughput
     int pcie_num_lanes = 16;              // lane count (also feeds McPAT num_channels)
     double pcie_pj_per_bit_override = -1.0;  // 1.11.7: user pJ/bit for unknown link types (printed)
+    /* 1.12.18 (user rulings 2026-10-23): power.link.controller_clock_mhz
+     * overrides the link controller clock for any class (0 = not given: the
+     * class's published default -- PIPE for PCIe/CXL, the UCIe D2D clock
+     * derived inside McPAT for interposer -- and a refusal for classes with
+     * none). power.models.ucie_link switches McPAT's UCIe link model. */
+    int  pcie_controller_clock_mhz = 0;
+    bool ucie_link_model = true;
+    /* 1.12.18 (user ruling 2026-10-23, two-node UCIe rows): the process node
+     * (nm) of the die the interposer link sits on, which selects McPAT's UCIe
+     * energy row. power.link.process_node_nm; only 22 and 3 are priced
+     * (3 nm is not a CACTI node, so the link has its own key). 0 = not given:
+     * McPAT takes the node of the die it prices (its run node). */
+    int  link_process_node_nm = 0;
     /* 1.11.8 (#84): per-component power-gating flags (v7 spec). Default
      * FALSE: a config with no pg: keys is bit-identical to 1.11.7. */
     bool pg_pe = false;    // pim.pe.pg      (PE cores + their caches)
@@ -2660,10 +3092,39 @@ struct UnifiedConfig {
      * now. <0 = model default (the R7 rd/wr split loops); >=0 prices BOTH
      * directions at the stated pJ/bit (a user-stated operating point). */
     double termination_pj_per_bit = -1.0;
+    /* 1.12.18 (user rule 2026-10-23): every model added in 1.12.18 is
+     * switchable under power.models.<name> (bool, default true); off prints
+     * that the component is not priced by user option. */
+    bool model_coherence_directory = true;    // power.models.coherence_directory (C4)
+    bool model_nondram_array_system = true;   // power.models.nondram_array_system (C2)
+    /* 1.12.18 (user rule "make new additions as options in param"): the
+     * fabric-link models, each switchable. noc_links: the tree's up-links
+     * (and a flat mesh's links) as McPAT/CACTI wire. fabric_tsv: the die
+     * crossings of a stacked part's chip tier as CACTI-3DD TSVs. Off = the
+     * pre-1.12.18 behaviour, and the run says the component is not priced
+     * BY USER OPTION. */
+    bool power_model_noc_links = true;
+    bool power_model_fabric_tsv = true;
+    /* 1.12.18 (user ruling "pass-through routers as wire"): a router with
+     * one router child and no endpoint (a single in/out path) on a level
+     * that survives is priced as the wire it is: its flit traversals leave
+     * the level's router accesses (the McPAT fork subtracts the measured
+     * passthrough_accesses) and stay priced on the links-only instances.
+     * Off = they are priced as router accesses, as before. */
+    bool power_model_passthrough_as_wire = true;
+    /* 1.12.18 (user ruling "sharer bits from the real child count"): the SBT
+     * directory of an L2/L3 is sized from the children zsim gives the cache
+     * (McPAT fork param dir_sharers), not from number_of_cores. */
+    bool model_sharer_bits_from_children = true;
     /* 1.11.51 (E17): power-down entry threshold override, ns. <=0 = use the
      * per-generation sourced tXP default; techs with no sourced tXP refuse
      * the gap-based descent rather than inventing a threshold. */
     double power_down_threshold_ns = -1.0;
+    /* 1.12.18 (user ruling, HBM TSV layout): memory.channels_per_die, the
+     * stack layout the TSV die crossings are charged under. 0 = the stated
+     * default: channels spread evenly from the bottom core die (channels /
+     * core dies per die), the base logic die holding the hub. */
+    int memory_channels_per_die = 0;
     bool mem_array_pg = false;   // memory.array_pg    NVM retention-free periphery gating
     std::string pcie_model = "simple";    // "simple" or "md1" for PCIe timing model
     // Host<->device link technology. Selects preset latency/BW/overhead unless
@@ -2792,6 +3253,10 @@ struct UnifiedConfig {
          * node that gives none takes the top-level values, as before. */
         int  pe_lanes = 1;
         int  pe_imem_bytes = 4096;
+        int  pe_spm_bytes = 4096;            // 1.12.18: pim.pe.spm_bytes
+        std::string pe_spm_staging = "dma";  // 1.12.18: pim.pe.spm_staging
+        std::string pe_stack = "dram";       // 1.12.18: pim.pe.stack
+        int  pe_spm_stack_bytes = 8192;      // 1.12.18: pim.pe.spm_stack_bytes
         int  arch_int_regs = 16, arch_fp_regs = 16;
         /* 1.11.56 (audit B055): whether this node actually DECLARED a
          * pim.mc block. pe_mc_type defaults to "simple" and can only be
@@ -2836,6 +3301,13 @@ struct UnifiedConfig {
         double host_path_mc_pipeline_ns = -1.0;
         double host_path_phy_ns       = -1.0;
         bool   host_path_any_set = false;   // true if any host_path.* was given
+        /* 1.12.18 (ruling 17 / R0605): the host memory replayed through
+         * Ramulator2 (system.hosts[].memory.dram_replay, default true). It
+         * sets the host memory's TIMING (the measured service latency prices
+         * every host access) and the controller counters its energy uses.
+         * false = the M/D/1 host controller (tRCD + tCAS + adder + queue), and
+         * the run says so. */
+        bool   host_dram_replay = true;
 
         // SEPARATE host main memory (1.7.4, HANDOFF UNIVERSALITY ADDENDUM).
         // HOST role only; consumed when the paired device sets is_default_mem
@@ -2903,7 +3375,7 @@ struct UnifiedConfig {
         uint64_t addr_end = 0;         // address range end (exclusive)
         /* 1.12.12 (the address configuration layer): the window the node declares (address: { base, size }) and the
          * ranges it declares it may address (allowed_address_ranges: [{ base, size }, ...]); the layout step checks them
-         * against the node map and applies the window. Enforcement of what a node reaches beyond its own window is 1.13. */
+         * against the node map and applies the window. Enforcement of what a node reaches beyond its own window is not part of this build. */
         bool addr_declared = false;
         uint64_t addr_base_decl = 0, addr_size_decl = 0;
         bool allowed_declared = false;
@@ -3021,10 +3493,27 @@ struct UnifiedConfig {
  * termination override, from the run's config. The ordering matters --
  * the wrapper resolves its preset transcriptions in initialize(), and the
  * grade and width both select which row is transcribed. */
+/* 1.12.18 (user ruling 2026-10-24): PER-CHIP BANK STATE FOR PE TRAFFIC. A PE placed at the chip tier or
+ * below (SUBARRAY, BANK, BANK_GROUP, CHIP) on a rank-level DRAM whose chips are not folded into channels drives
+ * its own x8 chip's banks (UPMEM-like bank-level PIM): the DRAM epoch replay keeps each chip as its own Ramulator
+ * rank, a PE row is ONE chip's page, and every counted ACT/REF command is one chip's. A host access drives all
+ * chips in lock step (its row is chips x page; the replay fans it out). Returns the chips per rank, or 1 when
+ * the split does not apply (RANK/CHANNEL/LOGIC_DIE placement, HBM, GDDR6, x16/x32 parts with one chip). The
+ * replay applies the same rule (dram_epoch_replay.cpp, chipSplit_). */
+static int dramPeChipSplit(const UnifiedConfig& c, const std::string& tech) {
+    const bool rank_level = (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" || tech == "LPDDR5");
+    const int cpr = c.hierarchy_chips_per_rank, nch = c.hierarchy_dram_channels;
+    if (!rank_level || cpr <= 1 || c.pe_hierarchy_level < 0 || c.pe_hierarchy_level > 3 || (nch > 1 && cpr == nch)) return 1;
+    return cpr;
+}
+/* the shared/device array's split for reportSharedMemoryArrayEnergy (set around its device-side calls only) */
+static int s_array_pe_chip_split = 1;
 static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& config) {
     w.setDeviceWidth(config.dram_device_width);
     if (config.ddr5_speed_grade > 0) w.setDdr5SpeedGrade(config.ddr5_speed_grade);   // 1.11.101: unset -> the record's grade
     w.setTemperatureK(config.temperature_k);
+    w.setRowPolicyKnobs(config.row_policy_host_idle_timeout, config.row_policy_host_closed_mode);   // 1.12.18 (row policy ruling)
+    w.setWriteDrainKnobs(config.write_high_watermark, config.write_low_watermark);   // 1.12.18 (write drain)
     w.setTerminationOverridePJPerBit(config.termination_pj_per_bit);
 }
 
@@ -3304,7 +3793,7 @@ static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string
  * every DRAM technology this run names and cross-check it against the code
  * tables. A missing record, a missing field or a disagreement REFUSES the run:
  * in step 1 the record and the code must be one fact. The preset names are
- * compared only when the run uses the record's default knobs (DDR5 grade 4800,
+ * compared only when the run uses the record's default knobs (DDR5 grade unset -- 5600B since 1.12.18,
  * device width unset); other knobs legitimately select other presets, and the
  * run says so in one line. Nothing priced in this release reads the record. */
 static int checkDramPartRecords(const UnifiedConfig& config) {
@@ -3512,6 +4001,49 @@ static int dramChannelLinkTiming(const std::string& tech, double& lat_ns, double
     } catch (const std::exception& e) {
         refuseWithoutDramOracle(tech, e.what(), "the dram_channel link's timing (channel width, data rate, tRCD + tCL)");
     }
+}
+
+/* 1.12.18 (user ruling 2026-10-23 "one device, one attachment, remove the
+ * double count", completed for a NON-DRAM main memory): an SRAM or NVM device
+ * that IS the host's main memory is reached over that memory's own interface
+ * too -- the class stays dram_channel (no separate link energy, no link
+ * controller or PHY, no framing), but there is no DRAM part record to read,
+ * so the channel's timing comes from the array's own model, the same query
+ * device scope and the host memory block make for this technology:
+ *   base latency = the array's access time (CACTI random-access time for
+ *                  SRAM, NVSim read latency for STT_MRAM/PCM/RERAM) of ONE
+ *                  configured bank unit (memory.bank_kb) at the configured
+ *                  line width, the device's node and the run's temperature;
+ *   bandwidth    = banks x line / access time -- the configured banks served
+ *                  in parallel, exactly the M/D/1 cap getMemControllerConfig
+ *                  and getHostMemBandwidth derive for the same array.
+ * An array model that reports no access time refuses: no preset stands in. */
+static int arrayChannelLinkTiming(const std::string& tech, int banks, int node_nm, double freq_mhz,
+                                  int temperature_k, int line_bytes,
+                                  double& lat_ns, double& bw_gbs, std::string& how) {
+    std::string why;
+    double acc_ns = -1.0;
+    try {
+        (void)getMemoryLatencyCycles(tech, freq_mhz, node_nm, false, -1.0, -999,
+                                     temperature_k, line_bytes, "", 0, &acc_ns);   // 1.12.18: no DDR5 grade literal (non-DRAM path)
+    } catch (const std::exception& e) { why = e.what(); }
+    if (!(acc_ns > 0.0) || banks < 1 || line_bytes < 1) {
+        std::cerr << "[link] FATAL: the device IS the host's main memory (" << tech << "), so the host reaches it over the "
+                     "memory's own channel (dram_channel class), whose timing is the array's: access time from the "
+                  << (tech == "SRAM" ? "CACTI" : "NVSim") << " model and bandwidth = banks x line / access time. The model "
+                     "gave no access time (" << (why.empty() ? std::string("none reported") : why) << "; banks " << banks
+                  << ", line " << line_bytes << " B). Refusing rather than substituting a preset; name a link class with "
+                     "power.pcie.link_type to override." << std::endl;
+        return 1;
+    }
+    lat_ns = acc_ns;
+    bw_gbs = static_cast<double>(banks) * static_cast<double>(line_bytes) / acc_ns;   // B/ns = GB/s
+    std::ostringstream o;
+    o << banks << " bank(s) x " << line_bytes << " B / " << acc_ns << " ns "
+      << (tech == "SRAM" ? "CACTI access time" : "NVSim read latency") << " (" << (g_bank_unit_bytes / 1024ULL)
+      << " KB bank unit, " << node_nm << " nm, " << temperature_k << " K)";
+    how = o.str();
+    return 0;
 }
 
 /* 1.11.98 (gate 1208A): the host-side memory controllers a run builds -- one
@@ -3892,6 +4424,53 @@ static double referenceLayer0BandwidthGBs() {
  * The fabric exists whatever the timing fidelity; this is one census, two
  * callers (dramHTreeBuilder for the detailed path, analyticalTreeCensus for
  * the analytical one). */
+/* 1.12.18 (user ruling, HBM TSV layout): the stack layout the fabric's die
+ * crossings are charged under. A stacked part (HBM) folds its channels into
+ * the chip slot (chips_per_rank = channels per stack), and its part record
+ * gives the core dies per stack; WHICH die a channel sits on is not
+ * published (JESD238 leaves it to the vendor). The layout is therefore
+ * STATED: memory.channels_per_die, default channels spread evenly from the
+ * bottom (channels / core dies per die), channel c on core die
+ * c / per_die + 1, the base logic die 0 holding the hub. Returns channels
+ * per die, 0 when the part is not stacked. A layout needing more dies than
+ * the stack has is refused. Printed once. */
+static int stackChannelsPerDie(const UnifiedConfig& config, bool print) {
+    static bool printed = false;
+    const bool stacked = config.memory_tech.rfind("HBM", 0) == 0;
+    if (!stacked) {
+        if (config.memory_channels_per_die > 0 && print && !printed) {
+            printed = true;
+            std::cerr << "[stack] WARNING: memory.channels_per_die = " << config.memory_channels_per_die
+                      << " is IGNORED: " << config.memory_tech << " is not a stacked part" << std::endl;
+        }
+        return 0;
+    }
+    const pimid::params::DramPartRecord& rec = pimid::params::dramPartRecord(config.memory_tech);
+    const int dies = rec.stack_dies;
+    const int slots = config.hierarchy_chips_per_rank;   // the folded chip slot = channels per stack
+    if (dies < 1 || slots < 1) return 0;
+    const bool user = config.memory_channels_per_die > 0;
+    const int per_die = user ? config.memory_channels_per_die : (slots + dies - 1) / dies;
+    const int used = (slots + per_die - 1) / per_die;
+    if (used > dies) {
+        std::cerr << "[stack] FATAL: memory.channels_per_die = " << per_die << " puts " << slots
+                  << " channels on " << used << " core dies, but the " << config.memory_tech
+                  << " stack has " << dies << " (part record " << rec.part << ")" << std::endl;
+        std::exit(2);
+    }
+    if (print && !printed) {
+        printed = true;
+        std::cout << "  [stack] " << config.memory_tech << " channel-to-die layout: " << slots
+                  << " channel(s) over " << dies << " core die(s), " << per_die
+                  << " per die (channel c on core die c/" << per_die << " + 1, " << used
+                  << " die(s) used; base logic die 0 = the hub)"
+                  << (user ? " [memory.channels_per_die, user]" : " [default: even spread from the bottom]")
+                  << " -- stated layout, no published channel-to-die map (JESD238 leaves it to the vendor)"
+                  << std::endl;
+    }
+    return per_die;
+}
+
 static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig& config, long covered, int pe_level) {
     /* 1.11.103 (ruling 9): the in-die fabric's node links count as ports and
      * every grid node (and a CROSSBAR hub) is a priced switch; the walk census
@@ -3925,6 +4504,26 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
     for (int l = 0; l < 7; ++l) {
         config.htree_level_branch[l]    = tree.branchAtLevel[l];
         config.htree_level_endpoints[l] = tree.endpointsAtLevel[l];
+        config.htree_level_routers[l]   = 0;   // 1.12.18: counted below
+    }
+    /* 1.12.18: every router by its level, and the root's level. */
+    for (int r = 0; r < tree.numRouters; ++r) {
+        const int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+        if (lv < 0 || lv > 6) continue;
+        config.htree_level_routers[lv]++;
+        if (r == 0) config.htree_root_level = lv;
+    }
+    /* 1.12.18 (TSV layout): the die boundaries the built chip-slot routers
+     * sit above the hub (assignStackDies ran on this tree). */
+    config.htree_tsv_segments = 0;
+    for (size_t r = 0; r < tree.stackDie.size(); ++r)
+        if (tree.stackDie[r] > 0) config.htree_tsv_segments += tree.stackDie[r];
+    {   /* PIMID 1.12.18 (per-die clock trunk): the DRAM dies the fabric's PEs sit on */
+        std::set<int> dd;
+        for (size_t r = 0; r < tree.stackDie.size(); ++r)
+            if (tree.stackDie[r] > 0) dd.insert(tree.stackDie[r]);
+        config.htree_dram_dies = !dd.empty() ? static_cast<int>(dd.size())
+            : (pe_level <= 3 && config.htree_level_routers[3] > 0) ? config.htree_level_routers[3] : 1;
     }
     config.htree_endpoints      = tree.totalEndpoints();
     config.htree_abstract       = tree.numAbstract;
@@ -4088,7 +4687,9 @@ static bool dramHTreeBuilder(const std::string& tech,
     } else if (tech == "DDR4") {
         L[0]={512,1.2}; L[1]={256,1.2}; L[2]={256,1.2}; L[3]={192,1.2}; N=1;
     } else if (tech == "DDR5") {
-        L[0]={512,2.4}; L[1]={256,2.4}; L[2]={256,2.4}; L[3]={128,2.4}; N=1;
+        /* 1.12.18: the fallback clock is the grade in force (data rate / 2), not the literal 2.4 GHz of 4800 */
+        const double f = effectiveDdr5Grade(config) > 0 ? effectiveDdr5Grade(config) / 2000.0 : 2.4;
+        L[0]={512,f}; L[1]={256,f}; L[2]={256,f}; L[3]={128,f}; N=1;
     } else if (tech == "LPDDR5") {
         L[0]={256,1.6}; L[1]={256,1.6}; L[2]={256,1.6}; L[3]={64,1.6};  N=1;
     } else if (tech == "GDDR6") {
@@ -4384,6 +4985,7 @@ static bool dramHTreeBuilder(const std::string& tech,
         config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
         config.hierarchy_ranks_per_channel, layer_w, layer_lat,
         config.indie_fabric.empty() ? nullptr : &fab);
+    pimid_htree::assignStackDies(tree, stackChannelsPerDie(config, true));   // 1.12.18 (TSV layout)
 
     /* 1.10: the tree must cover the memory exactly. Every organisation at the
      * placement level is either hosted by a processing element or sits behind
@@ -4451,11 +5053,31 @@ static bool dramHTreeBuilder(const std::string& tech,
     {
         std::map<int,int> kids;
         for (const auto& l : tree.intLinks) kids[l.a]++;
+        /* 1.12.18 (user ruling "pass-through routers as wire"): a 4th field,
+         * 1 = a WIRE router: exactly one router child, no endpoint attached,
+         * no grid link, not a grid node, not the root -- a single in/out
+         * path. Garnet sums its measured flits apart (wire_router_traversals)
+         * and the power model prices them as the links they ride. */
+        std::map<int,int> eps;
+        for (const auto& e : tree.extLinks) eps[e.b]++;
+        std::set<int> gridded;
+        for (const auto& e : tree.gridLinks) { gridded.insert(e.a); gridded.insert(e.b); }
         for (int r = 0; r < tree.numRouters; ++r) {
             int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+            const bool grid = (r < (int)tree.gridDie.size() && tree.gridDie[(size_t)r] >= 0) ||
+                              gridded.count(r);
+            const bool wire = (r != 0) && kids.count(r) && kids[r] == 1 &&
+                              !eps.count(r) && !grid;
             f << "rlevel " << r << " " << lv << " "
-              << ((kids.count(r) && kids[r] >= 2) ? 1 : 0) << "\n";
+              << ((kids.count(r) && kids[r] >= 2) ? 1 : 0) << " "
+              << (wire ? 1 : 0) << "\n";
         }
+        /* 1.12.18 (TSV layout): "rdie <router> <core die>" for the chip-slot
+         * routers the stated layout placed; the network counts the die
+         * boundaries each packet crosses from them. */
+        for (int r = 0; r < tree.numRouters && r < (int)tree.stackDie.size(); ++r)
+            if (tree.stackDie[(size_t)r] > 0)
+                f << "rdie " << r << " " << tree.stackDie[(size_t)r] << "\n";
     }
     f.close();
     return true;
@@ -4508,6 +5130,7 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
         config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
         config.hierarchy_ranks_per_channel, ones, ones,
         config.indie_fabric.empty() ? nullptr : &fab);
+    pimid_htree::assignStackDies(tree, stackChannelsPerDie(config, true));   // 1.12.18 (TSV layout)
     const long covered = tree.coveredOrgs();
     const long expected = (long)config.total_mem_orgs;
     if (expected > 0 && covered != expected) {
@@ -5433,6 +6056,19 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     if (pe_level <= 3) {
         const bool chan_folded = (chans > 1 && chips_per_rank == chans);
         slots *= ranks_pc * (chan_folded ? 1 : chans);
+    }
+    /* 1.12.18 (DDR5 RANK): the same frame at the RANK tier. The tree puts
+     * RpCh rank routers under EVERY unfolded channel (decompose() carries the
+     * channel above the rank), so DDR5 -- two 32-bit sub-channels, one rank
+     * each -- builds 2 rank organisations, while the frame said ranks_pc = 1
+     * and every DDR5 RANK cell was refused by the coverage gate ("2
+     * organisations ... describes 1", detailed and analytical alike). The
+     * ranks are counted per channel, x the unfolded channel count; a folded
+     * part (HBM: the channels live in the chip slot under ONE rank, rootFanout
+     * = 1) stays x1, as at levels 0-3. One-channel parts are unchanged. */
+    else if (pe_level == 4) {
+        const bool chan_folded = (chans > 1 && chips_per_rank == chans);
+        slots *= (chan_folded ? 1 : chans);
     }
 
     if (config.num_pes > slots) {
@@ -6800,6 +7436,15 @@ static void emitZSimPcieBlock(std::ostream& out, const UnifiedConfig& config,
 }
 
 static int dramBurstsPerLine(const std::string& tech, const UnifiedConfig& config);   // 1.11.98: defined with the mem block
+/* 1.12.18 (ruling 17 / R0605): the device DRAM epoch replay predicate, one
+ * copy -- the device hierarchy block arms it, and the host memory block joins
+ * it when the device IS the host's memory. */
+static bool deviceDramReplayOn(const UnifiedConfig& config) {
+    const bool mpi_workload = (config.workload_type == "mpi");
+    return config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator"
+           && !config.ramulator_config_file.empty()
+           && !(mpi_workload && config.method != "exec");
+}
 static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& config,
                                    double device_bw_freq_mhz = 0.0,
                                    double sys_freq_mhz = 0.0) {
@@ -6827,6 +7472,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     // a writer. The plugin still receives the key it has always received.
     out << "        channelsPerSystem = 1;\n";
     out << "        dramChannels = " << config.hierarchy_dram_channels << ";\n";
+    out << "        stackChannelsPerDie = " << stackChannelsPerDie(config, false) << ";\n";   // 1.12.18 (TSV layout)
     /* 1.11.98 (sweep-94 ruling 4 (c)): the live controller serves every element
      * type by epoch replay (dram_epoch_replay.h). On for DRAM technologies
      * unless pim.mc.epoch_replay is false; the Ramulator YAML is the one the
@@ -6844,9 +7490,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
          * method runs one process per rank, where a replay would see one
          * rank's traffic only: it keeps the analytical service. */
         const bool mpi_workload = (config.workload_type == "mpi");
-        const bool replay_on = config.mc_epoch_replay && config.zsim_mem_controller_type == "ramulator"
-                               && !config.ramulator_config_file.empty()
-                               && !(mpi_workload && config.method != "exec");
+        const bool replay_on = deviceDramReplayOn(config);   // 1.12.18: the shared predicate
         out << "        dramEpochReplay = " << (replay_on ? 1 : 0) << ";\n";
         if (replay_on) {
             /* the replay's own Ramulator config and column commands per line:
@@ -6956,8 +7600,16 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                     const int dev = rb.getDevicesPerAccess();
                     row_stride = static_cast<uint32_t>(rb.getRowStrideBytes());
                     std::ostringstream w;
-                    w << dev << " device(s) x " << row_bytes << " B ("
-                      << rb.getAccessPathLabel() << ")";
+                    const int split = dramPeChipSplit(config, mt);   // 1.12.18
+                    if (split > 1) {
+                        row_stride = row_bytes;
+                        w << "1 device(s) x " << row_bytes << " B (per-chip PE row: chip-level placement, each PE "
+                             "drives its own chip's banks; a host access's lock-step row is " << split << " x "
+                          << row_bytes << " B, user ruling 2026-10-24)";
+                    } else {
+                        w << dev << " device(s) x " << row_bytes << " B ("
+                          << rb.getAccessPathLabel() << ")";
+                    }
                     stride_why = w.str();
                 }
             } catch (const std::exception& e) {
@@ -7279,6 +7931,10 @@ static UnifiedConfig::SystemNode runConfigDeviceNode(const UnifiedConfig& config
     dev.noc_topology = config.noc_topology;
     dev.pe_lanes = config.pe_lanes;            // 1.11.107: the per-node McPAT fields, as the run's
     dev.pe_imem_bytes = config.pe_imem_bytes;
+    dev.pe_spm_bytes = config.pe_spm_bytes;          // 1.12.18
+    dev.pe_spm_staging = config.pe_spm_staging;
+    dev.pe_stack = config.pe_stack;
+    dev.pe_spm_stack_bytes = config.pe_spm_stack_bytes;
     dev.arch_int_regs = config.arch_int_regs;
     dev.arch_fp_regs = config.arch_fp_regs;
     return dev;
@@ -7314,10 +7970,10 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
 static void normalizeSystemConfig(UnifiedConfig& config) {
     if (config.system_nodes.empty()) return;
 
-    /* 1.12.13 (the user: "unsupported conf (for 1.13) just got refused"): a host needs a device (a memory with PEs). A host
-     * alone, or a host with only system.memories[] entries, is a host-only system, whose run is 1.13 work (the multi-host /
+    /* 1.12.13 (the user: "unsupported conf ... just got refused"): a host needs a device (a memory with PEs). A host
+     * alone, or a host with only system.memories[] entries, is a host-only system, whose run is not supported in this build (it needs the multi-host /
      * multi-device / multi-memory implementation). Through 1.12.12 a host with a memory and no device loaded and emitted a
-     * system the 1.12 model does not define, and a bare host stopped with rc 1 and no word of 1.13. */
+     * system the 1.12 model does not define, and a bare host stopped with rc 1 and no explanation. */
     bool has_host = false, has_compute = false, has_memory = false;
     for (const auto& n : config.system_nodes) {
         if (n.role == UnifiedConfig::SystemNode::HOST) has_host = true;
@@ -7326,7 +7982,7 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
     }
     if (has_host && !has_compute) {
         std::cerr << "[config] FATAL: this system has a host and no device (no system.devices[] entry, a memory with PEs)"
-                  << (has_memory ? ", only system.memories[]" : "") << ": a host-only system is 1.13 work (the multi-host /"
+                  << (has_memory ? ", only system.memories[]" : "") << ": a host-only system is not supported in this build (it needs the multi-host /"
                      " multi-device / multi-memory implementation). 1.12 runs one device alone, or one host with one device,"
                      " optionally with the host's own main memory as one system.memories[] entry (1.12.13). Add a device under"
                      " system.devices." << std::endl;
@@ -7368,7 +8024,7 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
      * 4 GB window granularity the node map decodes at (an unaligned one is refused); no two windows overlap. A declared
      * map is printed. Without declarations the 1.12.10 layout stands (the user's layout rule: "if host mem device, then
      * the addr is mem then device"): the memories without PEs take the first windows, the devices follow. What a node may
-     * reach beyond its own window is validated below and enforced in 1.13. */
+     * reach beyond its own window is validated below; it is not enforced in this build. */
     {
         typedef UnifiedConfig::SystemNode SN;
         int n_nodes = 0, n_decl = 0; std::string undeclared;
@@ -7429,7 +8085,7 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
                 std::cout << " " << n->name << " [" << hexAddr(n->addr_start) << ", " << hexAddr(n->addr_end) << ")"
                           << (n->device_type == SN::MEMORY_ONLY ? " memory" : " device") << ";";
             std::cout << " the windows are the declared ones, not the default layout. What each node reaches beyond its own window"
-                         " is enforced in 1.13." << std::endl;
+                         " is not enforced in this build." << std::endl;
         }
         /* the allowed ranges against the node map: accepted where this build already behaves that way */
         for (const auto& n : config.system_nodes) {
@@ -7443,8 +8099,8 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
                     if (!covered) {
                         std::cerr << "[config] FATAL: " << n.cfg_path << ".allowed_address_ranges leave out " << w.cfg_path << " ('" << w.name
                                   << "', [" << hexAddr(w.addr_start) << ", " << hexAddr(w.addr_end) << ")): in this build the host addresses"
-                                     " every node of the run; a host that does not reach a node is the 1.13 wiring (the multi-host /"
-                                     " multi-device / multi-memory implementation). Add a range containing the window, or remove the key"
+                                     " every node of the run; a host that does not reach a node is the wiring of a multi-host /"
+                                     " multi-device / multi-memory system, which this build does not support. Add a range containing the window, or remove the key"
                                      " (1.12.12)." << std::endl;
                         std::exit(2);
                     }
@@ -7478,7 +8134,7 @@ static void normalizeSystemConfig(UnifiedConfig& config) {
                         std::cerr << "[config] FATAL: " << n.cfg_path << ".allowed_address_ranges[" << i << "] = [" << hexAddr(r.first) << ", "
                                   << hexAddr(r.first + r.second) << ") reaches beyond the device's own window [" << hexAddr(n.addr_start) << ", "
                                   << hexAddr(n.addr_end) << "): a device that addresses another node's memory, or free address space, is the"
-                                     " 1.13 wiring (the multi-host / multi-device / multi-memory implementation); in this build a device"
+                                     " wiring of a multi-host / multi-device / multi-memory system, which this build does not support; a device"
                                      " addresses its own window, the default. Keep the ranges inside the window, or remove the key (1.12.12)."
                                   << std::endl;
                         std::exit(2);
@@ -7962,24 +8618,23 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
                   << "); refusing to emit a timing model for a different part." << std::endl;
         std::exit(2);
     }
-    /* the controller's row policy per technology: closed-row for the DDR4/DDR5
-     * DIMM parts (plus DDR5's RFM), open-row for the others (unchanged) */
-    const bool useClosedRow = (tech == "DDR4" || tech == "DDR5");
+    /* 1.12.18 (user ruling 2026-10-24, row policy): the RowPolicy block comes from ONE emitter,
+     * RamulatorWrapper::rowPolicyYaml (the oracle's makeConfig uses it too). Was: ClosedRowPolicy cap 4
+     * for DDR4/DDR5 here and for every technology in the oracle. */
     ofs << "MemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n  DRAM:\n    impl: " << tech << "\n"
         << "    org:\n      preset: " << org_p << "\n    timing:\n      preset: " << tim_p << "\n";
     if (tech == "DDR5") ofs << "    RFM:\n      BRC: 2\n";
     ofs << "  Controller:\n    impl: Generic\n"
+        << pimid::RamulatorWrapper::writeDrainYaml(config.write_high_watermark, config.write_low_watermark)   // 1.12.18 (write drain)
         << "    Scheduler:\n      impl: FRFCFS\n"
         << "    RefreshManager:\n      impl: AllBank\n";
-    if (useClosedRow) {
-        ofs << "    RowPolicy:\n      impl: ClosedRowPolicy\n      cap: 4\n";
-    } else {
-        ofs << "    RowPolicy:\n      impl: OpenRowPolicy\n";
-    }
+    ofs << pimid::RamulatorWrapper::rowPolicyYaml(tech, config.row_policy_host_idle_timeout,
+                                                   config.row_policy_host_closed_mode);
     ofs << "  AddrMapper:\n    impl: RoBaRaCoCh\n";
 }
-static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string& tech) {
-    std::string tmpCfg = "/tmp/pimid_ramulator_" + std::to_string(getpid()) + ".yaml";
+/* 1.12.18 (ruling 17 / R0605): the YAML file for a technology under a config's
+ * knobs (the device's, or the decoupled host memory's own); returns the path. */
+static std::string writeRamulatorYamlFile(const UnifiedConfig& config, const std::string& tech, const std::string& tmpCfg) {
     std::ostringstream buf;
     writeRamulatorConfigYaml(buf, tech, config.dram_device_width, config);
     std::string y = buf.str();
@@ -8001,7 +8656,11 @@ static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string
     std::ofstream ofs(tmpCfg);
     ofs << y;
     ofs.close();
-    config.ramulator_config_file = tmpCfg;
+    return tmpCfg;
+}
+static void autoGenerateRamulatorConfig(UnifiedConfig& config, const std::string& tech) {
+    config.ramulator_config_file = writeRamulatorYamlFile(config, tech,
+        "/tmp/pimid_ramulator_" + std::to_string(getpid()) + ".yaml");
 }
 
 /**
@@ -8211,9 +8870,28 @@ struct GarnetParsedStats {
     std::string level_source;
     uint64_t level_router_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_passthrough_traversals[7] = {0,0,0,0,0,0,0};
+    /* 1.12.18 (ruling "pass-through routers as wire"): flits through the
+     * level's WIRE routers (one router child, no endpoint) and their count;
+     * level_wire_present = the file carries them. */
+    uint64_t level_wire_traversals[7] = {0,0,0,0,0,0,0};
+    uint32_t level_wire_routers[7] = {0,0,0,0,0,0,0};
+    bool level_wire_present = false;
     uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
     uint32_t level_routers[7] = {0,0,0,0,0,0,0};
     uint32_t level_branch_routers[7] = {0,0,0,0,0,0,0};
+    /* 1.12.18: per-level LINK flit traversals (a tree edge belongs to its
+     * child router's level, the edge being that router's up-link), and the
+     * part of the global link_traversals no level took (or the excess).
+     * level_links_present: the file carries them (an older one does not). */
+    uint64_t level_link_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t link_traversals_unattributed = 0;
+    uint64_t link_traversals_overattributed = 0;
+    bool level_links_present = false;
+    /* 1.12.18 (TSV layout): flit x die-boundary crossings per level, the
+     * packets-by-boundaries histogram, and whether a layout was in force. */
+    uint64_t level_tsv_die_crossings[7] = {0,0,0,0,0,0,0};
+    std::map<int, uint64_t> tsv_dies_hist;
+    bool stack_layout = false;
 };
 
 /**
@@ -8252,6 +8930,16 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
         while (!key.empty() && std::isspace(key.back())) key.pop_back();
         while (!val.empty() && std::isspace(val.front())) val.erase(val.begin());
         while (!val.empty() && std::isspace(val.back())) val.pop_back();
+        /* 1.12.18 (TSV layout): the histogram's keys end in a number, which
+         * the bare-name strip below would keep as the whole key. */
+        {
+            const std::string hp = "garnet.tsv_dies_hist.";
+            if (key.compare(0, hp.size(), hp) == 0) {
+                try { stats.tsv_dies_hist[std::stoi(key.substr(hp.size()))] = std::stoull(val); } catch (...) {}
+                continue;
+            }
+            if (key == "garnet.stack_layout") { stats.stack_layout = (val == "1"); continue; }
+        }
         /* 1.11.92 (F4): "garnet.level<k>.<field>" -- the bare-name strip below
          * would collapse these onto one another, so read them first. */
         {
@@ -8265,9 +8953,19 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
                     try {
                         if (fld == "router_traversals") stats.level_router_traversals[k] = std::stoull(val);
                         else if (fld == "passthrough_traversals") stats.level_passthrough_traversals[k] = std::stoull(val);
+                        else if (fld == "wire_router_traversals") {   // 1.12.18
+                            stats.level_wire_traversals[k] = std::stoull(val);
+                            stats.level_wire_present = true;
+                        }
+                        else if (fld == "wire_routers") stats.level_wire_routers[k] = std::stoul(val);   // 1.12.18
                         else if (fld == "packet_traversals") stats.level_packet_traversals[k] = std::stoull(val);
                         else if (fld == "routers") stats.level_routers[k] = std::stoul(val);
                         else if (fld == "branch_routers") stats.level_branch_routers[k] = std::stoul(val);
+                        else if (fld == "tsv_die_crossings") stats.level_tsv_die_crossings[k] = std::stoull(val);   // 1.12.18
+                        else if (fld == "link_traversals") {   // 1.12.18
+                            stats.level_link_traversals[k] = std::stoull(val);
+                            stats.level_links_present = true;
+                        }
                     } catch (...) {}
                 }
                 continue;
@@ -8302,6 +9000,8 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
             else if (key == "crossbar_traversals") stats.crossbar_traversals = std::stoull(val);
             else if (key == "arbiter_events") stats.arbiter_events = std::stoull(val);
             else if (key == "link_traversals") stats.link_traversals = std::stoull(val);
+            else if (key == "link_traversals_unattributed") stats.link_traversals_unattributed = std::stoull(val);     // 1.12.18
+            else if (key == "link_traversals_overattributed") stats.link_traversals_overattributed = std::stoull(val); // 1.12.18
             else if (key == "total_cycles") stats.total_cycles = std::stoull(val);
             else if (key == "total_latency") stats.total_latency = std::stoull(val);
             else if (key == "num_routers") stats.num_routers = std::stoul(val);
@@ -8320,8 +9020,14 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
         for (int l = 0; l < 7; l++) {
             stats.level_router_traversals[l] = 0;
             stats.level_passthrough_traversals[l] = 0;
+            stats.level_wire_traversals[l] = 0;   // 1.12.18
             stats.level_packet_traversals[l] = 0;
+            stats.level_link_traversals[l] = 0;   // 1.12.18
+            stats.level_tsv_die_crossings[l] = 0;
         }
+        stats.link_traversals = 0;                  // 1.12.18
+        stats.link_traversals_unattributed = 0;
+        stats.link_traversals_overattributed = 0;
     }
     return stats;
 }
@@ -8460,6 +9166,23 @@ static int validateTechNodeNm(int requested_nm, const char* site) {
     std::exit(1);
 }
 
+/* PIMID 1.12.18 (user ruling, per-die process): the node of the DRAM die
+ * (process.dram_die: node_nm, else the generation's CACTI DRAM table, else
+ * the memory technology's -- today's) and of the logic die
+ * (process.logic_die.node_nm, else the run's logic node -- today's). */
+static int dieProcessDramNode(const UnifiedConfig& config, const std::string& memory_tech) {
+    if (config.pm_per_die_process) {
+        if (config.proc_dram_node_nm > 0) return config.proc_dram_node_nm;
+        if (!config.proc_dram_generation.empty())
+            return pimid::CACTIWrapper::generationTableNm(config.proc_dram_generation);
+    }
+    return pimid::CACTIWrapper::generationTableNm(memory_tech);
+}
+static int dieProcessLogicNode(const UnifiedConfig& config) {
+    if (config.pm_per_die_process && config.proc_logic_node_nm > 0) return config.proc_logic_node_nm;
+    return config.tech_node_nm > 0 ? config.tech_node_nm : 22;
+}
+
 /* 1.11.96 (sweep-94 ruling 14 (c), review H18/H32): the controller McPAT
  * prices is described from the DRAM preset the run simulates -- the DQ rate
  * (MT/s) x the channel width (bits) / 8 = the peak transfer rate in MB/s,
@@ -8535,6 +9258,10 @@ static double mcClockMHzForMcPAT(const std::string& tech, const UnifiedConfig& c
  * before any of it happened. Whoever edits here next: the claim and the code
  * are now the same thing, and they have to be kept that way.
  */
+/* 1.12.18: the link pricing below spans the DRAM die; defined further down. */
+static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
+                                    int effective_banks);
+
 static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
     const UnifiedConfig& config,
     const GarnetParsedStats& garnet,
@@ -8705,8 +9432,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         if (surviving_levels == 0) { surviving_levels = 1; surviving_weight = 1.0; }
         if (surviving_levels != num_active)
             std::cout << "  [NoC] " << (num_active - surviving_levels)
-                      << " hierarchy level(s) are pure pass-through wire and are"
-                         " not priced; chip coverage is normalised over the "
+                      << " hierarchy level(s) are pure pass-through wire: no router"
+                         " is priced there (1.12.18: their links are, below); chip"
+                         " coverage is normalised over the "
                       << surviving_levels << " level(s) that are"
                       << (has_levels ? "" : ", and so are the preset traversal weights")
                       << std::endl;
@@ -8717,6 +9445,337 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                       << " " << preset_unit << " are split across levels by the"
                          " PRESET weight 1/(1+level), not by measurement"
                       << std::endl;
+
+        /* 1.11.92 (F7): each level is priced at ITS OWN datapath width, from
+         * the same ladder the "Hierarchy link ladder" line prints (after
+         * any noc.levels override). It was Garnet's single 128-bit flit at
+         * every level, so the 256-bit bank-group datapath and the 64-bit
+         * rank bus were both priced as 128-bit routers. Garnet's topology
+         * clamps widths at 128 b for its own flit engine; the power model
+         * is not bound by that clamp.
+         * 1.12.18: a lambda, so a level's links are cut at the same width as
+         * its routers (and a pass-through level, which has no router line,
+         * gets one). */
+        auto levelWidth = [&](int lvl, const char** wsrc_out) -> int {
+            int W = garnet_flit;
+            const char* wsrc = "Garnet flit width: no sourced ladder width for this level";
+            if (lvl < 7 && config.network_level_overrides[lvl].link_width_bits > 0) {
+                W = config.network_level_overrides[lvl].link_width_bits;
+                wsrc = "noc.levels override";
+            } else if (lvl < 7 && config.htree_tier_width_bits[lvl] > 0) {
+                /* 1.11.97 (review H20): the width the built tree carries at this
+                 * tier -- the per-node link Garnet runs on -- not the ladder's
+                 * aggregate rung (an HBM chip tier at 1024 b vs 64 b per node). */
+                W = config.htree_tier_width_bits[lvl];
+                wsrc = "the built tree's link width at this tier";
+            } else if (config.sourced_ladder_valid &&
+                       !(config.sourced_ladder_placeholder_mask & (1 << lvl)) &&
+                       config.sourced_ladder_w[lvl] > 0) {
+                W = config.sourced_ladder_w[lvl];
+                wsrc = "sourced ladder";
+            }
+            if (wsrc_out) *wsrc_out = wsrc;
+            return W;
+        };
+
+        /* 1.12.18 (user rulings "make the power model complete" and "mcpat
+         * and cacti wire modelling should be applied at the most appropriate
+         * places"): THE TREE'S LINKS ARE PRICED.
+         *
+         * Until now every router level was described to McPAT with
+         * has_global_link=0, so the wires between the routers carried no
+         * energy and no area, and a level made only of pass-through routers
+         * was skipped outright -- its flits were counted and printed "NOT
+         * priced". Each level's UP-LINKS are now one links-only McPAT NoC
+         * instance (routers_present=0, has_global_link=1):
+         *   count     the level's routers, less the root if it sits here
+         *             (each other router has exactly one parent);
+         *   activity  the level's MEASURED link flit traversals (Garnet path
+         *             walk; tier walk on the analytical NoC), turned into
+         *             packet crossings and re-cut at the level's width
+         *             exactly as its router accesses are (F7);
+         *   length    derived IN McPAT (processor.cc) from the structure
+         *             passed here: the die area the level spans and the
+         *             number of parent regions it is cut into (H-tree; user
+         *             rule "call them in PIMID, don't add them to PIMID");
+         *   wire      McPAT interconnect over the CACTI wire model, type
+         *             Global, at the level's process node (the DRAM array's
+         *             CACTI table on the die, the logic node off it);
+         *   die cross on a stacked part (HBM) the chip tier's up-link leaves
+         *             the core die. Each transfer is charged the die
+         *             boundaries it actually crosses under the STATED
+         *             channel-to-die layout (memory.channels_per_die; zsim
+         *             counts them, McPAT prices them as CACTI-3DD TSVs from
+         *             the tsv_die_crossings stat).
+         * NOT included: the endpoint <-> router (EXT) links. They are the
+         * network interface's port into its router, not a tree edge; the
+         * zsim path walk does not count them and nothing here prices them.
+         * A BUS level (McPAT type 0) keeps its bus: the bus IS that level's
+         * wire, already charged by McPAT with the level's accesses, and it
+         * gets no second link instance. */
+        int lvl_routers[7] = {0,0,0,0,0,0,0};
+        int root_lvl = -1;
+        for (int l = 0; l < 7; l++)
+            lvl_routers[l] = (config.htree_level_routers[l] >= 0)
+                ? config.htree_level_routers[l] : (int)garnet.level_routers[l];
+        root_lvl = config.htree_root_level;
+        if (root_lvl < 0)
+            for (int l = 0; l < 7; l++) if (lvl_routers[l] > 0) root_lvl = l;
+        const bool link_counts = garnet.level_links_present;
+        const double die_mm2 = computeDramDieAreaMM2(config.memory_tech, false, 0);
+        const bool stacked_part = config.memory_tech.rfind("HBM", 0) == 0;
+        {
+            uint64_t sum = 0;
+            std::ostringstream per;
+            for (int l = 0; l < 7; l++) {
+                sum += garnet.level_link_traversals[l];
+                if (garnet.level_link_traversals[l])
+                    per << " L" << l << " " << garnet.level_link_traversals[l];
+            }
+            if (link_counts) {
+                const bool eq = (sum == garnet.link_traversals &&
+                                 garnet.link_traversals_unattributed == 0 &&
+                                 garnet.link_traversals_overattributed == 0);
+                std::cout << "  [NoC] " << lbl << "link flit traversals by level (edge"
+                             " owned by its child router's level):" << per.str()
+                          << "; sum " << sum << " vs global link_traversals "
+                          << garnet.link_traversals << " (unattributed "
+                          << garnet.link_traversals_unattributed << ", overattributed "
+                          << garnet.link_traversals_overattributed << "): "
+                          << (eq ? "per-level sum EQUALS the global"
+                                 : "per-level sum DIFFERS from the global") << std::endl;
+                if (!eq)
+                    std::cerr << "[NoC] WARNING: " << lbl
+                              << garnet.link_traversals_unattributed
+                              << " link flit traversals could not be given to a tree"
+                                 " level (a non-tree topology, a router with no level, or"
+                                 " the off-die HOST_MC rung) and are NOT priced as links;"
+                                 " the per-level sum " << sum << " differs from the global "
+                              << garnet.link_traversals << "." << std::endl;
+            } else if (garnet.link_traversals > 0) {
+                std::cerr << "[NoC] WARNING: " << lbl << "the stats file " << stats_path
+                          << " carries no per-level link traversals (written before"
+                             " 1.12.18): the " << garnet.link_traversals
+                          << " link flit traversals cannot be given to levels and the"
+                             " tree's links are NOT priced in this run." << std::endl;
+            }
+            std::cout << "  [NoC] " << lbl << "links: die area " << die_mm2
+                      << " mm^2 (" << config.memory_tech << ", preset organisation,"
+                         " the calibrated CACTI die the memory report prints) spans"
+                         " each level; routers per level";
+            for (int l = pe_level; l < 7; l++) std::cout << " L" << l << "=" << lvl_routers[l];
+            std::cout << ", root at L" << root_lvl << ". Wire RC: CACTI's interconnect"
+                         " tables at the level's node (McPAT Global wire). NO PUBLISHED"
+                         " SOURCE FOUND for DRAM-process metal RC beyond CACTI's tables:"
+                         " the on-die links are priced on CACTI's logic-process wire."
+                      << std::endl;
+            if (!config.power_model_noc_links)
+                std::cout << "  [NoC] " << lbl << "tree links: NOT priced BY USER OPTION"
+                             " (power.models.noc_links: false)" << std::endl;
+        }
+        /* 1.12.18 (user rule "scale the enrichments to the process nodes"):
+         * the node a level's links are priced at. Links on the DRAM die use
+         * the DRAM process the array is priced at (the generation's CACTI
+         * table, the "DRAM array process" line); links off the die (rank,
+         * channel, system logic) use the run's logic node. McPAT builds the
+         * wire (or TSV) from that node's CACTI tables. */
+        /* PIMID 1.12.18 (per-die process): the dies' nodes (system.devices[].process;
+         * absent: the generation's table and the run's logic node, as before). */
+        const int dram_node_nm = dieProcessDramNode(config, config.memory_tech);
+        const int logic_node_nm = dieProcessLogicNode(config);
+        /* 1.12.18 (user rulings on TSV charging and the HBM TSV layout):
+         * each fabric transfer is charged the die boundaries it ACTUALLY
+         * crosses between its source and target die. The stack geometry is
+         * the STATED layout (stackChannelsPerDie: channels spread evenly from
+         * the bottom unless memory.channels_per_die says otherwise; the base
+         * logic die holds the hub): a PE on core die a to the hub and up to
+         * core die b crosses a + b boundaries, PE <-> hub crosses a. zsim
+         * counts them per packet (Garnet path walk, analytical tier walk). */
+        const int stack_cpd = stackChannelsPerDie(config, false);
+        auto diesCrossed = [&](int lvl, int parent) -> std::string {
+            if (!stacked_part) return "0 (not a stacked part)";
+            if (lvl <= 2) return "0 (a channel's banks, bank groups and channel router are on one core die)";
+            if (lvl == 3 && parent >= 4)
+                return stack_cpd > 0
+                    ? "the channel's core-die index under the stated layout (" + std::to_string(stack_cpd)
+                      + " channel(s) per die; a transfer die a -> hub -> die b crosses a + b)"
+                    : std::string("UNKNOWN (no stack layout)");
+            return "0 (base-die / off-die logic, not in the core-die stack)";
+        };
+        auto emitLinks = [&](int lvl, const std::string& base, int on_die,
+                             double chip_cov, bool passthrough) {
+            if (!link_counts) return;
+            const uint64_t lf = garnet.level_link_traversals[lvl];
+            int parent = -1;
+            for (int p = lvl + 1; p < 7; p++) if (lvl_routers[p] > 0) { parent = p; break; }
+            const int n_links = lvl_routers[lvl] - (lvl == root_lvl ? 1 : 0);
+            if (parent < 0 || n_links <= 0) {
+                if (lf > 0)
+                    std::cerr << "[NoC] WARNING: " << lbl << "level " << (lvl - pe_level)
+                              << " (" << base << ") carries " << lf << " link flit"
+                                 " traversals but the tree gives it no up-link (routers "
+                              << lvl_routers[lvl] << ", root at L" << root_lvl
+                              << "): they are NOT priced." << std::endl;
+                return;
+            }
+            const bool tsv = stacked_part && lvl == 3 && parent >= 4;
+            std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " (" << base
+                      << ") up-links L" << lvl << "->L" << parent << ": dies crossed per"
+                         " transfer " << diesCrossed(lvl, parent) << "; " << lf
+                      << " link flit traversals" << std::endl;
+            if (tsv) {
+                if (!config.power_model_fabric_tsv)
+                    std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " ("
+                              << base << ") die crossings: NOT priced BY USER OPTION"
+                                 " (power.models.fabric_tsv: false)" << std::endl;
+                else if (stack_cpd <= 0 || !garnet.stack_layout || config.htree_tsv_segments <= 0)
+                    std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " ("
+                              << base << ") die crossings: NOT priced -- the run carries no"
+                                 " stack layout or no die-crossing count (stats file "
+                              << stats_path << ", layout " << stack_cpd << " per die, "
+                              << config.htree_tsv_segments << " TSV segments)" << std::endl;
+                else {
+                    /* the activity: flit x die-boundary crossings, re-cut at the
+                     * level's width exactly as its link traversals are (F7);
+                     * the structure: the TSV segments the layout puts under the
+                     * built channel routers. McPAT prices both (CACTI-3DD). */
+                    const char* wsrc = nullptr;
+                    const int W = levelWidth(lvl, &wsrc);
+                    const uint32_t fW = (data_bits + static_cast<uint32_t>(W) - 1) /
+                                        static_cast<uint32_t>(W);
+                    const uint64_t fd = garnet.level_tsv_die_crossings[lvl];
+                    const double pkd = static_cast<double>(fd) / fpp;
+                    const uint64_t dacc = static_cast<uint64_t>(std::llround(pkd * fW));
+                    const int segs = config.htree_tsv_segments;
+                    NoCLevel lk;
+                    lk.name = base + "_tsv";
+                    lk.type = 1;
+                    lk.routers_present = 0;
+                    lk.has_global_link = 1;
+                    lk.link_kind = 1;
+                    lk.tech_node_nm = dram_node_nm;   // the TSV is DRAM-die silicon
+                    exactRect(segs, lk.vertical_nodes, lk.horizontal_nodes);
+                    lk.input_ports = 2;
+                    lk.output_ports = 2;
+                    lk.vcs_per_port = 1;
+                    lk.vc_buffer_entries = 1;
+                    lk.flit_bits = W;
+                    lk.clock_mhz = (garnet.clock_mhz > 0.0) ? garnet.clock_mhz : deviceCycleClockMHz(config);
+                    lk.chip_coverage = chip_cov;
+                    lk.on_dram_die = on_die;
+                    lk.total_accesses = dacc;
+                    lk.tsv_die_crossings = static_cast<int64_t>(dacc);
+                    double net_cycles = static_cast<double>(total_cycles);
+                    {
+                        const double cyc_mhz = deviceCycleClockMHz(config);
+                        if (lk.clock_mhz > 0.0 && cyc_mhz > 0.0) net_cycles *= (lk.clock_mhz / cyc_mhz);
+                    }
+                    lk.duty_cycle = (net_cycles > 0.0) ? static_cast<double>(dacc) / (net_cycles * segs) : 0.0;
+                    std::ostringstream hist;
+                    uint64_t pk_tot = 0, dsum = 0;
+                    for (const auto& kv : garnet.tsv_dies_hist) {
+                        hist << " " << kv.first << ":" << kv.second;
+                        pk_tot += kv.second; dsum += (uint64_t)kv.first * kv.second;
+                    }
+                    std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " TSVs ("
+                              << lk.name << "): die-boundary crossings per packet (crossings:packets)"
+                              << hist.str() << "; " << pk_tot << " packets, " << dsum
+                              << " packet-boundary crossings, mean "
+                              << (pk_tot ? static_cast<double>(dsum) / pk_tot : 0.0) << std::endl;
+                    std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " TSVs ("
+                              << lk.name << "): " << fd << " flit x boundary crossings (MEASURED, "
+                              << (garnet.level_source == "tier_walk" ? "analytical tier walk"
+                                                                     : "Garnet path walk")
+                              << ") = " << pkd << " packet-boundary crossings x " << fW
+                              << " flits (" << data_bits << " b at " << W << " b, " << wsrc
+                              << ") = " << dacc << " flit-boundary crossings to McPAT; "
+                              << segs << " TSV segment(s) of " << W << " TSVs (sum of the die"
+                                 " index over the built channel routers); mean "
+                              << (lf ? static_cast<double>(fd) / lf : 0.0)
+                              << " boundaries per up-link traversal; node " << dram_node_nm
+                              << " nm (DRAM array process); priced in McPAT as CACTI-3DD TSVs"
+                                 " (Coarse)" << std::endl;
+                    levels.push_back(lk);
+                }
+                return;
+            }
+            if (!config.power_model_noc_links) return;
+            const char* wsrc = nullptr;
+            const int W = levelWidth(lvl, &wsrc);
+            const uint32_t fW = (data_bits + static_cast<uint32_t>(W) - 1) /
+                                static_cast<uint32_t>(W);
+            const double pk = static_cast<double>(lf) / fpp;
+            const uint64_t acc = static_cast<uint64_t>(std::llround(pk * fW));
+            NoCLevel lk;
+            lk.name = base + "_links";
+            lk.type = 1;
+            lk.routers_present = 0;
+            lk.has_global_link = 1;
+            lk.link_kind = 0;
+            /* the STRUCTURE the links span; McPAT derives the length */
+            lk.link_span_area_mm2 = (die_mm2 > 0.0) ? die_mm2 : 0.0;
+            lk.link_parent_regions = lvl_routers[parent];
+            lk.tech_node_nm = on_die ? dram_node_nm : logic_node_nm;
+            exactRect(n_links, lk.vertical_nodes, lk.horizontal_nodes);
+            /* two ports, one link each way: McPAT's global_linked_ports =
+             * (in - 1) + (out - 1) = 2 directed links per node. */
+            lk.input_ports = 2;
+            lk.output_ports = 2;
+            lk.vcs_per_port = 1;
+            lk.vc_buffer_entries = 1;
+            lk.flit_bits = W;
+            lk.clock_mhz = (garnet.clock_mhz > 0.0) ? garnet.clock_mhz : deviceCycleClockMHz(config);
+            lk.chip_coverage = chip_cov;
+            lk.on_dram_die = on_die;
+            lk.total_accesses = acc;
+            lk.link_traversals = static_cast<int64_t>(acc);
+            double net_cycles = static_cast<double>(total_cycles);
+            {
+                const double cyc_mhz = deviceCycleClockMHz(config);
+                if (lk.clock_mhz > 0.0 && cyc_mhz > 0.0) net_cycles *= (lk.clock_mhz / cyc_mhz);
+            }
+            lk.duty_cycle = (net_cycles > 0.0)
+                ? static_cast<double>(acc) / (net_cycles * n_links) : 0.0;
+            std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " links ("
+                      << lk.name << "): " << n_links << " up-link(s) to L" << parent
+                      << ", traversals " << acc << " = " << pk << " packet crossings x "
+                      << fW << " flits (" << data_bits << " b at " << W << " b, " << wsrc
+                      << "); crossings = " << lf << " link flit traversals / " << fpp
+                      << " flits per packet, "
+                      << (garnet.level_source == "tier_walk" ? "from the analytical tier walk"
+                                                             : "MEASURED by the Garnet path walk")
+                      << "; structure to McPAT: span " << lk.link_span_area_mm2
+                      << " mm^2 over " << lk.link_parent_regions << " L" << parent
+                      << " region(s) (McPAT derives the H-tree length)"
+                      << (die_mm2 > 0.0 ? "" : " -- no DRAM die area: McPAT's own mesh"
+                                               " derivation stands in")
+                      << "; node " << lk.tech_node_nm << " nm ("
+                      << (on_die ? "DRAM array process, the generation's CACTI table"
+                                 : "the run's logic node") << ")"
+                      << "; duty " << lk.duty_cycle << "; "
+                      << (on_die ? "on the DRAM die" : "off-die logic")
+                      << (passthrough ? "; pass-through level: its routers forward, they"
+                                        " are NOT priced as routers, their flits are"
+                                        " priced on this wire" : "")
+                      << std::endl;
+            if (passthrough && garnet.level_router_traversals[lvl] != lf)
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                          << " cross-check: " << garnet.level_router_traversals[lvl]
+                          << " router flit traversals vs " << lf << " up-link flit"
+                             " traversals (equal on a pure pass-through level with no"
+                             " endpoint)" << std::endl;
+            if (!on_die)
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                          << " links: NO PUBLISHED SOURCE FOUND for the geometry of an"
+                             " off-die (rank/channel/system) fabric; the DRAM die's"
+                             " span stands in for the logic side's" << std::endl;
+            if (!stacked_part && lvl == 3 && parent >= 4)
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                          << " links leave the DRAM chip for the rank: priced as on-die"
+                             " wire over the die span; NO PUBLISHED SOURCE FOUND for the"
+                             " package/board segment of a PIM fabric link" << std::endl;
+            levels.push_back(lk);
+        };
 
         for (int lvl = pe_level; lvl < 7; lvl++) {
             NoCLevel nc;
@@ -8781,6 +9840,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                       << (lvl - pe_level) << " (" << nc.name
                                       << ") has no branch router and no endpoint,"
                                          " so it is not priced at all" << std::endl;
+                    /* 1.12.18: no longer "NOT priced". The level's routers
+                     * only forward, so they get no crossbar or allocator;
+                     * the wire they forward onto -- the level's up-links --
+                     * is priced from its measured link traversals (a
+                     * stacked part's die crossings as TSVs, see
+                     * diesCrossed). */
                     if (has_levels && garnet.level_router_traversals[lvl] > 0)
                         std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                                   << " (" << nc.name << "): "
@@ -8788,10 +9853,15 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                   << " flit traversals of pass-through routers"
                                   << (garnet.level_source == "tier_walk"
                                           ? " (analytical tier walk)" : " (MEASURED)")
-                                  << " are NOT priced: the level has no branch"
-                                     " router or endpoint, and pass-through"
-                                     " routers are not priced as wire in this"
-                                     " release" << std::endl;
+                                  << (config.power_model_noc_links
+                                          ? ": no branch router or endpoint, so no router"
+                                            " is priced here; the level's links are"
+                                          : " are NOT priced: the level has no branch"
+                                            " router or endpoint, and its links are not"
+                                            " priced BY USER OPTION (power.models.noc_links)")
+                                  << std::endl;
+                    emitLinks(lvl, nc.name, nc.on_dram_die,
+                              1.0 / static_cast<double>(surviving_levels), true);
                     continue;
                 }
                 nodes = chg;
@@ -8844,30 +9914,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
              * of the fabric the run built (Garnet: 2 vnets, read and write). */
             nc.vcs_per_port = std::max(1, config.noc_vnets) * std::max(1, config.noc_vcs_per_vnet);
 
-            /* 1.11.92 (F7): each level is priced at ITS OWN datapath width, from
-             * the same ladder the "Hierarchy link ladder" line prints (after
-             * any noc.levels override). It was Garnet's single 128-bit flit at
-             * every level, so the 256-bit bank-group datapath and the 64-bit
-             * rank bus were both priced as 128-bit routers. Garnet's topology
-             * clamps widths at 128 b for its own flit engine; the power model
-             * is not bound by that clamp. */
-            int W = garnet_flit;
-            const char* wsrc = "Garnet flit width: no sourced ladder width for this level";
-            if (lvl < 7 && config.network_level_overrides[lvl].link_width_bits > 0) {
-                W = config.network_level_overrides[lvl].link_width_bits;
-                wsrc = "noc.levels override";
-            } else if (lvl < 7 && config.htree_tier_width_bits[lvl] > 0) {
-                /* 1.11.97 (review H20): the width the built tree carries at this
-                 * tier -- the per-node link Garnet runs on -- not the ladder's
-                 * aggregate rung (an HBM chip tier at 1024 b vs 64 b per node). */
-                W = config.htree_tier_width_bits[lvl];
-                wsrc = "the built tree's link width at this tier";
-            } else if (config.sourced_ladder_valid &&
-                       !(config.sourced_ladder_placeholder_mask & (1 << lvl)) &&
-                       config.sourced_ladder_w[lvl] > 0) {
-                W = config.sourced_ladder_w[lvl];
-                wsrc = "sourced ladder";
-            }
+            /* 1.11.92 (F7): the level's own datapath width (levelWidth above). */
+            const char* wsrc = nullptr;
+            const int W = levelWidth(lvl, &wsrc);
             nc.flit_bits = W;
             /* 1.11.60 (audit round 4, B014): ONE clock authority, numerator
              * and denominator alike. The duty-cycle conversion below asks
@@ -8964,6 +10013,76 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.chip_coverage = chip_cov;
             nc.vc_buffer_entries = built_bufs;   // 1.11.93
 
+            /* 1.12.18 (user ruling "pass-through routers as wire"): a router
+             * on this (surviving) level with one router child and no
+             * endpoint -- a single in/out path -- only forwards: every flit
+             * it carries came up the child's up-link and leaves by its own
+             * up-link (or the reverse), and both links are priced by the
+             * links-only instances (power.models.noc_links). Its measured
+             * flits are passed to McPAT as passthrough_accesses, re-cut at
+             * the level's width exactly as the level's accesses are (F7),
+             * and the McPAT fork prices total_accesses - passthrough_accesses
+             * router accesses (noc.cc). No new wire term: the link instance
+             * already carries them. The router COUNT is unchanged: the level
+             * is priced at branch routers + endpoints (1.11 census), which
+             * never counted a pass-through router. A bus level has no router
+             * to remove (its bus is its wire). */
+            if (nc.type != 0 && has_levels && garnet.level_wire_present &&
+                garnet.level_wire_traversals[lvl] > 0) {
+                const uint64_t wt = garnet.level_wire_traversals[lvl];
+                const uint64_t lf = garnet.level_link_traversals[lvl];
+                const double wpk = static_cast<double>(wt) / fpp;
+                const uint64_t wacc = std::min<uint64_t>(level_accesses,
+                    static_cast<uint64_t>(std::llround(wpk * fW)));
+                const std::string head = "  [NoC] " + lbl + "level " + std::to_string(lvl - pe_level)
+                                       + " (" + nc.name + "): ";
+                if (!config.power_model_passthrough_as_wire)
+                    std::cout << head << wt << " flit traversals of " << garnet.level_wire_routers[lvl]
+                              << " pass-through router(s) (one router child, no endpoint) are priced"
+                                 " as router accesses BY USER OPTION (power.models.passthrough_as_wire:"
+                                 " false)" << std::endl;
+                else if (!config.power_model_noc_links || !link_counts)
+                    std::cout << head << wt << " flit traversals of " << garnet.level_wire_routers[lvl]
+                              << " pass-through router(s) stay router accesses: the links they ride are"
+                                 " not priced in this run ("
+                              << (!config.power_model_noc_links ? "power.models.noc_links: false"
+                                                                : "no per-level link counts")
+                              << "), so moving them would price them nowhere" << std::endl;
+                else if (it_acc != overrides.end())
+                    std::cout << head << "pass-through as wire NOT applied: the level's accesses are"
+                                 " overridden by yaml (" << prefix << ".total_accesses)" << std::endl;
+                else {
+                    nc.passthrough_accesses = static_cast<int64_t>(wacc);
+                    const int branch_here = config.htree_level_branch[lvl];
+                    const int eps_lvl = config.htree_level_endpoints[lvl];
+                    std::cout << head << "pass-through routers as wire (power.models.passthrough_as_wire): "
+                              << garnet.level_wire_routers[lvl] << " of the level's "
+                              << garnet.level_routers[lvl] << " router(s) have one router child and no"
+                                 " endpoint (a single in/out path) and carry " << wt << " of its "
+                              << garnet.level_router_traversals[lvl] << " router flit traversals"
+                              << (garnet.level_source == "tier_walk" ? " (analytical tier walk)" : " (MEASURED)")
+                              << "; passthrough_accesses " << wacc << " = " << wpk << " packet crossings x "
+                              << fW << " flits to McPAT, which prices " << level_accesses << " - " << wacc
+                              << " = " << (level_accesses - wacc) << " router accesses (router accesses"
+                                 " before " << level_accesses << " = after " << (level_accesses - wacc)
+                              << " + moved " << wacc << "); router count unchanged at " << nodes
+                              << " priced node(s) = " << branch_here << " branch + " << eps_lvl
+                              << " endpoint(s) (the census never counted a pass-through router)"
+                              << std::endl;
+                    std::cout << head << "the moved flits are priced as wire, once: each leaves its"
+                                 " pass-through router by the level's up-link ("
+                              << nc.name << "_links, " << lf << " link flit traversals; " << wt
+                              << " <= " << lf << ": " << (wt <= lf ? "OK" : "FAIL")
+                              << ") and entered it by the child level's up-link; no wire term is"
+                                 " added for them" << std::endl;
+                    if (wt > lf)
+                        std::cerr << "[NoC] WARNING: " << lbl << "level " << (lvl - pe_level)
+                                  << " pass-through flits " << wt << " exceed the level's up-link"
+                                     " flit traversals " << lf << ": a pass-through flit priced"
+                                     " on no link" << std::endl;
+                }
+            }
+
             /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED -- every number
              * McPAT scales this level by, with its formula, on one line.
              * 1.11.92: the accesses clause says what it counts (packet
@@ -8999,6 +10118,20 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                           << ", nodes " << nodes << "." << std::endl;
             }
 
+            /* 1.12.18: the level's up-links, priced on their own instance so
+             * the router classes below are untouched. A bus level's bus is
+             * its wire already (see emitLinks). */
+            if (nc.type != 0) {
+                emitLinks(lvl, nc.name, nc.on_dram_die, nc.chip_coverage, false);
+            } else if (link_counts && garnet.level_link_traversals[lvl] > 0) {
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " ("
+                          << nc.name << ") is a McPAT BUS: the bus is this level's wire,"
+                             " charged by McPAT with the level's " << nc.total_accesses
+                          << " accesses; its " << garnet.level_link_traversals[lvl]
+                          << " up-link flit traversals ride that bus and are not priced"
+                             " a second time" << std::endl;
+            }
+
             /* 1.11.97 (review H19): a level is priced per ROUTER CLASS. The census
              * records how many branch routers of each port count the level
              * built; each class is one McPAT NoC instance at its own port count
@@ -9015,18 +10148,41 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     const int class_nodes_total = total_hist + eps_here;
                     const uint64_t acc_total = nc.total_accesses;
                     uint64_t acc_given = 0; int emitted = 0;
+                    /* 1.12.18 (ruling "pass-through routers as wire"): the
+                     * router accesses (total - pass-through) and the
+                     * pass-through accesses are each split by the H19 rule,
+                     * so every class keeps pass-through <= total and the
+                     * sums stay exact (router sum = total - pass-through). */
+                    const bool pt_on = (nc.passthrough_accesses >= 0);
+                    const uint64_t pt_total = pt_on ? static_cast<uint64_t>(nc.passthrough_accesses) : 0;
+                    uint64_t rt_given = 0, pt_given = 0;
                     auto emitClass = [&](int ports, int count, const std::string& tag, bool last) {
                         NoCLevel c = nc;
                         c.name = nc.name + tag;
                         c.input_ports = ports; c.output_ports = ports;
                         exactRect(count, c.vertical_nodes, c.horizontal_nodes);
+                        if (pt_on) {
+                            const uint64_t rt_total = acc_total - pt_total;
+                            const uint64_t rc = last ? (rt_total - rt_given)
+                                                     : (uint64_t)((double)rt_total * (double)count / (double)class_nodes_total + 0.5);
+                            const uint64_t pc = last ? (pt_total - pt_given)
+                                                     : (uint64_t)((double)pt_total * (double)count / (double)class_nodes_total + 0.5);
+                            rt_given += rc; pt_given += pc;
+                            c.total_accesses = rc + pc;
+                            c.passthrough_accesses = static_cast<int64_t>(pc);
+                        } else
                         c.total_accesses = last ? (acc_total - acc_given)
                                                 : (uint64_t)((double)acc_total * (double)count / (double)class_nodes_total + 0.5);
                         acc_given += c.total_accesses;
                         c.chip_coverage = nc.chip_coverage * (double)count / (double)class_nodes_total;
                         levels.push_back(c);
                         std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " class " << c.name << ": " << count
-                                  << " node(s) x " << ports << " ports, " << c.total_accesses << " traversals (H19)" << std::endl;
+                                  << " node(s) x " << ports << " ports, " << c.total_accesses << " traversals (H19)";
+                        if (pt_on)   // 1.12.18
+                            std::cout << ", of which " << c.passthrough_accesses << " pass-through (priced as"
+                                         " wire), " << (c.total_accesses - c.passthrough_accesses)
+                                      << " router accesses to McPAT";
+                        std::cout << std::endl;
                         emitted++;
                     };
                     int classes_left = (eps_here > 0 ? 1 : 0);
@@ -9096,6 +10252,22 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         nc.total_accesses = accesses;
         nc.duty_cycle = duty;
         nc.vc_buffer_entries = built_bufs;   // 1.11.93
+        /* 1.12.18: a flat fabric is a mesh, which is what McPAT's own link
+         * model describes (length sqrt(area x coverage) / nodes per side /
+         * 2, global_linked_ports per router): its links are built, and
+         * their activity is the MEASURED link flit traversals (Garnet's flit
+         * is this instance's flit), not the router accesses McPAT would
+         * otherwise charge them with. A BUS has no links beyond the bus. */
+        if (nc.type != 0 && !config.power_model_noc_links) {
+            std::cout << "  [NoC] " << lbl << "flat links: NOT priced BY USER OPTION"
+                         " (power.models.noc_links: false)" << std::endl;
+        } else if (nc.type != 0) {
+            nc.has_global_link = 1;
+            nc.link_traversals = static_cast<int64_t>(garnet.link_traversals);
+            std::cout << "  [NoC] " << lbl << "flat links: " << garnet.link_traversals
+                      << " link flit traversals (MEASURED), McPAT's mesh link model"
+                         " (length from the die area and the node count)" << std::endl;
+        }
 
         /* 1.11.80 (R6-13): the flat branch gets the same announcement as the
          * hierarchical one above. The doc comment's claim is about the
@@ -9266,6 +10438,71 @@ static bool crossesOffPackageDQ(int pe_hierarchy_level,
  *
  * `label` prefixes every message ("" in device scope, "<node>: " per node);
  * `freq_mhz` and `gc` belong to the element being priced. */
+/* PIMID 1.12.18 (user ruling, per-die process): EACH COMPONENT PRICED AT THE
+ * DIE IT SITS ON. The placement matrix (the family decision above) says which
+ * components are on DRAM silicon: at a DRAM-periphery placement the PEs, their
+ * caches and element controllers and the NoC levels marked on_dram_die are on
+ * the DRAM die; the off-die NoC levels and the link controller on the logic
+ * die. At a logic placement every logic component is on the logic die. PIMID
+ * passes the dies' processes; McPAT gives each component the InputParameter
+ * of its die (processor.cc). Absent a process block every number is today's.
+ * Runs BEFORE applyCornerAndPeripheryPricing (which reads the DRAM node). */
+static void applyDieProcessNode(pimid::McPATWrapper::SystemConfig& mcfg, const UnifiedConfig& config,
+                                const std::string& memory_tech, const std::string& label) {
+    if (!config.proc_given) return;
+    if (!config.pm_per_die_process) {
+        std::cout << "  [tech] " << label << "system.devices[].process IGNORED BY USER OPTION"
+                     " (power.models.per_die_process: false)" << std::endl;
+        return;
+    }
+    const int dn = dieProcessDramNode(config, memory_tech);
+    if (mcfg.process_family == 1) {
+        mcfg.dram_periph_table_nm = dn;
+        mcfg.tech_node_nm = dn;
+        if (config.proc_dram_family > 0) mcfg.dram_periph_device = config.proc_dram_family;
+        if (config.proc_logic_node_nm > 0) mcfg.logic_die_node_nm = config.proc_logic_node_nm;
+        std::cout << "  [tech] " << label << "per-die process: DRAM die (PEs, their caches and controllers, on-die"
+                     " NoC levels) at " << dn << " nm, CACTI " << (mcfg.dram_periph_device == 3 ? "lp-dram" : "comm-dram")
+                  << " periphery (" << (config.proc_dram_node_nm > 0 ? "process.dram_die.node_nm"
+                                      : !config.proc_dram_generation.empty() ? "process.dram_die.generation " + config.proc_dram_generation
+                                      : "the memory technology's generation")
+                  << "); logic die (off-die NoC levels, link controller) at "
+                  << (config.proc_logic_node_nm > 0 ? std::to_string(config.proc_logic_node_nm) + " nm (process.logic_die.node_nm)"
+                                                    : std::string("the chip node ") + std::to_string(dn) + " nm for its routers and "
+                                                      + std::to_string(dieProcessLogicNode(config)) + " nm for its links (today's default)")
+                  << std::endl;
+    } else {
+        if (config.proc_logic_node_nm > 0) mcfg.tech_node_nm = config.proc_logic_node_nm;
+        std::cout << "  [tech] " << label << "per-die process: every logic component sits on the logic die at "
+                  << mcfg.tech_node_nm << " nm" << (config.proc_logic_node_nm > 0 ? " (process.logic_die.node_nm)" : "")
+                  << "; the DRAM die (" << dn << " nm) carries only the fabric's on-die links and TSVs here" << std::endl;
+    }
+}
+/* PIMID 1.12.18: the logic die's device type (after the corner pricing, which
+ * sets the chip's) and the per-die trunk's structure: the DRAM dies holding
+ * the device's DRAM-side components and the area of one (the calibrated die). */
+static double computeDramDieAreaMM2(const std::string& memory_tech, bool print, int effective_banks);
+static void applyDieProcessDevice(pimid::McPATWrapper::SystemConfig& mcfg, const UnifiedConfig& config,
+                                  const std::string& memory_tech, const std::string& label) {
+    if (config.proc_given && config.pm_per_die_process && config.proc_logic_device_type >= 0) {
+        if (mcfg.process_family == 1) mcfg.logic_die_device_type = config.proc_logic_device_type;
+        else mcfg.device_type = config.proc_logic_device_type;
+        std::cout << "  [tech] " << label << "per-die process: logic die device type " << config.proc_logic_device_type
+                  << " (0 hp, 1 lstp, 2 lop; process.logic_die.device_type)" << std::endl;
+    }
+    if (mcfg.process_family == 1) {
+        mcfg.dram_die_count = (config.htree_dram_dies > 0) ? config.htree_dram_dies : 1;
+        mcfg.dram_die_area_mm2 = computeDramDieAreaMM2(memory_tech, false, 0);
+        if (mcfg.clock_network && mcfg.clock_die_trunk)
+            std::cout << "  [power] " << label << "per-die clock trunk structure: " << mcfg.dram_die_count
+                      << " DRAM die(s) hold the device's DRAM-side components ("
+                      << (config.htree_dram_dies > 0 ? "the built fabric's stack core dies / chips"
+                                                     : "no fabric census: one die")
+                      << "), " << mcfg.dram_die_area_mm2 << " mm^2 each (the calibrated DRAM die); the logic"
+                         " die is the area McPAT gives its components" << std::endl;
+    }
+}
+
 static void applyCornerAndPeripheryPricing(
         pimid::McPATWrapper::SystemConfig& mcfg,
         const UnifiedConfig& config,
@@ -9299,7 +10536,7 @@ static void applyCornerAndPeripheryPricing(
             double fa_c = 0, fd_c = 0, fl_c = 0;
             const bool coherent = pimid::McPATWrapper::periphFactorsFor(
                 mcfg.dram_periph_table_nm, mcfg.tech_node_nm, baseline,
-                mcfg.temperature_k, fa_c, fd_c, fl_c);
+                mcfg.temperature_k, fa_c, fd_c, fl_c, mcfg.dram_periph_device);   // PIMID 1.12.18: DRAM die family
             if (!coherent) {
                 std::cerr << "[config] FATAL: " << label << "DRAM-periphery components cannot be "
                              "priced at device column " << baseline
@@ -9320,6 +10557,10 @@ static void applyCornerAndPeripheryPricing(
                 std::exit(2);
             }
             corner = baseline;
+            if (!config.device_corner_given)   // 1.12.18: user ruling 2026-10-24 (final): logic die stays hp
+                std::cout << "  [tech] " << label << "PEs on the DRAM die (DRAM-periphery pricing); the "
+                             "logic die's NoC routers and link controller use " << config.device_corner
+                          << " (power.device_corner) [1.12.18]" << std::endl;
             /* 1.11.17 (audit go-through): report the factor actually APPLIED
              * -- the emitted XML carries fa x subarray_pitch_factor, and the
              * old print showed fa alone, so at SUBARRAY placement the
@@ -9463,6 +10704,39 @@ static void applyCornerAndPeripheryPricing(
                                  "thermals and pitch as well as transistor "
                                  "delay." << std::endl;
                 }
+            }
+        } else if (config.pm_per_die_process && !config.device_corner_given &&
+                   !overrides.count("device_type")) {
+            /* 1.12.18 (USER RULING 2026-10-24, third and final): PEs ON A LOGIC
+             * DIE STAY ON hp (the default power.device_corner), the whole logic
+             * die (PEs, NoC routers, memory controllers) at one corner (one die,
+             * one process). Tried and rejected by the user: lop (CACTI 22 nm lop
+             * I_off_n exceeds hp's above ~60 C: PE leakage 17.85 -> 29.66 mW at
+             * 350 K) and lstp (leakage 0.17 mW/PE but dynamic 16.1 mW/PE at IPC 1,
+             * above the published 6.1-14.3 band). power.device_corner,
+             * process.logic_die.device_type and power.mcpat_overrides.device_type
+             * still choose. FEASIBILITY at the PE clock is still checked and
+             * printed (no clock is changed): the McPAT fork's "[mcpat timing]"
+             * array line and, here, the PE scratchpad's CACTI access time at the
+             * corner in use against one PE cycle. */
+            std::cout << "  [tech] " << label << "logic-die PE corner hp (default; whole logic die at one "
+                         "corner; user ruling 2026-10-24: lop and lstp tried and rejected) [1.12.18]; "
+                         "power.device_corner / process.logic_die.device_type override it" << std::endl;
+            const double period_ns = (freq_mhz > 0.0) ? 1000.0 / freq_mhz : 0.0;
+            if (config.pe_spm_bytes > 0 && period_ns > 0.0) {
+                const double ns = scratchpadAccessNsAt(config.pe_spm_bytes, mcfg.tech_node_nm, corner);
+                if (ns <= 0.0)
+                    std::cout << "  [tech] " << label << "WARNING: PE timing: the PE scratchpad ("
+                              << config.pe_spm_bytes << " B) has no CACTI solution at this corner; NOT CHECKED" << std::endl;
+                else if (ns > period_ns)
+                    std::cout << "  [tech] " << label << "WARNING: PE timing FAIL: PE scratchpad "
+                              << config.pe_spm_bytes << " B access " << ns << " ns (CACTI, "
+                              << mcfg.tech_node_nm << " nm) > PE cycle " << period_ns << " ns at " << freq_mhz
+                              << " MHz. The clock is NOT changed; power is reported at the requested clock." << std::endl;
+                else
+                    std::cout << "  [tech] " << label << "PE timing PASS: PE scratchpad " << config.pe_spm_bytes
+                              << " B access " << ns << " ns (CACTI, " << mcfg.tech_node_nm
+                              << " nm) <= PE cycle " << period_ns << " ns at " << freq_mhz << " MHz" << std::endl;
             }
         } else if (corner != 0) {
             /* 1.11.17: say when a corner is APPLIED, not only when refused --
@@ -9639,6 +10913,26 @@ static pimid::McPATWrapper::DeviceProfile describeTimingCore(
         mcfg.commit_width = g_core_rec.ooo.retire_width;
         mcfg.num_alus = 4; mcfg.num_muls = 2; mcfg.num_fpus = 2;
         mcfg.has_branch_predictor = true;
+        /* 1.12.18: the first-level TLB arrays of the core the
+         * OOO timing model mirrors (core record ooo, Intel 248966-031 sec.
+         * 2.5.4): 4 KB-page + large-page entries per McPAT array, 4-way. The
+         * wrapper emits them for a host core only (device elements have no
+         * TLB). The STLB has no McPAT structure: recorded, not priced. */
+        mcfg.itlb_entries = g_core_rec.ooo.itlb_entries + g_core_rec.ooo.itlb_large_entries;
+        mcfg.dtlb_entries = g_core_rec.ooo.dtlb_entries + g_core_rec.ooo.dtlb_large_entries;
+        mcfg.tlb_assoc = g_core_rec.ooo.tlb_associativity;
+        {
+            static bool told_tlb = false;
+            if (!told_tlb && mcfg.tlb_published_geometry) {
+                told_tlb = true;
+                std::cout << "  [power] host OOO core TLBs (core record, Westmere/Nehalem, Intel 248966-031 sec. 2.5.4): ITLB "
+                          << g_core_rec.ooo.itlb_entries << "+" << g_core_rec.ooo.itlb_large_entries << ", DTLB "
+                          << g_core_rec.ooo.dtlb_entries << "+" << g_core_rec.ooo.dtlb_large_entries << " entries (4 KB + large), "
+                          << mcfg.tlb_assoc << "-way; STLB " << g_core_rec.ooo.stlb_entries
+                          << " entries NOT priced (McPAT has no second-level TLB; zsim models no TLB misses)."
+                             " Device elements: no TLB (physical addressing), 1-entry floor." << std::endl;
+            }
+        }
         return W::DeviceProfile::OOO;
     }
     if (type == "alu_core" || type == "alu") {
@@ -9834,6 +11128,379 @@ static double gapPowerDownResidency(const UnifiedConfig& config,
     if (th_cyc_out) *th_cyc_out = th_cyc;
     if (denom_cyc_out) *denom_cyc_out = denom;
     return (r > 1.0) ? 1.0 : r;
+}
+
+/* 1.12.18 (user rulings 2026-10-23): the link controller clock and the UCIe
+ * link-class PARAMETERS McPAT prices from. No energy or clock arithmetic here
+ * ("Call them in PIMID but don't add them directly to PIMID"): the D2D clock
+ * derivation and the UCIe pJ/bit x bytes live in the McPAT fork
+ * (external/mcpat/iocontrollers.cc, PIMID 1.12.18).
+ * Clock: power.link.controller_clock_mhz when given; else the class's
+ * published default (PCIe/CXL: the PIPE convention, CactiIOWrapper; the
+ * interposer, a UCIe advanced-package module: McPAT derives the D2D clock from
+ * lanes x rate / (8 x 64 B FDI)); else (NVLink, UALink) REFUSED -- no
+ * published controller clock, and the 1000 MHz assumption is gone.
+ * Returns "" when resolvable, else the refusal text. */
+static std::string linkClockRefusal(const UnifiedConfig& config, const std::string& t) {
+    if (config.pcie_controller_clock_mhz > 0) return "";
+    if (PIMID::CactiIOWrapper::linkControllerClockMHz(t) > 0.0) return "";
+    if (t.rfind("interposer", 0) == 0 && PIMID::CactiIOWrapper::linkRateGTs(t) > 0.0) return "";
+    return "NO PUBLISHED SOURCE FOUND: link controller clock for link type '" + t +
+           "' (no PIPE convention, no UCIe D2D derivation). Set power.link.controller_clock_mhz"
+           " (legacy alias power.pcie.controller_clock_mhz) to the controller clock in MHz (1.12.18).";
+}
+
+static void setLinkModelParams(const UnifiedConfig& config, pimid::McPATWrapper::PCIeStats& ps,
+                               bool energy_end, const std::string& who) {
+    const std::string& t = config.pcie_link_type;
+    const bool interposer = (t.rfind("interposer", 0) == 0);
+    if (interposer) {
+        /* the class's published lane rate (specFor: UCIe advanced package
+         * module); McPAT validates it against the UCIe 1.1 rates. */
+        ps.lane_rate_gts = PIMID::CactiIOWrapper::linkRateGTs(t);
+        if (config.ucie_link_model) {
+            ps.link_class = 1;        // UCIe, priced in McPAT
+            ps.ucie_package = 1;      // interposer = UCIe ADVANCED package (linkLanesPerModule)
+            ps.phy_pj_per_bit = (config.pcie_pj_per_bit_override >= 0.0)
+                                    ? config.pcie_pj_per_bit_override : -1.0;
+            ps.link_pj_per_bit = 0.0; // the legacy per-bit stat is not used: no double count
+            ps.link_energy_end = energy_end;
+            ps.link_node_nm = config.link_process_node_nm;   // 1.12.18: two-node rows (McPAT selects)
+        } else {
+            static bool said_off = false;
+            if (!said_off) {
+                said_off = true;
+                std::cout << "  [link] power.models.ucie_link=false: the interposer link is priced by the"
+                             " pre-1.12.18 path (McPAT controller dynamic + the band's applied pJ/bit via"
+                             " link_pj_per_bit); McPAT's UCIe link model is OFF. The controller clock keeps"
+                             " its published UCIe default." << std::endl;
+            }
+        }
+    }
+    if (config.pcie_controller_clock_mhz > 0) {
+        ps.link_clock_mhz = config.pcie_controller_clock_mhz;
+        std::cout << "  [link] " << who << ": controller clock " << ps.link_clock_mhz
+                  << " MHz (power.link.controller_clock_mhz, user)" << std::endl;
+        return;
+    }
+    const double clk = PIMID::CactiIOWrapper::linkControllerClockMHz(t);
+    if (clk > 0.0) {
+        ps.link_clock_mhz = static_cast<int>(clk + 0.5);   // PIPE convention (1.11.42)
+        return;
+    }
+    const std::string why = linkClockRefusal(config, t);
+    if (!why.empty()) {
+        std::cerr << "[config] FATAL: " << why << std::endl;
+        std::exit(2);
+    }
+    ps.link_clock_mhz = 0;   // McPAT derives the UCIe D2D clock (printed by McPAT)
+    std::cout << "  [link] " << who << ": controller clock not given; McPAT derives the"
+                 " UCIe D2D clock (see the [link] controller clock line)" << std::endl;
+}
+
+/* 1.12.18 (user ruling "make the power model complete"): the coherence
+ * directory a zsim host already runs -- MESITopCC keeps a sharer bitset per
+ * line in every non-terminal cache (external/zsim/src/coherence_ctrls.h) --
+ * was priced by nothing: McPAT got number_of_L1/L2Directories = 0 and plain
+ * NonDir caches. McPAT's own model of an in-cache directory is SBT ("sharer
+ * bits in tag", merged_dir; S. Li et al., "McPAT: An Integrated Power, Area,
+ * and Timing Modeling Framework for Multicore and Manycore Architectures",
+ * MICRO 2009; external/mcpat/sharedcache.cc): each line widens by the sharer
+ * bits and home-node accesses are priced on top. Its activity is what the
+ * directory did: the INV/INVX/FWD the children received, cast as directory
+ * WRITE accesses -- McPAT's reference Xeon.xml: "the invalidates can be
+ * considered as writes". The wrapper maps the two sums onto the caches that
+ * own those directories and prints the mapping. */
+template <class S>
+static void feedCoherenceDirectory(pimid::McPATWrapper& m, const S& s, bool enabled) {
+    m.setCoherenceDirectoryEvents(s.l1_coh_events(), s.l2_coh_events(), enabled);
+    std::cout << "  [mcpat] coherence events parsed (zsim, received from the "
+                 "parent directory): L1 INV=" << s.l1_INV << " INVX=" << s.l1_INVX
+              << " FWD=" << s.l1_FWD << "; L2 INV=" << s.l2_INV << " INVX="
+              << s.l2_INVX << " FWD=" << s.l2_FWD << std::endl;
+}
+
+/* 1.12.18: ONE PRICE FOR A NON-DRAM MAIN-MEMORY ARRAY, BOTH SCOPES.
+ *
+ * Device scope priced SRAM (CACTI 7) and STT_MRAM/PCM/RERAM (NVSim) inline,
+ * while system scope's reportSharedMemoryArrayEnergy() returned 0 W for the
+ * same four technologies -- so a co-simulated system whose memory is one of
+ * them carried the array's silicon in System Total AREA (1.11.46 L242,
+ * computeNonDramMemAreaMM2) and none of its power in System Total POWER: the
+ * two adjacent lines described different machines again (the 1.11.45 E31
+ * argument). User ruling "make the power model complete": every component is
+ * priced with measured activity and summed into its scope's total.
+ *
+ * The device-scope blocks are MOVED here verbatim (their history comments
+ * with them), not re-derived: the same one-bank characterisation
+ * (memory.bank_kb, 1.11.94), the same corner / temperature / interconnect
+ * projection / ports, the same per-bank scaling of the extensive terms
+ * (leakage, area x banks; per-access energy is one bank's), and the same
+ * measured array-gating residuals (CACTI parameter.cc per-node
+ * peri_global.Vcc_min/Vdd = 0.35, sram_cell.Vcc_min/Vdd = 0.65). Only the
+ * inputs changed hands: config.num_banks -> banks, the device-MC counter
+ * reads -> gate. The printed [pg] lines are byte-identical to the ones device
+ * scope printed (gate.counter = "device-MC"), so a device-scope run's numbers
+ * and log do not move. Throws what the tool throws; the caller owns the
+ * failure policy (device scope: SRAM prints, NVM is fatal, 1.11.56 D032). */
+struct NonDramArrayPrice {
+    double rd_nj = 0.0;      // per access, one bank (one access hits one bank)
+    double wr_nj = 0.0;
+    double leak_mw = 0.0;    // whole array (x banks), after measured gating
+    double area_mm2 = 0.0;   // whole array (x banks)
+};
+struct NonDramGateInput {
+    bool requested = false;          // memory.array_pg (1.11.41 memory-side flag)
+    bool window = false;             // a priced PG window exists
+    bool armed = false;              // 1.11.57 A003: the watching counter(s) advanced, or no traffic
+    double r_idle = 0.0;             // measured idle residency of the array
+    const char* counter = "device-MC";
+};
+/* node_nm: the process node of the node that OWNS the array (1.12.18 user
+ * rule: price an enrichment at the right node). Device scope passes
+ * config.tech_node_nm, which is what it always used; system scope passes the
+ * owning node's own tech_node_nm. CACTI and NVSim scale to it themselves. */
+static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
+                                           const UnifiedConfig& config,
+                                           const NonDramGateInput& gate,
+                                           int node_nm) {
+    NonDramArrayPrice p;
+    if (tech == "SRAM") {
+        // Per-bank characterization: model ONE 64KB bank (CACTI supports only
+        // 1-32 banks; a 256-bank device would overflow its range), then scale
+        // the extensive quantities (leakage, area) by the bank count. Per-access
+        // energy is already per-bank -- one access hits one bank.
+        pimid::CACTIWrapper::SRAMConfig sram_cfg;
+        sram_cfg.device_corner = (config.device_corner == "lstp") ? 1 : (config.device_corner == "lop") ? 2 : 0;  // 1.11.49 (L59)
+            sram_cfg.ic_proj_type = config.interconnect_projection;   // 1.11.30 E5: one metal stack
+        sram_cfg.capacity_bytes = g_bank_unit_bytes;  // one bank (memory.bank_kb, 1.11.94)
+        sram_cfg.line_size = config.cache_line_size;
+        sram_cfg.associativity = 1;
+        sram_cfg.banks = 1;
+        sram_cfg.tech_node_nm = validateTechNodeNm(node_nm, "SRAM array");
+        sram_cfg.temperature = static_cast<uint32_t>(config.temperature_k);  // 1.11.52 (D055)
+        sram_cfg.is_cache = false;  // RAM mode
+        sram_cfg.read_write_ports = config.ports_per_bank;
+
+        pimid::CACTIWrapper cacti(sram_cfg);
+        cacti.initialize();
+
+        double rd_energy = cacti.getDynamicReadEnergy();  // per-access (one bank)
+        double wr_energy = cacti.getDynamicWriteEnergy();
+        double leakage = cacti.getLeakagePower() * banks;  // x banks (device scope passes num_banks)
+        double area = cacti.getArea() * banks;
+
+        /* 1.11.18 (audit go-through): pim.mc.pg reached the DRAM branch
+         * (IDD2P descent) and the NVM branch (retention floor) and did
+         * NOTHING here -- an SRAM main memory silently ignored the flag
+         * in the same if/else chain. SRAM is VOLATILE: gating the array
+         * loses the data, so only the PERIPHERY can gate, at the same
+         * CACTI-class sleep-tx residual the McPAT endpoints use
+         * (Vcc_min/Vdd ~= 0.35). The cell array keeps its full leakage.
+         * The split is stated rather than assumed: CACTI does not
+         * separate them here, so the periphery share is declared. */
+        /* 1.11.41: memory-side flag. This gates the ARRAY periphery, which
+         * is a property of the memory, not of its controller -- it was
+         * driven by pim.mc.pg, so gating the controller silently gated the
+         * SRAM periphery too and the two savings could not be separated.
+         *
+         * RETENTION IS NOT MODELLED, and this is where it would go. The
+         * model below gates the periphery and leaves the CELL ARRAY at full
+         * leakage, which is the conservative bound for a volatile array:
+         * you cannot cut Vdd to an SRAM cell without losing its contents.
+         * A real drowsy/retention design holds the array at a reduced
+         * retention voltage instead -- keeping data while cutting leakage
+         * somewhere between full and gated. Adding that needs a
+         * retention-voltage leakage model, and CACTI does not provide one
+         * (it computes power_gated_leakage, the DESTRUCTIVE case, not a
+         * retention floor). So the reported SRAM saving is a LOWER BOUND,
+         * stated rather than closed with an invented retention factor.
+         *
+         * The alternative that IS fully modellable with what we hold:
+         * flush-then-gate. Write back the dirty lines (countDirtyLines()
+         * from 1.11.40 N7 already measures exactly that set and the flush
+         * energy is already priced), then gate destructively at CACTI's
+         * power_gated_leakage. That trades a real writeback cost for the
+         * full gated floor and invents nothing. Logged for a later release
+         * rather than bundled here. */
+        /* 1.11.57 (audit round 3, A003): the SAME unarmed-counter
+         * refusal the DRAM branch above applies. A leakage CREDIT taken
+         * on a counter that never advanced is indistinguishable from a
+         * measured idle device: pg_devmc_active stays 0 both when the
+         * memory truly idled and when nothing ever armed the counter, and
+         * only the second case is a non-measurement. Without the guard an
+         * array with real traffic collected the full array-gating credit
+         * on a dead counter. */
+        const bool a3_devmc_armed = gate.armed;   // 1.12.18: the caller's counter(s)
+        if (gate.requested && gate.window && !a3_devmc_armed) {
+            std::cout << "  [pg] array-gating residency UNAVAILABLE: the "
+                      << gate.counter << " phase counter never advanced despite "
+                         "measured traffic, so no idle residency was "
+                         "measured and no leakage credit is taken."
+                      << std::endl;
+        }
+        if (gate.requested && gate.window && a3_devmc_armed) {
+            double r_idle = gate.r_idle;   // 1.12.18: measured by the caller
+            if (r_idle > 0.0) {
+                /* 1.11.20 (user decision D16): DERIVE the periphery share
+                 * instead of declaring it. A second CACTI query on the same
+                 * geometry with the periphery minimised (single small bank,
+                 * one port) isolates the cell-array leakage; what the full
+                 * configuration carries above that is periphery. Replaces
+                 * the 1.11.18 declared 0.30 -- tool-sourced-everything
+                 * applies to this constant too. If the probe fails we say
+                 * so and refuse the credit rather than fall back to a
+                 * made-up number. */
+                double periph_share = -1.0;
+                try {
+                    pimid::CACTIWrapper::SRAMConfig cell_cfg = sram_cfg;
+                    cell_cfg.read_write_ports = 1;
+                    cell_cfg.quiet = true;
+                    pimid::CACTIWrapper cell_probe(cell_cfg);
+                    cell_probe.initialize();
+                    if (cell_probe.isValid()) {
+                        double cell_only = cell_probe.getLeakagePower() * banks;
+                        if (leakage > 0.0 && cell_only > 0.0 && cell_only < leakage)
+                            periph_share = 1.0 - (cell_only / leakage);
+                    }
+                } catch (const std::exception&) { periph_share = -1.0; }
+
+                if (periph_share <= 0.0) {
+                    std::cout << "  [pg] SRAM periphery gating REFUSED: the "
+                                 "array-only CACTI probe did not isolate a "
+                                 "periphery share, so there is no measured "
+                                 "split to gate on (no credit taken)."
+                              << std::endl;
+                } else {
+                    /* 1.11.41 (user ruling: harness the SRAM PG with a
+                     * RETENTION path). Both voltage ratios below are
+                     * CACTI's own, not ours -- parameter.cc derives them
+                     * per node as a fraction of the interpolated Vdd:
+                     *     peri_global.Vcc_min = Vdd * 0.35   (periphery)
+                     *     sram_cell.Vcc_min   = Vdd * 0.65   (cell array)
+                     * and CACTI documents Vcc_min for a memory cell as
+                     * "the lowest vcc for data retention". Its power-gating
+                     * model drops a block to Vcc_min (decoder.cc:212,
+                     * detalV = Vdd - Vcc_min), so CACTI's "gated" state IS
+                     * a retention state -- the tool already had the model
+                     * PIMID was missing.
+                     *
+                     * The array therefore does NOT have to stay at full
+                     * leakage. It cannot be gated to zero (volatile: that
+                     * loses the data), but it CAN sit at its retention
+                     * voltage and keep it. Previously the cells were held
+                     * at full Vdd throughout, which understated the saving
+                     * -- stated at the time as a lower bound, now closed
+                     * with the tool's own figure rather than an invented
+                     * retention factor. */
+                    const double kPeriphResidual = 0.35;   // peri_global.Vcc_min/Vdd
+                    const double kCellRetention  = 0.65;   // sram_cell.Vcc_min/Vdd
+                    /* Using the VOLTAGE ratio as the LEAKAGE ratio is the
+                     * conservative direction: subthreshold leakage falls
+                     * faster than linearly in Vdd (DIBL), so real retention
+                     * leakage at 0.65*Vdd is BELOW 0.65x. The credited
+                     * saving is therefore an under-estimate, never an
+                     * over-estimate -- the same bias direction as every
+                     * other bound in this file. */
+                    double before = leakage;
+                    double periph = leakage * periph_share;
+                    double cells  = leakage - periph;
+                    /* Periphery gates (state rebuilt on wake); cells go to
+                     * retention (state kept). Different mechanisms, so
+                     * different residuals, applied over the same measured
+                     * idle residency. */
+                    leakage = cells  * ((1.0 - r_idle) + kCellRetention  * r_idle)
+                            + periph * ((1.0 - r_idle) + kPeriphResidual * r_idle);
+                    std::cout << "  [pg] SRAM gating: idle residency " << r_idle
+                              << " -> leakage " << before << " -> " << leakage
+                              << " mW (periphery share " << periph_share
+                              << " DERIVED from an array-only CACTI query; "
+                                 "periphery gates to Vcc_min/Vdd=" << kPeriphResidual
+                              << ", cells hold DATA at retention Vcc_min/Vdd="
+                              << kCellRetention << " -- both CACTI per-node values)"
+                              << std::endl;
+                }
+            }
+        }
+        p.rd_nj = rd_energy; p.wr_nj = wr_energy;
+        p.leak_mw = leakage; p.area_mm2 = area;
+        return p;
+    }
+    // NVM: NVSim model (STT_MRAM, PCM, RERAM)
+    // Per-bank characterization: model ONE 64KB bank, then scale leakage/area
+    // by the bank count (per-access energy is already per-bank). Also keeps
+    // NVSim off the multi-minute 16MB-array characterization.
+    pimid::NVSimWrapper::NVMConfig nvm_cfg;
+    nvm_cfg.device_corner = (config.device_corner == "lstp") ? 1
+                          : (config.device_corner == "lop")  ? 2 : 0;  // 1.11.49 (L77)
+    nvm_cfg.capacity_bytes = g_bank_unit_bytes;  // one bank (memory.bank_kb, 1.11.94)
+    nvm_cfg.word_width_bits = config.cache_line_size * 8;  // one full line per access (64 B = 512 b), matching the CACTI/SRAM path
+    nvm_cfg.process_node_nm = validateTechNodeNm(node_nm, "NVM array");
+    nvm_cfg.temperature_k = config.temperature_k;   // 1.11.52 (D055)
+    if (tech == "STT_MRAM")
+        nvm_cfg.nvm_type = pimid::NVSimWrapper::NVMType::STTRAM;
+    else if (tech == "PCM")
+        nvm_cfg.nvm_type = pimid::NVSimWrapper::NVMType::PCRAM;
+    else if (tech == "RERAM")
+        nvm_cfg.nvm_type = pimid::NVSimWrapper::NVMType::RERAM;
+
+    pimid::NVSimWrapper nvsim(nvm_cfg);
+    nvsim.initialize();
+
+    double rd_energy = nvsim.getReadDynamicEnergy();  // per-access (one bank)
+    double wr_energy = nvsim.getWriteDynamicEnergy();
+    double leakage = nvsim.getLeakagePower() * banks;  // x banks (device scope passes num_banks)
+    /* 1.11.8: NVM periphery gates RETENTION-FREE -- non-volatile
+     * cells hold state unpowered, so with memory.array_pg the array
+     * periphery leakage descends during measured no-traffic
+     * residency.
+     *
+     * 1.11.51 (L142): the gated residual is CACTI's OWN sleep-
+     * transistor state, the same authority the SRAM path cites --
+     * peri_global.Vcc_min/Vdd = 0.35 (decoder.cc detalV model) --
+     * not the invented 2% floor this block used to carry. NVSim's
+     * reported leakage is ALL CMOS periphery (the cells are non-
+     * volatile and do not leak), so the old floor claimed a 50x
+     * leakage cut for which no linked tool provides a model, 17x
+     * deeper than the sleep-tx state the comment cited. Retention-
+     * free means the periphery COULD be cut harder than a retention
+     * design -- but neither CACTI nor NVSim models a deeper off
+     * state, so 0.35 is reported as the tool-backed BOUND rather
+     * than closing the gap with a made-up number. */
+    /* 1.11.57 (audit round 3, A003): the SAME unarmed-counter
+     * refusal the DRAM branch above applies. A leakage CREDIT taken
+     * on a counter that never advanced is indistinguishable from a
+     * measured idle device: pg_devmc_active stays 0 both when the
+     * memory truly idled and when nothing ever armed the counter, and
+     * only the second case is a non-measurement. Without the guard an
+     * array with real traffic collected the full array-gating credit
+     * on a dead counter. */
+    const bool a3_devmc_armed = gate.armed;   // 1.12.18: the caller's counter(s)
+    if (gate.requested && gate.window && !a3_devmc_armed) {
+        std::cout << "  [pg] array-gating residency UNAVAILABLE: the "
+                  << gate.counter << " phase counter never advanced despite "
+                     "measured traffic, so no idle residency was "
+                     "measured and no leakage credit is taken."
+                  << std::endl;
+    }
+    if (gate.requested && gate.window && a3_devmc_armed) {   // 1.11.41: memory-side flag
+        double r_idle = gate.r_idle;   // 1.12.18: measured by the caller
+        if (r_idle > 0.0) {
+            const double kPeriphResidual = 0.35;  // CACTI peri_global.Vcc_min/Vdd
+            double before = leakage;
+            leakage = leakage * (1.0 - r_idle) + leakage * kPeriphResidual * r_idle;
+            std::cout << "  [pg] NVM periphery gating (sleep-tx state, "
+                         "CACTI Vcc_min/Vdd=" << kPeriphResidual
+                      << ", tool-backed bound; retention-free could cut "
+                         "deeper but no linked tool models it): idle "
+                         "residency " << r_idle << " -> periphery leakage "
+                      << before << " -> " << leakage << " mW" << std::endl;
+        }
+    }
+    double area = nvsim.getArea() * banks;
+    p.rd_nj = rd_energy; p.wr_nj = wr_energy;
+    p.leak_mw = leakage; p.area_mm2 = area;
+    return p;
 }
 
 /**
@@ -10163,6 +11830,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                       << " nm, placement " << config.placement_level << " on "
                       << config.memory_tech << ")" << std::endl;
         }
+        applyDieProcessNode(mcfg, config, config.memory_tech, "");   // PIMID 1.12.18 (per-die process)
     }
     /* 1.9.32: this is the memory die, not the host processor. See
      * SystemConfig::device_scope -- it selects which of McPAT's two calibrated
@@ -10188,6 +11856,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     mcfg.pe_has_fp      = config.pe_has_fp;
     mcfg.fp_emul_cycles = (int)config.pe_fp_emul_cycles;   // 1.11.51 (L215/L223)
     mcfg.pe_imem_bytes  = priced_node ? priced_node->pe_imem_bytes : config.pe_imem_bytes;
+    mcfg.pe_spm_bytes   = priced_node ? priced_node->pe_spm_bytes : config.pe_spm_bytes;   // 1.12.18
+    mcfg.pe_spm_dma     = (priced_node ? priced_node->pe_spm_staging : config.pe_spm_staging) == "dma";
 
     // Derive McPAT architecture from pe_type.
     /* 1.11.93 (F6/F8): one owner -- describeTimingCore(). The profile is set
@@ -10234,6 +11904,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     applyCornerAndPeripheryPricing(mcfg, config, overrides,
                                    getDRAMGenClass(config.memory_tech),
                                    config.frequency_mhz, "");
+    applyDieProcessDevice(mcfg, config, config.memory_tech, "");   // PIMID 1.12.18 (per-die process / trunk)
     if (priced_node) {   // 1.12.2 (ruling 5a (ii)): the call above wrote the run's
         mcfg.arch_int_regs = priced_node->arch_int_regs;
         mcfg.arch_fp_regs = priced_node->arch_fp_regs;
@@ -10329,10 +12000,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * describing one that is not built.
      *
      * Only BRANCH routers are charged. A single-child router in the tree is a
-     * pass-through: signal enters, signal leaves, nothing is arbitrated. Its
-     * cost is wire, already carried by the link, and charging it a crossbar and
-     * an allocator would bill logic that is not there -- on a coarse placement,
-     * for most of the tree.
+     * pass-through: signal enters, signal leaves, nothing is arbitrated, and
+     * charging it a crossbar and an allocator would bill logic that is not
+     * there -- on a coarse placement, for most of the tree. Its cost is wire.
+     * 1.12.18: the sentence that stood here said that wire was "already
+     * carried by the link". It was not: no link was ever built (every level
+     * went to McPAT with has_global_link=0) and a pure pass-through level was
+     * skipped. Since 1.12.18 the wire is priced: each level's up-links are a
+     * links-only McPAT instance driven by the measured link traversals
+     * (buildNoCLevelsForMcPAT); the HBM chip tier's die crossings are
+     * CACTI-3DD TSVs under the stated channel-to-die layout.
      *
      * Rows and columns describe a mesh, and a tree is not one. Reported as a
      * single row of branch routers rather than a square, so the geometry claims
@@ -10388,22 +12065,28 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * (runPerNodePowerAnalysis); a system-scope dump reaching this function
      * (the system trace path) holds host cores too, so it keeps its old
      * window rather than mixing clock domains in one max. */
-    const bool crit_window = (config.scope != "system") && zsim_stats.max_core_cycles > 0;
+    /* 1.12.18 (user ruling 2026-10-23): the window is the run time
+     * (runWindowCycles), not the busy max; the busy max is printed beside it. */
+    std::string run_src;
+    const uint64_t run_window = runWindowCycles(zsim_stats, &run_src);
+    const bool crit_window = (config.scope != "system") && run_window > 0;
     /* 1.11.94 (review H21 m06-main-8265-10258-1): on the system TRACE path this
      * function prices the DEVICE over the whole-system dump; its window is the
      * device's own wall clock, not host core 0's cycle count (38x apart at
      * 2 GHz / 500 MHz in the review's reproduction). The per-node exec path
      * already prices over the max wall clock and never reaches here. */
     const bool sys_dev_window = (config.scope == "system") && zsim_stats.dev_wall_cycles > 0;
-    uint64_t cycles = crit_window ? zsim_stats.max_core_cycles
+    uint64_t cycles = crit_window ? run_window
                     : sys_dev_window ? zsim_stats.dev_wall_cycles : zsim_stats.cycles;
     if (sys_dev_window)
         std::cout << "  [power] pricing window " << cycles << " cycles = the device's wall clock (system trace path)" << std::endl;
-    if (crit_window && zsim_stats.max_core_cycles != zsim_stats.cycles)
-        std::cout << "  [power] pricing window " << zsim_stats.max_core_cycles
-                  << " cycles = critical-path max over "
+    if (crit_window)
+        std::cout << "  [power] pricing window " << run_window << " cycles = run time: " << run_src
+                  << "; busy max " << zsim_stats.max_core_cycles << " over "
                   << zsim_stats.core_recs.size() << " core(s) (core 0: "
-                  << zsim_stats.cycles << ")" << std::endl;
+                  << zsim_stats.cycles << "); every time-based term (McPAT runtime, memory"
+                     " background, refresh, VPP, PHY static, MC/NoC duty) is over this window"
+                     " [1.12.18, ruling 2026-10-23]" << std::endl;
     uint64_t instrs = zsim_stats.instrs > 0 ? zsim_stats.instrs : 1;
     if (cycles == 0 && instrs > 1) {
         /* 1.11.48 (FIX-PRE-FLEET L220): 1.11.9 made `instrs` the ALL-CORE
@@ -10422,6 +12105,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     /* 1.11.93 (F3): per-core executed instructions -> derived busy cycles
      * (the pipeline duty); F6: the ROI-windowed BTB and RAS activity. */
     mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(0));
+    mcpat.setPerCoreRunCycles(zsim_stats.runCyclesPerCore(0));   // PIMID 1.12.18 (idle halt)
     mcpat.setMeasuredControlFlow(zsim_stats.indirBranches, zsim_stats.rasReturns);
     /* 1.11.98 (sweep-94 row 28, user ruling (c)): when the run MEASURED its
      * controller (epoch replay: refresh commands and idle cycles counted, PHY
@@ -10429,11 +12113,27 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * 10%-of-peak-every-cycle controller background is switched off; the
      * convention stays, stated, for a run without a measured controller. */
     {
+        /* 1.12.18 (user 2026-10-23: "I hate that 10%", "measure and
+         * calculate"): no share-of-peak convention anywhere. The controller
+         * is priced as McPAT computes it -- leakage, plus each measured
+         * transaction through front end, transaction engine and PHY -- plus
+         * the routine work the replayed controller COUNTED: every refresh
+         * command it issued is one pass of the transaction engine (no data
+         * burst). 1.12.18: the controller's clock network is priced inside
+         * McPAT (logic.h ClockNetwork, Wattch model, gated by measured
+         * activity; power.models.clock_network) -- this text only says so. */
         const bool measured = zsim_stats.ctrlRowMeasured() && zsim_stats.ctrl_ticks > 0;
-        mcpat.setMCBackgroundFraction(measured ? 0.0 : 0.1);
-        std::cout << "  [power] memory-controller background: " << (measured
-            ? "MEASURED (ruling (c)): refresh commands and idle cycles from the replayed controller, PHY static from the IO model; McPAT's 10%-of-peak convention OFF"
-            : "McPAT convention, 10% of peak dynamic power every cycle (no measured controller in this run)") << std::endl;
+        mcpat.setMCBackgroundFraction(0.0);
+        mcpat.setMCCommandOps((measured && config.pm_mc_command_ops) ? zsim_stats.ctrl_refreshes : 0);   // 1.12.18: option
+        std::cout << "  [power] memory controller: McPAT leakage + " << zsim_stats.mem_rd + zsim_stats.mem_wr
+                  << " measured transactions + " << ((measured && config.pm_mc_command_ops) ? zsim_stats.ctrl_refreshes : 0)
+                  << (!config.pm_mc_command_ops ? " refresh commands (NOT charged by user option power.models.mc_command_ops: false)"
+                      : measured ? " refresh commands COUNTED by the replayed controller" : " refresh commands (no replayed controller: none counted)")
+                  << "; no share-of-peak background; "
+                  << (pimid::mcpatClockNetworkDefault()
+                          ? "clock network priced by McPAT (gated by measured activity)"
+                          : "clock network not priced (power.models.clock_network: false, user option)")
+                  << std::endl;   // 1.12.18
     }
     /* 1.9.33: subtract injected timing charges -- see the parser note. */
     if (zsim_stats.syntheticInstrs > 0 && instrs > zsim_stats.syntheticInstrs)
@@ -10462,6 +12162,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         mcpat.setMeasuredCoreActivity(D.uops, D.branches, D.mispredBranches);
         mcpat.setMeasuredPredictorWrites(D.bpHistWrites, D.bpPhtWrites, D.bpWritesPresent);   // 1.11.97 (R2476)
         mcpat.setMeasuredMix(D.mix_int, D.mix_mul, D.mix_fp, D.mix_ld, D.mix_st, D.mix_br);
+        mcpat.setMeasuredVectorMoves(D.mix_vm_reg, D.mix_vm_ld, D.mix_vm_st);   // 1.12.18 (bug 1b)
+        mcpat.setMeasuredFpOps(D.fp_ops);   // 1.12.18
+    mcpat.setMeasuredIntOps(D.int_ops);   // PIMID 1.12.18
     } else {
     mcpat.setMeasuredCoreActivity(zsim_stats.uops, zsim_stats.branches,
                                   zsim_stats.mispredBranches);
@@ -10471,22 +12174,30 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     mcpat.setMeasuredMix(zsim_stats.mix_int, zsim_stats.mix_mul,
                          zsim_stats.mix_fp, zsim_stats.mix_ld, zsim_stats.mix_st,
                          zsim_stats.mix_br);  // 1.11.10/.15
+    mcpat.setMeasuredVectorMoves(zsim_stats.mix_vm_reg, zsim_stats.mix_vm_ld, zsim_stats.mix_vm_st);   // 1.12.18 (bug 1b)
+    mcpat.setMeasuredFpOps(zsim_stats.fp_ops);   // 1.12.18
+    mcpat.setMeasuredIntOps(zsim_stats.int_ops);   // PIMID 1.12.18
     }
 
     // Split cache stats from ZSim
     if (sys_dev_subset) {   // 1.11.94 (H22)
         mcpat.setL1IAccesses(D.l1i_total_reads(), D.l1i_mGETS);
         mcpat.setL1DAccesses(D.l1d_total_reads(), D.l1d_total_writes(), D.l1d_mGETS, D.l1d_mGETXIM);
+        mcpat.setScratchpadAccesses(D.spm_reads, D.spm_writes, D.dma_lines, D.dma_cmd_reads, D.dma_cmd_writes);   // 1.12.18
         mcpat.setL2Accesses(D.l2_total_reads(), D.l2_total_writes(), D.l2_mGETS, D.l2_mGETXIM);
         mcpat.setL3Accesses(D.l3_total_reads(), D.l3_total_writes(), D.l3_mGETS, D.l3_mGETXIM);
+        feedCoherenceDirectory(mcpat, D, config.model_coherence_directory);   // 1.12.18
     } else {
     mcpat.setL1IAccesses(zsim_stats.l1i_total_reads(), zsim_stats.l1i_mGETS);
     mcpat.setL1DAccesses(zsim_stats.l1d_total_reads(), zsim_stats.l1d_total_writes(),
                          zsim_stats.l1d_mGETS, zsim_stats.l1d_mGETXIM);
+    mcpat.setScratchpadAccesses(zsim_stats.spm_reads, zsim_stats.spm_writes, zsim_stats.dma_lines,
+                                zsim_stats.dma_cmd_reads, zsim_stats.dma_cmd_writes);   // 1.12.18
     mcpat.setL2Accesses(zsim_stats.l2_total_reads(), zsim_stats.l2_total_writes(),
                         zsim_stats.l2_mGETS, zsim_stats.l2_mGETXIM);
     mcpat.setL3Accesses(zsim_stats.l3_total_reads(), zsim_stats.l3_total_writes(),
                         zsim_stats.l3_mGETS, zsim_stats.l3_mGETXIM);
+    feedCoherenceDirectory(mcpat, zsim_stats, config.model_coherence_directory);   // 1.12.18
     }
 
     // MC stats from ZSim
@@ -10781,6 +12492,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             host_mcpat.setTotalCycles(host_cycles);
             // 1.11.93 (F3/F6): per-core host instructions; host BTB/RAS activity.
             host_mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(1));
+            host_mcpat.setPerCoreRunCycles(zsim_stats.runCyclesPerCore(1));   // PIMID 1.12.18 (idle halt)
             host_mcpat.setMeasuredControlFlow(hgrp.indirBranches, hgrp.rasReturns);
             host_mcpat.setTotalInstructions(hgrp.real_instrs());   // 1.9.33
             host_mcpat.setL1IAccesses(hgrp.l1i_total_reads(), hgrp.l1i_mGETS);
@@ -10790,6 +12502,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                      hgrp.l2_mGETS, hgrp.l2_mGETXIM);
             host_mcpat.setL3Accesses(hgrp.l3_total_reads(), hgrp.l3_total_writes(),
                                      hgrp.l3_mGETS, hgrp.l3_mGETXIM);
+            feedCoherenceDirectory(host_mcpat, hgrp, config.model_coherence_directory);   // 1.12.18
             host_mcpat.setMemControllerAccesses(hgrp.mem_rd, hgrp.mem_wr);
             host_mcpat.setMeasuredCoreActivity(hgrp.uops, hgrp.branches,
                                                hgrp.mispredBranches);
@@ -10797,6 +12510,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                                   hgrp.bpWritesPresent);   // 1.11.97 (R2476)
             host_mcpat.setMeasuredMix(hgrp.mix_int, hgrp.mix_mul, hgrp.mix_fp,
                                       hgrp.mix_ld, hgrp.mix_st, hgrp.mix_br);  // 1.11.10/.15
+            host_mcpat.setMeasuredVectorMoves(hgrp.mix_vm_reg, hgrp.mix_vm_ld, hgrp.mix_vm_st);   // 1.12.18 (bug 1b)
+            host_mcpat.setMeasuredFpOps(hgrp.fp_ops);   // 1.12.18
+    host_mcpat.setMeasuredIntOps(hgrp.int_ops);   // PIMID 1.12.18
             /* 1.11.17: print the number McPAT is PRICED on (real_instrs =
              * retired minus injected timing charges), not the raw counter --
              * in an offload ROI the two differ by the whole charge. */
@@ -10844,6 +12560,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             pcie.number_units = config.pcie_num_units;
             // Use num_lanes for num_channels if available
             pcie.num_channels = (config.pcie_num_lanes > 0) ? config.pcie_num_lanes : config.pcie_num_channels;
+            {   // 1.12.18: an interposer is counted in UCIe modules here too, as on the per-node path (1.11.34)
+                const int lpm = McPAT::linkLanesPerModule(config.pcie_link_type);
+                if (lpm > 0) pcie.num_channels = lpm;
+            }
             pcie.duty_cycle = config.pcie_duty_cycle;
             /* 1.11.56 (audit B015): the link controller's load fraction is a
              * MEASUREMENT on the per-node path (measured crossing bytes over
@@ -10871,19 +12591,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * "pcie" link class (McPAT's 4 Gb/s SerDes), so the host link
              * controller's dynamic power was priced for a different link than
              * the one the run configured. */
-            {
-                double clk = PIMID::CactiIOWrapper::linkControllerClockMHz(
-                                 config.pcie_link_type);
-                if (clk > 0.0) {
-                    pcie.link_clock_mhz = static_cast<int>(clk + 0.5);
-                } else {
-                    pcie.link_clock_mhz = 1000;
-                    std::cerr << "[power] WARNING: no sourced controller clock "
-                                 "for host link type '" << config.pcie_link_type
-                              << "' (non-PIPE family); using 1000 MHz ASSUMED -- "
-                                 "controller dynamic scales with it." << std::endl;
-                }
-            }
+            /* 1.12.18: the 1000 MHz ASSUMED fallback is gone; see setLinkModelParams. */
+            setLinkModelParams(config, pcie, true, "host link");
             pcie.link_type_name = config.pcie_link_type;
             host_mcpat.setPCIeStats(pcie);
         }
@@ -10911,7 +12620,24 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     bool is_dram_tech = !(config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
                           config.memory_tech == "PCM" || config.memory_tech == "RERAM");
 
-    if (!detail_summary) {
+    /* 1.12.18 (user 2026-10-23: "make the power model complete"): the memory
+     * array's energy joins the device total. Until now this block priced the
+     * array (dynamic energy, background, refresh, VPP, PHY static) and only
+     * printed it, and only above summary detail: a device-scope run's only
+     * total was McPAT's logic (an HBM3 16-PE cell: 0.49 W logic beside 2.55 W
+     * of DRAM background that no total carried). The block now always runs;
+     * at summary detail its lines go to a sink and only the total below is
+     * printed. devmem collects what the total adds. */
+    struct DevMemTotals {
+        bool have = false;
+        double dyn_nj = 0.0;      // array + activate + termination + IDDQ
+        double static_mw = 0.0;   // background incl. refresh (measured when counted), VPP, PHY static
+        double area_mm2 = 0.0;    // the populated memory silicon
+        std::string note;         // provenance the total must carry
+    } devmem;
+    std::ostringstream devmem_sink;
+    std::streambuf* devmem_saved = detail_summary ? std::cout.rdbuf(devmem_sink.rdbuf()) : nullptr;
+    {
     std::cout << "\n--- Memory Array Power/Area ---" << std::endl;
 
     if (is_dram_tech) {
@@ -10919,6 +12645,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         try {
             pimid::RamulatorWrapper ram_oracle("", config.memory_tech);
             applyDramKnobs(ram_oracle, config);   // 1.11.66: width, DDR5 grade, temperature, termination
+            ram_oracle.setPeChipSplit(dramPeChipSplit(config, config.memory_tech));   // 1.12.18: per-chip ACT/REF
             /* 1.11.52 (audit D003): the array's activate/precharge share is
              * now weighted by the run's OWN measured row-buffer miss rate
              * (PE-MI rowHits/rowMisses) instead of a hardcoded 0.5. It is
@@ -10969,6 +12696,33 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             // physics, not by this gate).
             double rd_energy = ram_oracle.getArrayReadEnergyNJ();
             double wr_energy = ram_oracle.getArrayWriteEnergyNJ();
+            /* 1.12.18 (checklist: activates counted, not inferred): with the
+             * controller replayed, the ACT commands it ISSUED are counted. The
+             * per-access terms then carry the column burst only (row-miss
+             * fraction 0) and every ACT is charged once at the activate +
+             * precharge energy the same model gives a row-opening access
+             * (its read energy at miss fraction 1 minus that at 0). The
+             * inferred share (miss fraction x activate energy, per access)
+             * leaves the per-access terms -- never both. */
+            double act_counted_nj = -1.0, e_act_nj = 0.0;
+            if (zsim_stats.ctrl_act_present && !config.pm_dram_activates_counted)
+                std::cout << "  [mem] activates: counted ACTs NOT used by user option (power.models.dram_activates_counted: false); the row-miss fraction weights the per-access terms" << std::endl;
+            if (zsim_stats.ctrl_act_present && config.pm_dram_activates_counted) {
+                const double rmf_keep = ram_oracle.getRowMissFraction();
+                ram_oracle.setRowMissFraction(0.0);   // the per-access terms: column burst only
+                const double rd_burst = ram_oracle.getArrayReadEnergyNJ();
+                const double wr_burst = ram_oracle.getArrayWriteEnergyNJ();
+                ram_oracle.setRowMissFraction(rmf_keep);
+                e_act_nj = ram_oracle.getActivatePrechargeEnergyNJ();   // the model's own ACT+PRE term
+                rd_energy = rd_burst;
+                wr_energy = wr_burst;
+                act_counted_nj = (double)zsim_stats.ctrl_activates * e_act_nj;
+                std::cout << "  [mem] activates COUNTED by the replayed controller (1.12.18): "
+                          << zsim_stats.ctrl_activates << " ACT x " << e_act_nj
+                          << " nJ (activate + precharge) = " << act_counted_nj
+                          << " nJ; per-access terms carry the column burst only (the row-miss fraction "
+                          << rmf_keep << " no longer weights them)" << std::endl;
+            }
             bool crosses_dq = crossesOffPackageDQ(config.pe_hierarchy_level,
                                                   config.memory_tech);  // 1.11.52 (A018)
             /* 1.11.58: the DQ interface is DRIVER SWITCHING + PHY + TERMINATION.
@@ -11018,6 +12772,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             const bool iddq_published = (iddq_rd_raw >= 0.0 && iddq_wr_raw >= 0.0);
             const double iddq_rd_nj = (crosses_dq && iddq_published) ? iddq_rd_raw : 0.0;
             const double iddq_wr_nj = (crosses_dq && iddq_published) ? iddq_wr_raw : 0.0;
+            /* 1.12.18: (diagnosis 8c) a write's DQ termination is
+             * INSIDE the measured IDDQ4W excess when the sheet measured it with
+             * RTT_WR enabled (params/dram/ddr5.yaml iddq.wr_includes_rtt_wr):
+             * charged once, as the IDDQ excess (it also carries the receivers);
+             * the termination formula is printed as the guard. */
+            const bool wr_term_in_iddq = crosses_dq && iddq_published && iddq_wr_nj > 0.0 &&
+                                         iface_term_wr_nj > 0.0 && ram_oracle.getIddqWriteIncludesTermination();
+            const double iface_term_wr_chg = wr_term_in_iddq ? 0.0 : iface_term_wr_nj;
             /* 1.11.8, corrected 1.11.56 (audit A028): with memory.power_down
              * the idle controller descends the DRAM into precharge power-down
              * (IDD2P) during measured no-traffic residency; refresh always
@@ -11083,8 +12845,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * residency above stays the power-down (CKE-low) input only.
              * Without the measurement the 1.11.90 expression is used
              * unchanged (active = 1 - residency). */
+            if (zsim_stats.bank_open_present && !config.pm_dram_bank_open_measured)
+                std::cout << "  [mem] bank-open fraction: measured counter NOT used by user option (power.models.dram_bank_open_measured: false)" << std::endl;
             const BankOpenInput bank_open = bankOpenFrom(
-                zsim_stats.bank_open_present, zsim_stats.bank_open_cycles,
+                zsim_stats.bank_open_present && config.pm_dram_bank_open_measured, zsim_stats.bank_open_cycles,
                 zsim_stats.bank_open_window);
             const double traffic_active = 1.0 - mc_r_idle;
             double bg_active_frac = traffic_active;
@@ -11131,37 +12895,79 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double ref_energy = ram_oracle.getRefreshPowerMW() * bg_units;
             /* 1.11.98 (sweep-94 row 28, user ruling (c)): with the controller
              * replayed, the refresh commands are COUNTED. Energy per command
-             * per unit = vdd x (IDD5 - IDD3N) x tRFC (the same datasheet row
+             * per unit = vdd x (IDD5 - IDD2N) x tRFC + VPP x (IPP5B - IPP2N) x tRFC (1.12.18, user ruling
+             * 2026-10-23: IDD2N baseline, the refresh interrupts the state; the same datasheet row
              * the duty above uses); the units behind one command = the
              * population per rank (bg_units over ranks x channels); the rate
              * is quoted over the replayed DRAM time. The datasheet duty stays
              * printed beside it as the cross-check. */
             double ref_energy_measured_mw = -1.0, ref_rate_measured_per_us = -1.0;
-            if (zsim_stats.ctrl_refreshes > 0 && zsim_stats.ctrl_ticks > 0 && ram_oracle.getTckNs() > 0.0) {
+            double ref_window_us = -1.0;   // 1.12.18 (ruling 2026-10-23)
+            if (config.pm_dram_refresh_counted && zsim_stats.ctrl_refreshes > 0 && zsim_stats.ctrl_ticks > 0 && ram_oracle.getTckNs() > 0.0) {   // 1.12.18: option
                 const double span_ns = (double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs();
                 const int rc = std::max(1, config.hierarchy_ranks_per_channel) * std::max(1, config.hierarchy_dram_channels);
-                const double units_per_cmd = (bg_units > 0) ? (double)bg_units / (double)rc : 1.0;
+                const double units_per_cmd = ((bg_units > 0) ? (double)bg_units / (double)rc : 1.0)
+                                             / (double)ram_oracle.getPeChipSplit();   // 1.12.18: one REF per chip
                 const double e_nj = (double)zsim_stats.ctrl_refreshes * ram_oracle.getRefreshEnergyPerCommandNJ() * std::max(1.0, units_per_cmd);
-                ref_energy_measured_mw = e_nj / span_ns * 1000.0;   // nJ/ns = W
+                /* 1.12.18 (user ruling 2026-10-23): the counted energy (count x
+                 * energy per REF) is spread over the RUN window, the one every
+                 * other time-based term uses; the replay now closes at the ROI
+                 * end, so its span is that window up to a last drain. Where the
+                 * replay counted over a LONGER span than the window (a replay
+                 * axis that is not the run's, e.g. co-sim thread-MPI on the
+                 * phase clock), the commands are not all inside the window:
+                 * the rate over the replayed span is charged, as before. */
+                const double win_ns = (config.frequency_mhz > 0.0)
+                    ? (double)cycles / (config.frequency_mhz * 1e6) * 1e9 : 0.0;
+                const double charge_ns = std::max(win_ns, span_ns);
+                ref_window_us = charge_ns / 1000.0;
+                ref_energy_measured_mw = e_nj / charge_ns * 1000.0;   // nJ/ns = W
                 ref_rate_measured_per_us = (double)zsim_stats.ctrl_refreshes / (span_ns / 1000.0);
                 ref_energy = ref_energy_measured_mw;
             }
-            const double phy_static_mw = ram_oracle.getInterfacePhyStaticMW();   // 1.11.98 (row 28)
+            /* 1.12.18: (bug 5) the DQ PHY's static power exists only where the
+             * accesses cross the DQ pins -- the crossesOffPackageDQ rule the
+             * termination and IDDQ terms above use. An on-die placement has no
+             * DQ PHY (McPAT is told withPHY=0 there); it used to be added at every
+             * placement. System scope adds no PHY static term (checked). */
+            const double phy_static_mw = crosses_dq ? ram_oracle.getInterfacePhyStaticMW() : 0.0;   // 1.11.98 (row 28)
             double leakage_mw = bg_power_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0);   // 1.11.91: + the VPP rail
 
             double total_rd_nj = rd_energy * zsim_stats.mem_rd;
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
-            double total_act_nj = 0.0;  // folded into array rd/wr (no double-count)
+            double total_act_nj = (act_counted_nj >= 0.0) ? act_counted_nj : 0.0;  // 1.12.18: counted ACTs; else folded into rd/wr (no double count)
             double total_iface_nj = iface_term_rd_nj * zsim_stats.mem_rd
-                                  + iface_term_wr_nj * zsim_stats.mem_wr;
+                                  + iface_term_wr_chg * zsim_stats.mem_wr;   // 1.12.18: once
             const double total_iddq_nj = iddq_rd_nj * zsim_stats.mem_rd
                                        + iddq_wr_nj * zsim_stats.mem_wr;   // 1.11.91 (R8-8)
+            /* 1.12.18: what the device total adds. Background is summed once
+             * (leakage_mw IS background + VPP, not a further term); with the
+             * controller replayed, refresh is charged as COUNTED (ruling (c)):
+             * the datasheet duty inside the background is replaced by the
+             * measured rate. PHY static from the IO model. */
+            {
+                const double ref_duty_mw = ram_oracle.getRefreshPowerMW() * bg_units;
+                double static_mw = leakage_mw;
+                if (ref_energy_measured_mw >= 0.0) static_mw += ref_energy_measured_mw - ref_duty_mw;
+                if (phy_static_mw > 0.0) static_mw += phy_static_mw;
+                devmem.have = true;
+                devmem.dyn_nj = total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj + total_iddq_nj;
+                devmem.static_mw = static_mw;
+                std::ostringstream n;
+                n << config.memory_tech << " (Ramulator2): background " << leakage_mw << " mW";
+                if (ref_energy_measured_mw >= 0.0)
+                    n << ", refresh charged as counted " << ref_energy_measured_mw << " mW in place of the datasheet duty " << ref_duty_mw << " mW";
+                if (phy_static_mw > 0.0) n << ", PHY static " << phy_static_mw << " mW";
+                if (config.memory_tech.rfind("HBM", 0) == 0)
+                    n << "; background DERIVED (user ruling 2026-10-23): no published HBM standby current, scaled from measured HBM2 by voltage and data rate (power.md)";
+                devmem.note = n.str();
+            }
 
             std::cout << "  Technology:      " << config.memory_tech << " (Ramulator2 energy model)" << std::endl;
             pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  DQ interface:    rd=" << iface_term_rd_nj
-                      << " nJ, wr=" << iface_term_wr_nj << " nJ per access ("
+                      << " nJ, wr=" << iface_term_wr_chg << " nJ per access ("
                       << (crosses_dq ? "accesses cross the DQ pins at this placement"
                                      : "on-die placement: no DQ crossing, no interface charge")
                       << ")";
@@ -11174,12 +12980,25 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             else
                 std::cout << "; iddq= rd " << iddq_rd_nj << " nJ, wr " << iddq_wr_nj << " nJ";
             std::cout << std::endl;
+            {   /* 1.12.18 (user ruling R1 2026-10-24) */
+                const uint64_t ord = zsim_stats.out_rd + zsim_stats.out_hrd, owr = zsim_stats.out_wr + zsim_stats.out_hwr;
+                const uint64_t oac = zsim_stats.out_acts + zsim_stats.out_hacts;
+                if (ord + owr + oac > 0) {
+                    const double oe = (rd_energy + iface_term_rd_nj + iddq_rd_nj) * (double)ord
+                                    + (wr_energy + iface_term_wr_chg + iddq_wr_nj) * (double)owr
+                                    + (act_counted_nj >= 0.0 ? e_act_nj * (double)oac : 0.0);
+                    std::cout << "  [mem] outside ROI, not priced (1.12.18 ruling R1): requests stamped after the ROI end: rd="
+                              << ord << " wr=" << owr << " ACT=" << oac << " = " << oe
+                              << " nJ; replayed for the controller state only, in no count, energy or window above" << std::endl;
+                }
+            }
             if (crosses_dq) {
                 std::cout << "    termination:   rd=" << iface_term_rd_nj
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
                           << iface_term_wr_nj
                           << " nJ (ctrl RON -> DRAM RTT_WR class)"
-                             " [R7 split]  CACTI-IO driver+PHY: "
+                          << (wr_term_in_iddq ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "")   // 1.12.18
+                          << " [R7 split]  CACTI-IO driver+PHY: "
                           << iface_drv_nj
                           << " nJ [INFORMATIONAL, NOT charged -- 1.11.60: the"
                              " controller-side PHY is already priced by McPAT"
@@ -11231,7 +13050,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                  " for this technology, so no informational"
                                  " driver/PHY figure is available." << std::endl;
             }
-            std::cout << "  Array incl act+col in read/write terms above" << std::endl;
+            std::cout << (act_counted_nj >= 0.0 ? "  Array: column bursts in the read/write terms above; activates counted (act= below)" : "  Array incl act+col in read/write terms above") << std::endl;   // 1.12.18
             /* 1.11.56 (audit A029): these three lines are one quantity seen
              * three ways, and the old labels invited adding them. Refresh is a
              * COMPONENT of Background (the header's own relation is
@@ -11258,8 +13077,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                           << " mW MEASURED (ruling (c)): " << zsim_stats.ctrl_refreshes
                           << " refresh commands over " << std::setprecision(1) << ((double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs() / 1000.0)
                           << " us of replayed DRAM time (" << std::setprecision(3) << ref_rate_measured_per_us << " per us) x "
-                          << ram_oracle.getRefreshEnergyPerCommandNJ() << " nJ per command per unit (vdd x (IDD5 - IDD3N) x tRFC);"
-                             " datasheet duty would give " << ram_oracle.getRefreshPowerMW() * bg_units << " mW (a component of Background, not an addition)" << std::endl;
+                          << ram_oracle.getRefreshEnergyPerCommandNJ() << " nJ per command per unit (vdd x (IDD5 - IDD2N) x tRFC + VPP x (IPP5B - IPP2N) x tRFC: IDD2N baseline, the refresh interrupts the state, user ruling 2026-10-23);"
+                             " datasheet duty would give " << ram_oracle.getRefreshPowerMW() * bg_units << " mW (a component of Background, not an addition)"
+                          << "; charged as count x energy per REF over "
+                          << std::setprecision(1) << ref_window_us << " us = the longer of the run window and the replayed span (1.12.18, ruling 2026-10-23)" << std::endl;
             else
                 std::cout << "    of which refresh: " << ref_energy
                           << " mW (a component of Background, not an addition to it;"
@@ -11268,7 +13089,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 pimid::fmt_scoped(std::cout) << "    controller:       idle " << std::setprecision(1) << (100.0 * (double)zsim_stats.ctrl_idle_ticks / (double)zsim_stats.ctrl_ticks)
                           << "% of " << zsim_stats.ctrl_ticks << " replayed DRAM cycles (nothing in flight; row 28 MEASURED); PHY static "
                           << std::setprecision(3) << phy_static_mw << " mW from the IO model"
-                          << (phy_static_mw > 0.0 ? " (the controller-side background McPAT's 10%-of-peak convention stood in for; McPAT's term is OFF in this run)" : " (no exact IO map for this technology: 0)")
+                          << (phy_static_mw > 0.0 ? " (the controller-side background McPAT's 10%-of-peak convention stood in for; McPAT's term is OFF in this run)" : (crosses_dq ? " (no exact IO map for this technology: 0)" : " (on-die placement: no DQ crossing, no PHY: 0; 1.12.18)"))
                           << std::endl;
             std::cout << "    leakage:          " << leakage_mw
                       << " mW (Background + ipp: the same standby current, named the way the "
@@ -11286,7 +13107,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * "term=" column, attributes the entire 4.2x interface correction
              * to termination. It was invisible because the label kept working:
              * the column still parses, it just means something else now. */
-            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(1)
+            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(6)
                       << (total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj
                           + total_iddq_nj) / 1e6
                       << " mJ (rd=" << total_rd_nj / 1e6 << " + wr=" << total_wr_nj / 1e6
@@ -11504,6 +13325,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                                     config.dram_device_width,
                                                     config.hierarchy_ranks_per_channel,
                                                     config.hierarchy_dram_channels);
+                    devmem.area_mm2 = die_area_reported * dies;   // 1.12.18
                     pimid::fmt_scoped(std::cout) << "  With memory:     " << std::fixed
                               << std::setprecision(2)
                               << (mcpat.getTotalArea() + die_area_reported * dies)
@@ -11521,166 +13343,25 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     } else if (config.memory_tech == "SRAM") {
         // SRAM: CACTI model
         try {
-            // Per-bank characterization: model ONE 64KB bank (CACTI supports only
-            // 1-32 banks; a 256-bank device would overflow its range), then scale
-            // the extensive quantities (leakage, area) by the bank count. Per-access
-            // energy is already per-bank -- one access hits one bank.
-            pimid::CACTIWrapper::SRAMConfig sram_cfg;
-            sram_cfg.device_corner = (config.device_corner == "lstp") ? 1 : (config.device_corner == "lop") ? 2 : 0;  // 1.11.49 (L59)
-                sram_cfg.ic_proj_type = config.interconnect_projection;   // 1.11.30 E5: one metal stack
-            sram_cfg.capacity_bytes = g_bank_unit_bytes;  // one bank (memory.bank_kb, 1.11.94)
-            sram_cfg.line_size = config.cache_line_size;
-            sram_cfg.associativity = 1;
-            sram_cfg.banks = 1;
-            sram_cfg.tech_node_nm = validateTechNodeNm(config.tech_node_nm, "SRAM array");
-            sram_cfg.temperature = static_cast<uint32_t>(config.temperature_k);  // 1.11.52 (D055)
-            sram_cfg.is_cache = false;  // RAM mode
-            sram_cfg.read_write_ports = config.ports_per_bank;
-
-            pimid::CACTIWrapper cacti(sram_cfg);
-            cacti.initialize();
-
-            double rd_energy = cacti.getDynamicReadEnergy();  // per-access (one bank)
-            double wr_energy = cacti.getDynamicWriteEnergy();
-            double leakage = cacti.getLeakagePower() * config.num_banks;  // device = num_banks banks
-            double area = cacti.getArea() * config.num_banks;
-
-            /* 1.11.18 (audit go-through): pim.mc.pg reached the DRAM branch
-             * (IDD2P descent) and the NVM branch (retention floor) and did
-             * NOTHING here -- an SRAM main memory silently ignored the flag
-             * in the same if/else chain. SRAM is VOLATILE: gating the array
-             * loses the data, so only the PERIPHERY can gate, at the same
-             * CACTI-class sleep-tx residual the McPAT endpoints use
-             * (Vcc_min/Vdd ~= 0.35). The cell array keeps its full leakage.
-             * The split is stated rather than assumed: CACTI does not
-             * separate them here, so the periphery share is declared. */
-            /* 1.11.41: memory-side flag. This gates the ARRAY periphery, which
-             * is a property of the memory, not of its controller -- it was
-             * driven by pim.mc.pg, so gating the controller silently gated the
-             * SRAM periphery too and the two savings could not be separated.
-             *
-             * RETENTION IS NOT MODELLED, and this is where it would go. The
-             * model below gates the periphery and leaves the CELL ARRAY at full
-             * leakage, which is the conservative bound for a volatile array:
-             * you cannot cut Vdd to an SRAM cell without losing its contents.
-             * A real drowsy/retention design holds the array at a reduced
-             * retention voltage instead -- keeping data while cutting leakage
-             * somewhere between full and gated. Adding that needs a
-             * retention-voltage leakage model, and CACTI does not provide one
-             * (it computes power_gated_leakage, the DESTRUCTIVE case, not a
-             * retention floor). So the reported SRAM saving is a LOWER BOUND,
-             * stated rather than closed with an invented retention factor.
-             *
-             * The alternative that IS fully modellable with what we hold:
-             * flush-then-gate. Write back the dirty lines (countDirtyLines()
-             * from 1.11.40 N7 already measures exactly that set and the flush
-             * energy is already priced), then gate destructively at CACTI's
-             * power_gated_leakage. That trades a real writeback cost for the
-             * full gated floor and invents nothing. Logged for a later release
-             * rather than bundled here. */
-            /* 1.11.57 (audit round 3, A003): the SAME unarmed-counter
-             * refusal the DRAM branch above applies. A leakage CREDIT taken
-             * on a counter that never advanced is indistinguishable from a
-             * measured idle device: pg_devmc_active stays 0 both when the
-             * memory truly idled and when nothing ever armed the counter, and
-             * only the second case is a non-measurement. Without the guard an
-             * array with real traffic collected the full array-gating credit
-             * on a dead counter. */
-            const bool a3_devmc_armed =
-                (zsim_stats.pg_devmc_active > 0) ||
-                (zsim_stats.mem_rd + zsim_stats.mem_wr == 0);
-            if (config.mem_array_pg && zsim_stats.pg_window() > 0 && !a3_devmc_armed) {
-                std::cout << "  [pg] array-gating residency UNAVAILABLE: the "
-                             "device-MC phase counter never advanced despite "
-                             "measured traffic, so no idle residency was "
-                             "measured and no leakage credit is taken."
-                          << std::endl;
-            }
-            if (config.mem_array_pg && zsim_stats.pg_window() > 0 && a3_devmc_armed) {
-                double r_idle = 1.0 - std::min(1.0,
+            /* 1.12.18: characterisation and gating live in priceNonDramArray()
+             * (one price, both scopes); the block below prints and totals
+             * exactly what it printed and totalled before. Same counter, same
+             * A003 armed test, same residency. */
+            NonDramGateInput gate;
+            gate.requested = config.mem_array_pg;
+            gate.window = zsim_stats.pg_window() > 0;
+            gate.armed = (zsim_stats.pg_devmc_active > 0) ||
+                         (zsim_stats.mem_rd + zsim_stats.mem_wr == 0);
+            if (gate.window)
+                gate.r_idle = 1.0 - std::min(1.0,
                     static_cast<double>(zsim_stats.pg_devmc_active)
                         / static_cast<double>(zsim_stats.pg_window()));
-                if (r_idle > 0.0) {
-                    /* 1.11.20 (user decision D16): DERIVE the periphery share
-                     * instead of declaring it. A second CACTI query on the same
-                     * geometry with the periphery minimised (single small bank,
-                     * one port) isolates the cell-array leakage; what the full
-                     * configuration carries above that is periphery. Replaces
-                     * the 1.11.18 declared 0.30 -- tool-sourced-everything
-                     * applies to this constant too. If the probe fails we say
-                     * so and refuse the credit rather than fall back to a
-                     * made-up number. */
-                    double periph_share = -1.0;
-                    try {
-                        pimid::CACTIWrapper::SRAMConfig cell_cfg = sram_cfg;
-                        cell_cfg.read_write_ports = 1;
-                        cell_cfg.quiet = true;
-                        pimid::CACTIWrapper cell_probe(cell_cfg);
-                        cell_probe.initialize();
-                        if (cell_probe.isValid()) {
-                            double cell_only = cell_probe.getLeakagePower() * config.num_banks;
-                            if (leakage > 0.0 && cell_only > 0.0 && cell_only < leakage)
-                                periph_share = 1.0 - (cell_only / leakage);
-                        }
-                    } catch (const std::exception&) { periph_share = -1.0; }
-
-                    if (periph_share <= 0.0) {
-                        std::cout << "  [pg] SRAM periphery gating REFUSED: the "
-                                     "array-only CACTI probe did not isolate a "
-                                     "periphery share, so there is no measured "
-                                     "split to gate on (no credit taken)."
-                                  << std::endl;
-                    } else {
-                        /* 1.11.41 (user ruling: harness the SRAM PG with a
-                         * RETENTION path). Both voltage ratios below are
-                         * CACTI's own, not ours -- parameter.cc derives them
-                         * per node as a fraction of the interpolated Vdd:
-                         *     peri_global.Vcc_min = Vdd * 0.35   (periphery)
-                         *     sram_cell.Vcc_min   = Vdd * 0.65   (cell array)
-                         * and CACTI documents Vcc_min for a memory cell as
-                         * "the lowest vcc for data retention". Its power-gating
-                         * model drops a block to Vcc_min (decoder.cc:212,
-                         * detalV = Vdd - Vcc_min), so CACTI's "gated" state IS
-                         * a retention state -- the tool already had the model
-                         * PIMID was missing.
-                         *
-                         * The array therefore does NOT have to stay at full
-                         * leakage. It cannot be gated to zero (volatile: that
-                         * loses the data), but it CAN sit at its retention
-                         * voltage and keep it. Previously the cells were held
-                         * at full Vdd throughout, which understated the saving
-                         * -- stated at the time as a lower bound, now closed
-                         * with the tool's own figure rather than an invented
-                         * retention factor. */
-                        const double kPeriphResidual = 0.35;   // peri_global.Vcc_min/Vdd
-                        const double kCellRetention  = 0.65;   // sram_cell.Vcc_min/Vdd
-                        /* Using the VOLTAGE ratio as the LEAKAGE ratio is the
-                         * conservative direction: subthreshold leakage falls
-                         * faster than linearly in Vdd (DIBL), so real retention
-                         * leakage at 0.65*Vdd is BELOW 0.65x. The credited
-                         * saving is therefore an under-estimate, never an
-                         * over-estimate -- the same bias direction as every
-                         * other bound in this file. */
-                        double before = leakage;
-                        double periph = leakage * periph_share;
-                        double cells  = leakage - periph;
-                        /* Periphery gates (state rebuilt on wake); cells go to
-                         * retention (state kept). Different mechanisms, so
-                         * different residuals, applied over the same measured
-                         * idle residency. */
-                        leakage = cells  * ((1.0 - r_idle) + kCellRetention  * r_idle)
-                                + periph * ((1.0 - r_idle) + kPeriphResidual * r_idle);
-                        std::cout << "  [pg] SRAM gating: idle residency " << r_idle
-                                  << " -> leakage " << before << " -> " << leakage
-                                  << " mW (periphery share " << periph_share
-                                  << " DERIVED from an array-only CACTI query; "
-                                     "periphery gates to Vcc_min/Vdd=" << kPeriphResidual
-                                  << ", cells hold DATA at retention Vcc_min/Vdd="
-                                  << kCellRetention << " -- both CACTI per-node values)"
-                                  << std::endl;
-                    }
-                }
-            }
+            const NonDramArrayPrice price =
+                priceNonDramArray("SRAM", config.num_banks, config, gate, config.tech_node_nm);
+            const double rd_energy = price.rd_nj;
+            const double wr_energy = price.wr_nj;
+            const double leakage = price.leak_mw;
+            const double area = price.area_mm2;
 
             double total_rd_nj = rd_energy * zsim_stats.mem_rd;
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
@@ -11689,7 +13370,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  Leakage:         " << leakage << " mW" << std::endl;
-            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(1)
+            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(6)
                       << (total_rd_nj + total_wr_nj) / 1e6 << " mJ"
                       << std::defaultfloat << std::endl;
             pimid::fmt_scoped(std::cout) << "  Area:            " << std::fixed << std::setprecision(3)
@@ -11702,6 +13383,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * while the same machine in system scope reported McPAT silicon
              * plus the array. The array area is printed on the line above; it
              * was simply never added to anything here. */
+            devmem.have = true;   // 1.12.18: what the device total adds
+            devmem.dyn_nj = total_rd_nj + total_wr_nj;
+            devmem.static_mw = leakage;
+            devmem.area_mm2 = area;
+            devmem.note = config.memory_tech + std::string(config.memory_tech == "SRAM" ? " (CACTI 7)" : " (NVSim)") + ": array dynamic + leakage";
             pimid::fmt_scoped(std::cout) << "  With memory:     " << std::fixed << std::setprecision(3)
                       << (mcpat.getTotalArea() + area)
                       << " mm^2 (device silicon + the array above"
@@ -11713,81 +13399,24 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     } else {
         // NVM: NVSim model (STT_MRAM, PCM, RERAM)
         try {
-            // Per-bank characterization: model ONE 64KB bank, then scale leakage/area
-            // by the bank count (per-access energy is already per-bank). Also keeps
-            // NVSim off the multi-minute 16MB-array characterization.
-            pimid::NVSimWrapper::NVMConfig nvm_cfg;
-            nvm_cfg.device_corner = (config.device_corner == "lstp") ? 1
-                                  : (config.device_corner == "lop")  ? 2 : 0;  // 1.11.49 (L77)
-            nvm_cfg.capacity_bytes = g_bank_unit_bytes;  // one bank (memory.bank_kb, 1.11.94)
-            nvm_cfg.word_width_bits = config.cache_line_size * 8;  // one full line per access (64 B = 512 b), matching the CACTI/SRAM path
-            nvm_cfg.process_node_nm = validateTechNodeNm(config.tech_node_nm, "NVM array");
-            nvm_cfg.temperature_k = config.temperature_k;   // 1.11.52 (D055)
-            if (config.memory_tech == "STT_MRAM")
-                nvm_cfg.nvm_type = pimid::NVSimWrapper::NVMType::STTRAM;
-            else if (config.memory_tech == "PCM")
-                nvm_cfg.nvm_type = pimid::NVSimWrapper::NVMType::PCRAM;
-            else if (config.memory_tech == "RERAM")
-                nvm_cfg.nvm_type = pimid::NVSimWrapper::NVMType::RERAM;
-
-            pimid::NVSimWrapper nvsim(nvm_cfg);
-            nvsim.initialize();
-
-            double rd_energy = nvsim.getReadDynamicEnergy();  // per-access (one bank)
-            double wr_energy = nvsim.getWriteDynamicEnergy();
-            double leakage = nvsim.getLeakagePower() * config.num_banks;  // device = num_banks banks
-            /* 1.11.8: NVM periphery gates RETENTION-FREE -- non-volatile
-             * cells hold state unpowered, so with memory.array_pg the array
-             * periphery leakage descends during measured no-traffic
-             * residency.
-             *
-             * 1.11.51 (L142): the gated residual is CACTI's OWN sleep-
-             * transistor state, the same authority the SRAM path cites --
-             * peri_global.Vcc_min/Vdd = 0.35 (decoder.cc detalV model) --
-             * not the invented 2% floor this block used to carry. NVSim's
-             * reported leakage is ALL CMOS periphery (the cells are non-
-             * volatile and do not leak), so the old floor claimed a 50x
-             * leakage cut for which no linked tool provides a model, 17x
-             * deeper than the sleep-tx state the comment cited. Retention-
-             * free means the periphery COULD be cut harder than a retention
-             * design -- but neither CACTI nor NVSim models a deeper off
-             * state, so 0.35 is reported as the tool-backed BOUND rather
-             * than closing the gap with a made-up number. */
-            /* 1.11.57 (audit round 3, A003): the SAME unarmed-counter
-             * refusal the DRAM branch above applies. A leakage CREDIT taken
-             * on a counter that never advanced is indistinguishable from a
-             * measured idle device: pg_devmc_active stays 0 both when the
-             * memory truly idled and when nothing ever armed the counter, and
-             * only the second case is a non-measurement. Without the guard an
-             * array with real traffic collected the full array-gating credit
-             * on a dead counter. */
-            const bool a3_devmc_armed =
-                (zsim_stats.pg_devmc_active > 0) ||
-                (zsim_stats.mem_rd + zsim_stats.mem_wr == 0);
-            if (config.mem_array_pg && zsim_stats.pg_window() > 0 && !a3_devmc_armed) {
-                std::cout << "  [pg] array-gating residency UNAVAILABLE: the "
-                             "device-MC phase counter never advanced despite "
-                             "measured traffic, so no idle residency was "
-                             "measured and no leakage credit is taken."
-                          << std::endl;
-            }
-            if (config.mem_array_pg && zsim_stats.pg_window() > 0 && a3_devmc_armed) {   // 1.11.41: memory-side flag
-                double r_idle = 1.0 - std::min(1.0,
+            /* 1.12.18: characterisation and gating live in priceNonDramArray()
+             * (one price, both scopes); the block below prints and totals
+             * exactly what it printed and totalled before. */
+            NonDramGateInput gate;
+            gate.requested = config.mem_array_pg;   // 1.11.41: memory-side flag
+            gate.window = zsim_stats.pg_window() > 0;
+            gate.armed = (zsim_stats.pg_devmc_active > 0) ||
+                         (zsim_stats.mem_rd + zsim_stats.mem_wr == 0);
+            if (gate.window)
+                gate.r_idle = 1.0 - std::min(1.0,
                     static_cast<double>(zsim_stats.pg_devmc_active)
                         / static_cast<double>(zsim_stats.pg_window()));
-                if (r_idle > 0.0) {
-                    const double kPeriphResidual = 0.35;  // CACTI peri_global.Vcc_min/Vdd
-                    double before = leakage;
-                    leakage = leakage * (1.0 - r_idle) + leakage * kPeriphResidual * r_idle;
-                    std::cout << "  [pg] NVM periphery gating (sleep-tx state, "
-                                 "CACTI Vcc_min/Vdd=" << kPeriphResidual
-                              << ", tool-backed bound; retention-free could cut "
-                                 "deeper but no linked tool models it): idle "
-                                 "residency " << r_idle << " -> periphery leakage "
-                              << before << " -> " << leakage << " mW" << std::endl;
-                }
-            }
-            double area = nvsim.getArea() * config.num_banks;
+            const NonDramArrayPrice price =
+                priceNonDramArray(config.memory_tech, config.num_banks, config, gate, config.tech_node_nm);
+            const double rd_energy = price.rd_nj;
+            const double wr_energy = price.wr_nj;
+            const double leakage = price.leak_mw;
+            const double area = price.area_mm2;
 
             double total_rd_nj = rd_energy * zsim_stats.mem_rd;
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
@@ -11796,7 +13425,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  Leakage:         " << leakage << " mW" << std::endl;
-            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(1)
+            pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(6)
                       << (total_rd_nj + total_wr_nj) / 1e6 << " mJ"
                       << std::defaultfloat << std::endl;
             pimid::fmt_scoped(std::cout) << "  Area:            " << std::fixed << std::setprecision(3)
@@ -11809,6 +13438,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * while the same machine in system scope reported McPAT silicon
              * plus the array. The array area is printed on the line above; it
              * was simply never added to anything here. */
+            devmem.have = true;   // 1.12.18: what the device total adds
+            devmem.dyn_nj = total_rd_nj + total_wr_nj;
+            devmem.static_mw = leakage;
+            devmem.area_mm2 = area;
+            devmem.note = config.memory_tech + std::string(config.memory_tech == "SRAM" ? " (CACTI 7)" : " (NVSim)") + ": array dynamic + leakage";
             pimid::fmt_scoped(std::cout) << "  With memory:     " << std::fixed << std::setprecision(3)
                       << (mcpat.getTotalArea() + area)
                       << " mm^2 (device silicon + the array above"
@@ -11950,7 +13584,114 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     }
     std::cout << std::right;  // restore default alignment
 
-    } // !detail_summary
+    } // memory block (1.12.18: always runs)
+    if (devmem_saved) std::cout.rdbuf(devmem_saved);
+
+    /* 1.12.18: the device's total -- logic (McPAT) plus memory, over the
+     * same window the logic is priced on. The field a result is read from. */
+    {
+        const double window_s = (config.frequency_mhz > 0.0)
+            ? (double)cycles / (config.frequency_mhz * 1e6) : 0.0;
+        const auto lp = mcpat.getSystemPower();
+        const double mem_dyn_w = (devmem.have && window_s > 0.0) ? devmem.dyn_nj * 1e-9 / window_s : 0.0;
+        const double mem_static_w = devmem.have ? devmem.static_mw / 1000.0 : 0.0;
+        const double total_w = lp.total_power + mem_dyn_w + mem_static_w;
+        std::cout << "\n--- System Total ---" << std::endl;
+        pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(6) << total_w
+                  << " W (logic " << lp.total_power << " + memory " << (mem_dyn_w + mem_static_w)
+                  << " = dynamic " << mem_dyn_w << " + static " << mem_static_w
+                  << " over " << std::setprecision(9) << window_s << " s)" << std::endl;
+        pimid::fmt_scoped(std::cout) << "  Energy: " << std::scientific << std::setprecision(6)
+                  << total_w * window_s << " J (memory dynamic " << devmem.dyn_nj * 1e-9 << " J)" << std::endl;
+        pimid::fmt_scoped(std::cout) << "  Area:  " << std::fixed << std::setprecision(3)
+                  << mcpat.getTotalArea() + devmem.area_mm2 << " mm^2 (logic " << mcpat.getTotalArea()
+                  << " + memory " << devmem.area_mm2 << ")" << std::endl;
+        if (devmem.have) std::cout << "  memory: " << devmem.note << std::endl;
+        else std::cout << "  memory: NOT PRICED (the memory model failed above; see its error)" << std::endl;
+
+        /* 1.12.18 (user 2026-10-23: "make sure both completeness and no
+         * double counting are guaranteed"): the power ledger. Every term the
+         * total above adds is registered ONCE under a physical-component key
+         * with the model that priced it. The run stops when (1) a key is
+         * registered twice, (2) McPAT's components do not add up to McPAT's
+         * own total (a term McPAT counts but no component carries, or one
+         * counted twice inside it), (3) the ledger does not add up to the
+         * printed total, or (4) a component this scope must price is absent. */
+        {
+            struct Term { std::string key, source; double w; };
+            std::vector<Term> ledger;
+            std::set<std::string> keys;
+            bool ok = true;
+            auto add = [&](const std::string& k, double w, const std::string& src) {
+                if (!keys.insert(k).second) {
+                    std::cerr << "[ledger] FATAL: component '" << k << "' registered twice (double counting)" << std::endl;
+                    ok = false;
+                }
+                ledger.push_back({k, src, w});
+            };
+            using CT = pimid::McPATWrapper::ComponentType;
+            const struct { CT t; const char* key; } comps[] = {
+                {CT::CORE, "logic.pe_cores"}, {CT::L2_CACHE, "logic.l2"}, {CT::L3_CACHE, "logic.l3"},
+                {CT::NOC, "logic.noc"}, {CT::MEMORY_CONTROLLER, "logic.memory_controllers"}, {CT::PCIE, "logic.link_controller"} };
+            double comp_sum = 0.0;
+            for (const auto& c : comps) {
+                const double w = mcpat.getComponentPower(c.t).total_power;
+                comp_sum += w;
+                if (w != 0.0) add(c.key, w, "McPAT");
+            }
+            {   /* PIMID 1.12.18 (user ruling, per-die clock trunk): ONE entry per die,
+                 * in no component above; McPAT's per-die values must add up to its
+                 * trunk total. */
+                const double tw = mcpat.getClockTrunkPower().total_power;
+                double per_sum = 0.0;
+                for (const auto& t : mcpat.getClockTrunks()) per_sum += t.rt_w + t.leak_w + t.gate_w;
+                if (std::fabs(per_sum - tw) > 1e-9 * std::max(1.0, std::fabs(tw))) {
+                    std::cerr << "[ledger] FATAL: the per-die clock trunks sum to " << per_sum << " W but the trunk"
+                                 " total is " << tw << " W" << std::endl;
+                    ok = false;
+                }
+                comp_sum += tw;
+                for (const auto& t : mcpat.getClockTrunks()) {
+                    const int n = std::max(1, t.count);
+                    for (int k = 1; k <= n; k++)
+                        add("device." + std::string(t.name) + (n > 1 ? std::to_string(k) : std::string()) + ".clock_trunk",
+                            (t.rt_w + t.leak_w + t.gate_w) / n, "McPAT");
+                }
+            }
+            const double resid = lp.total_power - comp_sum;
+            if (std::fabs(resid) > 1e-9 * std::max(1.0, std::fabs(lp.total_power))) {
+                std::cerr << "[ledger] FATAL: McPAT's components sum to " << comp_sum << " W but its total is "
+                          << lp.total_power << " W (" << resid << " W unattributed or counted twice inside McPAT)" << std::endl;
+                ok = false;
+            }
+            if (devmem.have) {
+                add("memory.array.dynamic", mem_dyn_w, devmem.note.substr(0, devmem.note.find(':')));
+                add("memory.array.static", mem_static_w, "background + VPP + refresh (counted when replayed) + PHY static");
+            }
+            double led_sum = 0.0;
+            for (const auto& t : ledger) led_sum += t.w;
+            if (std::fabs(led_sum - total_w) > 1e-9 * std::max(1.0, std::fabs(total_w))) {
+                std::cerr << "[ledger] FATAL: ledger sums to " << led_sum << " W, the reported total is " << total_w << " W" << std::endl;
+                ok = false;
+            }
+            std::vector<std::string> need = {"logic.pe_cores", "memory.array.dynamic", "memory.array.static"};
+            if (config.num_pes > 1) need.push_back("logic.noc");
+            if (config.pe_mc_enabled) need.push_back("logic.memory_controllers");
+            for (const auto& k : need)
+                if (!keys.count(k)) {
+                    std::cerr << "[ledger] FATAL: required component '" << k << "' is not priced in this run" << std::endl;
+                    ok = false;
+                }
+            std::cout << "  ledger (" << ledger.size() << " components, each counted once; sum = total):" << std::endl;
+            for (const auto& t : ledger)
+                pimid::fmt_scoped(std::cout) << "    " << std::left << std::setw(34) << t.key << std::right << std::fixed   // PIMID 1.12.18: per-die keys
+                          << std::setprecision(6) << t.w << " W  [" << t.source << "]" << std::endl;
+            if (!ok) {
+                std::cerr << "[ledger] FATAL: the power report fails its completeness / no-double-counting check; refusing to report it." << std::endl;
+                std::exit(5);
+            }
+        }
+    }
 }
 
 /**
@@ -12024,60 +13765,43 @@ static void runPowerAnalysis(const UnifiedConfig& config,
  * memory from System Total area while the header promised "Returns 0 with a
  * note on failure; the caller's fallback story is the note". Every return 0
  * now says which query failed and what that costs. */
+/* 1.12.18: BUG FIX -- ONE CHARACTERIZATION, BOTH SCOPES.
+ * This helper still built its own CACTI query: a FIXED 64 KB bank (not the
+ * run's memory.bank_kb unit, g_bank_unit_bytes) in CACTI's MAIN-MEMORY mode
+ * (is_main_memory = true, a DRAM-organisation flag, on an SRAM array), at
+ * config.tech_node_nm instead of the node that owns the array. Device scope
+ * prices the same array through priceNonDramArray(): one configured bank in
+ * RAM mode at the owning node, x banks. On a cosim_SRAM cell the two scopes
+ * reported 121.702 mm^2 (here) against 13.966 mm^2 (device scope) for ONE
+ * array, 8.7x apart. The area now IS priceNonDramArray()'s area (no gating
+ * input: area is structural), so the two scopes cannot drift again; the NVM
+ * branch follows the same path (it had the same fixed 64 KB). tech_node_nm is
+ * the OWNING node's process (callers pass it). Not switchable: a bug fix. */
 static double computeNonDramMemAreaMM2(const std::string& tech, int banks,
                                        int tech_node_nm, int line_size,
                                        const UnifiedConfig& config) {
+    (void)line_size;   // priceNonDramArray() reads config.cache_line_size, as device scope does
     if (banks < 1) banks = 1;
-    const int corner = (config.device_corner == "lstp") ? 1
-                     : (config.device_corner == "lop")  ? 2 : 0;
     auto omitted = [&](const char* why) -> double {
         std::cerr << "[area] NOTE: " << tech << " memory die area unavailable ("
                   << why << "); System Total AREA omits this memory, stated "
                      "here rather than reported as zero silicon." << std::endl;
         return 0.0;
     };
+    if (!(tech == "SRAM" || tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM"))
+        return omitted("technology has no non-DRAM area model in this build");
     try {
-        if (tech == "SRAM") {
-            pimid::CACTIWrapper::SRAMConfig cfg;
-            cfg.capacity_bytes = 64 * 1024;                 // one bank
-            cfg.line_size = static_cast<uint32_t>(line_size > 0 ? line_size : 64);
-            cfg.associativity = 1;
-            cfg.banks = 1;
-            cfg.tech_node_nm = tech_node_nm > 0 ? tech_node_nm : 22;
-            cfg.is_cache = false;
-            cfg.is_main_memory = true;
-            cfg.quiet = true;
-            cfg.device_corner = corner;                              // A009
-            cfg.temperature = static_cast<uint32_t>(config.temperature_k);  // D055
-            cfg.ic_proj_type = config.interconnect_projection;       // A009 (E5)
-            cfg.read_write_ports = config.ports_per_bank;            // A009
-            pimid::CACTIWrapper cacti(cfg);
-            cacti.initialize();
-            if (cacti.isValid() && cacti.getArea() > 0.0)
-                return cacti.getArea() * banks;
-            return omitted("CACTI returned no valid SRAM area");
-        } else if (tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM") {
-            pimid::NVSimWrapper::NVMConfig cfg;
-            cfg.capacity_bytes = 64 * 1024;                 // one bank
-            cfg.word_width_bits = static_cast<uint32_t>((line_size > 0 ? line_size : 64) * 8);
-            cfg.process_node_nm = tech_node_nm > 0 ? tech_node_nm : 22;
-            cfg.device_corner = corner;                              // A009 (L77)
-            cfg.temperature_k = config.temperature_k;                // D055
-            cfg.nvm_type = (tech == "STT_MRAM") ? pimid::NVSimWrapper::NVMType::STTRAM
-                         : (tech == "PCM")      ? pimid::NVSimWrapper::NVMType::PCRAM
-                                                : pimid::NVSimWrapper::NVMType::RERAM;
-            pimid::NVSimWrapper nvsim(cfg);
-            nvsim.initialize();
-            if (nvsim.getArea() > 0.0) return nvsim.getArea() * banks;
-            return omitted("NVSim returned no valid array area");
-        }
+        const NonDramArrayPrice p = priceNonDramArray(tech, banks, config, NonDramGateInput(),
+                                                      tech_node_nm > 0 ? tech_node_nm : config.tech_node_nm);
+        if (p.area_mm2 > 0.0) return p.area_mm2;
+        return omitted(tech == "SRAM" ? "CACTI returned no valid SRAM area"
+                                      : "NVSim returned no valid array area");
     } catch (const std::exception& e) {
         std::cerr << "[area] NOTE: " << tech << " memory die area query failed ("
                   << e.what() << "); the system total omits it, stated here."
                   << std::endl;
         return 0.0;
     }
-    return omitted("technology has no non-DRAM area model in this build");
 }
 
 static int memorySystemDieCount(const std::string& tech,
@@ -12332,6 +14056,21 @@ struct ArrayAccessClass {
     double row_miss_frac = -1.0;  // <0 = not measured for this class
     uint64_t row_misses = 0, row_total = 0;   // the measurement, for the log
     const char* unmeasured_why = "";          // why not, when not
+    /* 1.12.18 (ruling 17 / R0605): ACT commands a replayed controller issued
+     * for this class (<0 = not counted). Counted: the per-access terms carry
+     * the column burst only and every ACT is charged once at the energy
+     * model's activate + precharge energy -- never both. */
+    int64_t activates = -1;
+    uint64_t out_rd = 0, out_wr = 0, out_acts = 0;   // 1.12.18 (R1): this class's requests outside the ROI (not priced)
+};
+/* 1.12.18 (ruling 17 / R0605): the refresh commands the array's replayed
+ * controller counted, over its replayed DRAM cycles; when present the energy
+ * model's counted-refresh power replaces the datasheet duty inside the
+ * background (as device scope since 1.11.98). */
+struct CountedRefresh {
+    bool present = false;
+    uint64_t refreshes = 0, ticks = 0;
+    const char* who = "";
 };
 
 static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
@@ -12345,8 +14084,13 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                                           int channels = 1,
                                           double termination_pj_per_bit = -1.0,   // 1.11.63 (R7, gate 1173B E3)
                                           int temperature_k = 358,                 // 1.11.65 (refresh ladder)
-                                          int ddr5_speed_grade = 4800,             // 1.11.66 (R8 #9)
-                                          const BankOpenInput& bank_open = BankOpenInput())   // 1.11.91 (R8-7)
+                                          int ddr5_speed_grade = 0,                // 1.11.66 (R8 #9); 1.12.18: 0 = the run's knob, else the record's grade (was 4800)
+                                          const BankOpenInput& bank_open = BankOpenInput(),   // 1.11.91 (R8-7)
+                                          const CountedRefresh& counted_refresh = CountedRefresh(),   // 1.12.18 (R0605)
+                                          const UnifiedConfig* array_config = nullptr,        // 1.12.18: non-DRAM pricing
+                                          int array_banks = 0,                                // 1.12.18
+                                          const NonDramGateInput& array_gate = NonDramGateInput(),   // 1.12.18
+                                          int array_node_nm = 0)                              // 1.12.18: the owning node's
 {
     if (memory_tech.empty()) return 0.0;
     uint64_t mem_rd = 0, mem_wr = 0;
@@ -12365,29 +14109,132 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
     if ((mem_rd + mem_wr) == 0) {
         const bool is_dram_zero = !(memory_tech == "SRAM" || memory_tech == "STT_MRAM" ||
                                     memory_tech == "PCM"  || memory_tech == "RERAM");
-        if (!is_dram_zero) return 0.0;   // non-DRAM: no standby/refresh model here
-        std::cout << "  [mem] " << memory_tech
-                  << ": no accesses in this run -- dynamic terms are zero, but "
-                     "standby and refresh are not: the background term is "
-                     "reported and counted." << std::endl;
+        /* 1.12.18: a non-DRAM array LEAKS whether or not it was
+         * touched (CACTI/NVSim leakage is a rate, as DRAM standby is), so it
+         * no longer returns 0 here; the priced branch below reports it. */
+        if (!is_dram_zero) {
+            std::cout << "  [mem] " << memory_tech
+                      << ": no accesses in this run -- dynamic terms are zero, but "
+                         "array leakage is not: it is reported and counted."
+                      << std::endl;
+        } else {
+            std::cout << "  [mem] " << memory_tech
+                      << ": no accesses in this run -- dynamic terms are zero, but "
+                         "standby and refresh are not: the background term is "
+                         "reported and counted." << std::endl;
+        }
     }
 
     const bool is_dram = !(memory_tech == "SRAM" || memory_tech == "STT_MRAM" ||
                            memory_tech == "PCM"  || memory_tech == "RERAM");
     if (!is_dram) {
-        /* NVM and SRAM arrays are priced by NVSim/CACTI on a different footing.
-         * Say so rather than print a DRAM-shaped number for them. */
+        /* 1.12.18 (user ruling "make the power model complete"): priced
+         * here with the SAME function device scope uses (priceNonDramArray:
+         * CACTI 7 for SRAM, NVSim for STT_MRAM/PCM/RERAM, leakage x banks,
+         * measured array gating), on the measured access counts of every
+         * class, and RETURNED in watts so System Total Power carries it:
+         *     W = (sum_class rd x E_rd + wr x E_wr) / wall_seconds + leak_mW / 1000
+         * on the same 1.9.10 wall clock as every node's McPAT power. AREA is
+         * NOT added here: computeNonDramMemAreaMM2 (1.11.46 L242) already
+         * puts this array in System Total Area; it is printed for comparison
+         * only. This branch used to print "array energy not charged in system
+         * scope yet" and return 0. */
         std::cout << "\n--- Memory Array Energy (system) ---" << std::endl;
-        std::cout << "  Technology:    " << memory_tech
-                  << " -- array energy not charged in system scope yet; the "
-                     "non-DRAM path is priced by its own model in device scope."
-                  << std::endl;
-        return 0.0;
+        if (array_config == nullptr) {
+            std::cerr << "[power] NOTE: " << memory_tech << " array power NOT "
+                         "priced: the caller passed no configuration; System "
+                         "Total Power OMITS this memory, stated here." << std::endl;
+            return 0.0;
+        }
+        if (!array_config->model_nondram_array_system) {
+            std::cout << "  Technology:    " << memory_tech << " -- array energy and "
+                         "leakage NOT PRICED by user option "
+                         "(power.models.nondram_array_system: false); System Total "
+                         "Power omits them" << std::endl;
+            return 0.0;
+        }
+        const bool is_nvm = (memory_tech != "SRAM");
+        try {
+            const int banks = (array_banks > 0) ? array_banks : 1;
+            const int node_nm = (array_node_nm > 0) ? array_node_nm
+                                                    : array_config->tech_node_nm;
+            const NonDramArrayPrice price =
+                priceNonDramArray(memory_tech, banks, *array_config, array_gate, node_nm);
+            std::cout << "  Technology:    " << memory_tech
+                      << (is_nvm ? " (NVSim)" : " (CACTI 7)")
+                      << " -- the device-scope model, one bank x " << banks
+                      << " banks, at " << node_nm << " nm (the owning node's "
+                         "process node; the tool scales to it)" << std::endl;
+            std::cout << "  Accesses:      " << (mem_rd + mem_wr)
+                      << " on this node's memory" << std::endl;
+            double dyn_nj = 0.0;
+            bool dq_unpriced = false;
+            for (const auto& c : classes) {
+                if (c.rd + c.wr == 0) continue;
+                const double c_nj = price.rd_nj * static_cast<double>(c.rd)
+                                  + price.wr_nj * static_cast<double>(c.wr);
+                dyn_nj += c_nj;
+                if (c.crosses_dq) dq_unpriced = true;
+                pimid::fmt_scoped(std::cout) << "  " << c.who << " accesses: rd=" << c.rd
+                          << " wr=" << c.wr << " -> " << std::setprecision(6)
+                          << c_nj / 1e6 << " mJ" << std::endl;
+            }
+            pimid::fmt_scoped(std::cout) << "  Per-access:    read=" << std::fixed
+                      << std::setprecision(3) << price.rd_nj << " nJ, write="
+                      << price.wr_nj << " nJ" << std::endl;
+            std::cout << "  Leakage:       " << price.leak_mw << " mW (x "
+                      << banks << " banks)" << std::endl;
+            pimid::fmt_scoped(std::cout) << "  Array dynamic: " << std::setprecision(6)
+                      << dyn_nj / 1e6 << " mJ" << std::endl;
+            pimid::fmt_scoped(std::cout) << "  Array area:    " << std::fixed
+                      << std::setprecision(3) << price.area_mm2
+                      << " mm^2 (printed for comparison; System Total Area "
+                         "carries this array through its own query and it is "
+                         "not added again)" << std::endl;
+            /* Device scope charges no interface energy for a non-DRAM array
+             * either. A host-originated access does reach it from outside the
+             * device, but the DRAM DQ termination model (JEDEC ODT classes)
+             * does not describe an SRAM/NVM main-memory interface, and no
+             * published per-access figure for one was found. */
+            if (dq_unpriced)
+                std::cout << "  [mem] interface/termination energy of an access "
+                             "crossing to a " << memory_tech << " main-memory "
+                             "array: NO PUBLISHED SOURCE FOUND; not charged "
+                             "(device scope charges none for this technology "
+                             "either)" << std::endl;
+            if (wall_seconds > 0.0) {
+                const double w = dyn_nj * 1e-9 / wall_seconds + price.leak_mw / 1000.0;
+                pimid::fmt_scoped(std::cout) << "  Array power:   " << std::setprecision(6)
+                          << w << " W = " << dyn_nj * 1e-9 << " J / "
+                          << wall_seconds << " s + " << price.leak_mw / 1000.0
+                          << " W leakage (counted in System Total)" << std::endl;
+                return w;
+            }
+            std::cerr << "[power] NOTE: no wall clock for the " << memory_tech
+                      << " array; System Total Power OMITS it, stated here."
+                      << std::endl;
+            return 0.0;
+        } catch (const std::exception& e) {
+            if (is_nvm) {
+                /* Same policy as device scope (1.11.56 D032): the array IS
+                 * the memory power of an NVM system. */
+                std::cerr << "  [NVM power] NVSim query failed: " << e.what() << std::endl;
+                std::cerr << "  [NVM power] FATAL: the " << memory_tech
+                          << " array could not be characterized, so this run has no "
+                             "memory-array energy, leakage or area. Refusing to report "
+                             "it as a result." << std::endl;
+                std::exit(3);
+            }
+            std::cerr << "  [SRAM power] CACTI query failed: " << e.what()
+                      << "; System Total Power OMITS this memory, stated here."
+                      << std::endl;
+            return 0.0;
+        }
     }
-
     try {
         pimid::RamulatorWrapper ram_oracle("", memory_tech);
         ram_oracle.setDeviceWidth(device_width);   // 1.11.46 (L181)
+        ram_oracle.setPeChipSplit(s_array_pe_chip_split);   // 1.12.18: the device/shared array at a chip-level placement
         /* 1.11.63 (R7): gate 1173B E3 caught the knob half-wired (parsed,
          * never applied). Set before initialize(), both scopes. */
         ram_oracle.setTerminationOverridePJPerBit(termination_pj_per_bit);
@@ -12442,6 +14289,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
 
         double total_rd_mj = 0.0, total_wr_mj = 0.0, total_iface_mj = 0.0;
         double total_iddq_mj = 0.0;   // 1.11.91 (R8-8)
+        double total_act_mj = 0.0;    // 1.12.18 (R0605): counted activates
         for (const auto& c : classes) {
             if (c.rd + c.wr == 0) continue;
             /* 1.11.89 (fix 1): the measured row-miss fraction, per class,
@@ -12467,8 +14315,22 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
              * activation and column access, so act/pre are NOT added
              * separately -- adding them would double-count within the array
              * term itself. */
-            const double rd_nj = ram_oracle.getArrayReadEnergyNJ();
-            const double wr_nj = ram_oracle.getArrayWriteEnergyNJ();
+            double rd_nj = ram_oracle.getArrayReadEnergyNJ();
+            double wr_nj = ram_oracle.getArrayWriteEnergyNJ();
+            /* 1.12.18 (ruling 17 / R0605): counted activates (energy from
+             * the energy model, RamulatorWrapper -> pimid_energy.h). */
+            if (c.activates >= 0) {
+                ram_oracle.setRowMissFraction(0.0);
+                rd_nj = ram_oracle.getArrayReadEnergyNJ();
+                wr_nj = ram_oracle.getArrayWriteEnergyNJ();
+                ram_oracle.setRowMissFraction(c.row_miss_frac);
+                const double act_nj = ram_oracle.getCountedActivatesNJ(static_cast<uint64_t>(c.activates));
+                total_act_mj += act_nj / 1e6;
+                std::cout << "  [mem] activates COUNTED by the replayed controller for the " << c.who
+                          << " accesses (1.12.18): " << c.activates << " ACT = " << act_nj
+                          << " nJ (energy model: activate + precharge per ACT); their per-access terms carry the column burst only"
+                          << std::endl;
+            }
             /* 1.11.20 (D6): DQ termination, placement-aware like 1.11.5.
              * 1.11.60 (A009/A010 revert, user-approved): termination-only, as
              * device scope. CACTI-IO's driver+PHY prints informational below.
@@ -12478,9 +14340,17 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             const double iface_drv_nj  = c.crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
             const double c_rd_mj = rd_nj * static_cast<double>(c.rd) / 1e6;
             const double c_wr_mj = wr_nj * static_cast<double>(c.wr) / 1e6;
+            /* 1.12.18: (diagnosis 8c) the write termination is
+             * charged once: inside the IDDQ4W excess when the sheet measured it
+             * with RTT_WR enabled (as device scope). */
+            const double iddq_wr_probe = ram_oracle.getIddqEnergyNJ(true);
+            const bool wr_term_in_iddq = c.crosses_dq && iddq_wr_probe > 0.0 && iface_term_wr_nj > 0.0 &&
+                                         ram_oracle.getIddqEnergyNJ(false) >= 0.0 &&
+                                         ram_oracle.getIddqWriteIncludesTermination();
+            const double iface_term_wr_chg = wr_term_in_iddq ? 0.0 : iface_term_wr_nj;
             const double c_if_mj =
                 (iface_term_rd_nj * static_cast<double>(c.rd)
-                 + iface_term_wr_nj * static_cast<double>(c.wr)) / 1e6;
+                 + iface_term_wr_chg * static_cast<double>(c.wr)) / 1e6;
             total_rd_mj += c_rd_mj; total_wr_mj += c_wr_mj; total_iface_mj += c_if_mj;
             /* 1.11.91 (audit R8-8): IDDQ on the class's own crossing answer. */
             bool iddq_band = false;
@@ -12497,10 +14367,11 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             std::cout << "  " << c.who << " accesses: rd=" << c.rd
                       << " wr=" << c.wr << std::endl;
             pimid::fmt_scoped(std::cout) << "    Per-access:    read=" << std::fixed << std::setprecision(3)
-                      << rd_nj << " nJ, write=" << wr_nj << " nJ (incl act+col)"
+                      << rd_nj << " nJ, write=" << wr_nj
+                      << (c.activates >= 0 ? " nJ (column burst; the ACTs are counted above)" : " nJ (incl act+col)")   // 1.12.18
                       << std::endl;
             pimid::fmt_scoped(std::cout) << "    DQ interface:  " << std::setprecision(3)
-                      << "rd=" << iface_term_rd_nj << " nJ, wr=" << iface_term_wr_nj
+                      << "rd=" << iface_term_rd_nj << " nJ, wr=" << iface_term_wr_chg
                       << " nJ per access (" << c.dq_why << ")";
             if (!iddq_published)
                 std::cout << "; iddq= n/a (no IDDQ row for " << memory_tech << ")";
@@ -12510,12 +14381,24 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             else
                 std::cout << "; iddq= rd " << iddq_rd_nj << " nJ, wr " << iddq_wr_nj << " nJ";
             std::cout << std::endl;
+            {   /* 1.12.18 (user ruling R1 2026-10-24) */
+                const uint64_t ord = c.out_rd, owr = c.out_wr, oac = c.out_acts;
+                if (ord + owr + oac > 0) {
+                    const double oe = (rd_nj + iface_term_rd_nj + iddq_rd_nj) * (double)ord
+                                    + (wr_nj + iface_term_wr_chg + iddq_wr_nj) * (double)owr
+                                    + (c.activates >= 0 ? ram_oracle.getCountedActivatesNJ(oac) : 0.0);
+                    std::cout << "    [mem] outside ROI, not priced (1.12.18 ruling R1): " << c.who << " requests stamped after the ROI end: rd="
+                              << ord << " wr=" << owr << " ACT=" << oac << " = " << oe
+                              << " nJ; replayed for the controller state only, in no count, energy or window above" << std::endl;
+                }
+            }
             if (c.crosses_dq) {
                 std::cout << "      termination: rd=" << iface_term_rd_nj
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
                           << iface_term_wr_nj
-                          << " nJ (ctrl RON -> DRAM RTT_WR class) [R7 split]"
-                             "  CACTI-IO driver+PHY: " << iface_drv_nj
+                          << " nJ (ctrl RON -> DRAM RTT_WR class)"
+                          << (wr_term_in_iddq ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "")   // 1.12.18
+                          << " [R7 split]  CACTI-IO driver+PHY: " << iface_drv_nj
                           << " nJ [INFORMATIONAL, NOT charged -- 1.11.60 revert:"
                              " McPAT already prices the PHY here]" << std::endl;
                 /* 1.11.82's rule, now that host accesses reach this branch
@@ -12542,6 +14425,30 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             std::cout << std::defaultfloat;
         }
         ram_oracle.setRowMissFraction(-1.0);
+
+        /* 1.12.18 (ruling 17 / R0605): refresh charged as counted. */
+        double ref_delta_mw = 0.0;
+        if (counted_refresh.present && counted_refresh.refreshes > 0 && counted_refresh.ticks > 0) {
+            /* 1.12.18 (user ruling 2026-10-23): count x energy per REF over the
+             * run window (wall_seconds), the replayed DRAM span only without one. */
+            /* The longer of the run window and the replayed span: commands
+             * counted over a replay that ran past the window (co-sim
+             * thread-MPI's phase-clock replay) are charged at their rate. */
+            const double replay_ns = (double)counted_refresh.ticks * ram_oracle.getTckNs();
+            const double charge_ns = std::max(wall_seconds * 1e9, replay_ns);
+            const double meas_mw = ram_oracle.getCountedRefreshSystemMWOverNs(counted_refresh.refreshes, charge_ns,
+                                                                              device_width, ranks_per_channel, channels);
+            const double duty_mw = ram_oracle.getRefreshDutySystemMW(device_width, ranks_per_channel, channels);
+            if (meas_mw >= 0.0) {
+                ref_delta_mw = meas_mw - duty_mw;
+                std::cout << "  [mem] refresh charged as counted " << meas_mw << " mW (" << counted_refresh.refreshes
+                          << " refresh commands over " << counted_refresh.ticks << " replayed DRAM cycles, "
+                          << counted_refresh.who << ") in place of the datasheet duty " << duty_mw
+                          << " mW inside the background; count x energy per REF over "
+                          << charge_ns * 1e-9 << " s = the longer of the run window " << wall_seconds
+                          << " s and the replayed span " << replay_ns * 1e-9 << " s (1.12.18, ruling 2026-10-23)" << std::endl;
+            }
+        }
 
         pimid::fmt_scoped(std::cout) << "  Background:    " << std::fixed << std::setprecision(3) << bg_mw
                   << " mW (standby+refresh over " << bg_units << " "
@@ -12582,8 +14489,9 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * correction -- what is printed here is the whole DQ interface since
          * 1.11.58, not the termination component of it. */
         pimid::fmt_scoped(std::cout) << "  Array dynamic: " << std::setprecision(3)
-                  << (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj)
+                  << (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj + total_act_mj)
                   << " mJ (rd=" << total_rd_mj
+                  << " + act=" << total_act_mj   // 1.12.18 (R0605): counted activates
                   << " + wr=" << total_wr_mj
                   << " + iddq=" << total_iddq_mj   // 1.11.91 (R8-8)
                   << " + iface=" << total_iface_mj
@@ -12595,9 +14503,9 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * clock. Energy terms divide by the same seconds node power uses;
          * background is already a rate. */
         if (wall_seconds > 0.0) {
-            return (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj)
+            return (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj + total_act_mj)
                        / 1000.0 / wall_seconds
-                   + (bg_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0)) / 1000.0;   // 1.11.91 (R8-8)
+                   + (bg_mw + ref_delta_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0)) / 1000.0;   // 1.11.91 (R8-8); 1.12.18 counted refresh
         }
         return 0.0;
     } catch (const std::exception& e) {
@@ -12628,6 +14536,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         double leakage_power = 0;
         double area = 0;
         bool valid = false;
+        /* 1.12.18 (power ledger): McPAT's components of this node, and the
+         * UCIe link energy McPAT carries inside its link component (booked
+         * on the ledger as the link's own entry, user ruling 2026-10-23). */
+        std::vector<std::pair<std::string, double>> comps;
+        double link_phy_w = 0.0;
     };
     std::vector<NodePowerResult> results;
 
@@ -12647,15 +14560,46 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
     // host ran long, collapsed below the host-only baseline). Pricing each node over
     // the true wall-clock in its own clock domain fixes all three failure modes.
     double wall_seconds = 0.0;
+    /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): with a
+     * closed roi_begin..roi_end stamp (source 1) every node that ran in the ROI
+     * is on the run time: the phase clock advances phaseLength of each core's
+     * OWN cycles per phase, so its seconds are those of the slowest clock that
+     * ran (the max below), and never below that node's busy wall cycles
+     * (host: unhalted + contention; device: PE cycles). Thread-MPI (source 2)
+     * keeps the per-node ROI-relative ends, which already are its elapsed
+     * time; the host/device wall-cycle fields reconcile to the same window. */
+    const bool roi_wall_stamped = (zsim_stats.roi_wall_source == 1 || zsim_stats.roi_wall_source == 3) && zsim_stats.roi_wall_cycles > 0;   // 1.12.18: 3 = single-process cut
+    std::string wall_owner = "none";
     for (const auto& node : config.system_nodes) {
         if (node.num_cores == 0 || node.frequency_mhz <= 0) continue;
         uint64_t node_wall =
             (node.role == UnifiedConfig::SystemNode::HOST)
                 ? zsim_stats.host_wall_cycles : zsim_stats.dev_wall_cycles;
         if (node_wall == 0) continue;
+        if (roi_wall_stamped) node_wall = std::max(node_wall, zsim_stats.roi_wall_cycles);
+        /* 1.12.18 (user ruling R2 2026-10-24): thread-MPI ranks on the HOST
+         * cores (a no-offload baseline: no device PE ran) -- the run time is
+         * the first ROI barrier to the latest rank's ROI end on those cores
+         * (roiWallCycles, host clock), not their busy max (rank 0 re-baselines
+         * at its roi_begin; cCycles). Device-rank runs keep their trimmed
+         * per-PE window, which is the same rule there. */
+        if (zsim_stats.roi_wall_source == 2 && zsim_stats.roi_wall_cycles > 0 && zsim_stats.dev_wall_cycles == 0 &&
+            node.role == UnifiedConfig::SystemNode::HOST)
+            node_wall = zsim_stats.roi_wall_cycles;
         double t = static_cast<double>(node_wall) / (node.frequency_mhz * 1e6);
-        if (t > wall_seconds) wall_seconds = t;
+        if (t > wall_seconds) { wall_seconds = t; wall_owner = node.name; }
     }
+    pimid::fmt_scoped(std::cout) << "  [run time] window " << std::setprecision(9) << wall_seconds << " s = "
+              << (roi_wall_stamped ? std::string(zsim_stats.roi_wall_source == 3 ? "ROI elapsed wall clock, the latest ROI end on the cores' own clocks (single-process cut: the device PEs, the host cores when no PE ran; roiWallCycles "
+                                                                                : "ROI elapsed wall clock, roi_begin..roi_end on the global phase clock (roiWallCycles ")
+                                     + std::to_string(zsim_stats.roi_wall_cycles) + ")"
+                                   : (zsim_stats.roi_wall_source == 2
+                                          ? "ROI elapsed wall clock, max over ranks of the ROI-relative end (thread-MPI; roiWallCycles "
+                                            + std::to_string(zsim_stats.roi_wall_cycles) + ")"
+                                          : std::string("busy wall cycles: the dump carries no closed ROI wall stamp")))
+              << " at the " << wall_owner << " clock; busy max: host " << zsim_stats.host_wall_cycles
+              << " cycles, device " << zsim_stats.dev_wall_cycles
+              << " cycles; every node and the memory are priced over it [1.12.18, ruling 2026-10-23]" << std::endl;
 
     const std::map<std::string, double>& overrides = config.mcpat_overrides;
     auto ov_get_int = [&overrides](const std::string& key, int fallback) -> int {
@@ -12800,10 +14744,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * tables, and guarded the clock with a literal 700 MHz -- while
              * its comment said "Same behavior as the device-scope site". One
              * owner, called from both scopes. */
+            applyDieProcessNode(mcfg, config, node.memory_tech, node.name + ": ");   // PIMID 1.12.18 (per-die process)
             applyCornerAndPeripheryPricing(
                 mcfg, config, config.mcpat_overrides,
                 getDRAMGenClass(node.memory_tech),
                 node.frequency_mhz, node.name + ": ");
+            applyDieProcessDevice(mcfg, config, node.memory_tech, node.name + ": ");   // PIMID 1.12.18 (per-die process / trunk)
             /* 1.11.107 (ONE VOCABULARY): the node's own architectural register
              * files (pim.pe.arch_int_regs / arch_fp_regs in the node, else the
              * top-level values); the call above wrote the run's. Equal for a
@@ -12883,6 +14829,19 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         /* 1.11.51 (L215/L223): node-scoped emulation cost for the energy fold. */
         mcfg.fp_emul_cycles = (int)node.pe_fp_emul_cycles;
         mcfg.pe_imem_bytes  = dev_datapath ? node.pe_imem_bytes : config.pe_imem_bytes;
+        mcfg.pe_spm_bytes   = dev_datapath ? node.pe_spm_bytes : config.pe_spm_bytes;   // 1.12.18
+        mcfg.pe_spm_dma     = (dev_datapath ? node.pe_spm_staging : config.pe_spm_staging) == "dma";
+        /* 1.12.18: (bug 1a) the device scope's H30 rule, per node. describeTimingCore
+         * gives the ALU profile num_fpus = 0, and the wrapper reads a 0 as "the caller
+         * removed the FPU", so a system-scope ALU element with floating_point=true was
+         * priced with NO FPU while device scope priced one per lane for the same element
+         * (its timing executes FP either way). One FPU per priced lane, as device scope;
+         * an explicit power.mcpat_overrides.num_fpus below still wins. */
+        if (profile == McPAT::DeviceProfile::DEVICE_ALU && node.pe_has_fpu) {
+            mcfg.num_fpus = std::max(1, mcfg.pe_lanes);
+            std::cout << "  [power] " << node.name << ": ALU element: " << mcfg.num_fpus
+                      << " FPU(s), one per lane (floating_point=true; review H30, system scope 1.12.18)" << std::endl;
+        }
 
         // Apply overrides
         mcfg.pipeline_depth = ov_get_int("pipeline_depth", mcfg.pipeline_depth);
@@ -13325,21 +15284,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                  * correct). Non-PIPE families (NVLink/UALink/UCIe) have no
                  * sourced controller clock: WARN and keep 1000, labelled
                  * ASSUMED, rather than pretending a derivation exists. */
-                if (!dram_channel_link) {
-                    double clk = PIMID::CactiIOWrapper::linkControllerClockMHz(
-                                     config.pcie_link_type);
-                    if (clk > 0.0) {
-                        ps.link_clock_mhz = static_cast<int>(clk + 0.5);
-                    } else {
-                        ps.link_clock_mhz = 1000;
-                        std::cerr << "[power] WARNING: no sourced controller "
-                                     "clock for link type '"
-                                  << config.pcie_link_type
-                                  << "' (non-PIPE family); using 1000 MHz "
-                                     "ASSUMED -- controller dynamic scales "
-                                     "with it." << std::endl;
-                    }
-                }
+                /* 1.12.18: the 1000 MHz ASSUMED fallback is gone; the clock and
+                 * the UCIe link-class parameters come from setLinkModelParams
+                 * (the model itself is McPAT's). */
+                if (!dram_channel_link)
+                    setLinkModelParams(config, ps, charge_here, node.name);
+                const bool ucie_in_mcpat = (ps.link_class == 1);
                 ps.link_type_name = config.pcie_link_type;   // 1.11.29: name it
                 /* 1.11.103 (ruling COSIM-LINK-CLASS): no link controller on a
                  * dram_channel link -- the host memory controller is priced as
@@ -13362,15 +15312,20 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                * midpoint pretending to be a measurement. A
                                * single-point entry says so, because that is a
                                * fact about our sourcing, not the hardware. */
-                              << " crossings, " << pjbit << " pJ/bit"
+                              << " crossings, "
+                              << (ucie_in_mcpat   /* 1.12.18: priced in McPAT, not here */
+                                    ? std::string("pJ/bit applied INSIDE McPAT's UCIe link model (see the [link] UCIe line)")
+                                    : [&]{ std::ostringstream o; o << pjbit << " pJ/bit"; return o.str(); }())
                               << (dram_channel_link && !pj_overridden
-                                    ? std::string(" [dram_channel: no separate link energy; the channel's I/O and termination are priced by the DRAM energy model]")
+                                    ? (pimid::isDRAM(pimid::parseMemoryTechnology(config.memory_tech))
+                                         ? std::string(" [dram_channel: no separate link energy; the channel's I/O and termination are priced by the DRAM energy model]")
+                                         : std::string(" [dram_channel: no separate link energy; the memory's own access is priced by its array model]"))   // 1.12.18: SRAM/NVM main memory
                                     : std::string())
                               << (pj_overridden
                                     ? std::string(" [power.pcie.pj_per_bit_override;"
                                                   " no sourced range for a user value]")
                                     : std::string())
-                              << (pjband.valid()
+                              << ((pjband.valid() && !ucie_in_mcpat)   // 1.12.18
                                     ? (pjband.single_point
                                          ? std::string(" [SINGLE POINT, range not sourced: ")
                                              + pjband.provenance + "]"
@@ -13436,6 +15391,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     uint64_t dev_cycles = (zsim_stats.dev_wall_cycles > 0)
                                         ? zsim_stats.dev_wall_cycles
                                         : (g.total_cycles > 0 ? g.total_cycles : total_cycles);
+                    if (wall_seconds > 0.0 && node.frequency_mhz > 0)   // 1.12.18 (ruling 2026-10-23): the run window
+                        dev_cycles = static_cast<uint64_t>(wall_seconds * node.frequency_mhz * 1e6);
                     auto measured = buildNoCLevelsForMcPAT(config, g, dev_cycles, overrides, node.name,
                                                            zsim_stats.pemi_remote_acc, gpath);
                     if (measured.size() >= 2) {
@@ -13636,6 +15593,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * (derived busy cycles -> pipeline duty) and its BTB/RAS activity. */
             mcpat.setPerCoreInstructions(zsim_stats.realInstrsPerCore(
                 (node.role == UnifiedConfig::SystemNode::HOST) ? 1 : 2));
+            mcpat.setPerCoreRunCycles(zsim_stats.runCyclesPerCore(   // PIMID 1.12.18 (idle halt)
+                (node.role == UnifiedConfig::SystemNode::HOST) ? 1 : 2));
             mcpat.setMeasuredControlFlow(grp->indirBranches, grp->rasReturns);
             /* 1.9.28: node_instrs was computed and then never handed to McPAT,
              * so total_instructions_ kept its constructor value of zero and
@@ -13655,11 +15614,70 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 mcpat.setL1IAccesses(grp->l1i_total_reads(), grp->l1i_mGETS);
                 mcpat.setL1DAccesses(grp->l1d_total_reads(), grp->l1d_total_writes(),
                                      grp->l1d_mGETS, grp->l1d_mGETXIM);
+                mcpat.setScratchpadAccesses(grp->spm_reads, grp->spm_writes, grp->dma_lines,
+                                            grp->dma_cmd_reads, grp->dma_cmd_writes);   // 1.12.18
                 mcpat.setL2Accesses(grp->l2_total_reads(), grp->l2_total_writes(),
                                     grp->l2_mGETS, grp->l2_mGETXIM);
                 mcpat.setL3Accesses(grp->l3_total_reads(), grp->l3_total_writes(),
                                     grp->l3_mGETS, grp->l3_mGETXIM);
+                feedCoherenceDirectory(mcpat, *grp, config.model_coherence_directory);   // 1.12.18
                 mcpat.setMemControllerAccesses(grp->mem_rd, grp->mem_wr);
+                /* 1.12.18 (user: no 10% convention, "measure and calculate"):
+                 * as device scope -- McPAT leakage + measured transactions +
+                 * the refresh commands a replayed controller counted (the
+                 * device's; the host memory is not replayed yet, so its
+                 * controller has no counted command work). Until now this
+                 * path never set the background: both nodes took McPAT's 0.1. */
+                {
+                    /* 1.12.18 (ruling 17 / R0605; user ruling 2026-10-23:
+                     * "refreshing is definitely host mc's job"): a shared
+                     * array (the device's DRAM IS the host's memory) is
+                     * refreshed by the HOST memory controller -- as on UPMEM
+                     * (host DDR4 controller), HBM-PIM and AiM (host/GPU
+                     * controller); the PEs' memory interfaces issue no
+                     * refresh. Its counted refresh commands are charged there,
+                     * once; the device node's line says so. A decoupled
+                     * memory's controller is charged its own replayed
+                     * controller's refresh commands. power.models.mc_command_ops
+                     * gates all. */
+                    const bool dev = (node.role == UnifiedConfig::SystemNode::DEVICE);
+                    const bool coupled = sharedMemoryCoupled(config);
+                    const ZSimParsedOutput::GroupCounters& hgc = zsim_stats.host;
+                    const bool shared_host = hgc.ctrl_present && hgc.ctrl_shared;
+                    const bool arr_measured = zsim_stats.ctrl_ticks > 0 && (zsim_stats.ctrlRowMeasured() || shared_host);
+                    const bool host_own = !dev && !coupled && hgc.ctrl_present && !hgc.ctrl_shared && hgc.ctrl_ticks > 0;
+                    uint64_t cmds = 0;
+                    std::string why;
+                    if (!config.pm_mc_command_ops) {
+                        why = " refresh commands (NOT charged by user option power.models.mc_command_ops: false)";
+                    } else if (coupled) {
+                        if (!dev && arr_measured) {
+                            cmds = zsim_stats.ctrl_refreshes;
+                            why = " refresh commands COUNTED by the shared array's replayed controller (refresh is the host memory controller's job; user ruling 2026-10-23)";
+                        } else if (dev) {
+                            why = " refresh commands here: the shared array's refresh is issued and charged by the host memory controller (user ruling 2026-10-23)";
+                        } else {
+                            why = " refresh commands (controller not replayed: none counted)";
+                        }
+                    } else if (dev && arr_measured) {
+                        cmds = zsim_stats.ctrl_refreshes;
+                        why = " refresh commands COUNTED by the device memory's replayed controller";
+                    } else if (host_own) {
+                        cmds = hgc.ctrl_refreshes;
+                        why = " refresh commands COUNTED by the host memory's replayed controller (1.12.18 ruling 17)";
+                    } else {
+                        why = " refresh commands (controller not replayed: none counted)";
+                    }
+                    mcpat.setMCBackgroundFraction(0.0);
+                    mcpat.setMCCommandOps(cmds);
+                    std::cout << "  [power] " << node.name << " memory controller: McPAT leakage + "
+                              << grp->mem_rd + grp->mem_wr << " measured transactions + " << cmds << why;
+                    std::cout << "; no share-of-peak background; "
+                              << (pimid::mcpatClockNetworkDefault()
+                                      ? "clock network priced by McPAT (gated by measured activity)"
+                                      : "clock network not priced (power.models.clock_network: false, user option)")
+                              << std::endl;   // 1.12.18
+                }
                 /* 1.9.28: measured core activity instead of fixed instruction-mix
                  * fractions. 1.9.29: this node's own, so the mix is consistent
                  * with the instruction count it describes. */
@@ -13669,6 +15687,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                                  grp->bpWritesPresent);   // 1.11.97 (R2476)
                 mcpat.setMeasuredMix(grp->mix_int, grp->mix_mul, grp->mix_fp,
                                      grp->mix_ld, grp->mix_st, grp->mix_br);  // 1.11.10/.15
+                mcpat.setMeasuredVectorMoves(grp->mix_vm_reg, grp->mix_vm_ld, grp->mix_vm_st);   // 1.12.18 (bug 1b)
+                mcpat.setMeasuredFpOps(grp->fp_ops);   // 1.12.18
+                mcpat.setMeasuredIntOps(grp->int_ops);   // PIMID 1.12.18
             }
             /* 1.11.44 (E26): the per-component core_frac fallback that lived
              * here is gone with its trigger -- have_grp is now a hard
@@ -13710,6 +15731,28 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             result.leakage_power = power.total_leakage;
             result.area = mcpat.getTotalArea();
             result.valid = true;
+            {   // 1.12.18: ledger components (reads only; McPAT priced them)
+                using CT = pimid::McPATWrapper::ComponentType;
+                const struct { CT t; const char* key; } cs[] = {
+                    {CT::CORE, "cores"}, {CT::L2_CACHE, "l2"}, {CT::L3_CACHE, "l3"},
+                    {CT::NOC, "noc"}, {CT::MEMORY_CONTROLLER, "memory_controllers"}, {CT::PCIE, "link_controller"} };
+                const auto& lr = mcpat.getLinkModelReadback();
+                result.link_phy_w = lr.ucie ? lr.phy_w : 0.0;
+                for (const auto& c : cs) {
+                    double w = mcpat.getComponentPower(c.t).total_power;
+                    if (c.t == CT::PCIE) w -= result.link_phy_w;   // the link's own entry carries it
+                    if (w != 0.0) result.comps.push_back({c.key, w});
+                }
+                /* PIMID 1.12.18 (user ruling, per-die clock trunk): one entry per die
+                 * (a host has one die: <host>.die.clock_trunk). */
+                for (const auto& t : mcpat.getClockTrunks()) {
+                    const int n = std::max(1, t.count);
+                    const std::string dn = (node.role == UnifiedConfig::SystemNode::HOST) ? std::string("die") : std::string(t.name);
+                    for (int k = 1; k <= n; k++)
+                        result.comps.push_back({dn + (n > 1 ? std::to_string(k) : std::string()) + ".clock_trunk",
+                                                (t.rt_w + t.leak_w + t.gate_w) / n});
+                }
+            }
 
             pimid::fmt_scoped(std::cout) << "  " << node.name << " (" << result.core_desc
                       << ", " << static_cast<int>(node.frequency_mhz) << "MHz"
@@ -13794,6 +15837,17 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
 
     double mem_area_total = 0.0;   // 1.11.9: memory silicon, summed into the system total
     double mem_power_total = 0.0;  // 1.11.45 (E31): its POWER, same wall clock, same total
+    /* 1.12.18: (user ruling: completeness) the PHY static power of
+     * each HOST memory controller whose accesses drive the DRAM's DQ pins,
+     * from the same CACTI-IO evaluation device scope charges at a crossing
+     * placement (RamulatorWrapper::getInterfacePhyStaticMW: phase rotator +
+     * RX + PLL static; datapath and clock-tree static are 0 in the map, so
+     * it does not overlap McPAT's PHY transistor leakage). One entry per
+     * host controller, registered once in the ledger under
+     * <host>.memory_controllers_phy: the PHY belongs to the
+     * controller that drives the pins, and the shared array's memory term
+     * carries none. power.models.host_mc_phy_static: false leaves it out. */
+    std::vector<std::pair<std::string, double>> host_mc_phy_w;
     int    mem_die_count = 0;      // 1.11.46 (L237): population, for the report
     double mem_die_mm2  = 0.0;
     int    mem_die_techs = 0;      // 1.11.56 (A031): how many technologies were priced
@@ -13876,6 +15930,63 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         uint64_t line_b = (config.cache_line_size > 0)
                               ? static_cast<uint64_t>(config.cache_line_size) : 64;
         uint64_t flush_wr = zsim_stats.xing_flush_bytes / line_b;
+        /* 1.12.18: (bug 7) with power.models.flush_writebacks_replayed the plugin
+         * sent the flush writebacks to the host memory controllers at flush time
+         * (through the host DRAM replay when it is on, source_id 1). They are in
+         * the host controller's write count -- so in McPAT's MC memory_writes and
+         * in the host-originated array class, priced with the replayed
+         * controller's ACTs and row state -- and are NOT added again here; the
+         * separate flush class and its 0.5 row-miss stand-in are gone. Any lines
+         * the controllers did not take (none expected) keep the old charge. */
+        if (zsim_stats.xing_flush_mc_lines > 0) {
+            const uint64_t mc_lines = zsim_stats.xing_flush_mc_lines;
+            std::cout << "  [mem] coherence flush: " << mc_lines << " line writebacks ("
+                      << zsim_stats.xing_flush_bytes << " B) went through the host memory controller at flush time"
+                         " (in its write count and McPAT MC memory_writes; replayed when the host replay is on;"
+                         " power.models.flush_writebacks_replayed)";
+            if (mc_lines != flush_wr)
+                std::cout << "; the footprint is " << flush_wr << " lines, the remainder "
+                          << (flush_wr > mc_lines ? flush_wr - mc_lines : 0) << " keeps the array-side charge";
+            std::cout << std::endl;
+            flush_wr = (flush_wr > mc_lines) ? flush_wr - mc_lines : 0;
+        } else if (zsim_stats.xing_flush_bytes > 0 && !config.pm_flush_writebacks_replayed) {
+            std::cout << "  [mem] coherence flush: writebacks charged array-side only BY USER OPTION"
+                         " (power.models.flush_writebacks_replayed: false)" << std::endl;
+        }
+        /* 1.12.18: the array-gating input of a NON-DRAM array, the
+         * device-scope derivation (1.11.8/1.11.41: memory.array_pg over the
+         * measured phase residency, 1.11.57 A003 armed test) applied to the
+         * counters that watch this array. A shared array is watched by both
+         * MCs; their union is not exported, so the least-idle end of the
+         * band is used, as arrayIdleResidency() does for DRAM. */
+        /* 1.12.18: the shared array of a coupled system is the DEVICE's
+         * memory (is_default_mem: the device IS host main memory), so it is
+         * priced at the device node's process; config.tech_node_nm when no
+         * device node names it. */
+        auto arrayOwnerNodeNm = [&](const std::string& t) -> int {
+            for (const auto& n : config.system_nodes)
+                if (n.role == UnifiedConfig::SystemNode::DEVICE && n.memory_tech == t)
+                    return n.tech_node_nm;
+            return config.tech_node_nm;
+        };
+        auto nonDramGate = [&](bool use_dev, bool use_host) {
+            NonDramGateInput g;
+            g.requested = config.mem_array_pg;
+            const uint64_t W = zsim_stats.pg_window();
+            g.window = W > 0;
+            const bool host_ok = !use_host ||
+                (zsim_stats.pg_hostmc_present && hostmc_armed_s);
+            g.armed = (!use_dev || devmc_armed_s) && host_ok;
+            g.counter = use_dev && use_host ? "device-MC or host-MC"
+                      : use_host ? "host-MC" : "device-MC";
+            if (g.window) {
+                const double Wd = static_cast<double>(W);
+                const double d = use_dev ? static_cast<double>(zsim_stats.pg_devmc_active) : 0.0;
+                const double h = use_host ? static_cast<double>(zsim_stats.pg_hostmc_active) : 0.0;
+                g.r_idle = 1.0 - std::min(d + h, Wd) / Wd;
+            }
+            return g;
+        };
         auto arrayIdleResidency = [&](bool use_dev, bool use_host,
                                       const char* array_name,
                                       const std::string& array_tech) -> double {
@@ -14016,9 +16127,19 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             c.row_miss_frac = zsim_stats.rowMissFraction();
             c.row_misses = zsim_stats.row_misses;
             c.row_total = zsim_stats.row_hits + zsim_stats.row_misses;
+            if (zsim_stats.ctrlRowMeasured()) {   // 1.12.18: the log names the controller's counts
+                c.row_misses = zsim_stats.ctrl_row_misses + zsim_stats.ctrl_row_conflicts;
+                c.row_total = zsim_stats.ctrl_row_hits + c.row_misses;
+            }
             c.unmeasured_why = "no PE-MI row counters in this run";
+            if (zsim_stats.ctrl_act_present) c.activates = static_cast<int64_t>(zsim_stats.ctrl_activates);   // 1.12.18 (R0605)
+            c.out_rd = zsim_stats.out_rd; c.out_wr = zsim_stats.out_wr; c.out_acts = zsim_stats.out_acts;   // 1.12.18 (R1)
             return c;
         };
+        /* 1.12.18 (ruling 17 / R0605): the host memory is replayed; its row
+         * behaviour and activates are the host requests' share of the
+         * replayed controller (Ramulator source_id 1). */
+        const ZSimParsedOutput::GroupCounters& hctl = zsim_stats.host;
         auto hostClass = [&](uint64_t rd, uint64_t wr) {
             ArrayAccessClass c;
             c.who = "host-originated";
@@ -14026,10 +16147,35 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             c.crosses_dq = host_crosses_dq;
             c.dq_why = host_dq_why;
             c.row_miss_frac = -1.0;
-            c.unmeasured_why = "the host memory controller exports no row "
-                               "counters; only the PE memory interface does";
+            c.unmeasured_why = "the host memory is not replayed in this run "
+                               "(system.hosts[].memory.dram_replay, or the run's line on it)";
+            if (hctl.ctrl_present && hctl.ctrlRowMeasured()) {
+                c.row_miss_frac = hctl.ctrlRowMissFraction();
+                c.row_misses = hctl.ctrl_row_misses + hctl.ctrl_row_conflicts;
+                c.row_total = hctl.ctrl_row_hits + c.row_misses;
+                if (hctl.ctrl_act_present) c.activates = static_cast<int64_t>(hctl.ctrl_activates);
+            }
+            c.out_rd = zsim_stats.out_hrd; c.out_wr = zsim_stats.out_hwr; c.out_acts = zsim_stats.out_hacts;   // 1.12.18 (R1)
             return c;
         };
+        /* 1.12.18: the coherence flush writebacks are charged by the bridge
+         * model and never pass the host controller, so the replay counted
+         * none of their row behaviour or activates; with the host replayed
+         * they are their own class (the stated fallback), never priced with
+         * the host's counted ACTs. Without the replay they stay in the host
+         * class, as before. */
+        auto flushClass = [&](uint64_t wr) {
+            ArrayAccessClass c;
+            c.who = "coherence-flush";
+            c.wr = wr;
+            c.crosses_dq = host_crosses_dq;
+            c.dq_why = host_dq_why;
+            c.row_miss_frac = -1.0;
+            c.unmeasured_why = "the flush writebacks are charged by the bridge model and "
+                               "do not pass the replayed host controller";
+            return c;
+        };
+        const bool host_replayed = hctl.ctrl_present && hctl.ctrlRowMeasured();
 
         bool flush_charged = false;
         auto sayFlushCharged = [&](const char* where) {
@@ -14045,7 +16191,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             uint64_t pe_rd = 0, pe_wr = 0, h_rd = 0, h_wr = 0;
             if (zsim_stats.host.has_activity()) { h_rd = zsim_stats.host.mem_rd; h_wr = zsim_stats.host.mem_wr; }
             if (zsim_stats.dev.has_activity())  { pe_rd = zsim_stats.dev.mem_rd; pe_wr = zsim_stats.dev.mem_wr; }
-            h_wr += flush_wr;   // 1.11.15: the flush lands on the shared array (host-issued)
+            if (!host_replayed) h_wr += flush_wr;   // 1.11.15: the flush lands on the shared array (host-issued); 1.12.18: its own class when the host is replayed
             if (!tech.empty()) {
                 std::cout << "  [mem] one memory (" << tech
                           << "): host and device accesses land on the same "
@@ -14055,13 +16201,22 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 std::vector<ArrayAccessClass> cls;
                 cls.push_back(peClass(pe_rd, pe_wr));
                 cls.push_back(hostClass(h_rd, h_wr));
+                if (host_replayed && flush_wr > 0) cls.push_back(flushClass(flush_wr));   // 1.12.18
                 /* 1.11.91 (audit R8-7): the bank-open counters come from the
                  * HOST's Ramulator2 controller, which sees only the host-
                  * originated accesses; the PE-originated ones reach the array
                  * through the PE memory interface, which keeps no bank state.
                  * A fraction measured on part of the traffic is not this
                  * array's BNK_ACT%, so with PE traffic it is not used. */
-                const BankOpenInput shared_bo = (pe_rd + pe_wr) > 0
+                /* 1.12.18 (ruling 17 / R0605): with the host's requests in
+                 * the device's replayed controller, that ONE controller saw
+                 * every access to this array: its bank-open time is the
+                 * array's. */
+                const BankOpenInput shared_bo = (hctl.ctrl_present && hctl.ctrl_shared)
+                    ? bankOpenFrom(zsim_stats.dev.bank_open_present,
+                                   zsim_stats.dev.bank_open_cycles,
+                                   zsim_stats.dev.bank_open_window)
+                    : (pe_rd + pe_wr) > 0
                     ? bankOpenFrom(false, 0, 0,
                           "the PE-originated accesses reach this array through "
                           "the PE memory interface, which keeps no bank state; "
@@ -14070,6 +16225,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     : bankOpenFrom(zsim_stats.host.bank_open_present,
                                    zsim_stats.host.bank_open_cycles,
                                    zsim_stats.host.bank_open_window);
+                s_array_pe_chip_split = dramPeChipSplit(config, tech);   // 1.12.18: the shared array
                 mem_power_total += reportSharedMemoryArrayEnergy(tech, cls,
                                               r_shared,
                                               config.mem_power_down,        // 1.11.45: split flag (was pg_mc)
@@ -14081,13 +16237,23 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.termination_pj_per_bit,   // 1.11.63 (R7)
                                               config.temperature_k,            // 1.11.65
                                               config.ddr5_speed_grade,         // 1.11.66 (R8 #9)
-                                              shared_bo);                      // 1.11.91 (R8-7)
+                                              shared_bo,                       // 1.11.91 (R8-7)
+                                              /* 1.12.18 (R0605): the array's one replayed controller */
+                                              CountedRefresh{zsim_stats.ctrl_ticks > 0 && (zsim_stats.ctrlRowMeasured() || (hctl.ctrl_present && hctl.ctrl_shared)),
+                                                             zsim_stats.ctrl_refreshes, zsim_stats.ctrl_ticks,
+                                                             (hctl.ctrl_present && hctl.ctrl_shared)
+                                                                 ? "the shared array's one replayed controller (host and device traffic)"
+                                                                 : "the device's replayed controller"},
+                                              &config, config.num_banks,       // 1.12.18: same banks as the area
+                                              nonDramGate(true, true),
+                                              arrayOwnerNodeNm(tech));         // 1.12.18: the device owns the shared array
+                s_array_pe_chip_split = 1;   // 1.12.18
                 {
                 double die = computeDramDieAreaMM2(tech, false,
                                                    effectiveDramBanks(tech, config));
                 if (die <= 0.0)   // 1.11.46 (L242)
                     mem_area_total += computeNonDramMemAreaMM2(
-                        tech, config.num_banks, config.tech_node_nm,
+                        tech, config.num_banks, arrayOwnerNodeNm(tech),   // 1.12.18: the owning node's process
                         config.cache_line_size, config);
                 int dies = memorySystemDieCount(tech, config.dram_device_width,
                                                 config.hierarchy_ranks_per_channel,
@@ -14115,7 +16281,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 if (die <= 0.0) {   // 1.11.46 (L242): non-DRAM silicon counts too
                     mem_area_total += computeNonDramMemAreaMM2(
                         node.memory_tech, node.banks > 0 ? node.banks : config.num_banks,
-                        config.tech_node_nm, config.cache_line_size, config);
+                        node.tech_node_nm > 0 ? node.tech_node_nm : config.tech_node_nm,   // 1.12.18: the owning node's process
+                        config.cache_line_size, config);
                     /* no continue: the ENERGY branches below must still run --
                      * their reporter states its own non-DRAM scope honestly. */
                 } else {
@@ -14139,7 +16306,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                                          node.memory_tech);
                 std::vector<ArrayAccessClass> cls;
                 cls.push_back(hostClass(zsim_stats.host.mem_rd,
-                                        zsim_stats.host.mem_wr + flush_wr));  // 1.11.15
+                                        zsim_stats.host.mem_wr + (host_replayed ? 0 : flush_wr)));  // 1.11.15; 1.12.18
+                if (host_replayed && flush_wr > 0) cls.push_back(flushClass(flush_wr));   // 1.12.18
                 mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech, cls,
                                               r_host,                             // 1.11.89: host MC's own
                                               config.mem_power_down,  // 1.11.45: split flag (1.11.41)
@@ -14153,7 +16321,15 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               hostDdr5Grade(node, config),     // 1.11.66 (R8 #9); 1.12.10: the host memory's own grade
                                               bankOpenFrom(zsim_stats.host.bank_open_present,   // 1.11.91 (R8-7)
                                                            zsim_stats.host.bank_open_cycles,
-                                                           zsim_stats.host.bank_open_window));
+                                                           zsim_stats.host.bank_open_window),
+                                              /* 1.12.18 (R0605): the host memory's own replayed controller */
+                                              CountedRefresh{hctl.ctrl_present && !hctl.ctrl_shared && hctl.ctrl_ticks > 0,
+                                                             hctl.ctrl_refreshes, hctl.ctrl_ticks,
+                                                             "the host memory's replayed controller"},
+                                              &config,                          // 1.12.18: same banks as the area
+                                              node.banks > 0 ? node.banks : config.num_banks,
+                                              nonDramGate(false, true),
+                                              node.tech_node_nm);               // 1.12.18: this node's own process
                 host_done = true;
             } else if (node.role == UnifiedConfig::SystemNode::DEVICE && !dev_done &&
                        zsim_stats.dev.has_activity()) {
@@ -14165,6 +16341,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 const double r_dev = arrayIdleResidency(true, false, "device array",
                                                         node.memory_tech);
                 std::vector<ArrayAccessClass> cls;
+                s_array_pe_chip_split = dramPeChipSplit(config, node.memory_tech);   // 1.12.18: the decoupled device array
                 cls.push_back(peClass(zsim_stats.dev.mem_rd, zsim_stats.dev.mem_wr));
                 mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech, cls,
                                               r_dev,                              // 1.11.89: device MC's own
@@ -14179,10 +16356,53 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               config.ddr5_speed_grade,         // 1.11.66 (R8 #9)
                                               bankOpenFrom(zsim_stats.dev.bank_open_present,   // 1.11.91 (R8-7)
                                                            zsim_stats.dev.bank_open_cycles,
-                                                           zsim_stats.dev.bank_open_window));
+                                                           zsim_stats.dev.bank_open_window),
+                                              /* 1.12.18 (R0605): the device's replayed controller */
+                                              CountedRefresh{zsim_stats.ctrlRowMeasured() && zsim_stats.ctrl_ticks > 0,
+                                                             zsim_stats.ctrl_refreshes, zsim_stats.ctrl_ticks,
+                                                             "the device's replayed controller"},
+                                              &config,                          // 1.12.18: same banks as the area
+                                              node.banks > 0 ? node.banks : config.num_banks,
+                                              nonDramGate(true, false),
+                                              node.tech_node_nm);               // 1.12.18: this node's own process
+                s_array_pe_chip_split = 1;   // 1.12.18
                 dev_done = true;
             }
         }
+        }
+        /* 1.12.18: the host memory controllers' PHY static (see the
+         * declaration of host_mc_phy_w). A coupled system's host drives the
+         * shared array's pins; a decoupled host drives its own memory's. */
+        if (config.pm_host_mc_phy_static) {
+            for (const auto& node : config.system_nodes) {
+                if (node.role != UnifiedConfig::SystemNode::HOST) continue;
+                const std::string t = coupled ? (d_tech.empty() ? h_tech : d_tech) : node.memory_tech;
+                if (t.empty() || t == "SRAM" || t == "STT_MRAM" || t == "PCM" || t == "RERAM") continue;
+                if (!crossesOffPackageDQ(-1, t)) continue;
+                double mw = 0.0;
+                try {
+                    pimid::RamulatorWrapper q("", t);
+                    q.setTemperatureK(config.temperature_k);
+                    q.setDdr5SpeedGrade(coupled ? config.ddr5_speed_grade : hostDdr5Grade(node, config));
+                    q.initialize();
+                    mw = q.getInterfacePhyStaticMW();
+                } catch (const std::exception& e) {
+                    std::cerr << "[mem] NOTE: " << node.name << " memory-controller PHY static unavailable ("
+                              << e.what() << "); not charged, stated here." << std::endl;
+                    mw = 0.0;
+                }
+                if (mw > 0.0) {
+                    host_mc_phy_w.push_back({node.name, mw / 1000.0});
+                    std::cout << "  [mem] " << node.name << " memory controller PHY static " << mw
+                              << " mW (CACTI-IO " << t << " map: phase rotator + RX + PLL; the host controller drives the DQ pins"
+                                 " -- charged once, ledger " << node.name << ".memory_controllers_phy; the array's"
+                                 " memory term carries no PHY; device scope charges the same term at a crossing placement)"
+                              << std::endl;
+                } else {
+                    std::cout << "  [mem] " << node.name << " memory controller PHY static: 0 (no exact CACTI-IO map for "
+                              << t << ")" << std::endl;
+                }
+            }
         }
         if (flush_wr > 0 && !flush_charged) {
             /* 1.11.16: reporting must not outrun the accounting -- if no
@@ -14213,6 +16433,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
      * node's McPAT power (1.9.10 single time base); shared memory counted
      * once, like area; split printed so the addition is auditable. */
     sys_power += mem_power_total;
+    double host_phy_total_w = 0.0;   // 1.12.18
+    for (const auto& p : host_mc_phy_w) host_phy_total_w += p.second;
+    sys_power += host_phy_total_w;
     pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(2)
               << sys_power << " W (" << sys_dyn << " dyn + " << sys_leak << " leak";
     if (mem_power_total > 0.0) {
@@ -14223,6 +16446,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         pimid::fmt_scoped(std::cout) << " over " << std::setprecision(6) << wall_seconds
                   << " s" << std::setprecision(2);
     }
+    if (host_phy_total_w > 0.0)   // 1.12.18
+        pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_phy_total_w << " host-MC PHY static";
     std::cout << ")" << std::endl;
     /* 1.11.9 (#86, audit): the memory die is silicon too. (1.11.51, L243:
      * the original justification here -- that device scope already counted
@@ -14264,6 +16489,63 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         if (!first || mem_area_total > 0.0) std::cout << " per node)";
     }
     std::cout << std::defaultfloat << std::endl;
+    /* 1.12.18 (user 2026-10-23: completeness and no double counting
+     * guaranteed): the system power ledger -- every term of the total above
+     * once, under a component key; the link's per-bit energy as its own entry
+     * (user ruling: charged once per bit, on no die). The run stops when a key
+     * repeats, a node's components do not add up to its McPAT total, the
+     * ledger does not add up to the total, or a node lacks its cores. */
+    {   // after Power and Area, which readers expect adjacent
+        struct Term { std::string key; double w; };
+        std::vector<Term> ledger;
+        std::set<std::string> keys;
+        bool ok = true;
+        auto add = [&](const std::string& k, double w) {
+            if (!keys.insert(k).second) {
+                std::cerr << "[ledger] FATAL: component '" << k << "' registered twice (double counting)" << std::endl;
+                ok = false;
+            }
+            ledger.push_back({k, w});
+        };
+        double link_w = 0.0;
+        for (const auto& r : results) {
+            if (!r.valid) continue;
+            double csum = r.link_phy_w;
+            bool has_cores = false;
+            for (const auto& c : r.comps) {
+                add(r.name + "." + c.first, c.second);
+                csum += c.second;
+                if (c.first == "cores") has_cores = true;
+            }
+            link_w += r.link_phy_w;
+            if (std::fabs(csum - r.total_power) > 1e-9 * std::max(1.0, std::fabs(r.total_power))) {
+                std::cerr << "[ledger] FATAL: node " << r.name << ": McPAT components sum to " << csum
+                          << " W but its total is " << r.total_power << " W" << std::endl;
+                ok = false;
+            }
+            if (!has_cores) {
+                std::cerr << "[ledger] FATAL: node " << r.name << " has no priced cores" << std::endl;
+                ok = false;
+            }
+        }
+        if (link_w != 0.0) add("link", link_w);
+        if (mem_power_total != 0.0) add("memory.array", mem_power_total);
+        for (const auto& p : host_mc_phy_w) add(p.first + ".memory_controllers_phy", p.second);   // 1.12.18
+        double lsum = 0.0;
+        for (const auto& t : ledger) lsum += t.w;
+        if (std::fabs(lsum - sys_power) > 1e-9 * std::max(1.0, std::fabs(sys_power))) {
+            std::cerr << "[ledger] FATAL: ledger sums to " << lsum << " W, the reported total is " << sys_power << " W" << std::endl;
+            ok = false;
+        }
+        std::cout << "  ledger (" << ledger.size() << " components, each counted once; sum = total):" << std::endl;
+        for (const auto& t : ledger)
+            pimid::fmt_scoped(std::cout) << "    " << std::left << std::setw(32) << t.key << std::right
+                      << std::fixed << std::setprecision(6) << t.w << " W" << std::endl;
+        if (!ok) {
+            std::cerr << "[ledger] FATAL: the power report fails its completeness / no-double-counting check; refusing to report it." << std::endl;
+            std::exit(5);
+        }
+    }
 }
 
 /* 1.12.1 (ticket #114): the zsim core-group type of each canonical core
@@ -14406,6 +16688,17 @@ public:
             cfg << std::fixed << std::setprecision(2);
             cfg << "            energyFactor = " << alu_factor_text(config_.alu_energy_factor) << ";\n";
             cfg << std::defaultfloat;
+            /* 1.12.18: the scratchpad (capacity, staging, CACTI access time). */
+            cfg << "            spmBytes = " << config_.pe_spm_bytes << ";\n";
+            if (config_.pe_spm_bytes > 0) {
+                cfg << "            spmStaging = " << (config_.pe_spm_staging == "core" ? 2 : 1) << ";\n";
+                cfg << "            spmStack = " << (config_.pe_stack == "spm" ? 1 : 0) << ";\n";
+                if (config_.pe_stack == "spm")
+                    cfg << "            spmStackBytes = " << config_.pe_spm_stack_bytes << ";\n";
+                const double lat = getScratchpadLatencyCycles(config_.pe_spm_bytes, config_.frequency_mhz,
+                                                              config_.tech_node_nm, "PE scratchpad");
+                cfg << std::setprecision(9) << "            spmLatency = " << lat << ";\n" << std::defaultfloat;
+            }
         } else if (core_has_caches) {
             cfg << "            dcache = \"l1d\";\n";
             cfg << "            icache = \"l1i\";\n";
@@ -14591,7 +16884,7 @@ static HostMemBW getHostMemBandwidth(const std::string& tech_in,
         try {
             double exact_ns = -1.0;
             (void)getMemoryLatencyCycles(tech, freq_mhz, tech_node_nm, false, -1.0, -999,
-                                         temperature_k, line_size, "", 4800, &exact_ns);
+                                         temperature_k, line_size, "", 0, &exact_ns);   // 1.12.18: no DDR5 grade literal
             if (exact_ns > 0.0) acc_ns = exact_ns; else why = "the array model reported no access time";
         } catch (const std::exception& e) { why = e.what(); }
         if (acc_ns > 0.0) {
@@ -14830,6 +17123,64 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
         out << "        bandwidth = " << agg_mbs << ";\n";
     }
     out << "        controllers = 1;\n";
+    /* 1.12.18 (ruling 17 / R0605, user: "make the power model complete"):
+     * the host memory is replayed through Ramulator2 like the device memory.
+     * The M/D/1 latency above stays as the bootstrap (accesses before the
+     * first replayed epoch); after it every host access is priced at the
+     * replayed controller's measured service latency of its interface plus
+     * the host-path adder (adder_cycles: fabric, coherence, controller
+     * pipeline, PHY -- no DRAM timing, so tRCD + tCAS is not counted twice).
+     * Coupled (the device IS the host's memory): the host joins the device's
+     * instance, so the shared array has ONE controller; that needs the device
+     * replay. Decoupled: a host-only instance of the host memory technology. */
+    {
+        const UnifiedConfig::SystemNode* dev = nullptr;
+        for (const auto& n : config.system_nodes)
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type == UnifiedConfig::SystemNode::COMPUTE) { dev = &n; break; }
+        if (!dev)
+            for (const auto& n : config.system_nodes)
+                if (n.role == UnifiedConfig::SystemNode::DEVICE) { dev = &n; break; }
+        const bool coupled = dev ? dev->is_default_mem : true;
+        const bool host_is_dram = pimid::isDRAM(pimid::parseMemoryTechnology(host.memory_tech));
+        const bool mpi_trace = (config.workload_type == "mpi" && config.method != "exec");
+        std::string off_why;
+        bool on = host.host_dram_replay;
+        if (!on) off_why = "system.hosts[].memory.dram_replay: false";
+        else if (!host_is_dram) { on = false; off_why = "the host memory technology " + host.memory_tech + " is not a DRAM; it keeps the array model's service"; }
+        else if (mpi_trace) { on = false; off_why = "trace-method MPI runs one process per rank, which would replay one rank's traffic (as the device replay, 1.12.17)"; }
+        else if (coupled && !(config.hierarchy_enabled && deviceDramReplayOn(config))) {
+            on = false;
+            off_why = "the device IS the host's memory and the device memory is not replayed (pim.mc.epoch_replay, or no device controller): a second controller on the shared array is not modelled";
+        }
+        out << "        flushWritebacksToMC = " << (config.pm_flush_writebacks_replayed ? 1 : 0) << ";\n";   // 1.12.18 (bug 7)
+        out << "        hostDramReplay = " << (on ? 1 : 0) << ";\n";
+        if (on) {
+            out << "        hostReplayShared = " << (coupled ? 1 : 0) << ";\n";
+            out << "        hostPathCycles = " << adder_cycles << ";\n";
+            out << "        hostFreqMHz = " << static_cast<int>(host_freq) << ";\n";
+            if (!coupled) {
+                /* the host memory's own part: its DDR5 grade, the default
+                 * device width (the decoupled host array's energy population,
+                 * 1.11.94 H23), the run's temperature */
+                UnifiedConfig hc = config;
+                hc.ddr5_speed_grade = hostDdr5Grade(host, config);
+                hc.dram_device_width = "";
+                const std::string tech_u = canonicalMemTech(host.memory_tech);
+                const std::string path = writeRamulatorYamlFile(hc, tech_u,
+                    "/tmp/pimid_ramulator_host_" + std::to_string(getpid()) + ".yaml");
+                out << "        hostReplayConfigFile = \"" << path << "\";\n";
+                out << "        hostReplayBurstsPerLine = " << dramBurstsPerLine(tech_u, hc) << ";\n";
+                out << "        hostReplayChannels = " << bw.channels << ";\n";
+            }
+        }
+        std::cout << "  [mem] host DRAM controller: "
+                  << (on ? (coupled ? "Ramulator2 EPOCH REPLAY (1.12.18 ruling 17): the host's requests join the device's replayed controller (one controller for the shared array), priced at the previous epoch's measured service latency + the host-path adder "
+                                    : "Ramulator2 EPOCH REPLAY (1.12.18 ruling 17): a host-only replayed controller of the host memory, priced at the previous epoch's measured service latency + the host-path adder ")
+                         : "M/D/1 (tRCD + tCAS + the host-path adder + the queue; ")
+                  << (on ? std::to_string(adder_cycles) + " cycles; the M/D/1 latency is the bootstrap before the first replayed epoch"
+                         : off_why + ")")
+                  << std::endl;
+    }
     out << "    };\n";
 }
 
@@ -15159,6 +17510,18 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             cfg << std::fixed << std::setprecision(2);
             cfg << "            energyFactor = " << alu_factor_text(node.alu_energy_factor) << ";\n";
             cfg << std::defaultfloat;
+            /* 1.12.18: the scratchpad, per node, as device scope emits it. */
+            cfg << "            spmBytes = " << node.pe_spm_bytes << ";\n";
+            if (node.pe_spm_bytes > 0) {
+                cfg << "            spmStaging = " << (node.pe_spm_staging == "core" ? 2 : 1) << ";\n";
+                cfg << "            spmStack = " << (node.pe_stack == "spm" ? 1 : 0) << ";\n";
+                if (node.pe_stack == "spm")
+                    cfg << "            spmStackBytes = " << node.pe_spm_stack_bytes << ";\n";
+                const double nfreq = (node.frequency_mhz > 0.0) ? node.frequency_mhz : config.frequency_mhz;
+                const double lat = getScratchpadLatencyCycles(node.pe_spm_bytes, nfreq, node.tech_node_nm,
+                                                              node.name + " PE scratchpad");
+                cfg << std::setprecision(9) << "            spmLatency = " << lat << ";\n" << std::defaultfloat;
+            }
         } else {
             std::string dcache = node.name + "_l1d";
             std::string icache = node.name + "_l1i";
@@ -15269,7 +17632,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
     for (const auto& n : config.system_nodes) {
         /* 1.12.10: a memory without PEs is the host main memory, served by the host memory controller (the mem block
          * below, at the memory technology and grade); it holds the first address window as a label and is not a
-         * router device. Routing by window and several memories are 1.13 work. */
+         * router device. Routing by window and several memories are not supported in this build. */
         if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY) num_mem_devices++;
     }
 
@@ -15373,7 +17736,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                     double exact_ns = -1.0;   // 1.11.94 (2b): exact ns, no cycle round-trip
                     (void)getMemoryLatencyCycles(tech_upper, dev_freq, node.tech_node_nm, false, -1.0,
                                                  -999, config.temperature_k, config.cache_line_size,
-                                                 "", 4800, &exact_ns);
+                                                 "", 0, &exact_ns);   // 1.12.18: no DDR5 grade literal
                     if (exact_ns > 0.0) acc_ns = exact_ns; else why = "the array model reported no access time";
                 } catch (const std::exception& e) { why = e.what(); }
                 if (acc_ns > 0.0) {
@@ -15899,6 +18262,67 @@ static int parseDevicePimBlock(YAML::Node root, UnifiedConfig& config, const Dev
             }
             config.pe_imem_bytes =
                 yamlInt(root["pim"]["pe"]["imem_bytes"], config.pe_imem_bytes, sc.pfx + "pim.pe.imem_bytes");
+            /* 1.12.18: the scratchpad. A power of two from 128 bytes (16 rows of
+             * its 64-bit word: CACTI builds no array below 16 rows), or 0 for none. It belongs
+             * to the compute unit: an in-order or out-of-order PE has an L1
+             * data cache instead, so giving it one there is refused. */
+            {
+                const bool spm_given = (bool)root["pim"]["pe"]["spm_bytes"];
+                const bool stg_given = (bool)root["pim"]["pe"]["spm_staging"];
+                config.pe_spm_bytes = yamlInt(root["pim"]["pe"]["spm_bytes"], config.pe_spm_bytes, sc.pfx + "pim.pe.spm_bytes");
+                config.pe_spm_staging = yamlString(root["pim"]["pe"]["spm_staging"], config.pe_spm_staging, sc.pfx + "pim.pe.spm_staging");
+                const int b = config.pe_spm_bytes;
+                if (b != 0 && (b < 128 || (b & (b - 1)) != 0)) {
+                    std::cerr << "Error: " << sc.pfx << "pim.pe.spm_bytes must be 0 (no scratchpad) or a power of two "
+                                 "of at least 128 bytes, 16 rows of its 64-bit word (got " << b << ").\n";
+                    return 1;
+                }
+                if (config.pe_spm_staging != "dma" && config.pe_spm_staging != "core") {
+                    std::cerr << "Error: " << sc.pfx << "pim.pe.spm_staging must be \"dma\" or \"core\" (got \""
+                              << config.pe_spm_staging << "\").\n";
+                    return 1;
+                }
+                /* pim.pe.stack / spm_stack_bytes (see UnifiedConfig) */
+                const bool stk_given = (bool)root["pim"]["pe"]["stack"];
+                const bool stb_given = (bool)root["pim"]["pe"]["spm_stack_bytes"];
+                config.pe_stack = yamlString(root["pim"]["pe"]["stack"], config.pe_stack, sc.pfx + "pim.pe.stack");
+                config.pe_spm_stack_bytes = yamlInt(root["pim"]["pe"]["spm_stack_bytes"], config.pe_spm_stack_bytes, sc.pfx + "pim.pe.spm_stack_bytes");
+                if (config.pe_stack != "dram" && config.pe_stack != "spm") {
+                    std::cerr << "Error: " << sc.pfx << "pim.pe.stack must be \"dram\" or \"spm\" (got \""
+                              << config.pe_stack << "\").\n";
+                    return 1;
+                }
+                if (stb_given && config.pe_stack != "spm") {
+                    std::cerr << "Error: " << sc.pfx << "pim.pe.spm_stack_bytes is the stack's share of the scratchpad; "
+                                 "it applies only with pim.pe.stack: spm (the stack is in DRAM here).\n";
+                    return 1;
+                }
+                if (config.pe_stack == "spm") {
+                    const int r = config.pe_spm_stack_bytes;
+                    if (b == 0) {
+                        std::cerr << "Error: " << sc.pfx << "pim.pe.stack: spm needs a scratchpad (pim.pe.spm_bytes is 0).\n";
+                        return 1;
+                    }
+                    if (r <= 0 || r % 64 != 0 || b - r < 128) {
+                        std::cerr << "Error: " << sc.pfx << "pim.pe.spm_stack_bytes = " << r << " in a " << b
+                                  << "-byte scratchpad: it must be a positive multiple of 64 that leaves the kernel "
+                                     "at least 128 bytes (pim.pe.spm_bytes >= spm_stack_bytes + 128; the default "
+                                     "reserve of 8192 needs spm_bytes of at least 16384).\n";
+                        return 1;
+                    }
+                }
+                if (config.pe_type != "alu_core" && (stk_given || stb_given)) {
+                    std::cerr << "Error: " << sc.pfx << "pim.pe.stack / spm_stack_bytes describe the compute unit's "
+                                 "scratchpad (pe type alu_core); this PE is " << config.pe_type << ".\n";
+                    return 1;
+                }
+                if (config.pe_type != "alu_core" && ((spm_given && b != 0) || stg_given)) {
+                    std::cerr << "Error: " << sc.pfx << "pim.pe.spm_bytes / spm_staging describe the compute unit's "
+                                 "scratchpad (pe type alu_core); this PE is " << config.pe_type
+                              << ", which has an L1 data cache instead.\n";
+                    return 1;
+                }
+            }
             if (config.pe_lanes < 1) {
                 std::cerr << "Error: " << sc.pfx << "pim.pe.lanes must be at least 1 (got "
                           << config.pe_lanes << ").\n";
@@ -16678,6 +19102,15 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
         if (root["memory"]["power_down_threshold_ns"])   // 1.11.51 (E17)
             config.power_down_threshold_ns =
                 yamlDouble(root["memory"]["power_down_threshold_ns"], -1.0, sc.pfx + "memory.power_down_threshold_ns");
+        if (root["memory"]["channels_per_die"]) {   // 1.12.18 (HBM TSV layout)
+            config.memory_channels_per_die =
+                yamlInt(root["memory"]["channels_per_die"], 0, sc.pfx + "memory.channels_per_die");
+            if (config.memory_channels_per_die < 1) {
+                std::cerr << "ERROR: " << sc.pfx << "memory.channels_per_die must be at least 1 (got "
+                          << config.memory_channels_per_die << ")" << std::endl;
+                std::exit(1);
+            }
+        }
         /* 1.11.107: the two duplicate reads of power.temperature_c/_k that
          * stood here are gone with the move: the unconditional parse before
          * this call (1.11.60 A005) already set the same value from the same
@@ -16787,6 +19220,26 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
             config.ddr5_speed_grade =
                 yamlInt(root["memory"]["dram"]["ddr5_speed_grade"], config.ddr5_speed_grade, sc.pfx + "memory.dram.ddr5_speed_grade");
         }
+        /* 1.12.18 (user ruling 2026-10-24, row policy) */
+        if (root["memory"]["row_policy"]) {
+            const YAML::Node rp = root["memory"]["row_policy"];
+            if (rp["host_idle_timeout_clocks"]) {
+                config.row_policy_host_idle_timeout =
+                    yamlInt(rp["host_idle_timeout_clocks"], config.row_policy_host_idle_timeout, sc.pfx + "memory.row_policy.host_idle_timeout_clocks");
+                if (config.row_policy_host_idle_timeout < 1) {
+                    std::cerr << "[config] FATAL: memory.row_policy.host_idle_timeout_clocks must be >= 1 memory clock" << std::endl;
+                    std::exit(2);
+                }
+            }
+            if (rp["host_closed_mode"]) {
+                config.row_policy_host_closed_mode =
+                    yamlString(rp["host_closed_mode"], config.row_policy_host_closed_mode, sc.pfx + "memory.row_policy.host_closed_mode");
+                if (config.row_policy_host_closed_mode != "auto_precharge" && config.row_policy_host_closed_mode != "explicit_pre") {
+                    std::cerr << "[config] FATAL: memory.row_policy.host_closed_mode must be auto_precharge or explicit_pre" << std::endl;
+                    std::exit(2);
+                }
+            }
+        }
 
         // Parse memory parameters from YAML
         // To override external models, user must provide ALL 5 required params:
@@ -16869,6 +19322,17 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
         // Ramulator
         if (ctrl["ramulator_config"])
             config.ramulator_config_file = yamlString(ctrl["ramulator_config"], config.ramulator_config_file, sc.pfx + "memory.controller.ramulator_config");
+        /* 1.12.18 (user ruling 2026-10-24, write drain): the write-drain watermarks */
+        if (ctrl["write_high_watermark"])
+            config.write_high_watermark = yamlDouble(ctrl["write_high_watermark"], config.write_high_watermark, sc.pfx + "memory.controller.write_high_watermark");
+        if (ctrl["write_low_watermark"])
+            config.write_low_watermark = yamlDouble(ctrl["write_low_watermark"], config.write_low_watermark, sc.pfx + "memory.controller.write_low_watermark");
+        if (!(config.write_low_watermark > 0.0 && config.write_low_watermark < config.write_high_watermark && config.write_high_watermark <= 1.0)) {
+            std::cerr << "[config] FATAL: " << sc.pfx << "memory.controller.write_low_watermark (" << config.write_low_watermark
+                      << ") and write_high_watermark (" << config.write_high_watermark
+                      << ") must satisfy 0 < low < high <= 1 (fractions of the controller write queue)." << std::endl;
+            std::exit(2);
+        }
     }
     return 0;
 }
@@ -16955,7 +19419,7 @@ static bool nodePathPerNode(const std::string& c) {
         "pim.pe.compute_factor", "pim.pe.access_factor", "pim.pe.throughput_factor", "pim.pe.operand_width",
         "pim.pe.energy_factor", "pim.pe.bit_serial", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles",
         "pim.pe.issue_width", "pim.pe.branch_predictor", "pim.pe.pg", "pim.pe.arch_int_regs", "pim.pe.arch_fp_regs", "pim.pe.lanes",
-        "pim.pe.imem_bytes", "pim.mc.pg", "noc.pg",
+        "pim.pe.imem_bytes", "pim.pe.spm_bytes", "pim.pe.spm_stack_bytes", "pim.pe.spm_staging", "pim.pe.stack", "pim.mc.pg", "noc.pg",
         "cache.l1d_kb", "cache.l1i_kb", "cache.l2_kb", "cache.l3_kb", "cache.l2.enabled", "cache.l3.enabled",
         "cache.l1d_ways", "cache.l1i_ways", "cache.l2_ways", "cache.l3_ways",
         "cache.l1d_banks", "cache.l1i_banks", "cache.l2_banks", "cache.l3_banks",
@@ -17236,14 +19700,14 @@ static void refuseNodeInertKeys(const YAML::Node& d, const std::string& dpath, b
  * memory.dram.ddr5_speed_grade are the host memory's: the host's memory controller (the emitted mem block) runs them.
  * The entry stays in the node map and takes the FIRST address window, the device's window follows (the user's layout
  * rule: "if host mem device, then the addr is mem then device"; a host and a device alone deduce the device as the
- * host's memory; hosts and a memory alone are a host-only system, whose run-time behaviour is 1.13 work with the
+ * host's memory; hosts and a memory alone are a host-only system, whose run-time behaviour is not supported; it needs the
  * multi-host / multi-device / multi-memory implementation). One in this build (one host, one device, one host
- * memory; several are the multi-memory model's, after 1.12). With one present the device is not the host's memory
+ * memory; several are not supported). With one present the device is not the host's memory
  * (is_default_mem false, derived); a written true is dropped with a warning. A key on the memory the host memory
  * model does not read is dropped with a warning naming it. */
 static void resolveHostMemoryNode(UnifiedConfig& config) {
     /* 1.12.10 (the user: "if a conf for the multi node is not supported, then refusal is the pick for now"): one host and
-     * one device in this build; several hosts, devices or memories are 1.13 (the multi-host / multi-device / multi-memory
+     * one device in this build; several hosts, devices or memories are not supported (they need the multi-host / multi-device / multi-memory
      * implementation). Through 1.12.9 a second host or device tripped the one-memory-per-role refusal, worded for memory. */
     {
         size_t nh = 0, nd = 0;
@@ -17251,8 +19715,8 @@ static void resolveHostMemoryNode(UnifiedConfig& config) {
             if (n.role == UnifiedConfig::SystemNode::HOST) ++nh;
             else if (n.device_type == UnifiedConfig::SystemNode::COMPUTE) ++nd;
         }
-        if (nh > 1) { std::cerr << "[config] FATAL: " << nh << " system.hosts[] entries. This build simulates one host; several hosts are 1.13 (the multi-host / multi-device / multi-memory implementation). Keep one." << std::endl; std::exit(2); }
-        if (nd > 1) { std::cerr << "[config] FATAL: " << nd << " system.devices[] entries. This build simulates one device; several devices are 1.13 (the multi-host / multi-device / multi-memory implementation). Keep one." << std::endl; std::exit(2); }
+        if (nh > 1) { std::cerr << "[config] FATAL: " << nh << " system.hosts[] entries. This build simulates one host; several hosts are not supported (they need the multi-host / multi-device / multi-memory implementation). Keep one." << std::endl; std::exit(2); }
+        if (nd > 1) { std::cerr << "[config] FATAL: " << nd << " system.devices[] entries. This build simulates one device; several devices are not supported (they need the multi-host / multi-device / multi-memory implementation). Keep one." << std::endl; std::exit(2); }
     }
     UnifiedConfig::SystemNode* host = nullptr;
     UnifiedConfig::SystemNode* dev = nullptr;
@@ -17447,6 +19911,7 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.bridge_overrides = d.bridge_overrides;
         config.mem_power_down = d.mem_power_down;
         config.power_down_threshold_ns = d.power_down_threshold_ns;
+        config.memory_channels_per_die = d.memory_channels_per_die;   // 1.12.18
         config.mem_array_pg = d.mem_array_pg;
         config.dq_turnaround_enabled = d.dq_turnaround_enabled;
         config.hierarchy_ranks_per_channel = d.hierarchy_ranks_per_channel;
@@ -17961,6 +20426,14 @@ int main(int argc, char** argv) {
     if (yaml_cfg["power"] && yaml_cfg["power"]["termination_pj_per_bit"])
         config.termination_pj_per_bit =
             yamlDouble(yaml_cfg["power"]["termination_pj_per_bit"], -1.0, "power.termination_pj_per_bit");
+    /* 1.12.18: the fabric-link model switches (see the members). */
+    if (yaml_cfg["power"] && yaml_cfg["power"]["models"]) {
+        const YAML::Node pm = yaml_cfg["power"]["models"];
+        if (pm["noc_links"])
+            config.power_model_noc_links = yamlBool(pm["noc_links"], true, "power.models.noc_links");
+        if (pm["fabric_tsv"])
+            config.power_model_fabric_tsv = yamlBool(pm["fabric_tsv"], true, "power.models.fabric_tsv");
+    }
 
     /* 1.11.60 (A005): the RANGE VALIDATOR moves with the parse. Leaving
      * it inside the memory: guard would accept an unevaluable temperature
@@ -18037,6 +20510,81 @@ int main(int argc, char** argv) {
                     if (cp < 1) { std::cerr << "Error: simulation.mpi_contention_points must be >= 1" << std::endl; return 1; }
                     setenv("PIMID_MPI_CONTEND_POINTS", std::to_string(cp).c_str(), 1);
                 }
+                /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): the lock-handoff
+                 * clock sync, a timing switch, default on; handed to the timing plugin as
+                 * PIMID_LOCK_SYNC (which the key overrides), like det_epoch_phases. */
+                if (yaml_cfg["simulation"]["lock_sync"]) {
+                    const bool ls = yamlBool(yaml_cfg["simulation"]["lock_sync"], true, "simulation.lock_sync");
+                    setenv("PIMID_LOCK_SYNC", ls ? "1" : "0", 1);
+                }
+
+                /* 1.12.18 (user rulings 2026-10-23): PIM runtime primitives. The
+                 * PE is not charged for executing the OpenMP / MPI runtime's own
+                 * code; each runtime event is charged its PIM primitive. The
+                 * defaults (UPMEM measured primitives, PrIM / SDK sources) live
+                 * in the timing plugin (qemu_zsim_plugin.cpp, RtParams) and in
+                 * docs/yaml_reference.md; only the keys set here are handed on,
+                 * as PIMID_PIM_RUNTIME="key=value;..." (the plugin and the MPI
+                 * shim read it). */
+                if (yaml_cfg["simulation"]["pim_runtime"]) {
+                    const YAML::Node pr = yaml_cfg["simulation"]["pim_runtime"];
+                    auto refuse = [](const std::string& m) {
+                        std::cerr << "[config] FATAL: simulation.pim_runtime." << m << std::endl;
+                        std::exit(2);
+                    };
+                    if (!pr.IsMap()) refuse("must be a map of keys (docs/yaml_reference.md)");
+                    std::string env;
+                    auto add = [&env](const std::string& k, const std::string& v) { env += k + "=" + v + ";"; };
+                    if (pr["enabled"]) add("enabled", yamlBool(pr["enabled"], true, "simulation.pim_runtime.enabled") ? "1" : "0");
+                    if (pr["apply_to"]) {
+                        const std::string v = yamlString(pr["apply_to"], "pe", "simulation.pim_runtime.apply_to");
+                        if (v != "pe" && v != "all") refuse("apply_to = '" + v + "' is not pe or all");
+                        add("apply_to", v);
+                    }
+                    if (pr["cycle_basis"]) {
+                        const std::string v = yamlString(pr["cycle_basis"], "pe_cycles", "simulation.pim_runtime.cycle_basis");
+                        if (v != "pe_cycles" && v != "time") refuse("cycle_basis = '" + v + "' is not pe_cycles or time");
+                        add("cycle_basis", v);
+                    }
+                    if (pr["source_clock_mhz"]) {
+                        const double v = yamlDouble(pr["source_clock_mhz"], 350.0, "simulation.pim_runtime.source_clock_mhz");
+                        if (!(v > 0)) refuse("source_clock_mhz must be > 0");
+                        add("source_clock_mhz", std::to_string(v));
+                    }
+                    for (const char* tk : { "barrier_table", "reduction_table" }) {
+                        if (!pr[tk]) continue;
+                        if (!pr[tk].IsMap() || pr[tk].size() == 0) refuse(std::string(tk) + " must be a map {participants: cycles, ...}");
+                        std::string t;
+                        for (const auto& kv : pr[tk]) {
+                            long long p = 0; double c = 0;
+                            try { p = kv.first.as<long long>(); c = kv.second.as<double>(); }
+                            catch (...) { refuse(std::string(tk) + ": every entry must be <participants>: <cycles>"); }
+                            if (p < 2) refuse(std::string(tk) + ": participant counts must be >= 2");
+                            if (c < 0) refuse(std::string(tk) + ": cycles must be >= 0");
+                            t += (t.empty() ? "" : ",") + std::to_string(p) + ":" + std::to_string(c);
+                        }
+                        add(tk, t);
+                    }
+                    static const char* const kRtKinds[] = { "omp_launch", "omp_barrier", "omp_lock_acquire", "omp_lock_release", "omp_loop_dispatch", "omp_reduction", "omp_query", "mpi_p2p_protocol", "mpi_collective_step", "mpi_reduction_step", "mpi_barrier" };
+                    static const char* const kRtTableKinds[] = { "omp_launch", "omp_barrier", "omp_reduction", "mpi_barrier" };
+                    for (const char* k : kRtKinds) {
+                        const std::string ck = std::string(k) + "_cycles", sk = std::string(k) + "_scaling";
+                        if (pr[ck]) {
+                            const double v = yamlDouble(pr[ck], 0.0, "simulation.pim_runtime." + ck);
+                            if (v < 0) refuse(ck + " must be >= 0");
+                            add(ck, std::to_string(v));
+                        }
+                        if (pr[sk]) {
+                            const std::string v = yamlString(pr[sk], "constant", "simulation.pim_runtime." + sk);
+                            if (v != "constant" && v != "linear" && v != "log2") refuse(sk + " = '" + v + "' is not constant, linear or log2");
+                            bool tabled = false;
+                            for (const char* tk : kRtTableKinds) if (!strcmp(tk, k)) tabled = true;
+                            if (tabled && !pr[ck]) refuse(sk + " applies only with " + ck + " (without it the cost is the participant table)");
+                            add(sk, v);
+                        }
+                    }
+                    setenv("PIMID_PIM_RUNTIME", env.c_str(), 1);
+                }
                 config.max_instructions = yamlI64(yaml_cfg["simulation"]["max_instructions"], config.max_instructions, "simulation.max_instructions");
                 config.stats_interval = yamlInt(yaml_cfg["simulation"]["stats_interval"], config.stats_interval, "simulation.stats_interval");
                 // Simulator parallelism: ONE knob, both workload paths (see
@@ -18086,6 +20634,181 @@ int main(int argc, char** argv) {
             // Default: host inherits the device node (uniform process unless
             // overridden). The device default (config.tech_node_nm, 22nm) is
             // unchanged, so existing device-side flows are bit-identical at default.
+            if (yaml_cfg["power"] && yaml_cfg["power"]["models"]) {   // 1.12.18: switchable additions
+                const YAML::Node pmn = yaml_cfg["power"]["models"];
+                config.pm_dram_refresh_counted = yamlBool(pmn["dram_refresh_counted"], true, "power.models.dram_refresh_counted");
+                config.pm_dram_activates_counted = yamlBool(pmn["dram_activates_counted"], true, "power.models.dram_activates_counted");
+                config.pm_dram_bank_open_measured = yamlBool(pmn["dram_bank_open_measured"], true, "power.models.dram_bank_open_measured");
+                config.pm_mc_command_ops = yamlBool(pmn["mc_command_ops"], true, "power.models.mc_command_ops");
+                config.model_coherence_directory = yamlBool(pmn["coherence_directory"], true, "power.models.coherence_directory");     // 1.12.18
+                config.model_nondram_array_system = yamlBool(pmn["nondram_array_system"], true, "power.models.nondram_array_system"); // 1.12.18
+                config.power_model_passthrough_as_wire = yamlBool(pmn["passthrough_as_wire"], true, "power.models.passthrough_as_wire");             // 1.12.18
+                config.model_sharer_bits_from_children = yamlBool(pmn["sharer_bits_from_children"], true, "power.models.sharer_bits_from_children"); // 1.12.18
+                /* 1.12.18: power bug batch H */
+                config.pm_vector_moves_split = yamlBool(pmn["vector_moves_split"], true, "power.models.vector_moves_split");
+                config.pm_dram_io_share_split = yamlBool(pmn["dram_io_share_split"], true, "power.models.dram_io_share_split");
+                config.pm_dram_vpp_dynamic = yamlBool(pmn["dram_vpp_dynamic"], true, "power.models.dram_vpp_dynamic");
+                config.pm_flush_writebacks_replayed = yamlBool(pmn["flush_writebacks_replayed"], true, "power.models.flush_writebacks_replayed");
+                /* 1.12.18: McPAT core enrichments (rulings 2026-10-23) */
+                config.pm_mcpat_fu_base_energy = yamlBool(pmn["mcpat_fu_base_energy"], false, "power.models.mcpat_fu_base_energy");
+                config.pm_fpu_published = yamlBool(pmn["fpu_published"], true, "power.models.fpu_published");
+                config.pm_frontend_from_timing = yamlBool(pmn["frontend_from_timing"], true, "power.models.frontend_from_timing");
+                /* PIMID 1.12.18: */
+                config.pm_int_alu_published = yamlBool(pmn["int_alu_published"], true, "power.models.int_alu_published");
+                config.pm_clock_global_local = yamlBool(pmn["clock_global_local"], true, "power.models.clock_global_local");
+                config.pm_l1d_access_width = yamlBool(pmn["l1d_access_width"], true, "power.models.l1d_access_width");
+                config.pm_tlb_btb_measured = yamlBool(pmn["tlb_btb_measured"], true, "power.models.tlb_btb_measured");
+                /* 1.12.18: */
+                config.pm_mcpat_layout_energy_overhead = yamlBool(pmn["mcpat_layout_energy_overhead"], false, "power.models.mcpat_layout_energy_overhead");   // 1.12.18 (ruling 2026-10-24)
+                config.pm_tlb_published_geometry = yamlBool(pmn["tlb_published_geometry"], true, "power.models.tlb_published_geometry");
+                config.pm_iddq_write_termination_once = yamlBool(pmn["iddq_write_termination_once"], true, "power.models.iddq_write_termination_once");
+                config.pm_host_mc_phy_static = yamlBool(pmn["host_mc_phy_static"], true, "power.models.host_mc_phy_static");   // 1.12.18
+                /* PIMID 1.12.18 (user rulings 2026-10-23) */
+                config.pm_idle_halt = yamlBool(pmn["idle_halt"], true, "power.models.idle_halt");
+                config.pm_per_die_process = yamlBool(pmn["per_die_process"], true, "power.models.per_die_process");
+                config.pm_clock_die_trunk = yamlBool(pmn["clock_die_trunk"], true, "power.models.clock_die_trunk");
+            }
+            /* 1.12.18: the backends read these switches (the McPAT wrapper and the
+             * DRAM energy model); set once, before any model is built. */
+            pimid::mcpatVectorMovesSplitDefault() = config.pm_vector_moves_split;
+            pimid::mcpatFuBaseEnergyDefault() = config.pm_mcpat_fu_base_energy;        // 1.12.18
+            pimid::mcpatFpuPublishedDefault() = config.pm_fpu_published;
+            pimid::mcpatFrontendFromTimingDefault() = config.pm_frontend_from_timing;
+            pimid::mcpatIntAluPublishedDefault() = config.pm_int_alu_published;    // PIMID 1.12.18
+            pimid::mcpatClockGlobalLocalDefault() = config.pm_clock_global_local;
+            pimid::mcpatL1dAccessWidthDefault() = config.pm_l1d_access_width;
+            pimid::mcpatTlbBtbMeasuredDefault() = config.pm_tlb_btb_measured;
+            pimid::mcpatTlbPublishedGeometryDefault() = config.pm_tlb_published_geometry;   // 1.12.18
+            pimid::mcpatLayoutEnergyOverheadDefault() = config.pm_mcpat_layout_energy_overhead;   // 1.12.18 (ruling 2026-10-24)
+            if (config.pm_mcpat_layout_energy_overhead)
+                std::cout << "  [power] McPAT layout area overheads (macro x chip) also scale array dynamic energy BY USER OPTION"
+                             " (power.models.mcpat_layout_energy_overhead: true)" << std::endl;
+            if (!config.pm_tlb_published_geometry)
+                std::cout << "  [power] host TLBs priced as McPAT's 1-entry floor BY USER OPTION"
+                             " (power.models.tlb_published_geometry: false)" << std::endl;
+            if (!config.pm_iddq_write_termination_once)
+                std::cout << "  [power] DDR write: termination charged beside IDDQ4W BY USER OPTION"
+                             " (power.models.iddq_write_termination_once: false)" << std::endl;
+            pimid::mcpatIdleHaltDefault() = config.pm_idle_halt;             // PIMID 1.12.18
+            pimid::mcpatClockDieTrunkDefault() = config.pm_clock_die_trunk;
+            if (!config.pm_idle_halt)
+                std::cout << "  [power] idle cores/PEs are NOT halted BY USER OPTION (power.models.idle_halt: false):"
+                             " their clock tree's global part runs every powered cycle" << std::endl;
+            if (!config.pm_clock_die_trunk)
+                std::cout << "  [power] per-die clock trunk NOT priced BY USER OPTION (power.models.clock_die_trunk: false)" << std::endl;
+            if (!config.pm_per_die_process)
+                std::cout << "  [power] per-die process OFF BY USER OPTION (power.models.per_die_process: false):"
+                             " system.devices[].process is ignored; one technology per McPAT chip" << std::endl;
+            /* PIMID 1.12.18 (user ruling, per-die process): system.devices[].process
+             *   logic_die: { node_nm, device_type }      the logic / base die
+             *   dram_die:  { generation | node_nm, family }  the DRAM core dies
+             * A node must be one CACTI tabulates (22, 32, 45, 65, 90 nm); the UCIe
+             * link keeps its own power.link.process_node_nm (22 | 3). The system
+             * builds ONE device, so two devices giving different blocks are refused. */
+            if (yaml_cfg["system"] && yaml_cfg["system"]["devices"] && yaml_cfg["system"]["devices"].IsSequence()) {
+                const YAML::Node devs = yaml_cfg["system"]["devices"];
+                std::string first_txt;
+                auto dieNode = [](int n, const std::string& path) -> int {
+                    static const int kNodes[] = {22, 32, 45, 65, 90};
+                    for (int v : kNodes) if (v == n) return n;
+                    std::cerr << "ERROR: " << path << " = " << n << " nm is not a node CACTI tabulates."
+                                 " Supported: 22, 32, 45, 65, 90 nm (the nodes every linked tool evaluates"
+                                 " from real tables). The UCIe link keeps its own key,"
+                                 " power.link.process_node_nm (22 | 3)." << std::endl;
+                    std::exit(1);
+                };
+                for (size_t di = 0; di < devs.size(); di++) {
+                    const YAML::Node d = devs[di];
+                    if (!d.IsMap() || !d["process"]) continue;
+                    const std::string dp = "system.devices[" + std::to_string(di) + "].process";
+                    const YAML::Node p = d["process"];
+                    if (!p.IsMap()) {
+                        std::cerr << "ERROR: " << dp << " must be a map with logic_die and/or dram_die" << std::endl;
+                        std::exit(1);
+                    }
+                    const std::string txt = YAML::Dump(p);
+                    if (config.proc_given && txt != first_txt) {
+                        std::cerr << "ERROR: " << dp << " differs from an earlier device's process block; the"
+                                     " system builds ONE device and prices it with one process block" << std::endl;
+                        std::exit(1);
+                    }
+                    if (config.proc_given) continue;
+                    first_txt = txt;
+                    config.proc_given = true;
+                    if (p["logic_die"]) {
+                        const YAML::Node l = p["logic_die"];
+                        if (l["node_nm"])
+                            config.proc_logic_node_nm = dieNode(yamlInt(l["node_nm"], 0, dp + ".logic_die.node_nm"), dp + ".logic_die.node_nm");
+                        if (l["device_type"]) {
+                            const std::string s = yamlString(l["device_type"], "", dp + ".logic_die.device_type");
+                            config.proc_logic_device_type = (s == "hp") ? 0 : (s == "lstp") ? 1 : (s == "lop") ? 2 : -2;
+                            if (config.proc_logic_device_type < 0) {
+                                std::cerr << "ERROR: " << dp << ".logic_die.device_type = '" << s
+                                          << "' is not a CACTI logic device: hp | lstp | lop" << std::endl;
+                                std::exit(1);
+                            }
+                        }
+                    }
+                    if (p["dram_die"]) {
+                        const YAML::Node r = p["dram_die"];
+                        if (r["generation"] && r["node_nm"]) {
+                            std::cerr << "ERROR: " << dp << ".dram_die gives both generation and node_nm; give one"
+                                         " (the generation names the node: its CACTI DRAM table)" << std::endl;
+                            std::exit(1);
+                        }
+                        if (r["generation"]) {
+                            const std::string g = canonicalMemTech(yamlString(r["generation"], "", dp + ".dram_die.generation"));
+                            if (!pimid::isDRAM(pimid::parseMemoryTechnology(g))) {
+                                std::cerr << "ERROR: " << dp << ".dram_die.generation = '" << g << "' is not a DRAM"
+                                             " technology (DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3)" << std::endl;
+                                std::exit(1);
+                            }
+                            config.proc_dram_generation = g;
+                        }
+                        if (r["node_nm"])
+                            config.proc_dram_node_nm = dieNode(yamlInt(r["node_nm"], 0, dp + ".dram_die.node_nm"), dp + ".dram_die.node_nm");
+                        if (r["family"]) {
+                            const std::string f = yamlString(r["family"], "", dp + ".dram_die.family");
+                            config.proc_dram_family = (f == "comm-dram") ? 4 : (f == "lp-dram") ? 3 : -2;
+                            if (config.proc_dram_family < 0) {
+                                std::cerr << "ERROR: " << dp << ".dram_die.family = '" << f << "' is not a CACTI DRAM"
+                                             " periphery device: comm-dram | lp-dram" << std::endl;
+                                std::exit(1);
+                            }
+                        }
+                    }
+                }
+            }
+            if (!config.pm_int_alu_published)
+                std::cout << "  [power] integer ALU/MUL per-operation energy: McPAT's own BY USER OPTION"
+                             " (power.models.int_alu_published: false)" << std::endl;
+            if (!config.pm_clock_global_local)
+                std::cout << "  [power] clock trees: the whole tree gated by measured activity BY USER OPTION"
+                             " (power.models.clock_global_local: false)" << std::endl;
+            if (!config.pm_l1d_access_width)
+                std::cout << "  [power] L1D access priced as a full-line read BY USER OPTION"
+                             " (power.models.l1d_access_width: false)" << std::endl;
+            if (!config.pm_tlb_btb_measured)
+                std::cout << "  [power] TLB accesses 0 and BTB = indirect resolutions BY USER OPTION"
+                             " (power.models.tlb_btb_measured: false)" << std::endl;
+            pimid::mcpatSharerBitsFromChildrenDefault() = config.model_sharer_bits_from_children;   // 1.12.18
+            if (!config.model_sharer_bits_from_children)
+                std::cout << "  [power] SBT directory sharer bits: McPAT's ceil(number_of_cores/8)*8 BY USER OPTION"
+                             " (power.models.sharer_bits_from_children: false)" << std::endl;
+            if (!config.power_model_passthrough_as_wire)
+                std::cout << "  [power] pass-through routers on surviving NoC levels: priced as routers BY USER OPTION"
+                             " (power.models.passthrough_as_wire: false)" << std::endl;
+            if (config.pm_mcpat_fu_base_energy)
+                std::cout << "  [power] McPAT OOO functional-unit base energy is CHARGED BY USER OPTION"
+                             " (power.models.mcpat_fu_base_energy: true)" << std::endl;
+            if (!config.pm_fpu_published)
+                std::cout << "  [power] FPU per-operation energy: McPAT's own BY USER OPTION"
+                             " (power.models.fpu_published: false)" << std::endl;
+            if (!config.pm_frontend_from_timing)
+                std::cout << "  [power] instruction buffer: McPAT's 32-entry preset BY USER OPTION"
+                             " (power.models.frontend_from_timing: false)" << std::endl;
+            pimid::RamulatorWrapper::setEnergyModelSwitches(config.pm_dram_io_share_split, config.pm_dram_vpp_dynamic);
+            pimid::RamulatorWrapper::setIddqWriteTerminationOnce(config.pm_iddq_write_termination_once);   // 1.12.18
             if (yaml_cfg["power"] && yaml_cfg["power"]["tech_node_nm"]) {
                 int n = yamlInt(yaml_cfg["power"]["tech_node_nm"], config.tech_node_nm, "power.tech_node_nm");
                 config.tech_node_nm = n;
@@ -18182,6 +20905,16 @@ int main(int argc, char** argv) {
                     std::exit(1);
                 }
             }
+            if (yaml_cfg["power"] && yaml_cfg["power"]["models"] && yaml_cfg["power"]["models"]["clock_network"]) {
+                /* 1.12.18: the McPAT clock-network model on/off (default on).
+                 * The model is McPAT's; PIMID only passes the switch. */
+                config.clock_network = yamlBool(yaml_cfg["power"]["models"]["clock_network"], true,
+                                                "power.models.clock_network");
+            }
+            pimid::mcpatClockNetworkDefault() = config.clock_network;   // 1.12.18
+            if (!config.clock_network)
+                std::cout << "  [power] clock distribution is NOT priced (power.models.clock_network: false, user option)"
+                          << std::endl;
             if (yaml_cfg["power"] && yaml_cfg["power"]["logic_reference_mhz"]) {
                 const double lr =
                     yamlDouble(yaml_cfg["power"]["logic_reference_mhz"], 0.0, "power.logic_reference_mhz");
@@ -18198,6 +20931,7 @@ int main(int argc, char** argv) {
             if (yaml_cfg["power"] && yaml_cfg["power"]["device_corner"]) {
                 config.device_corner =
                     yamlString(yaml_cfg["power"]["device_corner"], config.device_corner, "power.device_corner");
+                config.device_corner_given = true;   // 1.12.18: an explicit corner (vs the hp default)
                 if (config.device_corner != "hp" && config.device_corner != "lstp" &&
                     config.device_corner != "lop") {
                     std::cerr << "ERROR: power.device_corner '" << config.device_corner
@@ -18337,8 +21071,34 @@ int main(int argc, char** argv) {
              * the category error found in its lane count this release.
              * power.pcie.* stays as a DEPRECATED ALIAS so no existing config
              * breaks; it is read only when power.link is absent. */
+            /* 1.12.18 (user rulings 2026-10-23): power.link.process_node_nm selects
+             * the UCIe energy row only. It is read HERE, outside the block below,
+             * because that block marks the link timing as configured: a section
+             * holding nothing but process_node_nm must not change timing. */
+            auto pimidLinkHasTimingKeys = [](const YAML::Node& n) {
+                if (!n || !n.IsMap()) return false;
+                for (const auto& kv : n)
+                    if (kv.first.as<std::string>() != "process_node_nm") return true;
+                return false;
+            };
             if (yaml_cfg["power"] && (yaml_cfg["power"]["link"] || yaml_cfg["power"]["pcie"])) {
-                const bool legacy_key = !yaml_cfg["power"]["link"];
+                const bool has_link = static_cast<bool>(yaml_cfg["power"]["link"]);
+                const YAML::Node pn = has_link ? yaml_cfg["power"]["link"] : yaml_cfg["power"]["pcie"];
+                const std::string pn_path = has_link ? "power.link" : "power.pcie";
+                if (pn && pn.IsMap() && pn["process_node_nm"]) {
+                    config.link_process_node_nm = yamlInt(pn["process_node_nm"], 0, pn_path + ".process_node_nm");
+                    if (config.link_process_node_nm != 22 && config.link_process_node_nm != 3) {
+                        std::cerr << "[config] FATAL: " << pn_path << ".process_node_nm = "
+                                  << config.link_process_node_nm << ": the UCIe link model supports exactly two"
+                                     " process nodes, 22 and 3 (nm), each priced from published measurements"
+                                     " (see docs/power.md, The host-device link (UCIe)) (1.12.18)." << std::endl;
+                        std::exit(2);
+                    }
+                }
+            }
+            if (yaml_cfg["power"] && (pimidLinkHasTimingKeys(yaml_cfg["power"]["link"]) ||
+                                      pimidLinkHasTimingKeys(yaml_cfg["power"]["pcie"]))) {   // 1.12.18: process_node_nm alone is not a timing section
+                const bool legacy_key = !pimidLinkHasTimingKeys(yaml_cfg["power"]["link"]);
                 if (legacy_key)
                     std::cout << "  [config] power.pcie.* is deprecated; use "
                                  "power.link.* (the model carries pcie, cxl, "
@@ -18366,6 +21126,14 @@ int main(int argc, char** argv) {
                 if (pc["coherence_extra_ns"]) config.pcie_coherence_user_set = true;
                 config.pcie_num_lanes = yamlInt(pc["num_lanes"], config.pcie_num_lanes, pc_path + ".num_lanes");
                 config.pcie_pj_per_bit_override = yamlDouble(pc["pj_per_bit_override"], config.pcie_pj_per_bit_override, pc_path + ".pj_per_bit_override");
+                if (pc["controller_clock_mhz"]) {   // 1.12.18 (user ruling 2026-10-23)
+                    config.pcie_controller_clock_mhz = yamlInt(pc["controller_clock_mhz"], 0, pc_path + ".controller_clock_mhz");
+                    if (config.pcie_controller_clock_mhz <= 0) {
+                        std::cerr << "[config] FATAL: " << pc_path << ".controller_clock_mhz = "
+                                  << config.pcie_controller_clock_mhz << " must be > 0 (MHz) (1.12.18)." << std::endl;
+                        std::exit(2);
+                    }
+                }
                 /* 1.11.106: the duplicate link_type read is gone (census N2); the read below sets the class and the flag */
                 // (the flag is set beside the read below)
                 config.pcie_model = yamlString(pc["model"], config.pcie_model, pc_path + ".model");
@@ -18405,6 +21173,18 @@ int main(int argc, char** argv) {
                     if (!pc["header_bytes"])      config.pcie_header_bytes    = 0;        // no protocol framing
                     if (!pc["coherence_extra_ns"])config.pcie_coherence_extra_ns = 0.0;   // no protocol coherence
                 }
+            }
+
+            /* 1.12.18 (user ruling 2026-10-23): power.models.ucie_link switches
+             * the McPAT fork's UCIe link model (default on). Off: the interposer
+             * link is priced by the pre-1.12.18 path, and the run says so. */
+            if (yaml_cfg["power"] && yaml_cfg["power"]["models"]) {
+                const YAML::Node pm = yaml_cfg["power"]["models"];
+                if (!pm.IsMap()) {
+                    std::cerr << "[config] FATAL: power.models must be a map (1.12.18)." << std::endl;
+                    std::exit(2);
+                }
+                config.ucie_link_model = yamlBool(pm["ucie_link"], config.ucie_link_model, "power.models.ucie_link");
             }
 
             /* 1.12.9: the flat host: block reader, the cosim remap and the duplicate-node refusal of 1.11.90 are gone with
@@ -18509,6 +21289,8 @@ int main(int argc, char** argv) {
                             // auto per-tech default (getHostPathAdderNs).
                             node.mem_latency_adder_ns =
                                 yamlDouble(h["memory"]["latency_adder_ns"], node.mem_latency_adder_ns, hpath + ".memory.latency_adder_ns");
+                            node.host_dram_replay =   // 1.12.18 (ruling 17 / R0605)
+                                yamlBool(h["memory"]["dram_replay"], node.host_dram_replay, hpath + ".memory.dram_replay");
                             // Host-path DECOMPOSITION overrides (1.7.2). Partial
                             // override merges over the per-tech default split.
                             if (h["memory"]["host_path"]) {
@@ -18569,7 +21351,7 @@ int main(int argc, char** argv) {
                                 yamlString(h["noc"]["model"], node.host_noc_model, hpath + ".noc.model");
                             {   /* 1.11.106 (ruling R106-2 (b)): the host fabric is modelled as the analytic crossbar
                                  * (one uniform hop + the host MC queue); any other word is accepted with this warning
-                                 * until the host NoC model exists (a 1.1x to-do before v2). */
+                                 * (this build has no host NoC model). */
                                 std::string ht = node.host_noc_topology, hm = node.host_noc_model;
                                 for (auto& c : ht) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                                 for (auto& c : hm) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -18577,7 +21359,7 @@ int main(int argc, char** argv) {
                                     std::cerr << "[config] WARNING: " << hpath << ".noc topology '" << node.host_noc_topology
                                               << "' / model '" << node.host_noc_model << "' is not modelled: the host fabric runs as the "
                                                  "analytic crossbar (one uniform hop plus the host memory controller's queue). A host NoC "
-                                                 "model is a planned 1.1x release." << std::endl;
+                                                 "model is not part of this build." << std::endl;
                             }
                             node.host_noc_hop_cycles =
                                 yamlInt(h["noc"]["hop_cycles"], node.host_noc_hop_cycles, hpath + ".noc.hop_cycles");
@@ -18898,6 +21680,10 @@ int main(int argc, char** argv) {
                             node.inorder_branch_predictor_src = dev->inorder_branch_predictor_src;
                             node.pe_lanes = dev->pe_lanes;                  // 1.11.107: priced per node
                             node.pe_imem_bytes = dev->pe_imem_bytes;
+                            node.pe_spm_bytes = dev->pe_spm_bytes;          // 1.12.18
+                            node.pe_spm_staging = dev->pe_spm_staging;
+                            node.pe_stack = dev->pe_stack;
+                            node.pe_spm_stack_bytes = dev->pe_spm_stack_bytes;
                             node.arch_int_regs = dev->arch_int_regs;
                             node.arch_fp_regs = dev->arch_fp_regs;
                             node.pe_mc_declared = dev->pe_mc_enabled;       // 1.11.56 (B055): the node declared a pim.mc block
@@ -19290,17 +22076,34 @@ int main(int argc, char** argv) {
      * exactly as naming the class does (1.11.97 switched the energy class
      * alone and left an interposer on the PCIe 500 ns / 63 GB/s timing). */
     if (config.scope == "system") {
-        bool any_dev = false, all_internal = true; std::string dev_tech;
+        bool any_dev = false, all_internal = true, all_host_memory = true; std::string dev_tech;
+        const UnifiedConfig::SystemNode* dev_node = nullptr;   // 1.12.18: the first device (its array times a non-DRAM channel)
         for (const auto& n : config.system_nodes) {
             if (n.role != UnifiedConfig::SystemNode::DEVICE) continue;
-            if (!any_dev) dev_tech = n.memory_tech;
+            if (!any_dev) { dev_tech = n.memory_tech; dev_node = &n; }
             any_dev = true;
             if (n.attachment == UnifiedConfig::SystemNode::EXTERNAL) all_internal = false;
+            if (!n.is_default_mem) all_host_memory = false;
         }
         if (any_dev) {
             std::string implied = "pcie_gen5", why = "a device is EXTERNALLY attached; PCIe is the declared crossing";
             if (all_internal) {
-                if (dev_tech == "DDR3" || dev_tech == "DDR4" || dev_tech == "DDR5" || dev_tech == "LPDDR5" || dev_tech == "GDDR6") {
+                /* 1.12.18 (user ruling 2026-10-23: "one device, one attachment,
+                 * remove the double count"): a device that IS the host's main
+                 * memory (is_default_mem) -- HBM-PIM, AiM, a PIM DIMM -- is
+                 * reached over that memory's own channel, whatever its
+                 * technology: the host memory controller, the PHY and the DRAM
+                 * I/O carry every host<->device byte and are priced as
+                 * themselves. Until now an HBM device defaulted to an
+                 * interposer link and the same bytes (the coherence flush, the
+                 * launch messages) were charged a second time on a die-to-die
+                 * link the system does not have. The interposer (UCIe) class
+                 * stays for a device that is NOT the host's memory, or when
+                 * a config names it. */
+                if (all_host_memory) {
+                    implied = "dram_channel";
+                    why = "every device is INTERNALLY attached and IS the host's main memory (" + dev_tech + "): the host reaches it over that memory's own channel (one device, one attachment)";
+                } else if (dev_tech == "DDR3" || dev_tech == "DDR4" || dev_tech == "DDR5" || dev_tech == "LPDDR5" || dev_tech == "GDDR6") {
                     implied = "dram_channel";
                     why = "every device is INTERNALLY attached and " + dev_tech + " is a channel-attached part: the host reaches it over its own DRAM channel";
                 } else {
@@ -19336,18 +22139,41 @@ int main(int argc, char** argv) {
             }
             if (config.pcie_link_type == "dram_channel") {
                 double lat = 0.0, bw = 0.0; std::string how;
-                if (dramChannelLinkTiming(dev_tech, lat, bw, how) != 0) return 1;
+                /* 1.12.18: a DRAM part's channel from its part record; an SRAM
+                 * or NVM main memory's channel from its array model (CACTI /
+                 * NVSim) -- dramPartRecord() has no record for those and
+                 * refused every non-DRAM main memory under the ruling above. */
+                const bool dev_is_dram = pimid::isDRAM(pimid::parseMemoryTechnology(dev_tech));
+                if (dev_is_dram) {
+                    if (dramChannelLinkTiming(dev_tech, lat, bw, how) != 0) return 1;
+                } else {
+                    std::string t = dev_tech;
+                    std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+                    const int banks = (dev_node && dev_node->banks > 0) ? dev_node->banks : config.num_banks;
+                    const int node_nm = dev_node ? dev_node->tech_node_nm : config.tech_node_nm;
+                    const double fmhz = (dev_node && dev_node->frequency_mhz > 0.0) ? dev_node->frequency_mhz : config.frequency_mhz;
+                    if (arrayChannelLinkTiming(t, banks, node_nm, fmhz, config.temperature_k, config.cache_line_size, lat, bw, how) != 0) return 1;
+                }
                 if (!config.pcie_base_latency_user_set) config.pcie_base_latency_ns = lat;
                 if (!config.pcie_bandwidth_user_set)    config.pcie_bandwidth_GBs   = bw;
                 if (config.pcie_header_bytes < 0)       config.pcie_header_bytes    = 0;
                 if (!config.pcie_coherence_user_set)    config.pcie_coherence_extra_ns = 0.0;
                 for (auto& l : config.system_network.links)
                     if (l.link_type == "dram_channel") { if (l.base_latency_ns < 0) l.base_latency_ns = lat; if (l.bandwidth_GBs < 0) l.bandwidth_GBs = bw; l.header_bytes = 0; l.coherence_extra_ns = 0.0; }
-                std::cout << "  [link] dram_channel timing from the " << dev_tech << " part record: base " << config.pcie_base_latency_ns << " ns, "
-                          << config.pcie_bandwidth_GBs << " GB/s, header 0 B (" << how << "); no separate link energy and no link controller: "
-                             "the host memory controller and the DRAM interface carry the crossing and are priced in their own places" << std::endl;
+                std::cout << "  [link] dram_channel timing from the " << dev_tech << (dev_is_dram ? " part record" : " array model") << ": base "
+                          << config.pcie_base_latency_ns << " ns, " << config.pcie_bandwidth_GBs << " GB/s, header 0 B (" << how
+                          << "); no separate link energy and no link controller: the host memory controller and the "
+                          << (dev_is_dram ? "DRAM interface" : "array's own interface") << " carry the crossing and are priced in their own places" << std::endl;
             }
         }
+    }
+    /* 1.12.18: refuse a link class with no published controller clock at
+     * LOAD, not after the simulation (the pricing sites refuse too, for a
+     * class set later by the declared topology). */
+    if (config.scope == "system" && config.enable_power && config.pcie_enabled &&
+        config.pcie_link_type != "dram_channel") {
+        const std::string why = linkClockRefusal(config, config.pcie_link_type);
+        if (!why.empty()) { std::cerr << "[config] FATAL: " << why << std::endl; return 1; }
     }
     /* 1.11.94 (review H33-H35 follow-up): a DRAM device's fabric is the CUSTOM
      * tree and routes by TABLE; a user-set direction routing on it used to be
@@ -19623,7 +22449,7 @@ int main(int argc, char** argv) {
             try {
                 double exact_ns = -1.0;
                 (void)getMemoryLatencyCycles(mtech_up, print_mem_info_freq, config.tech_node_nm, false, 0.0,
-                                             -999, config.temperature_k, config.cache_line_size, "", 4800, &exact_ns);
+                                             -999, config.temperature_k, config.cache_line_size, "", 0, &exact_ns);   // 1.12.18: no DDR5 grade literal
                 if (exact_ns > 0.0) { bw_gbs = config.num_banks * config.cache_line_size / exact_ns; bw_sourced = true; }
                 else bw_why = "the array model reported no access time";
             } catch (const std::exception& e) { bw_why = e.what(); }
@@ -20371,7 +23197,7 @@ int main(int argc, char** argv) {
                 // PCIe/CXL interconnect info
                 if (config.pcie_timing_configured && config.pcie_enabled) {
                     pimid::fmt_scoped(std::cout) << "    Interconnect: " << config.pcie_link_type
-                              << (config.pcie_link_type == "dram_channel" ? std::string(" (the device's DRAM channels)") : " x" + std::to_string(config.pcie_num_lanes))   // 1.11.103
+                              << (config.pcie_link_type == "dram_channel" ? std::string(pimid::isDRAM(pimid::parseMemoryTechnology(config.memory_tech)) ? " (the device's DRAM channels)" : " (the memory's own interface)") : " x" + std::to_string(config.pcie_num_lanes))   // 1.11.103
                               << " (base=" << std::fixed << std::setprecision(0)
                               << config.pcie_base_latency_ns << "ns, BW="
                               << std::setprecision(1) << config.pcie_bandwidth_GBs
@@ -20461,6 +23287,7 @@ int main(int argc, char** argv) {
 
             // Find qemu-x86_64 binary
             std::string qemu_binary = findQemuBinary();
+            noteGuestBindNow();   // 1.12.18 (ruling 2026-10-24)
             if (qemu_binary.empty()) {
                 std::cerr << "Error: qemu-x86_64 not found" << std::endl;
                 std::cerr << "Install with: sudo apt install qemu-user" << std::endl;
@@ -20547,6 +23374,7 @@ int main(int argc, char** argv) {
                         // argv: qemu -plugin <plugin>,output=<trace> -- <workload> [args...]
                         std::vector<std::string> argv_owned;
                         argv_owned.push_back(qemu_binary);
+                        argv_owned.push_back("-E"); argv_owned.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
                         argv_owned.push_back("-plugin");
                         argv_owned.push_back(plugin_arg);
                         argv_owned.push_back("--");
@@ -20676,6 +23504,7 @@ int main(int argc, char** argv) {
                     }
                     std::vector<const char*> args;
                     args.push_back(qemu_binary.c_str());
+                    args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
                     args.push_back("-plugin");
                     args.push_back(plugin_arg.c_str());
                     args.push_back("--");
@@ -20752,6 +23581,7 @@ int main(int argc, char** argv) {
 
             // Find qemu-x86_64 binary
             std::string qemu_binary = findQemuBinary();
+            noteGuestBindNow();   // 1.12.18 (ruling 2026-10-24)
             if (qemu_binary.empty()) {
                 std::cerr << "Error: qemu-x86_64 not found" << std::endl;
                 std::cerr << "Install with: sudo apt install qemu-user" << std::endl;
@@ -21096,6 +23926,7 @@ int main(int argc, char** argv) {
                     std::vector<const char*> args;
                     std::string guest_preload;
                     args.push_back(qemu_binary.c_str());
+                    args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
                     if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
                         guest_preload = "LD_PRELOAD=" + mpi_thread_lib;
                         args.push_back("-E");
@@ -21204,6 +24035,12 @@ int main(int argc, char** argv) {
                         }
                         std::cout << "Total:  " << tot << " cycles (max: " << mx
                                   << ")" << std::endl;
+                        {   // 1.12.18 (ruling 2026-10-23): the run time, stated
+                            std::string run_src;
+                            const uint64_t run_w = runWindowCycles(exec_zsim_stats, &run_src);
+                            std::cout << "Run time: " << run_w << " cycles = " << run_src
+                                      << "; busy max over ranks " << mx << " [1.12.18]" << std::endl;
+                        }
                         /* 1.9.43: report EXECUTED instructions, not the raw
                          * counter. `instrs` includes injected timing charges --
                          * the synthetic per-basic-block advances the core adds
@@ -21305,10 +24142,19 @@ int main(int argc, char** argv) {
                                 if (v < mn) mn = v;
                             }
                             uint64_t mean = tot / peCycles.size();
-                            std::cout << "OMP cycles: " << mx << " (mean: " << mean
+                            /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed
+                             * wall clock"): the per-PE cycles are busy ACTIVITY and
+                             * are reported as such; the run's cycles -- the "(max: N)"
+                             * figure the sweep parsers read -- are the run time. */
+                            std::string run_src;
+                            const uint64_t run_w = runWindowCycles(exec_zsim_stats, &run_src);
+                            const uint64_t W = (run_w > 0) ? run_w : mx;
+                            std::cout << "OMP busy cycles: " << mx << " (mean: " << mean
                                       << ", min: " << mn << ", pes: " << peCycles.size()
-                                      << ", critical-path max)" << std::endl;
-                            std::cout << "Total:  " << tot << " cycles (max: " << mx
+                                      << ", per-PE activity; busy max)" << std::endl;
+                            std::cout << "Run time: " << W << " cycles = " << run_src
+                                      << "; busy max " << mx << " [1.12.18, ruling 2026-10-23]" << std::endl;
+                            std::cout << "Total:  " << tot << " cycles (max: " << W
                                       << ")" << std::endl;
                         }
                     }
@@ -21431,6 +24277,7 @@ int main(int argc, char** argv) {
 
             // Find QEMU and plugin
             std::string qemu_binary = findQemuBinary();
+            noteGuestBindNow();   // 1.12.18 (ruling 2026-10-24)
             if (qemu_binary.empty()) {
                 std::cerr << "Error: qemu-x86_64 not found" << std::endl;
                 return 1;
@@ -21524,6 +24371,7 @@ int main(int argc, char** argv) {
 
                         std::vector<const char*> args;
                         args.push_back(qemu_binary.c_str());
+                        args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
                         args.push_back("-plugin");
                         args.push_back(parg.c_str());
                         args.push_back("--");
@@ -21646,6 +24494,7 @@ int main(int argc, char** argv) {
                     std::vector<const char*> args;
                     std::string sys_guest_preload;
                     args.push_back(qemu_binary.c_str());
+                    args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
                     // LD_PRELOAD must be GUEST-scoped (qemu -E): a host-env preload
                     // would load the interposer into QEMU itself.
                     if (config.workload_type == "mpi" && config.mpi_ranks > 0) {

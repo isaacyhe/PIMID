@@ -41,6 +41,8 @@
  * This is the standard simple memory model -- M/D/1 is always active.
  * (The old fixed-latency SimpleMemory has been removed.)
  */
+class DramEpochReplay;   // 1.12.18 (ruling 17 / R0605)
+
 class SimpleMemory : public MemObject {
     private:
         uint64_t lastPhase;
@@ -62,10 +64,32 @@ class SimpleMemory : public MemObject {
 
         g_string name; //barely used
         lock_t updateLock;
+        /* 1.12.18 (ruling 17 / R0605): the host memory replayed through
+         * Ramulator2 (dram_epoch_replay.h). When set, every access is recorded
+         * on interface hostReplayMi and priced at the replay's measured
+         * service latency (host cycles) plus the calibrated host-path adder
+         * (fabric, coherence, controller pipeline, PHY: no DRAM timing in it);
+         * the M/D/1 latency above is the bootstrap until the first replayed
+         * epoch. */
+        DramEpochReplay* hostReplay = nullptr;
+        uint32_t hostReplayMi = 0;
+        uint32_t hostPathCycles = 0;
         PAD();
 
     public:
         SimpleMemory(uint32_t lineSize, uint32_t megacyclesPerSecond, uint32_t megabytesPerSecond, uint32_t _zeroLoadLatency, g_string& _name);
+        void setHostReplay(DramEpochReplay* r, uint32_t mi, uint32_t pathCycles) { hostReplay = r; hostReplayMi = mi; hostPathCycles = pathCycles; }
+        Counter* rdCounter() { return &profReads; }    // 1.12.18 (R1): bound to the replay
+        Counter* wrCounter() { return &profWrites; }
+        /* 1.12.18: access(), telling the caller whether the replay priced it */
+        uint64_t accessPriced(MemReq& req, bool* byReplay);
+        /* 1.12.18: (bug 7) one coherence-flush writeback of line lineAddr
+         * (controller-local, after the address split) issued at host cycle
+         * `cycle` by core srcId: recorded on the replayed controller when the
+         * host is replayed, counted as a write. The flush's TIME is charged by
+         * the plugin (the flush cycles), so no latency is returned and the
+         * M/D/1 bootstrap load is not touched. */
+        void flushWriteback(Address lineAddr, uint64_t cycle, uint32_t srcId);
 
         void initStats(AggregateStat* parentStat) {
             AggregateStat* memStats = new AggregateStat();

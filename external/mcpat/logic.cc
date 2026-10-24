@@ -30,6 +30,76 @@
  ***************************************************************************/
 
 #include "logic.h"
+#include <vector>      /* PIMID 1.12.18: guard lists */
+#include <algorithm>
+#include "wire.h"   /* PIMID 1.12.18: ClockNetwork prices its tree with CACTI wires */
+void init_tech_params(double tech, bool is_tag);   /* PIMID 1.12.18: cacti/technology.cc (Ucache.h) */
+
+/* PIMID 1.12.18 (ruling 2026-10-23 #2): switched capacitance of CACTI's
+ * minimum inverter under the CURRENT technology tables (g_tp): gate of the
+ * NMOS + PMOS pair (min_w_nmos_, McPAT's P/N sizing ratio) plus both drain
+ * junctions -- the per-transition load of a minimum gate driving its twin. A
+ * ratio of two of these (same device type, two nodes) times the Vdd^2 ratio
+ * is the switched-energy scaling of a logic block between nodes. */
+static double pimid_min_inv_switch_cap()
+{
+	const double wn = g_tp.min_w_nmos_;
+	const double wp = wn * pmos_to_nmos_sz_ratio();
+	return gate_C(wn + wp, 0) + drain_C_(wn, NCH, 1, 1, g_tp.cell_h_def) + drain_C_(wp, PCH, 1, 1, g_tp.cell_h_def);
+}
+
+/* PIMID 1.12.18: see logic.h. */
+double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src_o, double *c_run_o,
+                               double *v_run_o, double *v_src_cacti_o)
+{
+	const double c_run = pimid_min_inv_switch_cap();
+	const double v_run = g_tp.peri_global.Vdd;
+	const TechnologyParameter tp_saved = g_tp;
+	init_tech_params(src_nm/1000.0, false);
+	const double c_src = pimid_min_inv_switch_cap();
+	const double v_src_cacti = g_tp.peri_global.Vdd;
+	g_tp = tp_saved;   /* the run's tables, exactly as they were */
+	if (c_src_o) *c_src_o = c_src;
+	if (c_run_o) *c_run_o = c_run;
+	if (v_run_o) *v_run_o = v_run;
+	if (v_src_cacti_o) *v_src_cacti_o = v_src_cacti;
+	if (!(c_src > 0) || !(src_vdd > 0)) return 0.0;
+	return (c_run / c_src) * (v_run / src_vdd) * (v_run / src_vdd);
+}
+
+/* PIMID 1.12.18: the guard rule (user ruling 2026-10-23): the most accurate
+ * value goes in the total; the other sources/tools are printed beside it,
+ * and a WARNING is printed when the value lies outside the range the
+ * guards span (two or more guards), or below a published lower bound. One
+ * plain guard spans no range: its ratio is printed, nothing is invented. */
+struct PimidGuard { std::string label; double e; bool lower_bound; };
+static void pimid_guard_report(const char *tag, int core, const std::string &what, double e,
+                               const std::vector<PimidGuard> &g)
+{
+	double lo = 0, hi = 0; int nr = 0;
+	for (size_t j = 0; j < g.size(); j++)
+	{
+		std::cerr << tag << " core" << core << " guard for " << what << ": " << g[j].label << " = "
+		          << g[j].e*1e12 << " pJ at the run node" << (g[j].lower_bound ? " (lower bound)" : "")
+		          << "; used value / guard = " << ((g[j].e > 0) ? e/g[j].e : 0.0) << std::endl;
+		if (g[j].lower_bound) {
+			if (e < g[j].e)
+				std::cerr << tag << " core" << core << " WARNING: " << what << " " << e*1e12
+				          << " pJ is BELOW the published lower bound " << g[j].label << std::endl;
+			continue;
+		}
+		if (nr == 0) { lo = hi = g[j].e; } else { lo = std::min(lo, g[j].e); hi = std::max(hi, g[j].e); }
+		nr++;
+	}
+	if (nr >= 2) {
+		if (e < lo || e > hi)
+			std::cerr << tag << " core" << core << " WARNING: " << what << " " << e*1e12 << " pJ is OUTSIDE the guard range ["
+			          << lo*1e12 << ", " << hi*1e12 << "] pJ" << std::endl;
+		else
+			std::cerr << tag << " core" << core << " " << what << " " << e*1e12 << " pJ is inside the guard range ["
+			          << lo*1e12 << ", " << hi*1e12 << "] pJ" << std::endl;
+	}
+}
 
 
 //selection_logic
@@ -293,7 +363,8 @@ Pipeline::Pipeline(
   device_ty(device_ty_),
   is_core_pipeline(_is_core_pipeline),
   is_default(_is_default),
-  num_piperegs(0.0)
+  num_piperegs(0.0),
+  clock_energy_per_reg(0.0)
 
   {
 	local_result = init_interface(&l_ip);
@@ -301,11 +372,32 @@ Pipeline::Pipeline(
 		process_ind = true;
 	else
 		process_ind = false;
-	WNANDn = (process_ind)? 25 *   l_ip.F_sz_um : g_tp.min_w_nmos_ ;//this was  20 micron for the 0.8 micron process
-	WNANDp = (process_ind)? 37.5 * l_ip.F_sz_um : g_tp.min_w_nmos_*pmos_to_nmos_sz_ratio();//this was  30 micron for the 0.8 micron process
+	reg_widths(process_ind, l_ip.F_sz_um, WNANDn, WNANDp);   /* PIMID 1.12.18: the rule below, factored out */
 	load_per_pipeline_stage = 2*gate_C(WNANDn + WNANDp, 0, false);
 	compute();
 
+}
+
+/* PIMID 1.12.18: McPAT's register widths, unchanged (moved from the
+ * constructor so the clock network sizes other components' registers the
+ * same way). */
+void Pipeline::reg_widths(bool process_ind, double F_sz_um, double &wn, double &wp)
+{
+	wn = (process_ind)? 25 *   F_sz_um : g_tp.min_w_nmos_ ;//this was  20 micron for the 0.8 micron process
+	wp = (process_ind)? 37.5 * F_sz_um : g_tp.min_w_nmos_*pmos_to_nmos_sz_ratio();//this was  30 micron for the 0.8 micron process
+}
+
+/* PIMID 1.12.18: clock-pin energy of one McPAT register per cycle, exactly
+ * as Pipeline::compute() prices it (DFFCell e_clock = clock_cap x Vdd^2,
+ * the clock switching twice per cycle, x sckt_co_eff). */
+double Pipeline::reg_clock_energy(bool embedded, double F_sz_um)
+{
+	double wn, wp;
+	reg_widths(!embedded, F_sz_um, wn, wp);
+	InputParameter dummy;   /* DFFCell keeps a copy only */
+	DFFCell reg(false, wn, wp, 2*gate_C(wn + wp, 0, false), &dummy);
+	reg.compute_DFF_cell();
+	return reg.e_clock.readOp.dynamic * g_tp.sckt_co_eff;
 }
 
 void Pipeline::compute()
@@ -315,6 +407,7 @@ void Pipeline::compute()
 	pipe_reg.compute_DFF_cell();
 
 	double clock_power_pipereg = num_piperegs * pipe_reg.e_clock.readOp.dynamic;
+	clock_energy_per_reg = pipe_reg.e_clock.readOp.dynamic * g_tp.sckt_co_eff;   /* PIMID 1.12.18: as scaled below */
 	//******************pipeline power: currently, we average all the possibilities of the states of DFFs in the pipeline. A better way to do it is to consider
 	//the harming distance of two consecutive signals, However McPAT does not have plan to do this in near future as it focuses on worst case power.
 	double pipe_reg_power = num_piperegs * (pipe_reg.e_switch.readOp.dynamic+pipe_reg.e_keep_0.readOp.dynamic+pipe_reg.e_keep_1.readOp.dynamic)/3+clock_power_pipereg;
@@ -438,6 +531,196 @@ void Pipeline::compute_stage_vector()
 
 }
 
+/* PIMID 1.12.18: CLOCK DISTRIBUTION NETWORK -- see logic.h for the model
+ * and its sources (Wattch, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000,
+ * clocking section; H-tree length after Bakoglu 1990 ch. 8). Every number
+ * here is read from CACTI's technology tables and wire model, or from the
+ * structure counts the caller passes. */
+ClockNetwork::ClockNetwork()
+: built(false), enabled(true), tree_area_um2(0), side_um(0), n_sinks(0), h_levels(0), tree_len_um(0),
+  c_wire_per_um(0), c_eff_per_um(0), repeater_spacing_um(0), repeater_size(0),
+  e_tree_cycle(0), e_pin_reg(0), c_pin(0), vdd(0), clock_hz(0), sckt(0),
+  leak(0), gate_leak(0), lc_reduction(0), pg_reduction(0), activity(1), rt_ungated(0),
+  global_len_um(0), local_len_um(0), e_tree_global_cycle(0), e_tree_local_cycle(0),
+  powered(1), powered_source("always powered (no power gating)"), rt_global(0),   /* PIMID 1.12.18 (ruling #4) */
+  halt(false), running(1), running_max(1), running_source("no idle halt"), rt_halted(0)   /* PIMID 1.12.18 (idle halt) */
+{
+}
+
+void ClockNetwork::compute(const InputParameter *configure_interface, const string &owner_,
+		double tree_area_um2_, double n_sinks_, const string &sink_source_,
+		double e_pin_per_reg_, double clock_hz_, bool embedded_,
+		enum Device_ty device_ty_, enum Core_type core_ty_, bool enabled_)
+{
+	enabled = enabled_;
+	if (!enabled)
+	{   /* PIMID 1.12.18: user option power.models.clock_network = false. */
+		owner = owner_;
+		built = true;
+		std::cerr << "[mcpat clock] " << owner << ": clock distribution NOT priced (power.models.clock_network: "
+		             "false, user option)" << std::endl;
+		return;
+	}
+	InputParameter l_ip = *configure_interface;
+	uca_org_t res = init_interface(&l_ip);   /* g_tp of this owner's technology */
+	res.cleanup();
+	owner         = owner_;
+	sink_source   = sink_source_;
+	tree_area_um2 = (tree_area_um2_ > 0) ? tree_area_um2_ : 0;
+	n_sinks       = (n_sinks_ > 0) ? n_sinks_ : 0;
+	clock_hz      = clock_hz_;
+	vdd           = g_tp.peri_global.Vdd;
+	sckt          = g_tp.sckt_co_eff;
+	side_um       = sqrt(tree_area_um2);
+	/* H-tree reaching every sink: 4^n = N, L = 1.5 D (sqrt(N) - 1) (logic.h). */
+	h_levels      = (n_sinks > 1) ? log(n_sinks)/log(4.0) : 0;
+	tree_len_um   = (n_sinks > 1) ? 1.5*side_um*(sqrt(n_sinks) - 1.0) : 0;
+
+	double wn, wp;
+	Pipeline::reg_widths(!embedded_, l_ip.F_sz_um, wn, wp);
+	c_pin     = 2 * gate_C(wn + wp, 0, false);   /* DFFCell::compute_DFF_cell clock_cap */
+	e_pin_reg = (e_pin_per_reg_ >= 0) ? e_pin_per_reg_ : Pipeline::reg_clock_energy(embedded_, l_ip.F_sz_um);
+
+	e_tree_cycle = leak = gate_leak = 0;
+	if (tree_len_um > 0)
+	{
+		Wire w(l_ip.wt, tree_len_um);
+		e_tree_cycle = w.power.readOp.dynamic * sckt;
+		leak         = w.power.readOp.leakage;
+		gate_leak    = w.power.readOp.gate_leakage;
+		repeater_spacing_um = w.repeater_spacing;
+		repeater_size       = w.repeater_size;
+		c_wire_per_um = w.wire_cap(1e-6, true);
+		c_eff_per_um  = e_tree_cycle / (tree_len_um * vdd * vdd);
+	}
+	/* PIMID 1.12.18 (user ruling 2026-10-23 #4): global = every H-tree
+	 * level but the last, local = the last level (logic.h). The repeated
+	 * wire's energy is linear in its length (cacti/wire.cc), so the split
+	 * of E_tree is the split of L. */
+	global_len_um = (n_sinks > 4 && split_enabled) ? 1.5*side_um*(sqrt(n_sinks)/2.0 - 1.0) : 0.0;
+	if (!split_enabled)
+		std::cerr << "[mcpat clock] " << owner << ": global/local split OFF BY USER OPTION (power.models.clock_global_local:"
+		          << " false): the whole tree is gated by the measured activity" << std::endl;
+	if (global_len_um < 0) global_len_um = 0;
+	if (global_len_um > tree_len_um) global_len_um = tree_len_um;
+	local_len_um  = tree_len_um - global_len_um;
+	e_tree_global_cycle = (tree_len_um > 0) ? e_tree_cycle * global_len_um / tree_len_um : 0.0;
+	e_tree_local_cycle  = e_tree_cycle - e_tree_global_cycle;
+	lc_reduction = longer_channel_device_reduction(device_ty_, core_ty_);
+	pg_reduction = power_gating_leakage_reduction(false);
+	built = true;
+
+	std::cerr << "[mcpat clock] " << owner << ": area " << tree_area_um2*1e-6 << " mm^2 (D "
+	          << side_um << " um), sinks N " << n_sinks << " (" << sink_source << "), H-tree "
+	          << h_levels << " levels, L = 1.5 D (sqrt(N)-1) = " << tree_len_um << " um; wire "
+	          << (l_ip.wt == Global ? "Global" : (l_ip.wt == Global_30 ? "Global_30" : "other"))
+	          << " C_wire " << c_wire_per_um*1e15 << " fF/um, repeaters x" << repeater_size
+	          << " every " << repeater_spacing_um << " um, C_eff (wire+repeaters+sc, x sckt "
+	          << sckt << ") " << c_eff_per_um*1e15 << " fF/um; pin C " << c_pin*1e15
+	          << " fF, E_pin " << e_pin_reg << " J; Vdd " << vdd << " V, f " << clock_hz*1e-6
+	          << " MHz; per cycle: tree " << e_tree_cycle << " J + pins (ungated) "
+	          << n_sinks*e_pin_reg << " J; repeater leakage " << leak << " W, gate "
+	          << gate_leak << " W" << std::endl;
+	std::cerr << "[mcpat clock] " << owner << ": split (ruling 2026-10-23 #4, rule: GLOBAL = all H-tree levels but the last,"
+	          << " LOCAL = the last level + the register pins): global L 1.5 D (sqrt(N)/2 - 1) = " << global_len_um
+	          << " um -> " << e_tree_global_cycle << " J/cycle, every powered cycle; local L " << local_len_um
+	          << " um -> " << e_tree_local_cycle << " J/cycle + pins " << n_sinks*e_pin_reg
+	          << " J/cycle, gated by measured activity" << std::endl;
+}
+
+void ClockNetwork::set_powered(double r_gated, const string &src)
+{
+	/* PIMID 1.12.18 (ruling #4): power gating (off by default) stops the
+	 * global part for the measured gated residency; nothing else does. */
+	if (!(r_gated > 0)) { powered = 1.0; powered_source = "always powered (no power gating)"; return; }
+	powered = 1.0 - ((r_gated > 1.0) ? 1.0 : r_gated);
+	powered_source = src;
+}
+
+bool ClockNetwork::split_enabled = true;   /* PIMID 1.12.18 (ruling #4) */
+
+double ClockNetwork::gated_cycle(double a, double pins_e) const
+{
+	return e_tree_global_cycle * global_on() + (e_tree_local_cycle + pins_e) * a;   /* PIMID 1.12.18 (idle halt) */
+}
+
+/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt; logic.h). */
+void ClockNetwork::set_running(bool halt_on, double r_mean, double r_max, const string &src)
+{
+	halt = halt_on;
+	running = running_max = 1.0;
+	if (!halt_on) { running_source = "idle halt OFF (power.models.idle_halt: false): global part every powered cycle"; return; }
+	if (!(r_mean >= 0))
+	{
+		running_source = "NO MEASURED RUNNING TIME: global part every powered cycle (nothing invented)";
+		std::cerr << "[mcpat clock] " << owner << ": idle halt: " << running_source << std::endl;
+		return;
+	}
+	running     = (r_mean > 1.0) ? 1.0 : r_mean;
+	running_max = (r_max >= running) ? ((r_max > 1.0) ? 1.0 : r_max) : running;
+	running_source = src;
+}
+
+double ClockNetwork::global_on() const
+{
+	return halt ? std::min(powered, running) : powered;
+}
+
+double ClockNetwork::trunk_on() const
+{
+	return halt ? std::min(powered, running_max) : powered;
+}
+
+double ClockNetwork::gate(double a, const string &src)
+{
+	if (!enabled) { activity = 0; activity_source = "not priced (user option)"; return 0; }
+	if (!(a >= 0))
+	{
+		std::cerr << "NO MEASURED ACTIVITY: " << owner << " (" << src
+		          << "); its clock tree is priced UNGATED -- no duty is invented." << std::endl;
+		activity = 1.0;
+		activity_source = "none measured: ungated";
+		return 1.0;
+	}
+	activity = (a > 1.0) ? 1.0 : a;   /* a port-usage fraction cannot exceed every cycle */
+	activity_source = src;
+	return activity;
+}
+
+void ClockNetwork::set_power(double tdp_dyn, double rt_gated, double rt_ungated_, double n_leak_instances)
+{
+	power.reset();
+	rt_power.reset();
+	power.readOp.dynamic = tdp_dyn;
+	power.readOp.leakage = leak * n_leak_instances;
+	power.readOp.gate_leakage = gate_leak * n_leak_instances;
+	power.readOp.longer_channel_leakage = power.readOp.leakage * lc_reduction;
+	power.readOp.power_gated_leakage = power.readOp.leakage * pg_reduction;
+	power.readOp.power_gated_with_long_channel_leakage = power.readOp.power_gated_leakage * lc_reduction;
+	rt_power = power;
+	rt_power.readOp.dynamic = rt_gated;
+	rt_ungated = rt_ungated_;
+}
+
+void ClockNetwork::report_runtime(const string &what, double seconds) const
+{
+	const double g = rt_power.readOp.dynamic;
+	std::cerr << "[mcpat clock] " << owner << " runtime: ungated " << what << " = " << rt_ungated
+	          << " J (" << ((seconds > 0) ? rt_ungated/seconds : 0.0) << " W, reference); GATED (Wattch cc2, activity "
+	          << activity << " = " << activity_source << ") " << g << " J over " << seconds << " s = "
+	          << ((seconds > 0) ? g/seconds : 0.0) << " W dynamic (charged); leakage "
+	          << rt_power.readOp.leakage << " W + gate " << rt_power.readOp.gate_leakage << " W" << std::endl;
+	std::cerr << "[mcpat clock] " << owner << " runtime split (ruling #4): GLOBAL (H-tree levels but the last, every powered"
+	          << " cycle; powered " << powered << " = " << powered_source << ") " << rt_global << " J = "
+	          << ((seconds > 0) ? rt_global/seconds : 0.0) << " W; LOCAL (last level + pins, gated) " << g - rt_global
+	          << " J = " << ((seconds > 0) ? (g - rt_global)/seconds : 0.0) << " W" << std::endl;
+	if (halt)   /* PIMID 1.12.18 (idle halt) */
+		std::cerr << "[mcpat clock] " << owner << " runtime idle halt (power.models.idle_halt): running fraction "
+		          << running << " (max " << running_max << "; " << running_source << "), global part on " << global_on()
+		          << " of the cycles; HALTED (clock off, not charged) " << rt_halted << " J = "
+		          << ((seconds > 0) ? rt_halted/seconds : 0.0) << " W; leakage unchanged" << std::endl;
+}
+
 FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, enum FU_type fu_type_)
 :XML(XML_interface),
  ithCore(ithCore_),
@@ -551,6 +834,145 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			exit(0);
 		}
 	}
+	/* PIMID 1.12.18 (user ruling 2026-10-23 #1): McPAT's FIXED base energy
+	 * per OOO functional-unit type (89 mW ALU / 2 x 89 mW MUL / 3 x 89 mW FPU
+	 * at 1.2 V, "average numbers from Intel 4G and 773Mhz (Wattch)", scaled
+	 * by Vdd^2 above) is charged as base_energy x executionTime whatever the
+	 * activity (computeEnergy). It is the units' idle clocking, which the
+	 * gated clock network now prices (logic.h ClockNetwork), so by default
+	 * (power.models.mcpat_fu_base_energy: false -> pimid_fu_base_energy 0)
+	 * it is removed here, from both the peak and the runtime term. */
+	if (base_energy > 0)
+	{
+		const char* fu_nm = (fu_type == FPU) ? "FPU" : (fu_type == ALU) ? "ALU" : "MUL";
+		if (!XML->sys.pimid_fu_base_energy)
+		{
+			std::cerr << "[mcpat fu] core" << ithCore << " " << fu_nm << ": McPAT OOO fixed base energy "
+			          << base_energy << " W (x execution time " << executionTime << " s = "
+			          << base_energy*executionTime*g_tp.sckt_co_eff << " J runtime incl. sckt "
+			          << g_tp.sckt_co_eff << ") NOT charged (power.models.mcpat_fu_base_energy: false;"
+			          << " the gated clock network prices the units' clocking)" << std::endl;
+			base_energy = 0;
+		}
+		else
+			std::cerr << "[mcpat fu] core" << ithCore << " " << fu_nm << ": McPAT OOO fixed base energy "
+			          << base_energy << " W charged BY USER OPTION (power.models.mcpat_fu_base_energy: true)" << std::endl;
+	}
+
+	/* PIMID 1.12.18 (user rulings 2026-10-23 #1, #2): PUBLISHED PER-OPERATION
+	 * FP ENERGY, per scalar operation, the source value at its PRINTED node
+	 * and supply, scaled to the run node with CACTI's tables
+	 * (pimid_node_energy_scale, logic.h).
+	 *  FP32 add 0.9 pJ, FP32 mult 3.7 pJ: M. Horowitz, "Computing's energy
+	 *   problem (and what we can do about it)", ISSCC 2014, paper 1.1, Fig.
+	 *   1.1.9 "Rough energy costs for various operations in 45nm 0.9V" (ruling
+	 *   #1: scaled from 0.9 V as printed; there is no 1.0 V path).
+	 *  FP32 FMA 14.86 pJ, FP64 FMA 52.98 pJ: S. Galal, "Energy efficient
+	 *   floating-point unit design", PhD thesis, Stanford 2012 (Horowitz
+	 *   group; vlsiweb.stanford.edu/people/alum/pdf/1211_SamehGalal_FP_Design.pdf),
+	 *   Table 4.2 (p. 53), TSMC 45 nm, 6-stage, low Vth, Vdd 0.9 V: the
+	 *   table's Power columns are "Leakage" and "Dynamic" (mW); SP leakage 1.2
+	 *   + dynamic 30.9 mW at 2.08 GHz, DP leakage 4.6 + dynamic 95.9 mW at
+	 *   1.81 GHz. 1.12.18 (user ruling 2026-10-24, "dynamic only"): the
+	 *   DYNAMIC power / frequency is the per-operation energy (one FMA per
+	 *   cycle): SP 30.9 / 2.08 = 14.86 pJ, DP 95.9 / 1.81 = 52.98 pJ. The
+	 *   leakage is not added: McPAT charges the FPU's leakage itself (it was
+	 *   counted twice: 15.4 / 55.5 pJ before). The same table's W/Gops column
+	 *   (leakage + dynamic, FMA = 2 flops) gives 14.4 / 50.6 pJ: printed.
+	 *  FP64 add 5.0 pJ, FP64 mult 19.4 pJ: Galal 2012 Fig. 3.7 (p. 24), DP
+	 *   45 nm adder / multiplier, the KNEE (2 Pmin) of the energy vs
+	 *   area-per-throughput frontier Pmin/P + Amin/A = 1. Choice: Pmin (2.5 /
+	 *   9.68 pJ) is an asymptote (infinite area, vanishing frequency), not a
+	 *   realisable unit; the knee is the published point closest to a ~2 GHz
+	 *   unit (it coincides with Table 4.2's DP FMA row at 0.81 V, 0.95 GHz),
+	 *   and the thesis gives no adder/multiplier point at 2 GHz. FRONTIER
+	 *   CAVEAT (printed): the 1.81 GHz DP FMA sits at ~1.7x its knee, so a
+	 *   ~2 GHz adder/multiplier is likely ABOVE the knee value used.
+	 *  GUARDS (printed, scaled the same way): FPnew, S. Mach et al., IEEE
+	 *   TVLSI 2021 (arXiv 2007.01530), GF 22FDX, TT 0.8 V, Table IV scalar
+	 *   FMA: FP64 26.7 pJ, FP32 9.44 pJ (CACTI has no FD-SOI table: the bulk
+	 *   22 nm table is used); S. Keckler et al., "GPUs and the future of
+	 *   parallel computing", IEEE Micro 2011, Table 1, 40 nm 0.9 V: DFMA
+	 *   50 pJ; Galal's own Pmin (lower bounds) for FP64 add/mult.
+	 *  Divide/sqrt and x87: NO PUBLISHED SOURCE FOUND (Galal and FPnew report
+	 *   none): McPAT's per-op energy kept.
+	 * McPAT's FPU area and leakage are untouched; only the per-operation
+	 * dynamic energy of the operations listed is replaced (computeEnergy). */
+	if (fu_type == FPU && XML->sys.pimid_fpu_published)
+	{
+		struct PubSrc { const char *name; double pj, nm, vdd; const char *cite; };
+		static const PubSrc src[6] = {
+			{"FP32 add",  0.9,  45, 0.9, "Horowitz ISSCC 2014 Fig. 1.1.9 (45 nm 0.9 V)"},
+			{"FP32 mult", 3.7,  45, 0.9, "Horowitz ISSCC 2014 Fig. 1.1.9 (45 nm 0.9 V)"},
+			{"FP64 add",  5.0,  45, 0.9, "Galal PhD thesis Stanford 2012 Fig. 3.7, DP adder knee (2 x Pmin 2.5 pJ), 45 nm"},
+			{"FP64 mult", 19.4, 45, 0.9, "Galal PhD thesis Stanford 2012 Fig. 3.7, DP multiplier knee (2 x Pmin 9.68 pJ), 45 nm"},
+			{"FP32 FMA",  30.9 / 2.08, 45, 0.9, "Galal 2012 Table 4.2, SP FMA 6-stage LVT 0.9 V 2.08 GHz: dynamic 30.9 mW / 2.08 GHz (leakage 1.2 mW is McPAT's)"},
+			{"FP64 FMA",  95.9 / 1.81, 45, 0.9, "Galal 2012 Table 4.2, DP FMA 6-stage LVT 0.9 V 1.81 GHz: dynamic 95.9 mW / 1.81 GHz (leakage 4.6 mW is McPAT's)"}};
+		double c_src = 0, c_run = 0, v_run = 0, v_src_cacti = 0;
+		const double k45 = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run, &v_src_cacti);
+		pimid_pub = (k45 > 0);
+		std::cerr << "[mcpat fpu] core" << ithCore << " node scaling 45 -> " << interface_ip.F_sz_nm
+		          << " nm (CACTI tables, device type of this core): C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
+		          << " fF, Vdd 0.9 V (source, as printed) -> " << v_run << " V (CACTI run node; CACTI's own 45 nm Vdd is "
+		          << v_src_cacti << " V) => factor " << k45 << std::endl;
+		for (int q = 0; q < 6; q++)
+		{
+			pimid_pub_e[q] = src[q].pj * 1e-12 * pimid_node_energy_scale(src[q].nm, src[q].vdd);
+			std::cerr << "[mcpat fpu] core" << ithCore << " published " << src[q].name << ": " << src[q].pj << " pJ ("
+			          << src[q].cite << ") -> " << pimid_pub_e[q]*1e12 << " pJ per scalar op at the run node (USED)" << std::endl;
+		}
+		std::cerr << "[mcpat fpu] core" << ithCore << " FRONTIER CAVEAT (FP64 add/mult): Galal Fig. 3.7 plots energy vs"
+		          << " area-per-throughput, not delay; Pmin is an asymptote, the knee (used) matches a ~1 GHz design"
+		          << " (Table 4.2 DP FMA 0.81 V 0.95 GHz), and the 1.81 GHz DP FMA sits at ~1.7x its knee: a ~2 GHz"
+		          << " adder/multiplier is likely above the value used" << std::endl;
+		std::cerr << "[mcpat fpu] core" << ithCore << " NOTE (FMA): Galal Table 4.2's own W/Gops column (FMA = 2 flops)"
+		          << " (leakage + dynamic) gives 14.4 pJ (SP) / 50.6 pJ (DP), 3-5% below dynamic power / frequency (used)" << std::endl;
+		std::vector<PimidGuard> g;
+		g.push_back({"Galal 2012 Fig. 3.7 DP adder Pmin 2.5 pJ (45 nm 0.9 V)", 2.5e-12*k45, true});
+		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 add", pimid_pub_e[2], g); g.clear();
+		g.push_back({"Galal 2012 Fig. 3.7 DP multiplier Pmin 9.68 pJ (45 nm 0.9 V)", 9.68e-12*k45, true});
+		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 mult", pimid_pub_e[3], g); g.clear();
+		g.push_back({"FPnew (Mach et al., TVLSI 2021) Table IV FP32 FMA 9.44 pJ (GF 22FDX 0.8 V)", 9.44e-12*pimid_node_energy_scale(22.0, 0.8), false});
+		pimid_guard_report("[mcpat fpu]", ithCore, "FP32 FMA", pimid_pub_e[4], g); g.clear();
+		g.push_back({"FPnew (Mach et al., TVLSI 2021) FP64 FMA 26.7 pJ (GF 22FDX 0.8 V)", 26.7e-12*pimid_node_energy_scale(22.0, 0.8), false});
+		g.push_back({"Keckler et al., IEEE Micro 2011, Table 1, DFMA 50 pJ (40 nm 0.9 V)", 50e-12*pimid_node_energy_scale(40.0, 0.9), false});
+		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 FMA", pimid_pub_e[5], g); g.clear();
+		std::cerr << "[mcpat fpu] core" << ithCore << " NO PUBLISHED SOURCE FOUND for FP divide/sqrt (single, double;"
+		          << " Galal 2012 and FPnew 2021 report none) and x87: those keep McPAT's per-op FPU energy" << std::endl;
+	}
+
+	/* PIMID 1.12.18 (user ruling 2026-10-23 #3): PUBLISHED PER-OPERATION
+	 * INTEGER ENERGY. Source: Horowitz ISSCC 2014 Fig. 1.1.9 (45 nm, 0.9 V as
+	 * printed): Add 8 bit 0.03 pJ, 32 bit 0.1 pJ; Mult 8 bit 0.2 pJ, 32 bit
+	 * 3.1 pJ, scaled to the run node as above. The ALU prices the decoder's
+	 * scalar GPR add/logic operations (add, sub, adc, sbb, cmp, and, or, xor,
+	 * test, not, neg, inc, dec, shifts/rotates, bit scans/tests) of 8 and 32
+	 * bits; the MUL unit its 8- and 32-bit multiplies. NO PUBLISHED SOURCE
+	 * FOUND for 16- or 64-bit add/logic, 16- or 64-bit multiply, or divide
+	 * (Horowitz gives 8 and 32 bit only; Keckler 2011 Table 1 has no integer
+	 * row; no peer-reviewed per-op value found), and no published rule
+	 * composes a 64-bit value from the 32-bit one, so those keep McPAT's
+	 * per-op energy, as do moves, LEA and NOPs (no adder value applies).
+	 * McPAT's ALU/MUL area and leakage are kept. */
+	if ((fu_type == ALU || fu_type == MUL) && XML->sys.pimid_int_alu_published)
+	{
+		double c_src = 0, c_run = 0, v_run = 0;
+		const double k45 = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run);
+		pimid_int_pub = (k45 > 0);
+		const bool alu = (fu_type == ALU);
+		pimid_int_e[0] = (alu ? 0.03e-12 : 0.2e-12) * k45;
+		pimid_int_e[1] = (alu ? 0.1e-12 : 3.1e-12) * k45;
+		std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " published (Horowitz ISSCC 2014"
+		          << " Fig. 1.1.9, 45 nm 0.9 V): " << (alu ? "Add 8 bit 0.03 pJ, 32 bit 0.1 pJ" : "Mult 8 bit 0.2 pJ, 32 bit 3.1 pJ")
+		          << "; node scaling 45 -> " << interface_ip.F_sz_nm << " nm: C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
+		          << " fF, Vdd 0.9 V -> " << v_run << " V => factor " << k45 << ": 8 bit " << pimid_int_e[0]*1e12
+		          << " pJ, 32 bit " << pimid_int_e[1]*1e12 << " pJ (USED); McPAT per-op (reference) "
+		          << per_access_energy*g_tp.sckt_co_eff*1e12 << " pJ" << std::endl;
+		std::cerr << "[mcpat int] core" << ithCore << " NO PUBLISHED SOURCE FOUND for " << (alu ? "16- and 64-bit add/logic"
+		          : "16- and 64-bit multiply and integer divide") << ": McPAT's per-op energy kept (no published composition"
+		          << " from the 32-bit value is used)" << std::endl;
+	}
+
 	//IEXEU, simple ALU and FPU
 	//  double C_ALU, C_EXEU, C_FPU; //Lum Equivalent capacitance of IEXEU and FPU. Based on Intel and Sun 90nm process fabracation.
 	//
@@ -636,6 +1058,70 @@ void FunctionalUnit::computeEnergy(bool is_tdp)
 		rt_power.readOp.dynamic *= sckRation;
 		rt_power.writeOp.dynamic *= sckRation;
 		rt_power.searchOp.dynamic *= sckRation;
+		/* PIMID 1.12.18 (rulings 2026-10-23 #1, #2): the classified FP
+		 * operations (FP32/FP64 add, mult, FMA) are priced at the published
+		 * per-operation energy (constructor) per SCALAR operation (lanes);
+		 * divide/sqrt, x87 and the rest keep McPAT's per-op energy. The
+		 * published value is a silicon energy, so McPAT's sckt_co_eff is not
+		 * applied to it. */
+		if (fu_type == FPU && pimid_pub)
+		{
+			const double* ins = XML->sys.core[ithCore].pimid_fp_ins;
+			const double* ln  = XML->sys.core[ithCore].pimid_fp_lanes;
+			const double acc = stats_t.readAc.access;
+			double rep = 0, pub = 0;
+			for (int q = 0; q < 6; q++) { rep += ins[q]; pub += pimid_pub_e[q]*ln[q]; }
+			if (rep > 0 && rep <= acc)
+			{
+				const double before = rt_power.readOp.dynamic;
+				rt_power.readOp.dynamic = (per_access_energy*(acc - rep) + base_energy*executionTime)*sckRation + pub;
+				std::cerr << "[mcpat fpu] core" << ithCore << " runtime: " << acc << " FPU ops; published (instr / scalar ops x pJ):";
+				static const char* const nm[6] = {"FP32 add", "FP32 mult", "FP64 add", "FP64 mult", "FP32 FMA", "FP64 FMA"};
+				for (int q = 0; q < 6; q++)
+					std::cerr << " " << nm[q] << " " << ins[q] << " / " << ln[q] << " x " << pimid_pub_e[q]*1e12 << ";";
+				std::cerr << " = " << pub << " J; McPAT per-op " << per_access_energy*sckRation*1e12 << " pJ x " << (acc - rep)
+				          << " other FP ops (div/sqrt " << ins[6] + ins[7] << ", x87 " << ins[8] << ", rest min/max/cmp/cvt/shuffle "
+				          << (acc - rep - ins[6]-ins[7]-ins[8]) << "); McPAT-only reference " << before << " J -> FPU dynamic "
+				          << rt_power.readOp.dynamic << " J" << std::endl;
+			}
+			else if (rep > acc)
+				std::cerr << "[mcpat fpu] core" << ithCore << " WARNING: classified FP instructions (" << rep
+				          << ") exceed the FPU accesses (" << acc << "): bases disagree, McPAT's per-op energy kept" << std::endl;
+			else
+				std::cerr << "[mcpat fpu] core" << ithCore << " runtime: no classified FP add/mult/FMA counted (" << acc
+				          << " FPU ops at McPAT's per-op energy)" << std::endl;
+		}
+		/* PIMID 1.12.18 (ruling 2026-10-23 #3): the decoder's 8- and 32-bit
+		 * integer add/logic (ALU) and multiply (MUL) operations at the
+		 * published per-op energy; every other access keeps McPAT's. */
+		if ((fu_type == ALU || fu_type == MUL) && pimid_int_pub)
+		{
+			const double* ops = XML->sys.core[ithCore].pimid_int_ops;
+			const bool alu = (fu_type == ALU);
+			const double n8 = alu ? ops[0] : ops[4], n32 = alu ? ops[2] : ops[6];
+			const double nnp = alu ? ops[1] + ops[3] : ops[5] + ops[7] + ops[8];
+			const double acc = stats_t.readAc.access;
+			const double rep = n8 + n32;
+			if (rep > 0 && rep <= acc)
+			{
+				const double before = rt_power.readOp.dynamic;
+				const double pub = pimid_int_e[0]*n8 + pimid_int_e[1]*n32;
+				rt_power.readOp.dynamic = (per_access_energy*(acc - rep) + base_energy*executionTime)*sckRation + pub;
+				std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: " << acc
+				          << " accesses; published: 8 bit " << n8 << " x " << pimid_int_e[0]*1e12 << " pJ + 32 bit " << n32
+				          << " x " << pimid_int_e[1]*1e12 << " pJ = " << pub << " J; McPAT per-op "
+				          << per_access_energy*sckRation*1e12 << " pJ x " << (acc - rep) << " other (" << nnp
+				          << (alu ? " 16/64-bit add/logic" : " 16/64-bit mult + divide") << " -- NO PUBLISHED SOURCE FOUND; "
+				          << (acc - rep - nnp) << (alu ? " moves/LEA/NOP/other" : " other") << "); McPAT-only reference " << before
+				          << " J -> " << rt_power.readOp.dynamic << " J" << std::endl;
+			}
+			else if (rep > acc)
+				std::cerr << "[mcpat int] core" << ithCore << " WARNING: classified 8/32-bit integer ops (" << rep
+				          << ") exceed the " << (alu ? "ALU" : "MUL") << " accesses (" << acc << "): bases disagree, McPAT's per-op energy kept" << std::endl;
+			else
+				std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: no 8/32-bit operation counted ("
+				          << acc << " accesses at McPAT's per-op energy)" << std::endl;
+		}
 
 	}
 

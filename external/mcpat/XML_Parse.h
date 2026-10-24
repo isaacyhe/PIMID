@@ -71,6 +71,10 @@ typedef struct{
 } predictor_systemcore;
 typedef struct{
 	int number_entries;
+	/* PIMID 1.12.18: the TLB's associativity. 0 = upstream (a fully
+	 * associative CAM searched on every access); N > 0 = an N-way
+	 * set-associative array read on every access (core.cc MemManU). */
+	int pimid_assoc;
 	int cache_policy;//0 no write or write-though with non-write allocate;1 write-back with write-allocate
 	double total_hits;
 	double total_accesses;
@@ -101,6 +105,7 @@ typedef struct{
 typedef struct{
 	//params
 	int number_entries;
+	int pimid_assoc;   /* PIMID 1.12.18: as itlb_systemcore */
 	int cache_policy;//0 no write or write-though with non-write allocate;1 write-back with write-allocate
 	//stats
 	double total_accesses;
@@ -172,6 +177,13 @@ typedef struct{
 	int number_hardware_threads;
 	int fetch_width;
 	int number_instruction_fetch_ports;
+	int pimid_dma_engine;   /* PIMID 1.12.18: line bytes of the scratchpad DMA engine's buffer (0 = no engine) */
+	int pimid_ib_entries;   /* PIMID 1.12.18 (ruling 2026-10-23 #3): instructions the TIMING core's front-end buffer holds (0 = not given: McPAT's instruction_buffer_size) */
+	/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): the MEASURED fraction
+	 * of the run a thread was runnable on the core (device PE: its busy
+	 * cycles; host core: zsim's unhalted cycles), mean and max over the cores
+	 * this template stands for. < 0 = not measured. */
+	double pimid_running_fraction, pimid_running_fraction_max;
 	int decode_width;
 	int issue_width;
 	int peak_issue_width;
@@ -223,6 +235,16 @@ typedef struct{
 	double committed_int_instructions;
 	double committed_fp_instructions;
 	double load_instructions;
+	double pimid_dma_lines;  /* PIMID 1.12.18: lines the DMA engine moved */
+	double pimid_dma_cmd_reads, pimid_dma_cmd_writes;   /* PIMID 1.12.18: its command-register accesses */
+	/* PIMID 1.12.18 (ruling 2026-10-23 #2): measured FP operations by type and
+	 * precision (PIMID's decoder census, all cores), instructions and scalar
+	 * lane operations; categories pimid_fpc_name[] below. */
+	double pimid_fp_ins[9], pimid_fp_lanes[9];
+	/* PIMID 1.12.18 (ruling 2026-10-23 #3): measured scalar GPR integer
+	 * operations by class and operand width (PIMID's x86 decoder census, all
+	 * cores); categories pimid_ic_name[] below. */
+	double pimid_int_ops[9];
 	double store_instructions;
 	double total_cycles;
 	double idle_cycles;
@@ -380,6 +402,10 @@ typedef struct{
 	double duty_cycle;
 
 	bool   merged_dir;
+	/* PIMID 1.12.18 (user ruling "sharer bits from the real child count"):
+	 * > 0 = the children this cache's SBT directory tracks per line (the
+	 * caches below it); 0 (default) = upstream, number_of_cores. */
+	int    dir_sharers;
 	double homenode_read_accesses;
 	double homenode_write_accesses;
 	double homenode_read_hits;
@@ -423,6 +449,10 @@ typedef struct{
 	double duty_cycle;
 
 	bool   merged_dir;
+	/* PIMID 1.12.18 (user ruling "sharer bits from the real child count"):
+	 * > 0 = the children this cache's SBT directory tracks per line (the
+	 * caches below it); 0 (default) = upstream, number_of_cores. */
+	int    dir_sharers;
 	double homenode_read_accesses;
 	double homenode_write_accesses;
 	double homenode_read_hits;
@@ -474,8 +504,53 @@ typedef struct{
 	 * per the same placement matrix that decides the family itself.
 	 * Default 1 keeps unannotated XMLs (single on-die fabric) unchanged. */
 	int on_dram_die;
+	/* PIMID 1.12.18: LINK pricing inputs. Upstream McPAT derives a link's
+	 * length from the die area, sqrt(area * chip_coverage) / ((h + v) / 2)
+	 * / 2, i.e. a mesh pitch, and charges the link runtime dynamic with the
+	 * ROUTER access count. PIMID's fabric is a tree whose link count,
+	 * length and traffic it knows, so it can say them:
+	 *   routers_present  1 (default) = upstream; 0 = a LINKS-ONLY instance
+	 *                    (no router is built: a pass-through level, or the
+	 *                    up-links of a router level priced on their own).
+	 *   link_kind        0 (default) = planar wire (McPAT interconnect,
+	 *                    CACTI wire model); 1 = TSV (CACTI-3DD TSV, Coarse
+	 *                    = "industry reported" column, cacti_interface.h).
+	 *   link_span_area_mm2, link_parent_regions
+	 *                    the STRUCTURE a tree level's links span: the die
+	 *                    area the level lies on and the number of regions
+	 *                    (parent nodes) it is cut into. When both are > 0
+	 *                    McPAT derives the length of ONE link from them
+	 *                    (H-tree geometry, processor.cc) and uses it as is
+	 *                    (no mesh division, no die-growth stretch); else the
+	 *                    upstream derivation.
+	 *   link_traversals  (stat) >= 0: flit traversals of this instance's
+	 *                    wire links, the link runtime dynamic's activity;
+	 *                    < 0 (default) = upstream (total_accesses).
+	 *   tsv_die_crossings (stat, link_kind 1) >= 0: flit x DIE crossings,
+	 *                    i.e. each transfer's flits times the number of dies
+	 *                    it actually crossed in the stack; the TSV runtime
+	 *                    dynamic is the per-flit TSV energy times this. */
+	int routers_present;
+	int link_kind;
+	double link_span_area_mm2;
+	int link_parent_regions;
+	/* PIMID 1.12.18: > 0 = the process node (nm) THIS instance is priced
+	 * at; 0 (default) = the processor's core_tech_node. A tree level's
+	 * links lie on the DRAM die or on logic, and each takes its own
+	 * process's CACTI tables. */
+	int tech_node;
 	//stats
 	double total_accesses;
+	double link_traversals;
+	double tsv_die_crossings;
+	/* PIMID 1.12.18 (user ruling "pass-through routers as wire"): (stat)
+	 * > 0 = the part of total_accesses that went through routers with one
+	 * router child and no endpoint (a single in/out path). They are wire:
+	 * their flits are priced by the level's links-only instances, so this
+	 * instance's routers are charged total_accesses - passthrough_accesses
+	 * and its duty_cycle is scaled by the same ratio. <= 0 (default -1) =
+	 * upstream. */
+	double passthrough_accesses;
 	double duty_cycle;
 	double route_over_perc;
 } system_NoC;
@@ -503,6 +578,7 @@ typedef struct{
 	double peak_transfer_rate;
 	int number_mcs;
 	bool withPHY;
+	double pimid_command_ops;   /* PIMID 1.12.18: command-only operations the controller issued (counted refresh commands) */
 	double background_fraction;   /* PIMID 1.11.98 (row 28): the routine-job share of peak dynamic power per cycle; McPAT's 0.1 unless the run measures it */
 	int type;
 
@@ -565,6 +641,36 @@ typedef struct{
 	 * constant-load scaling. Both default 0 = legacy behavior. */
 	double transferred_bytes;
 	double link_pj_per_bit;
+	/* PIMID 1.12.18: UCIe link class (user rulings 2026-10-23). Sources:
+	 *  [UCIe11] D. Das Sharma, "The UCIe 1.1 Specification: Future
+	 *           Applications of Chiplets", UCIe Consortium, 2023, table
+	 *           "UCIe 1.0/1.1: Characteristics and Key Metrics".
+	 *  [HC23]   UCIe Consortium, "UCIe Protocol", Hot Chips 2023 UCIe
+	 *           Tutorial ("Protocol Layer presents 64B of the Flit on FDI").
+	 * link_class      0 = legacy (SerDes/PIPE classes), 1 = UCIe.
+	 * ucie_package    1 = advanced, 2 = standard, 0 = not given (refused
+	 *                 for link_class 1).
+	 * lanes           data lanes of the link (module width x modules).
+	 * lane_rate_gts   per-lane data rate, GT/s (one of the [UCIe11] rates).
+	 * fdi_width_bytes FDI data width, bytes; default 64 per [HC23].
+	 * phy_pj_per_bit  <0 = the [UCIe11] power-efficiency target for the
+	 *                 package; >=0 = a user value (printed as such).
+	 * link_energy_end 1 = this end prices the link's per-bit energy (the
+	 *                 link is priced once, at one end); 0 = the far end.
+	 * link_node_nm    PIMID 1.12.18 (user ruling 2026-10-23, two nodes):
+	 *                 process node (nm) of the die the link sits on, which
+	 *                 selects the UCIe energy row; only 22 and 3 are priced
+	 *                 (iocontrollers.cc). <= 0 = this McPAT run's node.
+	 * clockrate <= 0 asks McPAT to DERIVE the D2D adapter / controller clock
+	 * as lanes x lane_rate_gts / (8 bits x fdi_width_bytes). */
+	int link_class;
+	int ucie_package;
+	int lanes;
+	double lane_rate_gts;
+	int fdi_width_bytes;
+	double phy_pj_per_bit;
+	int link_energy_end;
+	int link_node_nm;   /* PIMID 1.12.18: see above */
 } system_pcie;
 
 typedef struct{
@@ -601,6 +707,33 @@ typedef struct{
 	bool longer_channel_device;
 	bool power_gating;
 	bool Embedded;
+	int  pimid_clock_network;   /* PIMID 1.12.18: 0 = clock distribution not priced (user option power.models.clock_network) */
+	int  pimid_layout_energy_overhead;   /* PIMID 1.12.18 (ruling 2026-10-24): 1 = layout area overheads also scale array dynamic energy (upstream) */
+	int  pimid_fu_base_energy;  /* PIMID 1.12.18 (ruling 2026-10-23 #1): 0 = the OOO FU fixed base energy is not charged */
+	int  pimid_fpu_published;   /* PIMID 1.12.18 (ruling 2026-10-23 #2): 1 = published per-op FP energies (logic.cc) */
+	int  pimid_int_alu_published;   /* PIMID 1.12.18 (ruling 2026-10-23 #3): 1 = published per-op integer energies (logic.cc) */
+	/* PIMID 1.12.18 (ruling 2026-10-23 #4): measured power-gated residency
+	 * (fraction of the run) of the components the described design gates,
+	 * 0 = always powered; stops the GLOBAL part of their clock tree
+	 * (logic.h ClockNetwork). */
+	double pimid_clock_pg_core, pimid_clock_pg_cache, pimid_clock_pg_noc, pimid_clock_pg_mc;
+	int    pimid_clock_split;   /* PIMID 1.12.18 (ruling #4): 1 = global part every powered cycle, local gated */
+	/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): 1 = a core with
+	 * nothing to run is halted (x86 HLT/C1, ARM WFI): its whole clock tree,
+	 * global part included, is off for the halted time (core param
+	 * pimid_running_fraction). 0 = upstream (global part every powered cycle). */
+	int    pimid_idle_halt;
+	/* PIMID 1.12.18 (user ruling, per-die process): the technology of the
+	 * LOGIC die the components off the DRAM die sit on (node nm, CACTI device
+	 * type). 0 / -1 = the chip's core_tech_node / device_type. */
+	int    pimid_logic_die_node, pimid_logic_die_device_type;
+	/* PIMID 1.12.18 (user ruling, per-die clock trunk): 1 = one die-level
+	 * H-tree trunk per die feeding the component trees on it; the DRAM-die
+	 * kind has pimid_dram_die_count dies of pimid_dram_die_area_mm2 each
+	 * (0 = the area of the components McPAT puts there); the logic die is
+	 * pimid_logic_die_area_mm2 (0 = the area of the components on it). */
+	int    pimid_clock_trunk, pimid_dram_die_count;
+	double pimid_dram_die_area_mm2, pimid_logic_die_area_mm2;
 	bool opt_dynamic_power;
 	bool opt_lakage_power;
 	bool opt_clockrate;
@@ -652,6 +785,14 @@ typedef struct{
 	 * of 0 that between them described a scoping mechanism this fork no
 	 * longer has. Per-level scoping is now NoC[i].on_dram_die. */
 } root_system;
+
+/* PIMID 1.12.18 (ruling 2026-10-23 #2): FP census categories, in PIMID's
+ * order (zsim decoder_simple.h FpOpCensus). */
+static const char* const pimid_fpc_name[9] = {"AddS", "MulS", "AddD", "MulD", "FmaS", "FmaD", "DivS", "DivD", "X87"};
+/* PIMID 1.12.18 (ruling 2026-10-23 #3): integer census categories, in
+ * PIMID's order (zsim decoder_simple.h, IntOp census): add/logic by operand
+ * width, multiply by width, divide (all widths). */
+static const char* const pimid_ic_name[9] = {"Alu8", "Alu16", "Alu32", "Alu64", "Mul8", "Mul16", "Mul32", "Mul64", "Div"};
 
 class ParseXML
 {

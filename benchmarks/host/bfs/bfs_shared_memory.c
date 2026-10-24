@@ -49,6 +49,10 @@ int main(int argc, char* argv[]) {
     frontier[0] = source;
     int fsize = 1;
 
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel
+    { }
     zsim_roi_begin();
     int level = 0;
     while (fsize > 0) {

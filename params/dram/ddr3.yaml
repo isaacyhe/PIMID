@@ -34,6 +34,7 @@ idd:
   idd4r: 157.0
   idd4w: 125.0
   idd5: 235.0
+  # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
   idd2p: 32.0
   trfc_ns: 350.0
   trefi_ns: 7800.0

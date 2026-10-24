@@ -53,6 +53,10 @@ int main(int argc, char* argv[]) {
     for (size_t i = 0; i < ncells; i++)
         image[i] = (double)bench_rand(&seed) / 32768.0;
 
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel
+    { }
     zsim_roi_begin();
 
     for (int t = 0; t < iters; t++) {

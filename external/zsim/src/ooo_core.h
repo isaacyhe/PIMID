@@ -668,6 +668,7 @@ class OOOCore : public Core {
             return (c > pimidPhantomWait) ? (c - pimidPhantomWait) : 0;
         }
 
+        uint64_t pimidRawCycle() const override { return curCycle; }   // 1.12.18 (R2)
         void contextSwitch(int32_t gid);
 
         virtual void join();
@@ -676,6 +677,11 @@ class OOOCore : public Core {
          * same rebase the weave end performs (advance), so the window and
          * decode cursor move together. Was the empty default. */
         void addDelay(uint32_t cycles) override;
+        /* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h:
+         * the raw clock (global phase axis), advanced like addDelay. */
+        uint32_t lockClockDomain() const override { return 1; }
+        uint64_t lockClock() const override { return curCycle; }
+        uint64_t syncToLock(uint64_t t) override;   // ooo_core.cpp
 
         InstrFuncPtrs GetFuncPtrs();
 

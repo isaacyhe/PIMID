@@ -25,15 +25,34 @@
  * controller's own row hit / miss / conflict totals (parsed from Ramulator's
  * statistics at the end of the run). The private open-row register of the
  * interface stays for its own statistic; it no longer prices anything when
- * the replay is on. */
+ * the replay is on.
+ *
+ * 1.12.18 (ruling 17 / R0605, user: "make the power model complete"): the HOST
+ * memory is replayed the same way. The host memory controller (SimpleMemory /
+ * WeaveSimpleMemory) records every host access through hostAccess() and
+ * prices it at the replay's measured service latency of its own interface
+ * (plus the calibrated host-path adder, which holds no DRAM timing); the
+ * M/D/1 queue and the tRCD+tCAS zero-load latency serve only the bootstrap.
+ * Coupled systems (the device IS the host's memory): the host interfaces join
+ * the DEVICE instance, numbered after the device interfaces, so one controller
+ * sees all traffic on the shared array; their requests carry Ramulator
+ * source_id 1, and the controller's row hits / misses / conflicts and
+ * activates are split by origin (pimid_src_totals). A host access lands on the
+ * bank the device's own placement gives that line (setHostTarget). Decoupled
+ * systems: a host-only instance (hostOnly) of the host memory's technology,
+ * with that memory's channel count, one rank, and Ramulator's own address
+ * mapper from the YAML. */
 #ifndef DRAM_EPOCH_REPLAY_H_
 #define DRAM_EPOCH_REPLAY_H_
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
 #include <atomic>
+#include <deque>
+#include <unordered_map>
 #include "locks.h"
 #include "stats.h"
 
@@ -43,7 +62,35 @@ class DramEpochReplay {
   public:
     DramEpochReplay(const std::string& configFile, uint64_t coreFreqHz,
                     uint32_t numInterfaces, uint32_t burstsPerLine, uint32_t lineBits,
-                    const char* name);
+                    const char* name, bool hostOnly = false, uint32_t hostChannels = 0);   // 1.12.18 (R0605): hostOnly = the decoupled host memory
+
+    /* 1.12.18 (ruling 17 / R0605): add one HOST memory interface (a host
+     * memory controller) clocked at hostFreqHz; returns its interface number,
+     * after every device interface. Called at construction time, before any
+     * access. Its service latency is returned in HOST cycles. */
+    uint32_t addHostInterface(uint64_t hostFreqHz);
+    /* 1.12.18: the bank a host access lands on in a coupled system -- the
+     * device's own placement of that line (unit, bank slot, row), so the host
+     * and the device see one array. Not used by a hostOnly instance. */
+    void setHostTarget(std::function<void(uint64_t lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row)> f) { hostTarget_ = f; }
+    /* 1.12.18: record one host access (host-clock cycle `cycle`, core srcId)
+     * on interface `mi` and return its service latency in host cycles: the
+     * previous epoch's measured mean of that interface; 0 = not yet measured
+     * (the caller keeps its analytical bootstrap). Same epoch, stamp and cut
+     * discipline as the device interfaces (PEMemoryInterface). */
+    /* 1.12.18: adjustedClock = `cycle` is the core's wall-free clock
+     * (Core::getCycles(), as the coherence flush passes it), not the raw
+     * curCycle a memory request carries. */
+    uint32_t hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cycle, uint32_t srcId, bool isWrite,
+                        bool adjustedClock = false);
+    /* 1.12.18 (user ruling R1 2026-10-24): the request counters of interface
+     * `mi` (a PE memory interface's rd/wr, a host memory controller's rd/wr).
+     * A request the replay finds stamped after the ROI end is still replayed
+     * (the controller state stays correct) but is taken out of these
+     * counters, as out of every replayed ROI total, and reported apart. */
+    void bindCounters(uint32_t mi, Counter* rd, Counter* wr);
+    bool hostOnly() const { return hostOnly_; }
+    bool hasHost() const { return hostMis_ > 0; }
     ~DramEpochReplay();
 
     /* Record one device DRAM access of epoch `epoch` (stamp on the phase axis)
@@ -94,14 +141,46 @@ class DramEpochReplay {
     double dramTicksPerCoreCycle() const { return ticksPerCycle_; }
 
   private:
-    struct Rec { uint64_t stamp; uint64_t addr; uint32_t mi; uint8_t wr; };
-    struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; };
+    struct Rec { uint64_t stamp; uint64_t addr; uint32_t mi; uint8_t wr; uint32_t ch; uint8_t shadow = 0; uint32_t grp = 0; };   // 1.12.18 (drain the lag): ch = the controller channel; shadow = a host lock-step copy past chip 0, grp = its host request
+    struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; bool out; uint64_t epoch; uint32_t grp = 0; };   // 1.12.18: out = stamped after the ROI end (R1); grp
+    /* 1.12.18 (user ruling 2026-10-24, "drain the lag"): a record that finds
+     * its controller queue full waits at that queue's door (FIFO per channel
+     * and direction) and enters the instant the controller can take it; an
+     * epoch's requests stay in flight across the epoch boundary, and its
+     * measured service latency is final when its last request completes. */
+    struct Waiting { Rec r; uint64_t epoch; uint64_t target; bool out; uint32_t b; uint64_t id; };
+    struct EpochAcc { std::vector<uint64_t> sum, cnt; uint64_t pend = 0; bool fed = false; };
+    std::map<uint32_t, std::deque<Waiting>> doors_;
+    uint64_t waitingN_ = 0, nextId_ = 0;
+    std::map<uint64_t, EpochAcc> acc_;
+    bool acceptOne(Waiting& w);
+    void serveDoors();
+    void finalizeEpoch(uint64_t epoch);
+    uint32_t partialMean(uint64_t e, uint32_t mi);   // 1.12.18
+    uint64_t partial_ = 0;                           // 1.12.18: reads served a partial mean
+    void drainAll();
+    uint64_t doorRecs_ = 0, doorTicks_ = 0, doorMax_ = 0; bool doorReported_ = false;
+    /* 1.12.18 (R0605): one record at a composed Ramulator address */
+    void recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, uint32_t ch, bool isWrite, uint32_t mi, uint8_t shadow = 0, uint32_t grp = 0);
+    bool isHostMi(uint32_t mi) const { return mi >= hostMi0_ && mi < hostMi0_ + hostMis_; }
+    bool hostOnly_ = false;
+    uint32_t hostMi0_ = ~0u, hostMis_ = 0;     // host interfaces [hostMi0_, hostMi0_ + hostMis_)
+    std::vector<double> miTicksPerCycle_;     // DRAM ticks per cycle of each interface's own clock
+    std::function<void(uint64_t, uint32_t&, uint32_t&, uint64_t&)> hostTarget_;
+    bool hostRoBaRaCoCh_ = false;             // hostOnly: the YAML maps RoBaRaCoCh (channel = low bits above the column access)
 
     void replayEpoch(uint64_t epoch);
     /* 1.11.98 (ruling 4 (c): "queueing at the target bank"): the Ramulator2
      * address whose ChRaBaRoCo decode is exactly (channel, the levels between
      * channel and row, row, column) of the request's target bank. */
-    uint64_t composeAddr(uint32_t unit, uint32_t slot, uint64_t row, uint64_t lineAddr, uint32_t* chOut);
+    uint64_t composeAddr(uint32_t unit, uint32_t slot, uint64_t row, uint64_t lineAddr, uint32_t* chOut, int chipSel = -1);
+    /* 1.12.18 (user ruling 2026-10-24): PE placement at or below the CHIP tier on a rank-level DRAM whose
+     * chips are not folded into channels: every chip is its own Ramulator rank (own banks, rows, tRRD/tFAW);
+     * a host request is replayed once per chip (lock step). */
+    bool chipSplit_ = false;
+    uint32_t chips_ = 1, hostRowSlots_ = 1, nextGrp_ = 0;
+    bool chipReported_ = false;
+    std::map<uint32_t, std::pair<uint32_t, uint64_t>> grpLat_;   // host request -> (copies outstanding, slowest latency)
     std::vector<int> counts_;     // Ramulator level counts (channel first, column last)
     int rowIdx_ = -1, colIdx_ = -1;
     uint64_t colCount_ = 1;       // column addresses per row at the transfer granularity
@@ -135,7 +214,7 @@ class DramEpochReplay {
                           // records re-keyed past the cut; reads ahead of the cut
 
     // replay scratch
-    std::vector<Inflight> inflight_;
+    std::unordered_map<uint64_t, Inflight> inflight_;   // 1.12.18 (drain the lag): by request id, across epochs
     std::vector<uint64_t> sumLat_, cntLat_;                  // per-MI accumulators of one epoch
     std::vector<uint32_t> lastValue_;                        // per-MI last replayed service latency (carried across idle epochs)
     uint64_t outstanding_ = 0;
@@ -143,12 +222,67 @@ class DramEpochReplay {
     // raw cumulative accumulators (under lock_; the priced/bootstrap pair is
     // atomic: notePriced is on every access) and their roi_begin snapshot
     struct Raw { uint64_t req = 0, rd = 0, wr = 0, lat = 0, epochs = 0, unserved = 0, ticks = 0, idle = 0,
-                 hits = 0, misses = 0, conflicts = 0, refreshes = 0; };
+                 hits = 0, misses = 0, conflicts = 0, refreshes = 0,
+                 bankW = 0, bankO = 0, acts = 0,     // 1.12.18: bank-open unit cycles (window, open)
+                 hreq = 0, hrd = 0, hwr = 0, hlat = 0,                       // 1.12.18 (R0605): the host interfaces' share
+                 hhits = 0, hmisses = 0, hconflicts = 0, hacts = 0,         //   (source_id 1 in the controller)
+                 /* 1.12.18 (user ruling R1 2026-10-24): requests stamped after
+                  * the ROI end -- replayed, never priced (source_id 2 device,
+                  * 3 host in the controller) */
+                 oreq = 0, ord = 0, owr = 0, olat = 0, ohreq = 0, ohrd = 0, ohwr = 0,
+                 ohits = 0, omisses = 0, oconflicts = 0, oacts = 0, ohacts = 0; };
     Raw raw_, base_;
     std::atomic<uint64_t> rawPriced_{0}, rawBoot_{0};
     uint64_t basePriced_ = 0, baseBoot_ = 0;
+    std::atomic<uint64_t> rawHPriced_{0}, rawHBoot_{0};   // 1.12.18 (R0605): host accesses priced by the replay / by the bootstrap
+    uint64_t baseHPriced_ = 0, baseHBoot_ = 0;
+    uint64_t hLatMin_ = ~0ull, hLatMax_ = 0;   // 1.12.18: the window's shortest / longest host request (host cycles), PIMID_DEBUG_REPLAY only
     bool roiMarked_ = false;
+    bool closeReported_ = false;   // 1.12.18: the ROI-end close is reported once
+    /* 1.12.18 (shift by lag): the window's time-based counters every
+     * kSnapEvery DRAM cycles until the close is armed, so a close the clock
+     * has already passed takes its counters at the close, not at "now". */
+    struct Snap { uint64_t tick = 0, ticks = 0, idle = 0, refreshes = 0, bankW = 0, bankO = 0; };
+    static constexpr uint64_t kSnapEvery = 1024;
+    std::vector<Snap> hist_;
+    void takeSnap(Snap& s);
+    void applySnap(const Snap& s);
+    /* 1.12.18: cut mode (message passing) -- the window's time-based counters
+     * (DRAM ticks, idle ticks, refreshes, bank-open time) are frozen when the
+     * replay clock reaches the ROI end (roiTick0_ + the run time's mpiEnd).
+     * Records stamped past it (a co-sim rank's post-kernel tail on its device
+     * PE) are still replayed and counted as requests, reads, writes and row
+     * events, but the DRAM time they extend the replay by is outside the
+     * priced window, as it is outside the run time. */
+    /* 1.12.18 (R1, B4): every mode. Cut mode closes at roiTick0_ + mpiEnd
+     * (the run time's clock); phase mode at the pricing window's end -- the
+     * roi_begin stamp plus the run time raised to the busy max as the power
+     * model raises it (phaseWindowCycles) -- armed in finalize, when the busy
+     * counts are final. Requests stamped past the close are "outside". */
+    void armClose(bool fromFinalize);
+    void snapClose();
+    uint64_t phaseWindowCycles(std::string* why);
+    double runTicksPerCycle() const;   // DRAM ticks per cycle of the clock roiWall.mpiEnd is counted in
+    uint64_t coreFreqHz_ = 0;
+    double tckNs_ = 0.0;
+    std::vector<Counter*> miRd_, miWr_;                       // bound request counters, per interface
+    std::vector<uint64_t> outRd_, outWr_, outRdApplied_, outWrApplied_;   // outside requests per interface; already taken out
+    void applyOutside();
+    bool closeArmed_ = false, closeSnapped_ = false;
+    uint64_t closeTick_ = 0;        // DRAM tick of the ROI end (cut mode)
+    uint64_t closeLate_ = 0;        // ticks the clock already stood past the end when the end became known
+    uint64_t pastEndRecs_ = 0;      // records issued at a stamp past the ROI end (counted as requests)
+    uint64_t snapTicks_ = 0, snapIdle_ = 0, snapRefreshes_ = 0, snapBankW_ = 0, snapBankO_ = 0;
+    std::atomic<uint64_t> hostCoreStamps_{0};    // 1.12.18 (R2): host records stamped on the host core's own ROI-relative clock
+    std::atomic<uint64_t> hostPhaseStamps_{0};   // 1.12.18: host records stamped on the ROI-relative phase grid (no core ROI baseline)
     void ctrlTotals(uint64_t& h, uint64_t& m, uint64_t& c, uint64_t& r);
+    /* 1.12.18 (ruling R8-7 b / 4 c): the replayed device's bank-open time,
+     * kept by Ramulator2 (dram/pimid_bank_open.h); exported only when the
+     * device tracks it, so an untracked device never reads as measured 0. */
+    bool bankTracked_ = false;
+    void bankTotals();
+    Counter profBankOpenCycles_, profBankOpenWindow_;
+    Counter profActivates_;   // 1.12.18: ACT commands the replayed controller issued (ROI)
     // exported (ROI window)
     Counter profRequests_, profEpochs_, profReads_, profWrites_;
     Counter profLatSum_;                 // sum of measured latencies (core cycles)
@@ -157,6 +291,13 @@ class DramEpochReplay {
     Counter profTicks_, profIdleTicks_;   // DRAM cycles replayed, and those with no request in flight (row 28: idle cycles)
     Counter profChannelsUsed_, profMaxChanPermille_;   // channels that received requests; the busiest channel's share (per mille)
     Counter profPriced_, profBootstrap_;  // accesses priced by a replay value / by the analytical fallback
+    /* 1.12.18 (ruling 17 / R0605): the host interfaces' share, exported when
+     * the instance serves a host memory controller */
+    Counter profHRequests_, profHReads_, profHWrites_, profHLatSum_, profHRowHits_, profHRowMisses_,
+            profHRowConflicts_, profHActivates_, profHPriced_, profHBootstrap_;
+    /* 1.12.18 (user ruling R1 2026-10-24): outside the ROI, not priced */
+    Counter profORequests_, profOReads_, profOWrites_, profORowHits_, profORowMisses_, profORowConflicts_,
+            profOActivates_, profOHostReads_, profOHostWrites_, profOHostActivates_;
   public:
     void notePriced(bool byReplay) { if (byReplay) rawPriced_.fetch_add(1, std::memory_order_relaxed); else rawBoot_.fetch_add(1, std::memory_order_relaxed); }
 };

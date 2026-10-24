@@ -166,6 +166,10 @@ int main(int argc, char* argv[]) {
     }
 
     /* --- ROI: Forward 3D FFT + Inverse 3D FFT --- */
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel num_threads(threads)
+    { }
     zsim_roi_begin();
 
     fft3d(data, N, -1);  /* forward */

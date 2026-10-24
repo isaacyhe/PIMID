@@ -115,6 +115,15 @@ struct Decoded {
     bool     readsFlags, writesFlags;
     bool     approx;
     bool     fence;        /* lock-prefixed / atomic / explicit fence -> serialize */
+    /* 1.12.18: FP-operation census category + 1 (FpOpCensus,
+     * decoder_simple.h; 0 = not a classified FP operation) and the scalar
+     * operations the instruction performs (lanes). */
+    uint8_t  fpCat1;
+    uint8_t  fpLanes;
+    /* PIMID 1.12.18: (ruling 2026-10-23 #3) operand size of a GPR
+     * instruction from the prefixes: REX.W (VEX.W on VEX forms) 64, 66h 16,
+     * else 32; the byte opcode forms are recognised in intCensusCat. */
+    uint8_t  intW;
     /* grp3 (0xF6/0xF7 /4../7) widening-mul / divide rdx:rax pair semantics:
      * 0 = not grp3 mul/div; 1 = widening mul (reads rax, writes rdx:rax);
      * 2 = div/idiv (reads rdx:rax AND rm, writes rdx:rax -> needs 2 uops);
@@ -179,6 +188,7 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
     bool p66 = false, pF2 = false, pF3 = false, pLock = false;
     int rex = 0;
     bool vex = false; int vexMap = 1; int vvvv = 0; bool vexW = false;
+    bool vexL = false;   /* 1.12.18: VEX.L, 256-bit vector length */
 
     /* legacy prefixes */
     while (i < len) {
@@ -199,6 +209,7 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
     if (b[i] == 0xC5 && i + 1 < len) {           /* 2-byte VEX */
         vex = true; uint8_t v1 = b[i + 1];
         vvvv = (~(v1 >> 3)) & 0xF;
+        vexL = ((v1 >> 2) & 1) != 0;   /* 1.12.18 */
         int pp = v1 & 3; p66 = (pp == 1); pF3 = (pp == 2); pF2 = (pp == 3);
         vexMap = 1; map = 0x0F;
         if ((v1 >> 7) == 0) rex |= 4; /* REX.R */
@@ -208,6 +219,7 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
         vexMap = v1 & 0x1F;
         vvvv = (~(v2 >> 3)) & 0xF;
         vexW = (v2 >> 7) & 1; (void)vexW;
+        vexL = ((v2 >> 2) & 1) != 0;   /* 1.12.18 */
         int pp = v2 & 3; p66 = (pp == 1); pF3 = (pp == 2); pF2 = (pp == 3);
         if ((v1 >> 7) == 0) rex |= 4;  /* REX.R = ~bit7 */
         if (((v1 >> 6) & 1) == 0) rex |= 2;  /* REX.X = ~bit6 */
@@ -231,6 +243,18 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
         }
     }
     (void)p66; (void)pF2; (void)vex; (void)vexMap;
+    d.intW = (uint8_t)(vex ? (vexW ? 64 : 32) : ((rex & 8) ? 64 : (p66 ? 16 : 32)));   /* PIMID 1.12.18: */
+    /* 1.12.18 (ruling 2026-10-23 #2): SSE/AVX FP arithmetic format
+     * from the mandatory prefix (or VEX.pp): F3 = ss (1 single), F2 = sd
+     * (1 double), 66 = pd (2 doubles), none = ps (4 singles); VEX.L doubles
+     * the packed lane count (256-bit). kind: 0 add/sub, 1 mul, 2 div/sqrt. */
+    auto sseFp = [&](int kind) {
+        const bool dbl = pF2 || (p66 && !pF3);
+        const bool scal = pF3 || pF2;
+        d.fpLanes = (uint8_t)(scal ? 1 : (dbl ? 2 : 4) * (vexL ? 2 : 1));
+        const int cat = (kind == 0) ? (dbl ? 2 : 0) : (kind == 1) ? (dbl ? 3 : 1) : (dbl ? 7 : 6);
+        d.fpCat1 = (uint8_t)(cat + 1);
+    };
     bool rexR = (rex & 4) != 0;
     bool rexX = (rex & 2) != 0;
     bool rexB = (rex & 1) != 0;
@@ -564,22 +588,26 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
             case 0x51:                         /* sqrt */
                 setRegIds(RF_VEC, RF_VEC);
                 d.cls = C_FDIV; d.regIsDst = true; d.rmIsSrc = true;
+                sseFp(2);   /* 1.12.18 */
                 if (memOperand) d.mem = MEM_LOAD;
                 return hasModrm;
             case 0x58: case 0x5C: case 0x5D: case 0x5F: /* add/sub/min/max */
                 setRegIds(RF_VEC, RF_VEC);
                 d.cls = C_FADD;
+                if (op == 0x58 || op == 0x5C) sseFp(0);   /* 1.12.18: add/sub only; min/max are compares */
                 d.regIsSrc = d.regIsDst = true; d.rmIsSrc = true;
                 if (memOperand) d.mem = MEM_LOAD;
                 return hasModrm;
             case 0x59:                         /* mul */
                 setRegIds(RF_VEC, RF_VEC);
                 d.cls = C_FMUL; d.regIsSrc = d.regIsDst = true; d.rmIsSrc = true;
+                sseFp(1);   /* 1.12.18 */
                 if (memOperand) d.mem = MEM_LOAD;
                 return hasModrm;
             case 0x5E:                         /* div */
                 setRegIds(RF_VEC, RF_VEC);
                 d.cls = C_FDIV; d.regIsSrc = d.regIsDst = true; d.rmIsSrc = true;
+                sseFp(2);   /* 1.12.18 */
                 if (memOperand) d.mem = MEM_LOAD;
                 return hasModrm;
             case 0x5A: case 0x5B:              /* cvt ps<->pd / dq */
@@ -814,6 +842,14 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
         setRegIds(RF_VEC, RF_VEC);
         if (op >= 0x96 && op <= 0xBF) {   /* vfmadd/vfmsub family (VEX) */
             d.cls = C_FMA;
+            {   /* 1.12.18: precision is VEX.W (W1 = double); the
+                 * scalar forms are the odd low nibbles 9/B/D/F (vfmadd132ss
+                 * 0x99, ...), the rest packed (VEX.L = 256-bit). */
+                const uint8_t lo = op & 0xF;
+                const bool scal = (lo == 0x9 || lo == 0xB || lo == 0xD || lo == 0xF);
+                d.fpLanes = (uint8_t)(scal ? 1 : (vexW ? 2 : 4) * (vexL ? 2 : 1));
+                d.fpCat1 = (uint8_t)((vexW ? 5 : 4) + 1);
+            }
             d.regIsDst = d.regIsSrc = true;   /* accumulator dest is also a src */
             d.rmIsSrc = true;
             if (memOperand) d.mem = MEM_LOAD;
@@ -839,6 +875,7 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
      * still approx (no per-op x87 uop model, and none is invented). */
     if (map == 1 && op >= 0xD8 && op <= 0xDF) {
         d.cls = C_FADD; d.approx = true;
+        d.fpCat1 = 8 + 1; d.fpLanes = 1;   /* 1.12.18: x87, precision unknown statically */
         if (memOperand) d.mem = MEM_LOAD;
         return hasModrm;
     }
@@ -1012,6 +1049,30 @@ static inline void emitUops(const Decoded& d, std::vector<DynUop>& v,
     }
 }
 
+/* PIMID 1.12.18: (user ruling 2026-10-23 #3) integer census
+ * category + 1 of a decoded instruction (decoder_simple.h; 0 = not
+ * counted): scalar GPR add/logic (C_ALU) and multiply (C_IMUL of the
+ * one-byte map and 0F AF; the 0F38 F5 pdep/pext is a bit deposit, not a
+ * multiply) by operand width, and divide (C_IDIV). Byte forms (8 bit):
+ * one-byte map 00-3F with low bits 0/2/4, 80, 82, 84, A8, C0, D0, D2, F6,
+ * FE; 0F B0 (cmpxchg), 0F C0 (xadd) (Intel SDM Vol. 2, opcode map A.3). */
+static inline int intCensusCat(const Decoded& d) {
+    int base;
+    if (d.cls == C_ALU) base = 0;
+    else if (d.cls == C_IMUL && d.dbgMapIdx != 2) base = 4;
+    else if (d.cls == C_IDIV) return 8 + 1;
+    else return 0;
+    const uint8_t op = d.dbgOp;
+    bool byteForm = false;
+    if (d.dbgMapIdx == 0)
+        byteForm = (op < 0x40 && (op & 1) == 0 && (op & 7) <= 4) || op == 0x80 || op == 0x82 ||
+                   op == 0x84 || op == 0xA8 || op == 0xC0 || op == 0xD0 || op == 0xD2 || op == 0xF6 || op == 0xFE;
+    else if (d.dbgMapIdx == 1)
+        byteForm = (op == 0xB0 || op == 0xC0);
+    const int w = byteForm ? 0 : (d.intW == 64 ? 3 : (d.intW == 16 ? 1 : 2));
+    return base + w + 1;
+}
+
 /* ==================================================================== *
  *  Build a fully-decoded BblInfo (with populated oooBbl) for a TB.
  *  insnBytes[k] / insnLens[k] describe instruction k. Allocated from the
@@ -1034,6 +1095,9 @@ static inline BblInfo* createDecodedBblInfo(uint64_t bblAddr,
      * is not a thing that happens -- if it ever did, clamping is visible in
      * the ratios while wrapping would silently invert them. */
     uint32_t cInt = 0, cMul = 0, cFp = 0, cBr = 0, cLd = 0, cSt = 0;
+    uint32_t cVmR = 0, cVmL = 0, cVmS = 0;   /* 1.12.18: pure vector moves (a subset of cFp), by form */
+    FpOpCensus fpc; memset(&fpc, 0, sizeof(fpc));   /* 1.12.18: FP operations by type/precision */
+    bool anyFpc = false;
     for (uint32_t k = 0; k < nInsns; k++) {
         Decoded d;
         decodeOne(insnBytes[k], insnLens[k], d);
@@ -1051,10 +1115,29 @@ static inline BblInfo* createDecodedBblInfo(uint64_t bblAddr,
                          cFp++; break;
             case C_VECALU: case C_VECMOV:
                          if (d.vecInt) { cInt++; break; }
-                         cFp++; break;
+                         cFp++;
+                         /* 1.12.18: (bug 1b) a PURE vector move (movss/movsd/
+                          * movaps/movd/movq ...: a load, a store or a register
+                          * copy) stays in the FP class -- the instruction counts
+                          * and the soft-float timing charge read cFp and are
+                          * unchanged -- and is ALSO counted here by form, so the
+                          * power model prices it as register-file / load-store
+                          * activity and never as an FPU operation. */
+                         if (d.cls == C_VECMOV && d.isPureMove) {
+                             if (d.mem == MEM_LOAD) cVmL++;
+                             else if (d.mem == MEM_STORE) cVmS++;
+                             else cVmR++;
+                         }
+                         break;
             case C_FADD: case C_FDIV: case C_FMA:           cFp++;  break;
             case C_BRANCH:                                  cBr++;  break;
             default:                                        cInt++; break;
+        }
+        if (d.fpCat1 && !d.vecInt) {   /* 1.12.18: a subset of cFp */
+            fpc.ins[d.fpCat1 - 1]++; fpc.lanes[d.fpCat1 - 1] += d.fpLanes; anyFpc = true;
+        }
+        if (const int ic = intCensusCat(d)) {   /* PIMID 1.12.18: a subset of cInt / cMul */
+            fpc.iops[ic - 1]++; anyFpc = true;
         }
         if (d.strKind && d.repPrefixed) repInstrs++;
         if (d.approx || d.cls == C_GENERIC) {
@@ -1075,11 +1158,14 @@ static inline BblInfo* createDecodedBblInfo(uint64_t bblAddr,
     bbl->bytes = tbBytes;
     bbl->nInt = sat16(cInt); bbl->nMul = sat16(cMul); bbl->nFp = sat16(cFp);
     bbl->nBr  = sat16(cBr);  bbl->nLoad = sat16(cLd); bbl->nStore = sat16(cSt);
+    auto sat8 = [](uint32_t v) -> uint8_t { return (uint8_t)((v > 0xFFu) ? 0xFFu : v); };   // 1.12.18
+    bbl->nVmovReg = sat8(cVmR); bbl->nVmovLd = sat8(cVmL); bbl->nVmovSt = sat8(cVmS);   // 1.12.18 (bug 1b)
     DynBbl& db = bbl->oooBbl[0];
     db.addr = bblAddr;
     db.uops = nUops;
-    db.approxInstrs = approx;
-    db.repInstrs = repInstrs;
+    db.approxInstrs = sat16(approx);       /* 1.12.18: <= 1024 per block, exact */
+    db.repInstrs = sat16(repInstrs);
+    db.fpCensusIdx = anyFpc ? fpCensusAdd(fpc) : 0;   /* 1.12.18 */
     for (uint32_t u = 0; u < nUops; u++) db.uop[u] = uops[u];
     return bbl;
 }

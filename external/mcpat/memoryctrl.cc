@@ -41,6 +41,7 @@
 #include <assert.h>
 #include "memoryctrl.h"
 #include "basic_components.h"
+#include <sstream>   /* PIMID 1.12.18: clock-network sink description */
 
 /* overview of MC models:
  * McPAT memory controllers are modeled according to large number of industrial data points.
@@ -167,6 +168,12 @@ void MCBackend::computeEnergy(bool is_tdp)
     else
     {
     	rt_power.readOp.dynamic	= (stats_t.readAc.access + stats_t.writeAc.access)*mcp.llcBlockSize*8.0/mcp.dataBusWidth*power_t.readOp.dynamic;
+    	/* PIMID 1.12.18 (user 2026-10-23: no 10% convention, "measure and
+    	 * calculate"): each command the controller issued without a data
+    	 * transfer (the refresh commands it counted) is one pass of the
+    	 * transaction engine -- one internal-bus beat of this model's own
+    	 * per-beat energy, no data burst. */
+    	rt_power.readOp.dynamic += mcp.command_ops*power_t.readOp.dynamic;
     	rt_power = rt_power + power_t*pppm_lkg;
     	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     	//Assume 10% of peak power is consumed by routine job including memory refreshing and scrubbing
@@ -591,7 +598,8 @@ MemoryController::MemoryController(ParseXML *XML_interface,InputParameter* inter
  frontend(0),
  transecEngine(0),
  PHY(0),
- pipeLogic(0)
+ pipeLogic(0),
+ clk_hz(0)
 {
   /* All computations are for a single MC
    *
@@ -677,6 +685,46 @@ MemoryController::MemoryController(ParseXML *XML_interface,InputParameter* inter
 ////  clockNetwork.num_regs           = pipeLogic.tot_stage_vector;
 ////  clockNetwork.optimize_wire();
 
+  /* PIMID 1.12.18: THE CONTROLLER'S CLOCK NETWORK (Wattch, D. Brooks,
+   * V. Tiwari, M. Martonosi, ISCA 2000, clocking section; logic.h
+   * ClockNetwork). The disabled block above is not used: its five-stage
+   * pipeline ("normal memory controller has five stages") and its 1.1
+   * placement factor are uncited presets.
+   *   Tree area: this controller's McPAT area.
+   *   Sinks: the port registers of the controller's CACTI arrays (reorder
+   *   buffer, read buffer, write buffer; one copy per channel), counted by
+   *   McPAT's own shared-cache rule (sharedcache.cc: ceil(access_time /
+   *   cycle_time) stages x (out_w + tag_w), tag_w only for the array McPAT
+   *   builds as a cache). The backend and PHY carry no register count in
+   *   McPAT (the backend is a published-fit area/energy, the PHY a
+   *   published per-bit figure), so their clocked elements are not priced.
+   *   Clock: the controller clock the run configures (mc_clock). McPAT's
+   *   mcp.clockRate is twice that ("DDR double pumped"), a data rate, not
+   *   the frequency a clock tree toggles at. */
+  {
+	  const double nch = XML->sys.mc.memory_channels_per_mc;
+	  double regs = 0;
+	  std::ostringstream src;
+	  src << "array port registers x " << nch << " channel(s):";
+	  ArrayST *arr[3] = {frontend->frontendBuffer, frontend->readBuffer, frontend->writeBuffer};
+	  for (int ai = 0; ai < 3; ai++)
+	  {
+		  if (!arr[ai]) continue;
+		  const double at = arr[ai]->local_result.access_time;
+		  const double ct = arr[ai]->local_result.cycle_time;
+		  const double st = (ct > 0) ? ceil(at/ct) : 1.0;
+		  const double w  = arr[ai]->l_ip.out_w + (arr[ai]->l_ip.is_cache ? arr[ai]->l_ip.tag_w : 0);
+		  regs += st * w * nch;
+		  src << " " << arr[ai]->name << " " << st << "x" << w;
+	  }
+	  std::cerr << "NO PUBLISHED SOURCE FOUND: memory-controller logic pipeline depth and backend/PHY register count "
+	               "(McPAT's five-stage MC pipeline, memoryctrl.cc, is uncited); the clock tree is priced over the "
+	               "controller's array port registers only -- a lower bound." << std::endl;
+	  clk_hz = XML->sys.mc.mc_clock * 1e6;
+	  clockNetwork.compute(&interface_ip, "mc", area.get_area(), regs, src.str(), -1.0, clk_hz,
+	                       XML->sys.Embedded, Uncore_device, Inorder, XML->sys.pimid_clock_network != 0);
+  }
+
 
 }
 void MemoryController::computeEnergy(bool is_tdp)
@@ -694,8 +742,45 @@ void MemoryController::computeEnergy(bool is_tdp)
 	{
 		PHY->computeEnergy(is_tdp);
 	}
+	/* PIMID 1.12.18: clock network, ungated, every cycle of the controller
+	 * clock. Peak is per McPAT MC cycle (processor.cc multiplies by
+	 * mcp.clockRate), so the tree's per-cycle energy is scaled by
+	 * clk_hz / mcp.clockRate. Runtime: every controller (number_mcs; the
+	 * runtime activity of all of them is in this object, processor.cc). */
+	{
+		const double e_cyc = clockNetwork.e_tree_cycle + clockNetwork.n_sinks*clockNetwork.e_pin_reg;
+		const double cycles = mcp.executionTime * clk_hz;
+		const double e_rt = e_cyc * cycles * XML->sys.mc.number_mcs;
+		/* Gated by the controller's measured utilisation (user ruling
+		 * 2026-10-23; Wattch cc2): the measured requests one controller
+		 * served (memory_reads + memory_writes, as emitted per controller)
+		 * per controller cycle per channel -- the rule PIMID uses for the
+		 * cache duty_cycle (accesses / cycles). */
+		double a = 1.0;
+		if (!is_tdp)
+		{
+			const double ch = XML->sys.mc.memory_channels_per_mc > 0 ? XML->sys.mc.memory_channels_per_mc : 1;
+			const double req = XML->sys.mc.memory_reads + XML->sys.mc.memory_writes;
+			std::ostringstream as;
+			as << "(memory_reads + memory_writes) " << req << " / (" << cycles << " controller cycles x " << ch << " channel(s))";
+			a = clockNetwork.gate((cycles > 0) ? req / (cycles * ch) : -1.0, as.str());
+			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered cycle. */
+			clockNetwork.set_powered(XML->sys.pimid_clock_pg_mc, "1 - measured MC power-gated residency (pimid_clock_pg_mc)");
+		}
+		const double e_rt_g = is_tdp ? e_rt
+			: clockNetwork.gated_cycle(a, clockNetwork.n_sinks*clockNetwork.e_pin_reg) * cycles * XML->sys.mc.number_mcs;
+		clockNetwork.rt_global = clockNetwork.e_tree_global_cycle * clockNetwork.powered * cycles * XML->sys.mc.number_mcs;
+		clockNetwork.set_power((mcp.clockRate > 0) ? e_cyc * clk_hz / mcp.clockRate : 0.0, e_rt_g, e_rt, 1.0);
+		if (!is_tdp)
+		{
+			std::ostringstream w;
+			w << XML->sys.mc.number_mcs << " controller(s) x " << cycles << " cycles x " << e_cyc << " J";
+			clockNetwork.report_runtime(w.str(), mcp.executionTime);
+		}
+	}
 	if (is_tdp)
 	{
+		power = power + clockNetwork.power;   /* PIMID 1.12.18 */
 		power = power + frontend->power + transecEngine->power;
 		if (mcp.withPHY)   /* PIMID 1.11.19 fix: MUST match the constructor's
 	                    * allocation guard. The constructor now allocates PHY
@@ -710,6 +795,7 @@ void MemoryController::computeEnergy(bool is_tdp)
 	}
 	else
 	{
+		rt_power = rt_power + clockNetwork.rt_power;   /* PIMID 1.12.18 */
 		rt_power = rt_power + frontend->rt_power + transecEngine->rt_power;
 		if (mcp.withPHY)   /* PIMID 1.11.19 fix: MUST match the constructor's
 	                    * allocation guard. The constructor now allocates PHY
@@ -742,6 +828,13 @@ void MemoryController::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 				<< (long_channel? power.readOp.power_gated_with_long_channel_leakage : power.readOp.power_gated_leakage)  << " W" << endl;
 		cout << indent_str<< "Gate Leakage = " << power.readOp.gate_leakage << " W" << endl;
 		cout << indent_str << "Runtime Dynamic = " << rt_power.readOp.dynamic/mcp.executionTime << " W" << endl;
+		cout<<endl;
+		/* PIMID 1.12.18: the clock network as its own line. */
+		cout << indent_str << "Clock Network:" << endl;
+		cout << indent_str_next << "Peak Dynamic = " << clockNetwork.power.readOp.dynamic*mcp.clockRate << " W" << endl;
+		cout << indent_str_next << "Subthreshold Leakage = " << clockNetwork.power.readOp.leakage << " W" << endl;
+		cout << indent_str_next << "Gate Leakage = " << clockNetwork.power.readOp.gate_leakage << " W" << endl;
+		cout << indent_str_next << "Runtime Dynamic = " << clockNetwork.rt_power.readOp.dynamic/mcp.executionTime << " W" << endl;
 		cout<<endl;
 		cout << indent_str << "Front End Engine:" << endl;
 		cout << indent_str_next << "Area = " << frontend->area.get_area()*1e-6<< " mm^2" << endl;
@@ -826,6 +919,7 @@ void MemoryController::set_mc_param()
 		mcp.type = XML->sys.mc.type;
 		mcp.withPHY = XML->sys.mc.withPHY;
 		mcp.background_fraction = XML->sys.mc.background_fraction;   /* PIMID 1.11.98 (row 28, ruling (c)) */
+		mcp.command_ops = XML->sys.mc.pimid_command_ops;   /* PIMID 1.12.18 */
 		mcp.phy_class = XML->sys.mc.phy_class;   // PIMID 1.11.19 (D2/D3)
 
 		if ( XML->sys.mc.vdd>0)

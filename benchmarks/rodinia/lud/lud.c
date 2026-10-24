@@ -40,6 +40,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel
+    { }
     zsim_roi_begin();
 
     /* Doolittle LU decomposition in place */

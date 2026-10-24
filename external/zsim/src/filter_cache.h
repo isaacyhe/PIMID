@@ -91,9 +91,11 @@ class FilterCache : public Cache {
             AggregateStat* cacheStat = new AggregateStat();
             cacheStat->init(name.c_str(), "Filter cache stats");
 
-            ProxyStat* fgetsStat = new ProxyStat();
+            /* 1.12.18: (bug 6b) ROI-relative, like the hGETS/mGETS Counters
+             * the power path sums them with (l1d_total_reads). */
+            RoiZeroProxyStat* fgetsStat = new RoiZeroProxyStat();
             fgetsStat->init("fhGETS", "Filtered GETS hits", &fGETSHit);
-            ProxyStat* fgetxStat = new ProxyStat();
+            RoiZeroProxyStat* fgetxStat = new RoiZeroProxyStat();
             fgetxStat->init("fhGETX", "Filtered GETX hits", &fGETXHit);
             cacheStat->append(fgetsStat);
             cacheStat->append(fgetxStat);
@@ -221,8 +223,8 @@ class FilterCache : public Cache {
          * across the clear is what closes the remaining race -- a replace()
          * that has already upgraded the line to M but has not yet published
          * wrAddr would otherwise re-open the identical hole behind us. */
-        uint64_t flushDirtyLines(std::unordered_set<Address>& distinctDirty) override {
-            uint64_t cleaned = Cache::flushDirtyLines(distinctDirty);
+        uint64_t flushDirtyLines(std::unordered_set<Address>& distinctDirty, std::vector<Address>* order = nullptr) override {
+            uint64_t cleaned = Cache::flushDirtyLines(distinctDirty, order);
             futex_lock(&filterLock);
             for (uint32_t i = 0; i < numSets; i++) filterArray[i].wrAddr = -1L;
             futex_unlock(&filterLock);

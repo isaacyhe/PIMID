@@ -81,6 +81,7 @@ interconnect::interconnect(
    * wire_model parameter and so passes its default, Global -- the value
    * the overwrite forced -- so no priced number moves. */
   l_ip=*configure_interface;
+  num_pipe_stages = 0;   /* PIMID 1.12.18: was read uninitialised by the clock network when no stage was inserted */
 
   try {
     local_result = init_interface(&l_ip);

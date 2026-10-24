@@ -144,7 +144,8 @@ void DRAMModel::initialize() {
         // Select factory architecture based on config standard
         if (dram_config_.standard == "DDR5" || dram_config_.standard == "DDR5-4800") {
             dram_arch_ = memory::createDDR5_4800_Verified();
-            std::cout << "[DRAMModel] Using factory DDR5-4800 specs (hard-coded)" << std::endl;
+            // 1.12.18: the factory object is not a 4800 part (its literals are the 3200AN fallback); do not name a grade
+            std::cout << "[DRAMModel] Using factory DDR5 specs (hard-coded fallback object)" << std::endl;
         } else if (dram_config_.standard == "HBM2") {
             dram_arch_ = memory::createHBM2_Verified();
             std::cout << "[DRAMModel] Using factory HBM2 specs (hard-coded)" << std::endl;

@@ -111,11 +111,33 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                 const YAML::Node q = m["iddq"]; row.has_iddq = true;
                 if (!need(q, "iddq3n", row.iddq3n, err) || !need(q, "iddq4r", row.iddq4r, err) || !need(q, "iddq4w", row.iddq4w, err) ||
                     !need(q, "vddq", row.vddq, err) || !need(q, "source", row.iddq_source, err)) { err = "iddq: " + err; return false; }
+                /* 1.12.18: optional; a true needs its source */
+                if (q["wr_includes_rtt_wr"]) {
+                    try { row.iddq_wr_includes_rtt_wr = q["wr_includes_rtt_wr"].as<bool>(); }
+                    catch (const std::exception&) { err = "iddq: wr_includes_rtt_wr is not true/false"; return false; }
+                    if (row.iddq_wr_includes_rtt_wr && !need(q, "wr_rtt_source", row.iddq_wr_rtt_source, err)) { err = "iddq: " + err; return false; }
+                }
             }
             if (m["ipp"]) {
                 const YAML::Node q = m["ipp"]; row.has_ipp = true;
                 if (!need(q, "ipp2n", row.ipp2n, err) || !need(q, "ipp3n", row.ipp3n, err) || !need(q, "vpp", row.vpp, err) ||
                     !need(q, "source", row.ipp_source, err)) { err = "ipp: " + err; return false; }
+                /* 1.12.18 (bug 3b): the active rows, optional (a sheet may not publish them) */
+                if ((q["ipp0"] && !need(q, "ipp0", row.ipp0, err)) || (q["ipp4r"] && !need(q, "ipp4r", row.ipp4r, err)) ||
+                    (q["ipp4w"] && !need(q, "ipp4w", row.ipp4w, err)) || (q["ipp5b"] && !need(q, "ipp5b", row.ipp5b, err))) { err = "ipp: " + err; return false; }
+            }
+            if (m["io_share"]) {   // 1.12.18 (bug 2b/8a)
+                const YAML::Node q = m["io_share"]; row.has_io_share = true;
+                if (!need(q, "idd4r_ma", row.idd4r_io, err) || !need(q, "idd4w_ma", row.idd4w_io, err) ||
+                    !need(q, "provenance", row.io_share_provenance, err) || !need(q, "source", row.io_share_source, err)) { err = "io_share: " + err; return false; }
+                /* 1.12.18 (user ruling 2026-10-23): the optional anchor, all four keys or none */
+                const int na = (q["anchor_read_pj_bit"] ? 1 : 0) + (q["anchor_write_pj_bit"] ? 1 : 0) + (q["channel_gbps"] ? 1 : 0) + (q["anchor_source"] ? 1 : 0);
+                if (na != 0 && na != 4) { err = "io_share: anchor_read_pj_bit, anchor_write_pj_bit, channel_gbps and anchor_source go together (all four or none)"; return false; }
+                if (na == 4) {
+                    row.io_share_anchored = true;
+                    if (!need(q, "anchor_read_pj_bit", row.io_anchor_rd_pj_bit, err) || !need(q, "anchor_write_pj_bit", row.io_anchor_wr_pj_bit, err) ||
+                        !need(q, "channel_gbps", row.io_channel_gbps, err) || !need(q, "anchor_source", row.io_anchor_source, err)) { err = "io_share: " + err; return false; }
+                }
             }
             return true;
         };
@@ -138,6 +160,51 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         }
         if (b["e_actpre_pj_override"] && !need(b, "e_actpre_pj_override", r.idd.e_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
         if (b["stack_floor_mw"] && !need(b, "stack_floor_mw", r.idd.stack_floor_mw, error)) { error = "part record " + path + ": idd: " + error; return false; }
+        /* 1.12.18 (user ruling 2026-10-24, option 5): an HBM row states which loop its idd0 is */
+        if (b["idd0_loop"] && !need(b, "idd0_loop", r.idd.idd0_loop, error)) { error = "part record " + path + ": idd: " + error; return false; }
+        if ((r.technology == "HBM2" || r.technology == "HBM3") && r.idd.idd0_loop != "ONE_PC_PER_TRC") {
+            error = "part record " + path + ": idd.idd0_loop must be ONE_PC_PER_TRC on an HBM record (found '" + r.idd.idd0_loop +
+                    "'): the energy model charges vdd x (idd0 - baseline) x tRC per ACT of ONE pseudo-channel page. A JEDEC IDD0"
+                    " (JESD235D Table 60 / JESD238B.01 Table 85) activates PC0 and PC1 every nRC -- convert it first:"
+                    " idd0 = baseline + (IDD0_JEDEC - baseline) / 2";
+            return false;
+        }
+        /* 1.12.18 (user ruling 2026-10-24): HBM activation VPP as a ratio of the VDD activate energy */
+        if (b["vpp_act"]) {
+            const YAML::Node v = b["vpp_act"]; r.idd.has_vpp_act = true;
+            if (!need(v, "ratio", r.idd.vpp_act_ratio, error) || !need(v, "device", r.idd.vpp_act_device, error) ||
+                !need(v, "alt_ratio", r.idd.vpp_act_alt_ratio, error) || !need(v, "alt_device", r.idd.vpp_act_alt_device, error) ||
+                !need(v, "provenance", r.idd.vpp_act_provenance, error) || !need(v, "source", r.idd.vpp_act_source, error)) {
+                error = "part record " + path + ": idd.vpp_act: " + error; return false;
+            }
+            if (!(r.idd.vpp_act_ratio >= 0.0 && r.idd.vpp_act_ratio < 1.0) || !(r.idd.vpp_act_alt_ratio >= 0.0 && r.idd.vpp_act_alt_ratio < 1.0)) {
+                error = "part record " + path + ": idd.vpp_act.ratio / alt_ratio must be in [0, 1)"; return false;
+            }
+            for (const auto& kv : r.idd.by_grade)
+                if (kv.second.ipp0 >= 0.0) {
+                    error = "part record " + path + ": idd.vpp_act and an ipp.ipp0 row both price the VPP activation; give one"; return false;
+                }
+        }
+        if (b["background_guard_mw_stack"]) {   // 1.12.18 (user ruling 2026-10-24, floor option 2): guard only
+            const YAML::Node g = b["background_guard_mw_stack"]; r.idd.has_bg_guard = true;
+            if (!need(g, "lo", r.idd.bg_guard_lo_mw, error) || !need(g, "hi", r.idd.bg_guard_hi_mw, error) ||
+                !need(g, "source", r.idd.bg_guard_source, error)) {
+                error = "part record " + path + ": idd.background_guard_mw_stack: " + error; return false;
+            }
+            if (!(r.idd.bg_guard_lo_mw > 0.0 && r.idd.bg_guard_lo_mw <= r.idd.bg_guard_hi_mw)) {
+                error = "part record " + path + ": idd.background_guard_mw_stack needs 0 < lo <= hi"; return false;
+            }
+        }
+        if (b["act_guard_nj_per_kb"]) {
+            const YAML::Node g = b["act_guard_nj_per_kb"]; r.idd.has_act_guard = true;
+            if (!need(g, "lo", r.idd.act_guard_lo, error) || !need(g, "xpe_ceiling", r.idd.act_guard_ceiling, error) ||
+                !need(g, "hi", r.idd.act_guard_hi, error) || !need(g, "source", r.idd.act_guard_source, error)) {
+                error = "part record " + path + ": idd.act_guard_nj_per_kb: " + error; return false;
+            }
+            if (!(r.idd.act_guard_lo > 0.0 && r.idd.act_guard_lo <= r.idd.act_guard_ceiling && r.idd.act_guard_ceiling <= r.idd.act_guard_hi)) {
+                error = "part record " + path + ": idd.act_guard_nj_per_kb needs 0 < lo <= xpe_ceiling <= hi"; return false;
+            }
+        }
     }
     if (!n["component_factors"]) {
         error = "part record " + path + ": required field 'component_factors' is missing (the seven typical/maximum factors, or 'none' for a measured row)";
@@ -172,6 +239,22 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         const YAML::Node q = n["iddq_band_pj_bit"]; r.iddq_band.valid = true;
         if (!need(q, "lo", r.iddq_band.lo, error) || !need(q, "hi", r.iddq_band.hi, error) || !need(q, "source", r.iddq_band.source, error)) { error = "part record " + path + ": iddq_band_pj_bit: " + error; return false; }
     }
+    if (n["read_energy_guard"]) {   // 1.12.18 (user ruling 2026-10-23): guard only
+        const YAML::Node g = n["read_energy_guard"]; r.read_energy_guard.valid = true;
+        if (!need(g, "max_generation_gain", r.read_energy_guard.max_generation_gain, error) || !need(g, "gain_source", r.read_energy_guard.gain_source, error)) {
+            error = "part record " + path + ": read_energy_guard: " + error; return false;
+        }
+        if (!g["references"] || !g["references"].IsSequence() || g["references"].size() == 0) {
+            error = "part record " + path + ": read_energy_guard: required sequence 'references' is missing or empty"; return false;
+        }
+        for (const auto& e : g["references"]) {
+            ReadEnergyGuardRec::Ref ref;
+            if (!need(e, "label", ref.label, error) || !need(e, "pj_bit", ref.pj_bit, error) || !need(e, "source", ref.source, error)) {
+                error = "part record " + path + ": read_energy_guard reference: " + error; return false;
+            }
+            r.read_energy_guard.references.push_back(ref);
+        }
+    }
     if (r.technology != tech) {
         error = "part record " + path + " says technology '" + r.technology + "' but was loaded for '" + tech + "'";
         return false;
@@ -186,6 +269,13 @@ std::map<std::string, DramPartRecord>& registry() { static std::map<std::string,
 
 void registerDramPartRecord(const DramPartRecord& rec) { registry()[rec.technology] = rec; }
 bool hasDramPartRecord(const std::string& tech) { return registry().count(tech) > 0; }
+int dramRecordGradeMTs(const std::string& tech) {   // 1.12.18: "DDR5_5600B" -> 5600
+    const std::string& n = dramPartRecord(tech).timing_preset;
+    const auto us = n.find('_');
+    int v = 0;
+    for (size_t i = (us == std::string::npos ? n.size() : us + 1); i < n.size() && n[i] >= '0' && n[i] <= '9'; ++i) v = v * 10 + (n[i] - '0');
+    return v;
+}
 const DramPartRecord& dramPartRecord(const std::string& tech) {
     auto it = registry().find(tech);
     if (it == registry().end()) {
@@ -263,6 +353,24 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
             if (!(r.trfc_ns > 0.0) || !(r.trefi_ns > r.trfc_ns)) errors.push_back(k + ": trfc_ns must be positive and below trefi_ns");
             if (r.has_iddq && !(r.vddq > 0.0)) errors.push_back(k + ": iddq.vddq must be positive");
             if (r.has_ipp && !(r.vpp > 0.0)) errors.push_back(k + ": ipp.vpp must be positive");
+            if (r.has_ipp && ((r.ipp0 < 0.0 && r.ipp0 != -1.0) || (r.ipp4r < 0.0 && r.ipp4r != -1.0) || (r.ipp4w < 0.0 && r.ipp4w != -1.0) || (r.ipp5b < 0.0 && r.ipp5b != -1.0)))
+                errors.push_back(k + ": ipp.ipp0 / ipp4r / ipp4w / ipp5b must be non-negative when given");   // 1.12.18
+            if (r.has_io_share && (!(r.idd4r_io >= 0.0) || !(r.idd4w_io >= 0.0) || r.idd4r_io > r.idd4r - r.idd3n || r.idd4w_io > r.idd4w - r.idd3n))
+                errors.push_back(k + ": io_share must be non-negative and inside the burst excess (idd4r - idd3n, idd4w - idd3n)");   // 1.12.18
+            if (r.has_io_share && r.io_share_provenance != "DERIVED" && r.io_share_provenance != "MEASURED")
+                errors.push_back(k + ": io_share.provenance must be DERIVED or MEASURED");   // 1.12.18
+            if (r.io_share_anchored) {   // 1.12.18 (user ruling 2026-10-23): the share IS its anchor at the channel rate
+                if (!(r.io_anchor_rd_pj_bit > 0.0) || !(r.io_anchor_wr_pj_bit > 0.0) || !(r.io_channel_gbps > 0.0))
+                    errors.push_back(k + ": io_share.anchor_read_pj_bit / anchor_write_pj_bit / channel_gbps must be positive");
+                else {
+                    const double rd = r.io_anchor_rd_pj_bit * r.io_channel_gbps / r.vdd, wr = r.io_anchor_wr_pj_bit * r.io_channel_gbps / r.vdd;
+                    if (std::fabs(rd - r.idd4r_io) > 0.05 + 1e-9 || std::fabs(wr - r.idd4w_io) > 0.05 + 1e-9)
+                        errors.push_back(k + ": io_share idd4r_ma / idd4w_ma " + fmt(r.idd4r_io) + " / " + fmt(r.idd4w_io) + " != anchor x channel_gbps / vdd = "
+                                         + fmt(rd) + " / " + fmt(wr) + " mA (to 0.05 mA)");
+                }
+                if (rec.component_factors.apply)
+                    errors.push_back(k + ": an anchored io_share prices the DQ I/O at its own value; component factors would scale only the burst side of it");
+            }
             if (r.source.empty()) errors.push_back(k + ": source must name the datasheet or measurement");
         }
         if (rec.component_factors.apply) {
@@ -277,6 +385,12 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
             if (rec.termination.rtt_rd < 0.0 || rec.termination.rtt_wr < 0.0) errors.push_back("termination.rtt_rd / rtt_wr must be non-negative (0 = no DC termination path)");
         }
         if (rec.iddq_band.valid && !(rec.iddq_band.lo > 0.0 && rec.iddq_band.hi >= rec.iddq_band.lo)) errors.push_back("iddq_band_pj_bit must satisfy 0 < lo <= hi");
+        if (rec.read_energy_guard.valid) {   // 1.12.18 (user ruling 2026-10-23)
+            if (!(rec.read_energy_guard.max_generation_gain >= 0.0 && rec.read_energy_guard.max_generation_gain < 1.0))
+                errors.push_back("read_energy_guard.max_generation_gain must be in [0, 1)");
+            for (const auto& ref : rec.read_energy_guard.references)
+                if (!(ref.pj_bit > 0.0)) errors.push_back("read_energy_guard reference " + ref.label + ": pj_bit must be positive");
+        }
     }
     try {
         RamulatorWrapper w("", t);
@@ -441,6 +555,25 @@ bool loadCoreRecord(CoreRecord& out, std::string& error) {
         !coreInt(oo, "ooo", "fetch_width_bytes", 1, 64, out.ooo.fetch_width_bytes, out.file, error) ||
         !coreInt(oo, "ooo", "retire_width", 1, 64, out.ooo.retire_width, out.file, error))
         return false;
+    /* 1.12.18: the TLB geometry, required like every field.
+     * Ranges: McPAT sizes a TLB as entries x line bytes, so 1..65536 entries;
+     * associativity 1..64 (a power of two, CACTI's rule) and at most the
+     * entries of each array it describes. */
+    if (!coreInt(oo, "ooo", "itlb_entries", 1, 65536, out.ooo.itlb_entries, out.file, error) ||
+        !coreInt(oo, "ooo", "itlb_large_entries", 0, 65536, out.ooo.itlb_large_entries, out.file, error) ||
+        !coreInt(oo, "ooo", "dtlb_entries", 1, 65536, out.ooo.dtlb_entries, out.file, error) ||
+        !coreInt(oo, "ooo", "dtlb_large_entries", 0, 65536, out.ooo.dtlb_large_entries, out.file, error) ||
+        !coreInt(oo, "ooo", "tlb_associativity", 1, 64, out.ooo.tlb_associativity, out.file, error) ||
+        !coreInt(oo, "ooo", "stlb_entries", 0, 1048576, out.ooo.stlb_entries, out.file, error))
+        return false;
+    {
+        const int a = out.ooo.tlb_associativity;
+        if ((a & (a - 1)) != 0 || a > out.ooo.dtlb_entries || a > out.ooo.itlb_entries) {
+            error = "core record " + out.file + ": ooo.tlb_associativity " + std::to_string(a) +
+                    " must be a power of two no larger than either first-level TLB";
+            return false;
+        }
+    }
     if (!io["retire_width"] || io["retire_width"].as<std::string>("") != "issue") {
         error = "core record " + out.file + ": in_order.retire_width must be 'issue' (InOrderCore issues and "
                 "commits on one cursor, so it retires exactly its issue width; an integer would price a retire "
@@ -485,7 +618,11 @@ std::string describeCoreRecord(const CoreRecord& rec) {
       << rec.in_order.resteer_penalty_cycles << " cyc, retire = issue width, branch predictor "
       << rec.in_order.branch_predictor << "; ooo: mispredict "
       << rec.ooo.mispredict_penalty_cycles << " cyc, fetch " << rec.ooo.fetch_width_bytes
-      << " B/cyc, retire " << rec.ooo.retire_width << ")";
+      << " B/cyc, retire " << rec.ooo.retire_width
+      << "; TLB: ITLB " << rec.ooo.itlb_entries << "+" << rec.ooo.itlb_large_entries
+      << ", DTLB " << rec.ooo.dtlb_entries << "+" << rec.ooo.dtlb_large_entries
+      << " (4 KB + large), " << rec.ooo.tlb_associativity << "-way, STLB "
+      << rec.ooo.stlb_entries << ")";
     return o.str();
 }
 

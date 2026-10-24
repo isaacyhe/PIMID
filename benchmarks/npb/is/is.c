@@ -59,6 +59,10 @@ int main(int argc, char* argv[]) {
     generate_keys(keys, N, 314159u);
 
     /* --- ROI: bucket sort --- */
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel num_threads(threads)
+    { }
     zsim_roi_begin();
 
     /* Phase 1: count occurrences (histogram scatter) */

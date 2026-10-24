@@ -7,14 +7,16 @@
  * slot (enforced ranks == num_pes). Prep (before the ROI, untimed, SPMD): each
  * rank relocates ITS input chunk + its private histogram into ITS own PE slot;
  * the ROI scan is then PE-local. Slot layout: [chunk][local hist]. The final
- * MPI_Reduce (the shared cross-PE step) is unchanged. Coarse placement runs the
- * host path. */
+ * MPI_Reduce (the shared cross-PE step) produces the result and is timed:
+ * 1.12.18 (ruling 2026-10-23) moved it inside the ROI. Coarse placement runs
+ * the host path. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <mpi.h>
 #include "zsim_hooks.h"
 #include "../../include/pimid_devorg.h"
+#include "../../include/pimid_spm.h"
 
 #define DEFAULT_SIZE 16384
 #define DEFAULT_BINS 256
@@ -28,6 +30,42 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.12.18: hist[data[i]]++ for data[0..n) through the PE scratchpad
+ * (pimid_spm.h). When the nbins counters fit, the RAM holds the whole
+ * histogram (fetched once, written back once) and the rest of it is one
+ * buffer for data tiles, each fetched once. Otherwise it holds two equal
+ * buffers, a tile of the bins and a tile of data: each bin tile is fetched and
+ * written back once and rescans all the data, counting the values that fall
+ * in it. With no scratchpad the tiles are whole ranges and this is the plain
+ * scatter loop. */
+static void histogram_count(pimid_spm_t* s, int* hist, const int* data, size_t n,
+                            size_t nbins) {
+    const size_t T2 = pimid_spm_tile(s, 2, sizeof(int));
+    const size_t hbytes = s->cap ? (nbins * sizeof(int) + 63) / 64 * 64 : 0;
+    const int fits = !s->cap || hbytes + 64 <= s->cap;
+    const size_t TB = fits ? nbins : T2;
+    const size_t TD = (s->cap && fits) ? (s->cap - hbytes) / 64 * 64 / sizeof(int) : T2;
+    const size_t oh = 0, od = s->cap ? (fits ? hbytes : T2 * sizeof(int)) : 0;
+    for (size_t b0 = 0; b0 < nbins; b0 += TB) {
+        const size_t nb = (nbins - b0 < TB) ? nbins - b0 : TB;
+        int* hb = (int*)pimid_spm_in(s, oh, hist + b0, nb * sizeof(int));
+        for (size_t i0 = 0; i0 < n; i0 += TD) {
+            const size_t m = (n - i0 < TD) ? n - i0 : TD;
+            const int* db = (const int*)pimid_spm_in(s, od, data + i0, m * sizeof(int));
+            if (nb == nbins) {
+                for (size_t i = 0; i < m; i++)
+                    hb[db[i]]++;
+            } else {
+                for (size_t i = 0; i < m; i++) {
+                    const size_t d = (size_t)db[i] - b0;
+                    if (d < nb) hb[d]++;
+                }
+            }
+        }
+        pimid_spm_flush(s, hist + b0, hb, nb * sizeof(int));
+    }
 }
 
 /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the largest rank share
@@ -128,29 +166,42 @@ int main(int argc, char* argv[]) {
                 "rank=%d slot_bytes=%zu\n",
                 pimid_devorg_level_name(dev.level), dev.num_pes, rank, slot_bytes);
 
+    pimid_spm_t spm;   /* 1.12.18: this rank's PE scratchpad */
+    pimid_spm_open(&spm);
+
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) zsim_roi_begin();
 
     /* Kernel: each rank builds a local histogram from its data chunk
      * (on slot pointers if prepped) */
-    if (prep) {
-        for (int i = 0; i < local_n; i++)
-            hpe[dpe[i]]++;
+    /* 1.12.18: no scratchpad -- the 1.12.17 code, unchanged */
+    if (!spm.cap) {
+        if (prep) {
+            for (int i = 0; i < local_n; i++)
+                hpe[dpe[i]]++;
+        } else {
+            for (int i = 0; i < local_n; i++)
+                local_hist[local_data[i]]++;
+        }
     } else {
-        for (int i = 0; i < local_n; i++)
-            local_hist[local_data[i]]++;
+        if (prep)
+            histogram_count(&spm, hpe, dpe, (size_t)local_n, (size_t)nbins);
+        else
+            histogram_count(&spm, local_hist, local_data, (size_t)local_n, (size_t)nbins);
     }
+
+    /* 1.12.18 (ruling 2026-10-23): the cross-rank merge that produces the
+     * result is part of the kernel and is timed, as the shared-memory merge
+     * is: every rank's private histogram (read straight from its PE slot when
+     * prepped -- the post-ROI copy back to host layout is gone) is summed into
+     * rank 0's global histogram INSIDE the ROI. Both scratchpad branches end
+     * here. Every rank calls it before rank 0's zsim_roi_end and the closing
+     * barrier, so the last-rank ROI rule still counts every rank's arrival. */
+    MPI_Reduce(prep ? hpe : local_hist, global_hist, nbins, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if (rank == 0) zsim_roi_end();
     MPI_Barrier(MPI_COMM_WORLD);
-
-    /* Gather this rank's private histogram back to host layout for the
-     * MPI_Reduce (post-ROI, not timed). */
-    if (prep)
-        memcpy(local_hist, hpe, (size_t)nbins * sizeof(int));
-
-    /* Reduce local histograms to global histogram on rank 0 */
-    MPI_Reduce(local_hist, global_hist, nbins, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    pimid_spm_close(&spm);
 
     if (rank == 0) {
         long checksum = 0;

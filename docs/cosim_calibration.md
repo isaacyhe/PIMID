@@ -126,7 +126,7 @@ runtime feedback loop** (the simulator never measures and re-tunes):
    `system.coherence.*`, `system.launch.*`, `memory.latency_adder_ns`,
    `memory.host_path.*`) overrides its default; partial `host_path` overrides
    merge over the per-tech split. Overrides are the ONLY way a number changes
-   at runtime -- the model is deterministic and reproducible run-to-run.
+   at runtime: the composed split is a fixed function of the configuration.
 
 Inspect the composed result on the login node (no compute node needed) with
 `PIMID_DEBUG_HOSTMEM`, `PIMID_DEBUG_COHERENCE`, `PIMID_DEBUG_LAUNCH`.

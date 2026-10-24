@@ -12,6 +12,37 @@ class ParseXML;
 class Processor;
 
 namespace pimid {
+/* 1.12.18: the run's power.models.clock_network, set once after the YAML is
+ * read (main.cpp); every McPATConfig built afterwards starts from it. */
+inline bool& mcpatClockNetworkDefault() { static bool v = true; return v; }
+/* 1.12.18: the run's power.models.vector_moves_split (bug 1b), set the same way. */
+inline bool& mcpatVectorMovesSplitDefault() { static bool v = true; return v; }
+/* 1.12.18 (user rulings 2026-10-23): power.models.mcpat_fu_base_energy
+ * (default false = removed), fpu_published, frontend_from_timing. */
+inline bool& mcpatFuBaseEnergyDefault() { static bool v = false; return v; }
+inline bool& mcpatFpuPublishedDefault() { static bool v = true; return v; }
+inline bool& mcpatFrontendFromTimingDefault() { static bool v = true; return v; }
+/* PIMID 1.12.18: (user rulings 2026-10-23 #3-#6) power.models.
+ * int_alu_published, clock_global_local, l1d_access_width, tlb_btb_measured
+ * (all default true), set the same way. */
+inline bool& mcpatIntAluPublishedDefault() { static bool v = true; return v; }
+inline bool& mcpatClockGlobalLocalDefault() { static bool v = true; return v; }
+inline bool& mcpatL1dAccessWidthDefault() { static bool v = true; return v; }
+inline bool& mcpatTlbBtbMeasuredDefault() { static bool v = true; return v; }
+/* 1.12.18 (user ruling 2026-10-24): power.models.mcpat_layout_energy_overhead
+ * (default false = McPAT's layout area overheads do not scale array energy). */
+inline bool& mcpatLayoutEnergyOverheadDefault() { static bool v = false; return v; }
+/* 1.12.18: power.models.tlb_published_geometry (default true). */
+inline bool& mcpatTlbPublishedGeometryDefault() { static bool v = true; return v; }
+/* PIMID 1.12.18 (user rulings 2026-10-23): power.models.idle_halt (a core
+ * with nothing to run is halted: its whole clock tree is off) and
+ * power.models.clock_die_trunk (one die-level clock trunk per die), both
+ * default true, set the same way. The models live in the McPAT fork. */
+inline bool& mcpatIdleHaltDefault() { static bool v = true; return v; }
+inline bool& mcpatClockDieTrunkDefault() { static bool v = true; return v; }
+/* 1.12.18 (user ruling "sharer bits from the real child count"):
+ * power.models.sharer_bits_from_children (default true). */
+inline bool& mcpatSharerBitsFromChildrenDefault() { static bool v = true; return v; }
 
 /**
  * Wrapper class that adapts McPAT to PIMID's power model interface
@@ -121,6 +152,33 @@ public:
          * the simulation ran on that. 0 = not known (no stats file): the
          * configured depth is priced and the level line says so. */
         int vc_buffer_entries = 0;
+        /* 1.12.18: link pricing. A router level's up-links, and a
+         * pass-through level, are described as a LINKS-ONLY instance
+         * (routers_present=0, has_global_link=1). link_kind 0 = planar wire
+         * (McPAT interconnect, CACTI wire model), 1 = TSV (CACTI-3DD,
+         * Coarse). link_span_area_mm2 / link_parent_regions: the structure
+         * the links span (die area, parent regions); McPAT derives the
+         * length of one link from them (0 = McPAT's own mesh derivation).
+         * tech_node_nm > 0: the process node this instance is priced at
+         * (0 = the processor's). link_traversals >= 0 is the links'
+         * measured activity (-1 = McPAT's upstream total_accesses);
+         * tsv_die_crossings >= 0 the flit x dies-crossed count of a TSV
+         * instance. PIMID passes structure and activity; the energy, length
+         * and TSV arithmetic live in the McPAT fork. */
+        int routers_present = 1;
+        int has_global_link = 0;
+        int link_kind = 0;
+        double link_span_area_mm2 = 0.0;
+        int link_parent_regions = 0;
+        int tech_node_nm = 0;
+        int64_t link_traversals = -1;
+        int64_t tsv_die_crossings = -1;
+        /* 1.12.18 (user ruling "pass-through routers as wire"): >= 0 = the
+         * part of total_accesses that went through pass-through routers (one
+         * router child, no endpoint) of this router instance's level; the
+         * McPAT fork prices total_accesses - passthrough_accesses router
+         * accesses. -1 = not described (upstream). */
+        int64_t passthrough_accesses = -1;
         // Activity
         uint64_t total_accesses;  // packets at this level
         double duty_cycle;        // derived: total_accesses / total_cycles
@@ -191,7 +249,48 @@ public:
         /* 1.11.29: the link CLASS, so the report names what it priced rather
          * than saying "PCIe" for a CXL/NVLink/UALink/interposer run. */
         std::string link_type_name = "pcie";
+        /* 1.12.18: UCIe link class, priced INSIDE the McPAT fork
+         * (iocontrollers.cc, PIMID 1.12.18). These are parameters only:
+         *   link_class      0 legacy, 1 UCIe (power.models.ucie_link)
+         *   ucie_package    1 advanced, 2 standard, 0 none
+         *   lane_rate_gts   the class's published lane rate (specFor)
+         *   phy_pj_per_bit  <0 = McPAT's UCIe table; >=0 = user override
+         *   link_energy_end true at the end that prices the link once
+         * link_clock_mhz 0 with lane_rate_gts > 0 asks McPAT to derive the
+         * D2D controller clock (lanes x rate / (8 x 64 B FDI)). */
+        int    link_class = 0;
+        int    ucie_package = 0;
+        double lane_rate_gts = 0.0;
+        double phy_pj_per_bit = -1.0;
+        bool   link_energy_end = true;
+        /* 1.12.18 (user ruling 2026-10-23, two-node UCIe rows): process node
+         * of the die the link sits on, which selects McPAT's UCIe energy row
+         * (22 or 3; power.link.process_node_nm). 0 = not given: McPAT uses
+         * its run's node. A structural parameter only -- the rows and their
+         * arithmetic live in iocontrollers.cc. */
+        int    link_node_nm = 0;
     };
+
+    /* 1.12.18: what McPAT's link model reported, read back from the child
+     * (ledger keys: link.controller = the McPAT controller's area, leakage
+     * and -- legacy classes only -- dynamic; link.phy = the UCIe adapter+PHY
+     * per-bit term). */
+    struct LinkModelReadback {
+        bool   ucie = false;
+        double clock_mhz = 0.0;
+        bool   clock_derived = false;
+        double ucie_pj_per_bit = 0.0;
+        double phy_joules = 0.0;
+        double phy_w = 0.0;
+        double ctrl_dyn_excluded_w = 0.0;
+        /* 1.12.18 (two-node rows): McPAT's split, read back, no arithmetic */
+        int    node_nm = 0;
+        double analog_pj = 0.0;
+        double digital_pj = 0.0;
+        bool   user_pj = false;
+        double ref_ctrl_pj = 0.0;
+    };
+    const LinkModelReadback& getLinkModelReadback() const { return link_readback_; }
 
     /* 1.11.8 (#84): per-component power gating. pg_* mark components the
      * DESCRIBED DESIGN can gate (v7 spec: per-component flag, default
@@ -304,7 +403,12 @@ public:
      * Callers REFUSE on false -- they must not price from it. */
     static bool periphFactorsFor(int dram_table_nm, int logic_node_nm,
                                  int baseline_device, int temp_k,
-                                 double& fa, double& fd, double& fl);
+                                 double& fa, double& fd, double& fl,
+                                 int periph_device = 4);   // PIMID 1.12.18 (per-die process): DRAM die family column
+    /* 1.12.18: CV/I gate delay of CACTI device column dev_a over
+     * dev_b at table_nm: (C_g_ideal + C_fringe) x Vdd / I_on_n. False when a
+     * row or a column is missing/zero. */
+    static bool deviceDelayRatio(int table_nm, int dev_a, int dev_b, double& ratio);
 
     /**
      * Device profile: controls core microarchitecture type in McPAT XML.
@@ -373,6 +477,8 @@ public:
         int  pe_element_bits;
         bool pe_has_fp;        // three of five kernels are FP32, so normally true
         int  pe_imem_bytes;    // instruction store: ~128 B command file .. 24 KB
+        int  pe_spm_bytes;     // 1.12.18: data scratchpad (0 = none)
+        bool pe_spm_dma;       // 1.12.18: the scratchpad has a DMA engine (spm_staging dma)
                                // spans command-driven to fully programmable, and
                                // gates which kernels can run at all
         int issue_width;
@@ -384,6 +490,57 @@ public:
          * describe). Was commit_width = issue_width for every profile. */
         int commit_width = -1;
         int periphery_leakage_device = 4;
+        /* 1.12.18: YAML power.models.clock_network (default true). Passed to
+         * McPAT as sys param pimid_clock_network; the clock-network model
+         * itself lives in the McPAT fork (external/mcpat/logic.h). */
+        bool clock_network = mcpatClockNetworkDefault();
+        bool vector_moves_split = mcpatVectorMovesSplitDefault();   // 1.12.18 (bug 1b)
+        /* 1.12.18: passed to the McPAT fork as sys params
+         * pimid_fu_base_energy / pimid_fpu_published and core param
+         * pimid_ib_entries; the models live in the fork (logic.cc, core.cc). */
+        bool fu_base_energy = mcpatFuBaseEnergyDefault();
+        bool fpu_published = mcpatFpuPublishedDefault();
+        bool frontend_from_timing = mcpatFrontendFromTimingDefault();
+        /* PIMID 1.12.18: passed to the McPAT fork as sys params
+         * pimid_int_alu_published / pimid_clock_split and as the dcache
+         * output-width field; tlb_btb_measured selects the TLB/BTB access
+         * statistics. The models live in the fork. */
+        bool int_alu_published = mcpatIntAluPublishedDefault();
+        bool clock_global_local = mcpatClockGlobalLocalDefault();
+        bool l1d_access_width = mcpatL1dAccessWidthDefault();
+        bool tlb_btb_measured = mcpatTlbBtbMeasuredDefault();
+        /* 1.12.18: the first-level TLB geometry the core
+         * record gives an OOO core (describeTimingCore(); 0 = none: McPAT's
+         * 1-entry floor). Emitted only for a HOST core whose translations
+         * are counted (the tlb_btb_measured rule); the associativity goes to
+         * the McPAT fork as itlb/dtlb param pimid_assoc. */
+        bool tlb_published_geometry = mcpatTlbPublishedGeometryDefault();
+        bool layout_energy_overhead = mcpatLayoutEnergyOverheadDefault();   // 1.12.18 (ruling 2026-10-24); sys param pimid_layout_energy_overhead
+        int itlb_entries = 0, dtlb_entries = 0, tlb_assoc = 0;
+        /* PIMID 1.12.18 (user rulings 2026-10-23): passed to the McPAT fork
+         * as sys params pimid_idle_halt / pimid_clock_trunk; the models live
+         * in the fork (logic.h ClockNetwork, processor.cc). */
+        bool idle_halt = mcpatIdleHaltDefault();
+        bool clock_die_trunk = mcpatClockDieTrunkDefault();
+        /* PIMID 1.12.18 (user ruling, per-die process): the LOGIC die's node
+         * and CACTI device type when the components on it are priced apart
+         * from the chip node (tech_node_nm / device_type), i.e. when the
+         * DRAM-die components set the chip node; 0 / -1 = the chip's. The
+         * per-die trunk's structure: the DRAM dies holding components, the
+         * area of one (mm^2), the logic die's area (0 = McPAT's own). */
+        int logic_die_node_nm = 0;
+        /* PIMID 1.12.18 (per-die process): the DRAM die's periphery device
+         * family, the CACTI column the area and dynamic factors are read from
+         * (4 = comm-dram, the default; 3 = lp-dram). */
+        int dram_periph_device = 4;
+        int logic_die_device_type = -1;
+        int dram_die_count = 1;
+        double dram_die_area_mm2 = 0.0;
+        double logic_die_area_mm2 = 0.0;
+        /* 1.12.18: passed to the McPAT fork as L2/L3 param
+         * dir_sharers (the cache's zsim children); false = McPAT's
+         * number_of_cores. */
+        bool sharer_bits_from_children = mcpatSharerBitsFromChildrenDefault();
         int arch_int_regs = 32, arch_fp_regs = 32;   // 1.11.94 (row 20 (a)): McPAT architectural register files   // 1.11.94 (item 1 knob): CACTI column for the DRAM-periphery leakage ratio (4 = comm-dram)
         int num_alus;
         int num_muls;
@@ -492,7 +649,7 @@ public:
          * When the run MEASURES its controller (epoch replay: refresh commands
          * counted, idle cycles counted, PHY static from the IO model) the
          * fraction is 0 and the measured terms are reported beside it. */
-        double mc_background_fraction = 0.1;
+        double mc_background_fraction = 0.0;   // 1.12.18 (user: no 10% convention): routine work is counted, not assumed
 
         // McPAT system-level parameters (exposed for architecture exploration)
         /* CACTI device corner. 0=HP, 1=LSTP, 2=LOP, 3=LP-DRAM, 4=COMM-DRAM.
@@ -520,6 +677,8 @@ public:
             , pe_element_bits(32)
             , pe_has_fp(true)
             , pe_imem_bytes(4096)
+            , pe_spm_bytes(0)
+            , pe_spm_dma(false)
             , issue_width(4)
             , num_alus(3)
             , num_muls(1)
@@ -561,6 +720,7 @@ public:
 
     // Set runtime statistics (needed for dynamic power calculation)
     void setMCBackgroundFraction(double f) { config_.mc_background_fraction = f; }   // 1.11.98 (row 28, ruling (c))
+    void setMCCommandOps(uint64_t n) { mc_command_ops_ = n; }   // 1.12.18: counted command-only operations (refresh)
     void setTotalCycles(uint64_t cycles);
     /* 1.11.93 (F3): setBusyCycles() is GONE. Every caller passed the total
      * cycle count, so busy/total -- McPAT's pipeline_duty_cycle, defined as
@@ -573,6 +733,22 @@ public:
      * all-core total over num_cores is used (the same mean when no core
      * saturates). */
     void setPerCoreInstructions(const std::vector<uint64_t>& instrs);
+    /* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): each core's
+     * MEASURED running cycles over the priced window (device PE: its busy
+     * cycles; host core: zsim's unhalted cycles -- the time a thread was
+     * runnable on it), one entry per core in core order. McPAT receives
+     * the running fraction (mean and max over the cores, the template
+     * standing for all of them). */
+    void setPerCoreRunCycles(const std::vector<uint64_t>& cycles);
+    /* PIMID 1.12.18 (user ruling, per-die clock trunk): McPAT's per-die
+     * trunk, one entry per die KIND (count dies; watts summed over them).
+     * NOT inside any component; INSIDE getSystemPower(). */
+    struct TrunkDie {
+        char name[16]; int count; double area_mm2, leaves, node_nm, on;
+        double rt_w, ungated_w, peak_w, leak_w, gate_w;
+    };
+    const std::vector<TrunkDie>& getClockTrunks() const { return trunk_dies_; }
+    PowerMetrics getClockTrunkPower() const { return trunk_power_; }
     /* 1.11.93 (F6): ROI-windowed BTB lookups (indirect jmp/call resolutions)
      * and RAS returns, measured by zsim (roiIndirBranches / roiRasReturns).
      * They drive the BTB and RAS McPAT now builds for cores that have them. */
@@ -616,14 +792,46 @@ public:
         meas_ld_ = nLd;   meas_st_ = nSt;   meas_mix_br_ = nBr;
         power_computed_ = false;
     }
+    /* 1.12.18: (bug 1b) the PURE vector moves inside nFp, by form (register
+     * copy, load, store), all cores. Priced as FP register-file and
+     * load/store activity, never as FPU work (power.models.vector_moves_split). */
+    void setMeasuredVectorMoves(uint64_t reg, uint64_t ld, uint64_t st) {
+        meas_vm_reg_ = reg; meas_vm_ld_ = ld; meas_vm_st_ = st;
+        power_computed_ = false;
+    }
+    /* 1.12.18 (ruling 2026-10-23 #2): the decoder's FP operations by
+     * type and precision, all cores: [k] instructions, [9 + k] scalar lane
+     * operations, k = AddS MulS AddD MulD FmaS FmaD DivS DivD X87. Passed to
+     * McPAT as core stats pimid_fp_ins_<Cat> / pimid_fp_lanes_<Cat>. */
+    void setMeasuredFpOps(const uint64_t* v) {
+        for (int k = 0; k < 18; k++) meas_fpc_[k] = v[k];
+        power_computed_ = false;
+    }
+    /* PIMID 1.12.18: (ruling 2026-10-23 #3) the decoder's scalar GPR
+     * integer operations, all cores, k = Alu8 Alu16 Alu32 Alu64 Mul8 Mul16
+     * Mul32 Mul64 Div. Passed to McPAT as core stats pimid_int_ops_<Cat>. */
+    void setMeasuredIntOps(const uint64_t* v) {
+        for (int k = 0; k < 9; k++) meas_iops_[k] = v[k];
+        power_computed_ = false;
+    }
 
     void setTotalInstructions(uint64_t instructions);
 
     // Split cache stat setters -- use actual ZSim counters, not combined reads/writes
     void setL1IAccesses(uint64_t reads, uint64_t read_misses);
     void setL1DAccesses(uint64_t reads, uint64_t writes, uint64_t read_misses, uint64_t write_misses);
+    /* 1.12.18: the compute unit's scratchpad words read/written and the lines
+     * its DMA engine moved (all cores, as every other count). */
+    void setScratchpadAccesses(uint64_t reads, uint64_t writes, uint64_t dma_lines,
+                               uint64_t cmd_reads, uint64_t cmd_writes);
     void setL2Accesses(uint64_t reads, uint64_t writes, uint64_t read_misses, uint64_t write_misses);
     void setL3Accesses(uint64_t reads, uint64_t writes, uint64_t read_misses, uint64_t write_misses);
+    /* 1.12.18: coherence events (zsim INV + INVX + FWD) received by the
+     * L1s and by the L2s, all cores of this node. Each is work done by the
+     * directory of the level above; the XML writer maps them onto McPAT's
+     * SBT directory (merged_dir) of the cache that owns it. */
+    void setCoherenceDirectoryEvents(uint64_t from_l1_children, uint64_t from_l2_children,
+                                     bool enabled = true);   // power.models.coherence_directory
 
     // Memory controller stats from ZSim (rd/wr counters)
     void setMemControllerAccesses(uint64_t reads, uint64_t writes);
@@ -648,6 +856,10 @@ public:
 
     // Query power results by component
     PowerMetrics getComponentPower(ComponentType component) const;
+    /* 1.12.18: the clock-network share of a component (already INCLUDED in
+     * getComponentPower and getSystemPower; Wattch clock model, D. Brooks,
+     * V. Tiwari, M. Martonosi, ISCA 2000 -- external/mcpat/logic.h). */
+    PowerMetrics getClockPower(ComponentType component) const;
     PowerMetrics getSystemPower() const;
 
     // Specific component queries
@@ -691,12 +903,17 @@ private:
 
     // Cached power results
     std::map<ComponentType, PowerMetrics> component_power_;
+    std::map<ComponentType, PowerMetrics> clock_power_;   // 1.12.18: share of component_power_ (gated by measured activity)
+    std::map<ComponentType, double> clock_ungated_w_;     // 1.12.18: ungated runtime clock dynamic, reference only
     PowerMetrics system_power_;
 
     // Runtime statistics
     uint64_t total_cycles_;
     uint64_t total_instructions_;
     std::vector<uint64_t> per_core_instrs_;      // 1.11.93 (F3)
+    std::vector<uint64_t> per_core_run_cycles_;  // PIMID 1.12.18 (idle halt)
+    std::vector<TrunkDie> trunk_dies_;           // PIMID 1.12.18 (per-die trunk)
+    PowerMetrics trunk_power_;
     uint64_t meas_indir_ = 0, meas_ras_ = 0;     // 1.11.93 (F6), ROI-windowed
     uint64_t meas_bp_hist_writes_ = 0, meas_bp_pht_writes_ = 0;   // 1.11.97 (R2476), ROI-windowed
     bool meas_bp_writes_present_ = false;
@@ -707,6 +924,10 @@ private:
     uint64_t meas_branches_ = 0;
     uint64_t meas_int_ = 0, meas_mul_ = 0, meas_fp_ = 0,
              meas_ld_ = 0, meas_st_ = 0, meas_mix_br_ = 0;   // 1.11.10/.15
+    uint64_t meas_vm_reg_ = 0, meas_vm_ld_ = 0, meas_vm_st_ = 0;   // 1.12.18 (bug 1b)
+    uint64_t meas_fpc_[18] = {};                                   // 1.12.18
+    uint64_t meas_iops_[9] = {};                                   // PIMID 1.12.18
+    mutable bool warned_vm_ = false;                               // 1.12.18 (bug 1b)
     uint64_t meas_mispred_ = 0;
     /* 1.11.60 (audit round 4, C006): THE GATE THAT DECIDES WHETHER A LATCHED
      * DIAGNOSTIC MAY FIRE, and the reason every one of them used to state the
@@ -809,6 +1030,8 @@ private:
     uint64_t l1d_writes_;
     uint64_t l1d_read_misses_;
     uint64_t l1d_write_misses_;
+    uint64_t spm_reads_ = 0, spm_writes_ = 0, dma_lines_ = 0;   // 1.12.18
+    uint64_t dma_cmd_reads_ = 0, dma_cmd_writes_ = 0;           // 1.12.18: command registers
     uint64_t l2_reads_;
     uint64_t l2_writes_;
     uint64_t l2_read_misses_;
@@ -817,10 +1040,14 @@ private:
     uint64_t l3_writes_;
     uint64_t l3_read_misses_;
     uint64_t l3_write_misses_;
+    uint64_t coh_l1_events_ = 0;   // 1.12.18: received by the L1s
+    uint64_t coh_l2_events_ = 0;   // 1.12.18: received by the L2s
+    bool coh_dir_enabled_ = true;  // 1.12.18: power.models.coherence_directory
 
     // MC stats
     uint64_t mc_reads_;
     uint64_t mc_writes_;
+    uint64_t mc_command_ops_ = 0;   // 1.12.18
 
     // MC technology params
     MCTechParams mc_tech_;
@@ -852,6 +1079,7 @@ private:
      * total. Measured: the controller carries 0.0037 W of leakage per
      * end, so it is present; only its area was invisible. */
     double mcpat_pcie_area_mm2_ = 0.0;
+    LinkModelReadback link_readback_;   // 1.12.18
     /* 1.11.56 (audit C027): fam_core_power_ratio_ is DELETED. Its comment
      * said "the CoreBreakdown block weights are multiplied by this", and
      * they are not -- the member lost its assignment in the 1.11.12

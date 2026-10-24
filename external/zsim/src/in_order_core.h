@@ -273,6 +273,7 @@ class InOrderCore : public Core {
         // same wall-free clock.
         uint64_t pimidPhantomWait = 0;
         void pimidRewindCycles(uint64_t delta) override { pimidPhantomWait += delta; }
+        uint64_t pimidRawCycle() const override { return curCycle; }   // 1.12.18 (R2)
         uint64_t getCycles() const {
             uint64_t c = cRec.getUnhaltedCycles(curCycle);
             return (c > pimidPhantomWait) ? (c - pimidPhantomWait) : 0;
@@ -287,6 +288,16 @@ class InOrderCore : public Core {
          * (since retired) simple cores had always advanced. memRespCycle is untouched: a
          * response already in flight still arrives when it arrives. */
         void addDelay(uint32_t cycles) override { curCycle += cycles; }
+        /* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h:
+         * the issue cursor (global phase axis), advanced like addDelay. */
+        uint32_t lockClockDomain() const override { return 1; }
+        uint64_t lockClock() const override { return curCycle; }
+        uint64_t syncToLock(uint64_t t) override {
+            if (t <= curCycle) return 0;
+            const uint64_t skip = t - curCycle;
+            curCycle = t; lockSyncCycles += skip; lockSyncs++;
+            return skip;
+        }
 
         InstrFuncPtrs GetFuncPtrs();
 

@@ -1,5 +1,6 @@
 /* PIMID 1.11.40 -- CACTI-IO harness. See include/power/cacti_io_wrapper.h. */
 #include "power/cacti_io_wrapper.h"
+#include "params/part_records.h"   // 1.12.18: the DDR5 row reads the record's grade
 
 #include <cmath>
 #include <cstdio>
@@ -356,7 +357,10 @@ double CactiIOWrapper::dramRateMTs(const std::string& t) {
      * the preset's own rate column is the authority at every grade -- so the
      * row's job is to agree with the default so the default run is quiet, and
      * to make a non-default grade say that the table is ignored. */
-    if (t == "DDR5")   return 4800;   // preset DDR5_4800B (default grade)
+    /* 1.12.18 (user ruling 2026-10-23/24): the row is the part record's grade
+     * (DDR5_5600B by default), not a literal, so the default run stays quiet
+     * whatever grade the record names. */
+    if (t == "DDR5") { const int g = pimid::params::dramRecordGradeMTs("DDR5"); return g > 0 ? g : -1.0; }
     if (t == "LPDDR5") return 6400;
     if (t == "GDDR6")  return 14000;
     if (t == "HBM2")   return 2400;   // 1.11.57 (C001): preset HBM2_2.4Gbps

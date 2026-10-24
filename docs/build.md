@@ -98,9 +98,9 @@ with the tree built and `PIMID_SRC_ROOT` naming the tree the binaries came from.
 
 ## Reproducibility (ASLR)
 
-Cycle counts vary slightly (~1%) run-to-run due to address-space layout
-randomization; instruction and access counts are exact. For bit-stable timing
-disable ASLR with `setarch`:
+Address-space layout randomization (ASLR) moves the guest's addresses, and
+cycle counts depend on them (about 1%); instruction and access counts do not.
+For bit-stable timing disable ASLR with `setarch`:
 
 ```bash
 setarch -R ./build/pimid --method exec --config <cfg>

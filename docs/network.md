@@ -146,35 +146,21 @@ and `detailed` for ground truth.
 For thread-MPI under `detailed` Garnet, per-access memory latency is priced
 from **measured** Garnet congestion, not from the analytical closed form.
 Ranks share one in-process Garnet (above), so an access can be charged the
-contention the replay actually observed. To keep reported cycles
-**deterministic** the feedback is **epoch-frozen** rather than read live:
+contention the replay actually observed. The feedback is **epoch-frozen**
+rather than read live:
 
 - Garnet congestion is sampled once per N-phase **epoch** on the per-core
   ROI-relative axis; ROI-gated recording, single-actor complete-bucket folds.
   An access in epoch `k` prices from epoch `k-1`'s **frozen** sample, looked up
   by epoch index from the access's own simulated cycle -- a keyed table lookup,
   never a live rolling scalar.
-- This replaces the naive "read the live per-drain EWMA" feedback, which was
-  **26-196% per-core / ~25% makespan nondeterministic** (a fast rank blended
-  fewer drains than a slow one) and read-depth inflated. The frozen level sits
+- This replaces a live per-drain EWMA read, which depended on how many drains
+  a rank had blended and was read-depth inflated. The frozen level sits
   **+5-12% above the analytical floor** with real congestion priced in.
-- OMP single-process pricing is **unchanged**: it keeps the rolling-EWMA live
-  feedback (one process, one wall-order, already reproducible for its use).
-
-**Repeatability (measured, dev8 gemv 8-rank HBM3, 4 reps x 2 host classes):**
-
-| axis | spread |
-|---|---|
-| within-host, per-core | <=0.15% typical (occasional ~0.5% outlier) |
-| cross-host, per-core | 2-7% systematic (host-dependent fixpoint) |
-| rank-0 / cut-pinning core | host-independent to ~0.05% |
-
-The residual is fundamental: the one-pass measured-feedback loop
-(contention -> pricing -> fold membership -> contention) converges to a
-**host-dependent fixpoint**, so cores that price from the epoch samples inherit
-that host's level. **MPI sweeps must therefore be run single-venue** for
-internal consistency; true venue-independent bit-exactness would need two-pass
-deterministic replay (future work).
+- Since 1.12.18 single-process runs (serial, OpenMP, co-sim OpenMP) use the
+  same mechanism: per-core ROI-relative stamps, the consistent cut, and an
+  epoch-frozen per-pair table read at epoch `k-2`
+  (`simulation.det_epoch_phases`; see the YAML reference).
 
 **Escape hatch.** `PIMID_MPI_ANALYTICAL_PRICING=1` forces the old analytical
 override (the topology-pure, load-independent `2 * nocAvgOneWayLatency`) for
@@ -191,14 +177,16 @@ exactly one of them:
   `analytical`) prices host-core loads/stores. A 1-core host has NO fabric
   (crossbar degenerates: core -> caches -> MC direct). A multi-core host adds
   a fixed one-hop latency (`hop_cycles`, core clock) on the host memory path;
-  port contention is already priced by the host memory M/D/1, so the fabric
+  port contention is already priced by the host memory controller (the replayed Ramulator2 controller since 1.12.18; the M/D/1 queue with `system.hosts[].memory.dram_replay: false`), so the fabric
   stays analytic. No host Garnet is instantiated: a host `noc.topology` other
   than `crossbar` or a `noc.model` other than `analytical` is accepted with a
   WARNING (1.11.106; it used to be accepted in silence) and the fabric still
-  runs as this crossbar. A host NoC model is a planned 1.1x release. Host
-  memory bandwidth is a single aggregate M/D/1 queue at per-channel x
-  channels GB/s, so one DDR5 channel saturates under many host cores while
-  HBM3's wide aggregate does not.
+  runs as this crossbar. The host NoC has no power model. Host
+  memory bandwidth comes from the replayed Ramulator2 controller (since
+  1.12.18; with `system.hosts[].memory.dram_replay: false`, a single
+  aggregate M/D/1 queue at per-channel x channels GB/s), so one DDR5
+  channel saturates under many host cores while HBM3's wide aggregate does
+  not.
 - **Bridge** (`system.bridge`, two-layer `protocol` x `phy`) prices only the
   host<->device boundary traffic -- launch cmd/ack, Case-1 coherence flush,
   Case-2 DMA. A crossing costs `phy_latency + protocol_overhead +

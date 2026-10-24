@@ -39,6 +39,7 @@
 //#include "Undifferentiated_Core_Area.h"
 #include <vector>
 #include "basic_components.h"
+#include "logic.h"   /* PIMID 1.12.18: ClockNetwork */
 
 class MCBackend : public Component {
   public:
@@ -102,7 +103,10 @@ class MemoryController : public Component {
     MCPHY	 * PHY;
     Pipeline * pipeLogic;
 
-    //clock_network clockNetwork;
+    /* PIMID 1.12.18: the controller's clock network (logic.h ClockNetwork;
+     * Wattch, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000, clocking). */
+    ClockNetwork clockNetwork;
+    double clk_hz;
     MemoryController(ParseXML *XML_interface,InputParameter* interface_ip_, enum MemoryCtrl_type mc_type_);
     void set_mc_param();
     void computeEnergy(bool is_tdp=true);

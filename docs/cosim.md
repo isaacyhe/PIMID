@@ -212,15 +212,16 @@ config syntax, but only one tier is modelled: the analytic **crossbar**
   analytic memory latency (see [cosim_calibration.md](cosim_calibration.md)).
 - A **multi-core host** (the 4/16-core baselines) adds a fixed one-hop
   crossbar latency (`hop_cycles`, core clock) on the host memory path; port
-  contention is already priced by the host MC M/D/1 model, so the fabric stays
-  analytic.
+  contention is already priced by the host memory controller (the replayed
+  Ramulator2 controller since 1.12.18, see section 6; the M/D/1 queue when the
+  replay is off), so the fabric stays analytic.
 
 > **Shipped behavior (1.11.106).** The host fabric always runs as the
 > analytic crossbar (one uniform hop plus the host memory controller's queue);
 > no host Garnet is instantiated. A `system.hosts[].noc.topology` other than
 > `crossbar` or a `noc.model` other than `analytical` (`detailed` included) is
 > accepted with a WARNING that says so; it used to be accepted in silence. A
-> host NoC model is a planned 1.1x release.
+> host NoC has no model of its own (no power model).
 
 ### 3b. Host-device link class (`power.link.link_type`, `system.network.links[].type`)
 
@@ -241,6 +242,20 @@ at load (1.11.106; it used to run as `external` and take the PCIe class).
 `power.pcie` is the legacy name of the `power.link` block (giving both is
 refused); the class list, with `pcie_gen3` added in 1.11.106, is in
 [yaml_reference.md](yaml_reference.md#link-types-system-scope).
+
+**The interposer link is a UCIe link (1.12.18).** Its energy is computed inside
+the McPAT fork: measured crossing bytes x 8 x (analog PHY + digital interface)
+pJ/bit from the row of the die's process node -- 22 nm (default: 0.669 + 0.284,
+both DERIVED -- from Intel ISSCC 2026 8.1 and Cadence JSSC 2026, and from
+Microsoft ISSCC 2026 8.3 scaled by CACTI and Stillmaker & Baas 2017) or 3 nm (`power.link.process_node_nm: 3`: 0.29 + 0.10, measured);
+any other node is refused. Sources and derivations in
+[power.md](power.md#the-host-device-link-ucie). Its controller clock defaults to the D2D adapter clock, 64 lanes x
+16 GT/s / (8 x 64 B FDI) = 2000 MHz, with the 64 B FDI width from UCIe Consortium, "UCIe Protocol", Hot Chips 2023 UCIe Tutorial ("All examples show 64B data width on FDI"; "Protocol Layer presents 64B of the Flit on FDI");
+`power.link.controller_clock_mhz` overrides it for any class. The `[xing]` line
+then says that the pJ/bit is applied in McPAT, and McPAT's `[link] UCIe` lines
+print the row, its derivation, bytes, pJ/bit, joules and watts, and the
+McPAT-controller cross-check. `power.models.ucie_link: false` runs the
+earlier path. See [power.md](power.md#the-host-device-link-ucie).
 
 ### 4. Bridge -- two-layer protocol x phy (`system.bridge`)
 
@@ -338,10 +353,33 @@ the effective latency matches measured real sockets (DDR5 ~110 ns, HBM3
 through it, so PIM-side timing stays clean. It ships both as an aggregate
 (`memory.latency_adder_ns`) and as an optional four-way decomposition
 (`memory.host_path { fabric_ns, coherence_ns, mc_pipeline_ns, phy_ns }`).
-Host memory bandwidth is a single aggregate M/D/1 queue at
-per-channel x channels GB/s, so one DDR5 channel saturates under many host
-cores while HBM3's 32x-wider aggregate stays unsaturated. Full calibration
-methodology and anchors: [cosim_calibration.md](cosim_calibration.md).
+Full calibration methodology and anchors:
+[cosim_calibration.md](cosim_calibration.md).
+
+**The host memory is replayed through Ramulator2 (1.12.18, ruling 17).** Like
+the device memory, every host access is recorded per epoch and replayed through
+a Ramulator2 controller at the epoch boundary; the host access is priced at the
+previous epoch's measured service latency of its interface (bank, row hit /
+miss / conflict, queueing at the bank, refresh, turnaround, the burst) **plus
+the host-path adder**, which holds no DRAM timing, so tRCD + tCAS is not
+counted twice. The aggregate M/D/1 queue (tRCD + tCAS + adder + queue at
+per-channel x channels GB/s) prices only the bootstrap, the accesses before
+the first replayed epoch. Where the device IS the host's memory
+(`is_default_mem`, the default), the host's interface joins the device's
+replay instance (numbered after the device interfaces, Ramulator source_id 1),
+so the shared array has one controller and one refresh schedule, and a host
+access lands on the bank the device's own placement gives that line. A
+decoupled host memory (`system.memories[]`) gets its own replay instance of
+its technology, with its channel count, one rank and Ramulator's own address
+mapper. The controller's row hits / misses / conflicts and activates are
+split by origin, so the host's share is measured. Message passing (thread-MPI)
+uses the same cut mode as the device replay. The run prints
+`[mem] host DRAM controller: ...` and, with `PIMID_DEBUG_REPLAY`, the host
+share (`[replaydbg] ... host share`). `system.hosts[].memory.dram_replay:
+false` restores the M/D/1 host controller and the line says so; it changes
+TIMING (the latency of every host access) as well as the energy inputs. The
+replay is off, and says why, for a non-DRAM host memory, for trace-method MPI,
+and on a shared array whose device memory is not replayed.
 
 ## NO_OFFLOAD baseline
 
@@ -397,12 +435,11 @@ regenerated. Device-scope sweeps were never affected.
   are accepted and checked. See the README, "What 1.12 simulates".
 - **Detailed host NoC not wired** (decision 3 note above): the host fabric is
   the analytic crossbar; any other host topology or model warns (1.11.106) and
-  runs the crossbar. A host NoC model is a planned 1.1x release.
-- **Device-side weave +-1-phase quantum.** The device-side weave (in-order /
-  OOO weave cores) has a residual +-1-phase QUANTUM nondeterminism in how a
-  phase boundary lands relative to contention (<=0.4% at production scale).
-  This is a device-model effect, independent of the host core type, and is
-  deferred to the 1.8 PDES rework -- it is NOT fixed by 1.7.7.
+  runs the crossbar. The host NoC has no power model.
+- **Device-side weave phase quantum.** With in-order / OOO weave cores on
+  the device, a phase boundary lands within one phase of the contention it
+  ends (<=0.4% at production scale). This is a device-model effect,
+  independent of the host core type.
 - **Phase-exclusivity assumed.** Host and PEs are temporally disjoint by
   construction in serial offload (host touches memory only outside the ROI,
   PEs only inside), so the only shared cost at the boundary is the flush. This
@@ -508,8 +545,8 @@ invariant).
   baseline share one clock axis; a per-rank cache holds the last valid-cid
   baseline so a transient cid-invalid window cannot flip `roiRel` back to the
   buggy path. Scoped to co-sim (`g_cosim_mode`): device scope keeps the `tid`
-  indexing verbatim (correct AND deterministic there; `cids[tid]` would couple
-  it to run-to-run PE assignment).
+  indexing verbatim (correct there; `cids[tid]` would tie it to the core a rank happens to
+  run on).
 - **Cross-axis invariant guard (1.8.7).** At the recv rendezvous, if a single
   message's advance exceeds the ROI span the clock axes are mismatched -- the
   guard shouts and caps rather than advancing a PE by a garbage delta (the

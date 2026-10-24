@@ -68,6 +68,41 @@ class PCIeController : public Component {
      * SerDes energy (bytes x pJ/bit) for the same silicon. Area and leakage
      * keep their SerDes share; only switching would be double-counted. */
     double SerDer_dyn_saved = 0.0;
+    /* PIMID 1.12.18: UCIe link class state, read back by the wrapper so the
+     * report can carry the link.controller / link.phy split.
+     *   ucie                  link_class == 1
+     *   ucie_pj_per_bit       applied adapter+PHY energy, pJ/bit
+     *   ucie_phy_joules       measured bytes x 8 x ucie_pj_per_bit (J)
+     *   ucie_phy_w            ucie_phy_joules / measured execution time (W)
+     *   ctrl_dyn_per_cycle    McPAT's controller dynamic, J/cycle, all
+     *                         channels (excluded from the UCIe runtime basis)
+     *   ctrl_dyn_excluded_w   that term in W at the measured load, the amount
+     *                         NOT charged (reported for audit)
+     *   clock_mhz             controller clock in force; clock_derived says
+     *                         whether McPAT derived it from the UCIe params */
+    bool   ucie = false;
+    double ucie_pj_per_bit = 0.0;
+    double ucie_phy_joules = 0.0;
+    double ucie_phy_w = 0.0;
+    double ctrl_dyn_per_cycle = 0.0;
+    double ctrl_dyn_excluded_w = 0.0;
+    double clock_mhz = 0.0;
+    bool   clock_derived = false;
+    /* PIMID 1.12.18 (user rulings 2026-10-23, two-node UCIe rows; sources in
+     * iocontrollers.cc set_pcie_param):
+     *   ucie_node_nm      process node of the row applied (22 or 3)
+     *   ucie_analog_pj    analog PHY pJ/bit applied
+     *   ucie_digital_pj   digital interface pJ/bit applied (ucie_pj_per_bit =
+     *                     analog + digital)
+     *   ucie_user_pj      phy_pj_per_bit (user) replaced both terms
+     *   ucie_ref_ctrl_pj  CROSS-CHECK only, never charged: McPAT's own link
+     *                     controller dynamic expressed per bit of this link
+     *                     at this run's node */
+    int    ucie_node_nm = 0;
+    double ucie_analog_pj = 0.0;
+    double ucie_digital_pj = 0.0;
+    bool   ucie_user_pj = false;
+    double ucie_ref_ctrl_pj = 0.0;
     PCIeController(ParseXML *XML_interface,InputParameter* interface_ip_);
     void set_pcie_param();
     void computeEnergy(bool is_tdp=true);

@@ -759,6 +759,10 @@ class DDR5 : public IDRAM, public Implementation {
       // Bank Preqs
       m_preqs[m_levels["bank"]][m_commands["RD"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
       m_preqs[m_levels["bank"]][m_commands["WR"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
+      /* PIMID 1.12.18 (ruling 2026-10-24, row policy): RDA/WRA need the row open like RD/WR (host closed page by
+       * auto-precharge); upstream defined their timings and the closing action but no prerequisite */
+      m_preqs[m_levels["bank"]][m_commands["RDA"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
+      m_preqs[m_levels["bank"]][m_commands["WRA"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
       m_preqs[m_levels["bank"]][m_commands["ACT"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
       m_preqs[m_levels["bank"]][m_commands["PRE"]] = Lambdas::Preq::Bank::RequireBankClosed<DDR5>;
     };
@@ -768,6 +772,8 @@ class DDR5 : public IDRAM, public Implementation {
 
       m_rowhits[m_levels["bank"]][m_commands["RD"]] = Lambdas::RowHit::Bank::RDWR<DDR5>;
       m_rowhits[m_levels["bank"]][m_commands["WR"]] = Lambdas::RowHit::Bank::RDWR<DDR5>;
+      m_rowhits[m_levels["bank"]][m_commands["RDA"]] = Lambdas::RowHit::Bank::RDWR<DDR5>;   // PIMID 1.12.18
+      m_rowhits[m_levels["bank"]][m_commands["WRA"]] = Lambdas::RowHit::Bank::RDWR<DDR5>;   // PIMID 1.12.18
     }
 
 
@@ -776,6 +782,8 @@ class DDR5 : public IDRAM, public Implementation {
 
       m_rowopens[m_levels["bank"]][m_commands["RD"]] = Lambdas::RowOpen::Bank::RDWR<DDR5>;
       m_rowopens[m_levels["bank"]][m_commands["WR"]] = Lambdas::RowOpen::Bank::RDWR<DDR5>;
+      m_rowopens[m_levels["bank"]][m_commands["RDA"]] = Lambdas::RowOpen::Bank::RDWR<DDR5>;   // PIMID 1.12.18
+      m_rowopens[m_levels["bank"]][m_commands["WRA"]] = Lambdas::RowOpen::Bank::RDWR<DDR5>;   // PIMID 1.12.18
     }
 
     void set_powers() {

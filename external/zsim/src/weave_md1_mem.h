@@ -65,8 +65,26 @@ class WeaveSimpleMemory : public SimpleMemory {
         }
 
         uint64_t access(MemReq& req) {
-            uint64_t realRespCycle = SimpleMemory::access(req);
+            bool byReplay = false;
+            uint64_t realRespCycle = SimpleMemory::accessPriced(req, &byReplay);
             uint32_t realLatency = realRespCycle - req.cycle;
+
+            /* 1.12.18 (ruling 17 / R0605): a replay-priced access carries its
+             * whole measured latency (queueing at the bank included) in the
+             * bound phase; a row hit can be shorter than the tRCD + tCAS
+             * zero-load latency, so it is not a lower bound to add an M/D/1
+             * excess to. The weave event spans the same latency and adds
+             * nothing (the contention is the replay's, one epoch back). */
+            if (byReplay) {
+                if (zinfo->eventRecorders[req.srcId]) {
+                    const uint32_t pre = realLatency / 2;
+                    WeaveMemAccEvent* memEv = new (zinfo->eventRecorders[req.srcId]) WeaveMemAccEvent(0, domain, pre, realLatency - pre);
+                    memEv->setMinStartCycle(req.cycle);
+                    TimingRecord tr = {req.lineAddr, req.cycle, realRespCycle, req.type, memEv, memEv};
+                    zinfo->eventRecorders[req.srcId]->pushRecord(tr);
+                }
+                return realRespCycle;
+            }
 
             uint64_t respCycle = req.cycle + ((req.type == PUTS)? 0 : boundLatency);
             assert(realRespCycle >= respCycle);

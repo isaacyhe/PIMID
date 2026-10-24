@@ -28,6 +28,20 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
      * across banks. Off by default: the shipped behaviour is unchanged. */
     bool m_pimid_bank_parallel = false;
     int  m_pimid_banks_per_channel = 1;
+    /* PIMID 1.12.18 (user ruling 2026-10-24): per-chip bank state for PE traffic at chip-level placement.
+     * Each x8 chip is its own Ramulator rank; a host request is sent once per chip, copy 0 with its own source_id
+     * (1 in the ROI, 3 outside) and the lockstep SHADOW copies with source_id + 3 (4 / 6): replayed, timed and
+     * state-changing, never in the row-hit/miss/conflict counts; their ACTs are host chip ACTs (energy).
+     * The DIMM command/address bus binds HOST commands only (PE commands are issued by each chip's in-chip
+     * controller): a host copy-0 command occupies the channel's CA bus for its command cycles (the channel-level
+     * ACT-following constraint of the unfiltered timing table: DDR5 two-cycle ACT/RD/WR = 2, else 1); the shadow
+     * copies ride the same broadcast slot. Off unless the replay sets pimid_host_ca_bus. */
+    bool m_pimid_host_ca = false;
+    std::vector<int> m_pimid_ca_occ;
+    long m_pimid_ca_free = 0;
+    uint64_t s_pimid_shadow_acts = 0, s_pimid_ca_waits = 0;
+    static int pimid_sid(int s) { return (s >= 4) ? s - 3 : s; }
+    bool pimid_ca_host(const Request& r) const { return m_pimid_host_ca && (r.source_id == 1 || r.source_id == 3); }
 
     size_t s_row_hits = 0;
     size_t s_row_misses = 0;
@@ -66,6 +80,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       m_wr_high_watermark = param<float>("wr_high_watermark").desc("Threshold for switching to write mode.").default_val(0.8f);
       m_pimid_bank_parallel = param<bool>("pimid_bank_parallel").desc("PIMID: one command per bank per cycle, no shared bus (processing elements below the channel tier).").default_val(false);
 
+      m_pimid_host_ca = param<bool>("pimid_host_ca_bus").desc("PIMID 1.12.18: host commands obey the DIMM CA bus; lockstep shadow copies (source_id 4/6).").default_val(false);
       m_scheduler = create_child_ifce<IScheduler>();
       m_refresh = create_child_ifce<IRefreshManager>();    
       m_rowpolicy = create_child_ifce<IRowPolicy>();    
@@ -93,6 +108,18 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_active_buffer.max_size *= m_pimid_banks_per_channel;
       }
 
+      if (m_pimid_host_ca) {   /* PIMID 1.12.18: CA occupancy per command, from the still-unfiltered channel level */
+        const int ncmd = (int)m_dram->m_commands.size();
+        /* 1.12.18 (AA10): the opening command by name, checked (LPDDR5 splits it into ACT-1/ACT-2); without one every
+         * command keeps the 1-cycle default CA occupancy */
+        const int act = m_dram->m_commands.contains("ACT") ? m_dram->m_commands("ACT")
+                      : m_dram->m_commands.contains("ACT-1") ? m_dram->m_commands("ACT-1") : -1;
+        m_pimid_ca_occ.assign(ncmd, 1);
+        if (!m_dram->m_timing_cons.empty())
+          for (int pc = 0; pc < ncmd && pc < (int)m_dram->m_timing_cons[0].size(); pc++)
+            for (const auto& t : m_dram->m_timing_cons[0][pc])
+              if (t.cmd == act && t.val > m_pimid_ca_occ[pc]) m_pimid_ca_occ[pc] = t.val;
+      }
       m_num_cores = frontend->get_num_cores();
 
       s_read_row_hits_per_core.resize(m_num_cores, 0);
@@ -227,7 +254,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         if (req_it->is_stat_updated == false) {
           update_request_stats(req_it);
         }
+        pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
         m_dram->issue_command(req_it->command, req_it->addr_vec);
+        if (m_dram->m_command_meta(req_it->command).is_opening) { const int sid_ = pimid_sid(req_it->source_id); s_pimid_activates++; if (req_it->source_id >= 4) s_pimid_shadow_acts++; if (sid_ == 1) s_pimid_src_acts++; if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; } }   /* PIMID 1.12.18: a lockstep shadow (4/6) is a chip ACT of the host (1/3) */   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
 
         // If we are issuing the last command, set depart clock cycle and move the request to the pending queue
         if (req_it->command == req_it->final_command) {
@@ -279,6 +308,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         if (taken) continue;
         it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
         if (!m_dram->check_ready(it->command, it->addr_vec)) continue;
+        if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
         if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing) {
           bool blocks = false;
           for (auto a = m_active_buffer.begin(); a != m_active_buffer.end(); ++a)
@@ -296,12 +326,48 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       return true;
     }
 
+    /* PIMID 1.12.18 (user ruling 2026-10-24 host closed page): the auto-precharge is chosen AT ISSUE.
+     * A host (source 1/3, lock-step shadows 4/6) column command becomes RDA/WRA only when no other queued request
+     * hits the same row of the same bank -- the close-when-no-pending-hit behaviour of a closed-page controller
+     * (Synopsys uMCTL2 SCHED.PAGECLOSE, reset 1: "bank is kept open only while there are page hit transactions
+     * available in the CAM to that bank"). An earlier version translated every host RD/WR to
+     * RDA/WRA at send, which re-opened the row for each of a sequential stream's queued hits. */
+    bool pimid_pending_hit(ReqBuffer& buf, const ReqBuffer::iterator& self) {
+      const int row_lv = m_dram->m_levels("row");
+      for (auto it = buf.begin(); it != buf.end(); ++it) {
+        if (&(*it) == &(*self)) continue;
+        bool same = true;
+        for (int l = 0; l <= row_lv && same; l++) if (it->addr_vec[l] != self->addr_vec[l]) same = false;
+        if (same) return true;
+      }
+      return false;
+    }
+    void pimid_choose_autoprecharge(ReqBuffer::iterator& req_it) {
+      if (!m_pimid_host_autoprecharge) return;
+      const int s = req_it->source_id;
+      if (!(s == 1 || s == 3 || s == 4 || s == 6)) return;
+      if (req_it->command != req_it->final_command) return;   // not the column command yet
+      if (!(m_dram->m_commands.contains("RD") && m_dram->m_commands.contains("WR") && m_dram->m_commands.contains("RDA") &&
+            m_dram->m_commands.contains("WRA"))) return;   // 1.12.18 (AA10): the plugin never sets the flag then; belt and braces
+      const int rd = m_dram->m_commands("RD"), wr = m_dram->m_commands("WR");
+      if (req_it->command != rd && req_it->command != wr) return;
+      if (pimid_pending_hit(m_read_buffer, req_it) || pimid_pending_hit(m_write_buffer, req_it) ||
+          pimid_pending_hit(m_active_buffer, req_it)) return;   // a queued hit keeps the row open
+      const int ap = m_dram->m_commands(req_it->command == rd ? "RDA" : "WRA");
+      if (!m_dram->check_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
+      req_it->command = ap;
+      req_it->final_command = ap;
+    }
     /* issue req_it from buffer: the same steps as tick() step 4 */
     void pimid_issue(ReqBuffer::iterator req_it, ReqBuffer* buffer) {
       if (req_it->is_stat_updated == false) {
         update_request_stats(req_it);
       }
+      pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
       m_dram->issue_command(req_it->command, req_it->addr_vec);
+      if (pimid_ca_host(*req_it) && req_it->command >= 0 && req_it->command < (int)m_pimid_ca_occ.size())   // PIMID 1.12.18
+        m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
+      if (m_dram->m_command_meta(req_it->command).is_opening) { const int sid_ = pimid_sid(req_it->source_id); s_pimid_activates++; if (req_it->source_id >= 4) s_pimid_shadow_acts++; if (sid_ == 1) s_pimid_src_acts++; if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; } }   /* PIMID 1.12.18: a lockstep shadow (4/6) is a chip ACT of the host (1/3) */   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
       if (req_it->command == req_it->final_command) {
         if (req_it->type_id == Request::Type::Read) {
           req_it->depart = m_clk + m_dram->m_read_latency;
@@ -323,17 +389,56 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     }
 
     void pimid_tick_bank_parallel() {
+      /* PIMID 1.12.18 (user ruling 2026-10-24, write drain): the standard
+       * watermark write-drain mode, Ramulator's own set_write_mode: write mode
+       * is entered when the write queue holds more than wr_high_watermark x
+       * its size or no read is pending, and left when it holds less than
+       * wr_low_watermark x its size while a read is pending. PIMID emits the
+       * published ratio, a high/low water mark of 32/16 on a 48-entry write
+       * queue per channel (Chatterjee et al., "Staged Reads", HPCA 2012,
+       * Table 1 p.2 and p.6): 2/3 and 1/3 of the queue in use. In
+       * bank-parallel mode the queue in use is the per-bank-scaled buffer
+       * (32 x banks per channel, setup()), so the marks are fractions of that.
+       * Every source counts (device, host, lock-step shadows 4/6; outside-ROI
+       * 2/3): they all occupy the queue. Bank-parallel mode bypassed this. */
+      set_write_mode();
       std::vector<AddrVec_t> used;
       int issued = 0;
+      /* PIMID 1.12.18: a BANK-scoped priority request -- the row
+       * policy's close-row PRE (ClosedRowPolicy, cap 4, on DDR4/DDR5) -- is
+       * that bank's own command. The 1.12.17 port applied the single-requester
+       * rule to every priority request (a head that is not ready stops the
+       * whole channel; it issues only as the cycle's first command), which is
+       * right for rank/channel maintenance (REFab, PREA) but made each per-bank
+       * PRE -- not ready until tWR after the bank's last write -- stall every
+       * other bank: the co-sim DDR5 MPI flush (61k writes over ~16 banks)
+       * drained at ~50 DRAM cycles per write, one bank at a time. Now a pending
+       * bank-scoped PRE blocks only its own bank until it issues; a
+       * rank/channel-scoped head keeps the old rule. */
+      const bool bankScopedHead = m_priority_buffer.size() != 0 &&
+                                  m_priority_buffer.begin()->addr_vec[m_bank_addr_idx] != -1;
       for (int n = 0; n < m_pimid_banks_per_channel; n++) {
         ReqBuffer::iterator req_it;
         ReqBuffer* buffer = nullptr;
         bool found = false;
+        std::vector<AddrVec_t> blocked = used;   // used banks + banks with a pending, not-ready PRE
+        if (bankScopedHead) {
+          // 0. bank-scoped priority requests, in order, up to the first rank/channel-scoped one
+          for (auto it = m_priority_buffer.begin(); it != m_priority_buffer.end(); ++it) {
+            if (it->addr_vec[m_bank_addr_idx] == -1) break;
+            bool taken = false;
+            for (const auto& k : blocked) if (pimid_same_bank(k, it->addr_vec)) { taken = true; break; }
+            if (taken) continue;
+            it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
+            if (m_dram->check_ready(it->command, it->addr_vec)) { req_it = it; buffer = &m_priority_buffer; found = true; break; }
+            blocked.push_back(it->addr_vec);   // its bank waits for it
+          }
+        }
         // 1. requests already activating
-        if (pimid_best(m_active_buffer, used, req_it)) { buffer = &m_active_buffer; found = true; }
+        if (!found && pimid_best(m_active_buffer, blocked, req_it)) { buffer = &m_active_buffer; found = true; }
         // 2. maintenance (refresh) keeps schedule_request's rule: when its head is
         //    not ready nothing else issues; it is served only as the cycle's first command
-        if (!found && m_priority_buffer.size() != 0) {
+        if (!found && !bankScopedHead && m_priority_buffer.size() != 0) {
           if (issued > 0) break;
           req_it = m_priority_buffer.begin();
           req_it->command = m_dram->get_preq_command(req_it->final_command, req_it->addr_vec);
@@ -344,11 +449,13 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         // 3. reads and writes: no shared data bus, so both are candidates
         if (!found) {
           ReqBuffer::iterator r, w;
-          const bool fr = pimid_best(m_read_buffer, used, r);
-          const bool fw = pimid_best(m_write_buffer, used, w);
+          const bool fr = pimid_best(m_read_buffer, blocked, r);
+          const bool fw = pimid_best(m_write_buffer, blocked, w);
           if (fr && fw) {
-            const bool hr = (r->command == r->final_command), hw = (w->command == w->final_command);
-            if ((hr && !hw) || (hr == hw && r->arrive <= w->arrive)) { req_it = r; buffer = &m_read_buffer; }
+            /* PIMID 1.12.18 (write drain): reads beat writes outside write
+             * mode, writes win inside it; each is row-hit first, then oldest
+             * (pimid_best). A lone candidate always issues (below). */
+            if (!m_is_write_mode) { req_it = r; buffer = &m_read_buffer; }
             else { req_it = w; buffer = &m_write_buffer; }
             found = true;
           } else if (fr) { req_it = r; buffer = &m_read_buffer; found = true; }
@@ -357,7 +464,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_rowpolicy->update(found, req_it);
         for (auto plugin : m_plugins) plugin->update(found, req_it);
         if (!found) break;
-        const bool maintenance = (buffer == &m_priority_buffer);
+        const bool maintenance = (buffer == &m_priority_buffer) && !bankScopedHead;
         AddrVec_t key = req_it->addr_vec;
         pimid_issue(req_it, buffer);
         used.push_back(key);
@@ -394,27 +501,51 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       hits += s_row_hits; misses += s_row_misses; conflicts += s_row_conflicts;
       if (m_refresh) refreshes += m_refresh->pimid_num_refresh();
     }
+    uint64_t s_pimid_activates = 0;   // PIMID 1.12.18
+    void pimid_cmd_totals(uint64_t& activates) const override { activates += s_pimid_activates; }
+    void pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits) const override { shadowActs += s_pimid_shadow_acts; caWaits += s_pimid_ca_waits; }   // PIMID 1.12.18
+    /* PIMID 1.12.18 (ruling 17 / R0605): the host's share (source_id 1). */
+    uint64_t s_pimid_src_hits = 0, s_pimid_src_misses = 0, s_pimid_src_conflicts = 0, s_pimid_src_acts = 0;
+    void pimid_src_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates) const override {
+      hits += s_pimid_src_hits; misses += s_pimid_src_misses; conflicts += s_pimid_src_conflicts; activates += s_pimid_src_acts;
+    }
+    /* PIMID 1.12.18 (user ruling R1 2026-10-24): requests sent with source_id
+     * 2 (device) or 3 (host) were stamped after the ROI end: replayed, not
+     * priced. Their row hits / misses / conflicts and activates (hostActs: the
+     * source_id 3 share), cumulative. */
+    uint64_t s_pimid_out_hits = 0, s_pimid_out_misses = 0, s_pimid_out_conflicts = 0, s_pimid_out_acts = 0, s_pimid_out_hacts = 0;
+    void pimid_out_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates, uint64_t& hostActs) const override {
+      hits += s_pimid_out_hits; misses += s_pimid_out_misses; conflicts += s_pimid_out_conflicts; activates += s_pimid_out_acts; hostActs += s_pimid_out_hacts;
+    }
 
     void update_request_stats(ReqBuffer::iterator& req)
     {
       req->is_stat_updated = true;
+      if (req->source_id >= 4) return;   // PIMID 1.12.18: a lockstep shadow copy is not a request of its own
 
       if (req->type_id == Request::Type::Read) 
       {
+        /* PIMID 1.12.18 (R0605): source_id 1 is the host; the per-core
+         * vectors hold get_num_cores() entries (1 for the GEM5 frontend), so
+         * an id past them is not indexed. */
+        const bool pimid_core = (req->source_id >= 0 && (size_t)req->source_id < s_read_row_hits_per_core.size());
         if (is_row_hit(req)) {
           s_read_row_hits++;
           s_row_hits++;
-          if (req->source_id != -1)
+          if (req->source_id == 1) s_pimid_src_hits++; if (req->source_id >= 2) s_pimid_out_hits++;
+          if (pimid_core)
             s_read_row_hits_per_core[req->source_id]++;
         } else if (is_row_open(req)) {
           s_read_row_conflicts++;
           s_row_conflicts++;
-          if (req->source_id != -1)
+          if (req->source_id == 1) s_pimid_src_conflicts++; if (req->source_id >= 2) s_pimid_out_conflicts++;
+          if (pimid_core)
             s_read_row_conflicts_per_core[req->source_id]++;
         } else {
           s_read_row_misses++;
           s_row_misses++;
-          if (req->source_id != -1)
+          if (req->source_id == 1) s_pimid_src_misses++; if (req->source_id >= 2) s_pimid_out_misses++;
+          if (pimid_core)
             s_read_row_misses_per_core[req->source_id]++;
         } 
       } 
@@ -423,12 +554,15 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         if (is_row_hit(req)) {
           s_write_row_hits++;
           s_row_hits++;
+          if (req->source_id == 1) s_pimid_src_hits++; if (req->source_id >= 2) s_pimid_out_hits++;   // PIMID 1.12.18 (R0605)
         } else if (is_row_open(req)) {
           s_write_row_conflicts++;
           s_row_conflicts++;
+          if (req->source_id == 1) s_pimid_src_conflicts++; if (req->source_id >= 2) s_pimid_out_conflicts++;
         } else {
           s_write_row_misses++;
           s_row_misses++;
+          if (req->source_id == 1) s_pimid_src_misses++; if (req->source_id >= 2) s_pimid_out_misses++;
         }
       }
     }

@@ -148,6 +148,53 @@ Use the **critical-path max** across PEs instead:
 - **The kernel metric is the `(max: N)` value** on either path, not the first
   per-PE line. Harnesses must read `(max: N)`, not `grep cycles | head -1`.
 
+Since 1.12.18 the run's cycles are its RUN TIME, the ROI's elapsed wall-clock
+time, and every time-based power term uses the same window. An OpenMP device
+run prints `OMP busy cycles: <max> (mean, min, pes, per-PE activity; busy
+max)`, then `Run time: <W> cycles = <source>; busy max <max>`, then
+`Total: <sum> cycles (max: <W>)`: the `(max: N)` figure is the run time, no
+longer the busiest PE. A message-passing run prints `Run time:` after its
+`Total:` line; its run time is the latest rank's ROI-relative end, which
+equals its `(max: N)`. The per-PE `cycles:` lines are busy activity.
+
+## Parallel runtime on PEs (PIM runtime primitives)
+
+1.12.18 (user rulings 2026-10-23). On a device PE the OpenMP and MPI runtimes
+are priced "the PIM way": the runtime's own code is not executed on the PE,
+and each runtime event is charged the PIM primitive a PIM device would use
+(UPMEM's measured primitives: lock acquire/release, barrier, handshake). The
+kernel's work -- including user code in a critical section, the inline atomics
+of `#pragma omp atomic` and of a scalar `reduction` clause, the reduce
+arithmetic of an MPI reduction, and every byte a message or collective moves --
+stays fully simulated. Host cores keep executing their runtime (a CPU really
+runs libgomp); `simulation.pim_runtime.apply_to: all` changes that. Keys,
+defaults and sources: [yaml_reference.md](yaml_reference.md#pim-runtime-primitives-simulationpim_runtime).
+
+How the runtime is told from the kernel:
+
+- **OpenMP (libgomp)**: by address range. The executable mappings of
+  `libgomp.so` are found in the guest's memory map; a thread is in the runtime
+  from the moment it jumps from the workload binary into libgomp until control
+  reaches the workload binary again (the outlined region body, or the return of
+  the `GOMP_*` / `omp_*` call). Library code called from either side (glibc:
+  `malloc`, `pthread_create`, futex) belongs to the caller. The event is the
+  exported libgomp function the jump lands on (from libgomp's dynamic symbol
+  table); the return of a region body into libgomp is the region's implicit
+  barrier. No interposer library or relinking is needed and every libgomp
+  entry point is covered; unsupported ones (tasks, target, teams, cancel)
+  refuse by name.
+- **MPI (`libpimid_mpi`, thread mode)**: the shim marks its own bookkeeping
+  and announces each protocol event; its data temporaries are per-rank scratch
+  buffers allocated once (no `malloc`/`free` per call) and stay priced, since
+  they hold message payload and reduction operands.
+
+The run prints the parameters in force ("assumes DPU-style atomics across the
+device's PEs") and, per core, `[pim-runtime] ROI core N: events
+(count/cycles): ... | primitive cycles charged C | runtime code not executed
+on the PE: I instrs, M memory accesses`, then a `[pim-runtime] ROI total:`
+line. `simulation.pim_runtime.enabled: false` restores the earlier model (the
+runtime executed and priced like kernel code).
+
 ## Device-organization-aware data prep (near-data placement)
 
 The simulator prices each PE access purely by data LOCATION (own unit = fast,
@@ -165,7 +212,58 @@ scatter) stays remote -- so it pays real network distance, which is the
 point. Coarse/host-shared placements (`CHANNEL`, `LOGIC_DIE`) need no prep
 and run the original path; a working set too large for a PE slot falls back
 to host layout with a loud note. MPI variants need no prep for rank
-locality: each rank's address space maps into its own placement slice.
+locality: each rank touches its own data first, so its pages live in its own
+PE's memory (first-touch placement, [memory.md](memory.md#pe-placement-levels)).
+
+Since 1.12.18 placement is first touch, so a slot belongs to a PE only if that
+PE writes it first. The shared-memory kernels therefore fill each slot from its
+own thread (thread p fills PE p's slot), and on the host-layout path each
+thread initialises the share of every array it later computes on, with the
+same split as the compute loop. Data built by one sequential random stream
+(bfs, histogram, spmv) is first zeroed by its owners, then filled. Unmodified
+programs that set data up serially (Rodinia, NPB) place it with the master's
+PE, as they would on a real non-uniform machine.
+
+## The PE scratchpad
+
+Since 1.12.18 the compute unit (`alu_core`) has a small data RAM of its own,
+`pim.pe.spm_bytes` (default 4096; the published reference point is UPMEM's
+64 KB WRAM). A load or store inside it costs the RAM's CACTI access time; every
+other access still goes to the device memory, one access at a time. As on real
+PIM hardware nothing enters the RAM by itself: the kernel moves blocks in and
+out through `benchmarks/include/pimid_spm.h`:
+
+    pimid_spm_t s;  pimid_spm_open(&s);       /* once per thread, before the ROI */
+    const float* a = (const float*)pimid_spm_in(&s, off, src, bytes);   /* memory -> RAM */
+    float* o = (float*)pimid_spm_out(&s, off, dst);                     /* a RAM area to fill */
+    pimid_spm_flush(&s, dst, o, bytes);                                 /* RAM -> memory */
+    pimid_spm_close(&s);                      /* after the ROI */
+
+`pimid_spm_tile(&s, nbuf, elem)` gives the elements per buffer when the RAM is
+split into `nbuf` equal buffers. `pim.pe.spm_staging` decides who moves a block:
+the PE's DMA engine (`dma`, default; no copy instructions) or the PE itself
+(`core`). Where there is no scratchpad -- `spm_bytes: 0`, an in-order or
+out-of-order PE, a native run -- `pimid_spm_open` reports 0, `pimid_spm_in`
+returns the source pointer, `pimid_spm_out` the destination, flush does nothing
+and the tile is the whole range, so the same kernel code runs on the memory
+directly. Outside the simulator, `PIMID_SPM_CHECK_BYTES=<n>` runs the tiled path
+natively with the PE copying, to check a kernel's tiling against its untiled
+result.
+
+The PE's own stack is in its DRAM by default (`pim.pe.stack: dram`), so a
+register the compiler spills in a tiled loop costs a memory access. With
+`pim.pe.stack: spm` the stack lives in the scratchpad instead, as on UPMEM,
+and keeps `pim.pe.spm_stack_bytes` of it (default 8192): `pimid_spm_open`
+then reports `spm_bytes - spm_stack_bytes` for the buffers. Each PE reports
+the stack span it touched in the ROI as `stackSpanBytes`, which is what the
+reserve must hold.
+
+All 8 PIM kernels, in their serial, shared-memory and message-passing forms,
+go through one tiled routine per kernel (the same text in all three forms).
+Data read once streams through the RAM in tiles; data that is reused stays in
+it (gemv's x tile, histogram's bins when they fit). Irregular gathers --
+spmv's `x[col]`, bfs's `row_ptr[u]` and `dist[v]` -- stay direct memory
+accesses. Buffers handed to MPI are always ordinary memory.
 
 ## NPB (NAS Parallel Benchmarks)
 

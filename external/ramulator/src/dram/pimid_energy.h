@@ -145,7 +145,45 @@ struct IDDSpec {
      * backgroundSystemStatesMW. < 0 = none (every non-HBM row). HBM2 and
      * HBM3 only; the measurement and its reading are at the HBM2 row. */
     double stack_floor_mw = -1.0;
+    /* 1.12.18: (bug 2b/8a) the I/O-EQUIVALENT share INSIDE idd4r / idd4w, mA,
+     * of a DERIVED row that folded the DQ I/O energy into its VDD burst
+     * current because the tree had no separate I/O term (HBM3: the 1.11.91
+     * derivation, section 1.3 and A7). < 0 = none: every row whose IDD is
+     * the VDD rail alone, as JEDEC measures it. With
+     * power.models.dram_io_share_split on, the ARRAY burst is charged without
+     * it and the I/O of an access that crosses the DQ is priced once, by the
+     * IDDQ term (iddqNJ); an access that does not cross pays no I/O. */
+    double idd4r_io = -1.0, idd4w_io = -1.0;
+    /* 1.12.18 (user ruling 2026-10-23, "Re-derive I/O share"): an io_share
+     * ANCHORED on a published I/O energy (record idd.io_share.anchor_*): the
+     * anchor, pJ/bit per direction, and the channel rate its mA were computed
+     * at. < 0 = not anchored. An anchored share PRICES the DQ I/O of a
+     * crossing access itself (iddqNJ): the burst gives it up and the crossing
+     * gets it back, once, reads and writes alike; the row's IDDQ band, if any,
+     * is then a guard (readEnergyGuardLines). */
+    double io_anchor_rd_pj_bit = -1.0, io_anchor_wr_pj_bit = -1.0, io_channel_gbps = -1.0;
+    /* 1.12.18: (bug 3b) the VPP rail's ACTIVE rows, from the same datasheet
+     * table as ipp2n/ipp3n: IPP0 (the IDD0 loop), IPP4R / IPP4W (the burst
+     * loops), IPP5B (all-bank refresh). < 0 = the row's source does not
+     * publish it: nothing is priced for it. */
+    double ipp0 = -1.0, ipp4r = -1.0, ipp4w = -1.0, ipp5b = -1.0;
+    /* 1.12.18: the sheet measured IDDQ4W with the DRAM's
+     * RTT_WR enabled (record iddq.wr_includes_rtt_wr): the write termination
+     * DC current is inside IDDQ4W - IDDQ3N. */
+    bool iddq_wr_includes_rtt_wr = false;
+    /* 1.12.18 (user ruling 2026-10-24): HBM activation VPP as a RATIO of the VDD
+     * activate+precharge energy (record idd.vpp_act; Xilinx XPE 2023.1.2 HBM_Data
+     * VPP Activate / VDD activate (read)). < 0 = none. Never set together with
+     * ipp0 (the loader refuses both), so the VPP activation is priced once. */
+    double vpp_act_ratio = -1.0;
 };
+/* 1.12.18: power.models.iddq_write_termination_once (default on). */
+inline bool& iddqWriteTerminationOnceEnabled() { static bool v = true; return v; }
+/* 1.12.18: the run's power.models.dram_io_share_split and
+ * power.models.dram_vpp_dynamic, set once after the YAML is read
+ * (RamulatorWrapper::setEnergyModelSwitches); both default on. */
+inline bool& ioShareSplitEnabled() { static bool v = true; return v; }
+inline bool& vppDynamicEnabled() { static bool v = true; return v; }
 
 /* ---- 1.11.105: the registry types, declared before the first reader ---- */
 inline std::string baseTech(const std::string& key) {
@@ -171,6 +209,14 @@ struct TermElectricals {
     bool known = false;   // false: no row (the caller announces its DDR4-class substitute)
 };
 
+/* 1.12.18 (user ruling 2026-10-23): published whole-device read energy of
+ * older generations (record read_energy_guard). GUARD ONLY: compared with the
+ * model's derived total read energy and printed; never priced, never tuned. */
+struct ReadEnergyGuardFacts {
+    bool valid = false;
+    std::vector<std::pair<std::string, double>> refs;   // label, pJ/bit
+    double max_gain = 0.0;                              // expected band per ref: [(1 - gain) x ref, ref]
+};
 struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
     std::map<int, IDDSpec> rows;         // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
     std::string provenance;              // MEASURED | CALIBRATED | DERIVED
@@ -181,6 +227,13 @@ struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
     ComponentFactors component_factors;
     TermElectricals termination;
     IddqBand iddq_band;
+    ReadEnergyGuardFacts read_guard;     // 1.12.18 (user ruling 2026-10-23)
+    /* 1.12.18 (user ruling 2026-10-24): labels of the activation VPP ratio and the
+     * activate+precharge guard per 1 KB row (printed by readEnergyGuardLines, never priced) */
+    struct VppActFacts { bool valid = false; double alt_ratio = -1.0; std::string device, alt_device, provenance; } vpp_act;
+    struct ActGuardFacts { bool valid = false; double lo = 0.0, ceiling = 0.0, hi = 0.0; } act_guard;
+    /* 1.12.18 (user ruling 2026-10-24, floor option 2): XPE like-for-like background guard, mW per stack */
+    struct BgGuardFacts { bool valid = false; double lo_mw = 0.0, hi_mw = 0.0; } bg_guard;
     bool set = false;
 };
 inline std::map<std::string, PartIddFacts>& partIddFactsMap() { static std::map<std::string, PartIddFacts> m; return m; }
@@ -511,7 +564,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * (8 Gb, DDR5_3200AN) keeps its previous currents with the gap STATED:
      * no held datasheet publishes a 3200 column, so that row's IDD is
      * unsourced (lane C F6 measured it 2-3x below either addendum on
-     * standby). Default grade is 4800. The energy caller passes the grade;
+     * standby). Default grade is the part record's: 5600 since 1.12.18 (user
+     * ruling 2026-10-23/24). The energy caller passes the grade;
      * the tRFC column is 195 ns at 8 Gb and 295 ns at 16 Gb. */
     /* 1.11.91 (audit R8-8, user ruling (a)): the IDDQ and IPP rows of the
      * SAME two addenda, x8 column, read page-ranged. VDDQ = VDD = 1.1 V and
@@ -831,7 +885,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * 16-bit channel, BL16 x 16 b = 32 B, 2 bursts), and backgroundUnits()
      * counts ranks x channels with the preset's 2 channels per device, so
      * the row is written per channel: burst per access = half current x 2
-     * bursts = the device figure x 1 burst (basis-neutral, IDD_DERIVATION
+     * bursts = the device figure x 1 burst (basis-neutral, docs/derivations/hbm_gddr6_idd.md
      * section 2.2); background and refresh = 2 units x half = per device.
      * The row STORES (device maximum / 2); typicalFromSpec() applies the
      * two-generation component factors (anchors [G], [S] at the DDR5 rows;
@@ -956,7 +1010,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * background ~6.5x, burst increments 3-5x -- the model had priced a
      * stack's standby at 0.20 W where silicon draws 1.37 W. */
     /* 1.11.91 (item 11): MEASURED, AT THE PRESET'S OPERATING POINT. The
-     * measurement's own operating point is not the preset's (IDD_DERIVATION
+     * measurement's own operating point is not the preset's (docs/derivations/hbm_gddr6_idd.md
      * section 1.1): the artifact's sources/table3/configs/
      * HBM2_1.2Gbps_timing_BL4.json has "tCK_ps": 1666.7 (600 MHz = 1.2
      * Gb/s/pin), and every IDD test file the standardiser maps is
@@ -1238,6 +1292,8 @@ inline IDDSpec typicalFromSpec(const IDDSpec& spec, const ComponentFactors& f,
     if (t.idd3n < t.idd2n) t.idd3n = t.idd2n;
     t.idd4r = t.idd3n + f.burst_rd * (spec.idd4r - spec.idd3n);
     t.idd4w = t.idd3n + f.burst_wr * (spec.idd4w - spec.idd3n);
+    if (spec.idd4r_io >= 0.0) t.idd4r_io = f.burst_rd * spec.idd4r_io;   // 1.12.18: the I/O share rides its burst's factor
+    if (spec.idd4w_io >= 0.0) t.idd4w_io = f.burst_wr * spec.idd4w_io;
     t.idd5  = t.idd2n + f.refresh  * (spec.idd5  - spec.idd2n);
     t.idd2p = f.pd * spec.idd2p;
     if (tRC > 0.0 && tRAS >= 0.0 && tRAS <= tRC) {
@@ -1331,7 +1387,7 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
  *          ranks x channels and receives 2 channels per device from the
  *          GDDR6_8Gb_x16 preset: 2 x a per-channel standby = the device's.
  *          Burst energy is basis-neutral (half current x 2 bursts = device
- *          current x 1 burst, IDD_DERIVATION section 2.2); until 1.11.91 the
+ *          current x 1 burst, docs/derivations/hbm_gddr6_idd.md section 2.2); until 1.11.91 the
  *          path was held at 1 device-unit x 1 burst.]
  *   HBM2   one 128-bit channel (the IDD basis, JESD235D) = 1 unit;
  *          BL4 x 128 b = 64 B, 1 burst
@@ -1525,6 +1581,53 @@ inline double oneBankActiveStandbyMA(const IDDSpec& s, int banks_per_device,
     return s.idd2n + (s.idd3n - s.idd2n) / static_cast<double>(n);
 }
 
+/* 1.12.18: (bug 2b/8a) the part of the burst current that is the row's
+ * I/O-equivalent share (0 when the row has none or the split is off): the
+ * array burst is (idd4r - ioShareMA - idd3n). */
+inline double ioShareMA(const IDDSpec& s, bool is_write) {
+    if (!ioShareSplitEnabled()) return 0.0;
+    const double io = is_write ? s.idd4w_io : s.idd4r_io;
+    return (io > 0.0) ? io : 0.0;
+}
+/* 1.12.18: (bug 3b) THE PUMP RAIL'S ACTIVE TERMS, pJ per IDD unit, on the
+ * same loops and baselines as the VDD terms they sit beside (TN-41-01 form):
+ *   activate + precharge  VPP x (IPP0 x tRC - IPP3N(one bank) x tRAS - IPP2N x (tRC - tRAS))
+ *   burst                 VPP x (IPP4R | IPP4W - IPP3N) x tBurst
+ *   refresh (one REF)     VPP x (IPP5B - IPP2N) x tRFC   (IPP2N-relative, as the VDD term: 1.12.18, user ruling 2026-10-23)
+ * The rows are the datasheet's values as stored, like the standby IPP pair
+ * (no typical/maximum factor is sourced for the VPP rail). A column the row
+ * does not publish prices nothing; a difference that is not positive (DDR4:
+ * IPP0 = IPP3N = 3 mA) adds nothing. power.models.dram_vpp_dynamic: false
+ * restores the standby-only VPP rail. */
+inline double vppActPrePJ(const IDDSpec& s, double tRC, double tRAS, int banks_per_device, Idd3nBasis basis) {
+    if (!vppDynamicEnabled() || !(s.vpp > 0.0) || s.ipp0 < 0.0 || s.ipp2n < 0.0 || s.ipp3n < 0.0) return 0.0;
+    const int n = (banks_per_device > 0) ? banks_per_device : 1;
+    const double ipp3n_1b = (basis == Idd3nBasis::ONE_BANK) ? s.ipp3n
+                          : s.ipp2n + (s.ipp3n - s.ipp2n) / static_cast<double>(n);
+    const double e = s.vpp * (s.ipp0 * tRC - ipp3n_1b * tRAS - s.ipp2n * (tRC - tRAS));
+    return (e > 0.0) ? e : 0.0;
+}
+/* 1.12.18 (user ruling 2026-10-24): the activation's VPP share as a ratio of the
+ * VDD activate+precharge energy e_vdd_pJ (record idd.vpp_act, HBM). Same switch as
+ * the IPP route (power.models.dram_vpp_dynamic); 0 when the row carries an IPP0
+ * (the loader refuses that combination; this is the second lock). */
+inline double vppActRatioPJ(const IDDSpec& s, double e_vdd_pJ) {
+    if (!vppDynamicEnabled() || s.vpp_act_ratio < 0.0 || s.ipp0 >= 0.0 || !(e_vdd_pJ > 0.0)) return 0.0;
+    return s.vpp_act_ratio * e_vdd_pJ;
+}
+inline double vppBurstPJ(const IDDSpec& s, double tBurst, bool is_write) {
+    if (!vppDynamicEnabled() || !(s.vpp > 0.0) || s.ipp3n < 0.0) return 0.0;
+    const double ip = is_write ? s.ipp4w : s.ipp4r;
+    if (ip < 0.0) return 0.0;
+    const double e = s.vpp * (ip - s.ipp3n) * tBurst;
+    return (e > 0.0) ? e : 0.0;
+}
+inline double vppRefreshPerUnitPJ(const IDDSpec& s) {
+    if (!vppDynamicEnabled() || !(s.vpp > 0.0) || s.ipp5b < 0.0 || s.ipp2n < 0.0) return 0.0;
+    const double e = s.vpp * (s.ipp5b - s.ipp2n) * s.trfc_ns;   // 1.12.18 (user ruling 2026-10-23): IPP2N baseline (was IPP3N)
+    return (e > 0.0) ? e : 0.0;
+}
+
 inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
                           double tBurst, double bank_override_pJ_per_byte,
                           const std::string& device_width = "",
@@ -1540,11 +1643,14 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
         ? s.e_actpre_pJ_override
         : s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
+    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
+    e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
     /* 1.11.91 (R8-2): the burst's baseline is the standby the IDD4R loop
      * ran on top of -- all banks open on the ALL_BANKS parts, i.e. IDD3N
      * as specified. For ONE_BANK parts see the stated residual in the
      * Idd3nBasis note. */
-    double e_rd_pJ     = s.vdd * (s.idd4r - s.idd3n) * tBurst;
+    double e_rd_pJ     = s.vdd * (s.idd4r - ioShareMA(s, false) - s.idd3n) * tBurst   // 1.12.18 (bug 2b/8a): the array's share
+                         + vppBurstPJ(s, tBurst, false);                              // 1.12.18 (bug 3b)
     /* 1.11.52 (audit D003): the activate/precharge share is MEASURED, not
      * assumed. It is the dominant term -- on DDR4 the act+pre part is ~1.42
      * nJ against ~0.39 nJ of burst -- and it used to be weighted by a
@@ -1558,6 +1664,28 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
                                  ? row_miss_frac : 0.5;
     return (ROW_MISS_FRAC * e_actpre_pJ + e_rd_pJ) / 1000.0
            * devicesPerAccess(baseTech(tech), device_width);   // 1.11.46 (L181)
+}
+/* PIMID 1.12.18: the energy of ONE activate + precharge (the IDD0 term
+ * arrayReadNJ weights by the row-miss fraction), per access's devices, for a
+ * caller that COUNTS the activates a controller issued and charges the
+ * per-access terms at miss fraction 0. A user per-byte array override is an
+ * all-in figure with no separable activate: 0, and the override stays in the
+ * per-access term. */
+inline double activatePrechargeNJ(const std::string& tech, double tRC, double tRAS,
+                                  double bank_override_pJ_per_byte,
+                                  const std::string& device_width = "",
+                                  int banks_per_device = 1) {
+    if (bank_override_pJ_per_byte > 0.0) return 0.0;
+    IDDSpec s = iddTypicalAt(tech, tRC, tRAS, banks_per_device);
+    const double idd3n_1b = oneBankActiveStandbyMA(s, banks_per_device,
+                                idd3nBasisFor(baseTech(tech)));
+    double e_actpre_pJ = (s.e_actpre_pJ_override >= 0.0)
+        ? s.e_actpre_pJ_override
+        : s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
+    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);
+    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
+    e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
+    return e_actpre_pJ / 1000.0 * devicesPerAccess(baseTech(tech), device_width);
 }
 inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
                            double tBurst, double bank_override_pJ_per_byte,
@@ -1588,7 +1716,10 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
         ? s.e_actpre_pJ_override
         : s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
-    double e_wr_pJ     = s.vdd * (s.idd4w - s.idd3n) * tBurst;   // same baseline rule as the read (1.11.91)
+    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
+    e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
+    double e_wr_pJ     = s.vdd * (s.idd4w - ioShareMA(s, true) - s.idd3n) * tBurst   // same baseline rule as the read (1.11.91); 1.12.18 (bug 2b/8a)
+                         + vppBurstPJ(s, tBurst, true);                              // 1.12.18 (bug 3b)
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)
                                  ? row_miss_frac : 0.5;   // 1.11.52 (D003)
     return (ROW_MISS_FRAC * e_actpre_pJ + e_wr_pJ) / 1000.0
@@ -1861,6 +1992,26 @@ inline double iddqNJ(const std::string& tech, const std::string& device_width,
                      double* band_lo_nj = nullptr, double* band_hi_nj = nullptr) {
     const std::string bt = baseTech(tech);
     const IddqBand band = iddqBandFor(bt);
+    /* 1.12.18 (user ruling 2026-10-23): a row whose io_share is ANCHORED on a
+     * published I/O energy prices the DQ I/O of a crossing access at that
+     * share, VDD x share x the access's burst time: exactly what the burst
+     * term gave up (ioShareMA), so a crossing access pays the derived row's
+     * full burst and an on-die access pays the array alone. Writes too: the
+     * share is inside IDD4W, and nothing else charges it back. The band, if
+     * the record keeps one, is reported as a guard only (band_lo/hi carry
+     * its ends for that). The record refuses component factors on such a row,
+     * so the stored share is the typical one. */
+    if (partIddFactsIfAny(bt)) {
+        const IDDSpec s = iddFor(tech);
+        if (s.io_anchor_rd_pj_bit > 0.0) {
+            const double io = is_write ? s.idd4w_io : s.idd4r_io;
+            if (band_lo_nj) *band_lo_nj = band.valid ? band.lo_pj_bit * 512.0 / 1000.0 : -1.0;
+            if (band_hi_nj) *band_hi_nj = band.valid ? band.hi_pj_bit * 512.0 / 1000.0 : -1.0;
+            if (io < 0.0 || !(access_burst_ns > 0.0)) return -1.0;
+            return s.vdd * io * access_burst_ns
+                   * static_cast<double>(devicesPerAccess(bt, device_width)) / 1000.0;
+        }
+    }
     if (band.valid) {
         if (band_lo_nj) *band_lo_nj = is_write ? 0.0 : band.lo_pj_bit * 512.0 / 1000.0;
         if (band_hi_nj) *band_hi_nj = is_write ? 0.0 : band.hi_pj_bit * 512.0 / 1000.0;
@@ -1876,14 +2027,37 @@ inline double iddqNJ(const std::string& tech, const std::string& device_width,
     return e_pj / 1000.0;   // may be < 0 if the row's increment is negative
 }
 
+/* 1.12.18: true when a crossing WRITE's termination is already
+ * inside the priced IDDQ4W excess: the row's IDDQ is the measured one (not an
+ * anchored share, not a band) and the sheet measured it with RTT_WR enabled
+ * (record iddq.wr_includes_rtt_wr, see params/dram/ddr5.yaml). The caller
+ * then charges the IDDQ4W excess and prints the termination as a guard. */
+inline bool iddqWriteIncludesTermination(const std::string& tech) {
+    if (!iddqWriteTerminationOnceEnabled()) return false;
+    const std::string bt = baseTech(tech);
+    if (!partIddFactsIfAny(bt)) return false;
+    if (iddqBandFor(bt).valid) return false;
+    const IDDSpec s = iddFor(tech);
+    if (s.io_anchor_rd_pj_bit > 0.0) return false;
+    return s.iddq_wr_includes_rtt_wr && s.iddq4w >= 0.0 && s.iddq3n >= 0.0;
+}
+
+/* 1.12.18 (user ruling 2026-10-23): true when the DQ I/O of a crossing access
+ * is priced from an anchored io_share (iddqNJ above) rather than the band. */
+inline bool dqIoFromAnchoredShare(const std::string& tech) {
+    if (!partIddFactsIfAny(baseTech(tech))) return false;
+    return iddFor(tech).io_anchor_rd_pj_bit > 0.0;
+}
+
 /* 1.11.91 (audit R8-8, user ruling (a)): THE PUMP RAIL, PER UNIT. IPP2N
  * while the unit is precharged, IPP3N while a bank is open, each x VPP, on
  * the same state split as the VDD background (backgroundUnitStatesMW): the
  * active share is the caller's bank-open fraction, the rest is precharged.
  * Precharge power-down draws IPP2N too (DDR5 Rev A IPP2P 6 = IPP2N 6,
  * Table 6 p.18; DDR4 note 22 p.334: IPP3N applies to "all IDD2x"). The
- * refresh and burst IPP rows (IPP5B, IPP4R/W, IPP0) are NOT priced -- only
- * the standby pair the ruling names. Returns < 0 when the row has no IPP
+ * refresh and burst IPP rows (IPP5B, IPP4R/W, IPP0) were NOT priced before
+ * 1.12.18 -- only the standby pair the ruling names (see vppActPrePJ /
+ * vppBurstPJ / vppRefreshPerUnitPJ and the refresh term below). Returns < 0 when the row has no IPP
  * (HBM2/HBM3: no published value; GDDR6: pending the R8-9 row; DDR3: no VPP
  * rail; DDR5-3200: no sheet). */
 inline double ippUnitMW(const std::string& tech, double active_frac) {
@@ -1891,7 +2065,21 @@ inline double ippUnitMW(const std::string& tech, double active_frac) {
     if (s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) return -1.0;
     if (active_frac < 0.0) active_frac = 0.0;
     if (active_frac > 1.0) active_frac = 1.0;
-    return s.vpp * (s.ipp3n * active_frac + s.ipp2n * (1.0 - active_frac));
+    double mw = s.vpp * (s.ipp3n * active_frac + s.ipp2n * (1.0 - active_frac));
+    /* 1.12.18: (bug 3b) the pump rail's refresh: for the tRFC/tREFI duty the
+     * unit draws IPP5B in place of its state's standby IPP, as the VDD
+     * background does with IDD5 (stateWithRefreshMW). refreshMW() carries the
+     * same term IPP2N-relative (1.12.18, user ruling 2026-10-23: the refresh
+     * interrupts the state, baseline precharged standby), so a counted-refresh
+     * substitution (counted minus duty) leaves every state at IPP2N for the
+     * duty -- what a refresh interrupting it draws -- and adds the counted
+     * (IPP5B - IPP2N) x tRFC per command: nothing is counted twice. */
+    if (vppDynamicEnabled() && s.ipp5b >= 0.0 && s.trefi_ns > 0.0) {
+        const double duty = s.trfc_ns / s.trefi_ns;
+        mw += s.vpp * duty * (active_frac * (s.ipp5b - s.ipp3n)
+                              + (1.0 - active_frac) * (s.ipp5b - s.ipp2n));
+    }
+    return mw;
 }
 
 /* All three quantities below are PER IDD-BEARING UNIT: one DDR-class chip,
@@ -1930,12 +2118,17 @@ inline double stateWithRefreshMW(const IDDSpec& s, double idd_state) {
     return s.vdd * (idd_state * (1.0 - duty) + idd5 * duty);
 }
 
-/* The refresh EXCESS over active standby. Reported as its own line item, and
- * that is the only thing it means: it is IDD3N-relative and must not be added
- * to a baseline that is not IDD3N. backgroundUnitMW() no longer calls it. */
+/* The refresh EXCESS over PRECHARGED standby, per unit: vdd x (IDD5 - IDD2N) x tRFC/tREFI (+ VPP x (IPP5B -
+ * IPP2N) x tRFC/tREFI). 1.12.18 (user ruling 2026-10-23, "IDD2N (state interrupted)"): JEDEC measures IDD5
+ * with all banks precharged and a REFab needs them precharged, so the refresh interrupts whatever state the unit
+ * held and its excess is over IDD2N, not IDD3N (was: IDD3N-relative, under-pricing refresh by vdd x (IDD3N -
+ * IDD2N) x duty). It is the share of stateWithRefreshMW() a counted-refresh substitution removes: each state's
+ * duty then stands at IDD2N (state x (1 - duty) + IDD2N x duty), and the counted energy adds the excess, so no
+ * state is charged twice. backgroundUnitMW() no longer calls it. */
 inline double refreshMW(const std::string& tech, int temperature_k = 358) {   // 1.11.65
     IDDSpec s = iddFor(tech, temperature_k);
-    return s.vdd * (s.idd5 - s.idd3n) * (s.trfc_ns / s.trefi_ns);
+    return s.vdd * (s.idd5 - s.idd2n) * (s.trfc_ns / s.trefi_ns)   // 1.12.18 (user ruling 2026-10-23): IDD2N baseline (was IDD3N)
+         + vppRefreshPerUnitPJ(s) / s.trefi_ns;   // 1.12.18 (bug 3b): the VPP refresh, pJ/ns = mW
 }
 inline double backgroundMW(const std::string& tech, int temperature_k = 358) {
     IDDSpec s = iddFor(tech, temperature_k);
@@ -2166,6 +2359,217 @@ inline double backgroundSystemStatesMW(const std::string& tech, double active_fr
            static_cast<double>(backgroundUnits(baseTech(tech), device_width,
                                                ranks_per_channel, channels))
            + (floor_mw > 0.0 ? floor_mw : 0.0);
+}
+
+/* 1.12.18 (ruling 17 / R0605; user 2026-10-23: "Call them in PIMID but don't
+ * add them directly to PIMID"): the energy of the commands a REPLAYED
+ * controller counted, here in the energy model, so the system-scope report
+ * only passes the counts and sums what comes back. Same datasheet rows and the
+ * same arithmetic the device-scope report has used since 1.11.98 / 1.12.18:
+ *   - one activate (ACT + its precharge) = the array read energy of a
+ *     row-opening access minus that of a row hit (arrayReadNJ at miss
+ *     fraction 1 and 0): the act/pre term, on the whole-access basis;
+ *   - one refresh command on one IDD unit = vdd x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC; IDD2N
+ *     baseline, 1.12.18 user ruling 2026-10-23); the
+ *     units behind one command = the population per rank (background units
+ *     over ranks x channels); the rate is quoted over the replayed DRAM time;
+ *   - the datasheet refresh duty it replaces = refreshMW x the background
+ *     units (the share of backgroundSystem*MW that is refresh). */
+inline double activateEnergyNJ(const std::string& tech, double tRC, double tRAS,
+                               double tBurst, double bank_override_pJ_per_byte,
+                               const std::string& device_width, int banks_per_device) {
+    return arrayReadNJ(tech, tRC, tRAS, tBurst, bank_override_pJ_per_byte, device_width, 1.0, banks_per_device)
+         - arrayReadNJ(tech, tRC, tRAS, tBurst, bank_override_pJ_per_byte, device_width, 0.0, banks_per_device);
+}
+inline double refreshEnergyPerCommandNJ(const std::string& tech, int temperature_k = 358) {
+    IDDSpec s = iddFor(tech, temperature_k);
+    return (s.vdd * (s.idd5 - s.idd2n) * s.trfc_ns + vppRefreshPerUnitPJ(s)) / 1000.0;   // 1.12.18 (bug 3b): + VPP; (user ruling 2026-10-23): IDD2N baseline (was IDD3N)
+}
+inline double countedRefreshSystemMW(const std::string& tech, int temperature_k,
+                                     uint64_t refreshes, double span_ns,
+                                     const std::string& device_width,
+                                     int ranks_per_channel, int channels) {
+    if (!(span_ns > 0.0)) return -1.0;
+    const int units = backgroundUnits(baseTech(tech), device_width, ranks_per_channel, channels);
+    const int rc = std::max(1, ranks_per_channel) * std::max(1, channels);
+    const double units_per_cmd = (units > 0) ? (double)units / (double)rc : 1.0;
+    return (double)refreshes * refreshEnergyPerCommandNJ(tech, temperature_k)
+           * std::max(1.0, units_per_cmd) / span_ns * 1000.0;   // nJ/ns = W -> mW
+}
+inline double refreshDutySystemMW(const std::string& tech, int temperature_k,
+                                  const std::string& device_width,
+                                  int ranks_per_channel, int channels) {
+    return refreshMW(tech, temperature_k)
+           * static_cast<double>(backgroundUnits(baseTech(tech), device_width, ranks_per_channel, channels));
+}
+
+
+/* 1.12.18 (user ruling 2026-10-23): THE DERIVED TOTAL READ ENERGY, pJ/bit,
+ * the quantity the published whole-device figures state: sequential 64 B
+ * reads that cross the DQ, at the channel's full rate (512 b per access burst
+ * time), one activate per row (64 B / row bytes), with the unit's standby,
+ * refresh excess and its share of the stack floor spread over the bits moved:
+ *   burst    arrayReadNJ at miss fraction 0 (the array burst, io_share removed)
+ *   io       iddqNJ (read): the DQ I/O of a crossing access
+ *   act      (64 / row_bytes) x activatePrechargeNJ
+ *   standby  VDD x IDD3N x units / channel Gb/s     (mW / Gb/s = pJ/b)
+ *   refresh  refreshMW x units / channel Gb/s
+ *   floor    stack floor / (channels x channel Gb/s)
+ * All from the record through the same functions the run prices with (no
+ * user array override). valid = false when the inputs cannot give it. */
+struct ReadEnergyPerBit {
+    bool valid = false;
+    double burst = 0.0, io = 0.0, act = 0.0, standby = 0.0, refresh = 0.0, floor = 0.0, total = 0.0;
+    double channel_gbps = 0.0, row_bytes = 0.0;
+};
+inline ReadEnergyPerBit derivedReadEnergyPerBit(const std::string& tech, double tRC, double tRAS,
+                                                double access_burst_ns, const std::string& device_width,
+                                                int banks_per_device, double row_bytes) {
+    ReadEnergyPerBit e;
+    if (!(access_burst_ns > 0.0) || !(row_bytes >= 64.0) || !partIddFactsIfAny(baseTech(tech))) return e;
+    const double bits = 512.0;
+    const IDDSpec s = iddFor(tech);
+    const double units = static_cast<double>(devicesPerAccess(baseTech(tech), device_width));
+    e.channel_gbps = bits / access_burst_ns;
+    e.row_bytes = row_bytes;
+    e.burst = arrayReadNJ(tech, tRC, tRAS, access_burst_ns, 0.0, device_width, 0.0, banks_per_device) * 1000.0 / bits;
+    const double io = iddqNJ(tech, device_width, access_burst_ns, false);
+    e.io = (io > 0.0) ? io * 1000.0 / bits : 0.0;
+    e.act = (64.0 / row_bytes) * activatePrechargeNJ(tech, tRC, tRAS, 0.0, device_width, banks_per_device) * 1000.0 / bits;
+    e.standby = s.vdd * s.idd3n * units / e.channel_gbps;
+    e.refresh = refreshMW(tech) * units / e.channel_gbps;
+    const double fl = stackFloorSystemMW(tech, s.channels > 0 ? s.channels : 1);
+    e.floor = (fl > 0.0 && s.channels > 0) ? fl / (e.channel_gbps * static_cast<double>(s.channels)) : 0.0;
+    e.total = e.burst + e.io + e.act + e.standby + e.refresh + e.floor;
+    e.valid = true;
+    return e;
+}
+
+/* 1.12.18 (user ruling 2026-10-23): the GUARD LINES of a record that carries
+ * read_energy_guard and/or an anchored io_share. Pure report: nothing here is
+ * priced and nothing is adjusted to land inside a band.
+ *  - the derived total read energy against each published older-generation
+ *    figure, expected inside [(1 - max_gain) x ref, ref] (the newer part is
+ *    not worse per bit, and at most max_gain better); WARNING when outside;
+ *  - the anchored I/O against the record's IDDQ band (the priced figure and
+ *    the guard must agree), per direction; the band is a read-only (driver)
+ *    figure, so a write is reported as "not covered", not as a pass or fail;
+ *  - the anchor's channel rate against the run's (the mA were computed at
+ *    it). Empty when the record has neither. */
+inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, double tRC, double tRAS,
+                                                     double access_burst_ns, const std::string& device_width,
+                                                     int banks_per_device, double row_bytes) {
+    std::vector<std::string> out;
+    const std::string bt = baseTech(tech);
+    const PartIddFacts* pf = partIddFactsIfAny(bt);
+    if (!pf) return out;
+    /* 1.12.18 (user ruling 2026-10-24): THE ACTIVATE+PRECHARGE GUARD per 1 KB row, with
+     * the VDD / VPP split when the VPP is the record's ratio. Printed, never priced. */
+    if (pf->act_guard.valid || pf->vpp_act.valid) {
+        auto f3 = [](double v) { std::ostringstream o; o.setf(std::ios::fixed); o.precision(4); o << v; return o.str(); };
+        const IDDSpec rs = iddFor(tech);
+        const double act = activatePrechargeNJ(tech, tRC, tRAS, 0.0, device_width, banks_per_device);
+        const bool ratio_on = (rs.vpp_act_ratio >= 0.0 && vppDynamicEnabled() && rs.ipp0 < 0.0);
+        const double vdd = ratio_on ? act / (1.0 + rs.vpp_act_ratio) : act;
+        const double per_kb = (row_bytes > 0.0) ? act * 1024.0 / row_bytes : act;
+        std::ostringstream o;
+        o << "[guard] " << bt << " activate+precharge " << f3(act) << " nJ per ACT (" << static_cast<long>(row_bytes) << " B row) = VDD " << f3(vdd);
+        if (ratio_on)
+            o << " + VPP " << f3(act - vdd) << " (" << f3(rs.vpp_act_ratio) << " x VDD, " << pf->vpp_act.provenance << ", " << pf->vpp_act.device
+              << "; " << pf->vpp_act.alt_device << " would give " << f3(pf->vpp_act.alt_ratio) << " x VDD = " << f3(pf->vpp_act.alt_ratio * vdd)
+              << " -> " << f3(vdd * (1.0 + pf->vpp_act.alt_ratio)) << " nJ)";
+        else if (rs.vpp_act_ratio >= 0.0)
+            o << " (VPP ratio " << f3(rs.vpp_act_ratio) << " NOT priced BY USER OPTION, power.models.dram_vpp_dynamic: false)";
+        o << "; " << f3(per_kb) << " nJ per 1 KB";
+        if (pf->act_guard.valid) {
+            const auto& g = pf->act_guard;
+            const bool in = (per_kb >= g.lo - 1e-9 && per_kb <= g.hi + 1e-9);
+            o << " vs guards: lower " << f3(g.lo) << " (IDD route, Chatterjee HPCA17 Table II), XPE attribution ceiling " << f3(g.ceiling)
+              << ", upper " << f3(g.hi) << " (O'Connor MICRO17 / Chatterjee HPCA17 bottom-up) -> "
+              << (in ? "inside" : (per_kb < g.lo ? "BELOW the lower guard (reported, not tuned)" : "ABOVE the upper guard (reported, not tuned)"))
+              << (in ? (per_kb > g.ceiling + 1e-9 ? ", ABOVE the XPE attribution ceiling" : ", at or below the XPE attribution ceiling") : "");
+            const bool warn = !in || per_kb > g.ceiling + 1e-9;
+            out.push_back(warn ? "[guard] WARNING: " + o.str().substr(8) : o.str());
+        } else {
+            out.push_back(o.str() + "; no act_guard_nj_per_kb in the record");
+        }
+    }
+    /* 1.12.18 (user ruling 2026-10-24, floor option 2): THE BACKGROUND GUARD per stack -- the
+     * datasheet background the report starts from (active standby IDD3N, no idle descent, refresh
+     * at the datasheet duty, 358 K) plus the per-stack floor, against XPE like-for-like (DRAM
+     * VDD + VDDQ + VPP rails). Printed, never priced. */
+    if (pf->bg_guard.valid) {
+        const IDDSpec rs = iddFor(tech);
+        const int ch = (rs.channels > 0) ? rs.channels : 1;
+        const double bg = backgroundSystemMW(tech, 0.0, false, device_width, 1, ch, 358);
+        const double fl = stackFloorSystemMW(tech, ch);
+        const double st = std::max(1, hbmStacks(tech, ch));
+        const double per_stack = bg / st;
+        const auto& g = pf->bg_guard;
+        const bool in = (per_stack >= g.lo_mw - 1e-9 && per_stack <= g.hi_mw + 1e-9);
+        std::ostringstream o; o.setf(std::ios::fixed); o.precision(1);
+        o << "[guard] " << (in ? "" : "WARNING: ") << bt << " background per stack " << per_stack << " mW (datasheet: active standby + refresh at 358 K over "
+          << ch << " channels + stack floor " << (fl > 0.0 ? fl / st : 0.0) << " mW) vs XPE 2023.1.2 like-for-like [" << g.lo_mw << ", " << g.hi_mw
+          << "] mW (DRAM VDD + VDDQ + VPP rails, record idd.background_guard_mw_stack) -> "
+          << (in ? "inside" : (per_stack < g.lo_mw ? "BELOW (reported, not tuned)" : "ABOVE (reported, not tuned)"));
+        out.push_back(o.str());
+    }
+    const IDDSpec row = iddFor(tech);
+    const bool anchored = (row.io_anchor_rd_pj_bit > 0.0);
+    if (!pf->read_guard.valid && !anchored) return out;
+    auto f2 = [](double v) { std::ostringstream o; o.setf(std::ios::fixed); o.precision(2); o << v; return o.str(); };
+    const ReadEnergyPerBit e = derivedReadEnergyPerBit(tech, tRC, tRAS, access_burst_ns, device_width, banks_per_device, row_bytes);
+    if (pf->read_guard.valid) {
+        if (!e.valid) {
+            out.push_back("[guard] WARNING: " + bt + " derived total read energy not computable (no access burst time or row size); the published-figure guard is NOT checked");
+        } else {
+            std::ostringstream o;
+            o << "[guard] " << bt << " derived total read energy " << f2(e.total) << " pJ/b = array burst " << f2(e.burst)
+              << " + DQ I/O " << f2(e.io) << " + activate " << f2(e.act) << " (1 ACT per " << static_cast<long>(e.row_bytes)
+              << " B row) + standby " << f2(e.standby) << " + refresh " << f2(e.refresh) << " + stack floor " << f2(e.floor)
+              << "; sequential 64 B reads crossing the DQ at the channel's full " << f2(e.channel_gbps)
+              << " Gb/s (record values, not tuned)";
+            out.push_back(o.str());
+            const double g = pf->read_guard.max_gain;
+            for (const auto& r : pf->read_guard.refs) {
+                const double lo = (1.0 - g) * r.second, hi = r.second;
+                const bool in = (e.total >= lo - 1e-9 && e.total <= hi + 1e-9);
+                std::ostringstream q;
+                q << "[guard] " << (in ? "" : "WARNING: ") << bt << " derived total read " << f2(e.total) << " pJ/b vs published "
+                  << r.first << " " << f2(r.second) << " pJ/b: expected [" << f2(lo) << ", " << f2(hi) << "] (newer generation at most "
+                  << static_cast<int>(std::lround(g * 100.0)) << "% better, not worse): " << f2(e.total / r.second) << "x -> "
+                  << (in ? "inside" : "OUTSIDE (reported, not tuned)");
+                out.push_back(q.str());
+            }
+        }
+    }
+    if (anchored) {
+        const IDDSpec& s = row;
+        const IddqBand& b = pf->iddq_band;
+        std::ostringstream o;
+        o << "[guard] " << bt << " DQ I/O priced at the anchored io_share " << f2(s.io_anchor_rd_pj_bit) << " R / "
+          << f2(s.io_anchor_wr_pj_bit) << " W pJ/b (" << f2(s.idd4r_io) << " / " << f2(s.idd4w_io) << " mA at "
+          << f2(s.io_channel_gbps) << " Gb/s)";
+        if (b.valid) {
+            const bool rd_in = (s.io_anchor_rd_pj_bit >= b.lo_pj_bit - 1e-9 && s.io_anchor_rd_pj_bit <= b.hi_pj_bit + 1e-9);
+            o << "; IDDQ band " << f2(b.lo_pj_bit) << "-" << f2(b.hi_pj_bit) << " pJ/b is the guard: read "
+              << f2(s.io_anchor_rd_pj_bit) << " " << (rd_in ? "inside" : (s.io_anchor_rd_pj_bit > b.hi_pj_bit ? "ABOVE" : "BELOW"))
+              << " (" << f2(s.io_anchor_rd_pj_bit / (s.io_anchor_rd_pj_bit > b.hi_pj_bit ? b.hi_pj_bit : b.lo_pj_bit)) << "x of the "
+              << (s.io_anchor_rd_pj_bit > b.hi_pj_bit ? "top" : "bottom") << "), write " << f2(s.io_anchor_wr_pj_bit)
+              << " not covered (the band is a read-driver figure)";
+            out.push_back((rd_in ? std::string() : std::string("[guard] WARNING: ")) + (rd_in ? o.str() : o.str().substr(8)));
+        } else {
+            out.push_back(o.str() + "; no IDDQ band in the record to guard it");
+        }
+        if (e.valid && std::fabs(e.channel_gbps - s.io_channel_gbps) > 0.005 * s.io_channel_gbps) {
+            std::ostringstream q;
+            q << "[guard] WARNING: " << bt << " io_share was computed at " << f2(s.io_channel_gbps) << " Gb/s but this run's channel moves "
+              << f2(e.channel_gbps) << " Gb/s: the priced I/O is " << f2(s.io_anchor_rd_pj_bit * s.io_channel_gbps / e.channel_gbps)
+              << " pJ/b read, not the anchor";
+            out.push_back(q.str());
+        }
+    }
+    return out;
 }
 
 } // namespace pimid_energy

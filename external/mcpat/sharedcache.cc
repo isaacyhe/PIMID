@@ -44,13 +44,15 @@
 #include <cmath>
 #include <assert.h>
 #include "sharedcache.h"
+#include <sstream>   /* PIMID 1.12.18: clock-network sink description */
 
 SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter* interface_ip_, enum cache_level cacheL_)
 :XML(XML_interface),
  ithCache(ithCache_),
  interface_ip(*interface_ip_),
  cacheL(cacheL_),
- dir_overhead(0)
+ dir_overhead(0),
+ clk_instances(1)
 {
   int idx;
   int tag, data;
@@ -104,7 +106,30 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 	  interface_ip.num_search_ports    = 0;
 	  if (cachep.dir_ty==SBT)
 	  {
-		  dir_overhead = ceil(XML->sys.number_of_cores/8.0)*8/(cachep.blockW*8);
+		  /* PIMID 1.12.18 (user ruling "sharer bits from the real child
+		   * count"): the sharer list of a line has one bit per CHILD the
+		   * directory tracks -- the caches directly below it (zsim's
+		   * MESITopCC keeps one sharer bit per child cache). Upstream sizes
+		   * it from number_of_cores, which is the child count only for a
+		   * shared LLC directly above one L1 per core: a private L2 under
+		   * L1I + L1D has 2 children, an L3 above N private L2s has N. The
+		   * caller passes the child count as dir_sharers (0 = upstream).
+		   * The byte rounding is upstream's and is kept: ceil(n/8)*8 bits,
+		   * i.e. the sharer vector is stored in whole bytes (McPAT 1.0,
+		   * S. Li et al., MICRO 2009, sharedcache.cc SharedCache::
+		   * SharedCache, the SBT dir_overhead line this replaces). */
+		  int sharers = XML->sys.number_of_cores;
+		  int kids = 0;
+		  if (cacheL==L2) kids = XML->sys.L2[ithCache].dir_sharers;
+		  else if (cacheL==L3) kids = XML->sys.L3[ithCache].dir_sharers;
+		  if (kids > 0) sharers = kids;
+		  dir_overhead = ceil(sharers/8.0)*8/(cachep.blockW*8);
+		  std::cerr << "[mcpat dir] " << cachep.name << ": SBT sharer bits/line "
+		            << (int)(ceil(sharers/8.0)*8) << " = ceil(" << sharers << "/8)*8 ("
+		            << (kids > 0 ? "dir_sharers: the cache's children" : "number_of_cores (upstream)")
+		            << "; number_of_cores " << XML->sys.number_of_cores << " would give "
+		            << (int)(ceil(XML->sys.number_of_cores/8.0)*8) << "); line " << cachep.blockW
+		            << " B widened by " << dir_overhead*100.0 << "%" << std::endl;
 		  line = cachep.blockW*(1+ dir_overhead) ;
 		  size = cachep.capacity*(1+ dir_overhead);
 
@@ -594,6 +619,46 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 //  clockNetwork.num_regs           = pipeLogicCache.tot_stage_vector + pipeLogicDirectory.tot_stage_vector;
 //  clockNetwork.optimize_wire();
 
+  /* PIMID 1.12.18: THE CACHE'S CLOCK NETWORK (Wattch, D. Brooks, V. Tiwari,
+   * M. Martonosi, ISCA 2000, clocking section; logic.h ClockNetwork). The
+   * block above (upstream, never enabled) is not used: its 1.1 placement
+   * factor and fixed metal level are presets.
+   *   Tree area: this cache's McPAT area.
+   *   Sinks: the cache's pipeline registers by McPAT's OWN rule for a
+   *   shared cache (this file, the disabled pipeline block above:
+   *   stages = ceil(access_time / cycle_time) of the CACTI solution,
+   *   per_stage_vector = out_w + tag_w). CACTI prices the arrays per
+   *   access (precharge included) and models no register, so these pins
+   *   are charged nowhere else.
+   *   Instances: McPAT's runtime convention carries the activity of every
+   *   instance of a homogeneous set in this one object (processor.cc
+   *   multiplies runtime dynamic by 1/executionTime only), so the
+   *   ungated tree is charged for every instance. */
+  {
+	  const double at = unicache.caches->local_result.access_time;
+	  const double ct = unicache.caches->local_result.cycle_time;
+	  const double stages = (ct > 0) ? ceil(at/ct) : 1.0;
+	  const double psv = unicache.caches->l_ip.out_w + unicache.caches->l_ip.tag_w;
+	  if (!(ct > 0))
+		  std::cerr << "NO PUBLISHED SOURCE FOUND: " << cachep.name << " pipeline depth (CACTI returned no cycle time; one register stage is counted)" << std::endl;
+	  if (cacheL==L2 && XML->sys.Private_L2)
+		  clk_instances = (XML->sys.homogeneous_cores==1) ? XML->sys.number_of_cores : 1;
+	  else if (cacheL==L2)
+		  clk_instances = (XML->sys.homogeneous_L2s==1) ? XML->sys.number_of_L2s : 1;
+	  else if (cacheL==L3)
+		  clk_instances = (XML->sys.homogeneous_L3s==1) ? XML->sys.number_of_L3s : 1;
+	  else if (cacheL==L1Directory)
+		  clk_instances = (XML->sys.homogeneous_L1Directories==1) ? XML->sys.number_of_L1Directories : 1;
+	  else
+		  clk_instances = (XML->sys.homogeneous_L2Directories==1) ? XML->sys.number_of_L2Directories : 1;
+	  std::ostringstream src;
+	  src << "cache pipeline registers: ceil(" << at << " s / " << ct << " s) = " << stages
+	      << " stage(s) x (out_w " << unicache.caches->l_ip.out_w << " + tag_w "
+	      << unicache.caches->l_ip.tag_w << ") bits; instances " << clk_instances;
+	  clockNetwork.compute(&interface_ip, cachep.name + std::to_string(ithCache), area.get_area(),
+	                       stages*psv, src.str(), -1.0, cachep.clockRate, XML->sys.Embedded,
+	                       device_t, core_t, XML->sys.pimid_clock_network != 0);
+  }
 }
 
 
@@ -674,6 +739,13 @@ void SharedCache::computeEnergy(bool is_tdp)
 				homenode_rtp_stats.writeAc.access = XML->sys.L2[ithCache].homenode_write_accesses;
 				homenode_rtp_stats.writeAc.miss   = XML->sys.L2[ithCache].homenode_write_misses;
 				homenode_rtp_stats.writeAc.hit    = homenode_rtp_stats.writeAc.access -	homenode_rtp_stats.writeAc.miss;
+				/* PIMID 1.12.18 bug fix: the runtime counts were stored
+				 * in homenode_rtp_stats but the power sum below reads
+				 * homenode_stats_t, which still held the TDP pass's per-cycle
+				 * peak rates; runtime home-node energy was therefore a peak
+				 * rate divided by executionTime. The data array follows the
+				 * stats_t -> rtp_stats pattern; the home node now does too. */
+				homenode_stats_t = homenode_rtp_stats;
 			}
 		}
 		else if (cacheL==L3)
@@ -694,6 +766,7 @@ void SharedCache::computeEnergy(bool is_tdp)
 				homenode_rtp_stats.writeAc.access = XML->sys.L3[ithCache].homenode_write_accesses;
 				homenode_rtp_stats.writeAc.miss   = XML->sys.L3[ithCache].homenode_write_misses;
 				homenode_rtp_stats.writeAc.hit    = homenode_rtp_stats.writeAc.access -	homenode_rtp_stats.writeAc.miss;
+				homenode_stats_t = homenode_rtp_stats;   // PIMID 1.12.18 bug fix: see the L2 branch
 			}
 		}
 		else if (cacheL==L1Directory)
@@ -808,6 +881,12 @@ void SharedCache::computeEnergy(bool is_tdp)
 					unicache.wbb->local_result.power)*pppm_lkg;
 		}
 		power     = power + unicache.power;
+		/* PIMID 1.12.18: clock network, one instance, J per cycle (ungated). */
+		{
+			const double e = clockNetwork.e_tree_cycle + clockNetwork.n_sinks*clockNetwork.e_pin_reg;
+			clockNetwork.set_power(e, e, e, 1.0);
+			power = power + clockNetwork.power;
+		}
 //		cout<<"unicache.caches->local_result.power.readOp.dynamic"<<unicache.caches->local_result.power.readOp.dynamic<<endl;
 //		cout<<"unicache.caches->local_result.power.writeOp.dynamic"<<unicache.caches->local_result.power.writeOp.dynamic<<endl;
 	}
@@ -823,6 +902,28 @@ void SharedCache::computeEnergy(bool is_tdp)
 							unicache.wbb->local_result.power)*pppm_lkg;
 		}
 		rt_power     = rt_power + unicache.rt_power;
+		/* PIMID 1.12.18: clock network over the run, every instance, every
+		 * cycle of this cache's clock (ungated). */
+		{
+			const double e_cyc  = clockNetwork.e_tree_cycle + clockNetwork.n_sinks*clockNetwork.e_pin_reg;
+			const double cycles = cachep.executionTime * cachep.clockRate;
+			const double e = e_cyc * cycles * clk_instances;
+			/* Gated by the cache's measured utilisation (user ruling
+			 * 2026-10-23; Wattch cc2): the duty_cycle stat, which PIMID
+			 * emits as measured accesses per cycle of this cache. */
+			const double a = clockNetwork.gate(cachep.duty_cycle, "duty_cycle = measured accesses / cycles");
+			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered
+			 * cycle, local part + pins gated (logic.h ClockNetwork). */
+			clockNetwork.set_powered(XML->sys.pimid_clock_pg_cache,
+			                         "1 - measured shared-cache power-gated residency (pimid_clock_pg_cache)");
+			const double e_g = clockNetwork.gated_cycle(a, clockNetwork.n_sinks*clockNetwork.e_pin_reg) * cycles * clk_instances;
+			clockNetwork.set_power(e_cyc, e_g, e, 1.0);
+			clockNetwork.rt_global = clockNetwork.e_tree_global_cycle * clockNetwork.powered * cycles * clk_instances;
+			rt_power = rt_power + clockNetwork.rt_power;
+			std::ostringstream w;
+			w << clk_instances << " instance(s) x " << cycles << " cycles x " << e_cyc << " J";
+			clockNetwork.report_runtime(w.str(), cachep.executionTime);
+		}
 	}
 }
 
@@ -844,6 +945,11 @@ void SharedCache::displayEnergy(uint32_t indent,bool is_tdp)
 				<< (long_channel? power.readOp.power_gated_with_long_channel_leakage : power.readOp.power_gated_leakage)  << " W" << endl;
 		cout << indent_str << "Gate Leakage = " << power.readOp.gate_leakage << " W" << endl;
 		cout << indent_str << "Runtime Dynamic = " << rt_power.readOp.dynamic/cachep.executionTime << " W" << endl;
+		/* PIMID 1.12.18: the clock network as its own line. */
+		cout << indent_str << "Clock Network: Peak Dynamic = " << clockNetwork.power.readOp.dynamic*cachep.clockRate
+			<< " W, Subthreshold Leakage = " << clockNetwork.power.readOp.leakage
+			<< " W, Gate Leakage = " << clockNetwork.power.readOp.gate_leakage
+			<< " W, Runtime Dynamic = " << clockNetwork.rt_power.readOp.dynamic/cachep.executionTime << " W" << endl;
 		cout <<endl;
 	}
 	else
@@ -1134,14 +1240,19 @@ void SharedCache::set_cache_param()
 		cachep.prefetchb_size= XML->sys.L3[ithCache].buffer_sizes[2];
 		cachep.wbb_size      = XML->sys.L3[ithCache].buffer_sizes[3];
 		cachep.duty_cycle    = XML->sys.L3[ithCache].duty_cycle;
-		if (!XML->sys.L2[ithCache].merged_dir)
+		/* PIMID 1.12.18 bug fix: this L3 branch read the L2's
+		 * merged_dir and dir_duty_cycle (XML->sys.L2[ithCache]), a copy of
+		 * the L2 branch above. XML_Parse.cc parses sys.L3[i].merged_dir and
+		 * sys.L3[i].dir_duty_cycle and nothing else reads them, so an L3's
+		 * own SBT setting was dead input and the L3 took the L2's. */
+		if (!XML->sys.L3[ithCache].merged_dir)
 		{
 			cachep.dir_ty = NonDir;
 		}
 		else
 		{
 			cachep.dir_ty = SBT;
-			cachep.dir_duty_cycle  = XML->sys.L2[ithCache].dir_duty_cycle;
+			cachep.dir_duty_cycle  = XML->sys.L3[ithCache].dir_duty_cycle;
 		}
 		if ( XML->sys.L3[ithCache].vdd>0)
 		{

@@ -41,6 +41,18 @@
 #include <assert.h>
 #include "iocontrollers.h"
 #include "basic_components.h"
+void init_tech_params(double tech, bool is_tag);   /* PIMID 1.12.18: cacti/technology.cc */
+
+/* PIMID 1.12.18 (two-node UCIe cross-check): switched capacitance of CACTI's
+ * minimum inverter under the CURRENT technology tables (g_tp) -- the same
+ * definition as logic.cc's pimid_min_inv_switch_cap (gate of the NMOS + PMOS
+ * pair at McPAT's P/N ratio plus both drain junctions). */
+static double pimid_io_min_inv_switch_cap()
+{
+	const double wn = g_tp.min_w_nmos_;
+	const double wp = wn * pmos_to_nmos_sz_ratio();
+	return gate_C(wn + wp, 0) + drain_C_(wn, NCH, 1, 1, g_tp.cell_h_def) + drain_C_(wp, PCH, 1, 1, g_tp.cell_h_def);
+}
 
 
 /*
@@ -347,6 +359,53 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 	  SerDer_dyn_saved = SerDer_dyn;   // PIMID 1.11.54 (E008)
 	  area.set_area(((ctrl_area + (pciep.withPHY? SerDer_area:0))/8*pciep.num_channels)*1e6);
 	  power_t.readOp.dynamic = (ctrl_dyn + (pciep.withPHY? SerDer_dyn:0))*pciep.num_channels;
+	  ctrl_dyn_per_cycle = ctrl_dyn*pciep.num_channels;   // PIMID 1.12.18: kept for audit
+	  if (ucie) {
+		  /* PIMID 1.12.18: THE UCIe DYNAMIC BASIS. [UCIe11]'s pJ/b is the
+		   * energy of the D2D adapter and PHY -- the stack below the FDI,
+		   * "FDI to bump and back" in the same table. McPAT's ctrl_dyn above
+		   * is Cadence ChipEstimate's PCIe controller ("the controller
+		   * includes everything: the PHY, the data link and transaction
+		   * layer"), modelled bit-sliced PER LANE (the /8 and x num_channels
+		   * above). Its PHY and data-link share is exactly what the adapter
+		   * (CRC/retry, link management) and the UCIe PHY replace and what the
+		   * pJ/b prices; no published figure splits the Cadence number into
+		   * PHY / data link / transaction layer. Charging both would pay for
+		   * the adapter+PHY twice, so the controller DYNAMIC is excluded and
+		   * the per-bit term stands alone. Area and leakage stay McPAT's (real
+		   * silicon that leaks; the pJ/b prices switching only).
+		   * NO PUBLISHED SOURCE FOUND: dynamic energy of the protocol layer
+		   * ABOVE the FDI (the transaction layer) separable from the Cadence
+		   * figure -- it is therefore not priced, said at runtime.
+		   * Peak (TDP) dynamic: the link at full rate, lanes x GT/s x pJ/b,
+		   * at the pricing end only (the link is priced once). */
+		  const double peak_w = XML->sys.pcie.link_energy_end
+		      ? XML->sys.pcie.lanes * XML->sys.pcie.lane_rate_gts * 1e9 * ucie_pj_per_bit * 1e-12
+		      : 0.0;
+		  power_t.readOp.dynamic = peak_w / pciep.clockRate;   // J per controller cycle
+		  /* PIMID 1.12.18 (two-node rows): the per-bit term is now analog PHY
+		   * + digital interface (set_pcie_param). The digital interface of
+		   * [MS26] (flow control, calibration, error correction, repair) is
+		   * the adapter-level logic McPAT's controller term also prices, so
+		   * the controller DYNAMIC stays excluded (no double count).
+		   * CROSS-CHECK 1 (user: "verify with 3"), printed, NEVER charged:
+		   * McPAT's own controller dynamic for this link, per bit:
+		   *   ctrl_dyn_per_cycle [J/cycle, all lanes] / (lanes x GT/s x 1e9 /
+		   *   clock [Hz]) [bits/cycle]. */
+		  const double bits_per_cycle = XML->sys.pcie.lanes * XML->sys.pcie.lane_rate_gts * 1e9 / pciep.clockRate;
+		  ucie_ref_ctrl_pj = (bits_per_cycle > 0.0) ? ctrl_dyn_per_cycle / bits_per_cycle * 1e12 : 0.0;
+		  std::cerr << "[link] CROSS-CHECK (McPAT PIMID 1.12.18, reference only, NOT charged): McPAT's own"
+		               " link controller dynamic (Cadence ChipEstimate 65 nm PCIe controller, scaled by McPAT"
+		               " to " << interface_ip.F_sz_nm << " nm, Vdd " << g_tp.peri_global.Vdd
+		            << " V) for this link (" << XML->sys.pcie.lanes << " lanes x " << XML->sys.pcie.lane_rate_gts
+		            << " GT/s, clock " << clock_mhz << " MHz) = " << ctrl_dyn_per_cycle << " J/cycle / "
+		            << bits_per_cycle << " bit/cycle = " << ucie_ref_ctrl_pj << " pJ/bit, beside the applied digital"
+		               " interface " << ucie_digital_pj << " pJ/bit (" << ucie_node_nm << " nm row"
+		            << (ucie_user_pj ? ", user value" : "") << "): McPAT/digital = "
+		            << ((ucie_digital_pj > 0.0) ? ucie_ref_ctrl_pj / ucie_digital_pj : 0.0)
+		            << "; McPAT/(analog+digital) = "
+		            << ((ucie_pj_per_bit > 0.0) ? ucie_ref_ctrl_pj / ucie_pj_per_bit : 0.0) << std::endl;
+	  }
 	  power_t.readOp.leakage = (ctrl_gates + (pciep.withPHY? SerDer_gates:0))*cmos_Isub_leakage(NMOS_sizing, PMOS_sizing, 2, nand)*g_tp.peri_global.Vdd;//unit W
 	  double long_channel_device_reduction = longer_channel_device_reduction(Uncore_device);
 	  double pg_reduction = power_gating_leakage_reduction(false);
@@ -370,6 +429,48 @@ void PCIeController::computeEnergy(bool is_tdp)
     {
     	rt_power = power_t;
     	rt_power.readOp.dynamic *= pciep.perc_load;
+    	if (ucie) {
+    		/* PIMID 1.12.18: link.phy = measured bytes x 8 x pJ/b, the
+    		 * analog PHY + digital interface figure of the node row
+    		 * (set_pcie_param); link.controller dynamic is NOT
+    		 * charged (see the constructor), and perc_load does not scale the
+    		 * per-bit term: the bytes ARE the activity. Expressed as energy per
+    		 * cycle so the Processor's (number_units x clockRate) aggregation
+    		 * restores watts exactly. */
+    		rt_power.readOp.dynamic = 0.0;
+    		const double units = (XML->sys.pcie.number_units > 0) ?
+    		                     (double)XML->sys.pcie.number_units : 1.0;
+    		ctrl_dyn_excluded_w = ctrl_dyn_per_cycle * pciep.perc_load * pciep.clockRate * units;
+    		double execTimeSec = 0.0;
+    		if (XML->sys.total_cycles > 0 && XML->sys.target_core_clockrate > 0)
+    			execTimeSec = XML->sys.total_cycles / (XML->sys.target_core_clockrate * 1e6);
+    		const double bytes = XML->sys.pcie.link_energy_end ? XML->sys.pcie.transferred_bytes : 0.0;
+    		ucie_phy_joules = bytes * 8.0 * ucie_pj_per_bit * 1e-12;
+    		if (bytes > 0.0) {
+    			if (execTimeSec <= 0.0) {
+    				std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): UCIe link carries "
+    				          << bytes << " measured bytes but the run has no measured time"
+    				             " (total_cycles / target_core_clockrate); its energy cannot"
+    				             " be expressed as power." << std::endl;
+    				exit(2);
+    			}
+    			ucie_phy_w = ucie_phy_joules / execTimeSec;
+    			rt_power.readOp.dynamic = ucie_phy_joules / execTimeSec / (units * pciep.clockRate);
+    		}
+    		std::cerr << "[link] UCIe (McPAT PIMID 1.12.18): link.phy = " << bytes
+    		          << " B x 8 x (analog " << ucie_analog_pj << " + digital " << ucie_digital_pj
+    		          << " = " << ucie_pj_per_bit << " pJ/bit) = " << ucie_phy_joules
+    		          << " J over " << execTimeSec << " s = " << ucie_phy_w << " W"
+    		          << (XML->sys.pcie.link_energy_end ? "" : " [far end: the link is priced at the other end]")
+    		          << "; link.controller dynamic EXCLUDED (" << ctrl_dyn_excluded_w
+    		          << " W at measured load " << pciep.perc_load << ", clock " << clock_mhz
+    		          << " MHz): the analog PHY + digital interface pJ/bit covers the PHY and the"
+    		             " adapter-level logic (flow control, calibration, error correction, repair), which"
+    		             " McPAT's per-lane controller term also prices; link.controller area"
+    		             " and leakage kept. NO PUBLISHED SOURCE FOUND: transaction-layer"
+    		             " dynamic above the FDI, not priced." << std::endl;
+    		return;
+    	}
     	/* PIMID 1.11.7 (#85): activity-driven link energy. When PIMID
     	 * supplies measured crossing bytes and a per-link-type pJ/bit
     	 * (PCIe gen3/4/5, CXL, NVLink -- selected and cited PIMID-side),
@@ -525,6 +626,277 @@ void PCIeController::set_pcie_param()
 	  pciep.type            = XML->sys.pcie.type;
 	  pciep.withPHY         = XML->sys.pcie.withPHY;
 	  pciep.serdes_lane_gbps = XML->sys.pcie.serdes_lane_gbps;   // PIMID 1.11.29
+
+	  /* PIMID 1.12.18: UCIe link class and the controller clock.
+	   *
+	   * CLOCK (user ruling 2026-10-23: "parameter as it is but default to
+	   * published number"). A given clockrate (> 0) is used as is. When none
+	   * is given (clockrate <= 0) and the link describes a D2D interface
+	   * (lanes, lane_rate_gts, fdi_width_bytes), the D2D adapter clock is the
+	   * rate at which the FDI moves one fdi_width_bytes word:
+	   *   clock = lanes x lane_rate_gts / (8 bits x fdi_width_bytes)
+	   * Sources: lane rates and module widths from [UCIe11] (table "UCIe
+	   * 1.0/1.1: Characteristics and Key Metrics": 4/8/12/16/24/32 GT/s;
+	   * 16 lanes standard, 64 advanced); the 64 B FDI width from [HC23] ("All
+	   * examples show 64B data width on FDI"; "Protocol Layer presents 64B of
+	   * the Flit on FDI"). 64 lanes x 16 GT/s / (8 x 64) = 2000 MHz.
+	   * With no clock and no D2D description there is no published number:
+	   * refuse, rather than assume one. */
+	  ucie = (XML->sys.pcie.link_class == 1);
+	  if (XML->sys.pcie.link_class != 0 && XML->sys.pcie.link_class != 1) {
+		  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): system.pcie link_class "
+		            << XML->sys.pcie.link_class << " is not 0 (legacy) or 1 (UCIe)." << std::endl;
+		  exit(2);
+	  }
+	  if (pciep.clockRate <= 0.0) {
+		  if (XML->sys.pcie.lanes > 0 && XML->sys.pcie.lane_rate_gts > 0.0 &&
+		      XML->sys.pcie.fdi_width_bytes > 0) {
+			  clock_mhz = XML->sys.pcie.lanes * XML->sys.pcie.lane_rate_gts * 1000.0
+			            / (8.0 * XML->sys.pcie.fdi_width_bytes);
+			  clock_derived = true;
+			  pciep.clockRate = clock_mhz * 1e6;
+			  std::cerr << "[link] controller clock " << clock_mhz << " MHz DERIVED in McPAT = "
+			            << XML->sys.pcie.lanes << " lanes x " << XML->sys.pcie.lane_rate_gts
+			            << " GT/s / (8 bits x " << XML->sys.pcie.fdi_width_bytes
+			            << " B FDI) [UCIe 1.1 white paper (Das Sharma 2023) rates/widths;"
+			               " Hot Chips 2023 UCIe Tutorial: 64B on FDI]" << std::endl;
+		  } else {
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): NO PUBLISHED SOURCE FOUND:"
+			               " controller clock for this link (no clockrate given, and no"
+			               " lanes/lane_rate_gts/fdi_width_bytes to derive a D2D clock from)."
+			               " Supply the clock (PIMID: power.link.controller_clock_mhz)." << std::endl;
+			  exit(2);
+		  }
+	  } else {
+		  clock_mhz = pciep.clockRate / 1e6;
+	  }
+	  if (ucie) {
+		  /* PIMID 1.12.18: UCIe has no SerDes: its PHY is a parallel
+		   * single-ended AFE whose energy [UCIe11] states per bit. A SerDes
+		   * term on top would price a block that does not exist. */
+		  if (pciep.withPHY) {
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): link_class 1 (UCIe) with"
+			               " withPHY=1: UCIe has no SerDes; its PHY is priced per bit." << std::endl;
+			  exit(2);
+		  }
+		  const int pkg = XML->sys.pcie.ucie_package;
+		  if (pkg != 1 && pkg != 2) {
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): NO PUBLISHED SOURCE FOUND:"
+			               " UCIe package for this link (ucie_package must be 1 = advanced or"
+			               " 2 = standard; the [UCIe11] targets differ by package)." << std::endl;
+			  exit(2);
+		  }
+		  /* [UCIe11] widths per cluster: 64 advanced, 16 standard. */
+		  const int module_w = (pkg == 1) ? 64 : 16;
+		  if (XML->sys.pcie.lanes <= 0 || (XML->sys.pcie.lanes % module_w) != 0) {
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): UCIe lanes "
+			            << XML->sys.pcie.lanes << " is not a positive multiple of the "
+			            << module_w << "-lane module of the "
+			            << (pkg == 1 ? "advanced" : "standard")
+			            << " package [UCIe 1.1 white paper, Das Sharma 2023]." << std::endl;
+			  exit(2);
+		  }
+		  /* [UCIe11] data rates: 4, 8, 12, 16, 24, 32 GT/s. */
+		  const double r = XML->sys.pcie.lane_rate_gts;
+		  if (!(r == 4.0 || r == 8.0 || r == 12.0 || r == 16.0 || r == 24.0 || r == 32.0)) {
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): UCIe lane_rate_gts " << r
+			            << " is not a UCIe 1.0/1.1 data rate (4, 8, 12, 16, 24, 32 GT/s)"
+			               " [UCIe 1.1 white paper, Das Sharma 2023]." << std::endl;
+			  exit(2);
+		  }
+		  /* PIMID 1.12.18 (user rulings 2026-10-23): TWO-NODE UCIe ENERGY ROWS.
+		   * The link is priced per bit as ANALOG PHY + DIGITAL INTERFACE, from
+		   * published measurements, for exactly two process nodes: 22 and 3 nm
+		   * (user: "just provide 2 techs ... 22 and 3"). Sources:
+		   *  [CDN26] D. T. Melek et al. (Cadence), "A 0.29 pJ/b 5.27 Tb/s/mm
+		   *          UCIe Advanced Package Link With 2.5-D CoWoS Interposer and a
+		   *          0.52 pJ/b 0.448 Tb/s/mm UCIe Standard Package Link With
+		   *          Organic Substrate in 3 nm FinFET", IEEE JSSC vol. 61, no. 7,
+		   *          July 2026, DOI 10.1109/JSSC.2026.3651425: "The link operates
+		   *          under a core supply (VDD) of 0.75 V, and a high supply (VDDH)
+		   *          of 1.2 V, and a TX driver supply (VCCIO) of 0.45 V. One
+		   *          UCIe-AP module consumes a total of 297 mW of measured analog
+		   *          power, which corresponds to 0.29 pJ/bit analog power
+		   *          efficiency" (64 lanes x 16 Gb/s; the PLL is in the TX common
+		   *          block); standard package: "the PHY exhibits an analog power
+		   *          efficiency of 0.52 pJ/bit running at 16 Gb/s/pin for a 25 mm
+		   *          channel".
+		   *  [INT26] S. Mondal et al. (Intel), "A 48Gb/s/lane 1.24Tb/s/mm
+		   *          UCIe-Compliant Die-to-Die Link Over 30mm Standard Package",
+		   *          ISSCC 2026, paper 8.1, DOI 10.1109/ISSCC49663.2026.11409120:
+		   *          "Fabricated in 22nm FinFET CMOS"; "At VDD=0.7V (VDDH=0.85V
+		   *          for TX pre-driver)"; "energy efficiency of 1.2pJ/b (0.45,
+		   *          0.69, and 0.06pJ/b in TX, RX, and PI+QH, respectively; a PLL
+		   *          is not integrated in this work)".
+		   *  [MS26]  R. Shivnaraine et al. (Microsoft), "A 0.23pJ/b 24Gb/s
+		   *          Modular D2D Interface With Zero Wake Penalty Clock Gating in
+		   *          3nm", ISSCC 2026, paper 8.3, DOI
+		   *          10.1109/ISSCC49663.2026.11409276: "0.33pJ/b (0.23pJ/b PHY
+		   *          only) at 24Gb/s - power is quoted at 0.75V for 24Gb/s"; the
+		   *          digital interface "manages traffic flow control (credit
+		   *          based), performs calibration tasks during initialization,
+		   *          houses error correction, and redundancy/repair logic".
+		   * Rows (pJ/bit):
+		   *   3 nm  advanced  analog 0.29 [CDN26]            digital 0.10 [MS26]
+		   *   3 nm  standard  analog 0.52 [CDN26]            digital 0.10 [MS26]
+		   *   22 nm standard  analog 1.2  [INT26]            digital DERIVED
+		   *   22 nm advanced  analog DERIVED 1.2 x 0.29/0.52 digital DERIVED
+		   * digital, 3 nm = 0.33 - 0.23 = 0.10 [MS26]: a UCIe-LIKE digital
+		   *   interface, not the UCIe D2D adapter itself.
+		   * digital, 22 nm DERIVED (user ruling 2026-10-23: "use the most accurate
+		   *   one, the other two as internal reference, calibrations, and guards")
+		   *   = 0.10 x E22/E7, the PUBLISHED DIGITAL CHAIN:
+		   *     E22/E32 = CACTI C_inv x Vdd^2, 22 nm / 32 nm tables (same device
+		   *               type; pimid_io_min_inv_switch_cap), then
+		   *     E32/E7  = [SB17] A. Stillmaker and B. Baas, "Scaling equations
+		   *               for the accurate prediction of CMOS device performance
+		   *               from 180 nm to 7 nm", Integration, the VLSI Journal,
+		   *               vol. 58, pp. 74-81, 2017, Table 2 (FO4-chain inverter,
+		   *               energy per transition): 32 nm High-k 0.97 V 0.51 fJ /
+		   *               7 nm Multi-Gate 0.8 V 0.111 fJ ([SB17] has no 22 nm
+		   *               row, hence the CACTI step at 32 nm).
+		   *   It is a LOWER BOUND: the published chain stops at 7 nm and 3 nm
+		   *   logic costs no more than 7 nm logic (the 7 -> 3 nm step is taken
+		   *   as 1). Two INTERNAL REFERENCES are printed beside it, never applied:
+		   *     (a) the analog node ratio, 0.10 x 1.2 / 0.52 [INT26]/[CDN26];
+		   *     (b) the TSMC PRESS chain: the applied value / (E5/E7 x E3/E5),
+		   *         E5/E7 = 0.70, E3/E5 = 0.70..0.75 (midpoint 0.725), from P.
+		   *         Alcorn, "TSMC Dishes on 5nm and 3nm Process Nodes, Introduces
+		   *         3DFabric Tech", Tom's Hardware, 2020-08-24 (TSMC Technology
+		   *         Symposium 2020): "TSMC claims the N5 process offers up to 15%
+		   *         more performance (at the same power) or 30% power reduction
+		   *         at the same performance"; N3 "will bring up to a 10-15%
+		   *         performance improvement or 25-30% power reduction". PRESS, not
+		   *         TSMC: TSMC's own pages state only N7 vs N16 ("55% power
+		   *         saving") and N3E vs N5 ("over 30% power savings").
+		   *   GUARD: a WARNING (not fatal) when the applied value falls outside
+		   *   [min, max] of the references.
+		   * analog, 22 nm advanced DERIVED: Cadence's same-node AP/SP ratio
+		   *   applied to Intel's 22 nm SP (caveats printed at runtime).
+		   * NODE: link_node_nm (PIMID: power.link.process_node_nm); <= 0 = the
+		   *   node of the die the link sits on, i.e. this McPAT run's node. Any
+		   *   node other than 22 or 3 is REFUSED. A user phy_pj_per_bit (>= 0)
+		   *   replaces the whole per-bit figure (analog + digital) and needs no
+		   *   node row. */
+		  ucie_user_pj = (XML->sys.pcie.phy_pj_per_bit >= 0.0);
+		  ucie_node_nm = (XML->sys.pcie.link_node_nm > 0) ? XML->sys.pcie.link_node_nm
+		                                                  : (int)(interface_ip.F_sz_nm + 0.5);
+		  const char* pkg_s = (pkg == 1) ? "advanced" : "standard";
+		  const double cdn_ap = 0.29, cdn_sp = 0.52;   /* [CDN26], 3 nm, 16 Gb/s */
+		  const double int_sp = 1.2;                   /* [INT26], 22 nm, 48 Gb/s */
+		  const double ms_total = 0.33, ms_phy = 0.23;  /* [MS26], 3 nm, 24 Gb/s, 0.75 V */
+		  const double ms_dig = ms_total - ms_phy;
+		  const double node_ratio = int_sp / cdn_sp;
+		  if (ucie_user_pj) {
+			  ucie_analog_pj  = XML->sys.pcie.phy_pj_per_bit;
+			  ucie_digital_pj = 0.0;
+			  std::cerr << "[link] UCIe link energy (McPAT PIMID 1.12.18): " << ucie_analog_pj
+			            << " pJ/bit [user value: power.link.pj_per_bit_override] replaces the whole per-bit"
+			               " figure (analog PHY + digital interface); no node row applied." << std::endl;
+		  } else {
+			  if (ucie_node_nm != 22 && ucie_node_nm != 3) {
+				  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): the UCIe link model supports exactly two"
+				               " process nodes, 22 nm and 3 nm (published measurements: Intel ISSCC 2026 8.1 at"
+				               " 22 nm; Cadence JSSC 2026 and Microsoft ISSCC 2026 8.3 at 3 nm); the link's node is "
+				            << ucie_node_nm << " nm"
+				            << ((XML->sys.pcie.link_node_nm > 0) ? " (link_node_nm)" : " (the die's node)")
+				            << ". Set power.link.process_node_nm to 22 or 3, or give"
+				               " power.link.pj_per_bit_override." << std::endl;
+				  exit(2);
+			  }
+			  if (ucie_node_nm == 3) {
+				  ucie_analog_pj  = (pkg == 1) ? cdn_ap : cdn_sp;
+				  ucie_digital_pj = ms_dig;
+				  std::cerr << "[link] UCIe 3 nm " << pkg_s << " package (McPAT PIMID 1.12.18): analog PHY "
+				            << ucie_analog_pj << " pJ/bit MEASURED [Melek et al. (Cadence), JSSC 2026,"
+				               " DOI 10.1109/JSSC.2026.3651425: " << (pkg == 1
+				                   ? "\"297 mW of measured analog power ... 0.29 pJ/bit analog power efficiency\","
+				                     " 64 lanes x 16 Gb/s, VDD 0.75 V, VDDH 1.2 V, VCCIO 0.45 V, PLL included]"
+				                   : "\"analog power efficiency of 0.52 pJ/bit running at 16 Gb/s/pin for a 25 mm"
+				                     " channel\", VDD 0.75 V, VDDH 1.2 V, PLL included]") << std::endl;
+				  std::cerr << "[link] UCIe 3 nm digital interface: " << ucie_digital_pj << " pJ/bit MEASURED-DIFFERENCE"
+				               " = 0.33 - 0.23 [Shivnaraine et al. (Microsoft), ISSCC 2026 8.3, DOI"
+				               " 10.1109/ISSCC49663.2026.11409276: \"0.33pJ/b (0.23pJ/b PHY only) at 24Gb/s\", 0.75 V];"
+				               " flow control, calibration, error correction, repair: a UCIe-LIKE digital interface,"
+				               " not the UCIe D2D adapter itself." << std::endl;
+			  } else {
+				  ucie_analog_pj  = (pkg == 1) ? int_sp * cdn_ap / cdn_sp : int_sp;
+				  /* PIMID 1.12.18: the published digital chain (rows comment above).
+				   * set_pcie_param runs BEFORE the constructor's init_interface, so the
+				   * global CACTI input (g_ip) is set from this component first --
+				   * init_tech_params reads it; the constructor re-initialises after. */
+				  init_interface(&interface_ip);
+				  const TechnologyParameter tp_saved = g_tp;
+				  init_tech_params(0.022, false);
+				  const double c22 = pimid_io_min_inv_switch_cap(), v22 = g_tp.peri_global.Vdd;
+				  init_tech_params(0.032, false);
+				  const double c32 = pimid_io_min_inv_switch_cap(), v32 = g_tp.peri_global.Vdd;
+				  g_tp = tp_saved;   /* the run's tables, exactly as they were */
+				  const double k_cacti = (c32 > 0 && v32 > 0) ? (c22 * v22 * v22) / (c32 * v32 * v32) : 0.0;
+				  const double k_sb = 0.51 / 0.111;              /* [SB17] Table 2, 32 nm / 7 nm */
+				  const double k_22_7 = k_cacti * k_sb;
+				  if (!(k_22_7 > 0.0)) {
+					  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): CACTI's 22/32 nm tables gave no switched"
+					               " capacitance for the digital node chain." << std::endl;
+					  exit(2);
+				  }
+				  ucie_digital_pj = ms_dig * k_22_7;
+				  const double ref_analog = ms_dig * node_ratio;
+				  const double e57 = 0.70, e35_lo = 0.70, e35_hi = 0.75, e35_mid = 0.725;
+				  const double ref_press_mid = ucie_digital_pj / (e57 * e35_mid);
+				  const double ref_press_lo  = ucie_digital_pj / (e57 * e35_hi);
+				  const double ref_press_hi  = ucie_digital_pj / (e57 * e35_lo);
+				  if (pkg == 1)
+					  std::cerr << "[link] UCIe 22 nm advanced package (McPAT PIMID 1.12.18): analog PHY "
+					            << ucie_analog_pj << " pJ/bit DERIVED = 1.2 pJ/b [Mondal et al. (Intel), ISSCC 2026"
+					               " 8.1, DOI 10.1109/ISSCC49663.2026.11409120, 22nm FinFET standard package, 0.45 TX +"
+					               " 0.69 RX + 0.06 PI+QH] x (0.29 / 0.52) [Melek et al. (Cadence), JSSC 2026: same-node"
+					               " 3 nm advanced/standard package pair]. CAVEATS: the package ratio is Cadence's design"
+					               " (16 Gb/s, PLL included, 25 mm SP channel) applied to Intel's (48 Gb/s, PLL NOT"
+					               " integrated, 30 mm SP channel), across vendors; this link runs at "
+					            << XML->sys.pcie.lane_rate_gts << " GT/s." << std::endl;
+				  else
+					  std::cerr << "[link] UCIe 22 nm standard package (McPAT PIMID 1.12.18): analog PHY "
+					            << ucie_analog_pj << " pJ/bit MEASURED [Mondal et al. (Intel), ISSCC 2026 8.1, DOI"
+					               " 10.1109/ISSCC49663.2026.11409120: \"1.2pJ/b (0.45, 0.69, and 0.06pJ/b in TX, RX, and"
+					               " PI+QH ...; a PLL is not integrated in this work)\", 48 Gb/s, VDD 0.7 V, 30 mm];"
+					               " this link runs at " << XML->sys.pcie.lane_rate_gts << " GT/s." << std::endl;
+				  std::cerr << "[link] UCIe 22 nm digital interface: " << ucie_digital_pj << " pJ/bit DERIVED (APPLIED)"
+				               " = 0.10 pJ/b [Microsoft ISSCC 2026 8.3, 3 nm: 0.33 - 0.23] x E22/E7 " << k_22_7
+				            << " = CACTI C_inv x Vdd^2 22 nm (" << c22 * 1e15 << " fF, " << v22 << " V) / 32 nm ("
+				            << c32 * 1e15 << " fF, " << v32 << " V) = " << k_cacti
+				            << " x Stillmaker & Baas, Integration 58 (2017) 74-81, Table 2 FO4 inverter energy 32 nm"
+				               " 0.51 fJ (0.97 V) / 7 nm 0.111 fJ (0.8 V) = " << k_sb
+				            << ". LOWER BOUND: the published chain stops at 7 nm (7 -> 3 nm taken as 1)." << std::endl;
+				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (a), not applied: analog node"
+				               " ratio 0.10 x (1.2 / 0.52 = " << node_ratio << ") = " << ref_analog
+				            << " pJ/bit [Intel ISSCC 2026 8.1 SP / Cadence JSSC 2026 SP]" << std::endl;
+				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (b), not applied: TSMC PRESS chain "
+				            << ucie_digital_pj << " / (E5/E7 0.70 x E3/E5 0.725) = " << ref_press_mid
+				            << " pJ/bit (range " << ref_press_lo << " .. " << ref_press_hi << " for E3/E5 0.75 .. 0.70)"
+				               " [P. Alcorn, Tom's Hardware, 2020-08-24, TSMC Technology Symposium 2020: N5 \"30% power"
+				               " reduction at the same performance\" vs N7; N3 \"25-30% power reduction\" vs N5]. PRESS"
+				               " figures: TSMC's own pages state only N7 vs N16 (\"55% power saving\") and N3E vs N5"
+				               " (\"over 30% power savings\")." << std::endl;
+				  const double ref_min = std::min(ref_analog, ref_press_lo);
+				  const double ref_max = std::max(ref_analog, ref_press_hi);
+				  if (ucie_digital_pj < ref_min || ucie_digital_pj > ref_max)
+					  std::cerr << "[link] WARNING (McPAT PIMID 1.12.18, guard): applied 22 nm digital interface "
+					            << ucie_digital_pj << " pJ/bit is OUTSIDE the internal references [" << ref_min
+					            << ", " << ref_max << "] pJ/bit" << std::endl;
+				  else
+					  std::cerr << "[link] guard (McPAT PIMID 1.12.18): applied 22 nm digital interface "
+					            << ucie_digital_pj << " pJ/bit lies within the internal references [" << ref_min
+					            << ", " << ref_max << "] pJ/bit" << std::endl;
+			  }
+		  }
+		  ucie_pj_per_bit = ucie_analog_pj + ucie_digital_pj;
+		  std::cerr << "[link] UCIe link model (McPAT PIMID 1.12.18): " << pkg_s << " package, "
+		            << XML->sys.pcie.lanes << " lanes x " << r << " GT/s, "
+		            << (ucie_user_pj ? std::string("user value") : std::to_string(ucie_node_nm) + " nm row")
+		            << ": analog PHY " << ucie_analog_pj << " + digital interface " << ucie_digital_pj
+		            << " = " << ucie_pj_per_bit << " pJ/bit, charged once per crossing bit" << std::endl;
+	  }
 
 		if ( XML->sys.pcie.vdd>0)
 		{

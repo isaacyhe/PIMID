@@ -153,6 +153,11 @@ void McPATWrapper::setPerCoreInstructions(const std::vector<uint64_t>& instrs) {
     power_computed_ = false;
 }
 
+void McPATWrapper::setPerCoreRunCycles(const std::vector<uint64_t>& cycles) {
+    per_core_run_cycles_ = cycles;   // PIMID 1.12.18 (idle halt)
+    power_computed_ = false;
+}
+
 void McPATWrapper::setMeasuredControlFlow(uint64_t indirect_branches,
                                           uint64_t ras_returns) {
     meas_indir_ = indirect_branches;   // 1.11.93 (F6)
@@ -259,6 +264,16 @@ void McPATWrapper::setL1DAccesses(uint64_t reads, uint64_t writes,
     power_computed_ = false;
 }
 
+void McPATWrapper::setScratchpadAccesses(uint64_t reads, uint64_t writes, uint64_t dma_lines,
+                                         uint64_t cmd_reads, uint64_t cmd_writes) {
+    spm_reads_ = reads;
+    spm_writes_ = writes;
+    dma_lines_ = dma_lines;
+    dma_cmd_reads_ = cmd_reads;
+    dma_cmd_writes_ = cmd_writes;
+    power_computed_ = false;
+}
+
 void McPATWrapper::setL2Accesses(uint64_t reads, uint64_t writes,
                                   uint64_t read_misses, uint64_t write_misses) {
     l2_reads_ = reads;
@@ -274,6 +289,15 @@ void McPATWrapper::setL3Accesses(uint64_t reads, uint64_t writes,
     l3_writes_ = writes;
     l3_read_misses_ = read_misses;
     l3_write_misses_ = write_misses;
+    power_computed_ = false;
+}
+
+void McPATWrapper::setCoherenceDirectoryEvents(uint64_t from_l1_children,
+                                               uint64_t from_l2_children,
+                                               bool enabled) {
+    coh_l1_events_ = from_l1_children;   // 1.12.18
+    coh_l2_events_ = from_l2_children;
+    coh_dir_enabled_ = enabled;
     power_computed_ = false;
 }
 
@@ -413,7 +437,8 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
                                 int baseline_device, int temp_k,
                                 double& fa, double& fd, double& fl,
                                 double& fg,     // 1.11.54 (E004): gate-leakage ratio
-                                int leakage_device = 4) {   // 1.11.94 (item 1): column for fl/fg; 4 = comm-dram
+                                int leakage_device = 4,   // 1.11.94 (item 1): column for fl/fg; 4 = comm-dram
+                                int periph_device = 4) {  // PIMID 1.12.18 (per-die process): the DRAM die family, column for fa/fd
     double lp_d[5], cg_d[5], cf_d[5], vd_d[5], io_d[5];   // DRAM table
     double lp_l[5], cg_l[5], cf_l[5], vd_l[5], io_l[5];   // logic table
     if (!cactiRow(dram_table_nm, "-l_phy", lp_d) ||
@@ -425,7 +450,8 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
         !cactiRow(logic_node_nm, "-C_fringe", cf_l) ||
         !cactiRow(logic_node_nm, "-Vdd", vd_l)) return false;
     if (baseline_device < 0 || baseline_device > 4) return false;
-    const int B = baseline_device, CD = 4;
+    const int B = baseline_device;
+    const int CD = (periph_device == 3 || periph_device == 4) ? periph_device : 4;   // PIMID 1.12.18: comm-dram (4) or lp-dram (3)
     const int LD = (leakage_device >= 0 && leakage_device <= 4) ? leakage_device : CD;   // 1.11.94: leakage column (area/dynamic keep comm-dram)
     if (!(vd_l[B] > 0.0) || !(lp_l[B] > 0.0)) return false;   // column unpopulated
     if (!(vd_d[CD] > 0.0) || !(lp_d[CD] > 0.0)) return false;
@@ -492,12 +518,29 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
     return true;
 }
 
+/* 1.12.18: the CV/I delay ratio between two device columns, the
+ * same physics the DRAM-periphery clock ceiling uses (1.11.35). */
+bool McPATWrapper::deviceDelayRatio(int table_nm, int dev_a, int dev_b, double& ratio) {
+    ratio = 0.0;
+    if (dev_a < 0 || dev_a > 4 || dev_b < 0 || dev_b > 4) return false;
+    double cg[5], cf[5], vdd[5], ion[5];
+    if (!cactiRow(table_nm, "-C_g_ideal", cg) || !cactiRow(table_nm, "-C_fringe", cf) ||
+        !cactiRow(table_nm, "-Vdd", vdd) || !cactiRow(table_nm, "-I_on_n", ion)) return false;
+    if (!(ion[dev_a] > 0.0) || !(ion[dev_b] > 0.0)) return false;
+    const double ta = (cg[dev_a] + cf[dev_a]) * vdd[dev_a] / ion[dev_a];
+    const double tb = (cg[dev_b] + cf[dev_b]) * vdd[dev_b] / ion[dev_b];
+    if (!(ta > 0.0) || !(tb > 0.0)) return false;
+    ratio = ta / tb;
+    return true;
+}
+
 bool McPATWrapper::periphFactorsFor(int dram_table_nm, int logic_node_nm,
                                     int baseline_device, int temp_k,
-                                    double& fa, double& fd, double& fl) {
+                                    double& fa, double& fd, double& fl,
+                                    int periph_device) {
     double fg_unused = 0.0;   // 1.11.54: reporting callers do not need it
     return periphFamilyFactors(dram_table_nm, logic_node_nm, baseline_device,
-                               temp_k, fa, fd, fl, fg_unused);
+                               temp_k, fa, fd, fl, fg_unused, 4, periph_device);
 }
 
 /* 1.11.51 (L105/L68): the legacy 3-arg wrapper is GONE. It priced the
@@ -510,11 +553,12 @@ static void periphFamilyFactorsCfg(int table_nm, int logic_node_nm,
                                    int baseline_device, int temp_k,
                                    double& fa, double& fd, double& fl,
                                    double& fg,     // 1.11.54 (E004)
-                                   int leakage_device = 4) {   // 1.11.94 (item 1)
+                                   int leakage_device = 4,   // 1.11.94 (item 1)
+                                   int periph_device = 4) {  // PIMID 1.12.18 (per-die process)
     if (!periphFamilyFactors(table_nm, logic_node_nm, baseline_device,
-                             temp_k, fa, fd, fl, fg, leakage_device)) {
+                             temp_k, fa, fd, fl, fg, leakage_device, periph_device)) {
         std::cerr << "[power] FATAL: cannot derive the DRAM-periphery factors"
-                  << " (comm-dram from " << table_nm << "nm.dat / baseline"
+                  << " (" << (periph_device == 3 ? "lp-dram" : "comm-dram") << " from " << table_nm << "nm.dat / baseline"
                   << " device " << baseline_device << " from "
                   << logic_node_nm << "nm.dat at " << (temp_k - 273)
                   << "C).\n";
@@ -1036,6 +1080,17 @@ struct ResultBlob {
      * factors. The child cannot refuse on its own behalf without losing the
      * count, so it carries them back and the PARENT refuses. */
     int subst_counts[5];   // 1.11.106: + zeroed wires (PIMID_SUBST_WIRE)
+    /* 1.12.18: the clock-network share of each component above (Wattch clock
+     * model, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000; McPAT logic.h
+     * ClockNetwork), already inside component_power. */
+    McPATWrapper::PowerMetrics clock_power[kNumComponents];
+    double clock_ungated_w[kNumComponents];   // reference: the same, ungated (dynamic, W)
+    McPATWrapper::LinkModelReadback link_readback;   // 1.12.18: McPAT's UCIe link model
+    /* PIMID 1.12.18 (per-die clock trunk): McPAT's trunks, one per die kind. */
+    static constexpr int kMaxTrunks = 4;
+    int num_trunks;
+    McPATWrapper::TrunkDie trunks[kMaxTrunks];
+    McPATWrapper::PowerMetrics trunk_power;
     // After this struct, num_noc_levels * sizeof(PowerMetrics) bytes follow.
 };
 constexpr McPATWrapper::ComponentType kComponentOrder[ResultBlob::kNumComponents] = {
@@ -1051,7 +1106,7 @@ constexpr McPATWrapper::ComponentType kComponentOrder[ResultBlob::kNumComponents
 /* 1.11.57 (latent C012): the blob's format stamp. Bump it whenever the layout
  * of ResultBlob changes, so a file written by a different build is rejected
  * rather than reinterpreted. */
-constexpr uint64_t kResultBlobMagic = 0x50494D4944425033ULL;  // "PIMIDBP3" (1.11.106: subst_counts[5], + wires)
+constexpr uint64_t kResultBlobMagic = 0x50494D4944425036ULL;  // "PIMIDBP6" (1.12.18: + clock_power, + link_readback; + per-die trunks)
 
 /* FNV-1a over raw bytes. Not a cryptographic hash and does not need to be:
  * its job is to make two DIFFERENT input sets collide with negligible
@@ -1123,6 +1178,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.pipeline_depth);    f(config_.pe_lanes);
     f(config_.pe_element_bits);   f(config_.pe_has_fp);
     f(config_.pe_imem_bytes);     f(config_.issue_width);
+    f(config_.pe_spm_bytes);      f(config_.pe_spm_dma);       // 1.12.18
     f(config_.num_alus);          f(config_.num_muls);
     f(config_.num_fpus);          f(config_.fp_emul_cycles);
     f(config_.device_scope);
@@ -1145,6 +1201,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(static_cast<int>(config_.mc_phy_tier));
     f(config_.device_type);       f(config_.longer_channel_device);
     f(config_.periphery_leakage_device);   // 1.11.94: part of the priced identity
+    f(config_.clock_network ? 1 : 0);        // 1.12.18: power.models.clock_network
     f(config_.arch_int_regs);     f(config_.arch_fp_regs);
     f(config_.number_hardware_threads);
     f(config_.interconnect_projection_type);
@@ -1166,11 +1223,32 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.commit_width);                                                       // 1.11.97 (R2537)
     f(meas_int_);       f(meas_mul_);      f(meas_fp_);
     f(meas_ld_);        f(meas_st_);       f(meas_mix_br_);
+    f(meas_vm_reg_);    f(meas_vm_ld_);    f(meas_vm_st_);                       // 1.12.18 (bug 1b)
+    f(config_.vector_moves_split ? 1 : 0);
+    for (uint64_t v : meas_fpc_) f(v);                                              // 1.12.18
+    for (uint64_t v : meas_iops_) f(v);                                             // PIMID 1.12.18
+    f(config_.int_alu_published ? 1 : 0); f(config_.clock_global_local ? 1 : 0);
+    f(config_.l1d_access_width ? 1 : 0);  f(config_.tlb_btb_measured ? 1 : 0);
+    f(config_.tlb_published_geometry ? 1 : 0);                                     // 1.12.18
+    f(config_.layout_energy_overhead ? 1 : 0);                                     // 1.12.18 (ruling 2026-10-24)
+    f(config_.itlb_entries); f(config_.dtlb_entries); f(config_.tlb_assoc);
+    f(config_.fu_base_energy ? 1 : 0); f(config_.fpu_published ? 1 : 0); f(config_.frontend_from_timing ? 1 : 0);
+    f(config_.sharer_bits_from_children ? 1 : 0);   // 1.12.18
+    /* PIMID 1.12.18 (idle halt, per-die process, per-die trunk) */
+    f(config_.idle_halt ? 1 : 0); f(config_.clock_die_trunk ? 1 : 0);
+    f(config_.logic_die_node_nm); f(config_.logic_die_device_type);
+    f(config_.dram_die_count); f(config_.dram_die_area_mm2); f(config_.logic_die_area_mm2);
+    f(config_.dram_periph_device);
+    f(static_cast<uint64_t>(per_core_run_cycles_.size()));
+    for (uint64_t v : per_core_run_cycles_) f(v);
     f(l1i_reads_);      f(l1i_read_misses_);
     f(l1d_reads_);      f(l1d_writes_);    f(l1d_read_misses_); f(l1d_write_misses_);
+    f(spm_reads_);      f(spm_writes_);    f(dma_lines_);                          // 1.12.18
+    f(dma_cmd_reads_);  f(dma_cmd_writes_);
     f(l2_reads_);       f(l2_writes_);     f(l2_read_misses_);  f(l2_write_misses_);
     f(l3_reads_);       f(l3_writes_);     f(l3_read_misses_);  f(l3_write_misses_);
-    f(mc_reads_);       f(mc_writes_);
+    f(coh_l1_events_);  f(coh_l2_events_);  f(coh_dir_enabled_);                   // 1.12.18
+    f(mc_reads_);       f(mc_writes_);   f(mc_command_ops_);
 
     // --- setter state: memory-controller technology ---
     f(mc_tech_.peak_transfer_rate);  f(mc_tech_.databus_width);
@@ -1190,6 +1268,12 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.flit_bits);       f(lvl.clock_mhz);
         f(lvl.chip_coverage);   f(lvl.on_dram_die);
         f(lvl.vc_buffer_entries);   // 1.11.93
+        f(lvl.routers_present); f(lvl.has_global_link);   // 1.12.18
+        f(lvl.link_kind);       f(lvl.link_span_area_mm2);
+        f(lvl.link_parent_regions); f(lvl.tech_node_nm);
+        f(static_cast<uint64_t>(lvl.link_traversals));
+        f(static_cast<uint64_t>(lvl.tsv_die_crossings));
+        f(static_cast<uint64_t>(lvl.passthrough_accesses));   // 1.12.18
         f(lvl.total_accesses);  f(lvl.duty_cycle);
     }
 
@@ -1205,6 +1289,10 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(pcie_stats_.duty_cycle);        f(pcie_stats_.total_load_perc);
     f(pcie_stats_.transferred_bytes); f(pcie_stats_.link_pj_per_bit);
     f(pcie_stats_.link_clock_mhz);    f(pcie_stats_.link_type_name);
+    f(pcie_stats_.link_class);        f(pcie_stats_.ucie_package);      // 1.12.18
+    f(pcie_stats_.lane_rate_gts);     f(pcie_stats_.phy_pj_per_bit);
+    f(pcie_stats_.link_energy_end);
+    f(pcie_stats_.link_node_nm);      // 1.12.18: two-node UCIe rows
 
     // --- setter state: power gating and profile ---
     f(pg_spec_.pg_core);  f(pg_spec_.pg_noc);  f(pg_spec_.pg_mc);
@@ -1347,6 +1435,10 @@ void McPATWrapper::computePower() {
             for (int i = 0; i < ResultBlob::kNumComponents; i++) {
                 auto it = component_power_.find(kComponentOrder[i]);
                 if (it != component_power_.end()) blob.component_power[i] = it->second;
+                auto ic = clock_power_.find(kComponentOrder[i]);   // 1.12.18
+                if (ic != clock_power_.end()) blob.clock_power[i] = ic->second;
+                auto iu = clock_ungated_w_.find(kComponentOrder[i]);
+                blob.clock_ungated_w[i] = (iu != clock_ungated_w_.end()) ? iu->second : 0.0;
             }
             blob.system_power    = system_power_;
             blob.peak_power      = peak_power_;
@@ -1362,6 +1454,11 @@ void McPATWrapper::computePower() {
             for (int k = 0; k < PIMID_SUBST_KINDS; k++)
                 blob.subst_counts[k] = pimid_substitution_count(k);
             blob.subst_counts[PIMID_SUBST_WIRE] = pimid_cacti_wire_zeroed_count() - wire_zeroed_before;   // 1.11.106: this child's solves
+            blob.link_readback = link_readback_;   // 1.12.18
+            blob.num_trunks = 0;   // PIMID 1.12.18 (per-die trunk)
+            for (const auto& t : trunk_dies_)
+                if (blob.num_trunks < ResultBlob::kMaxTrunks) blob.trunks[blob.num_trunks++] = t;
+            blob.trunk_power = trunk_power_;
             blob.core_ifu_w = blob.core_lsu_w = blob.core_mmu_w = 0.0;
             blob.core_exu_w = blob.core_pipe_w = blob.core_undiff_w = 0.0;
             blob.core_btb_area_mm2 = blob.core_bpt_area_mm2 = blob.core_bp_w = 0.0;
@@ -1403,7 +1500,8 @@ void McPATWrapper::computePower() {
                                            config_.device_type,
                                            config_.temperature_k,
                                            faW, fdW, flW, fgW,
-                                           config_.periphery_leakage_device);   // 1.11.94
+                                           config_.periphery_leakage_device,   // 1.11.94
+                                           config_.dram_periph_device);        // PIMID 1.12.18 (per-die process)
                     (void)faW; (void)fgW;
                 }
                 auto wf = [&](const Component* p, const char* label) -> double {
@@ -1596,6 +1694,8 @@ void McPATWrapper::computePower() {
     component_power_.clear();
     for (int i = 0; i < ResultBlob::kNumComponents; i++) {
         component_power_[kComponentOrder[i]] = blob.component_power[i];
+        clock_power_[kComponentOrder[i]] = blob.clock_power[i];   // 1.12.18
+        clock_ungated_w_[kComponentOrder[i]] = blob.clock_ungated_w[i];
     }
     system_power_         = blob.system_power;
     peak_power_           = blob.peak_power;
@@ -1605,6 +1705,9 @@ void McPATWrapper::computePower() {
     mcpat_noc_area_mm2_   = blob.noc_area_mm2;
     mcpat_mc_area_mm2_    = blob.mc_area_mm2;
     mcpat_pcie_area_mm2_  = blob.pcie_area_mm2;
+    link_readback_        = blob.link_readback;   // 1.12.18
+    trunk_dies_.assign(blob.trunks, blob.trunks + std::max(0, std::min(blob.num_trunks, (int)ResultBlob::kMaxTrunks)));   // PIMID 1.12.18
+    trunk_power_          = blob.trunk_power;
     core_ifu_w_    = blob.core_ifu_w;      // 1.9.36
     core_lsu_w_    = blob.core_lsu_w;
     core_mmu_w_    = blob.core_mmu_w;
@@ -1861,6 +1964,61 @@ void McPATWrapper::extractResults() {
         component_power_[ComponentType::NOC] = PowerMetrics();
     }
 
+    /* 1.12.18: THE CLOCK-NETWORK SHARE of each component (Wattch clock model,
+     * D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000; McPAT logic.h
+     * ClockNetwork). McPAT added each clock network to its component, so the
+     * entries above already include it; these are read from the Processor's
+     * clk_* aggregates (built with the same multipliers and family transform)
+     * on the same basis as the component: runtime dynamic, peak-basis
+     * leakage. L1 lives in the core's tree; the link controller has none in
+     * McPAT (not modelled, stated in power.md). */
+    clock_power_.clear();
+    clock_ungated_w_.clear();
+    /* the ungated reference (user ruling 2026-10-23: print it beside the
+     * measured-activity-gated value that the totals carry) */
+    {
+        const Processor& P = *mcpat_processor_;
+        auto u = [&](ComponentType t, double w) { clock_ungated_w_[t] = componentIsDescribed(t) ? w : 0.0; };
+        u(ComponentType::CORE, P.clku_core);
+        u(ComponentType::L2_CACHE, P.clku_l2);
+        u(ComponentType::L3_CACHE, P.clku_l3);
+        u(ComponentType::MEMORY_CONTROLLER, P.clku_mcs);
+        u(ComponentType::NOC, (P.numNOC > 0) ? P.clku_noc : 0.0);
+        clock_ungated_w_[ComponentType::L1_CACHE] = 0.0;
+        clock_ungated_w_[ComponentType::PCIE] = 0.0;
+    }
+    clock_power_[ComponentType::CORE] = extractComponent(
+        mcpat_processor_->clk_core, "core clock network", componentIsDescribed(ComponentType::CORE));
+    clock_power_[ComponentType::L1_CACHE] = PowerMetrics();
+    clock_power_[ComponentType::L2_CACHE] = extractComponent(
+        mcpat_processor_->clk_l2, "L2 clock network", componentIsDescribed(ComponentType::L2_CACHE));
+    clock_power_[ComponentType::L3_CACHE] = extractComponent(
+        mcpat_processor_->clk_l3, "L3 clock network", componentIsDescribed(ComponentType::L3_CACHE));
+    /* 1.12.18: with l3_replicated_slices > 1 the L3 line below is McPAT's
+     * ONE priced slice; the clock of the other slices is not added here (no
+     * clock arithmetic in PIMID, user rule 2026-10-23) -- an open item. */
+    clock_power_[ComponentType::MEMORY_CONTROLLER] = extractComponent(
+        mcpat_processor_->clk_mcs, "memory controller clock network",
+        componentIsDescribed(ComponentType::MEMORY_CONTROLLER));
+    clock_power_[ComponentType::NOC] = (mcpat_processor_->numNOC > 0)
+        ? extractComponent(mcpat_processor_->clk_noc, "NoC clock network", componentIsDescribed(ComponentType::NOC))
+        : PowerMetrics();
+    clock_power_[ComponentType::PCIE] = PowerMetrics();
+    /* PIMID 1.12.18 (user ruling, per-die clock trunk): McPAT's per-die
+     * trunk (processor.cc), its own entry: in no component above, in the
+     * system total below. Read, not computed. */
+    trunk_dies_.clear();
+    for (const auto& t : mcpat_processor_->trunk_dies) {
+        TrunkDie d{};
+        std::snprintf(d.name, sizeof(d.name), "%s", t.name.c_str());
+        d.count = t.count; d.area_mm2 = t.area_mm2; d.leaves = t.leaves; d.node_nm = t.node_nm; d.on = t.on;
+        d.rt_w = t.rt_w; d.ungated_w = t.ungated_w; d.peak_w = t.peak_w; d.leak_w = t.leak_w; d.gate_w = t.gate_w;
+        refuseNonFinite("per-die clock trunk", "runtime dynamic power", d.rt_w);
+        trunk_dies_.push_back(d);
+    }
+    trunk_power_ = trunk_dies_.empty() ? PowerMetrics()
+        : extractComponent(mcpat_processor_->clk_trunk, "per-die clock trunk", true);
+
     // PCIe
     if (mcpat_processor_->pcie) {
         /* 1.11.7 (audit blocker): read the AGGREGATED component (pcies),
@@ -1870,6 +2028,22 @@ void McPATWrapper::extractResults() {
         component_power_[ComponentType::PCIE] = extractComponent(
             mcpat_processor_->pcies, "PCIe link controller",
             componentIsDescribed(ComponentType::PCIE));
+        /* 1.12.18: read McPAT's UCIe link model state (no arithmetic). */
+        const PCIeController* pc = mcpat_processor_->pcie;
+        link_readback_.ucie                = pc->ucie;
+        link_readback_.clock_mhz           = pc->clock_mhz;
+        link_readback_.clock_derived       = pc->clock_derived;
+        link_readback_.ucie_pj_per_bit     = pc->ucie_pj_per_bit;
+        link_readback_.phy_joules          = pc->ucie_phy_joules;
+        link_readback_.phy_w               = pc->ucie_phy_w;
+        link_readback_.ctrl_dyn_excluded_w = pc->ctrl_dyn_excluded_w;
+        link_readback_.node_nm             = pc->ucie_node_nm;      // 1.12.18: two-node rows
+        link_readback_.analog_pj           = pc->ucie_analog_pj;
+        link_readback_.digital_pj          = pc->ucie_digital_pj;
+        link_readback_.user_pj             = pc->ucie_user_pj;
+        link_readback_.ref_ctrl_pj         = pc->ucie_ref_ctrl_pj;
+    } else {
+        link_readback_ = LinkModelReadback();   // 1.12.18
     }
 
     // Store areas from McPAT (um^2 -> mm^2)
@@ -1996,6 +2170,11 @@ void McPATWrapper::extractResults() {
         system_power_.gate_leakage += pair.second.gate_leakage;
         system_power_.total_leakage += pair.second.total_leakage;
     }
+    /* PIMID 1.12.18 (per-die clock trunk): its own entry, once. */
+    system_power_.runtime_dynamic += trunk_power_.runtime_dynamic;
+    system_power_.subthreshold_leakage += trunk_power_.subthreshold_leakage;
+    system_power_.gate_leakage += trunk_power_.gate_leakage;
+    system_power_.total_leakage += trunk_power_.total_leakage;
     system_power_.total_dynamic = system_power_.runtime_dynamic;
     system_power_.total_power = system_power_.total_dynamic + system_power_.total_leakage;
 
@@ -2068,6 +2247,10 @@ void McPATWrapper::extractResults() {
         peak_dyn += peakDynamic(mcpat_processor_->pcies, "PCIe link controller");   // 1.11.7: aggregated
         peak_leak += peakLeakage(mcpat_processor_->pcies, "PCIe link controller");
     }
+    if (!trunk_dies_.empty()) {   // PIMID 1.12.18 (per-die clock trunk)
+        peak_dyn += peakDynamic(mcpat_processor_->clk_trunk, "per-die clock trunk");
+        peak_leak += peakLeakage(mcpat_processor_->clk_trunk, "per-die clock trunk");
+    }
     peak_power_ = peak_dyn + peak_leak;
 }
 
@@ -2081,6 +2264,11 @@ McPATWrapper::PowerMetrics McPATWrapper::getComponentPower(ComponentType compone
         return it->second;
     }
     return PowerMetrics();
+}
+
+McPATWrapper::PowerMetrics McPATWrapper::getClockPower(ComponentType component) const {
+    auto it = clock_power_.find(component);   // 1.12.18
+    return (it != clock_power_.end()) ? it->second : PowerMetrics();
 }
 
 McPATWrapper::PowerMetrics McPATWrapper::getSystemPower() const {
@@ -2195,7 +2383,10 @@ void McPATWrapper::printDetailedResults() const {
             const auto& cfg = noc_levels_[i];
             std::cout << "  " << cfg.name
                       << " (" << cfg.horizontal_nodes << "x" << cfg.vertical_nodes
-                      << (cfg.type == 0 ? " bus" : " NoC") << "):"
+                      << (cfg.type == 0 ? " bus"
+                          : (cfg.routers_present == 0
+                                 ? (cfg.link_kind == 1 ? " TSV links" : " links")   /* 1.12.18 */
+                                 : " NoC")) << "):"
                       << "  " << pm.runtime_dynamic << "W dynamic, "
                       << pm.total_leakage << "W leakage" << std::endl;
         }
@@ -2292,12 +2483,31 @@ bool McPATWrapper::componentIsDescribed(ComponentType t) const {
 
 void McPATWrapper::printComponentBreakdown() const {
     std::cout << "\nComponent Power Breakdown:" << std::endl;
+    if (!config_.clock_network)   // 1.12.18
+        std::cout << "  (clock distribution is NOT priced: power.models.clock_network: false, user option)" << std::endl;
 
-    auto print_component = [](const std::string& name, const PowerMetrics& power) {
+    /* 1.12.18: each component carries its clock network (McPAT logic.h
+     * ClockNetwork, the Wattch clock model: D. Brooks, V. Tiwari,
+     * M. Martonosi, ISCA 2000), printed as its own line. It is INSIDE the
+     * component's figures above it, not an addend. */
+    auto print_clock = [this](ComponentType t) {
+        const PowerMetrics ck = getClockPower(t);
+        if (ck.total_power <= 0.0 && ck.total_dynamic <= 0.0) return;
+        auto iu = clock_ungated_w_.find(t);
+        /* values as McPAT computed them (no clock arithmetic in PIMID, user
+         * rule 2026-10-23); leakage before the power-gating interpolation */
+        std::cout << "    of which clock network (McPAT, Wattch model, gated by measured activity): "
+                  << ck.runtime_dynamic << " W dynamic, " << ck.total_leakage << " W leakage" << std::endl;
+        std::cout << "      clock network UNGATED dynamic (reference, in no total): "
+                  << ((iu != clock_ungated_w_.end()) ? iu->second : 0.0) << " W" << std::endl;
+    };
+    auto print_component = [&print_clock](const std::string& name, const PowerMetrics& power,
+                                           ComponentType t) {
         std::cout << "  " << name << ":" << std::endl;
         std::cout << "    Dynamic: " << power.runtime_dynamic << " W" << std::endl;
         std::cout << "    Leakage: " << power.total_leakage << " W" << std::endl;
         std::cout << "    Total: " << power.total_power << " W" << std::endl;
+        print_clock(t);
     };
 
     /* 1.11.29 (user ruling): report the system the USER DEFINED. The scope is
@@ -2311,9 +2521,9 @@ void McPATWrapper::printComponentBreakdown() const {
      * componentIsDescribed(), so the breakdown adds up to the total printed
      * beside it. */
     if (componentIsDescribed(ComponentType::CORE))
-        print_component("Cores", getComponentPower(ComponentType::CORE));
+        print_component("Cores", getComponentPower(ComponentType::CORE), ComponentType::CORE);
     if (componentIsDescribed(ComponentType::L1_CACHE))
-        print_component("L1 Caches", getComponentPower(ComponentType::L1_CACHE));
+        print_component("L1 Caches", getComponentPower(ComponentType::L1_CACHE), ComponentType::L1_CACHE);
     if (componentIsDescribed(ComponentType::L2_CACHE)) {
         /* 1.11.93 (F1): priced as the timing model's shared instances, so
          * this line carries the L2 (a private L2 used to be folded into
@@ -2323,19 +2533,48 @@ void McPATWrapper::printComponentBreakdown() const {
                         + std::to_string(config_.l2_size_bytes / 1024) + " KB, shared by "
                         + std::to_string(nl2 > 0 ? std::max(1, config_.num_cores) / nl2 : 0)
                         + " core(s) each)",
-                        getComponentPower(ComponentType::L2_CACHE));
+                        getComponentPower(ComponentType::L2_CACHE), ComponentType::L2_CACHE);
     }
     if (componentIsDescribed(ComponentType::L3_CACHE))
-        print_component("L3 Cache", getComponentPower(ComponentType::L3_CACHE));
+        print_component("L3 Cache", getComponentPower(ComponentType::L3_CACHE), ComponentType::L3_CACHE);
     if (componentIsDescribed(ComponentType::MEMORY_CONTROLLER))
         print_component("Memory Controllers",
-                        getComponentPower(ComponentType::MEMORY_CONTROLLER));
+                        getComponentPower(ComponentType::MEMORY_CONTROLLER),
+                        ComponentType::MEMORY_CONTROLLER);
     if (componentIsDescribed(ComponentType::NOC)) {
-        print_component("NoC", getComponentPower(ComponentType::NOC));
+        print_component("NoC", getComponentPower(ComponentType::NOC), ComponentType::NOC);
+    }
+    /* PIMID 1.12.18 (user ruling, per-die clock trunk): McPAT's numbers. */
+    if (!trunk_dies_.empty()) {
+        std::cout << "  Clock trunk (one die-level H-tree per die, McPAT; in no component above, in the total):" << std::endl;
+        for (const auto& t : trunk_dies_)
+            std::cout << "    " << t.name << " x" << t.count << ": " << t.rt_w << " W dynamic (on " << t.on
+                      << " of the cycles; ungated " << t.ungated_w << " W), " << (t.leak_w + t.gate_w)
+                      << " W leakage; " << t.leaves << " component tree root(s) per die over " << t.area_mm2
+                      << " mm^2 at " << t.node_nm << " nm" << std::endl;
+    } else if (config_.clock_network && !config_.clock_die_trunk) {
+        std::cout << "  Clock trunk: NOT priced BY USER OPTION (power.models.clock_die_trunk: false)" << std::endl;
     }
     if (componentIsDescribed(ComponentType::PCIE)) {
         print_component("Link controller (" + pcie_stats_.link_type_name + ")",
-                        getComponentPower(ComponentType::PCIE));
+                        getComponentPower(ComponentType::PCIE), ComponentType::PCIE);
+        /* 1.12.18: the ledger split McPAT's UCIe model reports. link.phy is
+         * McPAT's own number (bytes x 8 x pJ/bit); link.controller is the
+         * rest of the McPAT link component (area, leakage; no dynamic). */
+        if (link_readback_.ucie)
+            std::cout << "    link.phy (UCIe analog PHY + digital interface, McPAT, "
+                      << (link_readback_.user_pj ? std::string("user value")
+                                                 : std::to_string(link_readback_.node_nm) + " nm row")
+                      << "): "
+                      << link_readback_.phy_w << " W, " << link_readback_.phy_joules
+                      << " J at " << link_readback_.analog_pj << " + " << link_readback_.digital_pj
+                      << " = " << link_readback_.ucie_pj_per_bit << " pJ/bit; McPAT controller"
+                         " reference " << link_readback_.ref_ctrl_pj << " pJ/bit (cross-check, not"
+                         " charged); link.controller dynamic excluded ("
+                      << link_readback_.ctrl_dyn_excluded_w << " W not charged); clock "
+                      << link_readback_.clock_mhz << " MHz"
+                      << (link_readback_.clock_derived ? " (derived in McPAT)" : " (given)")
+                      << std::endl;
         std::cout << "    Area:    " << getComponentArea(ComponentType::PCIE)
                   << " mm^2" << std::endl;
     }
@@ -2649,6 +2888,38 @@ std::string McPATWrapper::generateXMLConfig() const {
      * Host scope stays on the server population, because the host is a server
      * part. */
     xml << "    <param name=\"Embedded\" value=\"" << (config_.device_scope ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_clock_network\" value=\"" << (config_.clock_network ? 1 : 0) << "\"/>\n";   // 1.12.18
+    /* 1.12.18 (user rulings 2026-10-23 #1, #2): the switches only;
+     * the models are the fork's (logic.cc FunctionalUnit). */
+    xml << "    <param name=\"pimid_layout_energy_overhead\" value=\"" << (config_.layout_energy_overhead ? 1 : 0) << "\"/>\n";   // 1.12.18 (ruling 2026-10-24)
+    xml << "    <param name=\"pimid_fu_base_energy\" value=\"" << (config_.fu_base_energy ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_fpu_published\" value=\"" << (config_.fpu_published ? 1 : 0) << "\"/>\n";
+    /* PIMID 1.12.18: (user rulings 2026-10-23 #3, #4) switches and
+     * MEASURED residencies only; the models are the fork's (logic.cc
+     * FunctionalUnit, logic.h ClockNetwork). pimid_clock_pg_*: the measured
+     * power-gated residency of each component class the described design
+     * gates (pg flags), 0 otherwise -- the only thing that stops the global
+     * part of a clock tree. */
+    xml << "    <param name=\"pimid_int_alu_published\" value=\"" << (config_.int_alu_published ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_clock_split\" value=\"" << (config_.clock_global_local ? 1 : 0) << "\"/>\n";
+    /* PIMID 1.12.18 (user rulings 2026-10-23: idle halt, per-die process,
+     * per-die clock trunk): switches and STRUCTURE only; the models are the
+     * fork's (logic.h ClockNetwork, processor.cc). */
+    xml << "    <param name=\"pimid_idle_halt\" value=\"" << (config_.idle_halt ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_clock_trunk\" value=\"" << (config_.clock_die_trunk ? 1 : 0) << "\"/>\n";
+    xml << "    <param name=\"pimid_logic_die_node\" value=\"" << config_.logic_die_node_nm << "\"/>\n";
+    xml << "    <param name=\"pimid_logic_die_device_type\" value=\"" << config_.logic_die_device_type << "\"/>\n";
+    xml << "    <param name=\"pimid_dram_die_count\" value=\"" << std::max(1, config_.dram_die_count) << "\"/>\n";
+    xml << "    <param name=\"pimid_dram_die_area_mm2\" value=\"" << config_.dram_die_area_mm2 << "\"/>\n";
+    xml << "    <param name=\"pimid_logic_die_area_mm2\" value=\"" << config_.logic_die_area_mm2 << "\"/>\n";
+    {
+        const bool pg_cache = pg_spec_.pg_cache_set ? pg_spec_.pg_cache : pg_spec_.pg_core;
+        const double r_sc = pg_spec_.have_shared_cache ? pg_spec_.r_shared_cache : pg_spec_.r_core;
+        xml << "    <param name=\"pimid_clock_pg_core\" value=\"" << (pg_spec_.pg_core ? pg_spec_.r_core : 0.0) << "\"/>\n";
+        xml << "    <param name=\"pimid_clock_pg_cache\" value=\"" << (pg_cache ? r_sc : 0.0) << "\"/>\n";
+        xml << "    <param name=\"pimid_clock_pg_noc\" value=\"" << (pg_spec_.pg_noc ? pg_spec_.r_noc : 0.0) << "\"/>\n";
+        xml << "    <param name=\"pimid_clock_pg_mc\" value=\"" << (pg_spec_.pg_mc ? pg_spec_.r_mc : 0.0) << "\"/>\n";
+    }
     /* Only ever read inside the embedded undifferentiated-core term, where it
      * decides whether that term exists at all. Kept at 1 so the element still
      * carries clocking and control overhead; 0 would zero it, which is a
@@ -2678,7 +2949,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         periphFamilyFactorsCfg(config_.dram_periph_table_nm,
                                config_.tech_node_nm, config_.device_type,
                                config_.temperature_k, fa, fd, fl, fg,
-                               config_.periphery_leakage_device);   // 1.11.94 (item 1 knob)
+                               config_.periphery_leakage_device,   // 1.11.94 (item 1 knob)
+                               config_.dram_periph_device);        // PIMID 1.12.18 (per-die process)
         double pitch = (config_.subarray_pitch_factor > 0.0)
                            ? config_.subarray_pitch_factor : 1.0;
         xml << "    <param name=\"dram_periph_family\" value=\"1\"/>\n";
@@ -2826,6 +3098,10 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <param name=\"number_hardware_threads\" value=\"" << config_.number_hardware_threads << "\"/>\n";
         xml << "      <param name=\"fetch_width\" value=\"" << issue_width << "\"/>\n";
         xml << "      <param name=\"number_instruction_fetch_ports\" value=\"1\"/>\n";
+        /* 1.12.18: the scratchpad's DMA engine (line buffer, counter
+         * registers, one adder -- the fork builds it from McPAT's models). */
+        if (alu_only && config_.pe_spm_bytes > 0 && config_.pe_spm_dma)
+            xml << "      <param name=\"pimid_dma_engine\" value=\"" << config_.cache_line_bytes << "\"/>\n";
         xml << "      <param name=\"decode_width\" value=\"" << issue_width << "\"/>\n";
         xml << "      <param name=\"issue_width\" value=\"" << issue_width << "\"/>\n";
         xml << "      <param name=\"peak_issue_width\" value=\"" << issue_width << "\"/>\n";
@@ -2845,6 +3121,27 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <param name=\"MUL_per_core\" value=\"" << num_muls << "\"/>\n";
         xml << "      <param name=\"FPU_per_core\" value=\"" << num_fpus << "\"/>\n";
         xml << "      <param name=\"instruction_buffer_size\" value=\"32\"/>\n";
+        /* 1.12.18 (user ruling 2026-10-23 #3): the instruction-holding
+         * front-end buffer of the TIMING core, in instructions (STRUCTURE
+         * only -- the fork sizes the array from it, core.cc InstFetchU):
+         *   OOO: 28 = zsim OOOCore's decode->issue queue, CycleQueue<28>
+         *     uopQueue ("models issue queue", external/zsim/src/ooo_core.h:529),
+         *     the only front-end buffer the OOO timing model has (fetch is
+         *     modelled as 16 B/cycle accesses straight into decode).
+         *   in-order: one issue group (issue_width instructions). InOrderCore
+         *     fetches a block through the L1I and issues up to issueWidth
+         *     uops per cycle, stopping at the first that cannot issue
+         *     (in_order_core.h header): no queue beyond the group in flight.
+         *   ALU element (alu_core): 1. ALUCore has no fetch stage or buffer
+         *     at all -- it charges instrs x compute_factor cycles per block
+         *     (alu_core.cpp ALUCore::bbl) -- so the only instruction holder
+         *     it implies is the one-entry fetch register of the instruction
+         *     being executed.
+         * The 32 above stays for power.models.frontend_from_timing: false. */
+        if (config_.frontend_from_timing) {
+            const int ib_entries = is_ooo ? 28 : (is_alu ? 1 : issue_width);
+            xml << "      <param name=\"pimid_ib_entries\" value=\"" << ib_entries << "\"/>\n";
+        }
         xml << "      <param name=\"decoded_stream_buffer_size\" value=\"16\"/>\n";
         xml << "      <param name=\"instruction_window_scheme\" value=\"0\"/>\n";
         xml << "      <param name=\"instruction_window_size\" value=\"" << inst_window_size << "\"/>\n";
@@ -3132,11 +3429,55 @@ std::string McPATWrapper::generateXMLConfig() const {
         const uint64_t ld_pc = ldst_measured ? meas_ld_ : inst_all * 20 / 100;
         const uint64_t st_pc = ldst_measured ? meas_st_ : inst_all * 10 / 100;
         xml << "      <stat name=\"load_instructions\" value=\"" << ld_pc << "\"/>\n";
+        if (alu_only && config_.pe_spm_bytes > 0 && config_.pe_spm_dma)
+        {
+            xml << "      <stat name=\"pimid_dma_lines\" value=\"" << dma_lines_ << "\"/>\n";   // 1.12.18
+            xml << "      <stat name=\"pimid_dma_cmd_reads\" value=\"" << dma_cmd_reads_ << "\"/>\n";
+            xml << "      <stat name=\"pimid_dma_cmd_writes\" value=\"" << dma_cmd_writes_ << "\"/>\n";
+        }
         xml << "      <stat name=\"store_instructions\" value=\"" << st_pc << "\"/>\n";
         xml << "      <stat name=\"committed_instructions\" value=\"" << inst_all << "\"/>\n";
         xml << "      <stat name=\"committed_int_instructions\" value=\"" << int_all << "\"/>\n";
         xml << "      <stat name=\"committed_fp_instructions\" value=\"" << fp_all << "\"/>\n";
         xml << "      <stat name=\"pipeline_duty_cycle\" value=\"" << pipeline_duty_cycle << "\"/>\n";
+        /* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): each core's
+         * MEASURED running fraction = its running cycles (device PE: busy
+         * cycles, i.e. without futex/lock waits; host core: zsim's unhalted
+         * cycles; a core with no thread has none) over the priced window,
+         * capped at 1. McPAT prices the cores as ONE homogeneous template x
+         * number_of_cores, so it gets the group MEAN (template x count then
+         * charges the sum of the cores' running times) and the MAX (the die
+         * trunk runs while any core runs). -1 = not measured. */
+        {
+            double r_mean = -1.0, r_max = -1.0;
+            const size_t nc = static_cast<size_t>(std::max(1, config_.num_cores));
+            const bool have = config_.idle_halt && total_cycles_ > 0 && per_core_run_cycles_.size() == nc;
+            if (have) {
+                double s = 0.0; r_max = 0.0;
+                for (uint64_t c : per_core_run_cycles_) {
+                    const double r = std::min(1.0, static_cast<double>(c) / static_cast<double>(total_cycles_));
+                    s += r; r_max = std::max(r_max, r);
+                }
+                r_mean = s / static_cast<double>(nc);
+            }
+            if (diagnostics_live_ && config_.idle_halt) {
+                if (have) {
+                    std::cout << "  [power] idle halt (power.models.idle_halt): " << nc << " core(s), running cycles";
+                    for (size_t q = 0; q < per_core_run_cycles_.size() && q < 64; q++) std::cout << " " << per_core_run_cycles_[q];
+                    if (per_core_run_cycles_.size() > 64) std::cout << " ...";
+                    std::cout << " of " << total_cycles_ << " -> running fraction mean " << r_mean << ", max " << r_max
+                              << "; McPAT prices the cores as one homogeneous group, so the core clock's global part is"
+                                 " charged x the group MEAN (the sum of the cores' running times); halted cores keep"
+                                 " their leakage" << std::endl;
+                } else {
+                    std::cout << "  [power] idle halt: NO MEASURED RUNNING TIME for this core group ("
+                              << per_core_run_cycles_.size() << " per-core record(s) for " << nc
+                              << " core(s)); the core clock's global part stays every powered cycle" << std::endl;
+                }
+            }
+            xml << "      <stat name=\"pimid_running_fraction\" value=\"" << r_mean << "\"/>\n";
+            xml << "      <stat name=\"pimid_running_fraction_max\" value=\"" << r_max << "\"/>\n";
+        }
         xml << "      <stat name=\"total_cycles\" value=\"" << total_cycles_ << "\"/>\n";
         /* 1.11.57 (latent C035): the clamped value computed above, not a
          * second unguarded subtraction. This is the site McPAT actually
@@ -3152,6 +3493,38 @@ std::string McPATWrapper::generateXMLConfig() const {
         uint64_t ia_pc = mm_ ? meas_int_ : inst_all * 70 / 100;
         uint64_t fp_pc = mm_ ? meas_fp_  : inst_all * 10 / 100;
         const uint64_t mu_pc = mm_ ? meas_mul_ : inst_all * 5 / 100;
+        /* 1.12.18: (bug 1b) VECTOR MOVES ARE NOT FPU WORK. The decoder's FP
+         * class holds the pure vector moves (movss/movsd/movaps/movd/movq:
+         * loads, stores, register copies) beside the FP arithmetic. A move
+         * uses the FP/vector register file and, in its memory forms, the
+         * load/store unit (already in load/store_instructions); it uses no FP
+         * execution unit. The moves leave fp_pc here, so the FPU and its
+         * result bus no longer see them, and the register files below charge
+         * each one read and/or one write by form. The instruction class
+         * counts (fp_instructions above) are unchanged. On a soft-float
+         * element the timing charges the whole FP class as emulation, so the
+         * split is not applied there (the fold below stays the timing's twin). */
+        uint64_t vm_reg = 0, vm_ld = 0, vm_st = 0;
+        const bool vm_soft = (config_.num_fpus == 0 && config_.fp_emul_cycles > 0);
+        const uint64_t vm_meas = meas_vm_reg_ + meas_vm_ld_ + meas_vm_st_;
+        if (mm_ && config_.vector_moves_split && !vm_soft && vm_meas > 0) {
+            if (vm_meas > fp_pc) {
+                std::cerr << "  [Activity] WARNING: the vector-move census (" << vm_meas
+                          << ") exceeds the FP class (" << fp_pc << "): bases disagree, the moves are not split"
+                          << std::endl;
+            } else {
+                vm_reg = meas_vm_reg_; vm_ld = meas_vm_ld_; vm_st = meas_vm_st_;
+                fp_pc -= vm_meas;
+                if (diagOnce(warned_vm_))
+                    std::cout << "  [Activity] vector moves: " << vm_meas << " of the FP class (reg " << vm_reg
+                              << ", load " << vm_ld << ", store " << vm_st << ", all cores) priced as register-file /"
+                                 " load-store activity, not FPU work (power.models.vector_moves_split; 1.12.18)" << std::endl;
+            }
+        } else if (mm_ && !config_.vector_moves_split && vm_meas > 0 && diagOnce(warned_vm_)) {
+            std::cout << "  [Activity] vector moves (" << vm_meas << ") priced as FPU work BY USER OPTION"
+                         " (power.models.vector_moves_split: false)" << std::endl;
+        }
+        const uint64_t vm_all = vm_reg + vm_ld + vm_st;
         /* 1.11.51 (L215/L223): on an FPU-less element the FP class does
          * not vanish -- it EXECUTES as a soft-float integer sequence the
          * timing side already charges at fp_emul_cycles per op. Pricing
@@ -3179,7 +3552,7 @@ std::string McPATWrapper::generateXMLConfig() const {
          * rename table and FP window see the FP ops, the integer ones see
          * the rest. No measured mix: the 10% stand-in, UNSOURCED (warned
          * above). */
-        const uint64_t fp_sched = fp_pc;
+        const uint64_t fp_sched = fp_pc + vm_all;   // 1.12.18 (bug 1b): a move renames/issues on the FP side
         const uint64_t int_sched = (inst_all > fp_sched) ? inst_all - fp_sched : 0;
         xml << "      <stat name=\"ROB_reads\" value=\"" << (is_ooo ? inst_all : 0ULL) << "\"/>\n";
         xml << "      <stat name=\"ROB_writes\" value=\"" << (is_ooo ? inst_all : 0ULL) << "\"/>\n";
@@ -3221,6 +3594,18 @@ std::string McPATWrapper::generateXMLConfig() const {
             irf_w = (ia_pc + mu_pc) + (ldst_measured ? ld_pc : 0);
             frf_r = 2 * fp_pc;
             frf_w = fp_pc;
+            /* 1.12.18: (bug 1b) a vector move by form: a register copy reads
+             * one FP register and writes one; a load writes one (its
+             * destination, which the load term above had put in the integer
+             * file); a store reads one (its data, likewise). */
+            if (vm_all > 0) {
+                frf_r += vm_reg + vm_st;
+                frf_w += vm_reg + vm_ld;
+                if (ldst_measured) {
+                    irf_w -= std::min<uint64_t>(vm_ld, irf_w);
+                    irf_r -= std::min<uint64_t>(vm_st, irf_r);
+                }
+            }
         } else {
             irf_r = inst_all * 2;          // UNSOURCED stand-in (no decoder)
             irf_w = inst_all;
@@ -3245,6 +3630,25 @@ std::string McPATWrapper::generateXMLConfig() const {
          * warned no-decode fallback. */
         xml << "      <stat name=\"ialu_accesses\" value=\"" << ia_pc << "\"/>\n";
         xml << "      <stat name=\"fpu_accesses\" value=\"" << fp_pc << "\"/>\n";
+        /* 1.12.18 (user ruling 2026-10-23 #2): the measured FP
+         * operations by type and precision (a subset of the FP class above,
+         * all cores); the fork prices them with published per-operation
+         * energies when pimid_fpu_published is set (logic.cc). */
+        {
+            static const char* const kCat[9] = {"AddS", "MulS", "AddD", "MulD", "FmaS", "FmaD", "DivS", "DivD", "X87"};
+            for (int k = 0; k < 9; k++) {
+                xml << "      <stat name=\"pimid_fp_ins_" << kCat[k] << "\" value=\"" << meas_fpc_[k] << "\"/>\n";
+                xml << "      <stat name=\"pimid_fp_lanes_" << kCat[k] << "\" value=\"" << meas_fpc_[9 + k] << "\"/>\n";
+            }
+        }
+        /* PIMID 1.12.18: (ruling 2026-10-23 #3) the measured scalar
+         * GPR integer operations by class and width (subsets of the integer
+         * and mul classes above, all cores). */
+        {
+            static const char* const kIc[9] = {"Alu8", "Alu16", "Alu32", "Alu64", "Mul8", "Mul16", "Mul32", "Mul64", "Div"};
+            for (int k = 0; k < 9; k++)
+                xml << "      <stat name=\"pimid_int_ops_" << kIc[k] << "\" value=\"" << meas_iops_[k] << "\"/>\n";
+        }
         xml << "      <stat name=\"mul_accesses\" value=\"" << mu_pc << "\"/>\n";
         /* 1.11.93 (F7): each result bus carries the results of its own unit:
          * cdb_alu = the integer-ALU accesses (was every instruction,
@@ -3273,12 +3677,12 @@ std::string McPATWrapper::generateXMLConfig() const {
              * Direct-mapped, one instruction word per line, and ZERO misses:
              * the program is resident, so there is no refill path to charge.
              *
-             * RESIDUAL, named rather than hidden: this is still McPAT's cache
-             * constructor, so the store carries a tag array and one-entry miss,
-             * fill and prefetch structures that a scratchpad does not have.
-             * That overstates the instruction store by the tag overhead. Fixing
-             * it needs a pure-RAM instruction store inside McPAT's fetch unit,
-             * which is the remaining half of this item. */
+             * 1.12.18 (ruling 2026-10-23 #3): the RESIDUAL this note
+             * used to name (a tag array and miss/fill/prefetch buffers) was
+             * closed in the fork by 1.11.3 (#111): buffer_sizes[0] == 0 below
+             * makes InstFetchU build the store as a plain RAM (pure_ram, no
+             * tag, no miss/fill/prefetch buffers; core.cc), the same marker
+             * the 1.12.18 data scratchpad uses. */
             int imem_bytes = config_.pe_imem_bytes;
             if (imem_bytes < 64) {
                 std::cerr << "[power] WARNING: pe_imem_bytes=" << imem_bytes
@@ -3299,6 +3703,25 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "        <stat name=\"read_accesses\" value=\"" << ifetch_all << "\"/>\n";
             xml << "        <stat name=\"read_misses\" value=\"0\"/>\n";
             xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
+            xml << "      </component>\n";
+
+            /* 1.12.18: the element's DATA store, stated instead of inherited.
+             * Until now this path described none, so McPAT built the data
+             * cache from ParseXML's initialize() -- every field the literal 1:
+             * a one-byte cache with one access, the same uninitialised default
+             * 1.9.32 removed from the instruction side. What the element has
+             * is its scratchpad (pim.pe.spm_bytes): a plain RAM with a 64-bit
+             * word, no tags and no miss path (buffer_sizes 0, the fork's pure
+             * store), read and written by the counts the run measured. 0 bytes
+             * = no data store at all, and the fork builds none. */
+            xml << "      <component id=\"system.core" << i << ".dcache\" name=\"dcache\">\n";
+            xml << "        <param name=\"dcache_config\" value=\"" << config_.pe_spm_bytes
+                << ",8,1,1,1,1,64,0\"/>\n";
+            xml << "        <param name=\"buffer_sizes\" value=\"0,0,0,0\"/>\n";
+            xml << "        <stat name=\"read_accesses\" value=\"" << (config_.pe_spm_bytes > 0 ? spm_reads_ : 0) << "\"/>\n";
+            xml << "        <stat name=\"write_accesses\" value=\"" << (config_.pe_spm_bytes > 0 ? spm_writes_ : 0) << "\"/>\n";
+            xml << "        <stat name=\"read_misses\" value=\"0\"/>\n";
+            xml << "        <stat name=\"write_misses\" value=\"0\"/>\n";
             xml << "      </component>\n";
         }
 
@@ -3326,7 +3749,22 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <component id=\"system.core" << i << ".dcache\" name=\"dcache\">\n";
             xml << "        <param name=\"dcache_config\" value=\"" << config_.l1d_size_bytes
                 << "," << config_.cache_line_bytes << "," << config_.l1d_ways << "," << config_.l1d_banks
-                << ",1," << config_.l1d_latency_cycles << ",64,0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
+                << ",1," << config_.l1d_latency_cycles << "," << (config_.l1d_access_width ? 16 : 64)
+                << ",0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
+            /* PIMID 1.12.18: (user ruling 2026-10-23 #6) output = the
+             * bytes ONE load/store moves, which is what McPAT charges per
+             * access (one CACTI access per load/store uop). The timing core is
+             * zsim's Westmere-class OOO core (Sanchez, Kozyrakis, ISCA 2013,
+             * validated against Westmere), one 128-bit load port: 16 B per
+             * access (Intel 64 and IA-32 Architectures Optimization Reference
+             * Manual, Nehalem/Westmere L1 data cache, 16 bytes per load).
+             * The 64 emitted before was the full line, which CACTI priced as a
+             * 512-bit read (the output H-tree dominated: 175 pJ per load at
+             * 22 nm). The fork honours the field (core.cc LoadStoreU) and
+             * charges line fills as line/16 writes. power.models.
+             * l1d_access_width: false restores the full line. The icache keeps
+             * 64: zsim counts one fetch per 64 B line per block, so each
+             * counted fetch does deliver up to a line. */
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
             xml << "        <stat name=\"read_accesses\" value=\"" << l1d_reads_all << "\"/>\n";
             xml << "        <stat name=\"write_accesses\" value=\"" << l1d_writes_all << "\"/>\n";
@@ -3364,8 +3802,22 @@ std::string McPATWrapper::generateXMLConfig() const {
              * MEASURED as zsim roiIndirBranches. */
             xml << "      <component id=\"system.core" << i << ".BTB\" name=\"BTB\">\n";
             xml << "        <param name=\"BTB_config\" value=\"4096,8,1,1,1,1\"/>\n";
-            xml << "        <stat name=\"read_accesses\" value=\"" << meas_indir_ << "\"/>\n";
-            xml << "        <stat name=\"write_accesses\" value=\"" << meas_indir_ << "\"/>\n";
+            /* PIMID 1.12.18: (user ruling 2026-10-23 #5) INPUT BUG: the
+             * reads were the indirect resolutions only (6-14 against 66,000
+             * branches). McPAT's own definition (core.cc InstFetchU, the
+             * runtime BTB stats: read_accesses "branch_instructions", write
+             * "branch_mispredictions"; its peak path reads it on every
+             * fetch) is a lookup per branch: reads = every branch-class
+             * instruction the decoder counted (br_all: conditional, direct,
+             * indirect, call, return -- the fetch looks each one up), writes =
+             * the measured mispredictions (McPAT's definition: a re-installed
+             * target) + zsim's measured indirect target rewrites
+             * (ooo_core.h IndirectPredictor::update). power.models.
+             * tlb_btb_measured: false restores the indirect-only counts. */
+            const uint64_t btb_r = config_.tlb_btb_measured ? br_all : meas_indir_;
+            const uint64_t btb_w = config_.tlb_btb_measured ? mispred_all + meas_indir_ : meas_indir_;
+            xml << "        <stat name=\"read_accesses\" value=\"" << btb_r << "\"/>\n";
+            xml << "        <stat name=\"write_accesses\" value=\"" << btb_w << "\"/>\n";
             xml << "      </component>\n";
         }
         /* 1.11.93 (F10): ADDRESS TRANSLATION, stated. Nothing was emitted, so
@@ -3379,17 +3831,47 @@ std::string McPATWrapper::generateXMLConfig() const {
          * (core.cc:971/998, cache_sz = number_entries x line) -- so they keep
          * McPAT's minimum of 1 entry: its leakage and area remain, a floor
          * the tool imposes, not a structure the element has. */
+        /* PIMID 1.12.18: (user ruling 2026-10-23 #5) INPUT BUG: a HOST
+         * core runs a 64-bit Linux user process, and IA-32e paging is always
+         * on in 64-bit mode (Intel SDM Vol. 3A, 4.1.1 / 4.5), so every
+         * instruction fetch and every data access is translated: McPAT's own
+         * definition (core.cc MemManU: peak itlb = fetch, dtlb = LSU
+         * accesses; runtime total_accesses) is itlb = instruction fetches
+         * (the icache reads above), dtlb = data accesses (dcache reads +
+         * writes). zsim models no TLB, so no miss is measured: 0. Device
+         * elements (physical addressing) keep 0 accesses. The 1-entry
+         * array stays (no TLB size is modelled anywhere in the timing).
+         * power.models.tlb_btb_measured: false restores 0. */
+        const bool tlb_meas = config_.tlb_btb_measured && !config_.device_scope && !alu_only;
+        const uint64_t itlb_acc = tlb_meas ? l1i_reads_ : 0;
+        const uint64_t dtlb_rd = tlb_meas ? l1d_reads_ : 0, dtlb_wr = tlb_meas ? l1d_writes_ : 0;
+        /* 1.12.18: (user ruling: the published spec of the core
+         * the timing model mirrors) a HOST core whose translations are
+         * counted gets the record's TLB arrays (params/core/default.yaml ooo:
+         * Westmere/Nehalem, Intel 248966-031 sec. 2.5.4: ITLB 128 + 7, DTLB
+         * 64 + 32 entries, 4-way), set by describeTimingCore() for ooo_core
+         * only. An in-order host (no published core mirrored) and every
+         * device element (no TLB in the timing model) keep the 1-entry floor.
+         * power.models.tlb_published_geometry: false restores the floor. */
+        const bool tlb_geo = tlb_meas && is_ooo && config_.tlb_published_geometry &&
+                             config_.itlb_entries > 0 && config_.dtlb_entries > 0;
+        const int itlb_n = tlb_geo ? config_.itlb_entries : 1;
+        const int dtlb_n = tlb_geo ? config_.dtlb_entries : 1;
         xml << "      <component id=\"system.core" << i << ".itlb\" name=\"itlb\">\n";
-        xml << "        <param name=\"number_entries\" value=\"1\"/>\n";
-        xml << "        <stat name=\"total_accesses\" value=\"0\"/>\n";
+        xml << "        <param name=\"number_entries\" value=\"" << itlb_n << "\"/>\n";
+        if (tlb_geo && config_.tlb_assoc > 0)
+            xml << "        <param name=\"pimid_assoc\" value=\"" << config_.tlb_assoc << "\"/>\n";
+        xml << "        <stat name=\"total_accesses\" value=\"" << itlb_acc << "\"/>\n";
         xml << "        <stat name=\"total_misses\" value=\"0\"/>\n";
         xml << "        <stat name=\"conflicts\" value=\"0\"/>\n";
         xml << "      </component>\n";
         xml << "      <component id=\"system.core" << i << ".dtlb\" name=\"dtlb\">\n";
-        xml << "        <param name=\"number_entries\" value=\"1\"/>\n";
-        xml << "        <stat name=\"total_accesses\" value=\"0\"/>\n";
-        xml << "        <stat name=\"read_accesses\" value=\"0\"/>\n";
-        xml << "        <stat name=\"write_accesses\" value=\"0\"/>\n";
+        xml << "        <param name=\"number_entries\" value=\"" << dtlb_n << "\"/>\n";
+        if (tlb_geo && config_.tlb_assoc > 0)
+            xml << "        <param name=\"pimid_assoc\" value=\"" << config_.tlb_assoc << "\"/>\n";   /* 1.12.18: */
+        xml << "        <stat name=\"total_accesses\" value=\"" << dtlb_rd + dtlb_wr << "\"/>\n";
+        xml << "        <stat name=\"read_accesses\" value=\"" << dtlb_rd << "\"/>\n";
+        xml << "        <stat name=\"write_accesses\" value=\"" << dtlb_wr << "\"/>\n";
         xml << "        <stat name=\"read_misses\" value=\"0\"/>\n";
         xml << "        <stat name=\"write_misses\" value=\"0\"/>\n";
         xml << "        <stat name=\"total_misses\" value=\"0\"/>\n";
@@ -3449,6 +3931,81 @@ std::string McPATWrapper::generateXMLConfig() const {
                                         / static_cast<double>(total_cycles_))
                     : 0.0;
             xml << "      <stat name=\"duty_cycle\" value=\"" << l2_duty << "\"/>\n";
+            /* 1.12.18: the L2's in-cache coherence directory, as McPAT
+             * models one (SBT, merged_dir=1; Li et al., MICRO 2009). zsim's
+             * L2 is non-terminal whenever an L1 sits below it, and its
+             * MESITopCC keeps a sharer bitset per line for those L1s; McPAT
+             * then widens every line by ceil(number_of_cores/8)*8 sharer
+             * bits (sharedcache.cc, dir_overhead) and prices the home-node
+             * accesses on top of the data accesses.
+             *   writes = INV + INVX + FWD the L1 children received (the
+             *            directory updated their sharer state), per instance
+             *            as every other L2 count; McPAT's Xeon.xml: "the
+             *            invalidates can be considered as writes".
+             *   write misses = 0: zsim delivers an invalidate only to a line
+             *            the directory tracks (inclusive hierarchy;
+             *            MESIBottomCC::processInval asserts the line valid).
+             *   reads = 0: the sharer bits are read on the line's own
+             *            GETS/GETX, which the widened line already prices
+             *            (every data access reads blockW*(1+dir_overhead));
+             *            zsim exports no directory-only lookup to add.
+             *   dir_duty_cycle: measured, directory accesses per cycle per
+             *            instance, the duty_cycle construction above (TDP
+             *            branch only). */
+            const bool l2_dir_present = (config_.l1i_size_bytes > 0 || config_.l1d_size_bytes > 0);
+            const bool l2_dir = l2_dir_present && coh_dir_enabled_;
+            if (l2_dir_present && !coh_dir_enabled_ && diagnostics_live_)
+                std::cout << "  [mcpat] L2 coherence directory: NOT PRICED by user "
+                             "option (power.models.coherence_directory: false)" << std::endl;
+            if (l2_dir) {
+                const uint64_t l2_dir_wr_per = coh_l1_events_ / nl2;
+                const double l2_dir_duty =
+                    (total_cycles_ > 0)
+                        ? std::min(1.0, static_cast<double>(l2_dir_wr_per)
+                                            / static_cast<double>(total_cycles_))
+                        : 0.0;
+                xml << "      <param name=\"merged_dir\" value=\"1\"/>\n";
+                /* 1.12.18 (user ruling "sharer bits from the real
+                 * child count"): the L1s zsim hangs under each L2 -- its
+                 * cache tree gives every parent children / parents of the
+                 * "l1i|l1d" group (zsim init.cpp, childrenPerParent): 2 for a
+                 * private L2 with L1I + L1D. The McPAT fork sizes the sharer
+                 * bits from it (sharedcache.cc, dir_sharers). */
+                const int l2_l1_per_core = (config_.l1i_size_bytes > 0 ? 1 : 0)
+                                         + (config_.l1d_size_bytes > 0 ? 1 : 0);
+                const int l2_kids = (num_l2s > 0)
+                    ? (config_.num_cores * l2_l1_per_core + num_l2s - 1) / num_l2s : 0;
+                if (config_.sharer_bits_from_children && l2_kids > 0)
+                    xml << "      <param name=\"dir_sharers\" value=\"" << l2_kids << "\"/>\n";
+                xml << "      <stat name=\"homenode_read_accesses\" value=\"0\"/>\n";
+                xml << "      <stat name=\"homenode_write_accesses\" value=\"" << l2_dir_wr_per << "\"/>\n";
+                xml << "      <stat name=\"homenode_read_misses\" value=\"0\"/>\n";
+                xml << "      <stat name=\"homenode_write_misses\" value=\"0\"/>\n";
+                xml << "      <stat name=\"dir_duty_cycle\" value=\"" << l2_dir_duty << "\"/>\n";
+                if (diagnostics_live_) {
+                    const int l1_per_core = (config_.l1i_size_bytes > 0 ? 1 : 0)
+                                          + (config_.l1d_size_bytes > 0 ? 1 : 0);
+                    std::cout << "  [mcpat] L2 directory (SBT merged_dir=1): "
+                              << coh_l1_events_ << " directory writes (INV+INVX+FWD "
+                                 "received by the L1s) over " << nl2
+                              << " L2 instance(s) = " << l2_dir_wr_per
+                              << " homenode writes each, dir_duty_cycle "
+                              << l2_dir_duty << "; sharer bits/line "
+                              << ((config_.sharer_bits_from_children && l2_kids > 0)
+                                      ? static_cast<int>(std::ceil(l2_kids / 8.0)) * 8
+                                      : static_cast<int>(std::ceil(config_.num_cores / 8.0)) * 8)
+                              << ((config_.sharer_bits_from_children && l2_kids > 0)
+                                      ? " (McPAT fork: ceil(dir_sharers/8)*8, dir_sharers = the "
+                                      : " (McPAT: ceil(number_of_cores/8)*8 BY USER OPTION"
+                                        " power.models.sharer_bits_from_children: false; zsim tracks ")
+                              << (num_l2s > 0 ? (config_.num_cores * l1_per_core) / num_l2s : 0)
+                              << " L1 children per L2; number_of_cores " << config_.num_cores
+                              << " would give " << static_cast<int>(std::ceil(config_.num_cores / 8.0)) * 8
+                              << "); priced by McPAT/CACTI at this "
+                                 "node's " << config_.tech_node_nm << " nm, the cache's own node"
+                              << std::endl;
+                }
+            }
             xml << "    </component>\n";
         }
     }
@@ -3483,6 +4040,57 @@ std::string McPATWrapper::generateXMLConfig() const {
                                     / static_cast<double>(total_cycles_))
                 : 0.0;
         xml << "      <stat name=\"duty_cycle\" value=\"" << l3_duty << "\"/>\n";
+        /* 1.12.18: the L3's in-cache directory, same SBT mapping as the
+         * L2 above. Its children are the L2s when there are L2s, otherwise
+         * the L1s; their INV + INVX + FWD are its writes. The L3 is shared,
+         * so the count is not divided. */
+        const bool l3_kids_l2 = (num_l2s > 0);
+        const bool l3_dir_present = l3_kids_l2 ||
+                            (config_.l1i_size_bytes > 0 || config_.l1d_size_bytes > 0);
+        const bool l3_dir = l3_dir_present && coh_dir_enabled_;
+        if (l3_dir_present && !coh_dir_enabled_ && diagnostics_live_)
+            std::cout << "  [mcpat] L3 coherence directory: NOT PRICED by user "
+                         "option (power.models.coherence_directory: false)" << std::endl;
+        if (l3_dir) {
+            const uint64_t l3_dir_wr = l3_kids_l2 ? coh_l2_events_ : coh_l1_events_;
+            const double l3_dir_duty =
+                (total_cycles_ > 0)
+                    ? std::min(1.0, static_cast<double>(l3_dir_wr)
+                                        / static_cast<double>(total_cycles_))
+                    : 0.0;
+            xml << "      <param name=\"merged_dir\" value=\"1\"/>\n";
+            /* 1.12.18 (ruling "sharer bits from the real child
+             * count"): zsim builds ONE L3 (caches = 1) whose children are
+             * every L2, or every L1I and L1D when there is no L2. */
+            const int l3_l1_per_core = (config_.l1i_size_bytes > 0 ? 1 : 0)
+                                     + (config_.l1d_size_bytes > 0 ? 1 : 0);
+            const int l3_kids = l3_kids_l2 ? num_l2s : config_.num_cores * l3_l1_per_core;
+            if (config_.sharer_bits_from_children && l3_kids > 0)
+                xml << "      <param name=\"dir_sharers\" value=\"" << l3_kids << "\"/>\n";
+            xml << "      <stat name=\"homenode_read_accesses\" value=\"0\"/>\n";
+            xml << "      <stat name=\"homenode_write_accesses\" value=\"" << l3_dir_wr << "\"/>\n";
+            xml << "      <stat name=\"homenode_read_misses\" value=\"0\"/>\n";
+            xml << "      <stat name=\"homenode_write_misses\" value=\"0\"/>\n";
+            xml << "      <stat name=\"dir_duty_cycle\" value=\"" << l3_dir_duty << "\"/>\n";
+            if (diagnostics_live_) {
+                std::cout << "  [mcpat] L3 directory (SBT merged_dir=1): "
+                          << l3_dir_wr << " directory writes (INV+INVX+FWD received by the "
+                          << (l3_kids_l2 ? "L2s" : "L1s") << "), dir_duty_cycle "
+                          << l3_dir_duty << "; sharer bits/line "
+                          << ((config_.sharer_bits_from_children && l3_kids > 0)
+                                  ? static_cast<int>(std::ceil(l3_kids / 8.0)) * 8
+                                  : static_cast<int>(std::ceil(config_.num_cores / 8.0)) * 8)
+                          << ((config_.sharer_bits_from_children && l3_kids > 0)
+                                  ? " (McPAT fork: ceil(dir_sharers/8)*8, dir_sharers = the "
+                                  : " (McPAT: ceil(number_of_cores/8)*8 BY USER OPTION"
+                                    " power.models.sharer_bits_from_children: false; zsim tracks ")
+                          << l3_kids << " " << (l3_kids_l2 ? "L2" : "L1")
+                          << " children; number_of_cores " << config_.num_cores << " would give "
+                          << static_cast<int>(std::ceil(config_.num_cores / 8.0)) * 8
+                          << "); priced by McPAT/CACTI at this node's "
+                          << config_.tech_node_nm << " nm, the cache's own node" << std::endl;
+            }
+        }
         xml << "    </component>\n";
     }
 
@@ -3498,17 +4106,26 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"type\" value=\"" << lvl.type << "\"/>\n";
             xml << "      <param name=\"horizontal_nodes\" value=\"" << lvl.horizontal_nodes << "\"/>\n";
             xml << "      <param name=\"vertical_nodes\" value=\"" << lvl.vertical_nodes << "\"/>\n";
-            /* 1.11.92 (F3, NOT fixed): with has_global_link=0 McPAT builds no
-             * links for router levels, so their wires carry no energy or
-             * area, and pass-through routers are priced as routers wherever
-             * a level survives. Turning links on, and moving pass-through
-             * traversals from router accesses to link traversals, needs a
-             * modelling ruling (which routers are pass-through when an
-             * endpoint hangs on them; where the traversals of levels with no
-             * McPAT instance go; McPAT has ONE access count per instance) --
-             * see the 1.11.92 changelog. The per-level pass-through counts
-             * are already exported for it. */
-            xml << "      <param name=\"has_global_link\" value=\"0\"/>\n";
+            /* 1.11.92 (F3): with has_global_link=0 McPAT builds no links for
+             * router levels, so their wires carried no energy or area.
+             * 1.12.18 (user rulings "make the power model complete", "mcpat
+             * and cacti wire modelling should be applied at the most
+             * appropriate places"): FIXED for the links. Each level's up-links
+             * (and each pure pass-through level) arrive here as their own
+             * LINKS-ONLY instance -- routers_present=0, has_global_link=1, an
+             * explicit per-link length or a TSV, and their own measured
+             * link_traversals -- so McPAT's one-access-count-per-instance
+             * limit no longer forces links and routers to share a count. The
+             * router instances keep has_global_link=0 and are priced exactly
+             * as before. 1.12.18 (user ruling "pass-through routers as wire"):
+             * the last open part of F3 -- pass-through routers on a level that
+             * survives -- is closed by stat passthrough_accesses below. */
+            xml << "      <param name=\"has_global_link\" value=\"" << lvl.has_global_link << "\"/>\n";
+            xml << "      <param name=\"routers_present\" value=\"" << lvl.routers_present << "\"/>\n";   /* 1.12.18 */
+            xml << "      <param name=\"link_kind\" value=\"" << lvl.link_kind << "\"/>\n";
+            xml << "      <param name=\"link_span_area_mm2\" value=\"" << lvl.link_span_area_mm2 << "\"/>\n";
+            xml << "      <param name=\"link_parent_regions\" value=\"" << lvl.link_parent_regions << "\"/>\n";
+            xml << "      <param name=\"tech_node\" value=\"" << lvl.tech_node_nm << "\"/>\n";
             xml << "      <param name=\"link_throughput\" value=\"1\"/>\n";
             xml << "      <param name=\"link_latency\" value=\"1\"/>\n";
             xml << "      <param name=\"input_ports\" value=\"" << lvl.input_ports << "\"/>\n";
@@ -3530,6 +4147,12 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"on_dram_die\" value=\"" << lvl.on_dram_die << "\"/>\n";
             xml << "      <param name=\"link_routing_over_percentage\" value=\"0.5\"/>\n";
             xml << "      <stat name=\"total_accesses\" value=\"" << lvl.total_accesses << "\"/>\n";
+            if (lvl.link_traversals >= 0)   /* 1.12.18: the links' own activity */
+                xml << "      <stat name=\"link_traversals\" value=\"" << lvl.link_traversals << "\"/>\n";
+            if (lvl.tsv_die_crossings >= 0)
+                xml << "      <stat name=\"tsv_die_crossings\" value=\"" << lvl.tsv_die_crossings << "\"/>\n";
+            if (lvl.passthrough_accesses >= 0)   /* 1.12.18: priced as wire, not router accesses */
+                xml << "      <stat name=\"passthrough_accesses\" value=\"" << lvl.passthrough_accesses << "\"/>\n";
             xml << "      <stat name=\"duty_cycle\" value=\"" << lvl.duty_cycle << "\"/>\n";
             xml << "    </component>\n";
         }
@@ -3717,6 +4340,7 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <stat name=\"memory_accesses\" value=\"" << (mc_reads_ + mc_writes_) / num_mcs << "\"/>\n";
         xml << "      <stat name=\"memory_reads\" value=\"" << mc_reads_ / num_mcs << "\"/>\n";
         xml << "      <stat name=\"memory_writes\" value=\"" << mc_writes_ / num_mcs << "\"/>\n";
+        xml << "      <stat name=\"pimid_command_ops\" value=\"" << mc_command_ops_ / num_mcs << "\"/>\n";   // 1.12.18
     }
     xml << "    </component>\n";
 
@@ -3748,7 +4372,12 @@ std::string McPATWrapper::generateXMLConfig() const {
          * that caller from here, and we will not present its result as
          * priced: say what stood in, name what it governs, once. */
         int link_clk = pcie_stats_.link_clock_mhz;
-        if (link_clk <= 0) {
+        /* 1.12.18: a D2D class (lane rate given) with no clock leaves the
+         * clock to McPAT, which derives it from the UCIe parameters. */
+        const bool mcpat_derives_clock = (link_clk <= 0 && pcie_stats_.lane_rate_gts > 0.0);
+        if (mcpat_derives_clock) {
+            link_clk = 0;
+        } else if (link_clk <= 0) {
             link_clk = 350;
             /* 1.11.60 (audit round 4, C006): diagOnce(). pcie_stats_ is set
              * by setPCIeStats() after initialize(), so number_units was 0 on
@@ -3772,7 +4401,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         if (lane_gbps > 0.0) {
             xml << "      <param name=\"serdes_lane_gbps\" value=\"" << lane_gbps
                 << "\"/>\n";
-        } else if (pcie_stats_.number_units > 0 && diagOnce(warned_link_class_)) {
+        } else if (has_serdes &&   /* 1.12.18: no SerDes, no SerDes rate to warn about */
+                   pcie_stats_.number_units > 0 && diagOnce(warned_link_class_)) {
             /* 1.11.60 (audit round 4, C006): diagOnce(); same reason as the
              * link clock note above. */
             /* 1.11.56 (audit C017): a link type this table cannot name gets
@@ -3797,6 +4427,19 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <stat name=\"total_load_perc\" value=\"" << pcie_stats_.total_load_perc << "\"/>\n";
         xml << "      <stat name=\"transferred_bytes\" value=\"" << pcie_stats_.transferred_bytes << "\"/>\n";
         xml << "      <stat name=\"link_pj_per_bit\" value=\"" << pcie_stats_.link_pj_per_bit << "\"/>\n";
+        /* 1.12.18: UCIe link class parameters (iocontrollers.cc, PIMID 1.12.18). */
+        xml << "      <param name=\"link_class\" value=\"" << pcie_stats_.link_class << "\"/>\n";
+        if (pcie_stats_.lane_rate_gts > 0.0) {
+            xml << "      <param name=\"lanes\" value=\"" << pcie_stats_.num_channels << "\"/>\n";
+            xml << "      <param name=\"lane_rate_gts\" value=\"" << pcie_stats_.lane_rate_gts << "\"/>\n";
+        }
+        if (pcie_stats_.link_class == 1) {
+            xml << "      <param name=\"ucie_package\" value=\"" << pcie_stats_.ucie_package << "\"/>\n";
+            xml << "      <param name=\"phy_pj_per_bit\" value=\"" << pcie_stats_.phy_pj_per_bit << "\"/>\n";
+            xml << "      <param name=\"link_energy_end\" value=\"" << (pcie_stats_.link_energy_end ? 1 : 0) << "\"/>\n";
+            /* 1.12.18: the die's process node for the two-node UCIe rows (0 = McPAT's run node) */
+            xml << "      <param name=\"link_node_nm\" value=\"" << pcie_stats_.link_node_nm << "\"/>\n";
+        }
         xml << "    </component>\n";
     }
 

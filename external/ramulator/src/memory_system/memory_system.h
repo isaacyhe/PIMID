@@ -82,6 +82,19 @@ class IMemorySystem : public TopLevel<IMemorySystem> {
      * the memory system does not keep them. */
     virtual bool pimid_ctrl_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,
                                    uint64_t& /*conflicts*/, uint64_t& /*refreshes*/) { return false; };
+    /* PIMID 1.12.18: activate commands issued, summed over every controller. */
+    virtual bool pimid_cmd_totals(uint64_t& /*activates*/) { return false; };
+    virtual bool pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/) { return false; };   // PIMID 1.12.18
+    /* PIMID 1.12.18 (ruling 17 / R0605): the share of the row hits / misses /
+     * conflicts and activates that belongs to requests sent with source_id 1
+     * (the HOST's accesses on a replayed controller that also serves the
+     * device), summed over every controller, cumulative. */
+    virtual bool pimid_src_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,
+                                  uint64_t& /*conflicts*/, uint64_t& /*activates*/) { return false; };
+    /* PIMID 1.12.18 (R1): the share of requests sent with source_id 2 / 3
+     * (stamped after the ROI end), summed over every controller, cumulative. */
+    virtual bool pimid_out_totals(uint64_t& /*hits*/, uint64_t& /*misses*/, uint64_t& /*conflicts*/,
+                                  uint64_t& /*activates*/, uint64_t& /*hostActs*/) { return false; };
 };
 
 }        // namespace Ramulator

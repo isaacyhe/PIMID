@@ -39,6 +39,7 @@
 #include <string>
 #include <cmath>
 #include <assert.h>
+#include <sstream>   /* PIMID 1.12.18: clock-network sink description */
 #include "core.h"
 //#include "globalvar.h"
 
@@ -83,6 +84,14 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  interface_ip.assoc               = debug?8:(int)XML->sys.core[ithCore].icache.icache_config[2];
 	  interface_ip.nbanks              = debug?1:(int)XML->sys.core[ithCore].icache.icache_config[3];
 	  interface_ip.out_w               = interface_ip.line_sz*8;
+	  {   /* PIMID 1.12.18 (ruling 2026-10-23 #6): config field 6 is McPAT's own
+	       * output_width in BYTES (its ProcessorDescriptionFiles: "capacity,
+	       * block_width, associativity, bank, throughput, latency,
+	       * output_width, cache policy"), parsed but ignored upstream. Honoured
+	       * when below the line; otherwise upstream's full line. */
+	    const int ow = (int)XML->sys.core[ithCore].icache.icache_config[6];
+	    if (ow > 0 && ow < interface_ip.line_sz) interface_ip.out_w = ow*8;
+	  }
 	  interface_ip.access_mode         = 0;//debug?0:XML->sys.core[ithCore].icache.icache_config[5];
 	  interface_ip.throughput          = debug?1.0/clockRate:XML->sys.core[ithCore].icache.icache_config[4]/clockRate;
 	  interface_ip.latency             = debug?3.0/clockRate:XML->sys.core[ithCore].icache.icache_config[5]/clockRate;
@@ -203,13 +212,44 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  }
 
 	  //Instruction buffer
-	  data							   = XML->sys.core[ithCore].instruction_length*XML->sys.core[ithCore].peak_issue_width;//icache.caches.l_ip.line_sz; //multiple threads timing sharing the instruction buffer.
+	  /* PIMID 1.12.18 (user ruling 2026-10-23 #3): the buffer is sized from the
+	   * TIMING core's own front end when PIMID describes it (pimid_ib_entries,
+	   * in instructions) instead of the instruction_buffer_size preset (32).
+	   * The buffer is read and written once per INSTRUCTION (computeEnergy:
+	   * total_instructions), so its row is one instruction (instruction_length
+	   * bits) and it has one row per entry; upstream's fetch-group row
+	   * (instruction_length x peak_issue_width) is kept for the preset path.
+	   * A buffer that holds no more than ONE fetch group is the IF/ID pipeline
+	   * latch, which McPAT's Pipeline already prices (logic.cc
+	   * compute_stage_vector, "pipe stage IF/ID": fetchW x (instruction_length
+	   * + pc_width) bits per thread, clocked by the clock network): no
+	   * separate array is built for it, or it would be counted twice. */
+	  const int ib_entries = XML->sys.core[ithCore].pimid_ib_entries;
+	  const int ib_group   = XML->sys.core[ithCore].peak_issue_width > 0 ? XML->sys.core[ithCore].peak_issue_width : 1;
+	  const bool ib_is_latch = (ib_entries > 0 && ib_entries <= XML->sys.core[ithCore].fetch_width);
+	  /* CACTI builds an array only with a power-of-two number of rows and at
+	   * least MINSUBARRAYROWS (16, cacti/const.h) rows per subarray ("no valid
+	   * data array organizations" otherwise: 7 rows of 4 instructions and 8
+	   * rows both fail), so the rows the timing core needs are rounded UP to
+	   * the smallest array CACTI can build that holds them, and the run prints
+	   * both counts. */
+	  const int ib_rows_need = (ib_entries > 0) ? ib_entries : 0;
+	  int ib_rows_p2 = MINSUBARRAYROWS; while (ib_rows_p2 < ib_rows_need) ib_rows_p2 <<= 1;
+	  (void)ib_group;
+	  const int ib_rows = (ib_entries > 0) ? ib_rows_p2 : XML->sys.core[ithCore].instruction_buffer_size;
+	  if (ib_entries > 0)
+		  std::cerr << "[mcpat ifu] core" << ithCore << " instruction buffer from the timing core: " << ib_entries
+		            << " instruction(s), fetch width " << XML->sys.core[ithCore].fetch_width
+		            << (ib_is_latch ? " -> the IF/ID pipeline latch McPAT's pipeline model already prices; no separate array"
+		                            : " -> array rows") << (ib_is_latch ? std::string("") : " " + std::to_string(ib_rows_need) + " needed, built " + std::to_string(ib_rows) + " (CACTI: power of two, >= MINSUBARRAYROWS) of 1 instruction")
+		            << " (McPAT preset instruction_buffer_size " << XML->sys.core[ithCore].instruction_buffer_size << " not used)" << std::endl;
+	  data							   = XML->sys.core[ithCore].instruction_length*((ib_entries > 0) ? 1 : XML->sys.core[ithCore].peak_issue_width);   /* PIMID 1.12.18: one instruction per row when sized from the timing core */ //icache.caches.l_ip.line_sz; //multiple threads timing sharing the instruction buffer.
 	  interface_ip.is_cache			   = false;
 	  interface_ip.pure_ram            = true;
 	  interface_ip.pure_cam            = false;
 	  interface_ip.line_sz             = int(ceil(data/8.0));
-	  interface_ip.cache_sz            = XML->sys.core[ithCore].number_hardware_threads*XML->sys.core[ithCore].instruction_buffer_size*interface_ip.line_sz>64?
-			                             XML->sys.core[ithCore].number_hardware_threads*XML->sys.core[ithCore].instruction_buffer_size*interface_ip.line_sz:64;
+	  interface_ip.cache_sz            = XML->sys.core[ithCore].number_hardware_threads*ib_rows*interface_ip.line_sz>64?
+			                             XML->sys.core[ithCore].number_hardware_threads*ib_rows*interface_ip.line_sz:64;   /* PIMID 1.12.18: ib_rows */
 	  interface_ip.assoc               = 1;
 	  interface_ip.nbanks              = 1;
 	  interface_ip.out_w               = interface_ip.line_sz*8;
@@ -225,9 +265,11 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  interface_ip.num_rd_ports    = 0;
 	  interface_ip.num_wr_ports    = 0;
 	  interface_ip.num_se_rd_ports = 0;
+	  if (!ib_is_latch) {   /* PIMID 1.12.18: the interface fields above stay set for the blocks below */
 	  IB = new ArrayST(&interface_ip, "InstBuffer", Core_device, coredynp.opt_local, coredynp.core_ty);
 	  IB->area.set_area(IB->area.get_area()+ IB->local_result.area);
 	  area.set_area(area.get_area()+ IB->local_result.area);
+	  }
 	  //output_data_csv(IB.IB.local_result);
 
 	  //	  inst_decoder.opcode_length = XML->sys.core[ithCore].opcode_width;
@@ -753,6 +795,9 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
  exist(exist_)
 {
 	  if (!exist) return;
+	  dma_lbuf = 0; dma_regs = 0; dma_adder = 0;
+	  pure_dstore = (XML->sys.core[ithCore].dcache.buffer_sizes[0]==0);
+	  no_dstore   = pure_dstore && (XML->sys.core[ithCore].dcache.dcache_config[0]==0);
 	  int  idx, tag, data, size, line, assoc, banks;
 	  bool debug= false;
 	  int ldst_opcode = XML->sys.core[ithCore].opcode_width;//16;
@@ -765,6 +810,7 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  interface_ip.is_cache			   = true;
 	  interface_ip.pure_cam            = false;
 	  interface_ip.pure_ram            = false;
+	  if (!no_dstore) {
 	  //Dcache
 	  size                             = (int)XML->sys.core[ithCore].dcache.dcache_config[0];
 	  line                             = (int)XML->sys.core[ithCore].dcache.dcache_config[1];
@@ -772,17 +818,28 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  banks                            = (int)XML->sys.core[ithCore].dcache.dcache_config[3];
 	  idx    					 	   = debug?9:int(ceil(log2(size/line/assoc)));
 	  tag							   = debug?51:XML->sys.physical_address_width-idx-int(ceil(log2(line))) + EXTRA_TAG_BITS;
-	  interface_ip.specific_tag        = 1;
-	  interface_ip.tag_w               = tag;
+	  interface_ip.specific_tag        = pure_dstore?0:1;
+	  interface_ip.tag_w               = pure_dstore?0:tag;
 	  interface_ip.cache_sz            = debug?32768:(int)XML->sys.core[ithCore].dcache.dcache_config[0];
 	  interface_ip.line_sz             = debug?64:(int)XML->sys.core[ithCore].dcache.dcache_config[1];
 	  interface_ip.assoc               = debug?8:(int)XML->sys.core[ithCore].dcache.dcache_config[2];
 	  interface_ip.nbanks              = debug?1:(int)XML->sys.core[ithCore].dcache.dcache_config[3];
 	  interface_ip.out_w               = interface_ip.line_sz*8;
+	  {   /* PIMID 1.12.18 (ruling 2026-10-23 #6): the L1D data width read per
+	       * access. McPAT charges one CACTI access per load/store uop (Li et
+	       * al., MICRO 2009: per-access energy), and upstream sized that access
+	       * as a FULL LINE (out_w = line x 8): for the 32 KB 8-way host L1D
+	       * the 512-bit output H-tree was 92 of the 115 pJ raw read. Config
+	       * field 6 (McPAT's output_width, bytes, parsed but ignored upstream)
+	       * now sets it when below the line; >= line or <= 0 keeps upstream. */
+	    const int ow = (int)XML->sys.core[ithCore].dcache.dcache_config[6];
+	    if (ow > 0 && ow < interface_ip.line_sz) interface_ip.out_w = ow*8;
+	  }
 	  interface_ip.access_mode         = 0;//debug?0:XML->sys.core[ithCore].dcache.dcache_config[5];
 	  interface_ip.throughput          = debug?1.0/clockRate:XML->sys.core[ithCore].dcache.dcache_config[4]/clockRate;
 	  interface_ip.latency             = debug?3.0/clockRate:XML->sys.core[ithCore].dcache.dcache_config[5]/clockRate;
-	  interface_ip.is_cache			 = true;
+	  interface_ip.is_cache			 = pure_dstore?false:true;
+	  interface_ip.pure_ram            = pure_dstore?true:false;
 	  interface_ip.obj_func_dyn_energy = 0;
 	  interface_ip.obj_func_dyn_power  = 0;
 	  interface_ip.obj_func_leak_power = 0;
@@ -792,10 +849,40 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  interface_ip.num_wr_ports    = 0;
 	  interface_ip.num_se_rd_ports = 0;
 	  dcache.caches = new ArrayST(&interface_ip, "dcache", Core_device, coredynp.opt_local, coredynp.core_ty);
+	  /* PIMID 1.12.18 (ruling 2026-10-23 #6): guard. CACTI (normal access
+	   * mode: tag and data in parallel, way select at the sense amps -- CACTI
+	   * 6.5 tech report HPL-2009-85) is the model in the total; M. Horowitz,
+	   * ISSCC 2014 Fig. 1.1.9 "Cache (64bit)" 8KB 10 pJ / 32KB 20 pJ / 1MB
+	   * 100 pJ (45 nm 0.9 V), the entry nearest this capacity scaled to the
+	   * run node, is printed beside it; the guard range is that value for a
+	   * 64-bit read up to it scaled linearly to the access width. */
+	  if (!pure_dstore && interface_ip.F_sz_nm > 0)
+	  {
+		  const double cap = interface_ip.cache_sz;
+		  const double hcap[3] = {8192.0, 32768.0, 1048576.0}, hpj[3] = {10.0, 20.0, 100.0};
+		  int h = 0;
+		  for (int q = 1; q < 3; q++) if (fabs(log(cap/hcap[q])) < fabs(log(cap/hcap[h]))) h = q;
+		  const double k = pimid_node_energy_scale(45.0, 0.9);
+		  const double e64 = hpj[h]*1e-12*k;
+		  const double ehi = e64 * ((interface_ip.out_w > 64) ? interface_ip.out_w/64.0 : 1.0);
+		  const double ec  = dcache.caches->local_result.power.readOp.dynamic;
+		  std::cerr << "[mcpat l1] core" << ithCore << " dcache " << cap/1024 << " KB " << interface_ip.assoc << "-way, line "
+		            << interface_ip.line_sz << " B, access width " << interface_ip.out_w << " bit, mode normal, "
+		            << interface_ip.num_rw_ports << " rw port(s): CACTI read " << ec*1e12 << " pJ, write "
+		            << dcache.caches->local_result.power.writeOp.dynamic*1e12 << " pJ per access (USED); guard Horowitz ISSCC 2014"
+		            << " Fig. 1.1.9 Cache (64bit) " << hcap[h]/1024 << " KB " << hpj[h] << " pJ (45 nm 0.9 V) -> " << e64*1e12
+		            << " pJ at the run node, range [" << e64*1e12 << ", " << ehi*1e12 << "] pJ for a " << interface_ip.out_w
+		            << "-bit access" << std::endl;
+		  if (ec < e64 || ec > ehi)
+			  std::cerr << "[mcpat l1] core" << ithCore << " WARNING: dcache CACTI read " << ec*1e12
+			            << " pJ is OUTSIDE the Horowitz guard range" << std::endl;
+	  }
 	  dcache.area.set_area(dcache.area.get_area()+ dcache.caches->local_result.area);
 	  area.set_area(area.get_area()+ dcache.caches->local_result.area);
 	  //output_data_csv(dcache.caches.local_result);
+	  }
 
+	  if (!pure_dstore) {   /* PIMID 1.12.18: a scratchpad has no miss path */
 	  //dCache controllers
 	  //miss buffer
 	  tag							   = XML->sys.physical_address_width + EXTRA_TAG_BITS;
@@ -905,6 +992,8 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 		  //output_data_csv(dcache.wbb.local_result);
 	  }
 
+	  }
+
 	  /*
 	   * LSU--in-order processors do not have separate load queue: unified lsq
 	   * partitioned among threads
@@ -966,6 +1055,53 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 		  lsq_height=(LSQ->local_result.cache_ht + LoadQ->local_result.cache_ht)*sqrt(cdb_overhead);/*XML->sys.core[ithCore].number_hardware_threads*/
 	  }
 	  area.set_area(area.get_area()*cdb_overhead);
+
+	  /* PIMID 1.12.18 (user ruling 2026-10-23 (a)): the scratchpad's DMA
+	   * engine, described from its parts with McPAT's own models -- a one-line
+	   * data buffer (pimid_dma_engine bytes, as 16 words: CACTI builds no array
+	   * below 16 rows), its three 64-bit registers (source address, destination
+	   * address, bytes left), priced as McPAT prices a register file -- an
+	   * array, here CACTI's smallest 64-bit one, 16 rows, so the three-register
+	   * set is overstated by that floor -- and one integer adder that steps
+	   * them (McPAT's ALU model, one unit). */
+	  if (XML->sys.core[ithCore].pimid_dma_engine > 0)
+	  {
+		  const int lb = XML->sys.core[ithCore].pimid_dma_engine;
+		  interface_ip.is_cache            = false;
+		  interface_ip.pure_cam            = false;
+		  interface_ip.pure_ram            = true;
+		  interface_ip.specific_tag        = 0;
+		  interface_ip.tag_w               = 0;
+		  interface_ip.line_sz             = lb/16;
+		  interface_ip.cache_sz            = lb;
+		  interface_ip.assoc               = 1;
+		  interface_ip.nbanks              = 1;
+		  interface_ip.out_w               = (lb/16)*8;
+		  interface_ip.access_mode         = 0;
+		  interface_ip.throughput          = 1.0/clockRate;
+		  interface_ip.latency             = 1.0/clockRate;
+		  interface_ip.obj_func_dyn_energy = 0;
+		  interface_ip.obj_func_dyn_power  = 0;
+		  interface_ip.obj_func_leak_power = 0;
+		  interface_ip.obj_func_cycle_t    = 1;
+		  interface_ip.num_rw_ports        = 1;
+		  interface_ip.num_rd_ports        = 0;
+		  interface_ip.num_wr_ports        = 0;
+		  interface_ip.num_se_rd_ports     = 0;
+		  interface_ip.num_search_ports    = 0;
+		  dma_lbuf = new ArrayST(&interface_ip, "DMA line buffer", Core_device, coredynp.opt_local, coredynp.core_ty);
+		  dma.area.set_area(dma.area.get_area()+ dma_lbuf->local_result.area);
+		  interface_ip.line_sz             = 8;
+		  interface_ip.cache_sz            = 16*8;
+		  interface_ip.out_w               = 64;
+		  dma_regs = new ArrayST(&interface_ip, "DMA registers", Core_device, coredynp.opt_local, coredynp.core_ty);
+		  dma.area.set_area(dma.area.get_area()+ dma_regs->local_result.area);
+		  CoreDynParam one_adder = coredynp;
+		  one_adder.num_alus = 1;
+		  dma_adder = new FunctionalUnit(XML, ithCore, &interface_ip, one_adder, ALU);
+		  dma.area.set_area(dma.area.get_area()+ dma_adder->area.get_area());
+		  area.set_area(area.get_area()+ dma.area.get_area());
+	  }
 }
 
 MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_, const CoreDynParam & dyn_p_,bool exist_)
@@ -993,7 +1129,15 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
 	  interface_ip.tag_w               = tag;
 	  interface_ip.line_sz             = int(ceil(data/8.0));//int(ceil(pow(2.0,ceil(log2(data)))/8.0));
 	  interface_ip.cache_sz            = XML->sys.core[ithCore].itlb.number_entries*interface_ip.line_sz;//*XML->sys.core[ithCore].number_hardware_threads;
-	  interface_ip.assoc               = 0;
+	  /* PIMID 1.12.18: pimid_assoc > 0 describes the TLB as the
+	   * N-way set-associative array the modelled core has (Intel 64 and IA-32
+	   * Architectures Optimization Reference Manual, 248966-031, sec. 2.5.4:
+	   * Nehalem/Westmere first-level TLB entries "are 4-way associative"):
+	   * the tag and data arrays are READ on a lookup (read ports in place of
+	   * search ports) and priced with readOp in computeEnergy(). 0 keeps
+	   * upstream's fully associative CAM. */
+	  const int itlb_assoc             = XML->sys.core[ithCore].itlb.pimid_assoc;
+	  interface_ip.assoc               = itlb_assoc > 0 ? itlb_assoc : 0;
 	  interface_ip.nbanks              = 1;
 	  interface_ip.out_w               = interface_ip.line_sz*8;
 	  interface_ip.access_mode         = 0;
@@ -1004,10 +1148,10 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
 	  interface_ip.obj_func_leak_power = 0;
 	  interface_ip.obj_func_cycle_t    = 1;
 	  interface_ip.num_rw_ports    = 0;
-	  interface_ip.num_rd_ports    = 0;
+	  interface_ip.num_rd_ports    = itlb_assoc > 0 ? XML->sys.core[ithCore].number_instruction_fetch_ports : 0;   /* PIMID 1.12.18: */
 	  interface_ip.num_wr_ports    = debug?1:XML->sys.core[ithCore].number_instruction_fetch_ports;
 	  interface_ip.num_se_rd_ports = 0;
-	  interface_ip.num_search_ports    = debug?1:XML->sys.core[ithCore].number_instruction_fetch_ports;
+	  interface_ip.num_search_ports    = itlb_assoc > 0 ? 0 : (debug?1:XML->sys.core[ithCore].number_instruction_fetch_ports);   /* PIMID 1.12.18: */
 	  itlb = new ArrayST(&interface_ip, "ITLB", Core_device, coredynp.opt_local, coredynp.core_ty);
 	  itlb->area.set_area(itlb->area.get_area()+ itlb->local_result.area);
 	  area.set_area(area.get_area()+ itlb->local_result.area);
@@ -1020,7 +1164,8 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
 	  interface_ip.tag_w               = tag;
 	  interface_ip.line_sz             = int(ceil(data/8.0));//int(ceil(pow(2.0,ceil(log2(data)))/8.0));
 	  interface_ip.cache_sz            = XML->sys.core[ithCore].dtlb.number_entries*interface_ip.line_sz;//*XML->sys.core[ithCore].number_hardware_threads;
-	  interface_ip.assoc               = 0;
+	  const int dtlb_assoc             = XML->sys.core[ithCore].dtlb.pimid_assoc;   /* PIMID 1.12.18: as the itlb */
+	  interface_ip.assoc               = dtlb_assoc > 0 ? dtlb_assoc : 0;
 	  interface_ip.nbanks              = 1;
 	  interface_ip.out_w               = interface_ip.line_sz*8;
 	  interface_ip.access_mode         = 0;
@@ -1031,10 +1176,10 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
 	  interface_ip.obj_func_leak_power = 0;
 	  interface_ip.obj_func_cycle_t    = 1;
 	  interface_ip.num_rw_ports    = 0;
-	  interface_ip.num_rd_ports    = 0;
+	  interface_ip.num_rd_ports    = dtlb_assoc > 0 ? XML->sys.core[ithCore].memory_ports : 0;   /* PIMID 1.12.18: */
 	  interface_ip.num_wr_ports    = XML->sys.core[ithCore].memory_ports;
 	  interface_ip.num_se_rd_ports = 0;
-	  interface_ip.num_search_ports = XML->sys.core[ithCore].memory_ports;
+	  interface_ip.num_search_ports = dtlb_assoc > 0 ? 0 : XML->sys.core[ithCore].memory_ports;   /* PIMID 1.12.18: */
 	  dtlb = new ArrayST(&interface_ip, "DTLB", Core_device, coredynp.opt_local, coredynp.core_ty);
 	  dtlb->area.set_area(dtlb->area.get_area()+ dtlb->local_result.area);
 	  area.set_area(area.get_area()+ dtlb->local_result.area);
@@ -1857,13 +2002,20 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
  rnu  (0),
  corepipe (0),
  undiffCore (0),
- l2cache (0)
+ l2cache (0),
+ clk_pipe_regs (0),
+ clk_extra_regs (0),
+ clk_pin_counted (0),
+ clk_pin_ungated (0),
+ clk_tree_e (0),
+ clk_extra_e (0)
 {
  /*
   * initialize, compute and optimize individual components.
   */
 
   bool exit_flag = true;
+  const size_t pimid_t0 = g_pimid_array_timing.size();   // PIMID 1.12.18: this core's arrays start here
 
   double pipeline_area_per_unit;
   //  interface_ip.wire_is_mat_type = 2;
@@ -1950,6 +2102,68 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 //  clockNetwork.start_wiring_level =5;//toplevel metal
 //  clockNetwork.num_regs           = corepipe.tot_stage_vector;
 //  clockNetwork.optimize_wire();
+  /* PIMID 1.12.18: THE CORE'S CLOCK NETWORK (the block above, which upstream
+   * never enabled and whose 1.1 placement factor and fixed metal level are
+   * presets, is not used). Model: Wattch (D. Brooks, V. Tiwari,
+   * M. Martonosi, ISCA 2000, clocking section) with CACTI wires; see
+   * logic.h ClockNetwork.
+   *   Tree area: this core's McPAT area (its private L2 has its own tree).
+   *   Sinks: the pipeline registers McPAT builds for the units that exist
+   *   -- corepipe holds num_piperegs per pipeline and Core distributes it
+   *   num_pipelines/num_units per unit (computeEnergy below), so the
+   *   population is num_piperegs x num_pipelines x existing/num_units --
+   *   plus, on a scratchpad element, the DMA engine's three 64-bit
+   *   registers (core.cc LoadStoreU, user ruling 2026-10-23 (a)), which
+   *   McPAT prices as an array and so carry no clock pin anywhere else. */
+  {
+	  const double nu = (coredynp.core_ty==OOO) ? 5.0 : 4.0;
+	  double n_exist = (ifu->exist ? 1 : 0) + (lsu->exist ? 1 : 0) + (mmu->exist ? 1 : 0) + (exu->exist ? 1 : 0);
+	  if (coredynp.core_ty==OOO && rnu && rnu->exist) n_exist += 1;
+	  clk_pipe_regs  = corepipe->num_piperegs * coredynp.num_pipelines * n_exist / nu;
+	  clk_extra_regs = (lsu->exist && lsu->dma_regs) ? 3.0 * lsu->dma_regs->l_ip.out_w : 0.0;
+	  double a = area.get_area();
+	  if (XML->sys.Private_L2 && l2cache) a -= l2cache->area.get_area();
+	  std::ostringstream src;
+	  src << "pipeline registers " << clk_pipe_regs << " (corepipe " << corepipe->num_piperegs
+	      << " x " << coredynp.num_pipelines << " pipeline(s) x " << n_exist << "/" << nu << " units)";
+	  if (clk_extra_regs > 0) src << " + DMA registers " << clk_extra_regs;
+	  clockNetwork.compute(&interface_ip, "core" + std::to_string(ithCore), a,
+	                       clk_pipe_regs + clk_extra_regs, src.str(),
+	                       corepipe->clock_energy_per_reg, clockRate, XML->sys.Embedded,
+	                       Core_device, coredynp.core_ty, XML->sys.pimid_clock_network != 0);
+  }
+  /* PIMID 1.12.18: (user ruling 2026-10-24) CLOCK FEASIBILITY OF
+   * THE CORE AT ITS DEVICE. Every array McPAT built for this core was sized by
+   * CACTI against a cycle-time target (throughput) and an access-time target
+   * (latency) derived from clockRate; McPAT keeps the best solution it found
+   * even when none meets them, and upstream warns only for associative arrays.
+   * Report the worst of each and PASS/FAIL. The ALU/bypass logic has no
+   * delay model in McPAT: not checked, and said so. */
+  {
+	  const double period = (clockRate > 0) ? 1.0 / clockRate : 0;
+	  size_t n = 0, nfail = 0; double wc = 0, wa = 0; std::string wcn, wan; std::ostringstream fails, all;
+	  for (size_t i = pimid_t0; i < g_pimid_array_timing.size(); ++i) {
+		  const PimidArrayTiming& t = g_pimid_array_timing[i];
+		  if (!t.valid) continue;
+		  ++n;
+		  if (t.cycle > wc) { wc = t.cycle; wcn = t.name; }
+		  if (t.access > wa) { wa = t.access; wan = t.name; }
+		  const bool ok = (t.cycle - t.thr) <= 1e-12 && (t.access - t.lat) <= 1e-12;
+		  all << (all.tellp() > 0 ? "; " : "") << t.name << " acc " << t.access * 1e9 << "/" << t.lat * 1e9
+		      << " cyc " << t.cycle * 1e9 << "/" << t.thr * 1e9 << " ns";
+		  if (!ok) { ++nfail; fails << (fails.tellp() > 0 ? "; " : "") << t.name << " access " << t.access * 1e9
+		      << " ns (target " << t.lat * 1e9 << "), cycle " << t.cycle * 1e9 << " ns (target " << t.thr * 1e9 << ")"; }
+	  }
+	  std::cerr << "[mcpat timing] core" << ithCore << " @ " << clockRate / 1e6 << " MHz (period " << period * 1e9
+	            << " ns), array periphery device " << interface_ip.data_arr_peri_global_tech_type
+	            << " (0 hp, 1 lstp, 2 lop): " << n << " array(s) sized by CACTI for this clock; worst cycle time "
+	            << wc * 1e9 << " ns (" << wcn << "), worst access time " << wa * 1e9 << " ns (" << wan << ") -> "
+	            << (nfail ? "FAIL" : "PASS") << "; ALU/datapath logic delay NOT CHECKED (no logic delay model in McPAT)" << std::endl;
+	  if (n <= 16) std::cerr << "[mcpat timing] core" << ithCore << " arrays (access/target, cycle/target): " << all.str() << std::endl;
+	  if (nfail) std::cerr << "[mcpat timing] core" << ithCore << " WARNING: " << nfail << " array(s) miss the "
+	                      << clockRate / 1e6 << " MHz targets: " << fails.str()
+	                      << ". The clock is NOT changed; power is priced at the requested clock." << std::endl;
+  }
 }
 
 
@@ -2181,8 +2395,10 @@ void InstFetchU::computeEnergy(bool is_tdp)
     	icache.prefetchb->tdp_stats = icache.prefetchb->stats_t;
     	}
 
+    	if (IB) {   /* PIMID 1.12.18: absent when the buffer is the IF/ID latch */
     	IB->stats_t.readAc.access = IB->stats_t.writeAc.access = XML->sys.core[ithCore].peak_issue_width;
     	IB->tdp_stats = IB->stats_t;
+    	}
 
     	if (coredynp.predictionW>0)
     	{
@@ -2221,8 +2437,10 @@ void InstFetchU::computeEnergy(bool is_tdp)
     	icache.prefetchb->rtp_stats = icache.prefetchb->stats_t;
     	}
 
+    	if (IB) {   /* PIMID 1.12.18 */
     	IB->stats_t.readAc.access = IB->stats_t.writeAc.access = XML->sys.core[ithCore].total_instructions;
     	IB->rtp_stats = IB->stats_t;
+    	}
 
     	if (coredynp.predictionW>0)
     	{
@@ -2241,7 +2459,7 @@ void InstFetchU::computeEnergy(bool is_tdp)
     }
 
     icache.power_t.reset();
-    IB->power_t.reset();
+    if (IB) IB->power_t.reset();   /* PIMID 1.12.18 */
 //	ID_inst->power_t.reset();
 //	ID_operand->power_t.reset();
 //	ID_misc->power_t.reset();
@@ -2263,6 +2481,7 @@ void InstFetchU::computeEnergy(bool is_tdp)
             icache.prefetchb->stats_t.writeAc.access*icache.prefetchb->local_result.power.writeOp.dynamic;
     }
 
+	if (IB)   /* PIMID 1.12.18 */
 	IB->power_t.readOp.dynamic   +=  IB->local_result.power.readOp.dynamic*IB->stats_t.readAc.access +
 			IB->stats_t.writeAc.access*IB->local_result.power.writeOp.dynamic;
 
@@ -2288,8 +2507,9 @@ void InstFetchU::computeEnergy(bool is_tdp)
     			icache.prefetchb->local_result.power)*pppm_lkg)
     	    : (icache.power_t + icache.caches->local_result.power*pppm_lkg);
 
-    	IB->power = IB->power_t + IB->local_result.power*pppm_lkg;
-    	power     = power + icache.power + IB->power;
+    	if (IB) IB->power = IB->power_t + IB->local_result.power*pppm_lkg;   /* PIMID 1.12.18 */
+    	power     = power + icache.power;
+    	if (IB) power = power + IB->power;
     	if (coredynp.predictionW>0)
     	{
     		BTB->power = BTB->power_t + BTB->local_result.power*pppm_lkg;
@@ -2323,8 +2543,9 @@ void InstFetchU::computeEnergy(bool is_tdp)
     			icache.prefetchb->local_result.power)*pppm_lkg)
     	    : (icache.power_t + icache.caches->local_result.power*pppm_lkg);
 
-    	IB->rt_power = IB->power_t + IB->local_result.power*pppm_lkg;
-    	rt_power     = rt_power + icache.rt_power + IB->rt_power;
+    	if (IB) IB->rt_power = IB->power_t + IB->local_result.power*pppm_lkg;   /* PIMID 1.12.18 */
+    	rt_power     = rt_power + icache.rt_power;
+    	if (IB) rt_power = rt_power + IB->rt_power;
     	if (coredynp.predictionW>0)
     	{
     		BTB->rt_power = BTB->power_t + BTB->local_result.power*pppm_lkg;
@@ -2392,6 +2613,7 @@ void InstFetchU::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 				}
 			}
 		}
+		if (IB) {   /* PIMID 1.12.18 */
 		cout << indent_str<< "Instruction Buffer:" << endl;
 		cout << indent_str_next << "Area = " << IB->area.get_area()*1e-6  << " mm^2" << endl;
 		cout << indent_str_next << "Peak Dynamic = " << IB->power.readOp.dynamic*clockRate  << " W" << endl;
@@ -2402,6 +2624,7 @@ void InstFetchU::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 		cout << indent_str_next << "Gate Leakage = " << IB->power.readOp.gate_leakage  << " W" << endl;
 		cout << indent_str_next << "Runtime Dynamic = " << IB->rt_power.readOp.dynamic/executionTime << " W" << endl;
 		cout <<endl;
+		} else cout << indent_str << "Instruction Buffer: none (the IF/ID latch, priced in the pipeline; PIMID 1.12.18)" << endl << endl;
 		cout << indent_str<< "Instruction Decoder:" << endl;
 		cout << indent_str_next << "Area = " << (ID_inst->area.get_area() +
 				ID_operand->area.get_area() +
@@ -3260,9 +3483,119 @@ void SchedulerU::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 
 }
 
+/* PIMID 1.12.18: the energy of a scratchpad element's load/store unit -- the
+ * RAM's reads and writes (no misses, no buffers), the store queue as McPAT
+ * prices it, and the DMA engine: per line moved, a write and a read of each of
+ * the buffer's 16 words,
+ * three register reads and writes and three adder operations (each register
+ * steps once). Peak (TDP): the RAM at McPAT's 2:1 read/write port mix, the
+ * engine at one line per cycle. */
+void LoadStoreU::computeEnergyPimid(bool is_tdp)
+{
+	double dma_lines = 0.0, dma_cmd_rd = 0.0, dma_cmd_wr = 0.0;
+	if (is_tdp)
+	{
+		LSQ->tdp_stats = LSQ->stats_t;
+		if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
+		{
+			LoadQ->stats_t.readAc.access = LoadQ->stats_t.writeAc.access = LoadQ->l_ip.num_search_ports*coredynp.LSU_duty_cycle;
+			LoadQ->tdp_stats = LoadQ->stats_t;
+		}
+		if (dcache.caches)
+		{
+			dcache.caches->stats_t.readAc.access  = 0.67*dcache.caches->l_ip.num_rw_ports*coredynp.LSU_duty_cycle;
+			dcache.caches->stats_t.writeAc.access = 0.33*dcache.caches->l_ip.num_rw_ports*coredynp.LSU_duty_cycle;
+			dcache.caches->tdp_stats = dcache.caches->stats_t;
+		}
+		dma_lines = dma_lbuf ? coredynp.LSU_duty_cycle : 0.0;
+	}
+	else
+	{
+		if (dcache.caches)
+		{
+			dcache.caches->stats_t.readAc.access  = XML->sys.core[ithCore].dcache.read_accesses;
+			dcache.caches->stats_t.writeAc.access = XML->sys.core[ithCore].dcache.write_accesses;
+			dcache.caches->rtp_stats = dcache.caches->stats_t;
+		}
+		LSQ->stats_t.readAc.access  = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
+		LSQ->stats_t.writeAc.access = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
+		LSQ->rtp_stats = LSQ->stats_t;
+		if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
+		{
+			LoadQ->stats_t.readAc.access  = XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions;
+			LoadQ->stats_t.writeAc.access = XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions;
+			LoadQ->rtp_stats = LoadQ->stats_t;
+		}
+		dma_lines = dma_lbuf ? XML->sys.core[ithCore].pimid_dma_lines : 0.0;
+		dma_cmd_rd = dma_lbuf ? XML->sys.core[ithCore].pimid_dma_cmd_reads : 0.0;
+		dma_cmd_wr = dma_lbuf ? XML->sys.core[ithCore].pimid_dma_cmd_writes : 0.0;
+	}
+
+	dcache.power_t.reset();
+	LSQ->power_t.reset();
+	if (dcache.caches)
+		dcache.power_t.readOp.dynamic += dcache.caches->stats_t.readAc.access*dcache.caches->local_result.power.readOp.dynamic
+			+ dcache.caches->stats_t.writeAc.access*dcache.caches->local_result.power.writeOp.dynamic;
+	if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
+	{
+		LoadQ->power_t.reset();
+		LoadQ->power_t.readOp.dynamic += LoadQ->stats_t.readAc.access*(LoadQ->local_result.power.searchOp.dynamic+ LoadQ->local_result.power.readOp.dynamic)+
+			LoadQ->stats_t.writeAc.access*LoadQ->local_result.power.writeOp.dynamic;
+	}
+	LSQ->power_t.readOp.dynamic += LSQ->stats_t.readAc.access*(LSQ->local_result.power.searchOp.dynamic + LSQ->local_result.power.readOp.dynamic)
+		+ LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;
+
+	powerDef dma_t;
+	if (dma_lbuf)
+	{
+		const double words = 16.0;   /* the line buffer's words per line */
+		dma_t.readOp.dynamic = dma_lines*words*(dma_lbuf->local_result.power.writeOp.dynamic + dma_lbuf->local_result.power.readOp.dynamic)
+			+ 3.0*dma_lines*(dma_regs->local_result.power.readOp.dynamic + dma_regs->local_result.power.writeOp.dynamic)
+			+ 3.0*dma_lines*dma_adder->per_access_energy*g_tp.sckt_co_eff
+			+ dma_cmd_rd*dma_regs->local_result.power.readOp.dynamic
+			+ dma_cmd_wr*dma_regs->local_result.power.writeOp.dynamic;   /* loading and reading its command */
+		const double lc = longer_channel_device_reduction(Core_device, coredynp.core_ty);
+		const double pg = power_gating_leakage_reduction(false);
+		dma_t.readOp.leakage = dma_adder->leakage;
+		dma_t.readOp.gate_leakage = dma_adder->gate_leakage;
+		dma_t.readOp.longer_channel_leakage = dma_adder->leakage*lc;
+		dma_t.readOp.power_gated_leakage = dma_adder->leakage*pg;
+		dma_t.readOp.power_gated_with_long_channel_leakage = dma_adder->leakage*pg*lc;
+		dma_t = dma_t + (dma_lbuf->local_result.power + dma_regs->local_result.power)*pppm_lkg;
+	}
+
+	if (is_tdp)
+	{
+		dcache.power = dcache.power_t;
+		if (dcache.caches) dcache.power = dcache.power + dcache.caches->local_result.power*pppm_lkg;
+		LSQ->power = LSQ->power_t + LSQ->local_result.power *pppm_lkg;
+		dma.power = dma_t;
+		power = power + dcache.power + LSQ->power + dma.power;
+		if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
+		{
+			LoadQ->power = LoadQ->power_t + LoadQ->local_result.power *pppm_lkg;
+			power = power + LoadQ->power;
+		}
+	}
+	else
+	{
+		dcache.rt_power = dcache.power_t;
+		if (dcache.caches) dcache.rt_power = dcache.rt_power + dcache.caches->local_result.power*pppm_lkg;
+		LSQ->rt_power = LSQ->power_t + LSQ->local_result.power *pppm_lkg;
+		dma.rt_power = dma_t;
+		rt_power = rt_power + dcache.rt_power + LSQ->rt_power + dma.rt_power;
+		if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
+		{
+			LoadQ->rt_power = LoadQ->power_t + LoadQ->local_result.power *pppm_lkg;
+			rt_power = rt_power + LoadQ->rt_power;
+		}
+	}
+}
+
 void LoadStoreU::computeEnergy(bool is_tdp)
 {
 	if (!exist) return;
+	if (pure_dstore) { computeEnergyPimid(is_tdp); return; }   /* PIMID 1.12.18 */
 	if (is_tdp)
 	    {
 	    	//init stats for Peak
@@ -3367,6 +3700,16 @@ void LoadStoreU::computeEnergy(bool is_tdp)
     if (cache_p==Write_back)
     {//write miss will generate a write later
     	dcache.power_t.readOp.dynamic	+= dcache.caches->stats_t.writeAc.miss*dcache.caches->local_result.power.writeOp.dynamic;
+    }
+    /* PIMID 1.12.18 (ruling 2026-10-23 #6): with an access narrower than the
+     * line (config field 6), a line fill (read or write-allocate miss) is
+     * line/out_w array writes. Upstream's full-line access charges no fill
+     * write, and nothing changes for it (condition below). */
+    if (dcache.caches->l_ip.out_w > 0 && dcache.caches->l_ip.out_w < dcache.caches->l_ip.line_sz*8)
+    {
+    	const double per_fill = dcache.caches->l_ip.line_sz*8.0 / dcache.caches->l_ip.out_w;
+    	const double fills = dcache.caches->stats_t.readAc.miss + dcache.caches->stats_t.writeAc.miss;
+    	dcache.power_t.readOp.dynamic += fills * per_fill * dcache.caches->local_result.power.writeOp.dynamic;
     }
 
     dcache.power_t.readOp.dynamic	+=  dcache.missb->stats_t.readAc.access*dcache.missb->local_result.power.searchOp.dynamic +
@@ -3544,12 +3887,13 @@ void MemManU::computeEnergy(bool is_tdp)
 	if (is_tdp)
     {
     	//init stats for Peak
-    	itlb->stats_t.readAc.access  = itlb->l_ip.num_search_ports*coredynp.IFU_duty_cycle;
+    	/* PIMID 1.12.18: a set-associative TLB has read ports, not search ports */
+    	itlb->stats_t.readAc.access  = (itlb->l_ip.num_search_ports > 0 ? itlb->l_ip.num_search_ports : itlb->l_ip.num_rd_ports)*coredynp.IFU_duty_cycle;
     	itlb->stats_t.readAc.miss    = 0;
     	itlb->stats_t.readAc.hit     = itlb->stats_t.readAc.access - itlb->stats_t.readAc.miss;
     	itlb->tdp_stats = itlb->stats_t;
 
-    	dtlb->stats_t.readAc.access  = dtlb->l_ip.num_search_ports*coredynp.LSU_duty_cycle;
+    	dtlb->stats_t.readAc.access  = (dtlb->l_ip.num_search_ports > 0 ? dtlb->l_ip.num_search_ports : dtlb->l_ip.num_rd_ports)*coredynp.LSU_duty_cycle;   /* PIMID 1.12.18: */
     	dtlb->stats_t.readAc.miss    = 0;
     	dtlb->stats_t.readAc.hit     = dtlb->stats_t.readAc.access - dtlb->stats_t.readAc.miss;
     	dtlb->tdp_stats = dtlb->stats_t;
@@ -3570,9 +3914,14 @@ void MemManU::computeEnergy(bool is_tdp)
 
     itlb->power_t.reset();
     dtlb->power_t.reset();
-	itlb->power_t.readOp.dynamic +=  itlb->stats_t.readAc.access*itlb->local_result.power.searchOp.dynamic//FA spent most power in tag, so use total access not hits
+	/* PIMID 1.12.18: a set-associative TLB (pimid_assoc > 0) is READ
+	 * on every lookup (tag + data ways of one set); the fully associative CAM
+	 * is SEARCHED. A miss refills one entry (writeOp) either way. */
+	const double itlb_lookup = itlb->l_ip.assoc > 0 ? itlb->local_result.power.readOp.dynamic : itlb->local_result.power.searchOp.dynamic;
+	const double dtlb_lookup = dtlb->l_ip.assoc > 0 ? dtlb->local_result.power.readOp.dynamic : dtlb->local_result.power.searchOp.dynamic;
+	itlb->power_t.readOp.dynamic +=  itlb->stats_t.readAc.access*itlb_lookup//FA spent most power in tag, so use total access not hits
 	                      +itlb->stats_t.readAc.miss*itlb->local_result.power.writeOp.dynamic;
-	dtlb->power_t.readOp.dynamic +=  dtlb->stats_t.readAc.access*dtlb->local_result.power.searchOp.dynamic//FA spent most power in tag, so use total access not hits
+	dtlb->power_t.readOp.dynamic +=  dtlb->stats_t.readAc.access*dtlb_lookup//FA spent most power in tag, so use total access not hits
 	                      +dtlb->stats_t.readAc.miss*dtlb->local_result.power.writeOp.dynamic;
 
 	if (is_tdp)
@@ -3938,6 +4287,19 @@ void Core::computeEnergy(bool is_tdp)
 	double pppm_t[4]    = {1,1,1,1};
     double rtp_pipeline_coe;
     double num_units = 4.0;
+	/* PIMID 1.12.18 (clock network): the pipeline's dynamic energy, clock-pin
+	 * term included (logic.cc Pipeline::compute), is charged below with
+	 * coefficient pppm_t[0] per unit -- the MEASURED pipeline duty cycle times
+	 * the unit duty cycle. pipe_k_cnt sums those coefficients; pipe_k_ung sums
+	 * what an ungated clock toggles (num_pipelines/num_units per existing unit,
+	 * every cycle). The difference is the pin energy the clock network adds;
+	 * nothing McPAT already charged is charged again. clk_base: cycles the
+	 * pipeline is charged over (McPAT's own: total_cycles x cores when
+	 * homogeneous, the core's total_cycles otherwise; 1 for peak). */
+	double pipe_k_cnt = 0.0, pipe_k_ung = 0.0;
+	const double clk_base = is_tdp ? 1.0
+		: ((XML->sys.homogeneous_cores==1) ? XML->sys.total_cycles * XML->sys.number_of_cores
+		                                   : coredynp.total_cycles);
 	if (is_tdp)
 	{
 		ifu->computeEnergy(is_tdp);
@@ -3953,6 +4315,7 @@ void Core::computeEnergy(bool is_tdp)
 			if (rnu->exist)
 			{
 				rnu->power = rnu->power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units;   /* PIMID 1.12.18 */
 				power     = power + rnu->power;
 			}
 		}
@@ -3962,6 +4325,7 @@ void Core::computeEnergy(bool is_tdp)
 			set_pppm(pppm_t, coredynp.num_pipelines/num_units*coredynp.IFU_duty_cycle, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 //			cout << "IFU = " << ifu->power.readOp.dynamic*clockRate  << " W" << endl;
 			ifu->power = ifu->power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units;   /* PIMID 1.12.18 */
 //			cout << "IFU = " << ifu->power.readOp.dynamic*clockRate  << " W" << endl;
 //			cout << "1/4 pipe = " << corepipe->power.readOp.dynamic*clockRate/num_units  << " W" << endl;
 			power     = power + ifu->power;
@@ -3971,6 +4335,7 @@ void Core::computeEnergy(bool is_tdp)
 		{
 			set_pppm(pppm_t, coredynp.num_pipelines/num_units*coredynp.LSU_duty_cycle, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 			lsu->power = lsu->power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units;   /* PIMID 1.12.18 */
 //			cout << "LSU = " << lsu->power.readOp.dynamic*clockRate  << " W" << endl;
 			power     = power + lsu->power;
 //			cout << "core = " << power.readOp.dynamic*clockRate  << " W" << endl;
@@ -3979,6 +4344,7 @@ void Core::computeEnergy(bool is_tdp)
 		{
 			set_pppm(pppm_t, coredynp.num_pipelines/num_units*coredynp.ALU_duty_cycle, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 			exu->power = exu->power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units;   /* PIMID 1.12.18 */
 //			cout << "EXE = " << exu->power.readOp.dynamic*clockRate  << " W" << endl;
 			power     = power + exu->power;
 //			cout << "core = " << power.readOp.dynamic*clockRate  << " W" << endl;
@@ -3987,12 +4353,76 @@ void Core::computeEnergy(bool is_tdp)
 		{
 			set_pppm(pppm_t, coredynp.num_pipelines/num_units*(0.5+0.5*coredynp.LSU_duty_cycle), coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 			mmu->power = mmu->power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units;   /* PIMID 1.12.18 */
 //			cout << "MMU = " << mmu->power.readOp.dynamic*clockRate  << " W" << endl;
 			power     = power +  mmu->power;
 //			cout << "core = " << power.readOp.dynamic*clockRate  << " W" << endl;
 		}
 
 		power     = power +  undiffCore->power;
+
+		/* PIMID 1.12.18: CLOCK NETWORK (Wattch, D. Brooks, V. Tiwari,
+		 * M. Martonosi, ISCA 2000, clocking section; logic.h ClockNetwork):
+		 * the H-tree, the pipeline clock pins McPAT has not already charged
+		 * (clocked minus counted, above), and the DMA registers' pins.
+		 * Runtime is GATED by the core's measured activity (user ruling
+		 * 2026-10-23; Wattch cc2): the busy fraction PIMID emits as
+		 * pipeline_duty_cycle (= busy_cycles / total_cycles, measured
+		 * instructions over peak issue). The pins McPAT already charges at
+		 * the per-unit duty stay where they are; only the part of the
+		 * gated pin energy above them is added. Peak: ungated. */
+		{
+			const double a = is_tdp ? 1.0
+				: clockNetwork.gate((XML->sys.core[ithCore].total_cycles > 0 || XML->sys.total_cycles > 0)
+				                        ? coredynp.pipeline_duty_cycle : -1.0,
+				                    "pipeline_duty_cycle = busy_cycles / total_cycles");
+			/* PIMID 1.12.18 (ruling 2026-10-23 #4): the GLOBAL part of the
+			 * tree (all H-tree levels but the last) switches every powered
+			 * cycle; the LOCAL part (last level, pins, DMA register pins) is
+			 * gated by the measured activity (logic.h ClockNetwork). */
+			if (!is_tdp)
+			{
+				clockNetwork.set_powered(XML->sys.pimid_clock_pg_core,
+				                         "1 - measured core power-gated residency (pimid_clock_pg_core)");
+				/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): the core is
+				 * HALTED when nothing is runnable on it; its global part runs only
+				 * for the MEASURED running fraction (homogeneous cores: the mean
+				 * over the cores this template stands for, so the template x
+				 * number_of_cores charges the sum of their running times). */
+				clockNetwork.set_running(XML->sys.pimid_idle_halt != 0,
+				                         XML->sys.core[ithCore].pimid_running_fraction,
+				                         XML->sys.core[ithCore].pimid_running_fraction_max,
+				                         (XML->sys.homogeneous_cores == 1)
+				                             ? "pimid_running_fraction: the mean over the homogeneous core group of each core's measured running cycles / run cycles"
+				                             : "pimid_running_fraction: this core's measured running cycles / run cycles");
+			}
+			clk_tree_e      = clockNetwork.e_tree_cycle * clk_base;
+			const double clk_tree_g = clockNetwork.e_tree_global_cycle * clk_base;
+			const double clk_tree_l = clk_tree_e - clk_tree_g;
+			clk_pin_counted = corepipe->clock_energy_per_reg * corepipe->num_piperegs * pipe_k_cnt;
+			clk_pin_ungated = corepipe->clock_energy_per_reg * corepipe->num_piperegs * pipe_k_ung;
+			clk_extra_e     = clockNetwork.e_pin_reg * clk_extra_regs * clk_base;
+			double pin_rem_u = clockNetwork.enabled ? clk_pin_ungated - clk_pin_counted : 0.0;
+			double pin_rem_g = clockNetwork.enabled ? clk_pin_ungated * a - clk_pin_counted : 0.0;
+			if (pin_rem_u < 0) pin_rem_u = 0;   /* McPAT already charges more than a clocked pin (a unit duty above 1) */
+			if (pin_rem_g < 0) pin_rem_g = 0;   /* the per-unit charge already covers the gated pins */
+			const double e_ung = clk_tree_e + pin_rem_u + clk_extra_e;
+			const double e_gat = clk_tree_g * clockNetwork.global_on() + (clk_tree_l + clk_extra_e) * a + pin_rem_g;   /* PIMID 1.12.18 (idle halt) */
+			clockNetwork.rt_global = clk_tree_g * clockNetwork.global_on();
+			clockNetwork.rt_halted = clk_tree_g * (clockNetwork.powered - clockNetwork.global_on());
+			/* peak is per cycle and set by the peak call; the runtime call keeps it */
+			clockNetwork.set_power(is_tdp ? e_ung : clockNetwork.power.readOp.dynamic, e_gat, e_ung, 1.0);
+			power = power + clockNetwork.power;
+			std::cerr << "[mcpat clock] core" << ithCore << (is_tdp ? " peak" : " runtime")
+			          << " (J per " << (is_tdp ? "cycle" : "run") << "): tree " << clk_tree_e
+			          << " + pipeline pins clocked " << clk_pin_ungated << " - already in the pipeline "
+			          << clk_pin_counted << " + DMA register pins " << clk_extra_e << " = ungated " << e_ung
+			          << "; activity " << a << " -> gated: global tree " << clk_tree_g << " x powered "
+			          << clockNetwork.powered << " (x running " << clockNetwork.running << " with idle halt: on "
+			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
+			          << e_gat << std::endl;
+			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
+		}
 
 		if (XML->sys.Private_L2)
 		{
@@ -4027,6 +4457,7 @@ void Core::computeEnergy(bool is_tdp)
 			if (rnu->exist)
 			{
         	rnu->rt_power = rnu->rt_power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units*clk_base;   /* PIMID 1.12.18 */
 
 			rt_power      = rt_power + rnu->rt_power;
 			}
@@ -4048,6 +4479,7 @@ void Core::computeEnergy(bool is_tdp)
 			}
 			set_pppm(pppm_t, coredynp.num_pipelines*rtp_pipeline_coe/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 			ifu->rt_power = ifu->rt_power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units*clk_base;   /* PIMID 1.12.18 */
 			rt_power     = rt_power + ifu->rt_power ;
 		}
 		if (lsu->exist)
@@ -4063,6 +4495,7 @@ void Core::computeEnergy(bool is_tdp)
 			set_pppm(pppm_t, coredynp.num_pipelines*rtp_pipeline_coe/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 
 			lsu->rt_power = lsu->rt_power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units*clk_base;   /* PIMID 1.12.18 */
 			rt_power     = rt_power  + lsu->rt_power;
 		}
 		if (exu->exist)
@@ -4077,6 +4510,7 @@ void Core::computeEnergy(bool is_tdp)
 			}
 			set_pppm(pppm_t, coredynp.num_pipelines*rtp_pipeline_coe/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 			exu->rt_power = exu->rt_power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units*clk_base;   /* PIMID 1.12.18 */
 			rt_power     = rt_power  + exu->rt_power;
 		}
 		if (mmu->exist)
@@ -4091,11 +4525,75 @@ void Core::computeEnergy(bool is_tdp)
 			}
 			set_pppm(pppm_t, coredynp.num_pipelines*rtp_pipeline_coe/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units, coredynp.num_pipelines/num_units);
 			mmu->rt_power = mmu->rt_power + corepipe->power*pppm_t;
+			pipe_k_cnt += pppm_t[0]; pipe_k_ung += coredynp.num_pipelines/num_units*clk_base;   /* PIMID 1.12.18 */
 			rt_power     = rt_power +  mmu->rt_power ;
 
 		}
 
 		rt_power     = rt_power +  undiffCore->power;
+
+		/* PIMID 1.12.18: CLOCK NETWORK (Wattch, D. Brooks, V. Tiwari,
+		 * M. Martonosi, ISCA 2000, clocking section; logic.h ClockNetwork):
+		 * the H-tree, the pipeline clock pins McPAT has not already charged
+		 * (clocked minus counted, above), and the DMA registers' pins.
+		 * Runtime is GATED by the core's measured activity (user ruling
+		 * 2026-10-23; Wattch cc2): the busy fraction PIMID emits as
+		 * pipeline_duty_cycle (= busy_cycles / total_cycles, measured
+		 * instructions over peak issue). The pins McPAT already charges at
+		 * the per-unit duty stay where they are; only the part of the
+		 * gated pin energy above them is added. Peak: ungated. */
+		{
+			const double a = is_tdp ? 1.0
+				: clockNetwork.gate((XML->sys.core[ithCore].total_cycles > 0 || XML->sys.total_cycles > 0)
+				                        ? coredynp.pipeline_duty_cycle : -1.0,
+				                    "pipeline_duty_cycle = busy_cycles / total_cycles");
+			/* PIMID 1.12.18 (ruling 2026-10-23 #4): the GLOBAL part of the
+			 * tree (all H-tree levels but the last) switches every powered
+			 * cycle; the LOCAL part (last level, pins, DMA register pins) is
+			 * gated by the measured activity (logic.h ClockNetwork). */
+			if (!is_tdp)
+			{
+				clockNetwork.set_powered(XML->sys.pimid_clock_pg_core,
+				                         "1 - measured core power-gated residency (pimid_clock_pg_core)");
+				/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): the core is
+				 * HALTED when nothing is runnable on it; its global part runs only
+				 * for the MEASURED running fraction (homogeneous cores: the mean
+				 * over the cores this template stands for, so the template x
+				 * number_of_cores charges the sum of their running times). */
+				clockNetwork.set_running(XML->sys.pimid_idle_halt != 0,
+				                         XML->sys.core[ithCore].pimid_running_fraction,
+				                         XML->sys.core[ithCore].pimid_running_fraction_max,
+				                         (XML->sys.homogeneous_cores == 1)
+				                             ? "pimid_running_fraction: the mean over the homogeneous core group of each core's measured running cycles / run cycles"
+				                             : "pimid_running_fraction: this core's measured running cycles / run cycles");
+			}
+			clk_tree_e      = clockNetwork.e_tree_cycle * clk_base;
+			const double clk_tree_g = clockNetwork.e_tree_global_cycle * clk_base;
+			const double clk_tree_l = clk_tree_e - clk_tree_g;
+			clk_pin_counted = corepipe->clock_energy_per_reg * corepipe->num_piperegs * pipe_k_cnt;
+			clk_pin_ungated = corepipe->clock_energy_per_reg * corepipe->num_piperegs * pipe_k_ung;
+			clk_extra_e     = clockNetwork.e_pin_reg * clk_extra_regs * clk_base;
+			double pin_rem_u = clockNetwork.enabled ? clk_pin_ungated - clk_pin_counted : 0.0;
+			double pin_rem_g = clockNetwork.enabled ? clk_pin_ungated * a - clk_pin_counted : 0.0;
+			if (pin_rem_u < 0) pin_rem_u = 0;   /* McPAT already charges more than a clocked pin (a unit duty above 1) */
+			if (pin_rem_g < 0) pin_rem_g = 0;   /* the per-unit charge already covers the gated pins */
+			const double e_ung = clk_tree_e + pin_rem_u + clk_extra_e;
+			const double e_gat = clk_tree_g * clockNetwork.global_on() + (clk_tree_l + clk_extra_e) * a + pin_rem_g;   /* PIMID 1.12.18 (idle halt) */
+			clockNetwork.rt_global = clk_tree_g * clockNetwork.global_on();
+			clockNetwork.rt_halted = clk_tree_g * (clockNetwork.powered - clockNetwork.global_on());
+			/* peak is per cycle and set by the peak call; the runtime call keeps it */
+			clockNetwork.set_power(is_tdp ? e_ung : clockNetwork.power.readOp.dynamic, e_gat, e_ung, 1.0);
+			rt_power = rt_power + clockNetwork.rt_power;
+			std::cerr << "[mcpat clock] core" << ithCore << (is_tdp ? " peak" : " runtime")
+			          << " (J per " << (is_tdp ? "cycle" : "run") << "): tree " << clk_tree_e
+			          << " + pipeline pins clocked " << clk_pin_ungated << " - already in the pipeline "
+			          << clk_pin_counted << " + DMA register pins " << clk_extra_e << " = ungated " << e_ung
+			          << "; activity " << a << " -> gated: global tree " << clk_tree_g << " x powered "
+			          << clockNetwork.powered << " (x running " << clockNetwork.running << " with idle halt: on "
+			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
+			          << e_gat << std::endl;
+			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
+		}
 //		cout << "EXE = " << exu->power.readOp.dynamic*clockRate  << " W" << endl;
 		if (XML->sys.Private_L2)
 		{
@@ -4225,6 +4723,14 @@ void Core::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
 //				cout <<endl;
 //			}
 //		}
+		/* PIMID 1.12.18: the clock network as its own line. */
+		cout << indent_str << "Clock Network:" << endl;
+		cout << indent_str_next << "Peak Dynamic = " << clockNetwork.power.readOp.dynamic*clockRate << " W" << endl;
+		cout << indent_str_next << "Subthreshold Leakage = "
+			<< (long_channel? clockNetwork.power.readOp.longer_channel_leakage:clockNetwork.power.readOp.leakage) << " W" << endl;
+		cout << indent_str_next << "Gate Leakage = " << clockNetwork.power.readOp.gate_leakage << " W" << endl;
+		cout << indent_str_next << "Runtime Dynamic = " << clockNetwork.rt_power.readOp.dynamic/executionTime << " W" << endl;
+		cout << endl;
 		if (XML->sys.Private_L2)
 		{
 
@@ -4293,6 +4799,9 @@ LoadStoreU ::~LoadStoreU(){
 	if (!exist) return;
 	if(LSQ) 	               {delete LSQ; LSQ = 0;}
 	if(LoadQ) 	               {delete LoadQ; LoadQ = 0;}
+	if(dma_lbuf)               {delete dma_lbuf; dma_lbuf = 0;}
+	if(dma_regs)               {delete dma_regs; dma_regs = 0;}
+	if(dma_adder)              {delete dma_adder; dma_adder = 0;}
 }
 
 MemManU ::~MemManU(){

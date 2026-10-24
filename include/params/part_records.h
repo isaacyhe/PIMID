@@ -38,7 +38,21 @@ struct IddRow {
     double trfc_ns = 0.0, trefi_ns = 0.0;
     std::string source;
     bool has_iddq = false; double iddq3n = -1.0, iddq4r = -1.0, iddq4w = -1.0, vddq = -1.0; std::string iddq_source;   // VDDQ rail, when published
+    /* 1.12.18: optional iddq.wr_includes_rtt_wr (+ wr_rtt_source):
+     * IDDQ4W was measured with the DRAM's RTT_WR enabled, so the write DC
+     * termination current is inside it. */
+    bool iddq_wr_includes_rtt_wr = false; std::string iddq_wr_rtt_source;
     bool has_ipp = false;  double ipp2n = -1.0, ipp3n = -1.0, vpp = -1.0; std::string ipp_source;                      // VPP rail, when published
+    double ipp0 = -1.0, ipp4r = -1.0, ipp4w = -1.0, ipp5b = -1.0;   // 1.12.18 (bug 3b): the VPP active rows, when published (optional in ipp)
+    /* 1.12.18 (bug 2b/8a): the I/O-equivalent share inside idd4r / idd4w of a
+     * row that carries one (optional block idd.io_share). */
+    bool has_io_share = false; double idd4r_io = -1.0, idd4w_io = -1.0; std::string io_share_provenance, io_share_source;
+    /* 1.12.18 (user ruling 2026-10-23, "Re-derive I/O share"): an io_share ANCHORED on a published
+     * I/O energy carries the anchor (pJ/bit per direction) and the channel rate its mA were computed at.
+     * The loader checks idd4r_ma = anchor_read_pj_bit x channel_gbps / vdd (and the write) to 0.05 mA,
+     * and the energy model prices a DQ-crossing access's I/O at this share. All four keys or none. */
+    bool io_share_anchored = false; double io_anchor_rd_pj_bit = -1.0, io_anchor_wr_pj_bit = -1.0, io_channel_gbps = -1.0;
+    std::string io_anchor_source;
 };
 struct IddBlock {
     std::string basis;                 // "per device" | "per channel"
@@ -48,6 +62,28 @@ struct IddBlock {
     std::map<int, IddRow> by_grade;    // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
     double e_actpre_pj_override = -1.0;   // GDDR6: the IDD7-route activation energy, pJ
     double stack_floor_mw = -1.0;         // HBM: the per-stack static floor, mW
+    /* 1.12.18 (user ruling 2026-10-24, option 5): WHAT LOOP THE ROW'S idd0 IS. HBM records
+     * must say ONE_PC_PER_TRC: one 1 KB pseudo-channel activation per tRC per channel, the
+     * loop the SAFARI base ran. The JEDEC IDD0 loops (JESD235D Table 60, JESD238B.01
+     * Table 85) activate PC0 AND PC1 every nRC, i.e. two pages per tRC; such a value
+     * must be converted before it is entered (the loader refuses any other label). */
+    std::string idd0_loop;
+    /* 1.12.18 (user ruling 2026-10-24): HBM activation VPP priced as a RATIO of the VDD
+     * activate energy (Xilinx XPE 2023.1.2 HBM_Data VPP Activate / VDD activate (read)),
+     * DERIVED; alt_* is the other XPE stack column, printed beside it. Refused together
+     * with an ipp.ipp0 row (that would price the VPP activation twice). */
+    bool has_vpp_act = false;
+    double vpp_act_ratio = -1.0, vpp_act_alt_ratio = -1.0;
+    std::string vpp_act_device, vpp_act_alt_device, vpp_act_provenance, vpp_act_source;
+    /* 1.12.18 (user ruling 2026-10-24): activate+precharge guard per 1 KB row, nJ (printed, never priced) */
+    bool has_act_guard = false;
+    double act_guard_lo = -1.0, act_guard_ceiling = -1.0, act_guard_hi = -1.0;
+    std::string act_guard_source;
+    /* 1.12.18 (user ruling 2026-10-24, floor option 2): like-for-like XPE background guard per stack, mW
+     * (DRAM VDD + VDDQ + VPP rails; printed by readEnergyGuardLines, never priced) */
+    bool has_bg_guard = false;
+    double bg_guard_lo_mw = -1.0, bg_guard_hi_mw = -1.0;
+    std::string bg_guard_source;
 };
 struct ComponentFactorsRec {           // typical / maximum per component; apply = false for a measured row
     bool apply = false;
@@ -60,6 +96,15 @@ struct TerminationRec {                // DQ termination scheme and electricals;
     std::string source;
 };
 struct IddqBandRec { bool valid = false; double lo = 0.0, hi = 0.0; std::string source; };   // HBM VDDQ I/O band, pJ/bit
+/* 1.12.18 (user ruling 2026-10-23): published whole-device read energy of older generations, a GUARD
+ * printed against the model's derived total read energy (never priced, never tuned). */
+struct ReadEnergyGuardRec {
+    bool valid = false;
+    struct Ref { std::string label; double pj_bit = 0.0; std::string source; };
+    std::vector<Ref> references;
+    double max_generation_gain = 0.0;   // expected band per reference: [(1 - gain) x pj_bit, pj_bit]
+    std::string gain_source;
+};
 
 /* The DRAM part record. Field names mirror the YAML keys. */
 struct DramPartRecord {
@@ -83,6 +128,7 @@ struct DramPartRecord {
     ComponentFactorsRec component_factors;
     TerminationRec termination;
     IddqBandRec iddq_band;
+    ReadEnergyGuardRec read_energy_guard;   // 1.12.18: optional (HBM3)
 };
 
 /* The directory the records are read from: $PIMID_PARAMS when set, else the
@@ -101,6 +147,9 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
 void registerDramPartRecord(const DramPartRecord& rec);
 const DramPartRecord& dramPartRecord(const std::string& tech);
 bool hasDramPartRecord(const std::string& tech);
+/* 1.12.18: the data rate (MT/s) the record's timing preset names ("DDR5_5600B" -> 5600); 0 when the name
+ * carries none. The one place a code site that is not a Ramulator wrapper reads the record's DDR5 grade. */
+int dramRecordGradeMTs(const std::string& tech);
 /* The record's internal consistency (there is no table left to compare
  * with): the channel width is a power of two from 16 to 256 bits, the ladder
  * rises in temperature with factors in (0, 1], an HBM record's die capacity
@@ -150,6 +199,11 @@ struct CoreTypeRecord {
      * element (pim.pe.branch_predictor, devices[].pim.pe.branch_predictor,
      * hosts[].branch_predictor); this is the value where none is set. */
     std::string branch_predictor;
+    /* 1.12.18: the first-level TLB geometry of the core the
+     * timing model mirrors (ooo only; -1 = not carried). Derivation and
+     * citations in params/core/default.yaml. */
+    int itlb_entries = -1, itlb_large_entries = -1, dtlb_entries = -1, dtlb_large_entries = -1;
+    int tlb_associativity = -1, stlb_entries = -1;
 };
 struct CoreRecord {
     std::string file, record;

@@ -114,7 +114,11 @@ class Cache : public BaseCache {
          * flush walks holds Cache*, so the override only runs if the call
          * dispatches -- it did not, and nothing said so. See
          * FilterCache::flushDirtyLines for the mechanism and the bound. */
-        virtual uint64_t flushDirtyLines(std::unordered_set<Address>& distinctDirty);
+        /* 1.12.18: `order`, when given, receives each newly found dirty
+         * address in the order the walk meets it (this cache's line ids:
+         * set-major for a set-associative array) -- the order a hardware
+         * flush writes the lines back. */
+        virtual uint64_t flushDirtyLines(std::unordered_set<Address>& distinctDirty, std::vector<Address>* order = nullptr);
 
         //NOTE: reqWriteback is pulled up to true, but not pulled down to false.
         virtual uint64_t invalidate(const InvReq& req) {

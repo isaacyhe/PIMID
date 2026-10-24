@@ -34,6 +34,8 @@
 #include "decoder.h"
 #include "parameter.h"
 #include "array.h"
+/* PIMID 1.12.18: set from sys param pimid_layout_energy_overhead (XML_Parse.cc). */
+int pimid_layout_energy_overhead_g = 1;
 #include <iostream>
 #include <math.h>
 #include <cmath>
@@ -93,6 +95,8 @@ static void report_array_clamp(const std::string& name, const ArrayClampNote &cn
 	pimid_note_substitution(PIMID_SUBST_ARRAY, name, os.str());
 }
 
+std::vector<PimidArrayTiming> g_pimid_array_timing;   // PIMID 1.12.18
+
 ArrayST::ArrayST(const InputParameter *configure_interface,
 		               string _name,
 		               enum Device_ty device_ty_,
@@ -119,6 +123,9 @@ ArrayST::ArrayST(const InputParameter *configure_interface,
 		throw std::runtime_error("McPAT/CACTI: ArrayST::error_checking() rejected parameters");
 	}
 	optimize_array();
+	/* PIMID 1.12.18: record the chosen solution's timing */
+	g_pimid_array_timing.push_back(PimidArrayTiming{name, local_result.access_time, local_result.cycle_time,
+	                                                l_ip.throughput, l_ip.latency, local_result.valid});
 
 }
 
@@ -310,7 +317,14 @@ void ArrayST::optimize_array()
 	local_result.area *= total_overhead;
 
 	//maintain constant power density
-	double pppm_t[4]    = {total_overhead,1,1,total_overhead};
+	/* PIMID 1.12.18 (user ruling 2026-10-24): macro x chip layout overheads are
+	 * AREA overheads (place-and-route); upstream also scaled dynamic and
+	 * short-circuit energy by them 'to maintain constant power density' with no
+	 * published basis, and PIMID's direct CACTI pricing never applies it. Off
+	 * unless power.models.mcpat_layout_energy_overhead: true. Area keeps them;
+	 * sckt_co_eff (short-circuit, published) is unchanged. */
+	const double e_overhead = pimid_layout_energy_overhead_g ? total_overhead : 1.0;
+	double pppm_t[4]    = {e_overhead,1,1,e_overhead};
 
 	double sckRation = g_tp.sckt_co_eff;
 	local_result.power.readOp.dynamic *= sckRation;
@@ -399,7 +413,9 @@ void ArrayST::leakage_feedback(double temperature)//TODO: add the code to proces
   double chip_PR_overhead        = g_tp.chip_layout_overhead;
   double total_overhead          = macro_layout_overhead*chip_PR_overhead;
 
-  double pppm_t[4]    = {total_overhead,1,1,total_overhead};
+  /* PIMID 1.12.18 (user ruling 2026-10-24): as in optimize_array above. */
+  const double e_overhead = pimid_layout_energy_overhead_g ? total_overhead : 1.0;
+  double pppm_t[4]    = {e_overhead,1,1,e_overhead};
 
   double sckRation = g_tp.sckt_co_eff;
   local_result.power.readOp.dynamic *= sckRation;

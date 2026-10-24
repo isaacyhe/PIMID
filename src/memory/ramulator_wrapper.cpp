@@ -54,9 +54,14 @@ RamulatorWrapper::RamulatorWrapper(const std::string& config_path, const std::st
 
 bool        RamulatorWrapper::s_run_knobs_set_ = false;
 std::string RamulatorWrapper::s_run_device_width_;
-int         RamulatorWrapper::s_run_ddr5_grade_mtps_ = 4800;
+int         RamulatorWrapper::s_run_ddr5_grade_mtps_ = 0;   // 1.12.18: 0 = the part record's grade (was the literal 4800)
 int         RamulatorWrapper::s_run_temperature_k_ = 358;
 double      RamulatorWrapper::s_run_termination_pj_per_bit_ = -1.0;
+
+int RamulatorWrapper::runDdr5GradeMTs() {   // 1.12.18
+    if (s_run_knobs_set_ && s_run_ddr5_grade_mtps_ > 0) return s_run_ddr5_grade_mtps_;
+    return pimid::params::dramRecordGradeMTs("DDR5");
+}
 
 void RamulatorWrapper::setRunWideKnobs(const std::string& device_width, int ddr5_grade_mtps,
                                        int temperature_k, double termination_pj_per_bit) {
@@ -901,10 +906,16 @@ void RamulatorWrapper::initialize() {
             const pimid::params::IddRow& r = kv.second;
             Ramulator::pimid_energy::IDDSpec s{r.vdd, r.idd0, r.idd2n, r.idd3n, r.idd4r, r.idd4w, r.idd5,
                                               r.trfc_ns, r.trefi_ns, rec.idd.channels_basis, r.idd2p};
-            if (r.has_iddq) { s.iddq3n = r.iddq3n; s.iddq4r = r.iddq4r; s.iddq4w = r.iddq4w; s.vddq = r.vddq; }
-            if (r.has_ipp)  { s.ipp2n = r.ipp2n; s.ipp3n = r.ipp3n; s.vpp = r.vpp; }
+            if (r.has_iddq) { s.iddq3n = r.iddq3n; s.iddq4r = r.iddq4r; s.iddq4w = r.iddq4w; s.vddq = r.vddq;
+                              s.iddq_wr_includes_rtt_wr = r.iddq_wr_includes_rtt_wr; }   // 1.12.18
+            if (r.has_ipp)  { s.ipp2n = r.ipp2n; s.ipp3n = r.ipp3n; s.vpp = r.vpp;
+                              s.ipp0 = r.ipp0; s.ipp4r = r.ipp4r; s.ipp4w = r.ipp4w; s.ipp5b = r.ipp5b; }   // 1.12.18 (bug 3b)
+            if (r.has_io_share) { s.idd4r_io = r.idd4r_io; s.idd4w_io = r.idd4w_io; }   // 1.12.18 (bug 2b/8a)
+            if (r.io_share_anchored) { s.io_anchor_rd_pj_bit = r.io_anchor_rd_pj_bit; s.io_anchor_wr_pj_bit = r.io_anchor_wr_pj_bit;
+                                       s.io_channel_gbps = r.io_channel_gbps; }   // 1.12.18 (user ruling 2026-10-23)
             s.e_actpre_pJ_override = rec.idd.e_actpre_pj_override;
             s.stack_floor_mw = rec.idd.stack_floor_mw;
+            if (rec.idd.has_vpp_act) s.vpp_act_ratio = rec.idd.vpp_act_ratio;   // 1.12.18 (user ruling 2026-10-24)
             pf.rows[kv.first] = s;
         }
         pf.provenance = rec.idd.provenance; pf.idd3n_bank_state = rec.idd.idd3n_bank_state;
@@ -924,6 +935,17 @@ void RamulatorWrapper::initialize() {
         pf.termination.vddq = rec.termination.vddq; pf.termination.ron_rd = rec.termination.ron_rd; pf.termination.rtt_rd = rec.termination.rtt_rd;
         pf.termination.ron_wr = rec.termination.ron_wr; pf.termination.rtt_wr = rec.termination.rtt_wr;
         pf.iddq_band.valid = rec.iddq_band.valid; pf.iddq_band.lo_pj_bit = rec.iddq_band.lo; pf.iddq_band.hi_pj_bit = rec.iddq_band.hi;
+        pf.read_guard.valid = rec.read_energy_guard.valid;   // 1.12.18 (user ruling 2026-10-23): guard only
+        pf.read_guard.max_gain = rec.read_energy_guard.max_generation_gain;
+        for (const auto& g : rec.read_energy_guard.references) pf.read_guard.refs.emplace_back(g.label, g.pj_bit);
+        /* 1.12.18 (user ruling 2026-10-24): the activation VPP ratio's labels and the ACT guard (printed only) */
+        if (rec.idd.has_vpp_act) { pf.vpp_act.valid = true; pf.vpp_act.alt_ratio = rec.idd.vpp_act_alt_ratio;
+                                   pf.vpp_act.device = rec.idd.vpp_act_device; pf.vpp_act.alt_device = rec.idd.vpp_act_alt_device;
+                                   pf.vpp_act.provenance = rec.idd.vpp_act_provenance; }
+        if (rec.idd.has_bg_guard) { pf.bg_guard.valid = true; pf.bg_guard.lo_mw = rec.idd.bg_guard_lo_mw;   // 1.12.18 (floor option 2)
+                                    pf.bg_guard.hi_mw = rec.idd.bg_guard_hi_mw; }
+        if (rec.idd.has_act_guard) { pf.act_guard.valid = true; pf.act_guard.lo = rec.idd.act_guard_lo;
+                                     pf.act_guard.ceiling = rec.idd.act_guard_ceiling; pf.act_guard.hi = rec.idd.act_guard_hi; }
         pf.default_grade = gradeOfTimingName(rec.timing_preset);   // 1.11.105: the row a bare key takes (DDR5)
         pf.set = true;
         Ramulator::pimid_energy::setPartIddFacts(dt, pf);   // 1.11.105 (IDD-RECORDS step 2): the record is the source
@@ -933,6 +955,56 @@ void RamulatorWrapper::initialize() {
                 std::cout << "[params] " << dt << " idd: " << pf.provenance << " row (" << pf.basis << ", " << pf.idd3n_bank_state
                           << ", " << pf.rows.size() << " grade row(s)): the record is the source (IDD-RECORDS step 2, 1.11.105)"
                           << std::endl;
+        }
+        {   /* 1.12.18: what the record's new columns do in this run (bugs 2b/8a, 3b) */
+            static std::set<std::string> said_new;
+            if (said_new.insert(dt).second) {
+                const bool io_on = Ramulator::pimid_energy::ioShareSplitEnabled();
+                const bool vpp_on = Ramulator::pimid_energy::vppDynamicEnabled();
+                if (rec.idd.has_vpp_act)   // 1.12.18 (user ruling 2026-10-24)
+                    std::cout << "[params] " << dt << " VPP activate: " << (vpp_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false)")
+                              << " as " << rec.idd.vpp_act_ratio << " x the VDD activate+precharge energy (" << rec.idd.vpp_act_provenance
+                              << ", record idd.vpp_act: " << rec.idd.vpp_act_device << "; the other stack column, " << rec.idd.vpp_act_alt_device
+                              << ", would give " << rec.idd.vpp_act_alt_ratio << "). No other VPP term is priced for this record (no ipp rows)."
+                              << " idd0 is a " << rec.idd.idd0_loop << " current (record idd.idd0_loop: one 1 KB pseudo-channel page per tRC,"
+                              << " NOT the JEDEC two-PC IDD0 loop)" << std::endl;
+                for (const auto& kv : rec.idd.by_grade) {
+                    const pimid::params::IddRow& r = kv.second;
+                    const std::string row = kv.first ? dt + " (" + std::to_string(kv.first) + " MT/s row)" : dt;
+                    if (r.has_io_share)
+                        std::cout << "[params] " << row << ": idd4r/idd4w carry an I/O-equivalent share of " << r.idd4r_io << "/"
+                                  << r.idd4w_io << " mA (" << r.io_share_provenance << ", record idd.io_share). "
+                                  << (io_on ? (r.io_share_anchored
+                                              ? "The array burst is charged without it; the DQ I/O of an access that crosses the pins is priced"
+                                                " once, AT THIS SHARE (anchored on a published I/O energy, record idd.io_share.anchor_*;"
+                                                " reads and writes; the iddq column of the report carries it) (power.models.dram_io_share_split)"
+                                              : "The array burst is charged without it; the DQ I/O of an access that crosses the pins is priced"
+                                                " once, by the IDDQ term (power.models.dram_io_share_split)")
+                                            : "Kept inside every burst BY USER OPTION (power.models.dram_io_share_split: false): a"
+                                              " crossing access also pays the IDDQ term, so its I/O is counted twice")
+                                  << std::endl;
+                    if (dt != "DDR4" && dt != "DDR5") continue;   // the VPP active rows were checked for these records
+                    if (!r.has_ipp) {
+                        std::cout << "[params] " << row << " VPP rail (IPP0, IPP4R, IPP4W, IPP5B): NO PUBLISHED SOURCE FOUND"
+                                     " (the row cites no IPP table); not priced" << std::endl;
+                        continue;
+                    }
+                    std::string miss;
+                    if (r.ipp0 < 0.0) miss += " IPP0";
+                    if (r.ipp4r < 0.0) miss += " IPP4R";
+                    if (r.ipp4w < 0.0) miss += " IPP4W";
+                    if (r.ipp5b < 0.0) miss += " IPP5B";
+                    auto mA = [](double v) { return v < 0.0 ? std::string("n/a") : std::to_string(v).substr(0, std::to_string(v).find('.') + 2); };
+                    std::cout << "[params] " << row << " VPP active rows IPP0/IPP4R/IPP4W/IPP5B = " << mA(r.ipp0) << "/" << mA(r.ipp4r)
+                              << "/" << mA(r.ipp4w) << "/" << mA(r.ipp5b) << " mA at VPP " << r.vpp << " V: "
+                              << (vpp_on ? "priced in the activate, burst and refresh terms (power.models.dram_vpp_dynamic)"
+                                         : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false); standby IPP only")
+                              << std::endl;
+                    if (!miss.empty())
+                        std::cout << "[params] " << row << ":" << miss << ": NO PUBLISHED SOURCE FOUND in the row's cited source ("
+                                  << r.ipp_source << "); not priced" << std::endl;
+                }
+            }
         }
     }
     parseConfiguration();
@@ -1193,6 +1265,25 @@ void RamulatorWrapper::initialize() {
         }
     }
 
+    /* 1.12.18 (user ruling 2026-10-23): the record's GUARD lines (derived
+     * total read energy vs published older-generation figures; the anchored
+     * I/O vs the IDDQ band), computed in the energy backend from this
+     * wrapper's own timings. Once per technology, never from a reference
+     * anchor (an HBM3 anchor inside another technology's run is not an HBM3
+     * run). Report only: nothing is priced or adjusted here. */
+    if (!anchor_quiet_) {
+        std::string dt = dram_type_;
+        std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
+        static std::set<std::string> guard_said;
+        if (guard_said.insert(dt).second) {
+            for (const auto& line : Ramulator::pimid_energy::readEnergyGuardLines(
+                     energyKey(), getTRC(), getTRAS(), getAccessBurstNs(), device_width_,
+                     static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()),
+                     static_cast<double>(getRowStrideBytes())))
+                std::cout << line << std::endl;
+        }
+    }
+
     current_cycle_ = 0;
     resetStats();
 }
@@ -1281,7 +1372,11 @@ std::string RamulatorWrapper::energyKey() const {
 }
 
 void RamulatorWrapper::setDdr5SpeedGrade(int mtps) {
-    if (mtps == 0) { ddr5_grade_mtps_ = 0; return; }   // 1.11.101: unset -> the part record's grade (effectiveDdr5GradeMTs)
+    /* 1.11.101: unset -> the part record's grade (effectiveDdr5GradeMTs). 1.12.18: unset at a call site means
+     * "the run's knob": when main has recorded a run-wide grade, 0 keeps it (a site that passes no grade used to
+     * pass the literal 4800, which equalled the record by coincidence; with the record at 5600 it would have
+     * silently priced a 4800 run at 5600, or the default at 4800). */
+    if (mtps == 0) { ddr5_grade_mtps_ = s_run_knobs_set_ ? s_run_ddr5_grade_mtps_ : 0; return; }
     if (mtps != 3200 && mtps != 4800 && mtps != 5600) {
         std::cerr << "[mem] FATAL: memory.dram.ddr5_speed_grade = " << mtps
                   << " is not one of 3200 / 4800 / 5600 -- the three grades for "
@@ -1432,7 +1527,7 @@ void RamulatorWrapper::parseConfiguration() {
         std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
 
         // Helper lambda: generate Ramulator2 YAML config
-        auto makeConfig = [](const std::string& dram_impl, const std::string& org_preset,
+        auto makeConfig = [this](const std::string& dram_impl, const std::string& org_preset,
                             const std::string& timing_preset) -> std::string {
             /* 1.11.66: DDR5's impl REQUIRES the RFM param group (it throws
              * "ParamGroup RFM is not specified" otherwise). main.cpp's co-sim
@@ -1463,9 +1558,10 @@ void RamulatorWrapper::parseConfiguration() {
                    "  DRAM:\n    impl: " + dram_impl + "\n    org:\n      preset: " + org_preset +
                    "\n      channel_width: " + cw +
                    "\n    timing:\n      preset: " + timing_preset + rfm +
-                   "\n  Controller:\n    impl: Generic\n    Scheduler:\n      impl: FRFCFS\n"
+                   "\n  Controller:\n    impl: Generic\n" + writeDrainYaml(wr_high_, wr_low_) +   // 1.12.18 (write drain)
+                   "    Scheduler:\n      impl: FRFCFS\n"
                    "    RefreshManager:\n      impl: AllBank\n"
-                   "    RowPolicy:\n      impl: ClosedRowPolicy\n      cap: 4\n"
+                   + rowPolicyYaml(dram_impl, row_idle_timeout_, row_closed_mode_) +   // 1.12.18 (row policy ruling): was ClosedRowPolicy cap 4 for every technology
                    "  AddrMapper:\n    impl: RoBaRaCoCh\n";
         };
 
@@ -2057,6 +2153,12 @@ double RamulatorWrapper::getArrayWriteEnergyNJ() const {
          * all-bank IDD3N the datasheet specifies. */
         static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()));
 }
+double RamulatorWrapper::getActivatePrechargeEnergyNJ() const {   // 1.12.18
+    return Ramulator::pimid_energy::activatePrechargeNJ(
+        energyKey(), getTRC(), getTRAS(), energy_bank_override_pJ_per_byte_, device_width_,
+        static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()))
+        / static_cast<double>(pe_chip_split_);   // 1.12.18: one chip's ACT when the chips are split
+}
 double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
     /* 1.11.40 (audit N8, user ruling: harness the model, do not table the
      * answer). The DQ termination energy now comes from CACTI-IO -- a real
@@ -2337,13 +2439,53 @@ double RamulatorWrapper::getRefreshPowerMW() const {
 }
 /* 1.11.98 (sweep-94 row 28, user ruling (c) 2026-10-03): the energy of ONE
  * refresh command on one IDD-bearing unit, from the same datasheet row the
- * refresh duty uses: vdd x (IDD5 - IDD3N) x tRFC. mW x ns = pJ -> nJ. With the
+ * refresh duty uses: vdd x (IDD5 - IDD2N) x tRFC (1.12.18, user ruling 2026-10-23: IDD2N baseline, the
+ * refresh interrupts the state; was IDD3N) + the VPP (IPP5B - IPP2N) term. mW x ns = pJ -> nJ. With the
  * controller replayed per epoch (ruling 4 (c)) the refresh commands are
  * COUNTED, and the refresh energy is count x this, instead of the duty
  * tRFC/tREFI assumed always on. */
 double RamulatorWrapper::getRefreshEnergyPerCommandNJ() const {
-    Ramulator::pimid_energy::IDDSpec s = Ramulator::pimid_energy::iddFor(energyKey(), temperature_k_);
-    return s.vdd * (s.idd5 - s.idd3n) * s.trfc_ns / 1000.0;
+    /* 1.12.18: the energy model's own figure (it now carries the VPP refresh,
+     * bug 3b); this restated the VDD formula. */
+    return Ramulator::pimid_energy::refreshEnergyPerCommandNJ(energyKey(), temperature_k_);
+}
+void RamulatorWrapper::setEnergyModelSwitches(bool io_share_split, bool vpp_dynamic) {   // 1.12.18
+    Ramulator::pimid_energy::ioShareSplitEnabled() = io_share_split;
+    Ramulator::pimid_energy::vppDynamicEnabled() = vpp_dynamic;
+}
+void RamulatorWrapper::setIddqWriteTerminationOnce(bool on) {   // 1.12.18
+    Ramulator::pimid_energy::iddqWriteTerminationOnceEnabled() = on;
+}
+bool RamulatorWrapper::getIddqWriteIncludesTermination() const {   // 1.12.18
+    return Ramulator::pimid_energy::iddqWriteIncludesTermination(energyKey());
+}
+/* 1.12.18 (ruling 17 / R0605): thin calls into the energy model. */
+double RamulatorWrapper::getActivateEnergyNJ() const {
+    return Ramulator::pimid_energy::activateEnergyNJ(
+        energyKey(), getTRC(), getTRAS(), getAccessBurstNs(), energy_bank_override_pJ_per_byte_,
+        device_width_, static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()));
+}
+double RamulatorWrapper::getCountedActivatesNJ(uint64_t activates) const {
+    return static_cast<double>(activates) * getActivateEnergyNJ() / static_cast<double>(pe_chip_split_);   // 1.12.18: per-chip ACTs
+}
+double RamulatorWrapper::getCountedRefreshSystemMW(uint64_t refreshes, uint64_t dram_ticks,
+                                                   const std::string& device_width,
+                                                   int ranks_per_channel, int channels) const {
+    return Ramulator::pimid_energy::countedRefreshSystemMW(energyKey(), temperature_k_, refreshes,
+        static_cast<double>(dram_ticks) * getTckNs(), device_width, ranks_per_channel, channels)
+        / static_cast<double>(pe_chip_split_);   // 1.12.18: a REF command per chip
+}
+double RamulatorWrapper::getCountedRefreshSystemMWOverNs(uint64_t refreshes, double span_ns,
+                                                         const std::string& device_width,
+                                                         int ranks_per_channel, int channels) const {
+    return Ramulator::pimid_energy::countedRefreshSystemMW(energyKey(), temperature_k_, refreshes,
+        span_ns, device_width, ranks_per_channel, channels)
+        / static_cast<double>(pe_chip_split_);   // 1.12.18: a REF command per chip
+}
+double RamulatorWrapper::getRefreshDutySystemMW(const std::string& device_width,
+                                                int ranks_per_channel, int channels) const {
+    return Ramulator::pimid_energy::refreshDutySystemMW(energyKey(), temperature_k_, device_width,
+                                                        ranks_per_channel, channels);
 }
 double RamulatorWrapper::getTckNs() const {
     return (dram_arch_ && dram_arch_->timing.clock_freq_mhz > 0.0) ? 1000.0 / dram_arch_->timing.clock_freq_mhz : 0.0;
@@ -2428,7 +2570,7 @@ double RamulatorWrapper::getIddqEnergyNJ(bool is_write, bool* is_band,
                                          double* band_hi_nj) const {
     const auto b = Ramulator::pimid_energy::iddqBandFor(
         Ramulator::pimid_energy::baseTech(energyKey()));
-    if (is_band) *is_band = b.valid;
+    if (is_band) *is_band = b.valid && !Ramulator::pimid_energy::dqIoFromAnchoredShare(energyKey());   // 1.12.18: an anchored share is a value, the band its guard
     return Ramulator::pimid_energy::iddqNJ(energyKey(), device_width_,
                                            getAccessBurstNs(), is_write,
                                            band_lo_nj, band_hi_nj);
@@ -2595,7 +2737,8 @@ void RamulatorWrapper::enablePIMSupport(const std::string& dram_type) {
         std::cout << "Using DDR4-2400 architecture specs\n";
     } else if (dram_type_ == "DDR5") {
         dram_arch_ = pimid::memory::createDDR5_4800_Verified();
-        std::cout << "Using DDR5-4800 architecture specs\n";
+        // 1.12.18: the object's rate and timings are stamped from the preset the record/knob selects; no grade is named here
+        std::cout << "Using DDR5 architecture specs (rate/timings stamped from the selected preset)\n";
         std::cout << "  Key DDR5 features: 16n prefetch, 8 bank groups, dual subchannels\n";
     } else if (dram_type_ == "HBM2") {
         dram_arch_ = pimid::memory::createHBM2_Verified();
@@ -2988,6 +3131,32 @@ int RamulatorWrapper::getBurstsPerAccess() const {
 }
 double RamulatorWrapper::getAccessBurstNs() const {
     return static_cast<double>(getBurstsPerAccess()) * getTBurst();
+}
+/* 1.12.18 (user ruling 2026-10-24, "DRAM row policy") */
+const char* RamulatorWrapper::hostRowPolicyName(const std::string& tech) {
+    std::string t = tech;
+    std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+    if (t == "DDR5") return "closed";                    // Lenovo Press LP1836 p.12: DDR5 Xeon SP "Closed (Default)"
+    if (t == "DDR4" || t == "DDR3") return "timeout";    // Intel adaptive (LP1477 p.18, DDR4; no timer published);
+                                                         // AMD BKDG 42301 p.307-308 (DDR3): closed after 128 clocks idle
+    return "open";                                       // LPDDR5, GDDR6, HBM2, HBM3: no published host default found
+}
+/* 1.12.18 (user ruling 2026-10-24, write drain): see kWriteHighWatermark. */
+std::string RamulatorWrapper::writeDrainYaml(double high, double low) {
+    std::ostringstream o;
+    o.precision(17);
+    o << "    wr_high_watermark: " << high << "\n"
+      << "    wr_low_watermark: " << low << "\n";
+    return o.str();
+}
+std::string RamulatorWrapper::rowPolicyYaml(const std::string& tech, int host_idle_timeout_clocks,
+                                            const std::string& host_closed_mode) {
+    std::ostringstream o;
+    o << "    RowPolicy:\n      impl: PimidSourceRowPolicy\n"
+      << "      host: " << hostRowPolicyName(tech) << "\n"
+      << "      host_closed_mode: " << (host_closed_mode.empty() ? std::string("auto_precharge") : host_closed_mode) << "\n"
+      << "      host_idle_timeout: " << (host_idle_timeout_clocks > 0 ? host_idle_timeout_clocks : 128) << "\n";
+    return o.str();
 }
 uint64_t RamulatorWrapper::getRowStrideBytes() const {
     if (!preset_org_.valid) return 0;

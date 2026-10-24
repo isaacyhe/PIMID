@@ -27,6 +27,9 @@
 #include <unordered_map>
 #include <map>   // 1.11.97: barrier-generation table
 #include <mutex>
+#include <elf.h>      // 1.12.18: libgomp .dynsym (PIM runtime primitives)
+#include <string>
+#include <vector>
 
 /* QEMU plugin API (C interface) */
 extern "C" {
@@ -56,6 +59,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #include "cache.h"   // 1.11.40 (N7): zsimAllCaches; 1.11.57 (D001-D003): flushDirtyLines
 #include "zsim.h"
 #include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
+#include "pe_memory_interface.h"  // 1.12.18 (ruling 2026-10-24): singleProcCut / cutRoiRel
+#include "mem_ctrls.h"           // 1.12.18 (bug 7): SimpleMemory::flushWriteback
 #include "ooo_core.h"     // CtrlFlowKind codes for the branch/indirect feed
 #include "x86_decoder.h"  // minimal x86-64 decoder -> DynUops for the real OOO path
 
@@ -216,6 +221,8 @@ static bool in_zsim[MAX_VCPUS];
 /* ROI state -- set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
 static std::atomic<bool> in_roi{true};              /* true = record; default on for non-ROI workloads */
 static void roiRebaseTrafficCounters(const char* where);   // 1.11.90, defined below
+static void rtRoiSnapshot();   // 1.12.18: PIM runtime primitives, defined below
+static void rtPrintStats();
 static bool threadMpiMode();   // 1.11.92: g_mpi_thread_mode, which is declared below
 // 1.6 thread-MPI: N rank-threads each bracket their own ROI in ONE process.
 // Baselines snapshot at the FIRST begin; termination fires at the LAST end.
@@ -229,6 +236,9 @@ static std::atomic<uint64_t> roi_transition_count{0};
 #define ZSIM_MAGIC_OP_WORK_END      1030
 #define ZSIM_MAGIC_OP_MPI_REGISTER  2048
 #define ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE 2060   /* 1.12.17 (M1): %rdx -> {base, bytes} of transport memory */
+#define ZSIM_MAGIC_OP_SPM_QUERY     2061  /* 1.12.18: %rdx -> pimid_spm_msg_t; returns capacity, staging mode */
+#define ZSIM_MAGIC_OP_SPM_BIND      2062  /* 1.12.18: {base, bytes, cmd} of this thread's scratchpad RAM and DMA command block; {0,0} releases */
+#define ZSIM_MAGIC_OP_SPM_DMA       2063  /* 1.12.18: {dst, src, bytes, dir}: one DMA block transfer */
 #define ZSIM_MAGIC_OP_MPI_SEND      2049
 #define ZSIM_MAGIC_OP_MPI_RECV      2050
 #define ZSIM_MAGIC_OP_MPI_BARRIER   2051
@@ -293,6 +303,26 @@ static std::map<uint64_t, uint64_t> g_barFirstBaseGen;
 static lock_t g_barGenLock = 0;
 static uint64_t g_rankBarGen[MAX_THREADS] = {0};
 
+/* 1.12.18 (bug B3): coherence-flush writebacks issued before the thread-MPI
+ * ROI baseline existed (see chargeCoherenceFlush), sent when it is taken. */
+static std::mutex g_heldFlushMutex;
+struct HeldFlushLine { uint64_t line; uint32_t src; uint64_t offset; };   // 1.12.18: offset into the flush
+static std::vector<HeldFlushLine> g_heldFlush;
+static void flushHeldWritebacks() {
+    std::vector<HeldFlushLine> h;
+    { std::lock_guard<std::mutex> g(g_heldFlushMutex); h.swap(g_heldFlush); }
+    if (h.empty() || !zinfo->flushHostMems || zinfo->flushHostMems->empty()) return;
+    const g_vector<SimpleMemory*>& hm = *zinfo->flushHostMems;
+    const uint64_t n = hm.size();
+    for (const auto& e : h) {
+        const uint32_t src = e.src;
+        const uint64_t cyc = (src < zinfo->numCores && zinfo->cores[src]) ? zinfo->cores[src]->getCycles() : 0;
+        hm[e.line % n]->flushWriteback(e.line / n, cyc + e.offset, src);   // 1.12.18: paced over the flush
+    }
+    info("[roi] %lu coherence-flush writeback(s) of the kernel-entry flush that preceded the ROI baseline sent to the host memory controller at the baseline (inside the ROI) [1.12.18 B3]",
+         (unsigned long)h.size());
+}
+
 /* Snapshot every core's ROI baseline cycle (call right after markRoiBegin). */
 static inline void snapshotRoiBaseCyc() {
     g_roiBaseGen.fetch_add(1);   // 1.11.97: a new origin for roiRelCycles()
@@ -310,6 +340,8 @@ static inline void snapshotRoiBaseCyc() {
     // ROI-relative -- the wall-dependent pre-ROI phase count cannot then shift the
     // ROI epoch boundaries. Set BEFORE mpiNocBaselined so the flag gates cleanly.
     zinfo->hierarchy.mpiNocRoiBasePhase = zinfo->numPhases;
+    zinfo->hierarchy.mpiRoiBaseCyc = mpi_roi_base_cyc;   // 1.12.18 (R2, B3): host cores' ROI origin
+    zinfo->hierarchy.mpiRoiBaseCycN = MAX_THREADS;
     __sync_synchronize();
     zinfo->hierarchy.mpiNocBaselined = 1;
 }
@@ -323,7 +355,9 @@ static inline void snapshotRoiBaseCyc() {
  * like markRoiBegin (re-snapshots the current instant). Prints what it
  * dropped, once per call, so a log shows the window it reports. */
 static void roiRebaseTrafficCounters(const char* where) {
+    rtRoiSnapshot();   // 1.12.18: the PIM runtime statistics window opens with the traffic counters'
     if (zinfo && zinfo->dramReplay) zinfo->dramReplay->markRoi();   // 1.11.98 (gate 1208A): the replay's statistics window opens with the traffic counters'
+    if (zinfo && zinfo->hostDramReplay) zinfo->hostDramReplay->markRoi();   // 1.12.18 (ruling 17 / R0605): the host memory's replay, same window
     if (!zinfo) return;
     uint64_t pre_mem = 0;
     uint32_t groups = 0;
@@ -465,6 +499,9 @@ static bool thread_initialized[MAX_THREADS];            // false until ensureThr
  * getenv; false in per-rank trace-gen processes (PIMID_MPI_RANK set), which
  * keep process-mode semantics. */
 static bool g_mpi_thread_mode = false;
+/* 1.12.18 (ruling 2026-10-24): single-process run priced with the thread-MPI
+ * cut mechanism (PEMemoryInterface::singleProcCut); set at install. */
+static bool g_spCut = false;
 static bool threadMpiMode() { return g_mpi_thread_mode; }
 /* 1.11.19 (D4): emulated MPI rank count, resolved once at install.
  * 1.11.62 (ruling 5b): the coherence flush no longer DIVIDES by this. Every
@@ -585,6 +622,380 @@ static std::atomic<uint64_t> offload_count{0};
  * OFF. This yields the host-only baseline cells (1/4/16 OOO host cores running
  * the unmodified OMP/MPI kernels) from the SAME binary. */
 static bool g_cosim_no_offload = false;
+
+/* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): the
+ * ROI's elapsed time on the global clock (zinfo->roiWall, see zsim.h). A
+ * stamp is the phase clock plus the stamping core's offset in its phase --
+ * PEMemoryInterface::phaseStamp, the axis the DRAM replay records on -- so
+ * a serial run's elapsed time equals its core's cycles exactly and a
+ * blocked shared-memory thread's wait is inside it. */
+static inline uint64_t roiWallStamp(uint32_t tid) {
+    const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+    uint64_t off = 0;
+    if (tid < MAX_THREADS && thread_initialized[tid]) {
+        uint32_t cid = cids[tid];
+        if (cid < zinfo->numCores && zinfo->cores[cid]) off = zinfo->cores[cid]->getCycles() % pl;
+    }
+    return (uint64_t)zinfo->numPhases * pl + off;
+}
+/* 1.12.18 (user ruling 2026-10-23, "sync to waker"): a release stamp per
+ * futex word. FUTEX_WAKE-class ops stamp the word(s) with the waker's clock
+ * at the syscall; a FUTEX_WAIT-class op that returns 0 (woken) syncs the
+ * waiter's clock to the stamp of the word it waited on, at its next Join.
+ * Only device PEs stamp and sync (Core::wakeStampable): their clocks are
+ * their own timelines; the host cores re-base to the global phase clock on
+ * join already. A requeued waiter (FUTEX_CMP_REQUEUE / WAKE_OP) syncs to
+ * the requeue/wake-op stamp on its original word -- a lower bound on the
+ * release it was finally woken by. futex_waitv (449) is not tracked (its
+ * words live in a guest array); none of the shipped kernels' runtimes use
+ * it under the guest glibc (the diagnosis saw only nr 202). Thread-MPI
+ * (g_mpi_thread_mode) is left out: its ranks' waits are modelled by the
+ * transport (frozen-clock waits, the rendezvous re-places the clock from
+ * deterministic arithmetic, roiWall source 2 = the ranks' own clocks); a
+ * futex-driven jump there would make rank time wall-dependent. */
+static const uint32_t kWakeSlots = 8192;   // power of two
+struct WakeStampSlot { uint64_t addr; uint64_t cyc; uint64_t org; };   // 1.12.18: org = the waker's ROI origin (single-process cut)
+static WakeStampSlot g_wakeStamp[kWakeSlots];
+static std::mutex g_wakeMu;
+static uint64_t g_waitWord[MAX_THREADS];          // armed FUTEX_WAIT word, 0 = none
+static uint64_t g_wakeSyncTo[MAX_THREADS];        // pending sync target, 0 = none
+static uint64_t g_wakeSyncOrg[MAX_THREADS];       // 1.12.18: the ROI origin of that target's clock
+static std::atomic<uint64_t> g_wakeSyncN{0}, g_wakeSyncSkip{0}, g_wakeStampN{0}, g_wakeMissN{0};
+static uint64_t g_roiWakeSyncN = 0, g_roiWakeSyncSkip = 0, g_roiWakeStampN = 0, g_roiWakeMissN = 0;
+static inline uint32_t wakeSlotOf(uint64_t a) { return (uint32_t)((a >> 2) * 0x9E3779B97F4A7C15ull >> 51) & (kWakeSlots - 1); }
+static void wakeStampPut(uint64_t addr, uint64_t cyc, uint64_t org = 0) {
+    if (!addr) return;
+    std::lock_guard<std::mutex> g(g_wakeMu);
+    WakeStampSlot& s = g_wakeStamp[wakeSlotOf(addr)];
+    s.addr = addr; s.cyc = cyc; s.org = org;   // the latest release on this word (a collision evicts: no sync, never a wrong one)
+    g_wakeStampN.fetch_add(1, std::memory_order_relaxed);
+}
+static bool wakeStampGet(uint64_t addr, uint64_t& cyc, uint64_t* org = nullptr) {
+    std::lock_guard<std::mutex> g(g_wakeMu);
+    const WakeStampSlot& s = g_wakeStamp[wakeSlotOf(addr)];
+    if (s.addr != addr) return false;
+    cyc = s.cyc; if (org) *org = s.org; return true;
+}
+/* futex op classes (cmd = op & 0x7f: FUTEX_PRIVATE_FLAG 128 and
+ * FUTEX_CLOCK_REALTIME 256 masked off) */
+static void wakeSyncOnFutexEntry(uint32_t tid, uint32_t cid, uint64_t uaddr, uint64_t op, uint64_t uaddr2) {
+    if (g_mpi_thread_mode) return;   // the transport models thread-MPI waits (see above)
+    /* 1.12.18 (ruling 2026-10-24): a single-process thread entering a futex
+     * WAIT is SLEEPING: its core is QUIESCENT (exempt from the consistent cut)
+     * until the thread joins again (Join). */
+    if (g_spCut && cid < MAX_THREADS) {
+        const uint32_t c7 = (uint32_t)(op & 0x7f);
+        if (c7 == 0 || c7 == 9 || c7 == 6 || c7 == 11 || c7 == 13) {
+            uint32_t a = 0;
+            g_coreRoiState[cid].compare_exchange_strong(a, 1);
+        }
+    }
+    if (tid >= MAX_THREADS || cid >= zinfo->numCores || !zinfo->cores[cid] || !zinfo->cores[cid]->wakeStampable()) return;
+    const uint32_t cmd = (uint32_t)(op & 0x7f);
+    switch (cmd) {
+        case 1: case 10: case 7:          // WAKE, WAKE_BITSET, UNLOCK_PI
+            wakeStampPut(uaddr, zinfo->cores[cid]->getCycles(), PEMemoryInterface::spOriginOf(cid)); break;
+        case 3: case 4: case 5: case 12:  // REQUEUE, CMP_REQUEUE, WAKE_OP, CMP_REQUEUE_PI
+            wakeStampPut(uaddr, zinfo->cores[cid]->getCycles(), PEMemoryInterface::spOriginOf(cid));
+            wakeStampPut(uaddr2, zinfo->cores[cid]->getCycles(), PEMemoryInterface::spOriginOf(cid)); break;
+        case 0: case 9: case 6: case 11: case 13:   // WAIT, WAIT_BITSET, LOCK_PI, WAIT_REQUEUE_PI, LOCK_PI2
+            g_waitWord[tid] = uaddr; break;
+        default: break;
+    }
+}
+static void wakeSyncOnFutexReturn(uint32_t tid, int64_t ret) {
+    if (tid >= MAX_THREADS) return;
+    const uint64_t w = g_waitWord[tid];
+    if (!w) return;
+    g_waitWord[tid] = 0;
+    if (ret != 0) return;   // EAGAIN/ETIMEDOUT/EINTR: not woken, nothing to sync to
+    uint64_t c = 0, org = 0;
+    if (wakeStampGet(w, c, &org)) { if (c > g_wakeSyncTo[tid]) { g_wakeSyncTo[tid] = c; g_wakeSyncOrg[tid] = org; } }
+    else g_wakeMissN.fetch_add(1, std::memory_order_relaxed);
+}
+static void wakeSyncApply(uint32_t tid, uint32_t cid) {
+    if (tid >= MAX_THREADS || !g_wakeSyncTo[tid]) return;
+    const uint64_t t = g_wakeSyncTo[tid];
+    g_wakeSyncTo[tid] = 0;
+    if (cid >= zinfo->numCores || !zinfo->cores[cid] || !zinfo->cores[cid]->wakeStampable()) return;
+    const uint64_t sk = zinfo->cores[cid]->syncToWaker(t);
+    if (sk) { g_wakeSyncN.fetch_add(1, std::memory_order_relaxed); g_wakeSyncSkip.fetch_add(sk, std::memory_order_relaxed); }
+    if (sk && g_spCut && zinfo->hierarchy.mpiNocBaselined) PEMemoryInterface::spSetOrigin(cid, g_wakeSyncOrg[tid]);   // 1.12.18: the clock is the waker's, so is its origin
+}
+/* 1.12.18 (user ruling 2026-10-23, "model the lock word"): lock handoffs.
+ * Sync to waker (above) carries a release only through a futex wake; on a
+ * lightly loaded host a contended lock is taken by spinning (CAS/XCHG in user
+ * space) without any futex sleep, no handoff was seen, and critical sections
+ * overlapped in simulated time (host-load dependent run times). The lock word
+ * is now modelled. Atomic read-modify-writes are found at translation time
+ * (isAtomicRmw: a LOCK prefix, or XCHG with a memory operand) and tagged
+ * (lock_rmw_tag); their mem callbacks deliver the value read and the value
+ * written (QEMU reports both halves of an atomic, R then W). Per word (a
+ * small hash table holding only words an atomic RMW has CHANGED):
+ *   acquire: an atomic RMW that changes the word from its free value while
+ *     no thread holds it -> holder := this thread; if the last release was
+ *     by ANOTHER thread on the same clock domain (Core::lockClockDomain) and
+ *     wrote the value this RMW read, the acquirer's clock := max(own,
+ *     release time) (Core::syncToLock: re-based like syncToWaker). The free
+ *     value is learned from the first changing RMW (its old value).
+ *   release: the holder writes the free value back, by an atomic RMW (XCHG,
+ *     LOCK DEC/ADD, CMPXCHG) or a plain store (a spin unlock 'movl $1') ->
+ *     stamp (thread, domain, clock, value); holder := none.
+ *   anything else (contention marks like libgomp's -1, counter updates, a
+ *     failed CAS) changes nothing. An atomic counter therefore never syncs:
+ *     its first update makes the first updater the holder and it never
+ *     returns to the free value by the holder. A thread re-taking its own
+ *     lock never syncs (serial runs are untouched).
+ * Conservative and cheap: a table miss or collision (evict) loses a sync,
+ * never makes a wrong one; a plain store costs one relaxed load (g_lockKey
+ * filter) unless an atomic RMW has touched a word with that address. If an
+ * acquirer's callback runs before its releaser's (the two atomics raced on
+ * the host) the acquire is taken without a sync and counted (races).
+ * Thread-MPI is left out (as for sync to waker): its ranks' clocks are placed
+ * by the transport from deterministic arithmetic (frozen-clock waits,
+ * rendezvous), and the MPI shim's own atomics are host-schedule driven, so a
+ * lock-word jump there would make rank time wall-dependent. Switch:
+ * simulation.lock_sync (PIMID_LOCK_SYNC), default on. */
+static bool g_lockSync = true;
+static int lock_rmw_tag;   // mem-cb userdata of an atomic read-modify-write instruction
+static const uint32_t kLockSlots = 4096;   // power of two
+static const uint32_t kNoHolder = ~0u;
+struct LockWord { uint64_t addr, freeVal, relVal, relClk, relOrg; uint32_t holder, relTid, relDom; bool relValid; };   // 1.12.18: relOrg = the releaser's ROI origin
+static LockWord g_lockWord[kLockSlots];
+static std::atomic<uint64_t> g_lockKey[kLockSlots];   // lock-free filter for the plain-store path
+static std::atomic<bool> g_lockAny{false};
+static std::mutex g_lockMu;
+static uint64_t g_rmwOld[MAX_THREADS];   // the R half of this thread's atomic RMW
+static bool g_rmwHaveOld[MAX_THREADS];
+static std::atomic<uint64_t> g_lockSyncN{0}, g_lockSyncSkip{0}, g_lockRelN{0}, g_lockAcqN{0}, g_lockRaceN{0};
+static uint64_t g_roiLockSyncN = 0, g_roiLockSyncSkip = 0, g_roiLockRelN = 0, g_roiLockAcqN = 0, g_roiLockRaceN = 0;
+static inline uint32_t lockSlotOf(uint64_t a) { return (uint32_t)((a >> 2) * 0x9E3779B97F4A7C15ull >> 52) & (kLockSlots - 1); }
+static bool isAtomicRmw(const uint8_t* b, size_t n) {
+    bool lock = false;
+    size_t i = 0;
+    for (; i < n; i++) {
+        const uint8_t c = b[i];
+        if (c == 0xf0) { lock = true; continue; }
+        if (c == 0x66 || c == 0x67 || c == 0xf2 || c == 0xf3 || c == 0x26 || c == 0x2e ||
+            c == 0x36 || c == 0x3e || c == 0x64 || c == 0x65) continue;
+        break;
+    }
+    if (lock) return true;   // LOCK is only legal on a memory-destination RMW
+    if (i < n && b[i] >= 0x40 && b[i] <= 0x4f) i++;   // REX
+    return (i + 1 < n) && (b[i] == 0x86 || b[i] == 0x87) && ((b[i + 1] >> 6) != 3);   // XCHG r, m (always locked)
+}
+static inline uint64_t lockMemVal(qemu_plugin_meminfo_t info) {
+    const qemu_plugin_mem_value v = qemu_plugin_mem_get_value(info);
+    switch (v.type) {
+        case QEMU_PLUGIN_MEM_VALUE_U8:  return v.data.u8;
+        case QEMU_PLUGIN_MEM_VALUE_U16: return v.data.u16;
+        case QEMU_PLUGIN_MEM_VALUE_U32: return v.data.u32;
+        case QEMU_PLUGIN_MEM_VALUE_U64: return v.data.u64;
+        default: return v.data.u128.low ^ (v.data.u128.high * 0x9E3779B97F4A7C15ull);   // CMPXCHG16B: equality only
+    }
+}
+static inline Core* lockCoreOf(uint32_t tid) {
+    if (tid >= MAX_THREADS || !thread_initialized[tid]) return nullptr;
+    const uint32_t cid = cids[tid];
+    if (cid >= zinfo->numCores || !zinfo->cores[cid] || !zinfo->cores[cid]->lockClockDomain()) return nullptr;
+    return zinfo->cores[cid];
+}
+static void lockSyncApply(Core* c, uint64_t t, uint32_t cid = ~0u, uint64_t org = 0) {
+    const uint64_t sk = c->syncToLock(t);
+    if (sk) { g_lockSyncN.fetch_add(1, std::memory_order_relaxed); g_lockSyncSkip.fetch_add(sk, std::memory_order_relaxed); }
+    if (sk && g_spCut && cid != ~0u && zinfo->hierarchy.mpiNocBaselined) PEMemoryInterface::spSetOrigin(cid, org);   // 1.12.18: the releaser's origin
+}
+/* the R and W halves of a tagged atomic RMW (after the access is timed) */
+static void lockRmw(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
+    if (!qemu_plugin_mem_is_store(info)) { g_rmwOld[tid] = lockMemVal(info); g_rmwHaveOld[tid] = true; return; }
+    if (!g_rmwHaveOld[tid]) return;
+    g_rmwHaveOld[tid] = false;
+    const uint64_t oldv = g_rmwOld[tid], newv = lockMemVal(info);
+    if (newv == oldv) return;   // no change (a fence 'lock or $0', a failed CAS on the locked value)
+    Core* c = lockCoreOf(tid);
+    if (!c) return;
+    const uint32_t dom = c->lockClockDomain();
+    uint64_t syncTo = 0, syncOrg = 0;
+    {
+        std::lock_guard<std::mutex> g(g_lockMu);
+        const uint32_t s = lockSlotOf(addr);
+        LockWord& w = g_lockWord[s];
+        if (w.addr != addr) {   // first change seen (or a collision: evict) -- an acquire from oldv, nothing to sync to
+            w.addr = addr; w.freeVal = oldv; w.holder = tid; w.relValid = false;
+            g_lockKey[s].store(addr, std::memory_order_relaxed);
+            g_lockAny.store(true, std::memory_order_relaxed);
+            g_lockAcqN.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (w.holder == tid && newv == w.freeVal) {   // release by the holder
+            w.relValid = true; w.relTid = tid; w.relDom = dom; w.relClk = c->lockClock(); w.relVal = newv;
+            w.relOrg = PEMemoryInterface::spOriginOf(cids[tid]);
+            w.holder = kNoHolder;
+            g_lockRelN.fetch_add(1, std::memory_order_relaxed);
+        } else if (oldv == w.freeVal && w.holder != tid) {   // acquire: took the word from its free value
+            if (w.holder != kNoHolder) g_lockRaceN.fetch_add(1, std::memory_order_relaxed);   // its release callback is late
+            else if (w.relValid && w.relTid != tid && w.relDom == dom && oldv == w.relVal) { syncTo = w.relClk; syncOrg = w.relOrg; }
+            w.holder = tid;
+            g_lockAcqN.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (syncTo) lockSyncApply(c, syncTo, cids[tid], syncOrg);
+}
+/* a plain store: a release if it writes the free value of a word this thread holds */
+static void lockStore(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
+    const uint32_t s = lockSlotOf(addr);
+    if (g_lockKey[s].load(std::memory_order_relaxed) != addr) return;   // the cheap filter
+    Core* c = lockCoreOf(tid);
+    if (!c) return;
+    const uint64_t v = lockMemVal(info);
+    std::lock_guard<std::mutex> g(g_lockMu);
+    LockWord& w = g_lockWord[s];
+    if (w.addr != addr || w.holder != tid || v != w.freeVal) return;
+    w.relValid = true; w.relTid = tid; w.relDom = c->lockClockDomain(); w.relClk = c->lockClock(); w.relVal = v;
+    w.relOrg = PEMemoryInterface::spOriginOf(cids[tid]);   // 1.12.18
+    w.holder = kNoHolder;
+    g_lockRelN.fetch_add(1, std::memory_order_relaxed);
+}
+
+/* the ROI's elapsed time on the roi_begin core's own timeline (diagnostic
+ * beside the phase-clock stamps: with the clocks synced to their wakers this
+ * is the critical path the wakes carried) */
+static uint32_t g_roiTlCid = ~0u;
+static uint64_t g_roiTlBegin = 0;
+
+static void roiWallBegin(uint32_t tid) {   // non-thread-MPI roi_begin (re-opens on a repeat)
+    if (tid < MAX_THREADS && thread_initialized[tid] && cids[tid] < zinfo->numCores && zinfo->cores[cids[tid]]) {
+        g_roiTlCid = cids[tid]; g_roiTlBegin = zinfo->cores[cids[tid]]->getCycles();
+    } else g_roiTlCid = ~0u;
+    g_roiWakeSyncN = g_wakeSyncN.load(); g_roiWakeSyncSkip = g_wakeSyncSkip.load();
+    g_roiWakeStampN = g_wakeStampN.load(); g_roiWakeMissN = g_wakeMissN.load();
+    g_roiLockSyncN = g_lockSyncN.load(); g_roiLockSyncSkip = g_lockSyncSkip.load();   // 1.12.18 (model the lock word)
+    g_roiLockRelN = g_lockRelN.load(); g_roiLockAcqN = g_lockAcqN.load(); g_roiLockRaceN = g_lockRaceN.load();
+    zinfo->roiWall.ended = false;
+    zinfo->roiWall.endStamp = 0;
+    zinfo->roiWall.beginStamp = roiWallStamp(tid);
+    zinfo->roiWall.source = 1;
+}
+static void roiWallEnd(uint32_t tid, const char* how) {
+    if (zinfo->roiWall.source != 1 || zinfo->roiWall.ended) return;
+    const uint64_t e = (tid < MAX_THREADS) ? roiWallStamp(tid)
+                     : (uint64_t)zinfo->numPhases * (zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000);
+    zinfo->roiWall.endStamp = (e > zinfo->roiWall.beginStamp) ? e : zinfo->roiWall.beginStamp;
+    zinfo->roiWall.ended = true;
+    info("[roi] run time: ROI elapsed %lu cycles on the global phase clock (stamps %lu -> %lu, %s) [1.12.18, ruling 2026-10-23]",
+         (unsigned long)zinfo->roiWall.cycles(), (unsigned long)zinfo->roiWall.beginStamp,
+         (unsigned long)zinfo->roiWall.endStamp, how);
+    {   /* 1.12.18 (user ruling 2026-10-23, "sync to waker"): the wake syncs of the ROI */
+        uint64_t tl = 0; bool tlOk = false;
+        if (tid < MAX_THREADS && thread_initialized[tid] && cids[tid] == g_roiTlCid && g_roiTlCid < zinfo->numCores) {
+            const uint64_t e = zinfo->cores[g_roiTlCid]->getCycles();
+            tl = (e > g_roiTlBegin) ? e - g_roiTlBegin : 0; tlOk = true;
+        }
+        info("[wake-sync] ROI: %lu futex wakes synced a PE clock to its waker (%lu cycles skipped), %lu release stamps, %lu woken waits without a stamp; roi_begin core's own timeline elapsed %s%lu cycles [1.12.18, ruling 2026-10-23]",
+             (unsigned long)(g_wakeSyncN.load() - g_roiWakeSyncN), (unsigned long)(g_wakeSyncSkip.load() - g_roiWakeSyncSkip),
+             (unsigned long)(g_wakeStampN.load() - g_roiWakeStampN), (unsigned long)(g_wakeMissN.load() - g_roiWakeMissN),
+             tlOk ? "" : "(n/a: roi_end on another core) ", (unsigned long)tl);
+        /* 1.12.18 (user ruling 2026-10-23, "model the lock word") */
+        info("[lock-sync] ROI: %lu lock handoffs synced a core clock to the releaser (%lu cycles skipped), %lu releases, %lu acquires, %lu acquire/release races (%s) [1.12.18, ruling 2026-10-23]",
+             (unsigned long)(g_lockSyncN.load() - g_roiLockSyncN), (unsigned long)(g_lockSyncSkip.load() - g_roiLockSyncSkip),
+             (unsigned long)(g_lockRelN.load() - g_roiLockRelN), (unsigned long)(g_lockAcqN.load() - g_roiLockAcqN),
+             (unsigned long)(g_lockRaceN.load() - g_roiLockRaceN), g_lockSync ? "simulation.lock_sync on" : "off");
+    }
+    /* 1.12.18 (user ruling 2026-10-24 (a)): a single-process cut run's run time
+     * is the latest device PE's ROI end on its own clock -- the axis its NoC
+     * and DRAM records carry (PEMemoryInterface::cutRoiRel; co-sim: the device
+     * axis from the host doorbell) -- the same rule as thread-MPI source 2.
+     * The phase-clock stamps above stay printed (diagnostic). A run where no
+     * device PE ran (a no-offload baseline) takes its host cores, on the host
+     * clock. */
+    if (g_spCut) {
+        uint64_t mx = 0, n = 0; uint32_t endCore = ~0u;
+        for (int pass = 0; pass < 2 && n == 0; pass++) {
+            for (uint32_t c = 0; c < zinfo->numCores; c++) {
+                Core* co = zinfo->cores[c];
+                if (!co || (pass == 0) != co->wakeStampable()) continue;
+                /* 1.12.18 (W9): a core that had not run at the ROI baseline
+                 * (snapshot 0: OpenMP workers spawned in the ROI) has origin 0
+                 * and is counted; it used to be skipped while its records
+                 * were stamped (baseline_DDR5_omp_gemv_16core: 1 of 16 host
+                 * cores read, 676 ROI records outside). A core that ran
+                 * nothing in the ROI reads 0 below. */
+                if (pass == 1 && c >= MAX_THREADS) continue;
+                const uint64_t v = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18 (W9): the raw clock, as a request carries it (cutRoiRel moves it to the wall-free clock)
+                if (v == 0) continue;   // ran nothing in the ROI
+                if (endCore == ~0u || v > mx) { mx = v; endCore = c; }
+                n++;
+            }
+        }
+        uint32_t f = 0;
+        if (endCore != ~0u && !zinfo->cores[endCore]->wakeStampable())
+            for (uint32_t nd = 0; nd < zinfo->nodeMap.numNodes && nd < 16; nd++)
+                if (endCore >= zinfo->nodeMap.nodes[nd].coreStart && endCore < zinfo->nodeMap.nodes[nd].coreEnd) f = zinfo->nodeMap.nodes[nd].freqMHz;
+        zinfo->roiWall.mpiEndFreqMHz = f;   // 0 = the device PEs' (the replay's own) clock
+        zinfo->roiWall.mpiEnd = mx;
+        zinfo->roiWall.source = 3;
+        info("[roi] run time: ROI elapsed %lu cycles = the latest %s ROI end on its own clock (%lu core(s), core %d; single-process cut, %s) [1.12.18, ruling 2026-10-24 (a)]",
+             (unsigned long)mx, (f == 0) ? "device PE's" : "host core's", (unsigned long)n, (int)endCore, how);
+    }
+}
+/* Thread-MPI: the max over ranks of the ROI-relative end. Co-sim with
+ * offload: each rank's closing-barrier marker (the kernel window the
+ * 1.12.3 trim prices); otherwise every device core's clock at the cut. */
+static void roiWallCloseMpi(const char* how) {
+    if (zinfo->roiWall.ended) return;
+    uint64_t mx = 0, n = 0;
+    bool fromMarkers = false;
+    if (g_cosim_mode && !g_cosim_no_offload) {
+        for (uint32_t t = 0; t < MAX_THREADS; t++) {
+            if (!g_tailMarked[t]) continue;
+            uint32_t c = g_tailDeviceCid[t];
+            if (c >= zinfo->numCores || !zinfo->cores[c]) continue;
+            uint64_t b = zinfo->cores[c]->getRoiBaseCycle();
+            uint64_t v = (g_tailMarker[t] > b) ? g_tailMarker[t] - b : 0;
+            if (v > mx) mx = v;
+            n++;
+        }
+        fromMarkers = (n > 0);
+    }
+    /* 1.12.18 (user ruling R2 2026-10-24): the ranks run on whichever cores
+     * the run gives them -- the device PEs, or, in a no-offload baseline, the
+     * HOST cores. The run time is the same rule on either: the first ROI
+     * barrier (the baseline snapshot) to the latest rank's ROI end. A host
+     * core keeps no roiBaseCycle of its own; its origin is the snapshot's
+     * clock (mpi_roi_base_cyc). The device PEs of a no-offload baseline never
+     * run (0 cycles) and were the only cores read here: run time 0. */
+    const bool hostRanks = g_cosim_mode && g_cosim_no_offload;
+    uint32_t endCore = ~0u;
+    if (!fromMarkers) {
+        for (uint32_t c = 0; c < zinfo->numCores; c++) {
+            Core* co = zinfo->cores[c];
+            if (!co) continue;
+            const bool isHost = co->asInOrderCore() || co->asOOOCore();
+            if (g_cosim_mode && isHost != hostRanks) continue;   // the rank cores only
+            uint64_t cy = co->getCycles(), b = PEMemoryInterface::roiOriginOf(c);   // 1.12.18 (W9): an ooo/in-order PE's origin
+            if (hostRanks) {
+                if (c >= MAX_THREADS || mpi_roi_base_cyc[c] == 0) continue;   // never baselined: ran no rank
+                b = mpi_roi_base_cyc[c];
+            }
+            uint64_t v = (cy > b) ? cy - b : 0;
+            if (v > mx || endCore == ~0u) { mx = std::max(mx, v); endCore = c; }
+            n++;
+        }
+    }
+    {   /* 1.12.18 (R2): the clock mpiEnd is counted in (the DRAM replay converts it) */
+        uint32_t f = 0;
+        const uint32_t probe = endCore;
+        for (uint32_t nd = 0; probe != ~0u && nd < zinfo->nodeMap.numNodes && nd < 16; nd++)
+            if (probe >= zinfo->nodeMap.nodes[nd].coreStart && probe < zinfo->nodeMap.nodes[nd].coreEnd) f = zinfo->nodeMap.nodes[nd].freqMHz;
+        zinfo->roiWall.mpiEndFreqMHz = hostRanks ? f : 0;   // device PEs: the replay's own clock
+    }
+    zinfo->roiWall.mpiEnd = mx;
+    zinfo->roiWall.source = 2;
+    zinfo->roiWall.ended = true;
+    info("[roi] run time: thread-MPI ROI elapsed %lu cycles = max over %lu rank core(s) of the ROI-relative end (%s, %s%s) [1.12.18, ruling 2026-10-23]",
+         (unsigned long)mx, (unsigned long)n, fromMarkers ? "closing-barrier markers" : "core clocks at the cut", how,
+         hostRanks ? "; no-offload baseline: the HOST cores running the ranks, from the first ROI barrier (ruling R2 2026-10-24)" : "");
+}
 /* Env-gated thread-lifecycle trace for the in-image startup-hang hunt
  * (PIMID_COSIM_TRACE=1): timestamps around scheduler start/join at thread
  * birth and offload migration. Zero overhead when unset. */
@@ -644,8 +1055,10 @@ typedef qemu_plugin_reg_descriptor pimid_qemu_plugin_reg_descriptor;
 
 static std::atomic<struct qemu_plugin_register*> rcx_handle{nullptr};
 static std::atomic<struct qemu_plugin_register*> rdx_handle{nullptr};
-static std::atomic<struct qemu_plugin_register*> rsp_handle{nullptr};   /* 1.12.17: main stack at roi_begin */
-static void stackAtRoiBegin();   /* 1.12.17: defined with the stack registry below */
+static std::atomic<struct qemu_plugin_register*> rsp_handle{nullptr};
+static std::atomic<struct qemu_plugin_register*> rdi_handle{nullptr};   /* 1.12.18: omp_set_num_threads(n) */   /* 1.12.17: main stack at roi_begin */
+static void stackAtRoiBegin(uint32_t tid);   /* 1.12.17: defined with the stack registry below */
+static void stackAtRoiBeginReg();
 static std::atomic<bool> rcx_lookup_done{false};
 static __thread PimidGByteArray* rcx_buf = nullptr;  /* per-host-thread reusable buf */
 
@@ -665,6 +1078,8 @@ static void resolveRcxHandle() {
                 rdx_handle.store(d->handle, std::memory_order_release);
             } else if (d->name && strcmp(d->name, "rsp") == 0) {
                 rsp_handle.store(d->handle, std::memory_order_release);
+            } else if (d->name && strcmp(d->name, "rdi") == 0) {
+                rdi_handle.store(d->handle, std::memory_order_release);
             }
         }
         g_array_free(regs, 1 /* TRUE */);
@@ -813,11 +1228,17 @@ void EndOfPhaseActions() {
      * cut). */
     /* 1.12.17: the same cut also folds the device DRAM epoch replay under
      * message passing (DramEpochReplay cut mode). */
-    const bool foldNoc = g_mpi_thread_mode && zinfo->garnetNetwork &&
+    /* 1.12.18 (ruling 2026-10-24): single-process runs (g_spCut) fold at the
+     * same consistent cut after the ROI baseline, on cutRoiRel. */
+    const bool foldNoc = (g_mpi_thread_mode || g_spCut) && zinfo->garnetNetwork &&
                          zinfo->garnetNetwork->isCycleAccurate();
-    const bool foldDram = g_mpi_thread_mode && zinfo->dramReplay &&
+    const bool foldDram = (g_mpi_thread_mode || g_spCut) && zinfo->dramReplay &&
                           zinfo->hierarchy.dramEpochReplay && zinfo->dramReplay->cutMode();
-    if ((foldNoc || foldDram) && zinfo->hierarchy.mpiNocBaselined) {
+    /* 1.12.18 (ruling 17 / R0605): the decoupled host memory's replay folds at
+     * the same cut (a host sharing the device's instance folds with it). */
+    const bool foldHostDram = (g_mpi_thread_mode || g_spCut) && zinfo->hostDramReplay && zinfo->hostDramReplay->cutMode();
+    uint64_t spNocCut = 0; bool spNocFolded = false;   // 1.12.18: for the epoch publish below
+    if ((foldNoc || foldDram || foldHostDram) && zinfo->hierarchy.mpiNocBaselined) {
         // Consistent cut = min per-core roiRel over ACTIVE cores. All cores are
         // synced at this barrier, so their roiRel snapshots are a pure function of
         // simulated state. A core that has EXITED (finished its ROI) or is QUIESCENT
@@ -842,10 +1263,20 @@ void EndOfPhaseActions() {
             if (!co) continue;
             const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
             if (st != 0 && st != 1) continue;   // EXITED / VACATED: exempt from both cuts
-            uint64_t base = co->getRoiBaseCycle();
+            /* 1.12.18 (W9): device scope (every core a PE): an ooo/in-order PE's
+             * ROI origin (PEMemoryInterface::roiOriginOf), the origin its records
+             * are stamped against; co-sim keeps the host cores out of the cut
+             * as before (roiBaseCycle 0: their clock never pins it). */
+            uint64_t base = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
             uint64_t cyc  = co->getCycles();
             uint64_t rr   = (cyc > base) ? cyc - base : 0;
+            if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
             if (rr == 0) continue;       // baselined but no ROI traffic yet
+            /* 1.12.18 (ruling 2026-10-24): a SLEEPING single-process core (futex
+             * wait, QUIESCENT) is exempt from BOTH cuts: it resumes at its waker's
+             * clock (sync to waker), not at its own frozen one, so holding the DRAM
+             * cut there would stall the replay for the whole sleep. */
+            if (g_spCut && st != 0) continue;
             if (rr < cutDram) cutDram = rr;
             if (st != 0) continue;       // QUIESCENT: exempt from the NoC cut only
             if (rr < cut) { cut = rr; dbgCutCore = (int)c; }
@@ -861,12 +1292,47 @@ void EndOfPhaseActions() {
                 lastCut = (cut == ~0ull) ? lastCut : cut; lastCore = dbgCutCore;
             }
         }
+        if (foldNoc && g_spCut && !zinfo->garnetNetwork->cutAxis()) {   // 1.12.18
+            zinfo->garnetNetwork->enterCutAxis();
+        }
         if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
+        if (foldNoc) { spNocCut = cut; spNocFolded = true; }
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
             uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
             if (E < 1) E = 1;
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->dramReplay->foldByCut(cutDram, (uint64_t)pl * E);
+        }
+        if (foldHostDram) {   // 1.12.18: as above, the host interfaces' epoch length is the same
+            uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
+            if (E < 1) E = 1;
+            const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            zinfo->hostDramReplay->foldByCut(cutDram, (uint64_t)pl * E);
+        }
+    }
+
+    /* 1.12.18 (user ruling 2026-10-24, "OMP NoC: epoch-frozen"): single-process
+     * runs (no thread-MPI, no shared detailed-MPI NoC) fold the phase that just
+     * ended HERE, single-threaded, and publish each completed epoch's measured
+     * pair latencies; accesses read that table, which changes only here. */
+    {
+        static const bool sharedNocRun = (getenv("PIMID_NOC_SHM") != nullptr);
+        GarnetNetwork* gn = zinfo->garnetNetwork;
+        if (!g_mpi_thread_mode && !sharedNocRun && gn && gn->isCycleAccurate()) {   // single process (g_spCut)
+            if (!gn->epochFrozenPublish()) {
+                gn->setEpochFrozenPublish(true);
+                info("[EpochFeedback] shared-memory run: NoC accesses priced from the epoch-frozen measured pair latencies "
+                     "(folded at the phase barrier; an access in epoch k reads epoch k-1; E_phases=%u x %u cycles) [1.12.18, ruling 2026-10-24]",
+                     gn->detEpochPhases(), (unsigned)zinfo->phaseLength);
+            }
+            const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            if (!g_spCut || !gn->cutAxis()) {   // before the ROI baseline: the phase grid
+                gn->foldByCut(((uint64_t)zinfo->numPhases + 1) * pl, pl);
+                gn->publishCompletedEpochs(zinfo->numPhases);
+            } else if (spNocFolded) {   // 1.12.18 (full mechanism): epochs wholly below the consistent cut
+                if (spNocCut == ~0ull) gn->publishCompletedEpochs(~0ull - 1);
+                else if (spNocCut >= pl) gn->publishCompletedEpochs(spNocCut / pl - 1);
+            }
         }
     }
 
@@ -879,11 +1345,25 @@ void EndOfPhaseActions() {
 
 /* ---- Barrier (phase synchronization) ---- */
 
+bool pimidPostRoiFree();   // 1.12.18: defined with g_termStatsDumped below
+
 uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
+    if (pimidPostRoiFree()) {   // 1.12.18: after the ROI, leave and run free
+        zinfo->sched->leave(procIdx, tid, cid);
+        clearCid(tid);
+        fPtrs[tid] = nopPtrs;
+        return INVALID_CID;
+    }
     uint32_t newCid = zinfo->sched->sync(procIdx, tid, cid);
     clearCid(tid);
     setCid(tid, newCid);
 
+    if (zinfo->terminationConditionMet && pimidPostRoiFree()) {
+        zinfo->sched->leave(procIdx, tid, newCid);
+        clearCid(tid);
+        fPtrs[tid] = nopPtrs;
+        return INVALID_CID;
+    }
     if (zinfo->terminationConditionMet) {
         info("Termination condition met, exiting");
         zinfo->sched->leave(procIdx, tid, newCid);
@@ -1041,14 +1521,38 @@ static void dumpGapHistograms() {
 }
 
 static volatile uint32_t g_termStatsDumped = 0;
+/* 1.12.18: after a non-MPI ROI end the stats are written at once and the
+ * program runs to its own exit, unsimulated (g_postRoiFree): a thread that
+ * reaches a phase barrier or rejoins leaves the scheduler instead of ending
+ * the process, and the watchdog waits for the exit. Until now the watchdog
+ * (or the first thread at a barrier) ended the process within microseconds
+ * of the ROI end, racing the program's own output: shared-memory runs lost
+ * their BENCH_CHECKSUM line now and then. A program that has not exited
+ * kPostRoiWaitSec after the dump is ended as before. */
+static volatile uint32_t g_postRoiFree = 0;
+static volatile uint64_t g_postRoiSince = 0;
+static const uint64_t kPostRoiWaitSec = 600;
+static uint64_t postRoiWallSec() {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec;
+}
+bool pimidPostRoiFree() {
+    return g_postRoiFree && g_termStatsDumped && postRoiWallSec() < g_postRoiSince + kPostRoiWaitSec;
+}
 static void dumpTerminationStats() {
     if (!__sync_bool_compare_and_swap(&g_termStatsDumped, 0, 1)) return;
 
     recordProtocolTailStats();   // 1.8.7: fill the protocolTail receipt BEFORE the dump
+    /* 1.12.18 (ruling 2026-10-23): the run time is closed before the stats
+     * and the DRAM replay's window read it. */
+    if (g_mpi_thread_mode) roiWallCloseMpi("termination dump");
+    else roiWallEnd(MAX_THREADS, "no roi_end before the stats write: closed at the dump's phase");
     info("Dumping termination stats");
+    rtPrintStats();   // 1.12.18: PIM runtime primitives, per core
     zinfo->trigger = 20000;
     for (StatsBackend* backend : *(zinfo->statsBackends)) {
         if (zinfo->dramReplay) zinfo->dramReplay->finalize();   // 1.11.98 (ruling 4 (c)): replay the tail, fold the controller totals
+        if (zinfo->hostDramReplay) zinfo->hostDramReplay->finalize();   // 1.12.18 (ruling 17 / R0605)
         backend->dump(false);
     }
 
@@ -1064,6 +1568,13 @@ static void dumpTerminationStats() {
         if (tail)
             info("[roi] %lu pending NoC records replayed before the final stats write",
                  (unsigned long)tail);
+        if (g_spCut && zinfo->garnetNetwork->cutAxis()) {   // 1.12.18 (ruling 2026-10-24)
+            uint64_t late = 0, lateEp = 0, stale = 0, reads = 0;
+            zinfo->garnetNetwork->frozenCounters(late, lateEp, stale, reads);
+            info("[EpochFeedback] single-process cut: %lu NoC record(s) behind a cut already taken, %lu packet(s) joined a later epoch, "
+                 "%lu of %lu keyed read(s) took an epoch before the lag [1.12.18, ruling 2026-10-24]",
+                 (unsigned long)late, (unsigned long)lateEp, (unsigned long)stale, (unsigned long)reads);
+        }
         zinfo->garnetNetwork->setTotalCycles(zinfo->globPhaseCycles);
         std::string garnetStatsPath = std::string(zinfo->outputDir) + "/garnet_stats.txt";
         zinfo->garnetNetwork->writeStatsFile(garnetStatsPath.c_str());
@@ -1130,11 +1641,17 @@ void SimEnd() {
 
 /* ---- Thread management ---- */
 
+/* 1.12.18 (2026-10-24, MPI checksums): SimThreadFini once per SimThreadStart.
+ * After a thread-MPI ROI the ranks run to their exit; each rank thread is
+ * finished by vcpu_exit_cb, and plugin_exit finished it again (Scheduler::
+ * finish assertion, scheduler.h gidMap, then a QEMU-internal SIGSEGV). */
+static bool g_simThreadFinished[MAX_THREADS + 1];
 static void SimThreadStart(uint32_t tid) {
     info("Thread %d starting", tid);
     if (tid > MAX_THREADS) {
         panic("tid > MAX_THREADS");
     }
+    g_simThreadFinished[tid] = false;
     ProcessTreeNode* procTree = zinfo->procArray[procIdx];
     zinfo->sched->start(procIdx, tid, procTree->getMask());
 
@@ -1143,8 +1660,10 @@ static void SimThreadStart(uint32_t tid) {
 }
 
 static void SimThreadFini(uint32_t tid) {
+    if (tid <= MAX_THREADS && g_simThreadFinished[tid]) return;   // 1.12.18: finished already (see SimThreadStart)
+    if (tid <= MAX_THREADS) g_simThreadFinished[tid] = true;
     // Thread left permanently -> EXITED (exempt from the epoch cut).
-    if (g_mpi_thread_mode && tid < MAX_THREADS && cids[tid] < MAX_THREADS)
+    if ((g_mpi_thread_mode || g_spCut) && tid < MAX_THREADS && cids[tid] < MAX_THREADS)   // 1.12.18: single-process cut too
         g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
     zinfo->sched->finish(procIdx, tid);
     cids[tid] = UNINITIALIZED_CID;
@@ -1223,13 +1742,25 @@ static void ensureThreadInit(uint32_t tid) {
 static std::atomic<uint32_t> trace_join_count[MAX_THREADS];
 
 static void Join(uint32_t tid) {
+    if (pimidPostRoiFree()) { fPtrs[tid] = nopPtrs; return; }   // 1.12.18: after the ROI, run free
     /* trace only each thread's first few joins -- the startup hang window */
     bool tr = g_cosim_trace && tid < MAX_THREADS && trace_join_count[tid]++ < 6;
     if (tr) COSIMTRACE("tid=%u sched->join enter", tid);
     uint32_t cid = zinfo->sched->join(procIdx, tid);
     if (tr) COSIMTRACE("tid=%u sched->join done cid=%u", tid, cid);
     setCid(tid, cid);
+    wakeSyncApply(tid, cid);   // 1.12.18 (user ruling 2026-10-23, "sync to waker")
+    if (g_spCut && cid < MAX_THREADS) {   // 1.12.18 (ruling 2026-10-24): awake again -> ACTIVE (after the wake sync)
+        uint32_t q = 1;
+        g_coreRoiState[cid].compare_exchange_strong(q, 0);
+    }
 
+    if (unlikely(zinfo->terminationConditionMet) && pimidPostRoiFree()) {
+        zinfo->sched->leave(procIdx, tid, cid);
+        clearCid(tid);
+        fPtrs[tid] = nopPtrs;
+        return;
+    }
     if (unlikely(zinfo->terminationConditionMet)) {
         info("Caught termination on join, exiting");
         zinfo->sched->leave(procIdx, tid, cid);
@@ -1358,6 +1889,10 @@ struct TbUserdata {
     uint8_t   termKind;
     uint64_t  termPc;
     uint64_t  termRetAddr;
+    /* 1.12.18 (PIM runtime primitives): RtRegion of this block, and at a
+     * libgomp entry point its event (bit 15 set; kind | arg << 8). */
+    uint8_t   rtRegion;
+    uint16_t  rtSym;
 };
 
 /* Per-thread pending conditional branch awaiting direction resolution (set when
@@ -1373,6 +1908,506 @@ static uint64_t g_brFall[MAX_THREADS];
 static uint8_t  g_ctrlPending[MAX_THREADS];
 static uint64_t g_ctrlPc[MAX_THREADS];
 static uint64_t g_ctrlRet[MAX_THREADS];
+
+/* ==== 1.12.18: PIM runtime primitives (user rulings 2026-10-23) ===========
+ *
+ * "The PIM way, not as full SW overhead": a PE is NOT charged for executing
+ * the parallel runtime's own code. Each runtime EVENT is charged the cost of
+ * the corresponding PIM runtime primitive instead, as idle cycles (addDelay)
+ * on the PE's own clock, in program order -- deterministic. The kernel's own
+ * work stays simulated: user code inside a critical section, the reduce
+ * arithmetic on user buffers, and every byte a message moves (the sender's
+ * buffer read, the Garnet transfer, the receiver's write).
+ *
+ * Runtime code is "not executed on the PE": its blocks and memory accesses
+ * are not fed to the core (no instructions, no cycles, no traffic, no
+ * energy), exactly like the process-mode MPI comm window. The thread stays
+ * ATTACHED to its core while it runs that code (an eager Join at each
+ * dropped block), so the futex leave/join and the wake-sync stamps keep
+ * working: a waiter still cannot run ahead of its releaser, and the primitive
+ * cost is ADDED to that ordering (release, barrier and launch are charged
+ * before the release stamp; an acquire is charged after the acquisition).
+ *
+ * Two sources of runtime code:
+ *  1. libgomp (OpenMP). Recognised by ADDRESS RANGE: the executable mappings
+ *     of libgomp.so in /proc/self/maps (guest_base 0). A thread enters the
+ *     runtime when it jumps from the workload binary into libgomp; it leaves
+ *     when control reaches the workload binary again (the outlined region
+ *     body, or the return from the GOMP_* / omp_* call). Code in other
+ *     libraries (libc: malloc, futex, pthread_create) is attributed to
+ *     whichever side called it. The EVENT is the exported libgomp symbol the
+ *     jump lands on (libgomp's .dynsym, read from the mapped file); a return
+ *     from a region body into libgomp is the implicit barrier at the end of
+ *     the region. No interposer library is needed and every GOMP_* entry
+ *     point of any libgomp version is covered by construction; an entry
+ *     point without a PIM primitive (tasks, target, teams, cancel) REFUSES.
+ *  2. libpimid_mpi (thread-MPI shim). The shim brackets its bookkeeping with
+ *     RT_BEGIN / RT_END and announces each protocol event with RT_EVENT.
+ *
+ * PEs only by default (apply_to: pe): a host CPU really runs libgomp, so
+ * host cores keep executing it (apply_to: all extends the model to them).
+ *
+ * Costs (all overridable, simulation.pim_runtime.*; docs/yaml_reference.md):
+ * UPMEM's measured on-chip primitives, the device's PEs treated as one sync
+ * domain ("assumes DPU-style atomics across the device's PEs"):
+ *  - lock acquire / release: 1 instruction each (UPMEM SDK syslib/mutex.h:
+ *    acquire / release), latency 11 cycles per op (revolver pipeline: "same
+ *    thread dispatched 11 cycles apart", Gomez-Luna et al., PrIM, IEEE Access
+ *    2022, arXiv 2105.03814 Sec. 2.2; uPIMulator Table I).
+ *  - barrier: DERIVED from PrIM Appendix Fig. 21 (reduction final step, 1
+ *    DPU, int64): (BARRIER tree - HANDS tree) / log2 T = 224 / 504 / 1201 /
+ *    2777 cycles at T = 2 / 4 / 8 / 16, interpolated linearly in the
+ *    participant count P, extrapolated linearly above 16 (printed).
+ *  - OpenMP parallel launch: one barrier (tasklets are resident; a fork/join
+ *    is a barrier_wait) -- the barrier table.
+ *  - OpenMP reduction combine: PrIM Fig. 21 HANDS tree 304 / 768 / 1392 /
+ *    2654 cycles at T = 2 / 4 / 8 / 16 (measured, includes the adds).
+ *  - MPI point-to-point protocol: one handshake notify/wait pair (UPMEM SDK
+ *    handshake.c, ~10 instructions x 11 cycles = 110), DERIVED.
+ *  - MPI collective step: one point-to-point handshake (110); MPI barrier:
+ *    the barrier table.
+ * Cycles are used as published (UPMEM DPU pipeline cycles, PrIM's DPU at
+ * 350 MHz; the alu_core PE is the analogous pipeline); cycle_basis: time
+ * converts them through time to the PE clock instead. */
+enum RtKind { RTK_OMP_LAUNCH = 0, RTK_OMP_BARRIER, RTK_OMP_ACQUIRE, RTK_OMP_RELEASE, RTK_OMP_DISPATCH,
+              RTK_OMP_REDUCTION, RTK_OMP_QUERY, RTK_MPI_P2P, RTK_MPI_COLL_STEP, RTK_MPI_RED_STEP,
+              RTK_MPI_BARRIER, RTK_N };
+static const char* const kRtKey[RTK_N] = {
+    "omp_launch", "omp_barrier", "omp_lock_acquire", "omp_lock_release", "omp_loop_dispatch",
+    "omp_reduction", "omp_query", "mpi_p2p_protocol", "mpi_collective_step", "mpi_reduction_step",
+    "mpi_barrier" };
+enum RtScale { RTS_CONSTANT = 0, RTS_LINEAR, RTS_LOG2 };
+enum RtTable { RTT_NONE = 0, RTT_BARRIER, RTT_REDUCTION };
+static const uint16_t RT_SYM_UNMAPPED = 0xff;   /* a libgomp entry point with no PIM primitive */
+static const uint8_t RT_ARG_NONE = 0, RT_ARG_TEAM_RDX = 1, RT_ARG_ICV_RDI = 2;
+enum RtRegion { RTR_OTHER = 0, RTR_USER = 1, RTR_GOMP = 2 };
+enum RtState { RTS_UNSET = 0, RTS_KERNEL = 1, RTS_RUNTIME = 2 };
+
+struct RtParams {
+    bool enabled = true;
+    bool allCores = false;          /* apply_to: all */
+    bool timeBasis = false;         /* cycle_basis: time */
+    double srcMHz = 350.0;          /* clock the published cycles were measured at (PrIM: 350 MHz DPU) */
+    std::vector<std::pair<uint32_t, double>> barTab = { {2, 224}, {4, 504}, {8, 1201}, {16, 2777} };
+    std::vector<std::pair<uint32_t, double>> redTab = { {2, 304}, {4, 768}, {8, 1392}, {16, 2654} };
+    double cyc[RTK_N]   = { 0, 0, 11, 11, 22, 0, 1, 110, 110, 0, 0 };
+    int    scale[RTK_N] = { 0 };
+    int    table[RTK_N] = { RTT_BARRIER, RTT_BARRIER, RTT_NONE, RTT_NONE, RTT_NONE,
+                            RTT_REDUCTION, RTT_NONE, RTT_NONE, RTT_NONE, RTT_NONE, RTT_BARRIER };
+};
+static RtParams g_rt;
+static uint8_t  g_rtState[MAX_THREADS];          /* RtState per thread */
+static bool     g_rtShim[MAX_THREADS];           /* inside a shim RT_BEGIN/RT_END window */
+static uint64_t g_rtPend[MAX_THREADS];           /* acquire cycles charged at the runtime exit */
+static std::atomic<uint32_t> g_rtTeam{1};        /* team size of the current OpenMP region */
+static std::atomic<uint32_t> g_rtIcv{1};         /* nthreads-var (OMP_NUM_THREADS / omp_set_num_threads) */
+static std::atomic<bool> g_rtGompLoaded{false};
+static std::atomic<bool> g_rtExtrapWarned{false};
+/* per core (cid) statistics; *Roi = snapshot at the last roi_begin */
+static uint64_t g_rtCnt[MAX_THREADS][RTK_N], g_rtCyc[MAX_THREADS][RTK_N], g_rtDropI[MAX_THREADS], g_rtDropM[MAX_THREADS];
+static uint64_t g_rtCntRoi[MAX_THREADS][RTK_N], g_rtCycRoi[MAX_THREADS][RTK_N], g_rtDropIRoi[MAX_THREADS], g_rtDropMRoi[MAX_THREADS];
+
+static double rtInterp(const std::vector<std::pair<uint32_t, double>>& t, uint32_t P, bool* extrap) {
+    if (P <= 1 || t.empty()) return 0.0;   /* one participant: nothing to synchronise */
+    if (P <= t[0].first) return t[0].second * (double)(P - 1) / (double)(t[0].first > 1 ? t[0].first - 1 : 1);
+    for (size_t i = 1; i < t.size(); i++)
+        if (P <= t[i].first) {
+            const double f = (double)(P - t[i - 1].first) / (double)(t[i].first - t[i - 1].first);
+            return t[i - 1].second + f * (t[i].second - t[i - 1].second);
+        }
+    *extrap = true;
+    if (t.size() < 2) return t.back().second;
+    const auto& a = t[t.size() - 2]; const auto& b = t.back();
+    return b.second + (double)(P - b.first) * (b.second - a.second) / (double)(b.first - a.first);
+}
+static uint32_t rtPeMHz() {
+    return zinfo->hierarchy.nocBandwidthFreqMHz > 0 ? zinfo->hierarchy.nocBandwidthFreqMHz : zinfo->freqMHz;
+}
+static uint64_t rtCost(int kind, uint32_t P) {
+    double c = 0.0;
+    bool ex = false;
+    if (g_rt.table[kind] == RTT_BARRIER) c = rtInterp(g_rt.barTab, P, &ex);
+    else if (g_rt.table[kind] == RTT_REDUCTION) c = rtInterp(g_rt.redTab, P, &ex);
+    else {
+        double f = 1.0;
+        if (g_rt.scale[kind] == RTS_LINEAR) f = (double)P;
+        else if (g_rt.scale[kind] == RTS_LOG2) { f = 0.0; for (uint32_t s = 1; s < P; s <<= 1) f += 1.0; }
+        c = g_rt.cyc[kind] * f;
+    }
+    if (ex && !g_rtExtrapWarned.exchange(true))
+        info("[pim-runtime] NOTE: a %s event with P=%u participants is beyond PrIM Fig. 21's T <= 16: its cost is "
+             "EXTRAPOLATED linearly in P from the last two table points (%.0f cycles)", kRtKey[kind], P, c);
+    if (g_rt.timeBasis && g_rt.srcMHz > 0) c = c * (double)rtPeMHz() / g_rt.srcMHz;
+    return (uint64_t)(c + 0.5);
+}
+
+/* PEs only, unless apply_to: all. A host CPU really runs its runtime. */
+static inline bool rtApplies(uint32_t tid) {
+    if (!g_rt.enabled || tid >= MAX_THREADS) return false;
+    if (g_rt.allCores || !g_cosim_mode) return true;
+    return thread_domain[tid].load() == DOMAIN_DEVICE;
+}
+/* The thread must be on its core to be charged: a dropped block does not go
+ * through JoinBbl, so join here (the wake sync is applied by Join). */
+static inline bool rtEnsureAttached(uint32_t tid) {
+    if (fPtrs[tid].type == FPTR_JOIN) Join(tid);
+    return cores[tid] != nullptr && cids[tid] < zinfo->numCores && cids[tid] < MAX_THREADS;
+}
+static void rtCharge(uint32_t tid, int kind, uint32_t P, bool deferred) {
+    const uint64_t c = rtCost(kind, P);
+    if (!rtEnsureAttached(tid)) { g_rtPend[tid] += c; return; }
+    const uint32_t cid = cids[tid];
+    g_rtCnt[cid][kind]++;
+    if (deferred) { g_rtPend[tid] += c; return; }
+    g_rtCyc[cid][kind] += c;
+    if (c) cores[tid]->addDelay((uint32_t)std::min<uint64_t>(c, 0xFFFFFFFFull));
+}
+static void rtApplyPending(uint32_t tid) {
+    if (!g_rtPend[tid] || !rtEnsureAttached(tid)) return;
+    const uint64_t c = g_rtPend[tid];
+    g_rtPend[tid] = 0;
+    g_rtCyc[cids[tid]][RTK_OMP_ACQUIRE] += c;
+    cores[tid]->addDelay((uint32_t)std::min<uint64_t>(c, 0xFFFFFFFFull));
+}
+
+/* ---- libgomp recognition ---- */
+struct RtMap { uint64_t lo, hi; uint8_t region; };
+static std::vector<RtMap> g_rtMaps;
+static std::unordered_map<uint64_t, uint16_t> g_rtSyms;        /* entry address -> kind | arg << 8 */
+static std::unordered_map<uint64_t, std::string> g_rtSymName;
+static std::string g_rtExe;
+static std::mutex g_rtMu;
+static uint32_t g_rtReloads = 0;
+
+static uint16_t rtKindForName(const char* n) {
+    auto in = [n](std::initializer_list<const char*> l) { for (const char* s : l) if (!strcmp(n, s)) return true; return false; };
+    if (!strcmp(n, "GOMP_parallel_end")) return RTK_OMP_BARRIER;
+    if (!strncmp(n, "GOMP_parallel", 13)) return RTK_OMP_LAUNCH | (RT_ARG_TEAM_RDX << 8);   /* (fn, data, num_threads, ...) */
+    if (in({"GOMP_barrier", "GOMP_barrier_cancel", "GOMP_loop_end", "GOMP_loop_end_cancel",
+            "GOMP_sections_end", "GOMP_sections_end_cancel"})) return RTK_OMP_BARRIER;
+    if (in({"GOMP_critical_start", "GOMP_critical_name_start", "GOMP_atomic_start", "GOMP_ordered_start",
+            "GOMP_doacross_wait", "GOMP_doacross_ull_wait", "omp_set_lock", "omp_set_nest_lock", "omp_test_lock",
+            "omp_test_nest_lock", "omp_set_lock_", "omp_set_nest_lock_", "omp_test_lock_", "omp_test_nest_lock_"}))
+        return RTK_OMP_ACQUIRE;
+    if (in({"GOMP_critical_end", "GOMP_critical_name_end", "GOMP_atomic_end", "GOMP_ordered_end",
+            "GOMP_doacross_post", "GOMP_doacross_ull_post", "omp_unset_lock", "omp_unset_nest_lock",
+            "omp_unset_lock_", "omp_unset_nest_lock_"})) return RTK_OMP_RELEASE;
+    if (in({"GOMP_taskgroup_reduction_register", "GOMP_taskgroup_reduction_unregister",
+            "GOMP_task_reduction_remap", "GOMP_workshare_task_reduction_unregister"})) return RTK_OMP_REDUCTION;
+    if (!strncmp(n, "GOMP_loop_", 10) ||
+        in({"GOMP_sections_start", "GOMP_sections2_start", "GOMP_sections_next", "GOMP_sections_end_nowait",
+            "GOMP_single_start", "GOMP_single_copy_start", "GOMP_single_copy_end"})) return RTK_OMP_DISPATCH;
+    if (!strcmp(n, "omp_set_num_threads")) return RTK_OMP_QUERY | (RT_ARG_ICV_RDI << 8);
+    if (!strncmp(n, "omp_", 4)) return RTK_OMP_QUERY;
+    return RT_SYM_UNMAPPED;   /* GOMP_task*, GOMP_target*, GOMP_teams*, GOMP_cancel*, GOACC_*, ... */
+}
+
+/* libgomp's exported functions, from the .dynsym of the mapped file. */
+static void rtLoadGompSyms(const std::string& path, uint64_t bias) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) panic("[pim-runtime] cannot read %s to find libgomp's entry points", path.c_str());
+    std::vector<uint8_t> d;
+    uint8_t buf[65536]; size_t r;
+    while ((r = fread(buf, 1, sizeof buf, f)) > 0) d.insert(d.end(), buf, buf + r);
+    fclose(f);
+    if (d.size() < sizeof(Elf64_Ehdr) || memcmp(d.data(), ELFMAG, SELFMAG) || d[EI_CLASS] != ELFCLASS64)
+        panic("[pim-runtime] %s is not a 64-bit ELF file", path.c_str());
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)d.data();
+    if (eh->e_shoff + (uint64_t)eh->e_shnum * sizeof(Elf64_Shdr) > d.size())
+        panic("[pim-runtime] %s: section headers out of range", path.c_str());
+    const Elf64_Shdr* sh = (const Elf64_Shdr*)(d.data() + eh->e_shoff);
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < eh->e_shnum; i++) {
+        if (sh[i].sh_type != SHT_DYNSYM || sh[i].sh_link >= eh->e_shnum) continue;
+        const Elf64_Shdr& st = sh[sh[i].sh_link];
+        const Elf64_Sym* sy = (const Elf64_Sym*)(d.data() + sh[i].sh_offset);
+        const uint64_t ns = sh[i].sh_size / sizeof(Elf64_Sym);
+        for (uint64_t k = 0; k < ns; k++) {
+            const int ty = ELF64_ST_TYPE(sy[k].st_info);
+            if ((ty != STT_FUNC && ty != STT_GNU_IFUNC) || sy[k].st_shndx == SHN_UNDEF || !sy[k].st_value) continue;
+            if (sy[k].st_name >= st.sh_size) continue;
+            const char* nm = (const char*)(d.data() + st.sh_offset + sy[k].st_name);
+            const uint64_t a = bias + sy[k].st_value;
+            const uint16_t kd = rtKindForName(nm);
+            auto it = g_rtSyms.find(a);
+            if (it == g_rtSyms.end() || (it->second & 0xff) == RT_SYM_UNMAPPED) { g_rtSyms[a] = kd; g_rtSymName[a] = nm; }
+            n++;
+        }
+    }
+    info("[pim-runtime] libgomp recognised: %s at bias 0x%lx, %u exported functions mapped to PIM runtime events",
+         path.c_str(), (unsigned long)bias, n);
+}
+
+static std::string rtRealpath(const std::string& p) {
+    char b[4096];
+    return realpath(p.c_str(), b) ? std::string(b) : p;
+}
+/* The workload binary: the argument after "--" on QEMU's command line (src/main.cpp launches qemu ... -- binary). */
+static void rtFindExe() {
+    FILE* f = fopen("/proc/self/cmdline", "rb");
+    if (!f) return;
+    std::string all; char buf[4096]; size_t r;
+    while ((r = fread(buf, 1, sizeof buf, f)) > 0) all.append(buf, r);
+    fclose(f);
+    std::vector<std::string> av;
+    for (size_t p = 0; p < all.size(); ) { size_t e = all.find('\0', p); if (e == std::string::npos) e = all.size(); av.push_back(all.substr(p, e - p)); p = e + 1; }
+    for (size_t i = 0; i + 1 < av.size(); i++) if (av[i] == "--") { g_rtExe = rtRealpath(av[i + 1]); return; }
+}
+/* Caller holds g_rtMu. QEMU linux-user maps the guest's segments without host
+ * PROT_EXEC (it translates guest code, it never runs it), so the guest's text
+ * is an r--p mapping; mappings are classified by range regardless of their
+ * permissions (a translated block's address can only lie in a guest mapping).
+ * The simulator's own process may map a libgomp too (r-xp, a host library):
+ * every libgomp instance's symbols are loaded, keyed by its own load bias, so
+ * the guest's is covered whichever it is. */
+static std::vector<uint64_t> g_rtGompBiases;
+static void rtReloadMaps() {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return;
+    std::vector<RtMap> m;
+    char line[1024];
+    std::vector<std::pair<std::string, uint64_t>> gomps;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long lo = 0, hi = 0, off = 0; char perm[8] = {0}; int pos = 0;
+        if (sscanf(line, "%lx-%lx %7s %lx %*s %*s%n", &lo, &hi, perm, &off, &pos) < 4) continue;
+        const char* p = line + pos; while (*p == ' ' || *p == '\t') p++;
+        std::string path(p); while (!path.empty() && (path.back() == '\n' || path.back() == ' ')) path.pop_back();
+        if (getenv("PIMID_RT_DEBUG")) info("[pim-runtime] debug map %s", line);
+        if (path.empty() || path[0] != '/') continue;   /* anonymous, [heap], [stack], [vdso]: OTHER */
+        const size_t sl = path.rfind('/');
+        const bool isGomp = path.compare(sl + 1, 7, "libgomp") == 0;
+        if (isGomp) {
+            bool seen = false;
+            for (auto& g : gomps) if (g.second == lo - off) seen = true;
+            if (!seen) gomps.push_back({path, lo - off});
+        }
+        m.push_back({lo, hi, (uint8_t)(isGomp ? RTR_GOMP : (path == g_rtExe ? RTR_USER : RTR_OTHER))});
+    }
+    fclose(f);
+    g_rtMaps.swap(m);
+    for (auto& g : gomps) {
+        bool loaded = false;
+        for (uint64_t b : g_rtGompBiases) if (b == g.second) loaded = true;
+        if (loaded) continue;
+        g_rtGompBiases.push_back(g.second);
+        rtLoadGompSyms(g.first, g.second);
+    }
+}
+/* Translation time: the region of a block and, at a libgomp entry point, its event. */
+static void rtClassifyTb(uint64_t va, uint8_t* region, uint16_t* sym) {
+    *region = RTR_OTHER; *sym = 0;
+    if (getenv("PIMID_RT_DEBUG")) { static std::atomic<int> nd{0}; if (nd.fetch_add(1) < 50) info("[pim-runtime] debug tb 0x%lx", (unsigned long)va); }
+    std::lock_guard<std::mutex> g(g_rtMu);
+    for (int pass = 0; pass < 2; pass++) {
+        for (const RtMap& m : g_rtMaps)
+            if (va >= m.lo && va < m.hi) {
+                *region = m.region;
+                if (m.region == RTR_GOMP && !g_rtGompLoaded.exchange(true)) {   /* the guest's libgomp runs */
+                    if (g_rtExe.empty())
+                        panic("[pim-runtime] the guest runs libgomp but the workload binary could not be identified from "
+                              "QEMU's command line: the runtime cannot be told from the kernel. Set simulation.pim_runtime.enabled: false");
+                    for (const RtMap& x : g_rtMaps)
+                        if (x.region == RTR_USER)
+                            info("[pim-runtime] workload (kernel) mapping [0x%lx, 0x%lx)", (unsigned long)x.lo, (unsigned long)x.hi);
+                    info("[pim-runtime] guest libgomp code at 0x%lx: OpenMP runtime events are recognised", (unsigned long)va);
+                }
+                if (m.region == RTR_GOMP) {
+                    auto it = g_rtSyms.find(va);
+                    if (it != g_rtSyms.end()) *sym = (uint16_t)(it->second | 0x8000);   /* bit 15: an entry point */
+                }
+                return;
+            }
+        if (pass == 0 && g_rtReloads < 100000) { g_rtReloads++; rtReloadMaps(); }
+    }
+}
+static uint8_t rtRegionOf(uint64_t a) {
+    std::lock_guard<std::mutex> g(g_rtMu);
+    for (const RtMap& m : g_rtMaps) if (a >= m.lo && a < m.hi) return m.region;
+    return RTR_OTHER;
+}
+static void rtOmpEntry(uint32_t tid, uint16_t sym, uint64_t va) {
+    const int kind = sym & 0xff;
+    const uint8_t arg = (uint8_t)((sym >> 8) & 0x7f);
+    if (kind == RT_SYM_UNMAPPED) {
+        std::string nm;
+        { std::lock_guard<std::mutex> g(g_rtMu); auto it = g_rtSymName.find(va); if (it != g_rtSymName.end()) nm = it->second; }
+        panic("[pim-runtime] FATAL: the workload calls libgomp's %s on a PE; it has no PIM runtime primitive (tasks, "
+              "target, teams and cancellation are not modelled). Run with simulation.pim_runtime.enabled: false.",
+              nm.empty() ? "<unnamed>" : nm.c_str());
+    }
+    uint64_t v = 0;
+    if (arg == RT_ARG_TEAM_RDX) {
+        resolveRcxHandle();
+        uint64_t nt = 0;
+        if (!readRdx(&nt)) nt = 0;
+        const uint32_t P = (uint32_t)(nt ? nt : g_rtIcv.load());
+        g_rtTeam.store(P ? P : 1);
+    } else if (arg == RT_ARG_ICV_RDI) {
+        resolveRcxHandle();
+        if (readGuestReg(rdi_handle.load(std::memory_order_acquire), &v) && (int32_t)v > 0) g_rtIcv.store((uint32_t)v);
+    }
+    const uint32_t P = (kind == RTK_OMP_LAUNCH || kind == RTK_OMP_BARRIER || kind == RTK_OMP_REDUCTION) ? g_rtTeam.load() : 1;
+    rtCharge(tid, kind, P, kind == RTK_OMP_ACQUIRE);
+    /* A TAIL call from a region body (GOMP_critical_end, omp_unset_lock or
+     * GOMP_barrier as the body's last statement, compiled to a jmp) returns
+     * straight into libgomp: the body ends with this call, so its implicit
+     * barrier is charged here (the return address on the stack is in libgomp). */
+    uint64_t sp = 0;
+    resolveRcxHandle();
+    if (readGuestReg(rsp_handle.load(std::memory_order_acquire), &sp) && sp) {
+        const uint64_t ret = *(const uint64_t*)(uintptr_t)sp;   /* guest_base 0: guest memory is host memory */
+        if (rtRegionOf(ret) == RTR_GOMP) rtCharge(tid, RTK_OMP_BARRIER, g_rtTeam.load(), false);
+    }
+}
+/* Per executed block: the runtime state machine. Returns true when the block
+ * is runtime code to be dropped (not fed to the core). */
+static bool rtOnTb(uint32_t tid, uint8_t region, uint16_t sym, uint64_t va) {
+    const bool app = rtApplies(tid);
+    const uint8_t st = g_rtState[tid];
+    if (region == RTR_GOMP) {
+        if (st != RTS_RUNTIME) {
+            if (app && st == RTS_KERNEL) {
+                if (sym & 0x8000) rtOmpEntry(tid, (uint16_t)(sym & 0x7fff), va);
+                else rtCharge(tid, RTK_OMP_BARRIER, g_rtTeam.load(), false);   /* a region body returned: implicit barrier */
+            }
+            g_rtState[tid] = RTS_RUNTIME;   /* from UNSET: a new thread starting in the runtime, no event */
+        }
+    } else if (region == RTR_USER) {
+        g_rtState[tid] = RTS_KERNEL;
+    }
+    const uint8_t now = g_rtState[tid];
+    const bool drop = app && (g_rtShim[tid] || now == RTS_RUNTIME ||
+                              (now == RTS_UNSET && tid != 0 && g_rtGompLoaded.load(std::memory_order_relaxed)));
+    /* leaving the runtime: a deferred acquire is charged after the
+     * acquisition (Join has applied the wake sync to the releaser first) */
+    if (!drop && g_rtPend[tid]) rtApplyPending(tid);
+    return drop;
+}
+static inline bool rtDropNow(uint32_t tid) {
+    if (!g_rt.enabled || !rtApplies(tid)) return false;
+    const uint8_t s = g_rtState[tid];
+    return g_rtShim[tid] || s == RTS_RUNTIME || (s == RTS_UNSET && tid != 0 && g_rtGompLoaded.load(std::memory_order_relaxed));
+}
+static void rtRoiSnapshot() {
+    memcpy(g_rtCntRoi, g_rtCnt, sizeof g_rtCnt); memcpy(g_rtCycRoi, g_rtCyc, sizeof g_rtCyc);
+    memcpy(g_rtDropIRoi, g_rtDropI, sizeof g_rtDropI); memcpy(g_rtDropMRoi, g_rtDropM, sizeof g_rtDropM);
+}
+static void rtPrintStats() {
+    if (!g_rt.enabled || !zinfo) return;
+    uint64_t tc[RTK_N] = {0}, ty[RTK_N] = {0}, tI = 0, tM = 0;
+    for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++) {
+        std::string s; uint64_t cy = 0, ev = 0;
+        for (int k = 0; k < RTK_N; k++) {
+            const uint64_t n = g_rtCnt[c][k] - g_rtCntRoi[c][k], y = g_rtCyc[c][k] - g_rtCycRoi[c][k];
+            tc[k] += n; ty[k] += y; cy += y; ev += n;
+            if (n) { char b[96]; snprintf(b, sizeof b, " %s=%lu/%lu", kRtKey[k], (unsigned long)n, (unsigned long)y); s += b; }
+        }
+        const uint64_t dI = g_rtDropI[c] - g_rtDropIRoi[c], dM = g_rtDropM[c] - g_rtDropMRoi[c];
+        tI += dI; tM += dM;
+        if (ev || dI || dM)
+            info("[pim-runtime] ROI core %u: events (count/cycles):%s | primitive cycles charged %lu | runtime code not executed on the PE: %lu instrs, %lu memory accesses",
+                 c, s.empty() ? " none" : s.c_str(), (unsigned long)cy, (unsigned long)dI, (unsigned long)dM);
+    }
+    std::string s; uint64_t E = 0, Y = 0;
+    for (int k = 0; k < RTK_N; k++) {
+        E += tc[k]; Y += ty[k];
+        if (tc[k]) { char b[96]; snprintf(b, sizeof b, " %s=%lu/%lu", kRtKey[k], (unsigned long)tc[k], (unsigned long)ty[k]); s += b; }
+    }
+    info("[pim-runtime] ROI total: events=%lu charged=%lu cycles removedInstrs=%lu removedMemAccesses=%lu |%s [1.12.18, ruling 2026-10-23; assumes DPU-style atomics across the device's PEs]",
+         (unsigned long)E, (unsigned long)Y, (unsigned long)tI, (unsigned long)tM, s.empty() ? " no events" : s.c_str());
+}
+static std::vector<std::pair<uint32_t, double>> rtParseTable(const std::string& v, const char* key) {
+    std::vector<std::pair<uint32_t, double>> t;
+    size_t p = 0;
+    while (p < v.size()) {
+        size_t e = v.find(',', p); if (e == std::string::npos) e = v.size();
+        const std::string it = v.substr(p, e - p);
+        const size_t c = it.find(':');
+        if (c == std::string::npos) panic("[pim-runtime] %s: entry '%s' is not P:cycles", key, it.c_str());
+        t.push_back({(uint32_t)strtoul(it.substr(0, c).c_str(), nullptr, 10), strtod(it.substr(c + 1).c_str(), nullptr)});
+        p = e + 1;
+    }
+    std::sort(t.begin(), t.end());
+    if (t.empty() || t[0].first < 2) panic("[pim-runtime] %s needs participant counts >= 2", key);
+    return t;
+}
+/* PIMID_PIM_RUNTIME (src/main.cpp, simulation.pim_runtime): "key=value;..."; only the keys the user set. */
+static void rtInit() {
+    const char* e = getenv("PIMID_PIM_RUNTIME");
+    const std::string env = e ? e : "";
+    size_t p = 0;
+    while (p < env.size()) {
+        size_t q = env.find(';', p); if (q == std::string::npos) q = env.size();
+        const std::string kv = env.substr(p, q - p); p = q + 1;
+        const size_t eq = kv.find('='); if (eq == std::string::npos) continue;
+        const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
+        if (k == "enabled") g_rt.enabled = (v == "1");
+        else if (k == "apply_to") g_rt.allCores = (v == "all");
+        else if (k == "cycle_basis") g_rt.timeBasis = (v == "time");
+        else if (k == "source_clock_mhz") g_rt.srcMHz = strtod(v.c_str(), nullptr);
+        else if (k == "barrier_table") g_rt.barTab = rtParseTable(v, "barrier_table");
+        else if (k == "reduction_table") g_rt.redTab = rtParseTable(v, "reduction_table");
+        else {
+            bool hit = false;
+            for (int i = 0; i < RTK_N && !hit; i++) {
+                if (k == std::string(kRtKey[i]) + "_cycles") { g_rt.cyc[i] = strtod(v.c_str(), nullptr); g_rt.table[i] = RTT_NONE; hit = true; }
+                else if (k == std::string(kRtKey[i]) + "_scaling") {
+                    g_rt.scale[i] = (v == "linear") ? RTS_LINEAR : (v == "log2") ? RTS_LOG2 : RTS_CONSTANT; hit = true;
+                }
+            }
+            if (!hit) panic("[pim-runtime] unknown PIMID_PIM_RUNTIME key '%s'", k.c_str());
+        }
+    }
+    {
+        const char* nt = getenv("OMP_NUM_THREADS");
+        const uint32_t v = nt ? (uint32_t)atoi(nt) : 0;
+        g_rtIcv.store(v ? v : (zinfo ? zinfo->numCores : 1));
+    }
+    if (!g_rt.enabled) { info("[pim-runtime] disabled (simulation.pim_runtime.enabled: false): runtime code is executed and priced like kernel code"); return; }
+    rtFindExe();
+    std::string s;
+    for (int i = 0; i < RTK_N; i++) {
+        char b[128];
+        if (g_rt.table[i] == RTT_BARRIER) snprintf(b, sizeof b, " %s=barrier_table(P)", kRtKey[i]);
+        else if (g_rt.table[i] == RTT_REDUCTION) snprintf(b, sizeof b, " %s=reduction_table(P)", kRtKey[i]);
+        else snprintf(b, sizeof b, " %s=%g%s", kRtKey[i], g_rt.cyc[i],
+                      g_rt.scale[i] == RTS_LINEAR ? "*P" : g_rt.scale[i] == RTS_LOG2 ? "*ceil(log2 P)" : "");
+        s += b;
+    }
+    std::string bt, rt;
+    for (auto& x : g_rt.barTab) { char b[48]; snprintf(b, sizeof b, " %u:%g", x.first, x.second); bt += b; }
+    for (auto& x : g_rt.redTab) { char b[48]; snprintf(b, sizeof b, " %u:%g", x.first, x.second); rt += b; }
+    info("[pim-runtime] enabled (apply_to=%s): runtime code is not executed on the PE; each runtime event is charged its PIM primitive. "
+         "Assumes DPU-style atomics across the device's PEs (UPMEM measured primitives, one sync domain).", g_rt.allCores ? "all" : "pe");
+    info("[pim-runtime] costs (cycles):%s; barrier_table{%s } (DERIVED from PrIM Fig. 21), reduction_table{%s } (PrIM Fig. 21 HANDS); "
+         "cycle_basis=%s (%s)", s.c_str(), bt.c_str(), rt.c_str(), g_rt.timeBasis ? "time" : "pe_cycles",
+         g_rt.timeBasis ? "published DPU cycles at source_clock_mhz converted through time to the PE clock"
+                        : "published UPMEM DPU pipeline cycles used as PE cycles");
+    info("[pim-runtime] workload binary for the runtime/kernel split: %s", g_rtExe.empty() ? "<not found>" : g_rtExe.c_str());
+}
+/* Shim ops (src/parallel_abstraction/pimid_mpi.cpp). */
+#define ZSIM_MAGIC_OP_RT_BEGIN  2064   /* 1.12.18: runtime bookkeeping follows: not executed on the PE */
+#define ZSIM_MAGIC_OP_RT_END    2065
+#define ZSIM_MAGIC_OP_RT_EVENT  2066   /* %rdx = kind | participants << 32: charge one primitive */
+#define ZSIM_MAGIC_OP_RT_QUERY  2067   /* %rdx -> uint64: 1 if the PIM runtime applies to this thread */
+static inline bool isRtMagicOp(uint64_t op) { return op >= ZSIM_MAGIC_OP_RT_BEGIN && op <= ZSIM_MAGIC_OP_RT_QUERY; }
+static void handleRtMagicOp(uint64_t op, uint32_t tid) {
+    if (tid >= MAX_THREADS || !zinfo) return;
+    uint64_t a = 0;
+    if (op == ZSIM_MAGIC_OP_RT_QUERY) {
+        if (readRdx(&a) && a) *(volatile uint64_t*)a = rtApplies(tid) ? 1 : 0;
+        return;
+    }
+    if (!g_rt.enabled) return;
+    if (pimidPostRoiFree()) return;   // 1.12.18 (2026-10-24): no runtime charges after the ROI (see handleMpiMagicOp)
+    if (op == ZSIM_MAGIC_OP_RT_BEGIN) { g_rtShim[tid] = true; return; }
+    if (op == ZSIM_MAGIC_OP_RT_END)   { g_rtShim[tid] = false; return; }
+    if (!readRdx(&a) || !rtApplies(tid)) return;
+    const int kind = (int)(a & 0xffffffffu);
+    if (kind < RTK_MPI_P2P || kind > RTK_MPI_BARRIER) panic("[pim-runtime] RT_EVENT kind %d is not an MPI event", kind);
+    rtCharge(tid, kind, (uint32_t)(a >> 32), false);
+}
+/* ==== end 1.12.18 PIM runtime primitives ==== */
 
 /* ---- QEMU Callbacks ---- */
 
@@ -1417,12 +2452,18 @@ static void mem_cb(unsigned int vcpu_index,
     /* Inside an MPI comm window: skip counting the transport's own accesses
      * (keeps the core attached but the wall-clock poll invisible). */
     if (mpi_comm_window[tid].load(std::memory_order_acquire)) return;
+    /* 1.12.18: runtime code is not executed on the PE (PIM runtime primitives) */
+    if (g_rt.enabled && rtDropNow(tid)) { const uint32_t c = cids[tid]; if (c < MAX_THREADS) g_rtDropM[c]++; return; }
 
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = true;
     if (qemu_plugin_mem_is_store(info)) {
         fPtrs[tid].storePtr(tid, vaddr);
     } else {
         fPtrs[tid].loadPtr(tid, vaddr);
+    }
+    if (g_lockSync) {   // 1.12.18 (user ruling 2026-10-23, "model the lock word"): after the access is timed
+        if (userdata == &lock_rmw_tag) lockRmw(tid, vaddr, info);
+        else if (g_lockAny.load(std::memory_order_relaxed) && qemu_plugin_mem_is_store(info)) lockStore(tid, vaddr, info);
     }
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = false;
 }
@@ -1466,7 +2507,7 @@ static void detachThreadForMigration(uint32_t tid, int domain) {
             // at 64M records and climbing, with the cut unchanged across 71k
             // phases). Set at the migration itself, a deterministic simulation
             // event, not by a wall-dependent advancement test.
-            if (g_mpi_thread_mode && cid < MAX_THREADS)
+            if ((g_mpi_thread_mode || g_spCut) && cid < MAX_THREADS)   // 1.12.18: single-process cut too
                 g_coreRoiState[cid].store(3, std::memory_order_release);
             zinfo->sched->leave(procIdx, tid, cid);
         }
@@ -1541,6 +2582,20 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
      * transport's own instructions (the wall-clock poll stays invisible). */
     if (mpi_comm_window[tid].load(std::memory_order_acquire)) return;
 
+    /* 1.12.18 (user ruling 2026-10-23): PIM runtime primitives. A block of
+     * runtime code is not fed to the core; the thread stays attached. */
+    if (g_rt.enabled) {
+        if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = true;
+        const bool drop = rtOnTb(tid, tud->rtRegion, tud->rtSym, tud->tbAddr);
+        if (drop) {
+            if (rtEnsureAttached(tid)) g_rtDropI[cids[tid]] += tud->numInsns;
+            g_brPending[tid] = false;
+            g_ctrlPending[tid] = 0;
+        }
+        if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = false;
+        if (drop) return;
+    }
+
     /* Dynamic opcode profiling (PIMID_OOO_DUMP): tally this TB's approx insns
      * weighted by execution count. Lock-free (per-TB array + atomic slots). */
     if (unlikely(g_ooo_dump)) {
@@ -1612,6 +2667,12 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
  */
 static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     if (tid >= MAX_THREADS) return;
+    /* 1.12.18 (2026-10-24, MPI checksums): after the ROI (stats written, the
+     * program running to its exit) the MPI timing ops price nothing. The
+     * post-ROI checksum reduce of gemv/spmv/stencil/triad/vadd otherwise drove
+     * the NoC, contention and clock handlers on finalized state and on cores
+     * the rank no longer holds (QEMU SIGSEGV / heap corruption). */
+    if (pimidPostRoiFree() && op != ZSIM_MAGIC_OP_MPI_REGISTER && op != ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) return;
 
     if (op == ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) {
         /* 1.12.17 (M1): libpimid_mpi registers the memory of its own transport
@@ -1855,6 +2916,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                  * follows stays out of it. Bookkeeping only: no dump, no
                  * termination, no freeze (the 1.8.6 rounds above). */
                 zinfo->pgres.markKernelClose(zinfo->numPhases);
+                roiWallCloseMpi("co-sim kernel close");   // 1.12.18
                 info("Thread %d: device kernel window closed at phase %lu (co-sim MPI, the last rank's marker; the tail is outside the priced window) [1.12.3]",
                      tid, (unsigned long)zinfo->numPhases);
             }
@@ -1880,6 +2942,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             zinfo->pgres.markRoi(zinfo->numPhases, zinfo->globPhaseCycles);   // 1.11.18: PG residency window
             snapshotRoiBaseCyc();
             roiRebaseTrafficCounters("first MPI barrier (synthesized baseline)");   // 1.11.90
+            flushHeldWritebacks();   // 1.12.18 (B3)
             if (getenv("PIMID_DEBUG_RDV"))
                 info("Thread %d: synthesized per-rank ROI baseline at first "
                      "MPI BARRIER (cyc=%lu)", tid,
@@ -2035,6 +3098,14 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                         g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
                     in_roi.store(false);
                     dumpTerminationStats();
+                    /* 1.12.18 (2026-10-24, MPI checksums): every rank has arrived, the
+                     * stats are written; the program now runs to its own exit
+                     * unsimulated (pimidPostRoiFree), as after a shared-memory ROI,
+                     * so rank 0's BENCH_CHECKSUM is printed. It used to end here at
+                     * the next Join (_exit before the print). */
+                    g_postRoiSince = postRoiWallSec();
+                    __sync_synchronize();
+                    g_postRoiFree = 1;
                     zinfo->terminationConditionMet = true;
                 }
             }
@@ -2379,6 +3450,42 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
 /**
  * Check if a magic op code is an MPI op.
  */
+static inline bool isSpmMagicOp(uint64_t op) {   // 1.12.18
+    return op >= ZSIM_MAGIC_OP_SPM_QUERY && op <= ZSIM_MAGIC_OP_SPM_DMA;
+}
+
+/* 1.12.18: the scratchpad ops (benchmarks/include/pimid_spm.h). %rdx points to
+ * a pimid_spm_msg_t {a, b, c, d, ret0, ret1}; guest and host share the address
+ * space in user mode, so it is used directly. A DMA the core accepts is priced
+ * by the core (spmDma) and its bytes are moved here, so the transfer executes
+ * no guest instructions. */
+static void handleSpmMagicOp(uint64_t op, uint32_t tid) {
+    uint64_t addr = 0;
+    if (!zinfo || tid >= MAX_THREADS || !readRdx(&addr) || addr == 0) return;
+    volatile uint64_t* m = (volatile uint64_t*)addr;
+    Core* c = cores[tid];
+    if (op == ZSIM_MAGIC_OP_SPM_QUERY) {
+        uint64_t cap = 0, mode = 0;
+        if (c) c->spmQuery(&cap, &mode);
+        m[4] = cap; m[5] = mode;
+        return;
+    }
+    if (op == ZSIM_MAGIC_OP_SPM_BIND) {
+        const bool ok = c && c->spmBind(m[0], m[1], m[2]);
+        m[4] = ok ? 1 : 0;
+        if (ok && m[1]) info("Thread %u: scratchpad bound [0x%lx, 0x%lx) on core %u", tid,
+                             (unsigned long)m[0], (unsigned long)(m[0] + m[1]), c->getSrcId());
+        return;
+    }
+    const uint64_t dst = m[0], src = m[1], bytes = m[2], dir = m[3];
+    if (c && c->spmDma(dst, src, bytes, dir == 1)) {
+        memmove((void*)dst, (const void*)src, bytes);
+        m[4] = 1;
+    } else {
+        m[4] = 0;
+    }
+}
+
 static inline bool isMpiMagicOp(uint64_t op) {
     return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */;
 }
@@ -2657,14 +3764,24 @@ static inline uint32_t flushWalkersExpected() {
  * which is legitimately larger (one address held dirty at three levels is one
  * line of charge and three lines of cleaning) and is reported as the different
  * quantity it is (1.11.57, D004). */
-static uint64_t measureAndCleanFlushDelta(uint64_t* cleanedLines) {
+static uint64_t measureAndCleanFlushDelta(uint64_t* cleanedLines, std::vector<Address>* linesOut) {
     *cleanedLines = 0;
     if (!zinfo) return 0;
     std::unordered_set<Address> distinct;
     const g_vector<Cache*>& all = zsimAllCaches();
+    /* 1.12.18: the writebacks leave in the WALK's order -- caches in
+     * registry order, each cache's lines in line-id (set-major) order, a line
+     * at its first sighting -- deterministic, and the order a hardware flush
+     * emits them. Address order (the 1.12.18 bug-7 sort) sent each 64 MB
+     * per-thread malloc arena's lines in one run: with the PIM device's
+     * contiguous per-bank layout (pagesPerUnit) every run is ONE bank, so a
+     * controller queue full of one bank's writes drained the whole flush one
+     * bank at a time (cosim_DDR5_mpi_gemv: 61,002 lines, 2.8 M DRAM cycles,
+     * ~46 per write, the kernel then stalled ~12x). Arenas share their set
+     * indices, so the walk alternates between them, and across the banks. */
     for (Cache* c : all) {
         if (!c) continue;
-        *cleanedLines += c->flushDirtyLines(distinct);
+        *cleanedLines += c->flushDirtyLines(distinct, linesOut);
     }
     static bool said = false;
     if (!said) {
@@ -2687,7 +3804,8 @@ static uint64_t measureAndCleanFlushDelta(uint64_t* cleanedLines) {
  * touches fPtrs[].bblPtr() -- see decision 4 above. */
 static bool takeFlushWalkDelta(uint32_t tid, uint64_t* deltaBytes,
                                uint64_t* cumulativeBytes,
-                               uint64_t* cleanedLines, uint64_t* walkIndex) {
+                               uint64_t* cleanedLines, uint64_t* walkIndex,
+                               std::vector<Address>* linesOut) {
     if (!zinfo || !zinfo->coherence.enabled) return false;
     if (zinfo->coherence.mode != 0) return false;  // separate = cache bypass, no flush
     /* 1.11.62 (ruling 5b): the gate hook. Read once; the fast path is the
@@ -2695,7 +3813,7 @@ static bool takeFlushWalkDelta(uint32_t tid, uint64_t* deltaBytes,
     static const bool flushTrace = (getenv("PIMID_FLUSH_TRACE") != nullptr);
     std::lock_guard<std::mutex> lk(g_flushWalkMutex);
     uint64_t cleaned = 0;
-    const uint64_t delta = measureAndCleanFlushDelta(&cleaned);
+    const uint64_t delta = measureAndCleanFlushDelta(&cleaned, linesOut);
     g_flushWalkBytesTotal += delta;
     g_flushWalkCount++;
     /* 1.11.57 (audit D015), restated for 1.11.62: footprintMeasured is a
@@ -2731,10 +3849,21 @@ static bool takeFlushWalkDelta(uint32_t tid, uint64_t* deltaBytes,
  */
 static void chargeCoherenceFlush(uint32_t tid) {
     uint64_t deltaBytes = 0, cumulativeBytes = 0, cleanedLines = 0, walkIdx = 0;
+    std::vector<Address> wbLines;   // 1.12.18 (bug 7)
     if (!takeFlushWalkDelta(tid, &deltaBytes, &cumulativeBytes, &cleanedLines,
-                            &walkIdx))
+                            &walkIdx, zinfo->flushHostMems ? &wbLines : nullptr))
         return;
-
+    /* 1.12.18: (bug 7) THE WRITEBACKS REACH THE HOST MEMORY CONTROLLER. The
+     * walk cleaned these lines, i.e. wrote them back to memory; they were
+     * priced array-side only (a 0.5 row-miss stand-in) and never reached the
+     * host controller or its replay. Each line now goes to its controller
+     * (the SplitAddrMemory rule, line % n, controller-local line / n) at the
+     * flush instant, in address order (deterministic), outside every walk
+     * lock: one write in the controller's count (McPAT MC memory_writes, the
+     * host-originated array class) and, with the host replayed, one write
+     * request (source_id 1) whose ACTs and row state the controller counts.
+     * The flush runs at the co-sim roi_begin offload, after the traffic
+     * counters are rebased, so it lands in the ROI window. */
     /* 1.11.62 (ruling 5a): the FIXED term is charged per rank because each
      * core issues its own flush instruction and stalls on it -- see decision 3
      * of the design block. 1.11.62 (ruling 5b): the DATA term is this
@@ -2745,6 +3874,41 @@ static void chargeCoherenceFlush(uint32_t tid) {
         flushCyc += (uint64_t)std::ceil(
             (double)deltaBytes / zinfo->coherence.writebackBytesPerCycle);
     }
+    if (zinfo->flushHostMems && !zinfo->flushHostMems->empty() && !wbLines.empty()) {
+        /* 1.12.18: the writebacks leave in the WALK's order
+         * (measureAndCleanFlushDelta), not sorted, and PACED over the flush
+         * the core is charged for: line i at cyc + i x flushCyc / lines. All
+         * at one instant (the bug-7 form) gave every line one replay stamp,
+         * and the replay orders equal stamps by address: each 64 MB
+         * per-thread malloc arena became one run of writes to ONE bank (the
+         * device's contiguous per-bank layout, pagesPerUnit), the controller
+         * queue held ~1.4 banks, and cosim_DDR5_mpi_gemv drained its 61,002
+         * flush lines one bank at a time (2.7 M DRAM cycles, 0.035 commands
+         * per cycle; the kernel then ran ~12x long). */
+        const g_vector<SimpleMemory*>& hm = *zinfo->flushHostMems;
+        const uint64_t n = hm.size();
+        const uint64_t cyc = cores[tid] ? cores[tid]->getCycles() : 0;
+        const uint32_t src = getCid(tid);
+        /* 1.12.18 (bug B3): thread-MPI co-sim flushes at the KERNEL-ENTRY
+         * barrier, and the first rank there flushes (walk #1: the whole
+         * pre-ROI footprint, ~61k lines on the smoke gemv) BEFORE the barrier
+         * takes the ROI baseline: its writebacks were rebased out of the host
+         * controller's counts and never reached the replay (no record before
+         * mpiNocBaselined), while shared-memory co-sim flushes after its
+         * roi_begin rebase. They are held here and sent the instant the
+         * baseline is taken (flushHeldWritebacks), on the flushing core's
+         * clock then: inside the ROI, counted and replayed as in phase mode. */
+        if (g_mpi_thread_mode && !mpi_roi_baselined) {
+            std::lock_guard<std::mutex> g(g_heldFlushMutex);
+            for (size_t i = 0; i < wbLines.size(); i++)
+                g_heldFlush.push_back(HeldFlushLine{wbLines[i], src, (uint64_t)i * flushCyc / wbLines.size()});
+        } else {
+            for (size_t i = 0; i < wbLines.size(); i++)
+                hm[wbLines[i] % n]->flushWriteback(wbLines[i] / n, cyc + (uint64_t)i * flushCyc / wbLines.size(), src);
+        }
+        __sync_fetch_and_add(&zinfo->xing.flushMcLines, (uint64_t)wbLines.size());
+    }
+
 
     /* 1.11.62 (ruling 5b): the bytes are booked whether or not there are
      * cycles to inject. The walk has already CLEANED those lines, so if the
@@ -2867,6 +4031,12 @@ static void cosimRoiBeginOffload(uint32_t tid) {
     // Retire the flush+launch synthetic BBLs onto the host timeline before
     // the migration drops the last one.
     drainHostCharges(tid);
+    if (g_spCut && !g_mpi_thread_mode && tid < MAX_THREADS && cids[tid] < zinfo->numCores && zinfo->cores[cids[tid]]) {
+        /* 1.12.18 (ruling 2026-10-24): the device's ROI starts at the doorbell
+         * on the host's ROI-relative clock (PEMemoryInterface::spDevShift). */
+        const uint32_t hc = cids[tid];
+        PEMemoryInterface::spDevShift() = PEMemoryInterface::cutRoiRel(hc, zinfo->cores[hc]->pimidRawCycle());   // 1.12.18 (W9): the raw clock (cutRoiRel converts)
+    }
     thread_domain[tid].store(DOMAIN_DEVICE);
     // 1.8.4 ROI window: first opener initializes the population; any later
     // opener (kernels where every rank calls roi_begin) just joins it.
@@ -2920,12 +4090,26 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         }
         return;
     }
+    if (isSpmMagicOp(op)) {   // 1.12.18
+        if (tid < MAX_THREADS) {
+            ensureThreadInit(tid);
+            handleSpmMagicOp(op, tid);
+        }
+        return;
+    }
+    if (isRtMagicOp(op)) {   // 1.12.18: PIM runtime primitives (thread-MPI shim)
+        if (tid < MAX_THREADS) {
+            ensureThreadInit(tid);
+            handleRtMagicOp(op, tid);
+        }
+        return;
+    }
 
     // Extract low 32 bits as opcode, high 32 bits as optional payload size
     uint32_t opcode = static_cast<uint32_t>(op & 0xFFFFFFFF);
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
-    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin();   // 1.12.17: the main thread's stack
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin(tid);   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
         // OWN roi_begin (the process-mode contract, per-rank deterministic).
@@ -2972,6 +4156,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                     if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
+                flushHeldWritebacks();   // 1.12.18 (B3)
                 /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
                  * branch returns before the legacy path's
                  * pgres.markRoi(), so under thread-MPI the power-gating
@@ -3011,10 +4196,15 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         for (uint32_t c = 0; c < zinfo->numCores; c++)
             if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
         zinfo->pgres.markRoi(zinfo->numPhases, zinfo->globPhaseCycles);   // 1.11.18: PG residency window
+        roiWallBegin(tid);   // 1.12.18: run time = elapsed wall clock (before the replay window opens)
         // This rank got a real roi_begin -> don't also synthesize a baseline at
         // the first MPI op (see handleMpiMagicOp). rank 0 takes this path.
         mpi_roi_baselined = true;
         snapshotRoiBaseCyc();
+        if (g_spCut) {   // 1.12.18 (ruling 2026-10-24): each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
+            for (uint32_t c = 0; c < zinfo->numCores; c++)
+                if (zinfo->cores[c] && zinfo->cores[c]->wakeStampable()) PEMemoryInterface::spSetOrigin(c, zinfo->cores[c]->getRoiBaseCycle());
+        }
         roiRebaseTrafficCounters("roi_begin");   // 1.11.90
         // Co-sim: the ROI IS the offload region. The launching thread (and
         // every thread spawned inside the region) executes on the DEVICE;
@@ -3022,6 +4212,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         // co-sim workloads -- there is no special kind.
         cosimRoiBeginOffload(tid);
     } else if (opcode == ZSIM_MAGIC_OP_ROI_END) {
+        if (!g_mpi_thread_mode) roiWallEnd(tid, "roi_end");   // 1.12.18: on the core that ran the ROI, before any migration
         // Co-sim: return the launching thread to a host core BEFORE the
         // termination flag, so the host core rejoin fast-forwards to the
         // global phase clock and host cycles absorb the device execution.
@@ -3107,6 +4298,14 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
             in_roi.store(false);
             dumpTerminationStats();
+            /* 1.12.18 (2026-10-24, MPI checksums): the last rank is out of its ROI, the
+             * stats are written; the program now runs to its own exit
+             * unsimulated (pimidPostRoiFree), as after a shared-memory ROI,
+             * so rank 0's BENCH_CHECKSUM is printed. It used to end here at
+             * the next Join (_exit before the print). */
+            g_postRoiSince = postRoiWallSec();
+            __sync_synchronize();
+            g_postRoiFree = 1;
             zinfo->terminationConditionMet = true;
             return;
         }
@@ -3124,7 +4323,13 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
              * timing luck; this makes the semantics deterministic. */
             dumpTerminationStats();
         } else {
-            zinfo->terminationConditionMet = true;  // Let watchdog trigger SimEnd()
+            /* 1.12.18: write the stats now; the program then runs to its own
+             * exit (pimidPostRoiFree), so its output after the ROI survives. */
+            dumpTerminationStats();
+            g_postRoiSince = postRoiWallSec();
+            __sync_synchronize();
+            g_postRoiFree = 1;
+            zinfo->terminationConditionMet = true;
         }
     } else if (opcode == ZSIM_MAGIC_OP_WORK_BEGIN) {
         if (g_cosim_no_offload) return;  // NO_OFFLOAD baseline: WORK is stat-only (no migrate/charge)
@@ -3265,11 +4470,21 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         handleMpiMagicOp(op, tid);
         return;
     }
+    if (isSpmMagicOp(op)) {   // 1.12.18
+        ensureThreadInit(tid);
+        handleSpmMagicOp(op, tid);
+        return;
+    }
+    if (isRtMagicOp(op)) {   // 1.12.18: PIM runtime primitives (thread-MPI shim)
+        ensureThreadInit(tid);
+        handleRtMagicOp(op, tid);
+        return;
+    }
     // Extract low 32 bits as opcode, high 32 bits as optional payload size
     uint32_t opcode = static_cast<uint32_t>(op & 0xFFFFFFFF);
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
-    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin();   // 1.12.17: the main thread's stack
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin(tid);   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
         // OWN roi_begin (the process-mode contract, per-rank deterministic).
@@ -3301,6 +4516,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                     if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();   // 1.11.97 (H10): no barrier has rebased
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
+                flushHeldWritebacks();   // 1.12.18 (B3)
                 /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
                  * branch returns before the legacy path's
                  * pgres.markRoi(), so under thread-MPI the power-gating
@@ -3340,14 +4556,20 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         for (uint32_t c = 0; c < zinfo->numCores; c++)
             if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
         zinfo->pgres.markRoi(zinfo->numPhases, zinfo->globPhaseCycles);   // 1.11.18: PG residency window
+        roiWallBegin(tid);   // 1.12.18: run time = elapsed wall clock (before the replay window opens)
         // This rank got a real roi_begin -> don't also synthesize a baseline at
         // the first MPI op (see handleMpiMagicOp). rank 0 takes this path.
         mpi_roi_baselined = true;
         snapshotRoiBaseCyc();
+        if (g_spCut) {   // 1.12.18 (ruling 2026-10-24): each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
+            for (uint32_t c = 0; c < zinfo->numCores; c++)
+                if (zinfo->cores[c] && zinfo->cores[c]->wakeStampable()) PEMemoryInterface::spSetOrigin(c, zinfo->cores[c]->getRoiBaseCycle());
+        }
         roiRebaseTrafficCounters("roi_begin");   // 1.11.90
         // Co-sim: ROI = offload region (see the twin handler above).
         cosimRoiBeginOffload(tid);
     } else if (opcode == ZSIM_MAGIC_OP_ROI_END) {
+        if (!g_mpi_thread_mode) roiWallEnd(tid, "roi_end");   // 1.12.18: on the core that ran the ROI, before any migration
         if (g_cosim_mode && !g_cosim_no_offload && tid < MAX_THREADS) {
             g_in_device_region.store(false);
             g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94 (H11)
@@ -3430,6 +4652,14 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                 g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
             in_roi.store(false);
             dumpTerminationStats();
+            /* 1.12.18 (2026-10-24, MPI checksums): the last rank is out of its ROI, the
+             * stats are written; the program now runs to its own exit
+             * unsimulated (pimidPostRoiFree), as after a shared-memory ROI,
+             * so rank 0's BENCH_CHECKSUM is printed. It used to end here at
+             * the next Join (_exit before the print). */
+            g_postRoiSince = postRoiWallSec();
+            __sync_synchronize();
+            g_postRoiFree = 1;
             zinfo->terminationConditionMet = true;
             return;
         }
@@ -3447,7 +4677,13 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
              * timing luck; this makes the semantics deterministic. */
             dumpTerminationStats();
         } else {
-            zinfo->terminationConditionMet = true;  // Let watchdog trigger SimEnd()
+            /* 1.12.18: write the stats now; the program then runs to its own
+             * exit (pimidPostRoiFree), so its output after the ROI survives. */
+            dumpTerminationStats();
+            g_postRoiSince = postRoiWallSec();
+            __sync_synchronize();
+            g_postRoiFree = 1;
+            zinfo->terminationConditionMet = true;
         }
     } else if (opcode == ZSIM_MAGIC_OP_WORK_BEGIN) {
         if (g_cosim_no_offload) return;  // NO_OFFLOAD baseline: WORK is stat-only (no migrate/charge)
@@ -3550,6 +4786,9 @@ static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
     tud->brPc = tud->brTakenTarget = tud->brFallthrough = 0;
     tud->termKind = 0;
     tud->termPc = tud->termRetAddr = 0;
+    tud->rtRegion = RTR_OTHER;   // 1.12.18: PIM runtime primitives
+    tud->rtSym = 0;
+    if (g_rt.enabled) rtClassifyTb(tb_addr, &tud->rtRegion, &tud->rtSym);
 
     /* Branch-predictor wiring (OOO and decode-enabled in-order): classify this
      * TB's TERMINATOR so its outcome can be resolved from the next TB's start
@@ -3654,7 +4893,9 @@ static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
                     || prev_opcode == ZSIM_MAGIC_OP_ROI_END
                     || prev_opcode == ZSIM_MAGIC_OP_WORK_BEGIN
                     || prev_opcode == ZSIM_MAGIC_OP_WORK_END
-                    || isMpiMagicOp(prev_magic_op)) {
+                    || isMpiMagicOp(prev_magic_op)
+                    || isSpmMagicOp(prev_magic_op)
+                    || isRtMagicOp(prev_magic_op)) {   // 1.12.18
                 /* In-TB case: mov+xchg in same TB -- opcode known at
                  * translation time, passed as fallback via userdata.  The
                  * callback reads the real %rcx at execution time (R_REGS) as
@@ -3706,15 +4947,19 @@ static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
 
         /* Register BBL callback on first non-magic instruction of TB */
         if (!bbl_registered) {
+            /* 1.12.18: a libgomp entry point reads registers (team size, return address) */
+            const bool rtRegs = (tud->rtSym & 0x8000) != 0;
             qemu_plugin_register_vcpu_insn_exec_cb(
-                insn, insn_exec_cb, QEMU_PLUGIN_CB_NO_REGS, tud);
+                insn, insn_exec_cb, rtRegs ? QEMU_PLUGIN_CB_R_REGS : QEMU_PLUGIN_CB_NO_REGS, tud);
             bbl_registered = true;
         }
 
-        /* Register memory callback for every instruction (REP strings tagged for the guard above) */
+        /* Register memory callback for every instruction (REP strings tagged for the guard above;
+         * 1.12.18: atomic read-modify-writes tagged for the lock-word model, "model the lock word") */
         qemu_plugin_register_vcpu_mem_cb(
             insn, mem_cb, QEMU_PLUGIN_CB_NO_REGS,
-            QEMU_PLUGIN_MEM_RW, isRepString(bytes, insn_sz) ? (void *)&rep_string_tag : NULL);
+            QEMU_PLUGIN_MEM_RW, isRepString(bytes, insn_sz) ? (void *)&rep_string_tag
+                                : (g_lockSync && isAtomicRmw(bytes, insn_sz)) ? (void *)&lock_rmw_tag : NULL);
     }
 
     /* If the TB ends with a mov $imm, %rcx that wasn't consumed by an xchg
@@ -3793,8 +5038,18 @@ static void stackOnUnmap(uint64_t addr, uint64_t len) {
         }
 }
 
+/* 1.12.18: register the main stack, then the PE running the thread claims
+ * the stack under its stack pointer (spmOwnStack). */
+static void stackAtRoiBegin(uint32_t tid) {
+    stackAtRoiBeginReg();
+    uint64_t sp = 0;
+    if (zinfo && tid < MAX_THREADS && cores[tid] &&
+        readGuestReg(rsp_handle.load(std::memory_order_acquire), &sp) && sp)
+        cores[tid]->spmOwnStack(sp);
+}
+
 /* The main thread's stack: the mapping that holds its stack pointer. */
-static void stackAtRoiBegin() {
+static void stackAtRoiBeginReg() {
     uint64_t sp = 0;
     if (!zinfo) return;
     if (!readGuestReg(rsp_handle.load(std::memory_order_acquire), &sp) || sp == 0) {
@@ -3823,6 +5078,11 @@ static void stackAtRoiBegin() {
 }
 
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
+    if (num == 202 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // 1.12.18 (ruling 2026-10-23, "sync to waker")
+        const uint32_t t = vcpuToTid[vcpu_index];
+        if (t < MAX_THREADS) wakeSyncOnFutexReturn(t, ret);
+        return;
+    }
     if (vcpu_index >= MAX_VCPUS || num != 9 /* mmap */) return;
     const uint64_t len = g_stackMapLen[vcpu_index];
     if (!len) return;
@@ -3902,6 +5162,17 @@ static void syscall_cb(unsigned int vcpu_index,
     if (!thread_initialized[tid]) return;  // not yet started
 
     uint32_t cid = cids[tid];
+    /* 1.12.18 (2026-10-24, MPI checksums): exit_group after the ROI by a thread
+     * that has left the scheduler (post-ROI run to exit): end here with the
+     * guest's own status. The return below skipped the exit hook, so QEMU's
+     * exit path reached plugin_exit and the guest status was lost. */
+    if (num == 231 && pimidPostRoiFree()) {
+        g_guest_exit_status = (int)(a1 & 0xff);
+        info("Caught exit syscall (231) after the ROI (program ran to its exit unsimulated), terminating simulation, guest status %d", g_guest_exit_status);
+        if (g_guest_exit_status != 0)
+            info("Guest exit status %d: the workload did not complete normally", g_guest_exit_status);
+        SimEnd();
+    }
     if (cid == INVALID_CID || cid == UNINITIALIZED_CID) return;
 
     /* For potentially blocking syscalls, use the scheduler's adaptive
@@ -3965,6 +5236,7 @@ static void syscall_cb(unsigned int vcpu_index,
              * Offset by 0x1000 to avoid address 0 (which could confuse
              * the blacklist's unordered_set). */
             uint64_t synth_pc = 0x1000 + (uint64_t)num;
+            if (num == 202) wakeSyncOnFutexEntry(tid, cid, a1, a2, a5);   // 1.12.18 (ruling 2026-10-23, "sync to waker")
             zinfo->sched->syscallLeave(procIdx, tid, cid, synth_pc,
                                        (int)num, a1, a2);
             /* Whether fake or real leave occurred, set joinPtrs so the
@@ -4086,6 +5358,10 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb, NULL);
     qemu_plugin_register_vcpu_exit_cb(id, vcpu_exit_cb, NULL);
 
+    /* 1.12.18 (ruling 2026-10-24): an exec-method run; a single-process one
+     * (no PIMID_MPI_RANK, no thread-MPI) is priced with the cut mechanism
+     * (PEMemoryInterface::singleProcCut, read by SimInit's replay instances). */
+    setenv("PIMID_EXEC_CUT", "1", 1);
     if (argProcIdx == 0) {
         /* Primary process: create shared memory and run SimInit */
         if (useSharedMem) {
@@ -4282,6 +5558,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         const char* mpi_ranks_env = getenv("PIMID_MPI_RANKS");
         g_mpi_thread_mode = (mpi_ranks_env && atoi(mpi_ranks_env) > 1 &&
                              !getenv("PIMID_MPI_RANK"));
+        g_spCut = PEMemoryInterface::singleProcCut();   // 1.12.18 (ruling 2026-10-24)
         /* 1.11.19 (user decision D4): remember the rank count.
          * 1.11.62 (ruling 5b): the flush no longer slices by it -- each rank
          * walks the caches at its own arrival and charges the delta that walk
@@ -4293,6 +5570,14 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     if (g_mpi_thread_mode) {
         info("[ZSim] MPI: emulated ranks in-process (deterministic serial weave)");
     }
+    {   /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): simulation.lock_sync, default on;
+         * never under thread-MPI (see lockRmw) */
+        const char* ls = getenv("PIMID_LOCK_SYNC");
+        const bool on = !(ls && atoi(ls) == 0);
+        g_lockSync = on && !g_mpi_thread_mode;
+        info("[ZSim] lock-word sync (simulation.lock_sync): %s", g_lockSync ? "on" : (on ? "off (thread-MPI)" : "off"));
+    }
+    rtInit();   // 1.12.18: PIM runtime primitives (simulation.pim_runtime -> PIMID_PIM_RUNTIME)
     g_cosim_trace = (getenv("PIMID_COSIM_TRACE") != nullptr);
     if (g_cosim_trace) {
         info("[ZSim] Co-sim thread-lifecycle trace enabled (PIMID_COSIM_TRACE)");

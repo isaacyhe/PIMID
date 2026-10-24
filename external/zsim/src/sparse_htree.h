@@ -106,7 +106,8 @@ struct TreeWalker {
      * unknown (caller falls back to the arithmetic walk). srcEp == dstEp or
      * both on one router: that router once, no links. */
     uint32_t walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
-                  const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost) const;
+                  const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost,
+                  uint32_t* tsvDies = nullptr) const;   // 1.12.18: die boundaries crossed (stackDieCrossing)
 };
 
 struct SparseHTree {
@@ -169,6 +170,13 @@ struct SparseHTree {
     std::vector<int> gridX, gridY, gridDie;
     std::map<int,int> dieExitOf;
     int gridRouters = 0;
+    /* 1.12.18 (user ruling, HBM TSV layout): the stack CORE DIE each
+     * chip-slot (L3) router sits on, counted up from the base logic die
+     * (0, where the hub above L3 sits): 1 = the bottom core die. -1 = not on
+     * a stacked core die (every other router, or a part that is not
+     * stacked). Filled by assignStackDies() from the stated channels-per-die
+     * layout; empty until then. */
+    std::vector<int> stackDie;
 
     int totalEndpoints() const { return numPEs + numAbstract; }
 
@@ -642,10 +650,49 @@ inline bool TreeWalker::path(const SparseHTree& t, int srcEp, int dstEp, std::ve
     }
     return true;
 }
+/* 1.12.18 (user ruling, HBM TSV layout): place the chip-slot (L3) routers
+ * of a stacked part on its core dies. On a folded part (HBM) the chip slot
+ * IS the channel, and a router's chip-slot index is the last coordinate of
+ * its routerOf key. Channel c sits on core die c / channelsPerDie + 1 (the
+ * stated layout: channels spread evenly from the bottom, the base logic die
+ * 0 holding the hub). channelsPerDie <= 0 = no stack: every entry -1.
+ * Returns the highest die used. */
+inline int assignStackDies(SparseHTree& t, int channelsPerDie) {
+    t.stackDie.assign((size_t)(t.numRouters > 0 ? t.numRouters : 0), -1);
+    if (channelsPerDie <= 0) return 0;
+    int top = 0;
+    for (const auto& kv : t.routerOf) {
+        const int r = kv.second;
+        if (r < 0 || r >= (int)t.levelOfRouter.size() || r >= (int)t.stackDie.size()) continue;
+        if (t.levelOfRouter[(size_t)r] != 3) continue;
+        const size_t sl = kv.first.rfind('/');
+        if (sl == std::string::npos || sl + 1 >= kv.first.size()) continue;
+        const long slot = std::stol(kv.first.substr(sl + 1));
+        const int die = (int)(slot / channelsPerDie) + 1;
+        t.stackDie[(size_t)r] = die;
+        if (die > top) top = die;
+    }
+    return top;
+}
+
+/* 1.12.18: the die boundaries ONE tree edge crosses: an edge between a
+ * chip-slot (L3) router on core die d and its parent above (the hub on the
+ * base die) crosses d boundaries; every other edge stays on its die. */
+inline uint32_t stackDieCrossing(const SparseHTree& t, int a, int b) {
+    auto lvlOf = [&](int r) -> int { return (r >= 0 && r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1; };
+    const int la = lvlOf(a), lb = lvlOf(b);
+    const int child = (la < lb) ? a : b;
+    if (std::min(la, lb) != 3 || std::max(la, lb) < 4) return 0;
+    if (child < 0 || child >= (int)t.stackDie.size() || t.stackDie[(size_t)child] <= 0) return 0;
+    return (uint32_t)t.stackDie[(size_t)child];
+}
+
 inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
-                                 const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost) const {
+                                 const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost,
+                                 uint32_t* tsvDies) const {
     for (int l = 0; l < 8; l++) perLevel[l] = 0;
     if (cost) *cost = 0;
+    if (tsvDies) *tsvDies = 0;
     std::vector<int> rs;
     if (!path(t, srcEp, dstEp, rs) || rs.empty()) return 0;
     auto lvlOf = [&](int r) -> int { return (r >= 0 && r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1; };
@@ -658,6 +705,7 @@ inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uin
         if (i + 1 < rs.size()) {
             const int rn = rs[i + 1];
             const int la = lvlOf(r), lb = lvlOf(rn);
+            if (tsvDies) *tsvDies += stackDieCrossing(t, r, rn);   // 1.12.18
             /* 1.11.103: a die exit (grid node or hub <-> chip router) crosses the
              * tiers the grid replaced: charge their level latencies and bridges
              * as the tree would, so leaving a gridded die costs what leaving

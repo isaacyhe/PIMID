@@ -4,6 +4,7 @@
  */
 
 #include "memory/internal_dram_network.h"
+#include "memory/ramulator_wrapper.h"   // 1.12.18: the DDR5 provisional clock reads the run's grade
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
@@ -487,7 +488,11 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L0: Subarray network: 16n prefetch buffer
     network_configs_[0].link_width_bits = 512;  // ~153 GB/s
-    network_configs_[0].frequency_GHz = 2.4;    // DDR5-4800 core clock
+    /* 1.12.18: the provisional clock is the run's DDR5 data rate / 2 (the knob, else the part
+     * record's grade: 2.8 GHz at the default DDR5-5600B), not the literal 2.4 GHz of 4800; the
+     * sourced ladder supersedes it. */
+    const double ddr5_clk_GHz = RamulatorWrapper::runDdr5GradeMTs() / 2000.0;
+    network_configs_[0].frequency_GHz = ddr5_clk_GHz;
     network_configs_[0].bandwidth_GBs =
         (network_configs_[0].link_width_bits / 8.0) *
         network_configs_[0].frequency_GHz;
@@ -496,7 +501,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L1: Bank network (banks within BG): internal prefetch-width bus
     network_configs_[1].link_width_bits = 256;     // ~76.8
-    network_configs_[1].frequency_GHz = 2.4;
+    network_configs_[1].frequency_GHz = ddr5_clk_GHz;
     network_configs_[1].bandwidth_GBs =
         (network_configs_[1].link_width_bits / 8.0) *
         network_configs_[1].frequency_GHz;
@@ -505,7 +510,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L2: Bank group network (BGs within chip): internal mux
     network_configs_[2].link_width_bits = 256;     // ~76.8
-    network_configs_[2].frequency_GHz = 2.4;
+    network_configs_[2].frequency_GHz = ddr5_clk_GHz;
     network_configs_[2].bandwidth_GBs =
         (network_configs_[2].link_width_bits / 8.0) *
         network_configs_[2].frequency_GHz;
@@ -514,7 +519,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L3: Chip DQ pins -> rank bus
     network_configs_[3].link_width_bits = 128;     // channel-derived width, no device-width bottleneck (~38.4)
-    network_configs_[3].frequency_GHz = 2.4;
+    network_configs_[3].frequency_GHz = ddr5_clk_GHz;
     network_configs_[3].bandwidth_GBs =
         (network_configs_[3].link_width_bits / 8.0) *
         network_configs_[3].frequency_GHz;
@@ -523,7 +528,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L4: Rank network (ranks within channel): >= channel
     network_configs_[4].link_width_bits = 96;      // ~28.8 (>= channel)
-    network_configs_[4].frequency_GHz = 2.4;
+    network_configs_[4].frequency_GHz = ddr5_clk_GHz;
     network_configs_[4].bandwidth_GBs =
         (network_configs_[4].link_width_bits / 8.0) *
         network_configs_[4].frequency_GHz;
@@ -532,7 +537,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L5: Channel network (channel to MC): JEDEC 25.6 GB/s @ 2.4 GHz
     network_configs_[5].link_width_bits = 88;      // ~26.4 (~ JEDEC 25.6)
-    network_configs_[5].frequency_GHz = 2.4;
+    network_configs_[5].frequency_GHz = ddr5_clk_GHz;
     network_configs_[5].bandwidth_GBs =
         (network_configs_[5].link_width_bits / 8.0) *
         network_configs_[5].frequency_GHz;
@@ -541,7 +546,7 @@ void InternalDRAMNetwork::configureDDR5Network() {
 
     // L6: System network (root): 1 channel aggregate
     network_configs_[6].link_width_bits = 88;
-    network_configs_[6].frequency_GHz = 2.4;
+    network_configs_[6].frequency_GHz = ddr5_clk_GHz;
     network_configs_[6].bandwidth_GBs =
         (network_configs_[6].link_width_bits / 8.0) *
         network_configs_[6].frequency_GHz;

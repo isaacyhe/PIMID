@@ -28,6 +28,11 @@ class IDRAMController : public Clocked<IDRAMController> {
     std::vector<IControllerPlugin*> m_plugins;
 
     int m_channel_id = -1;
+    /* PIMID 1.12.18 (user ruling 2026-10-24, row policy): set by PimidSourceRowPolicy when the HOST policy is
+     * closed page with auto-precharge: a host column command (source_id 1/3, lock-step shadows 4/6) is issued as
+     * RDA/WRA when no other queued request hits its row (chosen at issue; PE requests: open page). */
+    bool m_pimid_host_autoprecharge = false;
+    Clk_t pimid_clk() const { return m_clk; }   // PIMID 1.12.18 (row policy): the controller clock, for a row-policy timer
   public:
     /**
      * @brief       Send a request to the memory controller.
@@ -50,6 +55,19 @@ class IDRAMController : public Clocked<IDRAMController> {
      * controller that does not keep them adds nothing. */
     virtual void pimid_ctrl_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,
                                    uint64_t& /*conflicts*/, uint64_t& /*refreshes*/) const {}
+    /* PIMID 1.12.18: activate commands this controller ISSUED (every command
+     * whose meta is_opening), cumulative; refresh-forced re-opens included. */
+    virtual void pimid_cmd_totals(uint64_t& /*activates*/) const {}
+    /* PIMID 1.12.18 (user ruling 2026-10-24): ACTs of the host lockstep shadow copies (source_id 4/6) and the
+     * candidate-cycles a host command waited for the DIMM CA bus */
+    virtual void pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/) const {}
+    /* PIMID 1.12.18 (ruling 17 / R0605): the row hits / misses / conflicts and
+     * activates of the requests sent with source_id 1 (the host's), cumulative. */
+    virtual void pimid_src_totals(uint64_t& /*hits*/, uint64_t& /*misses*/,
+                                  uint64_t& /*conflicts*/, uint64_t& /*activates*/) const {}
+    /* PIMID 1.12.18 (R1): the requests sent with source_id 2 or 3 (outside the ROI). */
+    virtual void pimid_out_totals(uint64_t& /*hits*/, uint64_t& /*misses*/, uint64_t& /*conflicts*/,
+                                  uint64_t& /*activates*/, uint64_t& /*hostActs*/) const {}
 
     /**
      * @brief       Ticks the memory controller.

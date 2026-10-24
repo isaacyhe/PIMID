@@ -88,6 +88,10 @@ int main(int argc, char* argv[]) {
         n[c] = 0.32;    /* K activation gate */
     }
 
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel
+    { }
     zsim_roi_begin();
 
     for (int t = 0; t < T_steps; t++) {

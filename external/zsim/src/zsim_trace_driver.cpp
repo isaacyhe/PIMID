@@ -372,6 +372,7 @@ void SimEnd() {
          * requests and zero epochs for the ROI (the pre-ROI epochs were
          * replayed at roi_begin; the ROI's own were never replayed). */
         if (zinfo->dramReplay) zinfo->dramReplay->finalize();
+        if (zinfo->hostDramReplay) zinfo->hostDramReplay->finalize();   // 1.12.18 (ruling 17 / R0605)
         backend->dump(false);
     }
 
@@ -562,6 +563,7 @@ static void traceRoiBegin() {
         zinfo->garnetNetwork->markRoiBegin();
     }
     if (zinfo->dramReplay) zinfo->dramReplay->markRoi();
+    if (zinfo->hostDramReplay) zinfo->hostDramReplay->markRoi();   // 1.12.18 (ruling 17 / R0605)
     zinfo->hierarchy.mpiNocBaselined = true;
     zinfo->hierarchy.mpiNocRoiBasePhase = zinfo->numPhases;
     g_roiBegins++;

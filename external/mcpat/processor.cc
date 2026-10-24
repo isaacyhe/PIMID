@@ -37,6 +37,7 @@
 #include <assert.h>
 #include <fstream>
 #include <stdexcept>
+#include <sstream>   /* PIMID 1.12.18: per-die trunk lines */
 #include "parameter.h"
 #include "array.h"
 #include "const.h"
@@ -53,6 +54,7 @@ Processor::Processor(ParseXML *XML_interface)
  pcie(0),
  flashcontroller(0)
 {
+  ClockNetwork::split_enabled = (XML->sys.pimid_clock_split != 0);   /* PIMID 1.12.18 (ruling #4) */
   /*
    *  placement and routing overhead is 10%, core scales worse than cache 40% is accumulated from 90 to 22nm
    *  There is no point to have heterogeneous memory controller on chip,
@@ -102,9 +104,55 @@ Processor::Processor(ParseXML *XML_interface)
   else
 	  numL2Dir = procdynp.numL2Dir;
 
+  /* PIMID 1.12.18 (user ruling, per-die process): EACH COMPONENT IS PRICED
+   * AT THE DIE IT SITS ON. McPAT built one technology per chip
+   * (interface_ip / g_tp); every component already copies its own
+   * InputParameter and re-initialises CACTI's tables from it
+   * (init_interface), and the clock and wire models take the owning
+   * component's InputParameter, so the per-die technology is carried by
+   * the InputParameter each component is built with:
+   *   DRAM die (dram_periph_family 1: cores, caches, controllers, and the
+   *     NoC levels marked on_dram_die): interface_ip = core_tech_node /
+   *     device_type, then the CACTI comm-dram periphery transform below;
+   *   logic die (everything else; every component when the family is 0):
+   *     ip_logic_die = interface_ip with pimid_logic_die_node /
+   *     pimid_logic_die_device_type when given.
+   * Absent both, ip_logic_die IS interface_ip and every number is the
+   * one-technology chip's. A NoC instance's own tech_node (its links) still
+   * wins inside noc.cc. */
+  ip_logic_die = interface_ip;
+  logic_die_override = false;
+  if (XML->sys.pimid_logic_die_node > 0 && XML->sys.pimid_logic_die_node != (int)interface_ip.F_sz_nm)
+  {
+	  ip_logic_die.F_sz_nm = XML->sys.pimid_logic_die_node;
+	  ip_logic_die.F_sz_um = ip_logic_die.F_sz_nm / 1000;
+	  logic_die_override = true;
+  }
+  if (XML->sys.pimid_logic_die_device_type >= 0 && XML->sys.pimid_logic_die_device_type != XML->sys.device_type)
+  {
+	  ip_logic_die.data_arr_ram_cell_tech_type    = XML->sys.pimid_logic_die_device_type;
+	  ip_logic_die.data_arr_peri_global_tech_type = XML->sys.pimid_logic_die_device_type;
+	  ip_logic_die.tag_arr_ram_cell_tech_type     = XML->sys.pimid_logic_die_device_type;
+	  ip_logic_die.tag_arr_peri_global_tech_type  = XML->sys.pimid_logic_die_device_type;
+	  logic_die_override = true;
+  }
+  const bool pimid_fam1 = (XML->sys.dram_periph_family == 1);
+  /* the InputParameter of a component: on the DRAM die or not */
+  auto pimid_ip = [&](bool on_dram) -> InputParameter* {
+	  return (logic_die_override && !on_dram) ? &ip_logic_die : &interface_ip;
+  };
+  auto pimid_noc_ip = [&](int ni) -> InputParameter* {
+	  return pimid_ip(pimid_fam1 && XML->sys.NoC[ni].on_dram_die);
+  };
+  if (logic_die_override)
+	  std::cerr << "[mcpat tech] per-die process: logic die " << ip_logic_die.F_sz_nm << " nm device "
+	            << ip_logic_die.data_arr_peri_global_tech_type << "; "
+	            << (pimid_fam1 ? "DRAM die (cores, caches, controllers, on-die NoC levels) " : "every component is on the logic die; chip ")
+	            << interface_ip.F_sz_nm << " nm device " << interface_ip.data_arr_peri_global_tech_type << std::endl;
+
   for (i = 0;i < numCore; i++)
   {
-		  cores.push_back(new Core(XML,i, &interface_ip));
+		  cores.push_back(new Core(XML,i, pimid_ip(pimid_fam1)));   /* PIMID 1.12.18 (per-die process) */
 		  cores[i]->computeEnergy();
 		  cores[i]->computeEnergy(false);
 		  if (procdynp.homoCore){
@@ -136,7 +184,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL2 >0)
 	  for (i = 0;i < numL2; i++)
 	  {
-		  l2array.push_back(new SharedCache(XML,i, &interface_ip));
+		  l2array.push_back(new SharedCache(XML,i, pimid_ip(pimid_fam1)));
 		  l2array[i]->computeEnergy();
 		  l2array[i]->computeEnergy(false);
 		  if (procdynp.homoL2){
@@ -166,7 +214,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL3 >0)
 	  for (i = 0;i < numL3; i++)
 	  {
-		  l3array.push_back(new SharedCache(XML,i, &interface_ip, L3));
+		  l3array.push_back(new SharedCache(XML,i, pimid_ip(pimid_fam1), L3));
 		  l3array[i]->computeEnergy();
 		  l3array[i]->computeEnergy(false);
 		  if (procdynp.homoL3){
@@ -195,7 +243,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL1Dir >0)
 	  for (i = 0;i < numL1Dir; i++)
 	  {
-		  l1dirarray.push_back(new SharedCache(XML,i, &interface_ip, L1Directory));
+		  l1dirarray.push_back(new SharedCache(XML,i, pimid_ip(pimid_fam1), L1Directory));
 		  l1dirarray[i]->computeEnergy();
 		  l1dirarray[i]->computeEnergy(false);
 		  if (procdynp.homoL1Dir){
@@ -224,7 +272,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL2Dir >0)
 	  for (i = 0;i < numL2Dir; i++)
 	  {
-		  l2dirarray.push_back(new SharedCache(XML,i, &interface_ip, L2Directory));
+		  l2dirarray.push_back(new SharedCache(XML,i, pimid_ip(pimid_fam1), L2Directory));
 		  l2dirarray[i]->computeEnergy();
 		  l2dirarray[i]->computeEnergy(false);
 		  if (procdynp.homoL2Dir){
@@ -252,7 +300,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   if (XML->sys.mc.number_mcs >0 && XML->sys.mc.memory_channels_per_mc>0)
   {
-	  mc = new MemoryController(XML, &interface_ip, MC);
+	  mc = new MemoryController(XML, pimid_ip(pimid_fam1), MC);   /* PIMID 1.12.18 (per-die process) */
 	  mc->computeEnergy();
 	  mc->computeEnergy(false);
 	  mcs.area.set_area(mcs.area.get_area()+mc->area.get_area()*XML->sys.mc.number_mcs);
@@ -268,7 +316,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   if (XML->sys.flashc.number_mcs >0 )//flash controller
   {
-	  flashcontroller = new FlashController(XML, &interface_ip);
+	  flashcontroller = new FlashController(XML, pimid_ip(false));
 	  flashcontroller->computeEnergy();
 	  flashcontroller->computeEnergy(false);
 	  double number_fcs = flashcontroller->fcp.num_mcs;
@@ -285,7 +333,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   if (XML->sys.niu.number_units >0)
   {
-	  niu = new NIUController(XML, &interface_ip);
+	  niu = new NIUController(XML, pimid_ip(false));
 	  niu->computeEnergy();
 	  niu->computeEnergy(false);
 	  nius.area.set_area(nius.area.get_area()+niu->area.get_area()*XML->sys.niu.number_units);
@@ -301,7 +349,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   if (XML->sys.pcie.number_units >0 && XML->sys.pcie.num_channels >0)
   {
-	  pcie = new PCIeController(XML, &interface_ip);
+	  pcie = new PCIeController(XML, pimid_ip(false));   /* PIMID 1.12.18: the link controller sits on the logic die */
 	  pcie->computeEnergy();
 	  pcie->computeEnergy(false);
 	  pcies.area.set_area(pcies.area.get_area()+pcie->area.get_area()*XML->sys.pcie.number_units);
@@ -321,7 +369,7 @@ Processor::Processor(ParseXML *XML_interface)
 	  {
 		  if (XML->sys.NoC[i].type)
 		  {//First add up area of routers if NoC is used
-			  nocs.push_back(new NoC(XML,i, &interface_ip, 1));
+			  nocs.push_back(new NoC(XML,i, pimid_noc_ip(i), 1));   /* PIMID 1.12.18 (per-die process) */
 			  if (procdynp.homoNOC)
 			  {
 				  noc.area.set_area(noc.area.get_area() + nocs[i]->area.get_area()*procdynp.numNOC);
@@ -359,7 +407,7 @@ Processor::Processor(ParseXML *XML_interface)
 			  double bus_len_scale = (XML->sys.dram_periph_family == 1 &&
 			                          XML->sys.NoC[i].on_dram_die)
 			      ? sqrt(XML->sys.dram_periph_area) : 1.0;
-			  nocs.push_back(new NoC(XML,i, &interface_ip, 1, sqrt(area.get_area()*XML->sys.NoC[i].chip_coverage)*bus_len_scale));
+			  nocs.push_back(new NoC(XML,i, pimid_noc_ip(i), 1, sqrt(area.get_area()*XML->sys.NoC[i].chip_coverage)*bus_len_scale));
 			  if (procdynp.homoNOC){
 				  noc.area.set_area(noc.area.get_area() + nocs[i]->area.get_area()*procdynp.numNOC);
 				  area.set_area(area.get_area() + noc.area.get_area());
@@ -380,6 +428,22 @@ Processor::Processor(ParseXML *XML_interface)
 	  {
 		  if (nocs[i]->nocdynp.has_global_link && XML->sys.NoC[i].type)
 		  {
+			  /* PIMID 1.12.18: LIVE NOW. PIMID emits has_global_link=1 on
+			   * the links-only instances it writes for each tree level, with
+			   * the structure the level's links span: the die area and the
+			   * number of parent regions it is cut into. The length of ONE
+			   * link is derived here, from H-tree geometry: the segment from a
+			   * node to its parent is half the side of the parent's region,
+			   * and the die is shared by the parent regions, so
+			   *   len = 0.5 x sqrt(span_area / parent_regions)
+			   * (CACTI 6.0, Muralimanohar, Balasubramonian and Jouppi, HP Labs
+			   * HPL-2009-85, the H-tree of the bank/mat organisation;
+			   * external/cacti/htree2.cc in_htree: each segment is half its
+			   * region's side, halved per level). That length is used AS IS:
+			   * it is already per link on the die it lies on, so neither the
+			   * die-span derivation nor the die-growth stretch below applies.
+			   * The upstream derivation (and the stretch) remain for an
+			   * instance that supplies no span. */
 			  /* PIMID 1.11.57 (latent E011): THE SAME DIE-GROWTH STRETCH AS
 			   * THE BUS PATH. A global link is routed across the chip, so
 			   * its length scales with sqrt(die area) exactly as the bus
@@ -395,6 +459,10 @@ Processor::Processor(ParseXML *XML_interface)
 			  double link_len_scale = (XML->sys.dram_periph_family == 1 &&
 			                           XML->sys.NoC[i].on_dram_die)
 			      ? sqrt(XML->sys.dram_periph_area) : 1.0;
+			  if (XML->sys.NoC[i].link_span_area_mm2 > 0 && XML->sys.NoC[i].link_parent_regions > 0)
+				  nocs[i]->init_link_bus(0.5 * sqrt(XML->sys.NoC[i].link_span_area_mm2 * 1e6
+				                                    / XML->sys.NoC[i].link_parent_regions));   // 1.12.18, um
+			  else
 			  nocs[i]->init_link_bus(sqrt(area.get_area()*XML->sys.NoC[i].chip_coverage)*link_len_scale);//compute global links
 			  if (procdynp.homoNOC)
 			  {
@@ -438,6 +506,65 @@ Processor::Processor(ParseXML *XML_interface)
 
 
 		  }
+	  }
+  }
+
+  /* PIMID 1.12.18: CLOCK-NETWORK SHARE OF EACH AGGREGATE (Wattch clock
+   * model, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000; logic.h
+   * ClockNetwork). Each component already added its clock network to its own
+   * power and rt_power, so the aggregates above include it; these mirror the
+   * aggregation above multiplier for multiplier so the share can be reported.
+   * Peak: dynamic x clockRate x instances; runtime: dynamic / executionTime;
+   * leakage x instances. */
+  {
+	  clku_core = clku_l2 = clku_l3 = clku_l1dir = clku_l2dir = clku_mcs = clku_noc = 0;
+	  clkg_core = clkg_l2 = clkg_l3 = clkg_l1dir = clkg_l2dir = clkg_mcs = clkg_noc = 0;   /* PIMID 1.12.18 (ruling #4) */
+	  auto clkAgg = [](Component &dst, double &ung, double &glob, const Component &src, double src_ung, double src_glob,
+	                   double tdp_mul, double n, double rt_mul) {
+		  double p[4];
+		  set_pppm(p, tdp_mul, n, n, n);
+		  dst.power = dst.power + src.power*p;
+		  set_pppm(p, rt_mul, n, n, n);
+		  dst.rt_power = dst.rt_power + src.rt_power*p;
+		  ung += src_ung * rt_mul;
+		  glob += src_glob * rt_mul;
+	  };
+	  for (i = 0; i < numCore; i++)
+	  {
+		  const double n = procdynp.homoCore ? procdynp.numCore : 1;
+		  clkAgg(clk_core, clku_core, clkg_core, cores[i]->clockNetwork, cores[i]->clockNetwork.rt_ungated, cores[i]->clockNetwork.rt_global, cores[i]->clockRate*n, n, 1/cores[i]->executionTime);
+		  if (XML->sys.Private_L2 && cores[i]->l2cache)   /* core.cc: peak at the L2/core clock ratio, runtime as is */
+			  clkAgg(clk_core, clku_core, clkg_core, cores[i]->l2cache->clockNetwork, cores[i]->l2cache->clockNetwork.rt_ungated, cores[i]->l2cache->clockNetwork.rt_global, cores[i]->l2cache->cachep.clockRate*n, n,
+			         1/cores[i]->executionTime);
+	  }
+	  if (!XML->sys.Private_L2)
+		  for (i = 0; i < (int)l2array.size(); i++)
+		  {
+			  const double n = procdynp.homoL2 ? procdynp.numL2 : 1;
+			  clkAgg(clk_l2, clku_l2, clkg_l2, l2array[i]->clockNetwork, l2array[i]->clockNetwork.rt_ungated, l2array[i]->clockNetwork.rt_global, l2array[i]->cachep.clockRate*n, n, 1/l2array[i]->cachep.executionTime);
+		  }
+	  for (i = 0; i < (int)l3array.size(); i++)
+	  {
+		  const double n = procdynp.homoL3 ? procdynp.numL3 : 1;
+		  clkAgg(clk_l3, clku_l3, clkg_l3, l3array[i]->clockNetwork, l3array[i]->clockNetwork.rt_ungated, l3array[i]->clockNetwork.rt_global, l3array[i]->cachep.clockRate*n, n, 1/l3array[i]->cachep.executionTime);
+	  }
+	  for (i = 0; i < (int)l1dirarray.size(); i++)
+	  {
+		  const double n = procdynp.homoL1Dir ? procdynp.numL1Dir : 1;
+		  clkAgg(clk_l1dir, clku_l1dir, clkg_l1dir, l1dirarray[i]->clockNetwork, l1dirarray[i]->clockNetwork.rt_ungated, l1dirarray[i]->clockNetwork.rt_global, l1dirarray[i]->cachep.clockRate*n, n, 1/l1dirarray[i]->cachep.executionTime);
+	  }
+	  for (i = 0; i < (int)l2dirarray.size(); i++)
+	  {
+		  const double n = procdynp.homoL2Dir ? procdynp.numL2Dir : 1;
+		  clkAgg(clk_l2dir, clku_l2dir, clkg_l2dir, l2dirarray[i]->clockNetwork, l2dirarray[i]->clockNetwork.rt_ungated, l2dirarray[i]->clockNetwork.rt_global, l2dirarray[i]->cachep.clockRate*n, n, 1/l2dirarray[i]->cachep.executionTime);
+	  }
+	  if (mc)
+		  clkAgg(clk_mcs, clku_mcs, clkg_mcs, mc->clockNetwork, mc->clockNetwork.rt_ungated, mc->clockNetwork.rt_global, XML->sys.mc.number_mcs*mc->mcp.clockRate, XML->sys.mc.number_mcs,
+		         1/mc->mcp.executionTime);
+	  for (i = 0; i < (int)nocs.size(); i++)
+	  {
+		  const double n = procdynp.homoNOC ? procdynp.numNOC : 1;
+		  clkAgg(clk_noc, clku_noc, clkg_noc, nocs[i]->clk, nocs[i]->clk_rt_ungated, nocs[i]->clk_rt_global, n*nocs[i]->nocdynp.clockRate, n, 1/nocs[i]->nocdynp.executionTime);
 	  }
   }
 
@@ -692,6 +819,11 @@ Processor::Processor(ParseXML *XML_interface)
                     << " cell-table area." << std::endl;
       }
       applyFam(core, true, "core", pitch_core_mul);
+      /* PIMID 1.12.18: the clock share rides its component's transform. */
+      applyFam(clk_core, false, "core clock");
+      applyFam(clk_l2, false, "l2 clock"); applyFam(clk_l3, false, "l3 clock");
+      clku_core *= fd; clku_l2 *= fd; clku_l3 *= fd;
+      clkg_core *= fd; clkg_l2 *= fd; clkg_l3 *= fd;   /* PIMID 1.12.18 (ruling #4) */
       applyFam(l2, true, "l2"); applyFam(l3, true, "l3");
       {
           /* PIMID 1.11.50 (L74 + L103), replacing the blanket transform.
@@ -733,6 +865,7 @@ Processor::Processor(ParseXML *XML_interface)
                   link_rt_dyn  = n->link_bus->rt_power.readOp.dynamic;
               }
               applyFam(*n, false, "noc");
+              applyFam(n->clk, false, "noc clock");   /* PIMID 1.12.18: its share, same transform */
               n->power.readOp.dynamic    += link_tdp_dyn * (1.0 - fd);
               n->rt_power.readOp.dynamic += link_rt_dyn  * (1.0 - fd);
           }
@@ -742,6 +875,16 @@ Processor::Processor(ParseXML *XML_interface)
            * so the total and the per-level breakdown cannot disagree. The
            * chip totals are rebuilt from components further down. */
           noc.power.reset();
+          clk_noc.power.reset();      /* PIMID 1.12.18 */
+          clk_noc.rt_power.reset();
+          clku_noc = 0;
+          for (int ni = 0; ni < numNOC; ni++)
+              clku_noc += nocs[ni]->clk_rt_ungated / nocs[ni]->nocdynp.executionTime
+                        * (XML->sys.NoC[ni].on_dram_die ? fd : 1.0);   /* rt aggregation: 1/executionTime only */
+          clkg_noc = 0;   /* PIMID 1.12.18 (ruling #4): the same aggregation */
+          for (int ni = 0; ni < numNOC; ni++)
+              clkg_noc += nocs[ni]->clk_rt_global / nocs[ni]->nocdynp.executionTime
+                        * (XML->sys.NoC[ni].on_dram_die ? fd : 1.0);
           noc.rt_power.reset();
           for (int ni = 0; ni < numNOC; ni++) {
               double pppm_agg[4];
@@ -749,14 +892,18 @@ Processor::Processor(ParseXML *XML_interface)
                   set_pppm(pppm_agg, procdynp.numNOC*nocs[ni]->nocdynp.clockRate,
                            procdynp.numNOC, procdynp.numNOC, procdynp.numNOC);
                   noc.power = noc.power + nocs[ni]->power*pppm_agg;
+                  clk_noc.power = clk_noc.power + nocs[ni]->clk.power*pppm_agg;   /* PIMID 1.12.18 */
                   set_pppm(pppm_agg, 1/nocs[ni]->nocdynp.executionTime,
                            procdynp.numNOC, procdynp.numNOC, procdynp.numNOC);
                   noc.rt_power = noc.rt_power + nocs[ni]->rt_power*pppm_agg;
+                  clk_noc.rt_power = clk_noc.rt_power + nocs[ni]->clk.rt_power*pppm_agg;   /* PIMID 1.12.18 */
               } else {
                   set_pppm(pppm_agg, nocs[ni]->nocdynp.clockRate, 1, 1, 1);
                   noc.power = noc.power + nocs[ni]->power*pppm_agg;
+                  clk_noc.power = clk_noc.power + nocs[ni]->clk.power*pppm_agg;   /* PIMID 1.12.18 */
                   set_pppm(pppm_agg, 1/nocs[ni]->nocdynp.executionTime, 1, 1, 1);
                   noc.rt_power = noc.rt_power + nocs[ni]->rt_power*pppm_agg;
+                  clk_noc.rt_power = clk_noc.rt_power + nocs[ni]->clk.rt_power*pppm_agg;   /* PIMID 1.12.18 */
               }
           }
       }
@@ -782,6 +929,9 @@ Processor::Processor(ParseXML *XML_interface)
               phy_area_tot = mc->PHY->area.get_area() * n_mcs;
           }
           applyFam(mcs, true, "mcs");
+          applyFam(clk_mcs, false, "mc clock");   /* PIMID 1.12.18 */
+          clku_mcs *= fd;
+          clkg_mcs *= fd;   /* PIMID 1.12.18 (ruling #4) */
           if (phy_tdp_dyn > 0.0 || phy_area_tot > 0.0) {
               mcs.power.readOp.dynamic    += phy_tdp_dyn * (1.0 - fd);
               mcs.rt_power.readOp.dynamic += phy_rt_dyn  * (1.0 - fd);
@@ -873,6 +1023,205 @@ Processor::Processor(ParseXML *XML_interface)
 //  globalClock.start_wiring_level =5;//toplevel metal
 //  globalClock.l_ip.with_clock_grid=false;//global clock does not drive local final nodes
 //  globalClock.optimize_wire();
+  /* PIMID 1.12.18: the chip-level tree that would join the components'
+   * trees (globalClock above) is NOT priced: its leaves are the component
+   * tree roots, and which component it would be charged to is a reporting
+   * choice nobody has ruled on. Each component's tree (logic.h
+   * ClockNetwork) starts at its own root. The per-aggregate clock share
+   * (Wattch clock model, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000): */
+  {
+	  /* PIMID 1.12.18 (ruling 2026-10-23 #4): the charged runtime dynamic is
+	   * GLOBAL (every powered cycle; for cores with idle halt, every RUNNING
+	   * cycle) + LOCAL (gated by measured activity). The per-die trunk joining
+	   * these roots is built just below (its own line, in no component). */
+	  auto rep = [&](const char *who, const Component &c, const Component &tot, double ung, double glob) {
+		  if (c.power.readOp.dynamic == 0 && c.power.readOp.leakage == 0 && c.rt_power.readOp.dynamic == 0) return;
+		  std::cerr << "[mcpat clock] aggregate " << who << ": runtime dynamic " << c.rt_power.readOp.dynamic
+		            << " W = GLOBAL " << glob << " W (H-tree levels but the last, every powered cycle) + LOCAL "
+		            << c.rt_power.readOp.dynamic - glob << " W (last level + pins, gated by measured activity)"
+		            << " (ungated reference " << ung
+		            << " W) of the component's " << tot.rt_power.readOp.dynamic << " W; subthreshold leakage "
+		            << c.power.readOp.leakage << " W, gate " << c.power.readOp.gate_leakage << " W; peak dynamic "
+		            << c.power.readOp.dynamic << " W (of " << tot.power.readOp.dynamic << " W)" << std::endl;
+	  };
+	  rep("core", clk_core, core, clku_core, clkg_core); rep("L2", clk_l2, l2, clku_l2, clkg_l2); rep("L3", clk_l3, l3, clku_l3, clkg_l3);
+	  rep("L1dir", clk_l1dir, l1dir, clku_l1dir, clkg_l1dir); rep("L2dir", clk_l2dir, l2dir, clku_l2dir, clkg_l2dir);
+	  rep("memory controllers", clk_mcs, mcs, clku_mcs, clkg_mcs); rep("NoC", clk_noc, noc, clku_noc, clkg_noc);
+  }
+
+  /* PIMID 1.12.18 (user ruling "each die has its own clock tree ... avoid
+   * double counting"): THE PER-DIE CLOCK TRUNK, at the hook the component
+   * trees left (logic.h ClockNetwork). One die-level H-tree per die and clock
+   * domain (a domain is a clock frequency: the controllers and the cores of
+   * one die are separate trees), built with the same Wattch/CACTI model as
+   * the component trees:
+   *   leaves  N = the component tree ROOTS on that die (core, cache,
+   *           controller and router/link instances that have a tree); the
+   *           trunk ENDS at each root, whose first repeater is inside the
+   *           component's own tree, so there are no register pins here and
+   *           nothing is charged twice;
+   *   area    the die: the DRAM die's area as PIMID describes it (the
+   *           calibrated die, pimid_dram_die_area_mm2), the logic die's when
+   *           given, otherwise the area McPAT itself gives the components on
+   *           that die; L = 1.5 D (sqrt(N) - 1), CACTI Global wire at the
+   *           die's node (ip_logic_die / interface_ip);
+   *   runtime E x f x on, on = the largest on-fraction of its leaves (the
+   *           trunk switches while ANY component on the die is clocked; a
+   *           component that keeps serving -- controller, router, cache --
+   *           is on every powered cycle, so the trunk is off only on a die
+   *           whose cores are all halted). With the max, the union of the
+   *           leaves' on-times is bounded below; it is exact whenever one leaf
+   *           is always on (every die with a controller or router).
+   *   The DRAM die kind holds pimid_dram_die_count dies sharing its leaves
+   *   evenly; its trunk is priced per die and multiplied by the count.
+   *   Family transform: a trunk on the DRAM die takes the same comm-dram
+   *   periphery factors as the clock trees beside it. */
+  trunk_dies.clear();
+  clk_trunk.power.reset();
+  clk_trunk.rt_power.reset();
+  if (XML->sys.pimid_clock_trunk && XML->sys.pimid_clock_network)
+  {
+	  struct TLeaf { int die; double f_hz; double n; double on; const char *who; };
+	  std::vector<TLeaf> tl;
+	  double dram_area_um2 = 0;
+	  /* f: the clock the component's OWN tree runs at (ClockNetwork::clock_hz;
+	   * McPAT's controller carries mcp.clockRate = 2 x its clock, the DDR
+	   * convention, while its tree is built at the controller clock). */
+	  auto addLeaf = [&](int die, double f, double n, double on, const char *who) {
+		  if (n > 0 && f > 0) tl.push_back({die, f, n, on, who});
+	  };
+	  const int dcore = pimid_fam1 ? 1 : 0;
+	  for (i = 0; i < numCore; i++)
+	  {
+		  const double n = procdynp.homoCore ? procdynp.numCore : 1;
+		  addLeaf(dcore, cores[i]->clockNetwork.clock_hz, n, cores[i]->clockNetwork.trunk_on(), "core");
+		  if (XML->sys.Private_L2 && cores[i]->l2cache)
+			  addLeaf(dcore, cores[i]->l2cache->clockNetwork.clock_hz, n, cores[i]->l2cache->clockNetwork.global_on(), "private L2");
+	  }
+	  if (!XML->sys.Private_L2)
+		  for (i = 0; i < (int)l2array.size(); i++)
+			  addLeaf(dcore, l2array[i]->clockNetwork.clock_hz, procdynp.homoL2 ? procdynp.numL2 : 1, l2array[i]->clockNetwork.global_on(), "L2");
+	  for (i = 0; i < (int)l3array.size(); i++)
+		  addLeaf(dcore, l3array[i]->clockNetwork.clock_hz, procdynp.homoL3 ? procdynp.numL3 : 1, l3array[i]->clockNetwork.global_on(), "L3");
+	  for (i = 0; i < (int)l1dirarray.size(); i++)
+		  addLeaf(dcore, l1dirarray[i]->clockNetwork.clock_hz, procdynp.homoL1Dir ? procdynp.numL1Dir : 1, l1dirarray[i]->clockNetwork.global_on(), "L1dir");
+	  for (i = 0; i < (int)l2dirarray.size(); i++)
+		  addLeaf(dcore, l2dirarray[i]->clockNetwork.clock_hz, procdynp.homoL2Dir ? procdynp.numL2Dir : 1, l2dirarray[i]->clockNetwork.global_on(), "L2dir");
+	  if (mc)
+		  addLeaf(dcore, mc->clockNetwork.clock_hz, XML->sys.mc.number_mcs, mc->clockNetwork.global_on(), "memory controller");
+	  if (pimid_fam1)
+		  dram_area_um2 = core.area.get_area() + l2.area.get_area() + l3.area.get_area()
+		                + l1dir.area.get_area() + l2dir.area.get_area() + mcs.area.get_area();
+	  for (i = 0; i < (int)nocs.size(); i++)
+	  {
+		  NoC *n = nocs[i];
+		  const int d = (pimid_fam1 && XML->sys.NoC[i].on_dram_die) ? 1 : 0;
+		  const double sets  = procdynp.homoNOC ? procdynp.numNOC : 1;
+		  const double nodes = n->nocdynp.total_nodes;
+		  const double links = n->link_bus_exist ? (double)n->nocdynp.global_linked_ports * nodes : 0.0;
+		  const double roots = ((n->clk_router.built && n->clk_router.n_sinks > 0) ? nodes : 0.0)
+		                     + ((n->clk_link.built && n->clk_link.n_sinks > 0) ? links : 0.0);
+		  addLeaf(d, (n->clk_router.built && n->clk_router.clock_hz > 0) ? n->clk_router.clock_hz
+		          : (n->clk_link.built && n->clk_link.clock_hz > 0) ? n->clk_link.clock_hz : n->nocdynp.clockRate,
+		          roots * sets, n->clk_router.global_on(), "NoC router/link");
+		  if (d == 1)
+		  {
+			  dram_area_um2 += n->area.get_area() * sets;
+			  if (n->link_bus_exist && XML->sys.NoC[i].type)
+				  dram_area_um2 += n->link_bus_tot_per_Router.area.get_area() * nodes * sets;
+		  }
+	  }
+	  const double fd_d  = pimid_fam1 ? XML->sys.dram_periph_dyn : 1.0;
+	  const double fl_d  = pimid_fam1 ? XML->sys.dram_periph_leak : 1.0;
+	  const double fg_d  = (pimid_fam1 && XML->sys.dram_periph_gate_leak > 0.0) ? XML->sys.dram_periph_gate_leak : fl_d;
+	  const int    ndram = (XML->sys.pimid_dram_die_count > 0) ? XML->sys.pimid_dram_die_count : 1;
+	  for (int d = 0; d < 2; d++)
+	  {
+		  /* the leaves of this die kind, grouped by clock domain */
+		  std::vector<std::pair<double, std::pair<double, double> > > dom;   /* f -> (N, on) */
+		  std::string whos;
+		  for (const auto &l : tl)
+		  {
+			  if (l.die != d) continue;
+			  bool found = false;
+			  for (auto &e : dom)
+				  if (e.first == l.f_hz) { e.second.first += l.n; e.second.second = std::max(e.second.second, l.on); found = true; }
+			  if (!found) dom.push_back(std::make_pair(l.f_hz, std::make_pair(l.n, l.on)));
+			  if (whos.find(l.who) == std::string::npos) whos += std::string(whos.empty() ? "" : ", ") + l.who;
+		  }
+		  if (dom.empty()) continue;
+		  const int    cnt = (d == 1) ? ndram : 1;
+		  double a_die_um2;
+		  std::string a_src;
+		  if (d == 1)
+		  {
+			  if (XML->sys.pimid_dram_die_area_mm2 > 0) { a_die_um2 = XML->sys.pimid_dram_die_area_mm2 * 1e6; a_src = "the DRAM die as described (pimid_dram_die_area_mm2)"; }
+			  else { a_die_um2 = dram_area_um2 / cnt; a_src = "McPAT's area of the DRAM-die components / dies"; }
+		  }
+		  else
+		  {
+			  if (XML->sys.pimid_logic_die_area_mm2 > 0) { a_die_um2 = XML->sys.pimid_logic_die_area_mm2 * 1e6; a_src = "the logic die as described (pimid_logic_die_area_mm2)"; }
+			  else { a_die_um2 = area.get_area() - dram_area_um2; a_src = "McPAT's area of the logic-die components"; }
+		  }
+		  if (a_die_um2 < 0) a_die_um2 = 0;
+		  InputParameter tip = (d == 1) ? interface_ip : *pimid_ip(false);
+		  tip.wt = Global;
+		  PimidTrunkDie td;
+		  td.name = (d == 1) ? "dram_die" : "logic_die";
+		  td.count = cnt; td.area_mm2 = a_die_um2 * 1e-6; td.leaves = 0; td.node_nm = tip.F_sz_nm; td.on = 0;
+		  td.peak_w = td.rt_w = td.ungated_w = td.leak_w = td.gate_w = 0;
+		  Component dsum;
+		  for (const auto &e : dom)
+		  {
+			  const double f = e.first, n_die = e.second.first / cnt, on = e.second.second;
+			  ClockNetwork tr;
+			  std::ostringstream own, src;
+			  own << "trunk " << td.name << " " << f*1e-6 << " MHz";
+			  src << "component tree roots on this die in this clock domain: " << e.second.first << " / " << cnt << " die(s)";
+			  tr.compute(&tip, own.str(), a_die_um2, n_die, src.str(), 0.0, f, XML->sys.Embedded,
+			             Uncore_device, Inorder, true);
+			  const double e_cyc = tr.e_tree_cycle;   /* J per cycle per die, wire + repeaters + sc */
+			  tr.set_power(e_cyc * f * cnt, e_cyc * f * on * cnt, e_cyc * f * cnt, cnt);
+			  if (d == 1 && pimid_fam1)
+			  {
+				  tr.power.readOp.dynamic *= fd_d; tr.rt_power.readOp.dynamic *= fd_d; tr.rt_ungated *= fd_d;
+				  tr.power.readOp.leakage *= fl_d; tr.power.readOp.longer_channel_leakage *= fl_d;
+				  tr.power.readOp.power_gated_leakage *= fl_d; tr.power.readOp.power_gated_with_long_channel_leakage *= fl_d;
+				  tr.power.readOp.gate_leakage *= fg_d;
+				  tr.rt_power.readOp.leakage *= fl_d; tr.rt_power.readOp.longer_channel_leakage *= fl_d;
+				  tr.rt_power.readOp.power_gated_leakage *= fl_d; tr.rt_power.readOp.power_gated_with_long_channel_leakage *= fl_d;
+				  tr.rt_power.readOp.gate_leakage *= fg_d;
+			  }
+			  dsum.power = dsum.power + tr.power;
+			  dsum.rt_power = dsum.rt_power + tr.rt_power;
+			  td.leaves += e.second.first / cnt;
+			  td.on = std::max(td.on, on);
+			  td.peak_w += tr.power.readOp.dynamic;
+			  td.rt_w += tr.rt_power.readOp.dynamic;
+			  td.ungated_w += tr.rt_ungated;
+			  std::cerr << "[mcpat clock] " << own.str() << ": " << cnt << " die(s) of " << a_die_um2*1e-6 << " mm^2 (" << a_src
+			            << "), " << n_die << " root(s) per die, L " << tr.tree_len_um << " um at " << tip.F_sz_nm
+			            << " nm; " << e_cyc << " J/cycle/die x " << f*1e-6 << " MHz x on " << on << " x " << cnt
+			            << (d == 1 && pimid_fam1 ? " x periphery dyn factor" : "") << " = " << tr.rt_power.readOp.dynamic
+			            << " W runtime (ungated " << tr.rt_ungated << " W); leakage " << tr.power.readOp.leakage
+			            << " W, gate " << tr.power.readOp.gate_leakage << " W" << std::endl;
+		  }
+		  td.leak_w = XML->sys.longer_channel_device ? dsum.power.readOp.longer_channel_leakage : dsum.power.readOp.leakage;
+		  td.gate_w = dsum.power.readOp.gate_leakage;
+		  clk_trunk.power = clk_trunk.power + dsum.power;
+		  clk_trunk.rt_power = clk_trunk.rt_power + dsum.rt_power;
+		  power = power + dsum.power;
+		  rt_power = rt_power + dsum.rt_power;
+		  trunk_dies.push_back(td);
+		  std::cerr << "[mcpat clock] trunk " << td.name << " (x" << cnt << "; leaves: " << whos << "): runtime dynamic "
+		            << td.rt_w << " W (on " << td.on << "), ungated " << td.ungated_w << " W, peak " << td.peak_w
+		            << " W; leakage " << td.leak_w << " W + gate " << td.gate_w << " W" << std::endl;
+	  }
+  }
+  else
+	  std::cerr << "[mcpat clock] per-die trunk NOT priced ("
+	            << (XML->sys.pimid_clock_network ? "power.models.clock_die_trunk: false or not described" : "clock network off")
+	            << ")" << std::endl;
 
 }
 

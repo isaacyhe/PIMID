@@ -45,6 +45,10 @@ int main(int argc, char* argv[]) {
     if (!q_global) { fprintf(stderr, "malloc failed\n"); return 1; }
 
     /* --- ROI: Gaussian pair generation + binning --- */
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel num_threads(threads)
+    { }
     zsim_roi_begin();
 
     #pragma omp parallel

@@ -154,9 +154,19 @@ class LoadStoreU :public Component {
 	ArrayST * LSQ;//it is actually the store queue but for inorder processors it serves as both loadQ and StoreQ
 	ArrayST * LoadQ;
 	bool exist;
+	/* PIMID 1.12.18: a data store described with no miss buffers
+	 * (buffer_sizes[0]==0) is the compute unit's SCRATCHPAD -- a plain RAM, no
+	 * tags, no miss/fill/prefetch/write-back buffers; with size 0 as well
+	 * there is no data store at all. dma_* is the scratchpad's DMA engine. */
+	bool pure_dstore, no_dstore;
+	ArrayST * dma_lbuf;
+	ArrayST * dma_regs;
+	FunctionalUnit * dma_adder;
+	Component dma;
 
 	LoadStoreU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, bool exist_=true);
     void computeEnergy(bool is_tdp=true);
+    void computeEnergyPimid(bool is_tdp);
     void displayEnergy(uint32_t indent = 0,int plevel = 100, bool is_tdp=true);
 	~LoadStoreU();
 };
@@ -251,7 +261,12 @@ class Core :public Component {
     SharedCache * l2cache;
     CoreDynParam  coredynp;
     //full_decoder 	inst_decoder;
-    //clock_network	clockNetwork;
+    /* PIMID 1.12.18: the core's clock network (logic.h ClockNetwork; Wattch,
+     * D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000, clocking section). */
+    ClockNetwork clockNetwork;
+    double clk_pipe_regs;    /* pipeline registers of the units that exist */
+    double clk_extra_regs;   /* registers McPAT prices as arrays (no clock pin elsewhere) */
+    double clk_pin_counted, clk_pin_ungated, clk_tree_e, clk_extra_e;   /* last computeEnergy, J */
 	Core(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_);
 	void set_core_param();
 	void computeEnergy(bool is_tdp=true);

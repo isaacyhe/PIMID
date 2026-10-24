@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.17-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.18-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -137,6 +137,7 @@ system:
 | [docs/cache_warehouse.md](docs/cache_warehouse.md) | characterization cache internals |
 | [docs/external.md](docs/external.md) | vendored external simulators |
 | [docs/sources.md](docs/sources.md) | every external number's provenance (papers, JEDEC standards, datasheets) |
+| [docs/derivations/hbm_gddr6_idd.md](docs/derivations/hbm_gddr6_idd.md) | how the HBM3, HBM2 and GDDR6 IDD rows are derived, with bands |
 | [docs/external_models.md](docs/external_models.md) | plugging in your own models |
 
 ## Citation
@@ -176,10 +177,11 @@ also cite its paper:
 | CACTI-IO | off-chip DRAM interface: termination, PHY, IO area | [Jouppi et al., ICCAD 2012](https://doi.org/10.1145/2429384.2429504) | ships inside CACTI 7 (`external/cacti/extio*`) |
 | CACTI-P | power gating / sleep-transistor and retention (Vcc_min) model | [Li et al., ICCAD 2011](https://doi.org/10.1109/ICCAD.2011.6105405) | grafted into `external/cacti` (the 6.5-P fields McPAT consumes) |
 | CACTI-D | DRAM cell/device technology (`comm-dram`, `lp-dram`) and DRAM arrays | [Thoziyoor et al., ISCA 2008](https://doi.org/10.1109/ISCA.2008.16) | ships inside CACTI 7 (`external/cacti`, dram cell/device paths) |
-| CACTI-3DD | 3D-stacked DRAM + TSV model -- present and compiled, **not yet invoked** (see [docs/sources.md](docs/sources.md)) | [Chen et al., DATE 2012](https://doi.org/10.1109/DATE.2012.6176428) | ships inside CACTI 7 (`external/cacti/TSV.cc`) |
+| CACTI-3DD | 3D-stacked DRAM + TSV model: since 1.12.18 its TSV model (Coarse) prices the die crossings of a stacked part's (HBM) in-memory fabric, inside the McPAT fork (`power.models.fabric_tsv`; see [docs/sources.md](docs/sources.md)) | [Chen et al., DATE 2012](https://doi.org/10.1109/DATE.2012.6176428) | ships inside CACTI 7 (`external/cacti/TSV.cc`) |
 | NVSim | STT-MRAM, PCM, ReRAM arrays | [Dong et al., IEEE TCAD 2012](https://doi.org/10.1109/TCAD.2012.2185930) | [SEAL-UCSB/NVSim](https://github.com/SEAL-UCSB/NVSim) |
 | Garnet | cycle-accurate in-memory network | [Agarwal et al., ISPASS 2009](https://doi.org/10.1109/ISPASS.2009.4919636) | [gem5/gem5](https://github.com/gem5/gem5) |
 | McPAT | power and area | [Li et al., MICRO 2009](https://doi.org/10.1145/1669112.1669172) | [HewlettPackard/mcpat](https://github.com/HewlettPackard/mcpat) |
+| Wattch | clock-network power model (H-tree wiring, repeaters, clocked loads; conditional clocking by measured activity), implemented inside the McPAT fork since 1.12.18 -- the model, no code reused | [Brooks, Tiwari and Martonosi, ISCA 2000](https://doi.org/10.1145/339647.339657) | -- |
 | ZSim | microarchitectural core models | [Sanchez and Kozyrakis, ISCA 2013](https://doi.org/10.1145/2485922.2485963) | [s5z/zsim](https://github.com/s5z/zsim) |
 | QEMU | user-mode execution and TCG plugins | [Bellard, USENIX ATC 2005](https://www.usenix.org/legacy/publications/library/proceedings/usenix05/tech/freenix/bellard.html) | [qemu-project/qemu](https://gitlab.com/qemu-project/qemu) |
 

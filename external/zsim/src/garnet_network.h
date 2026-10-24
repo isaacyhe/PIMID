@@ -184,11 +184,41 @@ struct GarnetStats {
      * the run has no per-level attribution). */
     uint64_t level_flit_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_passthrough_flit_traversals[7] = {0,0,0,0,0,0,0};
+    /* 1.12.18 (user ruling "pass-through routers as wire"): the subset
+     * through WIRE routers -- exactly one router child, no endpoint, not a
+     * grid node, not the root: a single in/out path ("rlevel" 4th field).
+     * A non-branch router that carries an endpoint (a PE leaf, an aggregated
+     * region) has a third port and stays in the pass-through count above but
+     * not here. level_wire_routers counts them. */
+    uint64_t level_wire_flit_traversals[7] = {0,0,0,0,0,0,0};
+    uint32_t level_wire_routers[7] = {0,0,0,0,0,0,0};
     uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_buffer_reads[7] = {0,0,0,0,0,0,0};
     uint64_t level_buffer_writes[7] = {0,0,0,0,0,0,0};
     uint32_t level_routers[7] = {0,0,0,0,0,0,0};
     uint32_t level_branch_routers[7] = {0,0,0,0,0,0,0};
+    /* 1.12.18: per-level LINK flit traversals, for the link-wire pricing.
+     * A router-to-router edge of the tree belongs to its CHILD router's
+     * level (the edge is that router's up-link), so the level of an edge is
+     * the level of its deeper end. Detailed: from the per-packet path walk;
+     * analytical: from the tier walk. link_traversals_unattributed is what
+     * the global link_traversals counted but no tree level could take (a
+     * non-tree topology, a router with no level, the off-die HOST_MC rung);
+     * link_traversals_overattributed is the opposite mismatch (more path
+     * edges than the hop count said). On a well-formed tree both are 0 and
+     * the per-level sum equals link_traversals exactly. */
+    uint64_t level_link_flit_traversals[7] = {0,0,0,0,0,0,0};
+    uint64_t link_traversals_unattributed = 0;
+    uint64_t link_traversals_overattributed = 0;
+    /* 1.12.18 (user ruling, HBM TSV layout): flit x DIE-BOUNDARY crossings
+     * per level (the edge's child level, as above): a transfer from a PE on
+     * core die a to the hub and up to core die b crosses a + b boundaries,
+     * under the stated channel-to-die layout. tsv_dies_hist[n] = packets
+     * that crossed n boundaries (n >= 64 in the last bucket), counted only
+     * when the layout is known (stack_layout). */
+    uint64_t level_tsv_die_crossings[7] = {0,0,0,0,0,0,0};
+    uint64_t tsv_dies_hist[65] = {};
+    bool stack_layout = false;
     std::string level_source;
     // Measured whole-network totals from the Garnet routers (detailed only).
     uint64_t measured_crossbar_flits = 0;
@@ -260,7 +290,9 @@ private:
     std::vector<uint32_t> epWidth_;
     std::vector<int> routerLevel_;
     std::vector<uint8_t> routerBranch_;
+    std::vector<uint8_t> routerWire_;   // 1.12.18: "rlevel" 4th field (single in/out path)
     std::vector<int> routerParent_;
+    std::vector<int> routerStackDie_;   // 1.12.18: core die of a chip-slot router ("rdie" lines); -1 / empty = none
     std::vector<int> routerDepth_;
     bool customIsTree_ = false;
 
@@ -825,6 +857,37 @@ private:
     // made each barrier callback cost O(backlog) instead of O(new + folded).
     std::map<uint64_t, std::vector<BatchAccess>> pendingByPhase_;
 
+    /* 1.12.18 (user ruling 2026-10-24, "OMP NoC: epoch-frozen"): shared-memory
+     * (single-process) runs price NoC accesses from a table that changes ONLY at
+     * the phase barrier. Their records are folded there (foldByCut, the barrier
+     * fold thread-MPI uses), each drained phase accumulates into its epoch
+     * (epoch = phase / E_phases, integer sum/count per source-destination pair
+     * and in total), and when an epoch is complete its means are published
+     * (publishCompletedEpochs): a sampled pair takes the epoch's mean, an
+     * unsampled pair keeps its last published value, the batch average takes
+     * the epoch's mean. An access in epoch k therefore reads epoch k-1's
+     * measured latencies (lag one epoch). It used to read a live EWMA updated
+     * by whichever access thread drained first, over a batch whose membership
+     * depended on host order (run-to-run spread, bfs_omp bimodal). */
+    bool frozenPublish_ = false;
+    /* 1.12.18 (ruling 2026-10-24, full mechanism): after the ROI baseline the
+     * records carry the core's ROI-relative clock and are folded at the
+     * consistent cut; each published epoch keeps a SNAPSHOT of the pair table
+     * (cumulative: an unsampled pair keeps its last value), read by epoch key
+     * (frozenPairLatency). bootPair_ is the table at the baseline (epochs
+     * before the first published one). A record that arrives after its epoch
+     * was published joins the next unpublished epoch (counted). */
+    struct FrozenSnap { std::vector<uint32_t> pair; uint32_t avg = 0; };
+    bool cutAxis_ = false;
+    std::map<uint64_t, FrozenSnap> snaps_;
+    FrozenSnap bootSnap_;
+    bool anyPublished_ = false;
+    uint64_t lastPublishedEpoch_ = 0;
+    uint64_t lastFoldCut_ = 0;
+    uint64_t lateRecs_ = 0, lateEpochPkts_ = 0, staleReads_ = 0, keyedReads_ = 0;
+    std::map<uint64_t, std::map<uint64_t, std::pair<uint64_t, uint64_t>>> epochPairAcc_;
+    uint64_t frozenEpochsPublished_ = 0;
+
     // PIMID_INJ_DUMP census: per-source totals, accumulated under batchLock_ so
     // the sums are order-independent and comparable across runs.
     struct InjCensus { uint64_t n = 0, dstSum = 0, cycSum = 0; };
@@ -939,8 +1002,10 @@ public:
         size_t dbgIn = phaseBatch_.size();
         for (auto& a : phaseBatch_) {
             uint64_t p = (pl > 0) ? a.cycle / pl : 0;
+            if (cutAxis_ && (p + 1) * (uint64_t)pl <= lastFoldCut_) lateRecs_++;   // 1.12.18: behind a cut already taken
             pendingByPhase_[p].push_back(a);
         }
+        if (cutAxis_ && cut != ~0ull && cut > lastFoldCut_) lastFoldCut_ = cut;
         phaseBatch_.clear();
         // PIMID_FOLD_DEBUG=1: per-fold trace of the consistent cut and the pending
         // backlog, to detect a pinned cut (backlog grows without bound => each fold
@@ -975,6 +1040,90 @@ public:
         }
         for (auto& kv : buckets)
             runBatchDrain_(std::move(kv.second), kv.first);
+    }
+
+    /* 1.12.18 (ruling 2026-10-24): see frozenPublish_. Set once by the plugin
+     * for single-process runs (no thread-MPI, no shared NoC). */
+    void setEpochFrozenPublish(bool on) { frozenPublish_ = on; }
+    /* 1.12.18 (ruling 2026-10-24): switch to the ROI-relative axis at the
+     * first barrier after the ROI baseline (before its fold). */
+    bool cutAxis() const { return cutAxis_; }
+    void enterCutAxis() {
+        futex_lock(&epochLock_);
+        ensurePairTable_();
+        bootSnap_.pair.assign((size_t)pairLatN_ * pairLatN_, 0);
+        for (size_t i = 0; pairLat_ && i < bootSnap_.pair.size(); ++i) bootSnap_.pair[i] = pairLat_[i].load(std::memory_order_relaxed);
+        bootSnap_.avg = batchAvgLatency_.load(std::memory_order_relaxed);
+        epochPairAcc_.clear(); epochAvgLat_.clear(); snaps_.clear();
+        anyPublished_ = false; lastPublishedEpoch_ = 0;
+        cutAxis_ = true;
+        futex_unlock(&epochLock_);
+    }
+    /* keyed read: the snapshot of epoch e (e < 0: the baseline table). An epoch
+     * past the last published one (the cut has not passed it: should not happen
+     * at the read lag) reads the last one and is counted (staleReads_). */
+    const FrozenSnap* snapFor_(int64_t e) {
+        keyedReads_++;
+        if (e < 0 || snaps_.empty() || (uint64_t)e < snaps_.begin()->first) return &bootSnap_;
+        auto it = snaps_.find((uint64_t)e);
+        if (it != snaps_.end()) return &it->second;
+        it = snaps_.upper_bound((uint64_t)e);
+        if (it == snaps_.end()) staleReads_++;
+        --it;
+        return &it->second;
+    }
+    uint32_t frozenPairLatency(int64_t e, uint32_t src, uint32_t dst) {
+        futex_lock(&epochLock_);
+        const FrozenSnap* s = snapFor_(e);
+        uint32_t v = 0;
+        if (src < pairLatN_ && dst < pairLatN_ && (size_t)src * pairLatN_ + dst < s->pair.size()) v = s->pair[(size_t)src * pairLatN_ + dst];
+        futex_unlock(&epochLock_);
+        return v;
+    }
+    uint32_t frozenAvgLatency(int64_t e) {
+        futex_lock(&epochLock_);
+        const uint32_t v = snapFor_(e)->avg;
+        futex_unlock(&epochLock_);
+        return v;
+    }
+    void frozenCounters(uint64_t& late, uint64_t& lateEp, uint64_t& stale, uint64_t& reads) const {
+        late = lateRecs_; lateEp = lateEpochPkts_; stale = staleReads_; reads = keyedReads_;
+    }
+    bool epochFrozenPublish() const { return frozenPublish_; }
+    uint64_t frozenEpochsPublished() const { return frozenEpochsPublished_; }
+    /* 1.12.18 (ruling 2026-10-24): publish every epoch whose phases are all
+     * <= lastCompletePhase (called single-threaded at the phase barrier, after
+     * foldByCut). Order-free integer means => deterministic. */
+    void publishCompletedEpochs(uint64_t lastCompletePhase) {
+        const uint64_t E = detEpochPhases_ > 0 ? detEpochPhases_ : 1;
+        if (lastCompletePhase + 1 < E) return;
+        const uint64_t lastEpoch = (lastCompletePhase + 1) / E - 1;   // epochs 0..lastEpoch are complete
+        futex_lock(&epochLock_);
+        ensurePairTable_();
+        while (!epochPairAcc_.empty() && epochPairAcc_.begin()->first <= lastEpoch) {
+            auto it = epochPairAcc_.begin();
+            uint64_t sum = 0, cnt = 0;
+            for (const auto& kv : it->second) {
+                sum += kv.second.first; cnt += kv.second.second;
+                if (!pairLat_ || kv.second.second == 0) continue;
+                const uint32_t ps = (uint32_t)(kv.first >> 32), pd = (uint32_t)(kv.first & 0xffffffffu);
+                if (ps >= pairLatN_ || pd >= pairLatN_) continue;
+                pairLat_[(size_t)ps * pairLatN_ + pd].store((uint32_t)(kv.second.first / kv.second.second), std::memory_order_relaxed);
+            }
+            if (cnt) batchAvgLatency_.store((uint32_t)(sum / cnt), std::memory_order_relaxed);
+            frozenEpochsPublished_++;
+            if (cutAxis_) {   // 1.12.18: the epoch's snapshot, read by key
+                FrozenSnap& sn = snaps_[it->first];
+                sn.pair.resize((size_t)pairLatN_ * pairLatN_);
+                for (size_t i = 0; i < sn.pair.size(); ++i) sn.pair[i] = pairLat_[i].load(std::memory_order_relaxed);
+                sn.avg = batchAvgLatency_.load(std::memory_order_relaxed);
+                anyPublished_ = true; lastPublishedEpoch_ = it->first;
+                while (snaps_.size() > 16) snaps_.erase(snaps_.begin());
+            }
+            epochAvgLat_.erase(epochAvgLat_.begin(), epochAvgLat_.upper_bound(it->first));   // not read in this mode
+            epochPairAcc_.erase(it);
+        }
+        futex_unlock(&epochLock_);
     }
 
     /** Frozen one-way latency for a COMPLETED epoch: the integer mean over the
@@ -1211,10 +1360,22 @@ private:
             uint32_t newAvg = (uint32_t)(totalLat / delivered);
             uint32_t oldAvg = batchAvgLatency_.load(std::memory_order_relaxed);
             uint32_t next = (oldAvg == 0) ? newAvg : (oldAvg + newAvg) / 2;
+            if (frozenPublish_) {   // 1.12.18 (ruling 2026-10-24): accumulate into the epoch; published at the barrier
+                next = oldAvg;
+                uint64_t ep = phaseNum / (detEpochPhases_ > 0 ? detEpochPhases_ : 1);
+                futex_lock(&epochLock_);
+                if (cutAxis_ && anyPublished_ && ep <= lastPublishedEpoch_) { ep = lastPublishedEpoch_ + 1; lateEpochPkts_ += delivered; }
+                auto& acc = epochPairAcc_[ep];
+                for (const auto& kv : perPairLat) {
+                    auto& a = acc[kv.first];
+                    a.first += kv.second.first; a.second += kv.second.second;
+                }
+                futex_unlock(&epochLock_);
+            } else
             batchAvgLatency_.store(next, std::memory_order_relaxed);
             /* 1.11.97 (H09): publish every sampled pair the same way. */
             ensurePairTable_();
-            if (pairLat_) {
+            if (pairLat_ && !frozenPublish_) {
                 for (const auto& kv : perPairLat) {
                     uint32_t ps = (uint32_t)(kv.first >> 32), pd = (uint32_t)(kv.first & 0xffffffffu);
                     if (ps >= pairLatN_ || pd >= pairLatN_ || kv.second.second == 0) continue;
@@ -1337,10 +1498,16 @@ public:
         for (int l = 0; l < 7; l++) {
             stats_.level_flit_traversals[l] = 0;
             stats_.level_passthrough_flit_traversals[l] = 0;
+            stats_.level_wire_flit_traversals[l] = 0;   // 1.12.18
             stats_.level_packet_traversals[l] = 0;
             stats_.level_buffer_reads[l] = 0;
             stats_.level_buffer_writes[l] = 0;
+            stats_.level_link_flit_traversals[l] = 0;   // 1.12.18
         }
+        stats_.link_traversals_unattributed = 0;     // 1.12.18
+        stats_.link_traversals_overattributed = 0;   // 1.12.18
+        for (int l = 0; l < 7; l++) stats_.level_tsv_die_crossings[l] = 0;   // 1.12.18
+        for (int b = 0; b < 65; b++) stats_.tsv_dies_hist[b] = 0;
         stats_.measured_crossbar_flits = 0;
         stats_.measured_buffer_reads = 0;
         stats_.measured_buffer_writes = 0;
@@ -1401,7 +1568,8 @@ public:
      * the message at this network's flit width, as on the detailed path.
      * Lock-free: PE-MI threads call it concurrently. */
     void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94 (H17): rung 7 = HOST_MC, no on-die router (not counted below)
-                        bool ctrl = false) {
+                        bool ctrl = false,
+                        uint32_t tsvDies = 0, bool stackLayout = false) {   // 1.12.18: die boundaries this walk crossed
         const uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
         const uint32_t bits = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
         const uint64_t flits = std::max(1u, (bits + fb - 1) / fb);
@@ -1423,6 +1591,39 @@ public:
                            __ATOMIC_RELAXED);
         __atomic_fetch_add(&stats_.link_traversals, (uint64_t)links * flits,
                            __ATOMIC_RELAXED);
+        /* 1.12.18: the same links per level. Every router the walk visits
+         * except the top one (the LCA) leaves by its up-link, so tier l owns
+         * perLevel[l] edges, minus one at the top tier. Rung 7 (HOST_MC) has
+         * no on-die router: its edges stay unattributed and say so. */
+        {
+            int top = -1;
+            for (int l = 0; l < 8; l++) if (perLevel[l]) top = l;
+            uint64_t attributed = 0;
+            for (int l = 0; l < 7; l++) {
+                if (!perLevel[l]) continue;
+                const uint64_t e = (uint64_t)perLevel[l] - (l == top ? 1u : 0u);
+                if (!e) continue;
+                __atomic_fetch_add(&stats_.level_link_flit_traversals[l], e * flits,
+                                   __ATOMIC_RELAXED);
+                attributed += e;
+            }
+            if ((uint64_t)links >= attributed)
+                __atomic_fetch_add(&stats_.link_traversals_unattributed,
+                                   ((uint64_t)links - attributed) * flits, __ATOMIC_RELAXED);
+            else
+                __atomic_fetch_add(&stats_.link_traversals_overattributed,
+                                   (attributed - (uint64_t)links) * flits, __ATOMIC_RELAXED);
+        }
+        /* 1.12.18: the die boundaries the walk crossed (TreeWalker::walk under
+         * the stated layout); every crossing is an L3 up-link (stackDieCrossing). */
+        if (stackLayout) {
+            stats_.stack_layout = true;
+            if (tsvDies)
+                __atomic_fetch_add(&stats_.level_tsv_die_crossings[3], (uint64_t)tsvDies * flits,
+                                   __ATOMIC_RELAXED);
+            __atomic_fetch_add(&stats_.tsv_dies_hist[tsvDies < 64 ? tsvDies : 64], (uint64_t)1,
+                               __ATOMIC_RELAXED);
+        }
         tierWalkUsed_ = true;
     }
 
@@ -1441,6 +1642,8 @@ public:
                 stats_.level_routers[lv]++;
                 if (r < routerBranch_.size() && routerBranch_[r])
                     stats_.level_branch_routers[lv]++;
+                if (r < routerWire_.size() && routerWire_[r])
+                    stats_.level_wire_routers[lv]++;   // 1.12.18
             }
             stats_.level_source = "measured_crossbar";
             return;
@@ -1454,10 +1657,12 @@ public:
             for (int l = 0; l < 7; l++) {
                 stats_.level_flit_traversals[l] = 0;
                 stats_.level_passthrough_flit_traversals[l] = 0;
+            stats_.level_wire_flit_traversals[l] = 0;   // 1.12.18
                 stats_.level_buffer_reads[l] = 0;
                 stats_.level_buffer_writes[l] = 0;
                 stats_.level_routers[l] = 0;
                 stats_.level_branch_routers[l] = 0;
+                stats_.level_wire_routers[l] = 0;   // 1.12.18
             }
             for (size_t r = 0; r < rtrXbarTot_.size(); r++) {
                 stats_.measured_crossbar_flits += rtrXbarTot_[r];
@@ -1468,6 +1673,10 @@ public:
                 bool br = (r < routerBranch_.size()) && routerBranch_[r];
                 stats_.level_flit_traversals[lv] += rtrXbarTot_[r];
                 if (!br) stats_.level_passthrough_flit_traversals[lv] += rtrXbarTot_[r];
+                if (r < routerWire_.size() && routerWire_[r]) {   // 1.12.18
+                    stats_.level_wire_flit_traversals[lv] += rtrXbarTot_[r];
+                    stats_.level_wire_routers[lv]++;
+                }
                 stats_.level_buffer_reads[lv]  += rtrBufRdTot_[r];
                 stats_.level_buffer_writes[lv] += rtrBufWrTot_[r];
                 stats_.level_routers[lv]++;
@@ -1511,15 +1720,35 @@ public:
             if (stats_.level_source == "measured_crossbar") {
                 info("  Level %d (%s): %lu flit traversals MEASURED at %u router(s) "
                      "(%u branch; %lu of the flits through pass-through routers); "
-                     "%lu packet crossings by path walk", l, kLvl[l],
+                     "%lu packet crossings by path walk; %lu flits through %u wire "
+                     "router(s) (one router child, no endpoint: a single in/out path)",
+                     l, kLvl[l],
                      stats_.level_flit_traversals[l], stats_.level_routers[l],
                      stats_.level_branch_routers[l],
                      stats_.level_passthrough_flit_traversals[l],
-                     stats_.level_packet_traversals[l]);
+                     stats_.level_packet_traversals[l],
+                     stats_.level_wire_flit_traversals[l],
+                     stats_.level_wire_routers[l]);
             } else {
                 info("  Level %d (%s): %lu flit traversals, %lu packet crossings "
                      "(analytical tier walk)", l, kLvl[l],
                      stats_.level_flit_traversals[l], stats_.level_packet_traversals[l]);
+            }
+        }
+        {   // 1.12.18: per-level link traversals and their sum check
+            uint64_t sum = 0;
+            for (int l = 0; l < 7; l++) sum += stats_.level_link_flit_traversals[l];
+            if (sum || stats_.link_traversals_unattributed || stats_.link_traversals_overattributed) {
+                for (int l = 0; l < 7; l++)
+                    if (stats_.level_link_flit_traversals[l])
+                        info("  Level %d (%s): %lu link flit traversals (edges owned by the "
+                             "child router's level)", l, kLvl[l], stats_.level_link_flit_traversals[l]);
+                info("  Link traversals by level: sum %lu + unattributed %lu - overattributed %lu "
+                     "vs global %lu (%s)", sum, stats_.link_traversals_unattributed,
+                     stats_.link_traversals_overattributed, stats_.link_traversals,
+                     (sum == stats_.link_traversals && !stats_.link_traversals_unattributed &&
+                      !stats_.link_traversals_overattributed) ? "per-level sum EQUALS the global"
+                                                               : "per-level sum DIFFERS from the global");
             }
         }
         if (stats_.total_packets > 0) {
@@ -1582,6 +1811,10 @@ public:
                         stats_.level_flit_traversals[l]);
                 fprintf(f, "garnet.level%d.passthrough_traversals = %lu\n", l,
                         stats_.level_passthrough_flit_traversals[l]);
+                fprintf(f, "garnet.level%d.wire_router_traversals = %lu\n", l,   // 1.12.18
+                        stats_.level_wire_flit_traversals[l]);
+                fprintf(f, "garnet.level%d.wire_routers = %u\n", l,
+                        stats_.level_wire_routers[l]);
                 fprintf(f, "garnet.level%d.packet_traversals = %lu\n", l,
                         stats_.level_packet_traversals[l]);
                 fprintf(f, "garnet.level%d.buffer_reads = %lu\n", l,
@@ -1591,7 +1824,19 @@ public:
                 fprintf(f, "garnet.level%d.routers = %u\n", l, stats_.level_routers[l]);
                 fprintf(f, "garnet.level%d.branch_routers = %u\n", l,
                         stats_.level_branch_routers[l]);
+                fprintf(f, "garnet.level%d.link_traversals = %lu\n", l,   // 1.12.18
+                        stats_.level_link_flit_traversals[l]);
+                fprintf(f, "garnet.level%d.tsv_die_crossings = %lu\n", l,  // 1.12.18
+                        stats_.level_tsv_die_crossings[l]);
             }
+            fprintf(f, "garnet.stack_layout = %d\n", stats_.stack_layout ? 1 : 0);   // 1.12.18
+            for (int b = 0; b < 65; b++)
+                if (stats_.tsv_dies_hist[b])
+                    fprintf(f, "garnet.tsv_dies_hist.%d = %lu\n", b, stats_.tsv_dies_hist[b]);
+            fprintf(f, "garnet.link_traversals_unattributed = %lu\n",      // 1.12.18
+                    stats_.link_traversals_unattributed);
+            fprintf(f, "garnet.link_traversals_overattributed = %lu\n",
+                    stats_.link_traversals_overattributed);
         }
         fclose(f);
     }
@@ -2034,12 +2279,35 @@ private:
     void countPacket_(uint32_t src, uint32_t dst, uint32_t hops, bool ctrl) {
         const uint64_t flits = flitsFor_(src, ctrl);
         uint64_t routers;
+        uint64_t linkAttributed = 0;   // 1.12.18: edges given to a tree level
         thread_local std::vector<uint32_t> path;
         if (topology_ == NoCTopology::CUSTOM && pathRouters_(src, dst, path)) {
             routers = path.size();
             for (uint32_t r : path) {
                 int lv = (r < routerLevel_.size()) ? routerLevel_[r] : -1;
                 if (lv >= 0 && lv <= 6) stats_.level_packet_traversals[lv]++;
+            }
+            /* 1.12.18: each consecutive pair is one tree edge; it belongs to
+             * the deeper router's level (that router's up-link). */
+            uint32_t pktDies = 0;   // 1.12.18 (TSV layout): die boundaries this packet crossed
+            for (size_t i = 0; i + 1 < path.size(); i++) {
+                const uint32_t a = path[i], b = path[i + 1];
+                const uint32_t child = (routerDepth_[a] > routerDepth_[b]) ? a : b;
+                const uint32_t other = (child == a) ? b : a;
+                const int lv = (child < routerLevel_.size()) ? routerLevel_[child] : -1;
+                if (lv < 0 || lv > 6) continue;
+                stats_.level_link_flit_traversals[lv] += flits;
+                linkAttributed++;
+                /* an L3 router's up-link to the hub crosses its die index */
+                const int plv = (other < routerLevel_.size()) ? routerLevel_[other] : -1;
+                if (lv == 3 && plv >= 4 && child < routerStackDie_.size() && routerStackDie_[child] > 0) {
+                    stats_.level_tsv_die_crossings[3] += (uint64_t)routerStackDie_[child] * flits;
+                    pktDies += (uint32_t)routerStackDie_[child];
+                }
+            }
+            if (!routerStackDie_.empty()) {
+                stats_.stack_layout = true;
+                stats_.tsv_dies_hist[pktDies < 64 ? pktDies : 64]++;
             }
         } else if (topology_ == NoCTopology::BUS || topology_ == NoCTopology::CROSSBAR) {
             routers = 1;      // one arbiter / one crossbar, hop count is 1
@@ -2055,6 +2323,11 @@ private:
         stats_.crossbar_traversals += routers * flits;
         stats_.arbiter_events += routers;          // one allocation per packet per router
         stats_.link_traversals += (uint64_t)hops * flits;
+        // 1.12.18: what no level took (or the reverse), so the sum can be checked
+        if ((uint64_t)hops >= linkAttributed)
+            stats_.link_traversals_unattributed += ((uint64_t)hops - linkAttributed) * flits;
+        else
+            stats_.link_traversals_overattributed += (linkAttributed - (uint64_t)hops) * flits;
     }
 
 #ifdef HAVE_GARNET
@@ -2290,16 +2563,28 @@ private:
                 if (iss >> lat) { if (!(iss >> w)) w = 0; }
                 if (epWidth_.size() <= ep) epWidth_.resize(ep + 1, 0);
                 epWidth_[ep] = w;
+            } else if (token == "rdie") {
+                /* 1.12.18 (TSV layout): "rdie <router> <core die>", the stack
+                 * die main.cpp placed a chip-slot router on. */
+                uint32_t r; int d = -1;
+                iss >> r >> d;
+                if (routerStackDie_.size() <= r) routerStackDie_.resize(r + 1, -1);
+                routerStackDie_[r] = d;
             } else if (token == "rlevel") {
                 // 1.11.92 (F4): "rlevel <router> <level> <branch 1|0>"
-                uint32_t r; int lv = -1, br = 0;
+                uint32_t r; int lv = -1, br = 0, wr = 0;
                 iss >> r >> lv >> br;
+                /* 1.12.18: optional 4th field, 1 = a wire router (one router
+                 * child, no endpoint); an older file has none. */
+                if (!(iss >> wr)) wr = 0;
                 if (routerLevel_.size() <= r) {
                     routerLevel_.resize(r + 1, -1);
                     routerBranch_.resize(r + 1, 0);
                 }
+                if (routerWire_.size() <= r) routerWire_.resize(r + 1, 0);
                 routerLevel_[r] = lv;
                 routerBranch_[r] = (uint8_t)(br ? 1 : 0);
+                routerWire_[r] = (uint8_t)(wr ? 1 : 0);
             }
         }
 

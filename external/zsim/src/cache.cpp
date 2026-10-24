@@ -51,11 +51,14 @@ const char* Cache::getName() {
  * those three properties is required. The tag read has to happen INSIDE the
  * lock: once it is dropped, a concurrent eviction may re-tag the same line id
  * and the address we recorded would belong to a different line. */
-uint64_t Cache::flushDirtyLines(std::unordered_set<Address>& distinctDirty) {
+uint64_t Cache::flushDirtyLines(std::unordered_set<Address>& distinctDirty, std::vector<Address>* order) {
     std::vector<uint32_t> ids;
     cc->flushLock();
     cc->takeDirtyLineIds(ids);
-    for (uint32_t id : ids) distinctDirty.insert(array->getLineAddr(id));
+    for (uint32_t id : ids) {
+        const Address a = array->getLineAddr(id);
+        if (distinctDirty.insert(a).second && order) order->push_back(a);   // 1.12.18: walk order
+    }
     cc->flushUnlock();
     return (uint64_t)ids.size();
 }

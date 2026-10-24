@@ -42,6 +42,13 @@
 
 using namespace std;
 
+/* PIMID 1.12.18: every ArrayST's final CACTI timing against the
+ * targets McPAT derived from the clock (l_ip.throughput = cycle-time target,
+ * l_ip.latency = access-time target), for the core's clock-feasibility report. */
+#include <vector>
+struct PimidArrayTiming { std::string name; double access, cycle, thr, lat; bool valid; };
+extern std::vector<PimidArrayTiming> g_pimid_array_timing;
+
 class ArrayST :public Component{
  public:
   ArrayST(){};

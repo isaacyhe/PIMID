@@ -368,6 +368,36 @@ class ProxyStat : public ScalarStat {
 };
 
 
+/* 1.12.18: (bug 6b) a proxy for a TRAFFIC counter that lives in an object
+ * keeping no ROI base of its own (the filter cache's fhGETS / fhGETX hit
+ * counters). roiRebase() zeroes the proxied counter, so the dump reports the
+ * ROI window like every Counter beside it (1.11.90); a plain ProxyStat is left
+ * alone by the rebase, so these were whole-run while the misses next to them
+ * were ROI-only. Same size as ProxyStat (one pointer), so the stats heap
+ * layout is unchanged. Only for a counter nothing but this stat reads. */
+class RoiZeroProxyStat : public ScalarStat {
+    private:
+        uint64_t* _statPtr;
+
+    public:
+        RoiZeroProxyStat() : ScalarStat(), _statPtr(nullptr) {}
+
+        void init(const char* name, const char* desc, uint64_t* ptr) {
+            initStat(name, desc);
+            _statPtr = ptr;
+        }
+
+        uint64_t get() const {
+            assert(_statPtr);
+            return *_statPtr;
+        }
+
+        void roiRebase() override {
+            assert(_statPtr);
+            *_statPtr = 0;
+        }
+};
+
 class ProxyFuncStat : public ScalarStat {
     private:
         uint64_t (*_func)();

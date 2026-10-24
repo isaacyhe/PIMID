@@ -6,6 +6,7 @@
 #include <string.h>
 #include <mpi.h>
 #include "zsim_hooks.h"
+#include "../../include/pimid_spm.h"
 
 #define DEFAULT_SIZE 1024
 
@@ -18,6 +19,50 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     for (int i = 1; i < argc - 1; i++)
         if (strcmp(argv[i], flag) == 0) return atoi(argv[i + 1]);
     return def;
+}
+
+/* 1.12.18: y[0..nrows) = A[0..nrows) * x for the CSR rows whose row_ptr
+ * entries start at row_ptr (col_idx / values are indexed globally), through
+ * the PE scratchpad (pimid_spm.h). The RAM holds four equal buffers: a tile of
+ * row_ptr, a tile of col_idx, a tile of values and a tile of y. Each row block
+ * fetches its row_ptr entries once, streams its nonzeros through the col_idx
+ * and values tiles (each nonzero fetched once, a row may span tiles) and
+ * writes its y block back once. The x[col] gather is irregular and stays a
+ * direct DRAM access. With no scratchpad the tiles are the whole range and
+ * this is the plain row loop. */
+static void spmv_rows(pimid_spm_t* s, const int* row_ptr, const int* col_idx, const float* values,
+                      const float* x, float* y, size_t nrows) {
+    const size_t T = pimid_spm_tile(s, 4, sizeof(int));
+    const size_t R = T - 1;   /* rows per block: row_ptr needs R + 1 entries */
+    const size_t orp = 0, oc = s->cap ? T * sizeof(int) : 0;
+    const size_t ov = s->cap ? 2 * T * sizeof(int) : 0, oy = s->cap ? 3 * T * sizeof(int) : 0;
+    for (size_t rb = 0; rb < nrows; rb += R) {
+        const size_t nr = (nrows - rb < R) ? nrows - rb : R;
+        const int* rp = (const int*)pimid_spm_in(s, orp, row_ptr + rb, (nr + 1) * sizeof(int));
+        float* yb = (float*)pimid_spm_out(s, oy, y + rb);
+        const int jlast = rp[nr];
+        int jb = rp[0], je = rp[0];   /* nonzeros [jb, je) are in the RAM */
+        const int* cb = col_idx;
+        const float* vb = values;
+        for (size_t r = 0; r < nr; r++) {
+            float sum = 0.0f;
+            int j = rp[r];
+            const int jend = rp[r + 1];
+            while (j < jend) {
+                if (j == je) {
+                    jb = j;
+                    je = ((size_t)(jlast - jb) < T) ? jlast : jb + (int)T;
+                    cb = (const int*)pimid_spm_in(s, oc, col_idx + jb, (size_t)(je - jb) * sizeof(int));
+                    vb = (const float*)pimid_spm_in(s, ov, values + jb, (size_t)(je - jb) * sizeof(float));
+                }
+                const int e = (jend < je) ? jend : je;
+                for (; j < e; j++)
+                    sum += vb[j - jb] * x[cb[j - jb]];
+            }
+            yb[r] = sum;
+        }
+        pimid_spm_flush(s, y + rb, yb, nr * sizeof(float));
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -89,20 +134,29 @@ int main(int argc, char* argv[]) {
     float* y_local = (float*)calloc(local_rows, sizeof(float));
     if (!y_local) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
 
+    pimid_spm_t spm;   /* 1.12.18: this rank's PE scratchpad */
+    pimid_spm_open(&spm);
+
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) zsim_roi_begin();
 
     /* Kernel: each rank computes its rows */
-    for (int i = 0; i < local_rows; i++) {
-        int gi = local_start + i;
-        float sum = 0.0f;
-        for (int j = row_ptr[gi]; j < row_ptr[gi + 1]; j++)
-            sum += values[j] * x[col_idx[j]];
-        y_local[i] = sum;
+    /* 1.12.18: no scratchpad -- the 1.12.17 code, unchanged */
+    if (!spm.cap) {
+        for (int i = 0; i < local_rows; i++) {
+            int gi = local_start + i;
+            float sum = 0.0f;
+            for (int j = row_ptr[gi]; j < row_ptr[gi + 1]; j++)
+                sum += values[j] * x[col_idx[j]];
+            y_local[i] = sum;
+        }
+    } else {
+        spmv_rows(&spm, row_ptr + local_start, col_idx, values, x, y_local, (size_t)local_rows);
     }
 
     if (rank == 0) zsim_roi_end();
     MPI_Barrier(MPI_COMM_WORLD);
+    pimid_spm_close(&spm);
 
     /* Checksum: partial sum reduced to rank 0 */
     double local_sum = 0.0;

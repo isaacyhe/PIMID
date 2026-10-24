@@ -38,6 +38,7 @@
 #include "interconnect.h"
 #include "basic_components.h"
 #include "router.h"
+#include "TSV.h"
 
 class NoC :public Component {
   public:
@@ -49,7 +50,15 @@ class NoC :public Component {
 	double executionTime;
 	double scktRatio, chip_PR_overhead, macro_PR_overhead;
 	Router * router;
-	interconnect * link_bus;
+	/* PIMID 1.12.18: link_bus is the per-link price, whichever model built
+	 * it: link_wire (McPAT interconnect over the CACTI wire model, the
+	 * upstream path) or link_tsv_flit (a CACTI-3DD TSV x flit bits). A view
+	 * only: link_wire and link_tsv are the owners. */
+	Component * link_bus;
+	interconnect * link_wire;
+	TSV * link_tsv;
+	Component link_tsv_flit;
+	bool link_is_tsv;
 	NoCParam  nocdynp;
 	uca_org_t local_result;
 	statsDef       tdp_stats;
@@ -61,6 +70,18 @@ class NoC :public Component {
 	bool router_exist;
 	string name, link_name;
 	double M_traffic_pattern;
+	/* PIMID 1.12.18: clock networks (logic.h ClockNetwork; Wattch,
+	 * D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000, clocking): one per
+	 * router, one per link/bus segment. clk is their sum for this NoC. */
+	ClockNetwork clk_router, clk_link;
+	Component clk;
+	double clk_rt_ungated;   /* J, the ungated reference of clk.rt_power */
+	double clk_rt_global;    /* PIMID 1.12.18 (ruling #4): J, the global part of clk.rt_power */
+	/* PIMID 1.12.18 (user ruling "pass-through routers as wire"): the
+	 * router accesses this instance charges, total_accesses less the
+	 * pass-through routers' accesses (set_noc_param). */
+	double router_accesses;
+	void build_link_clock();
 	NoC(ParseXML *XML_interface, int ithNoC_, InputParameter* interface_ip_, double M_traffic_pattern_ = 0.6,double link_len_=0);
 	void set_noc_param();
 	void computeEnergy(bool is_tdp=true);

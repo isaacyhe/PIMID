@@ -54,7 +54,10 @@ class SharedCache :public Component{
     //	cache_processor llCache,directory, directory1, inv_dir;
 
     //pipeline pipeLogicCache, pipeLogicDirectory;
-    //clock_network				clockNetwork;
+    /* PIMID 1.12.18: this cache's clock network (logic.h ClockNetwork;
+     * Wattch, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000, clocking). */
+    ClockNetwork clockNetwork;
+    double clk_instances;   /* instances whose activity this object's runtime energy carries */
     double scktRatio, executionTime;
     //   Component L2Tot, cc, cc1, ccTot;
 

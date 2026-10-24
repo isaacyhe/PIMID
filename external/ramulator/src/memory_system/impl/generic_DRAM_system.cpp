@@ -94,6 +94,29 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       return true;
     }
 
+    bool pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits) override {   // PIMID 1.12.18 (user ruling 2026-10-24)
+      shadowActs = caWaits = 0;
+      for (auto controller : m_controllers) controller->pimid_chip_totals(shadowActs, caWaits);
+      return true;
+    }
+    bool pimid_cmd_totals(uint64_t& activates) override {   // PIMID 1.12.18
+      activates = 0;
+      for (auto controller : m_controllers) controller->pimid_cmd_totals(activates);
+      return true;
+    }
+
+    bool pimid_src_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates) override {   // PIMID 1.12.18 (R0605)
+      hits = misses = conflicts = activates = 0;
+      for (auto controller : m_controllers) controller->pimid_src_totals(hits, misses, conflicts, activates);
+      return true;
+    }
+
+    bool pimid_out_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates, uint64_t& hostActs) override {   // PIMID 1.12.18 (R1)
+      hits = misses = conflicts = activates = hostActs = 0;
+      for (auto controller : m_controllers) controller->pimid_out_totals(hits, misses, conflicts, activates, hostActs);
+      return true;
+    }
+
     float get_tCK() override {
       return m_dram->m_timing_vals("tCK_ps") / 1000.0f;
     }

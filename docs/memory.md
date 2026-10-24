@@ -14,6 +14,20 @@ Per-technology JEDEC organization (channels, banks, timings) drives both the
 memory timing and the device-internal network shape -- see
 [dram_specs.md](dram_specs.md) and [network.md](network.md).
 
+**Both memories are replayed controllers (1.12.18, ruling 17).** The device
+memory's interfaces (since 1.11.98) and, in system scope, the host memory
+controller record every DRAM access per epoch and replay it through a
+Ramulator2 controller at the epoch boundary; each access is priced at the
+previous epoch's measured service latency of its interface. The host keeps its
+calibrated host-path adder on top (no DRAM timing in it); the M/D/1 queue it
+used before prices only the first epoch, or everything with
+`system.hosts[].memory.dram_replay: false`. When the device is the host's
+memory the host joins the device's instance: one controller, one refresh
+schedule, the controller's row and activate counters split by origin. A
+decoupled host memory has its own instance. The controller counters (row hits /
+misses / conflicts, activates, refresh commands, replayed and idle cycles,
+bank-open time) feed the energy model; see [power.md](power.md).
+
 ## PE placement levels
 
 PEs attach inside the memory hierarchy via `pim.placement.level`. The levels,
@@ -69,10 +83,28 @@ real -- including cross-rank contention under message-passing (see
 Access pricing is purely by data LOCATION: a PE's access to its own placement
 unit traverses zero network hops; anything else pays the real tiered tree
 distance to where the data lives (or to its region's abstract endpoint, for
-regions hosting no PE). The PE local memory is a scratchpad, not a cache --
-nothing is cached, migrated, or auto-prepped by the simulator; data placement
-is the workload's job (see the device-org prep section in
-[benchmarks.md](benchmarks.md)).
+regions hosting no PE). Nothing is cached, migrated, or auto-prepped by the
+simulator; data placement is the workload's job (see the device-org prep
+section in [benchmarks.md](benchmarks.md)). The compute unit's own data RAM
+(`pim.pe.spm_bytes`, 1.12.18) is a scratchpad, not a cache: it holds only the
+blocks the kernel moves into it ([benchmarks.md](benchmarks.md#the-pe-scratchpad)).
+
+**Where data lives: first touch (1.12.18).** A 4 KB data page lives in the
+memory of the first PE that accesses it, in every mode (serial, shared memory,
+message passing), as Linux places a page on the node of the thread that first
+touches it and as real PIM keeps a PE's data in its own bank (UPMEM's MRAM,
+the HBM-PIM / AiM banks). A PE's pages fill its own units in the order it
+touches them, `pages_per_unit` pages to a unit. A thread's stack follows its
+own rule (it lives in its PE's memory, claimed by that PE; 1.12.17). So a
+program decides placement the way it would on the hardware: data a thread
+initialises lives with that thread's PE, and data one thread initialises for
+all (a serial setup loop) lives with that one PE. Until 1.12.17 pages were
+placed by address, in blocks of `pages_per_unit` pages across all units,
+whoever used them; placement-dependent results of 1.12.17 and earlier are not
+comparable. Capacity is not enforced: a PE that touches more pages than its
+units hold wraps around within them, as the address map did. Each PE
+interface reports `ftPages`, the pages it first touched inside the ROI (pages
+claimed during setup are not counted there).
 
 When multiple PEs are placed at a level and no explicit `pim.pe_mem_map` is
 given, PEs are distributed **distant/strided** across that level's units -- each

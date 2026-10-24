@@ -7,7 +7,10 @@
 # To model another part: copy this file, change every field with its own source,
 # and point PIMID_PARAMS at the directory holding it. Partial records are refused.
 technology: DDR5
-part: "MT60B 16 Gb DDR5-4800 (default grade; 5600 and 3200 select other presets)"
+# 1.12.18: user ruling 2026-10-23 (confirmed 2026-10-24): "DDR5 default = Micron MT60B 16 Gb Die Rev D Table 8, 4800 column; else move the default to 5600 and say so." Rev D Table 8 publishes only 5600/6400/7200, so the default moved to 5600
+# (DDR5-5600B, the MT60B2G8RZ-56B:D part, 16 Gb x8, 46-45-45; Rev D addendum Table 1 p.1). 4800 (Rev A) and
+# 3200 stay selectable with memory.dram.ddr5_speed_grade.
+part: "MT60B 16 Gb DDR5-5600B Die Rev D (default grade since 1.12.18; 4800 and 3200 select other presets)"
 vendor: "Micron"
 generation: "1a"            # vendor generation label of the DENSITY part (sweep-94 row 13)
 feature_nm: 14.0                  # mid-value of the published range for this generation
@@ -15,13 +18,28 @@ cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline
 density_mb_per_mm2: 40.32  # measured FULL-DIE density, user capacity basis (D11)
 density_source: "Micron D1a (1-alpha) 8 Gb DDR5, 8 Gb / 25.41 mm^2 = 0.315 Gb/mm^2 (TechInsights) x 128"
 organization_preset: "DDR5_16Gb_x8"   # Ramulator org preset the run instantiates (default knobs)
-timing_preset: "DDR5_4800B"         # Ramulator timing preset (default knobs)
+timing_preset: "DDR5_5600B"         # Ramulator timing preset (default knobs); 1.12.18: 5600B per the user ruling (was DDR5_4800B)
 channels: 2                   # 1.11.97 (review R1): the 64-bit DIMM channel is two independent 32-bit sub-channels (JESD79-5B 2.1); the preset instantiates both
 channel_width_bits: 32   # 1.11.101 (step 2): JESD79-5B 2.1: each of the two independent sub-channels is 32 bits wide; one sub-channel rank = 32 / device width devices (the DIMM rank spans both: 64 / width)
 refresh_ladder:                    # JEDEC JESD79-5: 2x refresh above 85 C (the model applies one step)
   - { above_c: 85.0, factor: 0.5 }
 
 # ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
+# 1.12.18: iddq.wr_includes_rtt_wr (optional, default false): the
+# sheet measures IDDQ4W with the DRAM's RTT_WR ENABLED (Table 387: "Output
+# Buffer and RTT: Enabled in mode registers"; notes 2-4: RON RZQ/7 = 34,
+# RTT_NOM RZQ/6 = 40, RTT_WR RZQ/2 = 120 ohm -- the same 34/120 the write
+# termination term uses), on the device's VDDQ balls. On a write the DQ is
+# driven by the tester/controller and the DC loop is DRAM VDDQ -> RTT_WR ->
+# line -> driver pull-down, so the DRAM's VDDQ supplies the whole write
+# termination current: it is INSIDE IDDQ4W - IDDQ3N (IDDQ3N has none: Data IO
+# at VDDQ, no DC). The write is therefore charged once, at the measured IDDQ
+# excess (which also carries the DQ receivers); the termination formula is
+# printed beside it as a guard. Reads do NOT overlap: the read loop's DC
+# current comes from the far-end terminator (POD pull-up-only termination,
+# JESD8-21C.01 cl.3; the driving DRAM's own ODT is off), not the DRAM's VDDQ
+# balls where IDDQ4R is measured. power.models.iddq_write_termination_once:
+# false charges both again.
 idd:
   basis: "per device"
   channels_basis: 1
@@ -36,12 +54,13 @@ idd:
       idd4r: 377.0
       idd4w: 349.0
       idd5: 277.0
+      # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
       idd2p: 88.0
       trfc_ns: 295.0
       trefi_ns: 3900.0
-      source: "Micron MT60B 16 Gb DDR5 core sheet Rev A Table 6, pp.17-19 (DDR5-4800B, the record grade), MAXIMA; typical via the component factors"
-      iddq: { iddq3n: 31.0, iddq4r: 57.0, iddq4w: 198.0, vddq: 1.1, source: "Rev A T6 pp.18-19 (VDDQ rail)" }
-      ipp: { ipp2n: 6.0, ipp3n: 7.0, vpp: 1.8, source: "Rev A T6 pp.17-18 (VPP rail)" }
+      source: "Micron MT60B 16 Gb DDR5 core sheet Rev A Table 6, pp.17-19 (DDR5-4800B; the record grade until 1.12.18, selectable with memory.dram.ddr5_speed_grade: 4800), MAXIMA; typical via the component factors"
+      iddq: { iddq3n: 31.0, iddq4r: 57.0, iddq4w: 198.0, vddq: 1.1, source: "Rev A T6 pp.18-19 (VDDQ rail)", wr_includes_rtt_wr: true, wr_rtt_source: "Micron DDR5 core sheet Rev D Table 387 pp.449-452 (IDD4W/IDDQ4W: Output Buffer and RTT Enabled) + notes 2-4 p.452 (RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2 = 120 ohm); IDDQ on the VDDQ balls (p.448)" }
+      ipp: { ipp2n: 6.0, ipp3n: 7.0, vpp: 1.8, ipp0: 8.0, ipp4r: 9.0, ipp4w: 37.0, ipp5b: 28.0, source: "Rev A T6 pp.17-18 (VPP rail); 1.12.18: x8 DDR5-4800 IPP0 8 (p.17), IPP4R 9 and IPP4W 37 (p.19), IPP5B 28 (p.20)" }
     5600:
       vdd: 1.1
       idd0: 53.0
@@ -50,12 +69,13 @@ idd:
       idd4r: 218.0
       idd4w: 241.0
       idd5: 377.0
+      # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
       idd2p: 47.0
       trfc_ns: 295.0
       trefi_ns: 3900.0
-      source: "Micron MT60B 16 Gb DDR5 core sheet Rev D Table 8, pp.18-20 (DDR5-5600B), MAXIMA; typical via the component factors"
-      iddq: { iddq3n: 70.0, iddq4r: 218.0, iddq4w: 271.0, vddq: 1.1, source: "Rev D T8 pp.19-20" }
-      ipp: { ipp2n: 7.0, ipp3n: 8.0, vpp: 1.8, source: "Rev D T8 pp.18-19" }
+      source: "Micron MT60B 16 Gb DDR5 core sheet Rev D (16gb_ddr5_sdram_dierevD.pdf Rev. F 04/2024) Table 8, pp.18-20, x8 DDR5-5600 column (DDR5-5600B; THE RECORD GRADE since 1.12.18, user ruling 2026-10-23/24), MAXIMA (worst-case process, temperature, voltage); power ruling: TYPICAL where a published ratio exists (VDD: via the component factors), MAXIMUM where none exists (VDDQ: the iddq row, VPP: the ipp row, both charged at the published maxima)"
+      iddq: { iddq3n: 70.0, iddq4r: 218.0, iddq4w: 271.0, vddq: 1.1, source: "Rev D T8 pp.19-20", wr_includes_rtt_wr: true, wr_rtt_source: "Micron DDR5 core sheet Rev D Table 387 pp.449-452 (IDD4W/IDDQ4W: Output Buffer and RTT Enabled) + notes 2-4 p.452 (RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2 = 120 ohm); IDDQ on the VDDQ balls (p.448)" }
+      ipp: { ipp2n: 7.0, ipp3n: 8.0, vpp: 1.8, ipp0: 9.0, ipp4r: 10.0, ipp4w: 23.0, ipp5b: 33.0, source: "Rev D T8 pp.18-19; 1.12.18: x8 DDR5-5600 IPP0 9 (p.18), IPP4R 10 (p.19), IPP4W 23 and IPP5B 33 (p.20)" }
     3200:
       vdd: 1.1
       idd0: 55.0
@@ -64,6 +84,7 @@ idd:
       idd4r: 148.0
       idd4w: 168.0
       idd5: 120.0
+      # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
       idd2p: 20.0
       trfc_ns: 195.0
       trefi_ns: 3900.0

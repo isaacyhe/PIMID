@@ -185,6 +185,11 @@ struct GlobSimInfo {
     // Garnet network for device NoC simulation (PIMID integration)
     GarnetNetwork* garnetNetwork;
     class DramEpochReplay* dramReplay;   // 1.11.98 (ruling 4 (c)): the device DRAM controller, replayed per epoch (nullptr = off)
+    class DramEpochReplay* hostDramReplay;   // 1.12.18 (ruling 17 / R0605): the decoupled host memory's own replay (nullptr = none, or the host shares dramReplay)
+    /* 1.12.18: (bug 7) the host memory controllers the coherence flush's
+     * writebacks are sent to (sys.mem.flushWritebacksToMC); nullptr = not
+     * routed (the array-side charge in the power report stands). */
+    g_vector<class SimpleMemory*>* flushHostMems = nullptr;
 
     /* 1.11.90: the stat subtrees whose counters are TRAFFIC and must be
      * rebased at roi_begin (cache groups, "mem", "pe_mem"). Core groups are
@@ -210,6 +215,10 @@ struct GlobSimInfo {
         // technologies stay unsaturated under load. A proper N-parallel-Garnet-
         // trees model is future work; this scalar is a stop-gap. 1 = no effect.
         uint32_t dramChannels = 1;
+        /* 1.12.18 (user ruling, HBM TSV layout): channels per stack core die
+         * under the stated layout (0 = not a stacked part); places the
+         * chip-slot routers on dies for the TSV die-crossing count. */
+        uint32_t stackChannelsPerDie = 0;
         // Shared detailed-MPI Garnet: this rank's ROI baseline, exported by the
         // plugin (snapshotRoiBaseCyc) so the PE-MI publishes shared-NoC records
         // on the ROI-RELATIVE clock -- the established floor-free cross-rank
@@ -223,6 +232,11 @@ struct GlobSimInfo {
         // wall-dependent PRE-ROI length (rank spawning, init) cannot shift the
         // ROI's epoch boundaries run-to-run. Pre-ROI traffic is not recorded.
         volatile uint64_t mpiNocRoiBasePhase = 0;
+        // 1.12.18 (R2, B3): every core's wall-free clock (Core::getCycles())
+        // at the ROI baseline snapshot (the first ROI barrier in thread-MPI),
+        // indexed by core id; host cores keep no roiBaseCycle of their own.
+        uint64_t* mpiRoiBaseCyc = nullptr;
+        uint32_t mpiRoiBaseCycN = 0;
         // Real datasheet AGGREGATE sustainable DRAM bandwidth (MB/s) =
         // per-channel x channels (from Ramulator getBandwidth()). The detailed
         // NoC model uses this to cap effective DRAM bandwidth at the channel
@@ -491,6 +505,7 @@ struct GlobSimInfo {
         volatile uint64_t d2hBytes = 0;    // device->host payload bytes
         volatile uint64_t count = 0;       // discrete crossings (all types)
         volatile uint64_t flushBytes = 0;  // coherence-flush footprint bytes
+        volatile uint64_t flushMcLines = 0;   // 1.12.18 (bug 7): of those, the line writebacks sent to the host memory controllers
     } xing;
 
     /* 1.11.8 (#84): per-object ACTIVE-PHASE marking for power-gating
@@ -591,6 +606,35 @@ struct GlobSimInfo {
             roiDevMC0      = devMC[0].activePhases;
         }
     } pgres;
+
+    /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): a
+     * run's time is the ROI's elapsed time on the GLOBAL clock, not the max
+     * over cores of their own (busy) cycle counts. A PE whose thread blocks
+     * (an OpenMP thread waiting at a barrier or a lock) stops advancing its
+     * own clock while the phase clock runs on with the other cores, so the
+     * busy max under-states the ROI whenever shared-memory threads block.
+     * Stamps are on the phase clock the DRAM replay already stamps on
+     * (numPhases x phaseLength + the stamping core's offset in its phase;
+     * each core advances phaseLength of its own cycles per phase).
+     *   source 1: roi_begin..roi_end stamps (serial, OpenMP, co-sim OpenMP)
+     *   source 2: thread-MPI, whose ranks run on per-core ROI-relative clocks
+     *             (frozen-clock waits; the phase clock runs on wall-coupled
+     *             parks there): the max over ranks of the ROI-relative end
+     *             at the cut (co-sim: the closing-barrier markers).
+     * One owner: the plugin sets it, the stats export it (roiWallCycles,
+     * roiWallSource), the DRAM replay closes its window at its end. */
+    struct {
+        volatile uint32_t source = 0;   // 0 = no ROI seen
+        volatile bool ended = false;
+        uint64_t beginStamp = 0, endStamp = 0;   // source 1, phase-clock cycles
+        uint64_t mpiEnd = 0;                     // source 2 and 3, ROI-relative cycles
+        uint32_t mpiEndFreqMHz = 0;              // 1.12.18 (R2): the clock mpiEnd is counted in (the rank cores'); 0 = the device's
+        uint64_t cycles() const {
+            if (!ended) return 0;
+            if (source == 2 || source == 3) return mpiEnd;   // 1.12.18: 3 = single-process cut (ruling 2026-10-24 (a))
+            return (endStamp > beginStamp) ? endStamp - beginStamp : 0;
+        }
+    } roiWall;
 
     // Kernel LAUNCH cost tree (1.7.3, HANDOFF ISSUE 2). The host launches a
     // device kernel at the offload doorbell (co-sim roi_begin / WORK_BEGIN).

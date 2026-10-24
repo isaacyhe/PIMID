@@ -49,6 +49,10 @@ int main(int argc, char* argv[]) {
     /* Initial centroids = first K points */
     memcpy(centroids, points, (size_t)K * D * sizeof(double));
 
+    /* 1.12.18: the thread team starts before the ROI, as message-passing
+     * ranks exist before it; the ROI measures the kernel, not the start-up. */
+    #pragma omp parallel
+    { }
     zsim_roi_begin();
 
     for (int t = 0; t < iters; t++) {

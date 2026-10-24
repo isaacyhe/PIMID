@@ -44,7 +44,7 @@ DERIVED / CALIBRATED).
 | DDR3L measured/datasheet ratio per current | three-vendor means IDD0 0.427, IDD2N 0.566, IDD3N 0.367, IDD4R 0.736 (I/O-corrected), IDD4W 0.542, IDD5B 0.829 (band: vendor A/B/C, e.g. IDD3N 0.234/0.532/0.334); IDD2P1 given only as ranges. DDR3 component set: standby 0.566, active-standby premium 0.367/0.566, activate excess 0.43 (IDD0 loop), burst excess 0.736 rd / 0.542 wr, refresh excess 0.829, power-down 0.566 | Ghose, Yaglikci, Gupta, Lee, Chandrasekar, Ma, Mutlu, "What Your DRAM Power Models Are Not Telling You: Lessons from a Detailed Experimental Study", Proc. ACM Meas. Anal. Comput. Syst. (SIGMETRICS) 2018, https://arxiv.org/abs/1807.05102 (50 DDR3L-1600 modules, 3 vendors) | `pimid_energy.h` `componentFactorsFor("DDR3")` (CALIBRATED); the two-generation set |
 | DDR4 measured/datasheet ratio per current | IDD0 0.540 (1120->605 mA), IDD2N 0.576 (1040->599), IDD3N 0.350 (1540->539), IDD4R 0.553 (1750->967), IDD4W 0.430 (1590->684); refresh not calibrated; energy-level ratios 0.25-0.51 (median 0.47). DDR4 component set: standby 0.576, premium 0.350/0.576, activate excess 0.540, burst excess 0.553 rd / 0.430 wr, refresh excess 0.83 (Ghose), power-down 0.576 | Shi et al., "Calibrating DRAMPower Model for HPC: A Runtime Perspective from Real-Time Measurements", arXiv:2411.17960 (v3), Fig. 4(b) (Samsung M393A1G43DB0-CPB DDR4-2133 8 GB RDIMMs, HDEEM, Haswell node) | `pimid_energy.h` `componentFactorsFor("DDR4")` (CALIBRATED; ratios only, not the per-DIMM values); the two-generation set |
 | Two-generation component factors | precharged standby 0.57; active-standby premium 0.36/0.57 (IDD3N_t = IDD2N_t + premium x (IDD3N - IDD2N), >= IDD2N_t); activate excess (IDD0 loop minus its TN-41-01 baseline) 0.5; burst excess 0.6 rd / 0.5 wr; refresh excess (IDD5B - IDD2N) 0.83 (Ghose only); power-down 0.57 | the two rows above (user ruling 19:30); assumption: newer generations are guardbanded as DDR3L and DDR4 were. [The first, per-current pass (IDD0 0.48 ... IDD2P 1.00) was withdrawn: DDR5 IDD0 fell below IDD2N] | `pimid_energy.h` `componentFactorsFor()`: DDR5 (3200/4800/5600), LPDDR5, LPDDR5X, GDDR6 (DERIVED); none for HBM2/HBM3 |
-| GDDR6 IDD maxima | per device, x32, 1.35 V, HC14: IDD0 430, IDD2N 310, IDD3N 460, IDD4R 1220, IDD4W 1470, IDD5 790, IDD2P 230, IDD7 1640 mA; tRFCab 120 ns (Table 91); row = device/2 per channel (maxima), typical by the two-generation component set; activate 3.24 nJ/channel ACT from IDD7 - IDD4R, x activate-excess 0.5 = 1620 pJ | Samsung K4Z80325BC 8Gb GDDR6 SGRAM C-die Rev. 1.3 (misc/52839ef626add36b171d2cdf17bacfd2.pdf) Table 82 PDF p.146, Tables 90-91; derivation _1166audit/IDD_DERIVATION_HBM3_GDDR6.md section 2 | `pimid_energy.h` GDDR6 row (DERIVED) |
+| GDDR6 IDD maxima | per device, x32, 1.35 V, HC14: IDD0 430, IDD2N 310, IDD3N 460, IDD4R 1220, IDD4W 1470, IDD5 790, IDD2P 230, IDD7 1640 mA; tRFCab 120 ns (Table 91); row = device/2 per channel (maxima), typical by the two-generation component set; activate 3.24 nJ/channel ACT from IDD7 - IDD4R, x activate-excess 0.5 = 1620 pJ | Samsung K4Z80325BC 8Gb GDDR6 SGRAM C-die Rev. 1.3 (misc/52839ef626add36b171d2cdf17bacfd2.pdf) Table 82 PDF p.146, Tables 90-91; derivation [derivations/hbm_gddr6_idd.md](derivations/hbm_gddr6_idd.md) section 2 | `pimid_energy.h` GDDR6 row (DERIVED) |
 | HBM2 measured IDD (base of HBM2 and HBM3) | 36-stack means / 8 per channel: IDD0 140.6, IDD2N 135.9, IDD3N1 133.4, IDD4R 463.8, IDD4W 355.6, IDD5B 189.3 mA at 1.2 Gb/s/pin on PC0 only, IDD5 loop tRFC 266.7 ns | CMU-SAFARI HBM-Power artifact, branch "artifact", https://github.com/CMU-SAFARI/HBM-Power/tree/artifact, accessed 2026-09-26 (paper not yet public): data/all_idd_measurements.csv, sources/table3/configs/HBM2_1.2Gbps_timing_BL4.json, power_measurement.cpp; its "ipp" column is a card-power residual (platform.cpp), NOT used | `pimid_energy.h` HBM2 row (MEASURED, burst at constant energy per bit x 307.2/76.8) and HBM3 row (DERIVED) |
 | HBM2 per-bit energy cross-check | 3.92 pJ/bit per access; row activation 909 pJ; I/O 0.80 of 3.48 pJ/b | O'Connor et al., "Fine-Grained DRAM: Energy-Efficient DRAM for Extreme Bandwidth Systems", MICRO-50 2017 (misc/MICRO_2017_Fine_Grained_DRAM.pdf) p.3, Table 3 p.10 | HBM3 row derivation (I/O share f_io 0.23) and check |
 | LPDDR5 / LPDDR5X IDD maxima (VDD2H) | IDD0 53, IDD2N 32.5, IDD3N 40, IDD4R 390, IDD4W 265, IDD52H 205, IDD2P 3.9 mA, x16, 7500 Mb/s, 16 Gb die; LPDDR5 row: burst excess x 6400/7500 (stored), typical by the two-generation component set; LPDDR5X row: unscaled, same set (technology not selectable: no public AC timing set) | Micron Y52P LPDDR5X SDRAM (misc/315b-441b-561b-563b-y52p-sdp-ddp-qdp-8dp-lpddr5x.pdf, Rev. H 03/2025, public) Table 18 PDF pp.42-43; tRFCab 280 ns Table 6 p.11. Checked for an AC timing table and found none: Micron automotive LPDDR5X 561b Y52Q DDP (MT62F512M64D2, Rev. G 05/2025, https://www.mouser.com/catalog/specsheets/Micron_10-16-2025_561b-y52q-ddp-auto-lpddr5x.pdf, 33 pp.) -- only density-dependent refresh (Table 4) and 16-bank 3733/4267 Mb/s RL/WL/nWR (Table 8); the rest deferred to General LPDDR5/LPDDR5X Specifications 2/3 | `pimid_energy.h` LPDDR5 (DERIVED) and LPDDR5X rows |
@@ -82,7 +82,12 @@ DERIVED / CALIBRATED).
 |---|---|---|---|
 | PCIe gen3/4/5 pJ/bit | gen3 4.0; gen4 1.93 (TX-only) - 6.0; gen5 7.6 - 11.4 | published PHY surveys, per-entry comments | `linkEnergyBandPJPerBit()` |
 | NVLink pJ/bit | 1.17 - 1.30 | NVIDIA NVLink4 claims | same |
-| UCIe pJ/bit | 0.25 - 0.5 | UCIe consortium figures | same |
+| UCIe pJ/bit (LEGACY band) | 0.25 - 0.5 | UCIe consortium figures | same; used only with `power.models.ucie_link: false` |
+| UCIe analog PHY, 3 nm | advanced 0.29; standard 0.52 pJ/bit (measured) | Melek et al. (Cadence), IEEE JSSC vol. 61 no. 7, July 2026, DOI 10.1109/JSSC.2026.3651425 | McPAT `iocontrollers.cc` (two-node rows, 1.12.18) |
+| UCIe analog PHY, 22 nm | standard 1.2 pJ/bit (measured, 48 Gb/s, PLL not integrated); advanced 0.669 DERIVED = 1.2 x 0.29/0.52 | Mondal et al. (Intel), ISSCC 2026 8.1, DOI 10.1109/ISSCC49663.2026.11409120; package ratio from Cadence above | same |
+| D2D digital interface, 3 nm | 0.10 pJ/bit = 0.33 - 0.23 (UCIe-like, not the UCIe adapter) | Shivnaraine et al. (Microsoft), ISSCC 2026 8.3, DOI 10.1109/ISSCC49663.2026.11409276 | same |
+| D2D digital interface, 22 nm | 0.284 pJ/bit DERIVED, lower bound = 0.10 x CACTI C_inv x Vdd^2 (22/32 nm) x 0.51/0.111 | Stillmaker & Baas, Integration 58 (2017) 74-81, Table 2; CACTI tables | same |
+| D2D digital 22 nm internal references (never applied) | analog node ratio 0.231; TSMC press chain 0.559 (0.541-0.580) | Intel/Cadence above; P. Alcorn, Tom's Hardware 2020-08-24 (TSMC Technology Symposium 2020: N5 -30% vs N7, N3 -25-30% vs N5) | same (guard: WARNING outside [min, max]) |
 | UALink pJ/bit | 3.5 (200G-class SerDes row) | D1 sourcing | same |
 | Interposer I/O | 0.3 pJ/bit (app toggle) / 0.80 (50%) | O'Connor et al., MICRO-50 2017 Table 3 (misc/MICRO_2017_Fine_Grained_DRAM.pdf) | MC interposer tier (D2) |
 | SerDes per-lane rates | PCIe 8/16/32 GT/s; NVLink4 100G; UALink 200G | PCI-SIG / vendor | `memoryctrl.cc` PIMID block |
@@ -101,12 +106,13 @@ each load-bearing for PIMID:
   0.65 of Vdd) are the authority behind every PIMID power-gating number.
 - CACTI-3DD (Chen et al., DATE 2012) -- 3D die-stacked DRAM with a TSV
   model (`external/cacti/TSV.cc`, the CACTI3D paths in `uca.cc`/`io.cc`,
-  and a 3D-stacked DRAM sample config). VENDORED AND COMPILED BUT NEVER
-  INVOKED by PIMID: nothing in `src/` sets `is_3d_mem`, so our HBM stacks
-  are priced today with the interposer I/O band (O'Connor) and a JEDEC
-  die-count population, with no TSV area or TSV energy term at all. Same
-  shape CACTI-IO had before 1.11.42 harnessed it; logged as an open item
-  rather than left silent.
+  and a 3D-stacked DRAM sample config). Since 1.12.18 its TSV model
+  (`TSV(Coarse)`) is invoked inside the McPAT fork (`external/mcpat/noc.cc`)
+  for the die crossings of a stacked part's (HBM) in-memory fabric: each
+  chip-tier transfer is charged the die boundaries it crosses under
+  `memory.channels_per_die`, with TSV leakage and area from the built channel
+  routers (`power.models.fabric_tsv`). Its 3D DRAM array path (`is_3d_mem`)
+  is still not used: the HBM array is priced by the part record.
 - CACTI-D (Thoziyoor et al., ISCA 2008) -- the DRAM technology extension.
   It supplies the `comm-dram` and `lp-dram` cell/device types, i.e. the
   columns the ENTIRE DRAM-periphery family factor is a ratio against
@@ -181,9 +187,9 @@ that deck as its provenance.
 | GDDR6 ns getters | derived from the preset (14.85/13.7/14.85/30.3 ns) | preset x 571 ps | The 14.8/28.0 literals were the vendor values; the derivation now reproduces them |
 | DDR3 org transcription | 65536 rows x 2048 cols (x8) | DDR3.cpp 1.11.63 rows | Transcription had gone stale (131072 x 1024); density product hid it |
 | DDR5 banks, 8 Gb x8 | 8 BG x 2 = 16 | JESD79-5D Table 4 printed p.7 (BA0); 32 begins at 16 Gb (Tables 5-7) | Arch object + main.cpp table were at 32; preset was right |
-| DDR5 speed grades | 3200AN (8 Gb) / 4800B / 5600B (16 Gb); default 4800 | JESD79-5D Tables 283/287/289 (bins), 335/336 (per-speed AC), 71 (16 Gb tRFC1 295), 73, cl.13.2 rounding | The Micron dies are B-bin parts (-48B, -56B) |
-| DDR5 IDD, 4800B / 16 Gb | IDD0 103, IDD2N 92, IDD3N 142, IDD4R 377, IDD4W 349, IDD5B 277, IDD2P 88 mA | Micron MT60B Rev A addendum Table 6 pp.17-19 | Default grade |
-| DDR5 IDD, 5600B / 16 Gb | 53 / 49 / 91 / 218 / 241 / 377 / 47 mA | Micron MT60B Rev D addendum Table 8 pp.18-20 | |
+| DDR5 speed grades | 3200AN (8 Gb) / 4800B / 5600B (16 Gb); default 5600 since 1.12.18 (4800 before) | JESD79-5D Tables 283/287/289 (bins), 335/336 (per-speed AC), 71 (16 Gb tRFC1 295), 73, cl.13.2 rounding | The Micron dies are B-bin parts (-48B, -56B) |
+| DDR5 IDD, 4800B / 16 Gb | IDD0 103, IDD2N 92, IDD3N 142, IDD4R 377, IDD4W 349, IDD5B 277, IDD2P 88 mA | Micron MT60B Rev A addendum Table 6 pp.17-19 | Default grade until 1.12.18 |
+| DDR5 IDD, 5600B / 16 Gb | 53 / 49 / 91 / 218 / 241 / 377 / 47 mA | Micron MT60B Rev D addendum Table 8 pp.18-20 | Default grade since 1.12.18 (user ruling 2026-10-23/24: Rev D Table 8 has no 4800 column, so 5600). VDD typical via the component factors; VDDQ/VPP at the published maxima (no published ratio) |
 | DDR5 IDD, 3200 / 8 Gb | 55 / 34 / 42 / 148 / 168 / 120 / 20 mA | UNSOURCED (no held datasheet publishes a 3200 column) | Stated; 2-3x below either addendum on standby |
 | DDR4 IDD5B | 457.4 mA (1.11.91) | Derived from Micron MT40A Rev B Table 148 p.332 IDD5R 53 / IDD2N 34 at tRFC/tREFI 350/7800 | 1.11.66 had 362 from a Rev A IDD5R against another revision's standby (R8-9) |
 | DDR4 IDD row, x8 2400 (1.11.91) | IDD0 48, IDD2N 34, IDD3N 43, IDD4R 135, IDD4W 123, IDD2P 25 mA; IPP2N = IPP3N 3 mA at VPP 2.5 V | Micron MT40A (8gb_ddr4_dram.pdf Rev. N) Table 148 Die Rev. B p.332; IPP3N applies to all IDD2x/3x/4x per note 22 p.334; VPP p.1 | User ruling R8-9. No IDDQ rows published (n/a) |

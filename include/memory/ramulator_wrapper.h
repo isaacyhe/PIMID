@@ -160,6 +160,9 @@ public:
      * HBM3 sizing disagreement into every DDR4/HBM2 run's log. The warnings
      * still fire on every wrapper that is actually used for the run. */
     void setAnchorQuiet(bool q) { anchor_quiet_ = q; }
+    /* 1.12.18: the energy model's switches, power.models.dram_io_share_split and
+     * power.models.dram_vpp_dynamic (bugs 2b/8a, 3b), set once per run. */
+    static void setEnergyModelSwitches(bool io_share_split, bool vpp_dynamic);
 
     // Initialization
     void initialize();
@@ -224,7 +227,8 @@ public:
      * both correct. */
     void setDeviceWidth(const std::string& w);  // 1.11.46; 1.11.59 (C018)
     /* 1.11.66 (round 5 F6, user ruling R8 #9): DDR5 SPEED GRADE as a
-     * setting -- 3200, 4800 (default) or 5600 MT/s. The grade selects ONE
+     * setting -- 3200, 4800 or 5600 MT/s (1.12.18: default = the part
+     * record's grade, 5600 per the 2026-10-23 ruling). The grade selects ONE
      * PART: timing preset (DDR5_3200AN / DDR5_4800B / DDR5_5600B), org (8 Gb
      * at 3200 -- the only 3200 datasheet class held -- and the 16 Gb Micron
      * MT60B die at 4800/5600), IDD row (Rev A = 4800B, Rev D = 5600B), the
@@ -261,6 +265,9 @@ public:
      * pre-1.11.67 member defaults, unchanged. */
     static void setRunWideKnobs(const std::string& device_width, int ddr5_grade_mtps,
                                 int temperature_k, double termination_pj_per_bit);
+    /* 1.12.18: the DDR5 grade this run simulates -- the run-wide knob when set, else the part
+     * record's (5600 by default) -- for code that holds no wrapper instance. */
+    static int runDdr5GradeMTs();
     /* The key the energy layer selects an IDD row by: the technology, plus a
      * "-<grade>" suffix for DDR5 (pimid_energy.h baseTech() strips it for
      * every family-level decision). */
@@ -279,6 +286,26 @@ public:
      * (pimid_energy.h refreshTempFactor). Default 358 K = 85 C = top of the
      * nominal range, i.e. the pre-1.11.66 behaviour. */
     void setTemperatureK(int k) { temperature_k_ = k; }
+    /* 1.12.18 (user ruling 2026-10-24, row policy): THE ONE EMITTER of the controller's RowPolicy block, used by
+     * main.cpp's co-sim/zsim YAML and by this wrapper's own config (makeConfig), so the two cannot disagree.
+     * PE traffic: open page, every technology. Host traffic: DDR5 closed page (auto-precharge by default);
+     * DDR4 and DDR3 adaptive open page with an idle timeout (default 128 memory clocks); every other technology
+     * open page. Sources and quotes: PimidSourceRowPolicy (external/ramulator/.../basic_rowpolicies.cpp). */
+    static std::string rowPolicyYaml(const std::string& tech, int host_idle_timeout_clocks = 128,
+                                     const std::string& host_closed_mode = "auto_precharge");
+    static const char* hostRowPolicyName(const std::string& tech);   // "closed" | "timeout" | "open"
+    /* 1.12.18 (user ruling 2026-10-24, write drain): the controller's
+     * write-drain watermarks, fractions of the write queue in use. Default:
+     * the published 32/16 of a 48-entry queue per channel (Chatterjee et al.,
+     * "Staged Reads", HPCA 2012, Table 1 p.2, p.6). */
+    static constexpr double kWriteHighWatermark = 32.0 / 48.0;
+    static constexpr double kWriteLowWatermark  = 16.0 / 48.0;
+    static std::string writeDrainYaml(double high, double low);
+    void setWriteDrainKnobs(double high, double low) { if (high > 0.0) wr_high_ = high; if (low > 0.0) wr_low_ = low; }
+    void setRowPolicyKnobs(int host_idle_timeout_clocks, const std::string& host_closed_mode) {
+        if (host_idle_timeout_clocks > 0) row_idle_timeout_ = host_idle_timeout_clocks;
+        if (!host_closed_mode.empty()) row_closed_mode_ = host_closed_mode;
+    }
     int  getTemperatureK() const { return temperature_k_; }
     double getRefreshTempFactor() const;   // 1.11.66: the ladder multiplier in force
     /* 1.11.52 (audit D003): the MEASURED row-buffer miss fraction from the
@@ -289,6 +316,7 @@ public:
 
     double getArrayReadEnergyNJ() const;     // array rd (act+col, amortized) per 64B
     double getArrayWriteEnergyNJ() const;    // array wr per 64B
+    double getActivatePrechargeEnergyNJ() const;   // 1.12.18: one ACT+PRE (Ramulator2 energy model)
     /* 1.11.63 (R7): direction-aware. Reads price the DRAM driver into the
      * RX termination (RTT_NOM class); writes price the controller driver
      * into the DRAM write termination (RTT_WR class). Both the CACTI-IO
@@ -324,8 +352,27 @@ public:
     void setTerminationOverridePJPerBit(double v) { energy_term_override_pJ_per_bit_ = v; }
     double getBackgroundPowerMW() const;     // per-unit active standby + refresh
     double getRefreshPowerMW() const;        // per-unit refresh component only
-    double getRefreshEnergyPerCommandNJ() const;   // 1.11.98 (row 28, ruling (c)): vdd x (IDD5 - IDD3N) x tRFC per unit per REF command
+    double getRefreshEnergyPerCommandNJ() const;   // 1.11.98 (row 28, ruling (c)): vdd x (IDD5 - IDD2N) x tRFC (+ VPP) per unit per REF command (1.12.18: IDD2N baseline)
     double getTckNs() const;                       // 1.11.98: the preset's clock period
+    /* 1.12.18 (ruling 17 / R0605): the energy of COUNTED controller commands,
+     * computed by the energy model (pimid_energy.h); see there. */
+    double getActivateEnergyNJ() const;                       // one ACT + its precharge, whole access
+    double getCountedActivatesNJ(uint64_t activates) const;   // activates x the above
+    /* 1.12.18 (user ruling 2026-10-24): PE placement at the chip tier or below on a rank-level DRAM: the
+     * replay keeps every chip's banks apart, so each counted ACT and REF command is ONE chip's (devices 1);
+     * a host access's lock-step copies are counted per chip. 1 = off (the rank's devices per command). */
+    void setPeChipSplit(int chips) { pe_chip_split_ = (chips > 1) ? chips : 1; }
+    int getPeChipSplit() const { return pe_chip_split_; }
+    double getCountedRefreshSystemMW(uint64_t refreshes, uint64_t dram_ticks,
+                                     const std::string& device_width,
+                                     int ranks_per_channel, int channels) const;   // <0 = no span
+    double getRefreshDutySystemMW(const std::string& device_width,
+                                  int ranks_per_channel, int channels) const;
+    /* 1.12.18 (user ruling 2026-10-23): the same counted refresh over a span
+     * the caller owns (the run window), in ns. <0 = no span. */
+    double getCountedRefreshSystemMWOverNs(uint64_t refreshes, double span_ns,
+                                           const std::string& device_width,
+                                           int ranks_per_channel, int channels) const;
     double getInterfacePhyStaticMW() const;        // 1.11.98 (row 28, ruling (c)): CACTI-IO PHY static power of the channel interface (0 = no exact map)
     /* 1.11.20 (D13+D15): the memory system's background. Population-scaled
      * (one DDR chip / one HBM channel is the IDD unit) and state-aware
@@ -366,6 +413,13 @@ public:
     double getIddqEnergyNJ(bool is_write, bool* is_band = nullptr,
                            double* band_lo_nj = nullptr,
                            double* band_hi_nj = nullptr) const;
+    /* 1.12.18: true when a crossing write's DQ termination is
+     * already inside getIddqEnergyNJ(true) (the sheet measured IDDQ4W with
+     * RTT_WR enabled; pimid_energy::iddqWriteIncludesTermination), so the
+     * caller charges it once. setIddqWriteTerminationOnce = the run's
+     * power.models.iddq_write_termination_once. */
+    bool getIddqWriteIncludesTermination() const;
+    static void setIddqWriteTerminationOnce(bool on);
     /* 1.11.91 (audit R8-2): the IDD3N basis word of this technology's row:
      * ALL_BANKS, ONE_BANK or UNVERIFIED (pimid_energy::Idd3nBasis). */
     const char* getIdd3nBasisName() const;
@@ -577,7 +631,11 @@ private:
      * pre-1.11.65 (temperature-flat) behaviour exactly. Both sit in the
      * <= 85 C rung, so no result differs between them. */
     int temperature_k_ = 358;
-    int ddr5_grade_mtps_ = 4800; // 1.11.66 (R8 #9): 3200 | 4800 (default) | 5600
+    int pe_chip_split_ = 1;   // 1.12.18
+    int row_idle_timeout_ = 128;   // 1.12.18 (row policy ruling)
+    double wr_high_ = kWriteHighWatermark, wr_low_ = kWriteLowWatermark;   // 1.12.18 (write drain)
+    std::string row_closed_mode_ = "auto_precharge";
+    int ddr5_grade_mtps_ = 0;    // 1.11.66 (R8 #9): 3200 | 4800 | 5600; 1.12.18: 0 = the part record's grade (5600 since the 2026-10-23 ruling)
     // 1.11.67: the run-wide values setRunWideKnobs() recorded; consulted by
     // the constructor when s_run_knobs_set_ is true.
     static bool        s_run_knobs_set_;

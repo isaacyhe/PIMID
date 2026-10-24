@@ -106,6 +106,38 @@
 #    return target miss the same resolution-bound redirect, total cost
 #    mispredict_penalty_cycles -- fetchCycle = max(fetchCycle,
 #    lastCommitCycle + mispredict_penalty_cycles - 9).)
+#   TLB geometry (1.12.18:, user ruling: the published spec of
+#     the core the timing model mirrors). zsim's OOOCore is matched to
+#     Westmere (ooo_core.cpp:48 "more or less matched to Westmere"; Sanchez and
+#     Kozyrakis, ISCA 2013, validated against a Westmere system), the 32 nm
+#     version of Nehalem whose features "all ... also apply" (Intel 64 and
+#     IA-32 Architectures Optimization Reference Manual, order 248966-031,
+#     Sept 2015, sec. 2.5). Sec. 2.5.4 (Cache and Memory Subsystem):
+#       ITLB: 64 entries per thread for 4 KB pages (128 per core, Table 2-13
+#             "ITLB 4K page entries 128"; statically partitioned between two
+#             threads only in HT operation, sec. 2.5.9) and 7 per thread for
+#             large pages (replicated per thread, sec. 2.5.9);
+#       DTLB0: 64 entries for 4 KB pages, 32 for large pages;
+#       STLB: 512 entries, 4 KB pages, code and data;
+#       "All entries are 4-way associative."
+#     The core zsim runs is ONE hardware thread, so the large-page ITLB is
+#     one thread's 7. McPAT (core.cc MemManU) builds ONE first-level ITLB and
+#     ONE DTLB array per core, so each is priced as the 4 KB-page array plus
+#     the large-page array (both physically present and both translate a
+#     fetch/load whose page size is not known before the lookup); whether
+#     the two are probed in parallel on every access: NO PUBLISHED SOURCE
+#     FOUND -- the combined array prices both arrays' leakage and area, which
+#     the manual establishes. McPAT has no second-level TLB structure, so the
+#     STLB is recorded and NOT priced (stated in the run). zsim models no TLB
+#     (no misses), so the STLB would see no lookups; its leakage and area are
+#     the omission. Used only for host cores: device elements address memory
+#     physically (no TLB in the timing model; the AddressTranslator class in
+#     src/address_translation has no caller) and keep McPAT's 1-entry floor.
+#     The in_order core mirrors no published microarchitecture (it is
+#     PIMID's own scoreboard core): NO PUBLISHED SOURCE FOUND for its TLB, so
+#     an in-order host core keeps McPAT's 1-entry floor (accesses are still
+#     its fetches and data accesses). power.models.tlb_published_geometry:
+#     false restores the 1-entry floor on every core.
 record: pimid core default
 in_order:
   mispredict_penalty_cycles: 7
@@ -116,3 +148,9 @@ ooo:
   mispredict_penalty_cycles: 17
   fetch_width_bytes: 16
   retire_width: 4
+  itlb_entries: 128          # 4 KB pages (248966-031 Table 2-13; sec. 2.5.4)
+  itlb_large_entries: 7      # 2M/4M pages, per thread (sec. 2.5.4 / 2.5.9)
+  dtlb_entries: 64           # DTLB0, 4 KB pages (sec. 2.5.4)
+  dtlb_large_entries: 32     # DTLB0, large pages (sec. 2.5.4)
+  tlb_associativity: 4       # "All entries are 4-way associative" (sec. 2.5.4)
+  stlb_entries: 512          # second level, 4 KB pages (sec. 2.5.4); NOT priced (McPAT has no STLB)

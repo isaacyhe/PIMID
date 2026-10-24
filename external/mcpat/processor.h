@@ -65,6 +65,37 @@ class Processor : public Component
     //wire	globalInterconnect;
     //clock_network globalClock;
     Component core, l2, l3, l1dir, l2dir, noc, mcs, cc, nius, pcies,flashcontrollers;
+    /* PIMID 1.12.18: the clock-network share of each aggregate above, built
+     * with the same multipliers and the same family transform, so a reader
+     * can state it as a line of that component (Wattch clock model, D. Brooks,
+     * V. Tiwari, M. Martonosi, ISCA 2000; logic.h ClockNetwork). Already
+     * INCLUDED in core, l2, l3, l1dir, l2dir, mcs and noc. */
+    Component clk_core, clk_l2, clk_l3, clk_l1dir, clk_l2dir, clk_mcs, clk_noc;
+    /* PIMID 1.12.18: the UNGATED runtime clock dynamic (W) of the same
+     * aggregates -- the reference beside the measured-activity-gated value
+     * the aggregates carry (user ruling 2026-10-23). */
+    double clku_core, clku_l2, clku_l3, clku_l1dir, clku_l2dir, clku_mcs, clku_noc;
+    /* PIMID 1.12.18 (ruling 2026-10-23 #4): the GLOBAL part (W) of the
+     * charged runtime clock of the same aggregates (every powered cycle);
+     * the rest of the charged clock is the measured-activity-gated LOCAL part. */
+    double clkg_core, clkg_l2, clkg_l3, clkg_l1dir, clkg_l2dir, clkg_mcs, clkg_noc;
+    /* PIMID 1.12.18 (user ruling, per-die process): the LOGIC die's
+    * technology (interface_ip with XML sys pimid_logic_die_node /
+    * pimid_logic_die_device_type). Components on the DRAM die keep
+    * interface_ip (core_tech_node + the dram_periph_family transform). */
+    InputParameter ip_logic_die;
+    bool logic_die_override;
+    /* PIMID 1.12.18 (user ruling, per-die clock trunk): one die-level
+    * H-tree trunk per die (logic.h ClockNetwork, built in the constructor).
+    * clk_trunk is their sum (W: peak dynamic, runtime dynamic, leakage), NOT
+    * inside any component above; trunk_dies one entry per die KIND (the
+    * DRAM-die kind carries count dies; its watts are the sum over them). */
+    struct PimidTrunkDie {
+        string name; int count; double area_mm2, leaves, node_nm, on;
+        double peak_w, rt_w, ungated_w, leak_w, gate_w;
+    };
+    std::vector<PimidTrunkDie> trunk_dies;
+    Component clk_trunk;
     int  numCore, numL2, numL3, numNOC, numL1Dir, numL2Dir;
     Processor(ParseXML *XML_interface);
     void compute();

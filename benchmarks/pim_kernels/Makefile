@@ -8,7 +8,10 @@ CXX      := g++
 MPICXX   := mpicxx
 CXXFLAGS := -std=c++11 -O2 -Wall -I$(ZSIM_HOOKS)
 OMPFLAGS := -fopenmp
-LDFLAGS  := -lpthread
+# 1.12.18 (ruling 2026-10-24, bind at load): every symbol is bound before main
+# (no lazy-binding resolution inside the ROI); the simulator also sets
+# LD_BIND_NOW=1 for the guest.
+LDFLAGS  := -Wl,-z,now -lpthread
 
 KERNELS := stream_triad vector_add gemv spmv_csr bfs histogram reduction stencil_2d
 

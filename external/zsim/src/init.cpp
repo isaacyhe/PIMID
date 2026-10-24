@@ -596,6 +596,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.ranksPerChannel = config.get<uint32_t>("sys.hierarchy.ranksPerChannel", 1);
         zinfo->hierarchy.channelsPerSystem = config.get<uint32_t>("sys.hierarchy.channelsPerSystem", 1);
         zinfo->hierarchy.dramChannels = config.get<uint32_t>("sys.hierarchy.dramChannels", 1);
+        zinfo->hierarchy.stackChannelsPerDie = config.get<uint32_t>("sys.hierarchy.stackChannelsPerDie", 0);   // 1.12.18
         zinfo->hierarchy.indieFabric = config.get<uint32_t>("sys.hierarchy.indieFabric", 0);   // 1.11.103 (ruling 9)
         zinfo->hierarchy.indieGridW = config.get<uint32_t>("sys.hierarchy.indieGridW", 0);
         zinfo->hierarchy.indieGridH = config.get<uint32_t>("sys.hierarchy.indieGridH", 0);
@@ -1229,6 +1230,8 @@ static void InitSystem(Config& config) {
             uint32_t bursts = config.get<uint32_t>("sys.hierarchy.dramReplayBurstsPerLine", config.get<uint32_t>("sys.mem.burstsPerLine", 1));
             uint32_t lineBits = 0; while ((1u << lineBits) < zinfo->lineSize) lineBits++;
             zinfo->dramReplay = new DramEpochReplay(replayCfg, (uint64_t)peMiFreqMHz * 1000000ull, mcCount, bursts, lineBits, "dramReplay");
+            for (uint32_t i = 0; i < mcCount; i++)   // 1.12.18 (R1): requests outside the ROI leave the interfaces' rd/wr
+                zinfo->dramReplay->bindCounters(rawMIs[i]->replayMi(), rawMIs[i]->rdCounter(), rawMIs[i]->wrCounter());
         }
 
         if (cosimMode) {
@@ -1267,6 +1270,63 @@ static void InitSystem(Config& config) {
                 g_string name(ss.str().c_str());
                 uint32_t domain = i*zinfo->numDomains/memControllers;
                 mems[i] = BuildMemoryController(config, zinfo->lineSize, zinfo->freqMHz, domain, name);
+            }
+
+            /* 1.12.18 (ruling 17 / R0605, user: "make the power model
+             * complete"): the host memory is replayed through Ramulator2 like
+             * the device memory (dram_epoch_replay.h). Coupled (the device IS
+             * the host's memory): the host controllers join the device's
+             * instance, so one controller sees all traffic on the shared
+             * array. Decoupled: a host-only instance of the host memory. */
+            if (config.get<uint32_t>("sys.mem.hostDramReplay", 0)) {
+                const string hType = config.get<const char*>("sys.mem.type", "Simple");
+                if (hType != "Simple" && hType != "WeaveSimple")
+                    panic("sys.mem.hostDramReplay = 1 needs a Simple or WeaveSimple host controller (got %s)", hType.c_str());
+                const bool hShared = config.get<uint32_t>("sys.mem.hostReplayShared", 0) != 0;
+                const uint32_t hPath = config.get<uint32_t>("sys.mem.hostPathCycles", 0);
+                const uint64_t hHz = 1000000ull * config.get<uint32_t>("sys.mem.hostFreqMHz", zinfo->freqMHz);
+                DramEpochReplay* hRep = nullptr;
+                if (hShared) {
+                    if (!zinfo->dramReplay || rawMIs.empty())
+                        panic("sys.mem.hostReplayShared = 1 but the device memory is not replayed (no dramReplay instance): the shared array would have two controllers");
+                    hRep = zinfo->dramReplay;
+                    PEMemoryInterface* m0 = rawMIs[0];
+                    hRep->setHostTarget([m0](uint64_t la, uint32_t& u, uint32_t& s, uint64_t& r) { m0->hostTarget(la, u, s, r); });
+                } else {
+                    const string hCfg = config.get<const char*>("sys.mem.hostReplayConfigFile", "");
+                    if (hCfg.empty()) panic("sys.mem.hostDramReplay = 1 (decoupled) needs sys.mem.hostReplayConfigFile (the host memory's Ramulator2 YAML)");
+                    const uint32_t hBursts = config.get<uint32_t>("sys.mem.hostReplayBurstsPerLine", 1);
+                    const uint32_t hCh = config.get<uint32_t>("sys.mem.hostReplayChannels", 1);
+                    uint32_t hLineBits = 0; while ((1u << hLineBits) < zinfo->lineSize) hLineBits++;
+                    hRep = new DramEpochReplay(hCfg, hHz, 0, hBursts, hLineBits, "hostDramReplay", true, hCh);
+                    zinfo->hostDramReplay = hRep;
+                }
+                for (uint32_t i = 0; i < memControllers; i++) {
+                    const uint32_t mi = hRep->addHostInterface(hHz);
+                    static_cast<SimpleMemory*>(mems[i])->setHostReplay(hRep, mi, hPath);
+                    hRep->bindCounters(mi, static_cast<SimpleMemory*>(mems[i])->rdCounter(), static_cast<SimpleMemory*>(mems[i])->wrCounter());   // 1.12.18 (R1)
+                }
+                info("[ZSim] host memory: %u controller(s) replayed through Ramulator2 (%s), host-path adder %u cycles on top of the measured service latency [1.12.18 ruling 17]",
+                     memControllers, hShared ? "the device's instance: one controller for the shared array" : "a host-only instance", hPath);
+            }
+
+            /* 1.12.18: (bug 7) the coherence flush's writebacks are sent to the
+             * host memory controllers at flush time -- their write count and,
+             * with the host replay on, the replayed controller (Ramulator
+             * source_id 1: ACTs, row state). The plugin needs the controllers
+             * before the address splitter wraps them; it applies the same
+             * line % n split. Simple / WeaveSimple only (the controllers that
+             * carry the replay hook); other types keep the array-side charge. */
+            if (config.get<uint32_t>("sys.mem.flushWritebacksToMC", 0)) {
+                const string fType = config.get<const char*>("sys.mem.type", "Simple");
+                if (fType == "Simple" || fType == "WeaveSimple") {
+                    zinfo->flushHostMems = new g_vector<SimpleMemory*>();
+                    for (uint32_t i = 0; i < memControllers; i++)
+                        zinfo->flushHostMems->push_back(static_cast<SimpleMemory*>(mems[i]));
+                    info("[ZSim] coherence flush: writebacks are sent to the %u host memory controller(s) at flush time [1.12.18]", memControllers);
+                } else {
+                    info("[ZSim] coherence flush: host controller type %s has no flush hook; the writebacks keep the array-side charge [1.12.18]", fType.c_str());
+                }
             }
 
             if (memControllers > 1) {
@@ -1684,6 +1744,20 @@ static void InitSystem(Config& config) {
                 uint32_t operandWidth   = config.get<uint32_t>(prefix + "operandWidth", 32);
                 double energyFactor     = config.get<double>(prefix + "energyFactor", 1.0);
                 bool bitSerial          = config.get<bool>(prefix + "bitSerial", false);
+                /* 1.12.18: the scratchpad. main.cpp states all three keys for
+                 * every compute-unit group; a capacity without a CACTI access
+                 * time or a staging mode is a configuration defect. */
+                uint64_t spmBytes  = config.get<uint64_t>(prefix + "spmBytes", 0);
+                uint32_t spmMode   = config.get<uint32_t>(prefix + "spmStaging", 0);
+                double spmLatency  = config.get<double>(prefix + "spmLatency", 0.0);
+                bool spmStack      = config.get<uint32_t>(prefix + "spmStack", 0) == 1;     // pim.pe.stack: spm
+                uint64_t spmStackB = config.get<uint64_t>(prefix + "spmStackBytes", 0);
+                if (spmStack && (!spmBytes || spmStackB == 0 || spmStackB >= spmBytes))
+                    panic("%s: stack in a %lu-byte scratchpad with a reserve of %lu bytes",
+                          group, (unsigned long)spmBytes, (unsigned long)spmStackB);
+                if (spmBytes && (spmLatency <= 0.0 || (spmMode != 1 && spmMode != 2)))
+                    panic("%s: scratchpad of %lu bytes without its access time (%f) or staging mode (%u)",
+                          group, (unsigned long)spmBytes, spmLatency, spmMode);
                 for (uint32_t j = 0; j < cores; j++) {
                     stringstream ss;
                     ss << group << "-" << j;
@@ -1725,6 +1799,7 @@ static void InitSystem(Config& config) {
                                                              throughputFactor, operandWidth, energyFactor,
                                                              mi, coreIdx, bitSerial);
                     acore->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.43 (E23)
+                    acore->setScratchpad(spmBytes, spmMode, spmLatency, spmStack, spmStackB);   // 1.12.18
                     Core* core = acore;
                     coreMap[group].push_back(core);
                     coreIdx++;
@@ -1791,6 +1866,7 @@ static void InitSystem(Config& config) {
     //for (uint32_t i = 0; i < zinfo->numCores; i++) eventRecorders[i] = new EventRecorder();
 
     if (zinfo->dramReplay) zinfo->dramReplay->initStats(zinfo->rootStat);   // 1.11.98 (ruling 4 (c))
+    if (zinfo->hostDramReplay) zinfo->hostDramReplay->initStats(zinfo->rootStat);   // 1.12.18 (ruling 17 / R0605)
     AggregateStat* memStat = new AggregateStat(true);
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);
@@ -1956,6 +2032,10 @@ static void InitGlobalStats() {
     xFlush->init("xingFlushBytes", "Coherence-flush footprint bytes crossed",
                  (uint64_t*)&zinfo->xing.flushBytes);
     zinfo->rootStat->append(xFlush);
+    ProxyStat* xFlushMc = new ProxyStat();   // 1.12.18 (bug 7)
+    xFlushMc->init("xingFlushMcLines", "Coherence-flush line writebacks sent to the host memory controllers",
+                   (uint64_t*)&zinfo->xing.flushMcLines);
+    zinfo->rootStat->append(xFlushMc);
 
     // 1.11.8 (#84): PG residency trackers -> zsim.out root scalars.
     // Idle residency derives at consumption: r = 1 - activePhases/phase.
@@ -2000,6 +2080,16 @@ static void InitGlobalStats() {
         auto* stw = new LambdaStat<decltype(fnw)>(fnw);
         stw->init("pgPhaseWindow", "Phases in the priced (ROI) window");
         zinfo->rootStat->append(stw);
+    }
+    {   /* 1.12.18 (user ruling 2026-10-23): the run time (zsim.h roiWall) */
+        auto fr = []() -> uint64_t { return zinfo->roiWall.cycles(); };
+        auto* sr = new LambdaStat<decltype(fr)>(fr);
+        sr->init("roiWallCycles", "Run time: ROI elapsed wall clock, cycles (phase clock; 0 = not closed yet)");
+        zinfo->rootStat->append(sr);
+        auto fs = []() -> uint64_t { return zinfo->roiWall.ended ? zinfo->roiWall.source : 0; };
+        auto* ss = new LambdaStat<decltype(fs)>(fs);
+        ss->init("roiWallSource", "1 = roi_begin..roi_end phase-clock stamps, 2 = max over ranks of the ROI-relative end, 3 = single-process cut: the latest device PE's ROI end on its own clock");
+        zinfo->rootStat->append(ss);
     }
     /* 1.11.51 (E17, closing the measure-first ruling): the devMC gap
      * histogram leaves the log and enters the stats stream, so the power

@@ -269,6 +269,113 @@ static bool           g_we_created_shm = false;
 static std::atomic<bool> g_initialized{false};
 static std::atomic<int>  g_next_request{1};
 
+/* ---- 1.12.18 (user ruling 2026-10-23): PIM runtime primitives ----
+ * "The PIM way, not as full SW overhead": the PE is not charged for executing
+ * this shim's own code (argument and chunk bookkeeping, mailbox and staging
+ * management, algorithm selection, reduction-op decoding, scratch buffers).
+ * RtScope brackets it with RT_BEGIN / RT_END; the zsim plugin does not feed
+ * those blocks to the core (no instructions, cycles or memory traffic). Each
+ * protocol EVENT is charged the PIM primitive instead (RT_EVENT, costs in
+ * simulation.pim_runtime). What a message really moves stays priced and
+ * outside the window (RtPriced): the read of the sender's buffer, the write
+ * of the receiver's buffer, the copies of user data a collective makes, and
+ * the reduce arithmetic on user data. The injected Garnet transfer and the
+ * rendezvous timing ops are unchanged. Thread mode only, and only while the
+ * plugin says the PIM runtime applies to this rank (RT_QUERY: PEs only by
+ * default); otherwise the shim runs exactly as before. */
+#define ZSIM_MAGIC_OP_RT_BEGIN 2064
+#define ZSIM_MAGIC_OP_RT_END   2065
+#define ZSIM_MAGIC_OP_RT_EVENT 2066   /* %rdx = kind | participants << 32 */
+#define ZSIM_MAGIC_OP_RT_QUERY 2067   /* %rdx -> uint64: 1 if the PIM runtime applies to this thread */
+enum { RTK_MPI_P2P = 7, RTK_MPI_COLL_STEP = 8, RTK_MPI_RED_STEP = 9, RTK_MPI_BARRIER = 10 };   /* = the plugin's RtKind */
+static bool g_rt_env = false;                 /* simulation.pim_runtime.enabled (PIMID_PIM_RUNTIME), thread mode */
+static thread_local bool tl_rt_on = false;    /* the plugin applies the PIM runtime to this rank (queried per call) */
+static thread_local int  tl_rt_depth = 0;     /* nesting of RtScope */
+static thread_local bool tl_rt_priced = false;
+static thread_local int  tl_coll = 0;         /* > 0 inside a collective: its messages are collective steps */
+static inline void rt_op_rdx(uint64_t op, uint64_t v) {
+#ifdef __x86_64__
+    COMPILER_BARRIER();
+    __asm__ __volatile__("xchg %%rcx, %%rcx;" : : "c"(op), "d"(v) : "memory");
+    COMPILER_BARRIER();
+#else
+    (void)op; (void)v;
+#endif
+}
+static bool rt_query(void) {
+    volatile uint64_t r = 0;
+    rt_op_rdx(ZSIM_MAGIC_OP_RT_QUERY, (uint64_t)(uintptr_t)&r);
+    return r == 1;   /* natively (no plugin) r stays 0 */
+}
+struct RtScope {
+    bool on = false;
+    RtScope() {
+        if (!g_rt_env) return;
+        if (tl_rt_depth == 0) tl_rt_on = rt_query();
+        if (!tl_rt_on) return;
+        on = true;
+        if (tl_rt_depth++ == 0) zsim_magic_op(ZSIM_MAGIC_OP_RT_BEGIN);
+    }
+    void close() {
+        if (!on) return;
+        on = false;
+        if (--tl_rt_depth == 0) zsim_magic_op(ZSIM_MAGIC_OP_RT_END);
+    }
+    ~RtScope() { close(); }
+};
+struct RtPriced {   /* kernel-side work inside a runtime window: executed and priced on the PE */
+    bool on;
+    RtPriced() : on(tl_rt_on && tl_rt_depth > 0 && !tl_rt_priced) { if (on) { tl_rt_priced = true; zsim_magic_op(ZSIM_MAGIC_OP_RT_END); } }
+    ~RtPriced() { if (on) { tl_rt_priced = false; zsim_magic_op(ZSIM_MAGIC_OP_RT_BEGIN); } }
+};
+struct CollScope { CollScope() { tl_coll++; } ~CollScope() { tl_coll--; } };
+static inline void rt_event(int kind, uint32_t participants) {
+    if (g_rt_env && tl_rt_on) rt_op_rdx(ZSIM_MAGIC_OP_RT_EVENT, (uint64_t)(uint32_t)kind | ((uint64_t)participants << 32));
+}
+static inline void priced_memcpy(void* d, const void* src, size_t n) { RtPriced p; memcpy(d, src, n); }
+/* Per-rank scratch for the collectives' data temporaries, preallocated by each
+ * rank in MPI_Init and reused (no malloc/free per call). It holds message
+ * payload and reduction operands, so it is NOT transport memory: the
+ * receiver's write into it and the combine's reads of it stay priced. Its
+ * pages are the rank's own (page-aligned, first touched by the rank's PE in
+ * MPI_Init, so first-touch placement puts them in that PE's memory, as a PIM
+ * runtime keeps a PE's buffers in its own bank). Growth (a larger message than
+ * any before) happens inside the runtime window. Off: a std::vector, as before
+ * 1.12.18.
+ * 1.12.18 (user ruling 2026-10-24, "PIM-way: no host zeroing"): the scratch is
+ * PIM-runtime state and is allocated the way a PIM runtime allocates device
+ * buffers. It is no longer allocated and zeroed in MPI_Init: in co-sim MPI_Init
+ * runs on the HOST before offload, so the 3 x 64 KB memset per rank was host
+ * work whose ~49k dirty lines the kernel-entry flush wrote back. The first
+ * collective that needs a slot allocates it here, inside the runtime window
+ * (RtScope: the allocation is runtime bookkeeping, not fed to the core), at
+ * least kScratchInit bytes, without zeroing: every use writes the bytes it
+ * later reads (message receive, copy of the caller's data). Its first priced
+ * touch is then the rank's PE's own write, so first-touch placement puts it in
+ * that PE's memory; the PE's reads and writes of it during collectives stay
+ * simulated and priced exactly as before. */
+struct RankScratch { char* p[3]; size_t cap[3]; };
+static RankScratch* g_scr = nullptr;
+static const size_t kScratchInit = 64 * 1024;
+static char* scratch_or_vec(int slot, size_t bytes, std::vector<char>& v) {
+    if (tl_rt_on && tl_rt_depth > 0 && g_scr && g_rank >= 0) {
+        RankScratch& s = g_scr[g_rank];
+        if (s.cap[slot] < bytes) {
+            size_t c = s.cap[slot] * 2;
+            if (c < kScratchInit) c = kScratchInit;   /* 1.12.18 (ruling 2026-10-24): first allocation, device-side, no zeroing */
+            if (c < bytes) c = bytes;
+            c = (c + 4095) & ~(size_t)4095;
+            free(s.p[slot]);
+            s.p[slot] = (char*)aligned_alloc(4096, c);   /* own pages: first touched (placed) by this rank's PE */
+            if (!s.p[slot]) { fprintf(stderr, "[pimid_mpi] scratch alloc of %zu bytes failed\n", c); abort(); }
+            s.cap[slot] = c;
+        }
+        return s.p[slot];
+    }
+    v.resize(bytes);
+    return v.data();
+}
+
 /* Reserve the contention point for a message sent at sim-time send_time that
  * occupies the shared link for `dur` cycles (the real Garnet-computed per-
  * message NoC cost), and return the queueing wait (cycles) the message must
@@ -639,7 +746,7 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
         /* 1.12.17 (M1): outside the comm window, so the read of the sender's
          * buffer is priced; the slot is registered transport memory, so the
          * write into it is not. The mailbox mutex stays held. */
-        if (data && size > 0) memcpy(slot->payload, data, size);
+        if (data && size > 0) priced_memcpy(slot->payload, data, size);   /* 1.12.18: RtPriced */
         mpi_comm_begin();
         mb->tail = (mb->tail + 1) % PIMID_MPI_RING_SLOTS;
         mb->count++;
@@ -913,6 +1020,10 @@ int MPI_Init(int *argc, char ***argv) {
     if (g_thread_mode) {
         trace_init(g_rank);
         register_mpi_params();
+        /* 1.12.18 (user ruling 2026-10-24): the rank's collective scratch is NOT
+         * allocated or zeroed here (in co-sim this runs on the host before
+         * offload); scratch_or_vec allocates it device-side at first use, inside
+         * the runtime window. g_scr's entries start empty (calloc). */
         return MPI_SUCCESS;
     }
 
@@ -1049,6 +1160,10 @@ static void send_chunk_at(int dest, int tag, const char* p, size_t nbytes,
 static int send_bytes(const void* buf, size_t nbytes, int dest, int tag) {
     if (g_nranks <= 1) return MPI_SUCCESS;
     if (dest < 0 || dest >= g_nranks) return MPI_SUCCESS;
+    RtScope rs;   /* 1.12.18: the send's bookkeeping is runtime */
+    /* 1.12.18: the protocol primitive, charged BEFORE the send stamp, so the
+     * receiver's rendezvous arrival includes it */
+    rt_event(tl_coll ? RTK_MPI_COLL_STEP : RTK_MPI_P2P, 2);
     const SendStamp st = send_prelude(dest, nbytes);
     const uint32_t n = chunks_of(nbytes);
     for (uint32_t i = 0; i < n; i++) send_chunk_at(dest, tag, (const char*)buf, nbytes, i, n, st);
@@ -1070,7 +1185,7 @@ static void recv_chunk_thread(RecvState* r, char* p, size_t nbytes) {
     r->contend_wait = s->sim_contend_wait;  /* and the contention wait */
     size_t space = (nbytes > r->written) ? (nbytes - r->written) : 0;
     size_t take = (s->size < space) ? s->size : space;
-    if (p && take > 0) memcpy(p + r->written, s->payload, take);
+    if (p && take > 0) priced_memcpy(p + r->written, s->payload, take);   /* 1.12.18: RtPriced */
     r->written += take;
     r->done = (s->chunk_idx + 1 >= s->n_chunks);
     recv_release_thread(&ref);
@@ -1085,9 +1200,12 @@ static size_t recv_bytes(void* buf, size_t nbytes, int source) {
     if (source < 0 || source >= g_nranks) return 0;
     char* p = (char*)buf;
     if (g_thread_mode) {   /* thread mode: honor source */
+        RtScope rs;   /* 1.12.18 */
         RecvState r = { source, -1, 0, 0, 0, false };
         do recv_chunk_thread(&r, p, nbytes); while (!r.done);
         inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);
+        /* 1.12.18: the protocol primitive, AFTER the rendezvous (added to the ordering) */
+        rt_event(tl_coll ? RTK_MPI_COLL_STEP : RTK_MPI_P2P, 2);
         return r.written;
     }
     /* Receive until we've assembled a complete message (1+ chunks). For
@@ -1126,6 +1244,8 @@ static size_t xchg_bytes(const void* sbuf, size_t sbytes, int dest,
         send_bytes(sbuf, sbytes, dest, 0);
         return recv_bytes(rbuf, rbytes, source);
     }
+    RtScope rs;   /* 1.12.18: one exchange step, one primitive, before the send stamp */
+    rt_event(tl_coll ? RTK_MPI_COLL_STEP : RTK_MPI_P2P, 2);
     const SendStamp st = send_prelude(dest, sbytes);
     const uint32_t ns = chunks_of(sbytes);
     RecvState r = { source, -1, 0, 0, 0, false };
@@ -1140,6 +1260,7 @@ static size_t xchg_bytes(const void* sbuf, size_t sbytes, int dest,
 int MPI_Send(const void *buf, int count, MPI_Datatype datatype,
              int dest, int tag, MPI_Comm comm) {
     (void)comm;
+    RtScope rs;   /* 1.12.18: argument bookkeeping is runtime */
     if (g_nranks <= 1) return MPI_SUCCESS;
     if (dest < 0 || dest >= g_nranks) return MPI_SUCCESS;
     return send_bytes(buf, (size_t)count * dtype_size(datatype), dest, tag);
@@ -1148,6 +1269,7 @@ int MPI_Send(const void *buf, int count, MPI_Datatype datatype,
 int MPI_Recv(void *buf, int count, MPI_Datatype datatype,
              int source, int tag, MPI_Comm comm, MPI_Status *status) {
     (void)comm; (void)status; (void)tag;
+    RtScope rs;   /* 1.12.18: argument bookkeeping is runtime */
     if (g_nranks <= 1) return MPI_SUCCESS;
     if (source < 0 || source >= g_nranks) return MPI_SUCCESS;
     recv_bytes(buf, (size_t)count * dtype_size(datatype), source);
@@ -1160,6 +1282,7 @@ int MPI_Sendrecv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                  int source, int recvtag,
                  MPI_Comm comm, MPI_Status *status) {
     (void)sendtag; (void)recvtag; (void)comm; (void)status;
+    RtScope rs;   /* 1.12.18: argument bookkeeping is runtime */
     if (g_nranks <= 1) return MPI_SUCCESS;
     const size_t sb = (dest >= 0 && dest < g_nranks) ? (size_t)sendcount * dtype_size(sendtype) : 0;
     const size_t rb = (source >= 0 && source < g_nranks) ? (size_t)recvcount * dtype_size(recvtype) : 0;
@@ -1207,6 +1330,7 @@ int MPI_Barrier(MPI_Comm comm) {
      * arriver resets the count and bumps the generation; everyone else
      * polls the generation. No mutex, no condvar, no kernel waits. */
     if (g_thread_mode) {
+        RtScope rs;   /* 1.12.18: the barrier's bookkeeping is runtime */
         /* Cond-parked generation barrier + MAX-ARRIVAL RENDEZVOUS: every rank
          * publishes its arrival sim-time; the last arriver freezes the max as
          * the release time; every rank then ADVANCEs its core clock to that
@@ -1234,6 +1358,10 @@ int MPI_Barrier(MPI_Comm comm) {
         tl_mpi_params.sim_send_time = release;
         zsim_magic_op(ZSIM_MAGIC_OP_MPI_ADVANCE);
         zsim_magic_op(ZSIM_MAGIC_OP_MPI_BARRIER);
+        rs.close();
+        /* 1.12.18: the barrier primitive, after the release (every rank exits
+         * at the max arrival plus the primitive) */
+        rt_event(RTK_MPI_BARRIER, (uint32_t)g_nranks);
         return MPI_SUCCESS;
     }
     int gen = g_shared->barrier_gen;
@@ -1361,7 +1489,10 @@ template <typename T> static void red_int(RedOp o, const T* in, T* io, size_t n)
 /* io = in (op) io, over n elements (MPI_Reduce_local; all supported ops commute). */
 static void reduce_local(const void* in, void* io, size_t n, MPI_Datatype dt, MPI_Op op) {
     const RedOp o = red_op(op);
-    switch (red_type(dt)) {
+    const RedType ty = red_type(dt);
+    rt_event(RTK_MPI_RED_STEP, 1);   /* 1.12.18: the combine step's primitive (default 0: the arithmetic below is simulated) */
+    RtPriced pr;                     /* 1.12.18: the reduce arithmetic on user data is kernel work */
+    switch (ty) {
         case RT_I8:  red_int<int8_t>(o, (const int8_t*)in, (int8_t*)io, n); return;
         case RT_U8:  red_int<uint8_t>(o, (const uint8_t*)in, (uint8_t*)io, n); return;
         case RT_I16: red_int<int16_t>(o, (const int16_t*)in, (int16_t*)io, n); return;
@@ -1450,6 +1581,7 @@ static void bcast_scatter_ring_allgather(char* buf, size_t nbytes, int root) {
 int MPI_Bcast(void *buffer, int count, MPI_Datatype datatype,
               int root, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     if (g_nranks <= 1) return MPI_SUCCESS;
     const size_t nbytes = (size_t)count * dtype_size(datatype);
     char* buf = (char*)buffer;
@@ -1470,14 +1602,14 @@ static void allgatherv_rd(char* rbuf, const std::vector<size_t>& cnt, const std:
     for (int j = 0; j < P; j++) if (dsp[j] != dsp[0] + pos[j]) contiguous = false;
     std::vector<char> tmp;
     char* w = rbuf + dsp[0];
-    if (!contiguous) { tmp.resize(pos[P] ? pos[P] : 1); w = tmp.data(); memcpy(w + pos[rank], rbuf + dsp[rank], cnt[rank]); }
+    if (!contiguous) { w = scratch_or_vec(0, pos[P] ? pos[P] : 1, tmp); priced_memcpy(w + pos[rank], rbuf + dsp[rank], cnt[rank]); }
     size_t curr = cnt[rank];
     for (int mask = 1, i = 0; mask < P; mask <<= 1, i++) {
         const int dst = rank ^ mask, dtr = (dst >> i) << i, mtr = (rank >> i) << i;
         curr += xchg_bytes(w + pos[mtr], curr, dst, w + pos[dtr], pos[P] - pos[dtr], dst);
     }
     if (!contiguous)
-        for (int j = 0; j < P; j++) if (j != rank) memcpy(rbuf + dsp[j], w + pos[j], cnt[j]);
+        for (int j = 0; j < P; j++) if (j != rank) priced_memcpy(rbuf + dsp[j], w + pos[j], cnt[j]);
 }
 
 static void allgatherv_bruck(char* rbuf, const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {
@@ -1485,7 +1617,7 @@ static void allgatherv_bruck(char* rbuf, const std::vector<size_t>& cnt, const s
     std::vector<size_t> rpos(P + 1, 0);   /* block j of the work buffer is rank (rank + j) % P's */
     for (int j = 0; j < P; j++) rpos[j + 1] = rpos[j] + cnt[(rank + j) % P];
     char w[kAllgatherShort];              /* total < kAllgatherShort: on this rank's own stack */
-    memcpy(w, rbuf + dsp[rank], cnt[rank]);
+    priced_memcpy(w, rbuf + dsp[rank], cnt[rank]);
     int pof2 = 1;
     while (pof2 <= P / 2) {
         xchg_bytes(w, rpos[pof2], (rank - pof2 + P) % P, w + rpos[pof2], rpos[2 * pof2] - rpos[pof2], (rank + pof2) % P);
@@ -1494,7 +1626,7 @@ static void allgatherv_bruck(char* rbuf, const std::vector<size_t>& cnt, const s
     const int rem = P - pof2;
     if (rem)
         xchg_bytes(w, rpos[rem], (rank - pof2 + P) % P, w + rpos[pof2], rpos[pof2 + rem] - rpos[pof2], (rank + pof2) % P);
-    for (int j = 1; j < P; j++) memcpy(rbuf + dsp[(rank + j) % P], w + rpos[j], cnt[(rank + j) % P]);
+    for (int j = 1; j < P; j++) priced_memcpy(rbuf + dsp[(rank + j) % P], w + rpos[j], cnt[(rank + j) % P]);
 }
 
 static void allgatherv_ring(char* rbuf, const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {
@@ -1511,7 +1643,7 @@ static void allgatherv_ring(char* rbuf, const std::vector<size_t>& cnt, const st
 static void allgatherv_bytes(const void* sendbuf, size_t sbytes, char* rbuf,
                              const std::vector<size_t>& cnt, const std::vector<size_t>& dsp) {
     if (sendbuf != kInPlace && sendbuf && rbuf)
-        memcpy(rbuf + dsp[g_rank], sendbuf, sbytes < cnt[g_rank] ? sbytes : cnt[g_rank]);
+        priced_memcpy(rbuf + dsp[g_rank], sendbuf, sbytes < cnt[g_rank] ? sbytes : cnt[g_rank]);
     if (g_nranks <= 1) return;
     size_t total = 0;
     for (int j = 0; j < g_nranks; j++) total += cnt[j];
@@ -1524,6 +1656,7 @@ int MPI_Allgather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                   void *recvbuf, int recvcount, MPI_Datatype recvtype,
                   MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const size_t blk = (size_t)recvcount * dtype_size(recvtype);
     const size_t sb = (sendbuf == kInPlace) ? 0 : (size_t)sendcount * dtype_size(sendtype);
     std::vector<size_t> cnt(g_nranks, blk), dsp(g_nranks);
@@ -1536,6 +1669,7 @@ int MPI_Allgatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                    void *recvbuf, const int *recvcounts, const int *displs,
                    MPI_Datatype recvtype, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const size_t ext = dtype_size(recvtype);
     const size_t sb = (sendbuf == kInPlace) ? 0 : (size_t)sendcount * dtype_size(sendtype);
     std::vector<size_t> cnt(g_nranks), dsp(g_nranks);
@@ -1604,8 +1738,8 @@ static void allreduce_bytes(char* acc, int count, MPI_Datatype dt, size_t ext, M
     const int P = g_nranks, rank = g_rank;
     const size_t n = (size_t)count * ext;
     const int pof2 = pof2_floor(P), rem = P - pof2;
-    std::vector<char> tmpv(n ? n : 1);
-    char* tmp = tmpv.data();
+    std::vector<char> tmpv;   /* 1.12.18: per-rank scratch under the PIM runtime */
+    char* tmp = scratch_or_vec(0, n ? n : 1, tmpv);
     int newrank;
     if (rank < 2 * rem) {   /* the first 2*rem ranks fold pairwise; the odd one survives */
         if (rank % 2 == 0) { send_bytes(acc, n, rank + 1, 0); newrank = -1; }
@@ -1653,8 +1787,9 @@ static void allreduce_bytes(char* acc, int count, MPI_Datatype dt, size_t ext, M
 int MPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
                   MPI_Datatype datatype, MPI_Op op, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const size_t ext = dtype_size(datatype);
-    if (sendbuf != kInPlace && sendbuf && recvbuf) memcpy(recvbuf, sendbuf, (size_t)count * ext);
+    if (sendbuf != kInPlace && sendbuf && recvbuf) priced_memcpy(recvbuf, sendbuf, (size_t)count * ext);
     if (g_nranks <= 1) return MPI_SUCCESS;
     allreduce_bytes((char*)recvbuf, count, datatype, ext, op);
     return MPI_SUCCESS;
@@ -1663,13 +1798,14 @@ int MPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
 static void reduce_binomial(char* acc, int count, MPI_Datatype dt, size_t ext, MPI_Op op, int root) {
     const int P = g_nranks, rel = (g_rank - root + P) % P;
     const size_t n = (size_t)count * ext;
-    std::vector<char> tmp(n ? n : 1);
+    std::vector<char> tmpv;   /* 1.12.18: per-rank scratch under the PIM runtime */
+    char* tmp = scratch_or_vec(0, n ? n : 1, tmpv);
     for (int mask = 1; mask < P; mask <<= 1) {
         if ((mask & rel) == 0) {
             const int src = rel | mask;
             if (src < P) {
-                recv_bytes(tmp.data(), n, (src + root) % P);
-                reduce_local(tmp.data(), acc, count, dt, op);
+                recv_bytes(tmp, n, (src + root) % P);
+                reduce_local(tmp, acc, count, dt, op);
             }
         } else {
             send_bytes(acc, n, ((rel & ~mask) + root) % P, 0);
@@ -1682,8 +1818,8 @@ static void reduce_scatter_gather(char* acc, int count, MPI_Datatype dt, size_t 
     const int P = g_nranks, rank = g_rank;
     const size_t n = (size_t)count * ext;
     const int pof2 = pof2_floor(P), rem = P - pof2;
-    std::vector<char> tmpv(n ? n : 1);
-    char* tmp = tmpv.data();
+    std::vector<char> tmpv;   /* 1.12.18: per-rank scratch under the PIM runtime */
+    char* tmp = scratch_or_vec(0, n ? n : 1, tmpv);
     int newrank;
     if (rank < 2 * rem) {   /* the first 2*rem ranks fold pairwise; the even one survives */
         if (rank % 2 != 0) { send_bytes(acc, n, rank - 1, 0); newrank = -1; }
@@ -1745,18 +1881,19 @@ static void reduce_scatter_gather(char* acc, int count, MPI_Datatype dt, size_t 
 int MPI_Reduce(const void *sendbuf, void *recvbuf, int count,
                MPI_Datatype datatype, MPI_Op op, int root, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const size_t ext = dtype_size(datatype), n = (size_t)count * ext;
     const bool isRoot = (g_rank == root);
     if (g_nranks <= 1) {
-        if (sendbuf != kInPlace && sendbuf && recvbuf) memcpy(recvbuf, sendbuf, n);
+        if (sendbuf != kInPlace && sendbuf && recvbuf) priced_memcpy(recvbuf, sendbuf, n);
         return MPI_SUCCESS;
     }
     /* The running result: the root's recvbuf, a scratch buffer elsewhere. */
     std::vector<char> accv;
     char* acc;
     if (isRoot && recvbuf) acc = (char*)recvbuf;
-    else { accv.resize(n ? n : 1); acc = accv.data(); }
-    if (!(isRoot && sendbuf == kInPlace) && sendbuf) memcpy(acc, sendbuf, n);
+    else acc = scratch_or_vec(1, n ? n : 1, accv);   /* 1.12.18: per-rank scratch under the PIM runtime */
+    if (!(isRoot && sendbuf == kInPlace) && sendbuf) priced_memcpy(acc, sendbuf, n);
     if (n > kReduceShort && count >= pof2_floor(g_nranks)) reduce_scatter_gather(acc, count, datatype, ext, op, root);
     else reduce_binomial(acc, count, datatype, ext, op, root);
     return MPI_SUCCESS;
@@ -1767,12 +1904,13 @@ int MPI_Gather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                void *recvbuf, int recvcount, MPI_Datatype recvtype,
                int root, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const int P = g_nranks, rel = (g_rank - root + P) % P;
     const size_t blk = (g_rank == root) ? (size_t)recvcount * dtype_size(recvtype)
                                         : (size_t)sendcount * dtype_size(sendtype);
     char* rbuf = (char*)recvbuf;
     if (P <= 1) {
-        if (sendbuf != kInPlace && sendbuf && rbuf) memcpy(rbuf, sendbuf, blk);
+        if (sendbuf != kInPlace && sendbuf && rbuf) priced_memcpy(rbuf, sendbuf, blk);
         return MPI_SUCCESS;
     }
     /* This rank's subtree, in relative rank order, starts with its own block. */
@@ -1784,9 +1922,9 @@ int MPI_Gather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
     char* w;
     if (rel == 0 && root == 0) w = rbuf;
     else if (sub == 1) w = (char*)sendbuf;   /* a leaf sends its own block */
-    else { tmp.resize((size_t)sub * blk); w = tmp.data(); }
+    else w = scratch_or_vec(0, (size_t)sub * blk, tmp);   /* 1.12.18 */
     const char* own = (sendbuf == kInPlace) ? rbuf + (size_t)root * blk : (const char*)sendbuf;
-    if (w != own && w != (char*)sendbuf && own) memcpy(w, own, blk);
+    if (w != own && w != (char*)sendbuf && own) priced_memcpy(w, own, blk);
     size_t curr = 1;
     for (int mask = 1; mask < P; mask <<= 1) {
         if ((rel & mask) == 0) {
@@ -1802,7 +1940,7 @@ int MPI_Gather(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
         }
     }
     if (rel == 0 && root != 0)
-        for (int j = 0; j < P; j++) memcpy(rbuf + (size_t)((j + root) % P) * blk, w + (size_t)j * blk, blk);
+        for (int j = 0; j < P; j++) priced_memcpy(rbuf + (size_t)((j + root) % P) * blk, w + (size_t)j * blk, blk);
     return MPI_SUCCESS;
 }
 
@@ -1810,12 +1948,13 @@ int MPI_Scatter(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                 void *recvbuf, int recvcount, MPI_Datatype recvtype,
                 int root, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const int P = g_nranks, rel = (g_rank - root + P) % P;
     const size_t blk = (g_rank == root) ? (size_t)sendcount * dtype_size(sendtype)
                                         : (size_t)recvcount * dtype_size(recvtype);
     const char* sbuf = (const char*)sendbuf;
     if (P <= 1) {
-        if (recvbuf != kInPlace && recvbuf && sbuf) memcpy(recvbuf, sbuf, blk);
+        if (recvbuf != kInPlace && recvbuf && sbuf) priced_memcpy(recvbuf, sbuf, blk);
         return MPI_SUCCESS;
     }
     int sub = 1;
@@ -1828,9 +1967,9 @@ int MPI_Scatter(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
     if (rel == 0) {
         if (root == 0) w = sbuf;
         else {
-            tmp.resize((size_t)P * blk);
-            for (int j = 0; j < P; j++) memcpy(tmp.data() + (size_t)j * blk, sbuf + (size_t)((j + root) % P) * blk, blk);
-            w = tmp.data();
+            char* const t = scratch_or_vec(0, (size_t)P * blk, tmp);   /* 1.12.18 */
+            for (int j = 0; j < P; j++) priced_memcpy(t + (size_t)j * blk, sbuf + (size_t)((j + root) % P) * blk, blk);
+            w = t;
         }
         curr = (size_t)P;
     } else {
@@ -1838,9 +1977,9 @@ int MPI_Scatter(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
         while (!(rel & mask)) mask <<= 1;
         const int parent = (g_rank - mask + P) % P;
         if (sub == 1) { recv_bytes(recvbuf, blk, parent); return MPI_SUCCESS; }   /* a leaf */
-        tmp.resize((size_t)sub * blk);
-        recv_bytes(tmp.data(), (size_t)sub * blk, parent);
-        w = tmp.data();
+        char* const t = scratch_or_vec(0, (size_t)sub * blk, tmp);   /* 1.12.18 */
+        recv_bytes(t, (size_t)sub * blk, parent);
+        w = t;
         curr = (size_t)sub;
     }
     int mask = 1;
@@ -1851,7 +1990,7 @@ int MPI_Scatter(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
             curr = (size_t)mask;
         }
     }
-    if (recvbuf != kInPlace && recvbuf) memcpy(recvbuf, w, blk);
+    if (recvbuf != kInPlace && recvbuf) priced_memcpy(recvbuf, w, blk);
     return MPI_SUCCESS;
 }
 
@@ -1859,6 +1998,7 @@ int MPI_Gatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                 void *recvbuf, const int *recvcounts, const int *displs,
                 MPI_Datatype recvtype, int root, MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     /* Linear, as MPICH's MPIR_Gatherv_allcomm_linear. */
     size_t rtsz = dtype_size(recvtype);
     if (g_rank != root) {
@@ -1868,7 +2008,7 @@ int MPI_Gatherv(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
         for (int i = 0; i < g_nranks; i++) {
             if (i == root) {
                 if (sendbuf && sendbuf != kInPlace && rbuf)
-                    memcpy(rbuf + (size_t)displs[i] * rtsz, sendbuf,
+                    priced_memcpy(rbuf + (size_t)displs[i] * rtsz, sendbuf,
                            (size_t)sendcount * dtype_size(sendtype));
             } else {
                 MPI_Recv(rbuf + (size_t)displs[i] * rtsz, recvcounts[i], recvtype,
@@ -1884,28 +2024,32 @@ int MPI_Alltoall(const void *sendbuf, int sendcount, MPI_Datatype sendtype,
                  void *recvbuf, int recvcount, MPI_Datatype recvtype,
                  MPI_Comm comm) {
     (void)comm;
+    RtScope rs; CollScope cs;   /* 1.12.18: the collective's bookkeeping is runtime; its messages are collective steps */
     const int P = g_nranks, rank = g_rank;
     const size_t sblk = (size_t)sendcount * dtype_size(sendtype);
     const size_t rblk = (size_t)recvcount * dtype_size(recvtype);
     const char* sbuf = (const char*)sendbuf;
     char* rbuf = (char*)recvbuf;
-    if (sbuf && rbuf) memcpy(rbuf + (size_t)rank * rblk, sbuf + (size_t)rank * sblk, sblk);
+    if (sbuf && rbuf) priced_memcpy(rbuf + (size_t)rank * rblk, sbuf + (size_t)rank * sblk, sblk);
     if (P <= 1) return MPI_SUCCESS;
     if (sblk <= kAlltoallShort && P >= kAlltoallMinProcs) {
         /* Bruck: rotate up by rank, log2(P) exchanges of the blocks whose index
          * has bit k set, then block j came from rank (rank - j). */
-        std::vector<char> w((size_t)P * sblk), pk((size_t)P * sblk), rk((size_t)P * sblk);
-        for (int j = 0; j < P; j++) memcpy(w.data() + (size_t)j * sblk, sbuf + (size_t)((rank + j) % P) * sblk, sblk);
+        std::vector<char> wv, pkv, rkv;   /* 1.12.18: per-rank scratch under the PIM runtime */
+        char* const w = scratch_or_vec(0, (size_t)P * sblk, wv);
+        char* const pk = scratch_or_vec(1, (size_t)P * sblk, pkv);
+        char* const rk = scratch_or_vec(2, (size_t)P * sblk, rkv);
+        for (int j = 0; j < P; j++) priced_memcpy(w + (size_t)j * sblk, sbuf + (size_t)((rank + j) % P) * sblk, sblk);
         for (int pof2 = 1; pof2 < P; pof2 <<= 1) {
             size_t nb = 0;
             for (int j = 0; j < P; j++)
-                if (j & pof2) { memcpy(pk.data() + nb * sblk, w.data() + (size_t)j * sblk, sblk); nb++; }
-            xchg_bytes(pk.data(), nb * sblk, (rank + pof2) % P, rk.data(), nb * sblk, (rank - pof2 + P) % P);
+                if (j & pof2) { priced_memcpy(pk + nb * sblk, w + (size_t)j * sblk, sblk); nb++; }
+            xchg_bytes(pk, nb * sblk, (rank + pof2) % P, rk, nb * sblk, (rank - pof2 + P) % P);
             nb = 0;
             for (int j = 0; j < P; j++)
-                if (j & pof2) { memcpy(w.data() + (size_t)j * sblk, rk.data() + nb * sblk, sblk); nb++; }
+                if (j & pof2) { priced_memcpy(w + (size_t)j * sblk, rk + nb * sblk, sblk); nb++; }
         }
-        for (int j = 1; j < P; j++) memcpy(rbuf + (size_t)((rank - j + P) % P) * rblk, w.data() + (size_t)j * sblk, rblk);
+        for (int j = 1; j < P; j++) priced_memcpy(rbuf + (size_t)((rank - j + P) % P) * rblk, w + (size_t)j * sblk, rblk);
     } else if (sblk <= kAlltoallMedium) {
         /* Scattered: step i sends to rank - i and receives from rank + i. */
         for (int i = 1; i < P; i++) {
@@ -1980,6 +2124,14 @@ static int pimid_thread_main(int argc, char** argv, char** envp) {
     g_thread_mode = true;
     g_nranks = nranks;
     if (!create_heap_region(nranks)) return 1;
+    {   /* 1.12.18: PIM runtime primitives (simulation.pim_runtime.enabled, default true) */
+        const char* e = getenv("PIMID_PIM_RUNTIME");
+        g_rt_env = !(e && strstr(e, "enabled=0"));
+        if (g_rt_env) {   /* the buffers themselves are allocated by each rank in MPI_Init */
+            g_scr = (RankScratch*)calloc((size_t)nranks, sizeof(RankScratch));
+            if (!g_scr) { fprintf(stderr, "[pimid_mpi] scratch table alloc failed\n"); return 1; }
+        }
+    }
 
     fprintf(stderr, "[pimid_mpi] thread mode: %d ranks as threads of one "
             "process (in-process transport, no shm)\n", nranks);

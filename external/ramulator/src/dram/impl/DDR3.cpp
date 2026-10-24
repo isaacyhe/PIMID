@@ -150,13 +150,16 @@ class DDR3 : public IDRAM, public Implementation {
       }
     );
 
+    /* PIMID 1.12.18 (AA10): open-row / close-row requests as DDR4 defines them (ACT / PRE), so a row policy can close
+     * a DDR3 row (the host adaptive open-page timeout); upstream DDR3 had neither request nor an ACT/PRE prerequisite */
     inline static constexpr ImplDef m_requests = {
-      "read", "write", "all-bank-refresh",
+      "read", "write", "all-bank-refresh", "open-row", "close-row",
     };
 
     inline static const ImplLUT m_request_translations = LUT (
       m_requests, m_commands, {
         {"read", "RD"}, {"write", "WR"}, {"all-bank-refresh", "REFab"},
+        {"open-row", "ACT"}, {"close-row", "PRE"}   // PIMID 1.12.18 (AA10)
       }
     );
 
@@ -564,6 +567,8 @@ class DDR3 : public IDRAM, public Implementation {
       // Bank actions
       m_preqs[m_levels["bank"]][m_commands["RD"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;
       m_preqs[m_levels["bank"]][m_commands["WR"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;
+      m_preqs[m_levels["bank"]][m_commands["ACT"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;    // PIMID 1.12.18 (AA10), as DDR4
+      m_preqs[m_levels["bank"]][m_commands["PRE"]] = Lambdas::Preq::Bank::RequireBankClosed<DDR3>;  // PIMID 1.12.18 (AA10), as DDR4
     };
 
     void set_rowhits() {

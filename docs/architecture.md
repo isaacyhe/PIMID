@@ -109,37 +109,25 @@ same way. So:
   one environment.** Then a single-threaded comparison is exact again, and any
   difference is the builds'.
 
-**A parallel workload does not repeat.** Its threads are real threads inside the
-emulator, the host kernel decides how they interleave, and the emulator reflects
-that faithfully. A parallel program on real hardware does not repeat its
-interleaving either, so this is the workload's property rather than a defect in
-the simulator. Total work stays stable across runs; simulated time moves.
+**A parallel workload is timed by the model.** Its threads are real threads
+inside the emulator, but their simulated time does not come from the host's
+interleaving. Each core and PE keeps its own clock from its ROI baseline;
+every NoC record and DRAM request is stamped on that ROI-relative clock; a
+thread woken by another, or taking a lock word another released, moves its
+clock to max(own, the waker's or releaser's time) and takes that core's
+origin; and at each phase barrier the records are folded at the consistent
+cut (the earliest ROI-relative time over the cores still running or waiting).
+Accesses are priced from frozen epochs (`simulation.det_epoch_phases`): an
+access reads an earlier epoch's per-pair NoC latency and DRAM service latency
+by epoch index from its own clock, never a live value. Message-passing ranks
+use the same mechanism and also meet at their rendezvous. The run time is the
+ROI's elapsed wall-clock time, the latest ROI end on the cores' own clocks.
 
-The size of that movement is not a constant. It depends on the workload, the
-machine, and how loaded the machine is -- measurements of the same configuration
-on one node have ranged from a fraction of a percent to several percent depending
-on what else was running. Quote it as a measured bound for the specific study,
-not as a property of the simulator.
-
-Measured in 1.12.15 (16-PE OpenMP `gemv` 256, six runs): every core executed the
-same instructions (apart from which thread took which loop chunk), and the
-reported cycles spanned 0.38%. With `simulation.parallel: false` (one simulator
-thread) four runs still spanned 3.9%: the spread comes from the order in which the
-threads take the simulated cores, which follows the host's wake-ups, not from
-simulating cores concurrently.
-
-Two things follow:
-
-- **Differences smaller than the run-to-run variation are not findings.** Measure
-  the variation for the configuration in question before claiming an effect near
-  its size.
-- **Regressions can be gated exactly.** Run the single-threaded build and require
-  bit-identical output. That is a far sharper check than judging a parallel run
-  through its own noise, and it costs one run.
-
-The settings below reduce this variation substantially -- they stop the parallel
-runtime resizing its team and stop its threads spinning at barriers -- but they
-cannot remove it, because its source is the workload.
+**Regressions can be gated exactly.** Run the single-threaded build and
+require bit-identical output; it costs one run. The settings below keep the
+parallel runtime from resizing its team and from spinning at barriers, so
+that a waiting thread's time is the model's synchronisation, not host-side
+spinning.
 
 ## Guest OpenMP runtime settings
 
@@ -153,7 +141,7 @@ runtime, so applying them unconditionally costs nothing.
 | variable | value | why |
 |---|---|---|
 | `OMP_NUM_THREADS` | PE count (`host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel) | Without it libgomp sizes its team from `omp_get_num_procs()`, which under user-mode emulation reports the **host machine's** core count. The team would then depend on which machine the job landed on. |
-| `OMP_DYNAMIC` | `FALSE` | Permits the runtime to resize the team at run time. With it enabled the team, and therefore the work each thread does, can differ between runs of the same binary. |
+| `OMP_DYNAMIC` | `FALSE` | Permits the runtime to resize the team at run time. With it enabled the runtime, not the configuration, chooses the team size and therefore the work each thread does. |
 | `OMP_WAIT_POLICY` | `PASSIVE` | Threads sleep at a barrier instead of spinning. A spinning thread executes instructions, and the simulator charges cycles for them -- so the reported time would include spinning whose duration the host kernel decides. |
 | `GOMP_SPINCOUNT` | `0` | Removes the residual spin before a thread sleeps, for the same reason. |
 
@@ -163,13 +151,6 @@ overwrite so a deliberate choice always wins.
 **These settings change results.** Enabling them on a configuration that
 previously ran without moved reported cycles by several percent and memory reads
 by a fraction of a percent -- the latter because a dynamically-resized team does
-a different amount of work per thread. They also reduce run-to-run variation
-substantially. Numbers produced before and after this change are therefore not
+a different amount of work per thread. Numbers produced before and after this change are therefore not
 comparable, and a run's provenance should record which behaviour applied.
-
-**What they do not fix.** A multi-threaded guest still interleaves differently
-between runs, because the host kernel schedules those threads and the emulator
-faithfully reflects that. Residual run-to-run variation in reported cycles is
-expected; total work is stable. Treat differences smaller than the variation as
-noise rather than as findings.
 

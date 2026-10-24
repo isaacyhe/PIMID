@@ -39,6 +39,9 @@
 //The scheduler class started simple, but at some point having it all in the header is too ridiculous. Migrate non perf-intensive calls here! (all but sync, really)
 
 #define WATCHDOG_INTERVAL_USEC (50)
+
+/* 1.12.18: defined by the QEMU plugin (post-ROI run to exit); false elsewhere. */
+__attribute__((weak)) bool pimidPostRoiFree() { return false; }
 #define WATCHDOG_MAX_MULTIPLER (40) //50us-2ms waits
 #define WATCHDOG_STALL_THRESHOLD (100)
 
@@ -101,6 +104,9 @@ void Scheduler::watchdogThreadFunc() {
     while (true) {
         TrueSleep(multiplier*WATCHDOG_INTERVAL_USEC);
 
+        if (zinfo->terminationConditionMet && pimidPostRoiFree()) {
+            continue;   // 1.12.18: the program is running to its own exit after the ROI
+        }
         if (zinfo->terminationConditionMet) {
             // Synchronize to avoid racing with EndOfPhaseActions code
             // (zinfo->terminationConditionMet is set on EndOfPhaseActions,

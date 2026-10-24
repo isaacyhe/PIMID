@@ -15,6 +15,7 @@
 #define PE_MEMORY_INTERFACE_H_
 
 #include <atomic>
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -106,6 +107,8 @@ protected:
      * never armed, i.e. dramRowBytes == 0). */
     Counter profRowHits_;
     Counter profPairSampled_, profPairFallback_;   // 1.11.97 (H09)
+    mutable Counter profFtPages_;                  // 1.12.18: pages placed here by first touch
+    mutable std::atomic<uint64_t> ftSeq_{0};       // 1.12.18: this PE's first-touched pages, in order
     Counter profRowMisses_;
     /* 1.11.57 (audit D006, D007, D008): one open-row register per BANK, sized
      * ONCE at construction, indexed by a row number computed on the RANK's
@@ -169,6 +172,43 @@ public:
         initRowModel_();   // 1.11.57 (D007): size the open-row table off the access path
     }
 
+    /* 1.12.18: PE cycles per line at this interface's service rate (its
+     * bandwidth at the PE clock): the issue interval of a scratchpad DMA
+     * transfer. 0 = no bandwidth configured. */
+    double lineIssueGapCycles() const { return (maxRequestsPerCycle_ > 0.0) ? 1.0 / maxRequestsPerCycle_ : 0.0; }
+
+    /* 1.12.18: the registered guest stack holding byteAddr, if this PE owns
+     * it. addrToUnit makes the first-touch claim (1.12.17) as for any access,
+     * so a stack priced in the PE's scratchpad is owned exactly as before. */
+    bool ownsStack(uint64_t byteAddr, uint64_t* lo, uint64_t* hi) {
+        if (!zinfo->stackRanges || byteAddr < zinfo->stackMin || byteAddr >= zinfo->stackMax) return false;
+        (void)addrToUnit((Address)(byteAddr >> 6));
+        return stackOwned(byteAddr, lo, hi);
+    }
+    /* the registered stack holding byteAddr, whoever owns it */
+    static bool stackRange(uint64_t byteAddr, uint64_t* lo, uint64_t* hi) {
+        if (!zinfo->stackRanges || byteAddr < zinfo->stackMin || byteAddr >= zinfo->stackMax) return false;
+        const uint32_t n = zinfo->stackRanges;
+        for (uint32_t i = 0; i < n; i++)
+            if (byteAddr >= zinfo->stackLo[i] && byteAddr < zinfo->stackHi[i]) {
+                *lo = zinfo->stackLo[i]; *hi = zinfo->stackHi[i];
+                return true;
+            }
+        return false;
+    }
+    /* the same lookup without making a claim (stack in DRAM: the access
+     * itself claims, as in 1.12.17; the PE only measures its stack). */
+    bool stackOwned(uint64_t byteAddr, uint64_t* lo, uint64_t* hi) const {
+        if (!zinfo->stackRanges || byteAddr < zinfo->stackMin || byteAddr >= zinfo->stackMax) return false;
+        const uint32_t n = zinfo->stackRanges;
+        for (uint32_t i = 0; i < n; i++) {
+            if (byteAddr < zinfo->stackLo[i] || byteAddr >= zinfo->stackHi[i]) continue;
+            if (zinfo->stackOwner[i] != (int32_t)mcId_ + 1) return false;
+            *lo = zinfo->stackLo[i]; *hi = zinfo->stackHi[i];
+            return true;
+        }
+        return false;
+    }
     bool isLocalAddress(Address lineAddr) const {
         // Device-only near-data (option 1): route ALL of a PE's accesses through
         // the PE-MI (the placement-aware local path), not the ALU core's flat
@@ -208,6 +248,8 @@ public:
                 (int)zinfo->hierarchy.subarraysPerBank, (int)zinfo->hierarchy.banksPerBG,
                 (int)zinfo->hierarchy.bgPerChip, (int)zinfo->hierarchy.chipsPerRank,
                 (int)zinfo->hierarchy.ranksPerChannel, W, Lt, fab.kind > 0 ? &fab : nullptr);
+            /* 1.12.18: the stated stack layout, as main.cpp placed it */
+            pimid_htree::assignStackDies(t, (int)zinfo->hierarchy.stackChannelsPerDie);
         });
         return t;
     }
@@ -229,7 +271,8 @@ public:
         std::call_once(once, [] { w.build(tree()); });
         return w;
     }
-    static bool treeWalk(int srcEp, int dstEp, uint32_t perLevel[8], uint32_t* links, uint64_t* cost) {
+    static bool treeWalk(int srcEp, int dstEp, uint32_t perLevel[8], uint32_t* links, uint64_t* cost,
+                         uint32_t* tsvDies = nullptr) {   // 1.12.18: die boundaries crossed
         if (zinfo->hierarchy.placementLevel >= 7) return false;   // HOST_MC: no tree below the element
         const pimid_htree::SparseHTree& t = tree();
         if (t.numPEs <= 0 || srcEp < 0 || dstEp < 0) return false;
@@ -237,7 +280,7 @@ public:
         if (!w.built) return false;
         uint64_t c = 0;
         uint32_t l = w.walk(t, srcEp, dstEp, perLevel, zinfo->hierarchy.levelLatency,
-                            zinfo->hierarchy.bridgeLatency, &c);
+                            zinfo->hierarchy.bridgeLatency, &c, tsvDies);
         bool visited = false;
         for (int i = 0; i < 7; i++) if (perLevel[i]) { visited = true; break; }
         if (!visited) return false;
@@ -275,6 +318,84 @@ public:
             v = (r && atoi(r) > 1 && !getenv("PIMID_MPI_RANK")) ? 1 : 0;
         }
         return v == 1;
+    }
+
+    /* 1.12.18 (user ruling 2026-10-24, "OMP: the full thread-MPI mechanism"):
+     * a single-process exec run (shared memory: OpenMP, serial, co-sim OMP; the
+     * QEMU plugin sets PIMID_EXEC_CUT before SimInit, the trace driver does not)
+     * prices like thread-MPI: NoC records and DRAM replay keys on the core's
+     * ROI-relative clock (cutRoiRel), folded at the consistent cut at the phase
+     * barrier, NoC read from the epoch-frozen per-pair table, DRAM replay in
+     * cut mode. Process-MPI ranks (PIMID_MPI_RANK) are untouched. */
+    static bool singleProcCut() {
+        static int v = -1;
+        if (v < 0) v = (getenv("PIMID_EXEC_CUT") && !getenv("PIMID_MPI_RANK") && !mpiThreadDetPricing()) ? 1 : 0;
+        return v == 1;
+    }
+    static bool cutPricing() { return (mpiThreadDetPricing() && !sharedNoc()) || singleProcCut(); }
+    /* 1.12.18: the ROI-relative clock of the cut (single-process runs).
+     * A device PE (Core::wakeStampable: its clock is its own timeline): its
+     * clock minus ITS ROI origin (spOrigin). The origin starts as the PE's own
+     * baseline at roi_begin and travels with the clock: a PE whose clock is
+     * moved to a waker's (sync to waker) or a lock releaser's (lock handoff)
+     * takes that core's origin, so PEs joined by a sync share one axis (a
+     * parked worker woken by the opener is on the opener's origin; with its
+     * own baseline it trailed it by the serial code before roi_begin, 31.5k
+     * cycles on gemv_omp, and 3819 DRAM requests fell past the ROI end). A PE
+     * never synced keeps its own baseline (the 1.12.17 kernels' workers: no
+     * wake sync; one device origin for all put their whole ROI before it,
+     * stamped 0, and the run time lost them). A host core (no wake sync; it
+     * re-bases to the phase clock on join) keeps the host rule: its own clock
+     * minus its clock at the ROI baseline snapshot (hierarchy.mpiRoiBaseCyc).
+     * Co-sim offload: the device's ROI starts where the host's offload
+     * doorbell is on the host's ROI-relative clock (after the flush and launch
+     * charges), so the PEs' axis is shifted by that point (spDevShift): device
+     * records then follow the host's flush writebacks, and the host core,
+     * cut-active until it vacates, does not put the first device records
+     * behind the cut. Thread-MPI keeps perCoreRoiRel. */
+    static const uint32_t kSpOrigins = 4096;
+    static std::atomic<uint64_t>* spOrigins() { static std::atomic<uint64_t> o[kSpOrigins]; return o; }
+    static uint64_t spOriginOf(uint32_t c) {
+        if (c < kSpOrigins) return spOrigins()[c].load(std::memory_order_relaxed);
+        return (c < zinfo->numCores && zinfo->cores[c]) ? zinfo->cores[c]->getRoiBaseCycle() : 0;
+    }
+    static void spSetOrigin(uint32_t c, uint64_t o) { if (c < kSpOrigins) spOrigins()[c].store(o, std::memory_order_relaxed); }
+    static uint64_t& spDevShift() { static uint64_t s = 0; return s; }
+    /* 1.12.18 (W9): an OOO or in-order core (a host core, or a device PE of
+     * an ooo_core / in_order_core model) keeps no exported roiBaseCycle and a
+     * memory request carries its RAW clock (curCycle: halted and phantom-wait
+     * cycles included), while its ROI end is read on the wall-free clock
+     * (Core::getCycles()). wallFreeCycle moves a raw request cycle onto the
+     * wall-free clock by the core's present offset between the two (0 for an
+     * ALU core, whose clocks are one); roiOriginOf is the core's ROI origin
+     * on that clock: its own roiBaseCycle when it exports one (ALU), else its
+     * clock at the ROI baseline snapshot (hierarchy.mpiRoiBaseCyc) -- 0 for a
+     * core that had not run yet, which is then its origin. coremodel_*_ooo_core
+     * stamped absolute raw cycles (thread-MPI: replay 166x the window) or raw
+     * cycles against a wall-free origin (OpenMP: 6688 ROI requests outside). */
+    static uint64_t wallFreeCycle(uint32_t c, uint64_t raw) {
+        Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
+        if (!co) return raw;
+        const uint64_t r = co->pimidRawCycle(), a = co->getCycles();
+        const uint64_t off = (r > a) ? r - a : 0;
+        return (raw > off) ? raw - off : 0;
+    }
+    static uint64_t roiOriginOf(uint32_t c) {
+        Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
+        uint64_t base = co ? co->getRoiBaseCycle() : 0;
+        if (base == 0 && zinfo->hierarchy.mpiRoiBaseCyc && c < zinfo->hierarchy.mpiRoiBaseCycN)
+            base = zinfo->hierarchy.mpiRoiBaseCyc[c];
+        return base;
+    }
+    static uint64_t cutRoiRel(uint32_t srcId, uint64_t cycle) {
+        if (!singleProcCut()) return perCoreRoiRel(srcId, cycle);
+        Core* co = (srcId < zinfo->numCores) ? zinfo->cores[srcId] : nullptr;
+        if (co && co->wakeStampable()) {
+            const uint64_t c = cycle + spDevShift(), o = spOriginOf(srcId);
+            return (c > o) ? c - o : 0;
+        }
+        const uint64_t c = wallFreeCycle(srcId, cycle), base = roiOriginOf(srcId);   // 1.12.18 (W9)
+        return (c > base) ? c - base : 0;
     }
 
     // 1.9.0 escape hatch (A/B only). Default thread-MPI pricing is now the
@@ -468,10 +589,10 @@ public:
     // removes the cross-core startup SKEW (rank 0 did init, others spawned fresh),
     // so contemporaneous ROI accesses from different cores align on ONE axis.
     static uint64_t perCoreRoiRel(uint32_t srcId, uint64_t cycle) {
-        uint64_t base = 0;
-        if (srcId < zinfo->numCores && zinfo->cores[srcId])
-            base = zinfo->cores[srcId]->getRoiBaseCycle();
-        return (cycle > base) ? cycle - base : 0;
+        /* 1.12.18 (W9): on the wall-free clock against the core's ROI origin
+         * (wallFreeCycle / roiOriginOf); an ALU core is unchanged */
+        const uint64_t c = wallFreeCycle(srcId, cycle), base = roiOriginOf(srcId);
+        return (c > base) ? c - base : 0;
     }
 
     // NoC read-lag in EPOCHS. The barrier cut folds roiRel up to min-active-roiRel;
@@ -623,8 +744,8 @@ public:
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
             }
 
-            profLocalAccesses_.inc();
-            profLocalLatency_.inc(lat);
+            profLocalAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            profLocalLatency_.atomicInc(lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
             return req.cycle + lat;
         } else {
@@ -659,8 +780,8 @@ public:
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
                     }
                     noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
-            profRemoteAccesses_.inc();
-                    profRemoteLatency_.inc(lat);
+            profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                    profRemoteLatency_.atomicInc(lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                     return req.cycle + lat;
                 }
                 // E16 site 2: past the degenerate check, every access here is a
@@ -725,15 +846,18 @@ public:
                         gn->recordBatchAccess(srcNode, dstNode,
                                               perCoreRoiRel(req.srcId, req.cycle));
                 } else {
-                    // OMP / non-MPI: record on the global phase clock + inline
-                    // per-phase processBatch (single process, live EWMA).
-                    gn->recordBatchAccess(srcNode, dstNode, phaseStamp(req.cycle));
-                    if (zinfo->numPhases > batchLastPhase_) {
-                        __sync_fetch_and_add(&zinfo->hierarchy.nocInlineDrain, 1);
-                        gn->processBatch(zinfo->numPhases, zinfo->phaseLength);
-                        __sync_fetch_and_sub(&zinfo->hierarchy.nocInlineDrain, 1);
-                        batchLastPhase_ = zinfo->numPhases;
-                    }
+                    // OMP / non-MPI: record on the global phase clock. 1.12.18
+                    // (ruling 2026-10-24, epoch-frozen): no inline drain by the
+                    // first access thread of a phase; the records are folded at
+                    // the phase barrier (EndOfPhaseActions) and the pair table
+                    // read below changes only there (GarnetNetwork::frozenPublish_).
+                    // 1.12.18 (ruling 2026-10-24, full mechanism): after the ROI
+                    // baseline on the core's ROI-relative clock, folded at the
+                    // consistent cut (as thread-MPI); before it on the phase grid.
+                    if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
+                        gn->recordBatchAccess(srcNode, dstNode, cutRoiRel(req.srcId, req.cycle));
+                    else
+                        gn->recordBatchAccess(srcNode, dstNode, phaseStamp(req.cycle));
                 }
                 if (sn && zinfo->numPhases > batchLastPhase_) {
                     __sync_fetch_and_add(&zinfo->hierarchy.nocInlineDrain, 1);
@@ -770,6 +894,15 @@ public:
                          * to cost the same. A pair with no sample yet takes the
                          * ladder cost of its tree distance (the analytical tier
                          * walk), never the global average. */
+                        if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined) {
+                            /* 1.12.18 (ruling 2026-10-24): the frozen per-pair table
+                             * of epoch k - lag, k the epoch of this access on its
+                             * core's ROI-relative clock (lag as thread-MPI's). */
+                            const uint32_t E = gn->detEpochPhases();
+                            const uint64_t eL = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * (E > 0 ? E : 1);
+                            const uint64_t k = cutRoiRel(req.srcId, req.cycle) / eL;
+                            garnetLat = gn->frozenPairLatency((k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1, srcNode, dstNode);
+                        } else
                         garnetLat = gn->getPairLatency(srcNode, dstNode);
                         if (garnetLat == 0) {
                             /* 1.11.97 (H09 + ruling 7 (c)): the unsampled pair's ladder
@@ -784,9 +917,9 @@ public:
                                     zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
                                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
                             }
-                            profPairFallback_.inc();
+                            profPairFallback_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                         } else {
-                            profPairSampled_.inc();
+                            profPairSampled_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                         }
                     }
                     networkLat = (garnetLat > 0)
@@ -809,8 +942,8 @@ public:
                     totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId);
                 }
                 noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
-            profRemoteAccesses_.inc();
-                profRemoteLatency_.inc(totalLat);
+            profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                profRemoteLatency_.atomicInc(totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                 return req.cycle + totalLat;
             }
 
@@ -842,7 +975,8 @@ public:
              * fallback for a run with no tree (HOST_MC placement, no PEs). */
             uint32_t perLevel[8];   // 1.11.94 (H17): one more rung (HOST_MC)
             uint32_t links = 0; uint64_t walkCost = 0;
-            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost);
+            uint32_t tsvDies = 0;   // 1.12.18
+            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost, &tsvDies);
             if (!fromTree)
                 links = hierTraversalLevels(
                     myUnit, targetUnit, perLevel,
@@ -851,7 +985,8 @@ public:
                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
             if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
                 if (myUnit != targetUnit)
-                    zinfo->garnetNetwork->recordTierWalk(perLevel, links);
+                    zinfo->garnetNetwork->recordTierWalk(perLevel, links, false, tsvDies,
+                        fromTree && zinfo->hierarchy.stackChannelsPerDie > 0);   // 1.12.18
             }
             // hierLat = per-tier hop-based latency through the LCA path (no double-counting)
             uint32_t hierLat = fromTree ? (uint32_t)walkCost : (uint32_t)computeHierTraversal(
@@ -1023,8 +1158,8 @@ public:
                 totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId);
             }
             noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
-            profRemoteAccesses_.inc();
-            profRemoteLatency_.inc(totalLat);
+            profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            profRemoteLatency_.atomicInc(totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             return req.cycle + totalLat;
         }
     }
@@ -1057,6 +1192,9 @@ public:
 
     const char* getName() override { return name_.c_str(); }
 
+    Counter* rdCounter() { return &profReads_; }    // 1.12.18 (R1): bound to the replay
+    Counter* wrCounter() { return &profWrites_; }
+    uint32_t replayMi() const { return mcId_; }
     void initStats(AggregateStat* parentStat) override {
         AggregateStat* s = new AggregateStat();
         s->init(name_.c_str(), "PE memory interface stats");
@@ -1070,6 +1208,8 @@ public:
         s->append(&profRowHits_);
         profRowMisses_.init("rowMisses", "Accesses opening a different row (measured)");
         s->append(&profRowMisses_);
+        profFtPages_.init("ftPages", "4 KB pages first touched by this PE in the ROI, placed in its memory (1.12.18; pre-ROI initialisation claims are not counted)");
+        s->append(&profFtPages_);
         profLocalAccesses_.init("localAcc", "Local accesses (within coverage)");
         s->append(&profLocalAccesses_);
         profRemoteAccesses_.init("remoteAcc", "Remote accesses (hierarchy traversal)");
@@ -1209,9 +1349,9 @@ protected:
          * writes (and the energy model's rd/wr with them: 1,259 reads for
          * 8,297 L2 misses on the gemv probe). */
         if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
-            profWrites_.inc();
+            profWrites_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
         } else {
-            profReads_.inc();
+            profReads_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
         }
         /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
          * well"): under exec-method message passing (thread-MPI) the replay runs
@@ -1222,9 +1362,9 @@ protected:
          * ROI baseline nothing is recorded (as for the NoC) and the access keeps
          * the analytical service below. Shared memory is unchanged. */
         const bool replayCut = zinfo->dramReplay && zinfo->dramReplay->cutMode();
-        if (zinfo->dramReplay && replayCut != (mpiThreadDetPricing() && !sharedNoc()))
-            panic("DRAM epoch replay: cut mode %d disagrees with the thread-MPI pricing mode %d",
-                  (int)replayCut, (int)(mpiThreadDetPricing() && !sharedNoc()));
+        if (zinfo->dramReplay && replayCut != cutPricing())   // 1.12.18: thread-MPI or single-process cut
+            panic("DRAM epoch replay: cut mode %d disagrees with the pricing mode %d",
+                  (int)replayCut, (int)cutPricing());
         if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay &&
             (!replayCut || zinfo->hierarchy.mpiNocBaselined)) {
             uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
@@ -1232,7 +1372,7 @@ protected:
             uint64_t curEpoch, stamp;
             if (replayCut) {
                 const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
-                stamp = perCoreRoiRel(req.srcId, req.cycle);
+                stamp = cutRoiRel(req.srcId, req.cycle);   // 1.12.18: perCoreRoiRel under thread-MPI
                 curEpoch = stamp / ((uint64_t)pl * E);
             } else {
                 uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
@@ -1259,7 +1399,7 @@ protected:
             zinfo->dramReplay->notePriced(v > 0);
             if (v > 0) { if (byReplay) *byReplay = true; return v; }
         }
-        if (mpiThreadDetPricing() && !sharedNoc() && maxRequestsPerCycle_ > 0.0 &&
+        if (cutPricing() && maxRequestsPerCycle_ > 0.0 &&   // 1.12.18: single-process cut too
             zinfo->hierarchy.mpiNocBaselined) {
             // 1.9.0 thread-MPI: DETERMINISTIC epoch-frozen M/D/1 device time (E2).
             // Count this MI's accesses per ROI-relative epoch; price from the
@@ -1348,19 +1488,23 @@ protected:
             if (!zinfo->terminationConditionMet) {
                 // Global-phase-clock stamp; thread-MPI folds at the barrier, OMP
                 // drains inline (single process).
-                gn->recordBatchAccess(srcNode, mcNode, phaseStamp(cycle));
-                if (!mpiThreadDetPricing() && zinfo->numPhases > batchLastPhase_) {
-                    __sync_fetch_and_add(&zinfo->hierarchy.nocInlineDrain, 1);
-                    gn->processBatch(zinfo->numPhases, zinfo->phaseLength);
-                    __sync_fetch_and_sub(&zinfo->hierarchy.nocInlineDrain, 1);
-                    batchLastPhase_ = zinfo->numPhases;
-                }
+                // 1.12.18 (ruling 2026-10-24): folded at the phase barrier, no inline drain;
+                // single-process runs after the ROI baseline on the ROI-relative clock.
+                if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
+                    gn->recordBatchAccess(srcNode, mcNode, cutRoiRel(srcId, cycle));
+                else
+                    gn->recordBatchAccess(srcNode, mcNode, phaseStamp(cycle));
             }
             uint32_t garnetLat;
             if (mpiThreadDetPricing()) {
                 garnetLat = forceAnalyticalPricing()
                     ? 0
                     : epochFrozenNocLat(gn, nullptr, cycle, srcId);
+            } else if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined) {   // 1.12.18
+                const uint32_t E = gn->detEpochPhases();
+                const uint64_t eL = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * (E > 0 ? E : 1);
+                const uint64_t k = cutRoiRel(srcId, cycle) / eL;
+                garnetLat = gn->frozenAvgLatency((k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1);
             } else {
                 garnetLat = gn->getBatchAvgLatency();
             }
@@ -1417,7 +1561,8 @@ protected:
      * A concurrent update can still cost one classification (two PEs racing on
      * the same bank slot), which is a counter question, not a memory-safety
      * one, and the two Counters on this path are already incremented without a
-     * lock. */
+     * lock. 1.12.18: they are atomic now (atomicInc), as every
+     * PE-MI counter: shared interfaces lost counts under parallel bound phases. */
     inline void noteRowAccess(uint32_t unit, Address lineAddr) {
         if (rowStrideBytes_ == 0 || lastRow_.empty()) return;
         const uint64_t stripe = (uint64_t)(lineAddr << 6) / rowStrideBytes_;
@@ -1426,9 +1571,9 @@ protected:
         const size_t slot = (size_t)unit * rowSlotsPerUnit_ + bank;
         if (slot >= lastRow_.size()) return;   // out-of-range unit: claim nothing
         if (__atomic_load_n(&lastRow_[slot], __ATOMIC_RELAXED) == row) {
-            profRowHits_.inc();
+            profRowHits_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
         } else {
-            profRowMisses_.inc();
+            profRowMisses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             __atomic_store_n(&lastRow_[slot], row, __ATOMIC_RELAXED);
         }
     }
@@ -1543,6 +1688,57 @@ protected:
         lastRow_.assign((size_t)total, ~0ull);
     }
 
+  public:
+    /* 1.12.18 (ruling 17 / R0605): the bank a HOST access to the shared array
+     * lands on, for the DRAM epoch replay -- the device's own placement of the
+     * line, read WITHOUT claiming anything: a stack placed by its owner maps
+     * into the owner's coverage, a page a PE has first-touched lives in that
+     * PE's unit, any other page at the address map (addrToUnit's rules, minus
+     * the claims, which belong to the PEs). Bank slot and row from the same
+     * stripe arithmetic as localAccessLatency. Any interface answers the same
+     * (totalUnits_ and the row model are the device's). */
+    void hostTarget(Address lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row) const {
+        const uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0) ? zinfo->hierarchy.pagesPerUnit : 1;
+        const uint32_t page = (uint32_t)(lineAddr >> 6);
+        unit = (totalUnits_ > 0) ? (page / ppu) % totalUnits_ : 0;
+        const uint64_t byteAddr = (uint64_t)lineAddr << 6;
+        bool placed = false;
+        if (zinfo->stackRanges && byteAddr >= zinfo->stackMin && byteAddr < zinfo->stackMax) {
+            for (uint32_t i = 0; i < zinfo->stackRanges; i++) {
+                const uint64_t lo = zinfo->stackLo[i];
+                if (byteAddr < lo || byteAddr >= zinfo->stackHi[i]) continue;
+                if (zinfo->stackOwner[i] > 0 && zinfo->stackCovN[i] > 0) {
+                    unit = zinfo->stackCovLo[i] + (uint32_t)(((byteAddr - lo) >> 12) / ppu % zinfo->stackCovN[i]);
+                    placed = true;
+                }
+                break;
+            }
+        }
+        if (!placed) {
+            FirstTouchTable& t = ftTable();
+            const uint64_t pg = byteAddr >> 12;
+            const uint64_t mask = FirstTouchTable::kSlots - 1;
+            uint64_t h = (pg * 0x9E3779B97F4A7C15ull) >> (64 - FirstTouchTable::kBits);
+            for (uint64_t n = 0; n < FirstTouchTable::kSlots; n++, h = (h + 1) & mask) {
+                const uint64_t k = t.key[h].load(std::memory_order_acquire);
+                if (k == 0) break;                       // never touched by a PE
+                if (k != pg + 1) continue;
+                const uint32_t u = t.unit[h].load(std::memory_order_acquire);
+                if (u != 0) unit = u - 1;                // 0 = being placed right now: the address map
+                break;
+            }
+        }
+        slot = 0;
+        if (rowStrideBytes_ > 0) {
+            const uint64_t stripe = byteAddr / rowStrideBytes_;
+            slot = (uint32_t)(stripe % rowSlotsPerUnit_);
+            row = stripe / rowSlotsPerUnit_;
+        } else {
+            row = byteAddr / 1024;   // no row model armed: 1 KB rows, as localAccessLatency states
+        }
+    }
+  protected:
+
     uint32_t addrToUnit(Address lineAddr) const {
         // Device-local CONTIGUOUS block mapping (point-1 fix): each unit owns a
         // contiguous address range (pagesPerUnit 4KB-pages, sized by subarray
@@ -1580,6 +1776,20 @@ protected:
                 break;
             }
         }
+        /* 1.12.18 (user rulings 2026-10-23, c-1 and A): first-touch placement,
+         * in every mode. A data page lives in the memory of the first PE that
+         * accesses it, as Linux places a page on the node of the thread that
+         * first touches it, and as real PIM keeps a PE's data in its own bank
+         * (UPMEM MRAM, HBM-PIM / AiM banks). The PE's pages fill its coverage
+         * in the order it touches them, pagesPerUnit to a unit, as the address
+         * map fills units. Stacks keep their own rule (above). Capacity is not
+         * enforced, as the address map's wrap-around never enforced it. Every
+         * PE access claims, so the address map and the rank offset below are
+         * left for an interface with no coverage. */
+        {
+            uint32_t ftu;
+            if (firstTouchUnit(byteAddr >> 12, ppu, &ftu)) return ftu;
+        }
         // MPI: each rank is a SEPARATE guest process with its own (identical-
         // looking) VA space. Without an offset, every rank's pages would map to
         // the SAME units -- N processes falsely stacked on one region. Offset
@@ -1603,6 +1813,52 @@ protected:
         }();
         return r;
     }
+    /* 1.12.18: the first-touch page table -- process-local (each guest
+     * process has its own address space), lock-free open addressing. key =
+     * page + 1 (0 = free), unit = unit + 1 (0 = being placed). */
+    struct FirstTouchTable {
+        static const uint64_t kBits = 22, kSlots = 1ull << kBits;   // 4 M pages = 16 GB of data
+        std::atomic<uint64_t>* key;
+        std::atomic<uint32_t>* unit;
+        FirstTouchTable()
+            : key((std::atomic<uint64_t>*)calloc(kSlots, sizeof(std::atomic<uint64_t>))),
+              unit((std::atomic<uint32_t>*)calloc(kSlots, sizeof(std::atomic<uint32_t>))) {
+            if (!key || !unit) panic("[first touch] page table allocation failed");
+        }
+    };
+    static FirstTouchTable& ftTable() { static FirstTouchTable t; return t; }
+    static uint32_t ftWait(std::atomic<uint32_t>& u) {
+        uint32_t v;
+        while ((v = u.load(std::memory_order_acquire)) == 0) {}
+        return v - 1;
+    }
+    /* the unit of `page`: its first toucher's, claiming it for this PE if no
+     * PE has touched it yet. false = this interface has no coverage. */
+    bool firstTouchUnit(uint64_t page, uint32_t ppu, uint32_t* out) const {
+        const uint32_t covN = nonContiguous_ ? (uint32_t)coverageSet_.size()
+                                             : (coverageEnd_ > coverageStart_ ? coverageEnd_ - coverageStart_ : 0);
+        FirstTouchTable& t = ftTable();
+        const uint64_t mask = FirstTouchTable::kSlots - 1;
+        uint64_t h = (page * 0x9E3779B97F4A7C15ull) >> (64 - FirstTouchTable::kBits);
+        for (uint64_t n = 0; n < FirstTouchTable::kSlots; n++, h = (h + 1) & mask) {
+            uint64_t k = t.key[h].load(std::memory_order_acquire);
+            if (k == page + 1) { *out = ftWait(t.unit[h]); return true; }
+            if (k != 0) continue;
+            if (covN == 0) return false;
+            if (!t.key[h].compare_exchange_strong(k, page + 1, std::memory_order_acq_rel)) {
+                if (k == page + 1) { *out = ftWait(t.unit[h]); return true; }
+                continue;
+            }
+            const uint64_t i = (ftSeq_.fetch_add(1, std::memory_order_relaxed) / ppu) % covN;
+            const uint32_t u = nonContiguous_ ? coverageSet_[i] : coverageStart_ + (uint32_t)i;
+            t.unit[h].store(u + 1, std::memory_order_release);
+            profFtPages_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            *out = u;
+            return true;
+        }
+        panic("[first touch] page table full (%lu pages)", (unsigned long)FirstTouchTable::kSlots);
+    }
+
     static uint32_t mpiRanks_() {
         static const uint32_t n = []() {
             const char* e = getenv("PIMID_MPI_RANKS");
@@ -1772,7 +2028,7 @@ protected:
         // accesses per numPhases-epoch and price from the PREVIOUS (barrier-final)
         // epoch's frozen M/D/c wait -- a keyed lookup of an order-free integer count.
         (void)srcId; (void)reqCycle;
-        if (mpiThreadDetPricing() && !sharedNoc()) {
+        if (cutPricing()) {   // 1.12.18: single-process cut too
             if (!zinfo->hierarchy.mpiNocBaselined) return 0;  // pre-ROI: no wait
             static EpochFrozenScalar cbwEpoch;
             uint32_t E = zinfo->garnetNetwork

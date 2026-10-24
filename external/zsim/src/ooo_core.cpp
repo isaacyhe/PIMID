@@ -782,6 +782,14 @@ void OOOCore::leave() {
     cRec.notifyLeave(curCycle);
 }
 
+uint64_t OOOCore::syncToLock(uint64_t t) {   /* 1.12.18 (model the lock word), see core.h */
+    if (t <= curCycle) return 0;
+    const uint64_t skip = t - curCycle;
+    advance(t);   // as addDelay: the whole core moves in lockstep; a jump past phaseEndCycle takes the barrier at the next BBL
+    lockSyncCycles += skip; lockSyncs++;
+    return skip;
+}
+
 void OOOCore::addDelay(uint32_t cycles) {   /* 1.11.97 (H05) */
     if (cycles == 0) return;
     advance(curCycle + cycles);
