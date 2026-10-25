@@ -385,7 +385,7 @@ void RamulatorWrapper::resolvePresetOrganization() {
         if (g == 3200) cap_gb = 8; else if (g == 4800 || g == 5600) cap_gb = 16;
     }
     const std::string name = (dt == "HBM2" || dt == "HBM3") ? rec.organization_preset
-                           : (dt == "LPDDR5") ? "LPDDR5_8Gb_x16"
+                           : (dt == "LPDDR5") ? rec.organization_preset   // 1.12.44: the record's (was the literal LPDDR5_8Gb_x16)
                            : dt + "_" + std::to_string(cap_gb) + "Gb_x" + std::to_string(ww);
     if (dt == "DDR3" && cap_gb == 8 && (ww == 4 || ww == 8 || ww == 16)) {
         const uint64_t ro = 65536ULL;
@@ -417,7 +417,13 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg(name.c_str(), "external/ramulator/src/dram/impl/DDR5.cpp org_presets",
                                     g16 ? 2048 : 1024, ww, 1, banks, 65536, co, false,
                                     (ww == 16) ? 4 : 8, bpg);
-    } else if (dt == "LPDDR5") {
+    } else if (dt == "LPDDR5" && name == "LPDDR5_16Gb_x16") {
+        /* 1.12.44: LPDDR5.cpp org_presets {"LPDDR5_16Gb_x16", {16<<10, 16, {1, 1, 4, 4, 1<<16, 1<<10}}}: the 16 Gb
+         * die, 4 BG x 4 banks, 65536 rows, 2 KB page (JESD209-5C Table 6, 16 Gb column). */
+        preset_org_ = makePresetOrg("LPDDR5_16Gb_x16", "external/ramulator/src/dram/impl/LPDDR5.cpp org_presets",
+                                    2048, 16, 1, 16, 65536, 1024, false,
+                                    4, 4);
+    } else if (dt == "LPDDR5" && name == "LPDDR5_8Gb_x16") {
         preset_org_ = makePresetOrg("LPDDR5_8Gb_x16", "external/ramulator/src/dram/impl/LPDDR5.cpp org_presets",
                                     1024, 16, 1, 16, 32768, 1024, false,
                                     4, 4);

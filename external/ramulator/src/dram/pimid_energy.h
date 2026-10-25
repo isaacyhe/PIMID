@@ -795,10 +795,13 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *     x 0.83 = 161.70, IDD2P 3.9 x 0.57 = 2.223 mA; activate = 0.5 x
      *     the TN-41-01 term of the stored row.
      * STATED MISMATCHES: the sheet is a 16 Gb die at 7500/8533 Mb/s; the
-     * emitted org is LPDDR5_8Gb_x16 at 6400. The burst is rate-scaled
+     * emitted org was LPDDR5_8Gb_x16 at 6400. The burst is rate-scaled
      * (step 2); standby, activate and refresh currents are the 16 Gb
-     * die's, unscaled. trfc_ns stays 210 (the LPDDR5.cpp 8 Gb timing
-     * identity; this sheet's tRFCab is 280 ns at 16 Gb, Table 6 p.11).
+     * die's, unscaled. [1.12.44: the emitted org is now LPDDR5_16Gb_x16,
+     * the sheet's own die, and the record's trfc_ns is 280 ns (this
+     * sheet's Table 6 p.11 = JESD209-5C Table 240 at 16 Gb = the timing
+     * model's tRFCab), so the refresh energy (IDD5 - IDD2N) x tRFC and the
+     * timing model's refresh occupancy use one tRFC.]
      * UNCITED CROSS-CHECK (a vendor source that cannot be disclosed
      * publicly): agrees within ~15% on the
      * burst and standby currents; its refresh and power-down currents are

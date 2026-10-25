@@ -11,7 +11,7 @@ between the simulated parts and the latest shipping silicon.
 | DDR3 | `DDR3_4Gb_x8` (1.12.19; was `DDR3_8Gb_x8`) | `DDR3_1600K` (1.12.38; was `DDR3_1600H`) | 1600 MT/s | 12.8 GB/s | 1 | 12.8 GB/s |
 | DDR4 | `DDR4_8Gb_x8` | `DDR4_2400R` | 2400 MT/s | 19.2 GB/s | 1 | 19.2 GB/s |
 | DDR5 | `DDR5_8Gb_x8` | `DDR5_3200AN` | 3200 MT/s | 25.6 GB/s | 1 | 25.6 GB/s |
-| LPDDR5 | `LPDDR5_8Gb_x16` | `LPDDR5_6400` | 6400 MT/s | 12.8 GB/s | 4 | 51.2 GB/s |
+| LPDDR5 | `LPDDR5_16Gb_x16` (1.12.44; was `LPDDR5_8Gb_x16`) | `LPDDR5_6400` | 6400 MT/s | 12.8 GB/s | 4 | 51.2 GB/s |
 | GDDR6 | `GDDR6_8Gb_x16` | `GDDR6_2000_1350mV_double` | 16 Gb/s/pin | 32 GB/s | 2 | 64 GB/s |
 | HBM2 | `HBM2_4Gb` | `HBM2_2.4Gbps` | 2.4 Gb/s/pin | 32 GB/s | 8 | 307 GB/s |
 | HBM3 | `HBM3_4Gb` | `HBM3_6.4Gbps` | 6.4 Gb/s/pin | 102 GB/s | 16 | 819 GB/s |

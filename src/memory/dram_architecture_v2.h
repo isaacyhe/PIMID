@@ -750,7 +750,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
 // Addressing for BG Mode, 4 Banks / 4 Bank Groups"), the 8 Gb column: 4 banks
 // per group, 4 bank groups, 32768 rows, 2048-byte page, array pre-fetch 256
 // bits. That is the same part the Ramulator preset LPDDR5_8Gb_x16 simulates
-// ({1 Ch, 1 Ra, 4 Bg, 4 Ba, 1<<15 Ro, 1<<10 Co}).
+// ({1 Ch, 1 Ra, 4 Bg, 4 Ba, 1<<15 Ro, 1<<10 Co}). [1.12.44: the record now
+// names LPDDR5_16Gb_x16, Table 6's 16 Gb column: 65536 rows, same 2 KB page.]
 //
 // ON THE COLUMN COUNT, so nobody "fixes" it later: JEDEC Table 6 says 64
 // columns and Ramulator's preset says 1024. They do not disagree. JEDEC counts
@@ -830,19 +831,21 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
         "Medium-high - page, prefetch, widths and organisation are all JEDEC-verified; "
         "only the bank serialization width is an estimate";
 
-    // ===== ORGANIZATION (preset LPDDR5_8Gb_x16, JESD209-5C Table 6) =====
-    // 8 Gb / 16 banks = 64 MB per bank; 32768 rows x 2 KB = 64 MB confirms it.
-    // A 512-row subarray at a 2 KB page is 1 MB, so 64 subarrays per bank,
-    // which is also main.cpp's live count (32768 rows / 512).
-    arch->organization.subarrays_per_bank = 64;   // DERIVED: 64 MB bank / 1 MB subarray
+    // ===== ORGANIZATION (preset LPDDR5_16Gb_x16, JESD209-5C Table 6) =====
+    // 1.12.44: the record's 16 Gb die (was LPDDR5_8Gb_x16; the stamp from the
+    // preset at run time is the authority, these are its check values).
+    // 16 Gb / 16 banks = 128 MB per bank; 65536 rows x 2 KB = 128 MB confirms it.
+    // A 512-row subarray at a 2 KB page is 1 MB, so 128 subarrays per bank,
+    // which is also main.cpp's live count (65536 rows / 512).
+    arch->organization.subarrays_per_bank = 128;  // DERIVED: 128 MB bank / 1 MB subarray
     arch->organization.banks_per_bank_group = 4;  // JESD209-5C Table 6
     arch->organization.bank_groups_per_chip = 4;  // JESD209-5C Table 6 (BG mode)
     arch->organization.chips_per_rank = 1;        // one x16 die per channel
     arch->organization.ranks_per_channel = 1;     // LPDDR5 is point-to-point
     arch->organization.subarray_size_kb = 1024;   // DERIVED: 512 rows x 2 KB page
-    arch->organization.bank_size_mb = 64;         // DERIVED: 8 Gb / 16 banks
-    arch->organization.chip_size_mb = 1024;       // preset LPDDR5_8Gb_x16: 8 Gb die
-    arch->organization.rank_size_gb = 1;          // DERIVED: 1 die x 1024 MB
+    arch->organization.bank_size_mb = 128;        // DERIVED: 16 Gb / 16 banks (1.12.44)
+    arch->organization.chip_size_mb = 2048;       // preset LPDDR5_16Gb_x16: 16 Gb die (1.12.44)
+    arch->organization.rank_size_gb = 2;          // DERIVED: 1 die x 2048 MB (1.12.44)
 
     // ===== TIMING (preset LPDDR5_6400; tCK = 8E6 / 6400 = 1250 ps) =====
     // LPDDR5 divides 8E6 rather than the DDR families' 2E6: WCK runs at 4x CK

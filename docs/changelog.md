@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.44 -- LPDDR5 organisation follows the 16 Gb die of the record's IDD row
+
+- **LPDDR5 org preset LPDDR5_8Gb_x16 -> LPDDR5_16Gb_x16 (user ruling 2026-10-25, T6):** the record's IDD row is
+  the Micron Y52P 16 Gb die and its density part a 16 Gb die; JESD209-5C Table 6 16 Gb column: 4 BG x 4 banks,
+  65536 rows, 2 KB page. The wrapper now takes the LPDDR5 org name from the record (it was a literal) and carries
+  the 16 Gb transcription; the architecture object's check values follow (128 MB bank, 2048 MB die).
+- **Timing follows the density** (LPDDR5.cpp tables, JESD209-5C Table 240 p.287 at 16 Gb): tRFCab 210 -> 280 ns
+  (168 -> 224 nCK), tRFCpb 120 -> 140 ns, tpbR2pbR 90, tpbR2act 7.5 ns.
+- **Refresh energy uses the same 280 ns:** params/dram/lpddr5.yaml idd trfc_ns 210 -> 280 (Y52P Table 6 p.11 =
+  Table 240), the field every refresh term reads ((IDD5 - IDD2N) x tRFC, and any VDD1 rail term built on the same
+  record field), so timing occupancy and refresh energy share one tRFC.
+- **Data impact:** LPDDR5 capacity 4 x 1 GB -> 4 x 2 GB = 8 GB per package; rows per bank 32768 -> 65536
+  (subarrays per bank 64 -> 128); refresh time per REFab +33%.
+
 ## 1.12.43 -- GDDR6 default row on Samsung K4Z80325BC Table 92; 1250 mV rows nRC >= nRAS + nRP
 
 - **GDDR6_2000_1350mV_double (user ruling 2026-10-25, T5):** Samsung K4Z80325BC GDDR6 Rev. 1.3 (public copy),
