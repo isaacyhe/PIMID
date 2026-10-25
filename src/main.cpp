@@ -9846,6 +9846,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     lk.has_global_link = 1;
                     lk.link_kind = 1;
                     lk.tech_node_nm = dram_node_nm;   // the TSV is DRAM-die silicon
+                    /* (user ruling 2026-10-25): the TSV switches at the part's core VDD (part record). */
+                    try {
+                        const pimid::params::DramPartRecord& prec = pimid::params::dramPartRecord(config.memory_tech);
+                        if (!prec.idd.by_grade.empty()) lk.tsv_vdd = prec.idd.by_grade.begin()->second.vdd;
+                    } catch (...) {
+                        lk.tsv_vdd = -1.0;
+                    }
                     exactRect(segs, lk.vertical_nodes, lk.horizontal_nodes);
                     lk.input_ports = 2;
                     lk.output_ports = 2;
@@ -9885,8 +9892,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                  " index over the built channel routers); mean "
                               << (lf ? static_cast<double>(fd) / lf : 0.0)
                               << " boundaries per up-link traversal; node " << dram_node_nm
-                              << " nm (DRAM array process); priced in McPAT as CACTI-3DD TSVs"
-                                 " (Coarse)" << std::endl;
+                              << " nm (DRAM array process); priced in McPAT as TSVs re-sourced from"
+                                 " published HBM silicon (30 um pitch, 118.5 fF per die crossing"
+                                 " DERIVED, at the part's core VDD " << lk.tsv_vdd << " V)" << std::endl;
                     levels.push_back(lk);
                 }
                 return;

@@ -1217,6 +1217,7 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_parent_regions")==0) {sys.NoC[i].link_parent_regions=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_span_processor")==0) {sys.NoC[i].link_span_processor=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* 1.12.23 */
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_io_pj_per_bit")==0) {sys.NoC[i].link_io_pj_per_bit=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tsv_vdd")==0) {sys.NoC[i].tsv_vdd=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tech_node")==0) {sys.NoC[i].tech_node=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_throughput")==0) {sys.NoC[i].link_throughput=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_latency")==0) {sys.NoC[i].link_latency=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
@@ -1880,6 +1881,7 @@ void ParseXML::initialize() //Initialize all
 		sys.NoC[i].link_parent_regions = 0;
 		sys.NoC[i].link_span_processor = 0;   /* 1.12.23: upstream */
 		sys.NoC[i].link_io_pj_per_bit = -1;   /* not set */
+		sys.NoC[i].tsv_vdd = -1;   /* the run's logic Vdd */
 		sys.NoC[i].tech_node = 0;
 		sys.NoC[i].link_traversals = -1;
 		sys.NoC[i].tsv_die_crossings = -1;

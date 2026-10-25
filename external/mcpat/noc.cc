@@ -364,7 +364,39 @@ void NoC ::init_link_bus(double link_len_)
 		interface_ip.tsv_os_bank_type = Coarse;
 		interface_ip.num_die_3d = 1;
 		init_interface(&interface_ip);
+		/* PIMID (user ruling 2026-10-25): the TSV RE-SOURCED from published HBM silicon.
+		 *  pitch   30 um: "two-dimensional TSV arrays of signal, power, and ground whose pitch is 30 um"
+		 *          (Samsung HBM2E, JSSC 56(1), Jan. 2021, Sec. III) -> area per TSV = pitch^2;
+		 *  length  ~30 um: "The thickness of the core dies ... is approximately about 30 um" (SK hynix
+		 *          192-Gb 12-high HBM3, JSSC 58(1), 2023, Sec. VIII) -- printed; the load below is the
+		 *          measured one, so the length enters no number;
+		 *  load    C per die-crossing 118.5 fF DERIVED from Cho et al. (SK hynix), ISSCC 2018 12.3,
+		 *          Fig. 12.3.1: IDD per TSV 880 uA at 1.0 V, 3.3 Gb/s PRBS, conventional multi-drop TSV of
+		 *          an 8-high stack (9 TX/RX loads: 8 core dies + base). Energy per bit 880 uA x 1.0 V /
+		 *          3.3 Gb/s = 0.267 pJ; a PRBS bit charges the line (0 -> 1) with probability 1/4, so
+		 *          C_column = 4 x 0.267 pJ / (1.0 V)^2 = 1.07 pF, / 9 loads = 118.5 fF per die segment
+		 *          (TSV + micro-bump + one die's TX/RX). It includes the drivers' own switching, so the
+		 *          CACTI driver chain is not charged on top; the chain (sized for this load) keeps its
+		 *          leakage. The spiral point-to-point TSV of the same paper draws 610 uA (-30%), printed
+		 *          as the alternative structure.
+		 *  supply  the stacked part's core VDD (tsv_vdd, HBM3 1.1 V, part record), else the run's Vdd.
+		 * Dynamic per bit per die crossing = C x V^2: the fork's every-bit-charges convention, the
+		 * basis of the CACTI TSV and wires it replaces (a PRBS bit costs 1/4 of it). */
+		const double pimid_tsv_c_load = 4.0 * 880e-6 * 1.0 / 3.3e9 / (1.0 * 1.0) / 9.0;   // F, DERIVED
+		const double pimid_tsv_c_spiral = 4.0 * 610e-6 * 1.0 / 3.3e9 / (1.0 * 1.0) / 9.0;  // F, reference
+		const double pimid_tsv_pitch_um = 30.0, pimid_tsv_len_um = 30.0;
+		const double cacti_c_table = g_tp.tsv_parasitic_capacitance_coarse;
+		const double cacti_area_table = g_tp.tsv_minimum_area_coarse;
+		const double cacti_pitch_table = g_tp.tsv_pitch, cacti_len_table = g_tp.tsv_length;
+		g_tp.tsv_parasitic_capacitance_coarse = pimid_tsv_c_load;
+		g_tp.tsv_minimum_area_coarse = pimid_tsv_pitch_um * pimid_tsv_pitch_um;
 		link_tsv = new TSV(Coarse);
+		const double cacti_chain_dyn = link_tsv->power.readOp.dynamic;   // chain + load at the logic Vdd (reference)
+		g_tp.tsv_parasitic_capacitance_coarse = cacti_c_table;
+		g_tp.tsv_minimum_area_coarse = cacti_area_table;
+		const double tsv_v = (XML->sys.NoC[ithNoC].tsv_vdd > 0.0) ? XML->sys.NoC[ithNoC].tsv_vdd
+		                                                          : g_tp.peri_global.Vdd;   // the TSV driver default device (TSV.h)
+		link_tsv->power.readOp.dynamic = pimid_tsv_c_load * tsv_v * tsv_v;
 		const double bits = nocdynp.flit_size;
 		const double lcr = longer_channel_device_reduction(Uncore_device);
 		const double pgr = power_gating_leakage_reduction(false);
@@ -380,7 +412,18 @@ void NoC ::init_link_bus(double link_len_)
 		link_bus = &link_tsv_flit;
 		link_is_tsv = true;
 		/* stderr: the fork's stdout is /dev/null (see wrapper). */
-		std::cerr << "  [link] noc" << ithNoC << " TSV (CACTI-3DD, Coarse = industry"
+		std::cerr << "  [link] noc" << ithNoC << " TSV RE-SOURCED: pitch " << pimid_tsv_pitch_um
+		          << " um [HBM2E JSSC 2021], length " << pimid_tsv_len_um << " um [HBM3 JSSC 2023 core die],"
+		          << " load " << pimid_tsv_c_load * 1e15 << " fF per die crossing DERIVED [Cho ISSCC 2018 Fig."
+		          << " 12.3.1: 880 uA/TSV, 1.0 V, 3.3 Gb/s PRBS, 9 loads; spiral P2P 610 uA -> "
+		          << pimid_tsv_c_spiral * 1e15 << " fF], supply " << tsv_v << " V"
+		          << ((XML->sys.NoC[ithNoC].tsv_vdd > 0.0) ? " (the part's core VDD)" : " (the run's logic Vdd)")
+		          << ": " << link_tsv->power.readOp.dynamic << " J per bit per crossing (C V^2; a PRBS bit "
+		          << 0.25 * link_tsv->power.readOp.dynamic << " J); CACTI-3DD table before: C "
+		          << cacti_c_table * 1e15 << " fF, pitch " << cacti_pitch_table << " um, length "
+		          << cacti_len_table << " um; CACTI chain + new load at the logic Vdd " << cacti_chain_dyn
+		          << " J (reference, not charged)" << std::endl;
+		std::cerr << "  [link] noc" << ithNoC << " TSV driver chain and table geometry (CACTI-3DD, Coarse = industry"
 		          << " reported, interconnect projection " << g_ip->ic_proj_type
 		          << ", " << g_ip->F_sz_nm << " nm table): pitch " << g_tp.tsv_pitch
 		          << " um, diameter " << g_tp.tsv_diameter << " um, length "

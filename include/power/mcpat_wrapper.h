@@ -180,6 +180,9 @@ public:
         /* (user ruling 2026-10-25): link_kind 2 = an off-package device-tree link that rides the
          * DRAM channel; priced at this energy per bit crossed (pJ/bit; < 0 = not set). */
         double link_io_pj_per_bit = -1.0;
+        /* (user ruling 2026-10-25): the stacked part's core supply (V) its TSV interface
+         * switches at, from the part record (HBM3 1.1 V); < 0 = the run's logic Vdd. */
+        double tsv_vdd = -1.0;
         int tech_node_nm = 0;
         int64_t link_traversals = -1;
         int64_t tsv_die_crossings = -1;

@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.56 -- the stacked part's TSV is re-sourced from published HBM silicon
+
+- **TSV (user ruling 2026-10-25):** the die-crossing TSV of a stacked part's tree (HBM chip tier) was
+  CACTI-3DD's Coarse table (pitch 9 um, length 25 um, C 14.6 fF, 12.1 fJ per bit per crossing at the logic
+  0.8 V). It is now re-sourced from published HBM silicon (McPAT fork, noc.cc):
+  pitch 30 um (Samsung HBM2E, JSSC 56(1) 2021, Sec. III: signal/power/ground TSV arrays "whose pitch is
+  30 um"; area per TSV = pitch^2); length ~30 um (SK hynix 12-high HBM3, JSSC 58(1) 2023, Sec. VIII: core-die
+  thickness "approximately about 30 um"; printed, enters no number); load per die crossing 118.5 fF DERIVED
+  from Cho et al. (SK hynix), ISSCC 2018 12.3, Fig. 12.3.1: 880 uA per TSV at 1.0 V, 3.3 Gb/s PRBS, on the
+  conventional multi-drop TSV of an 8-high stack (9 TX/RX loads) -> 0.267 pJ/bit; a PRBS bit charges the line
+  with probability 1/4, so C = 4 x 0.267 pJ / (1 V)^2 / 9 = 118.5 fF per die segment (TSV + micro-bump + one
+  die's TX/RX, drivers included, so CACTI's driver chain is not charged on top; it keeps its leakage, sized
+  for this load); supply = the part's core VDD from the part record (HBM3 1.1 V; JESD238B.01 Table 70).
+  Dynamic per bit per crossing = C V^2 (the fork's every-bit-charges convention; a PRBS bit costs 1/4):
+  HBM3 0.143 pJ (was 0.0121, x11.9). The spiral point-to-point TSV of the same paper (610 uA, -30%) is
+  printed as the alternative. NO PUBLISHED SOURCE FOUND for an HBM3 TSV capacitance: the HBM2 figure stands,
+  at a die thickness the paper does not give.
+
 ## 1.12.55 -- off-package device-tree links are priced as DRAM-channel I/O
 
 - **Off-package links (user ruling 2026-10-25):** in a non-stacked part (DDR3/DDR4/DDR5, LPDDR5, GDDR6)

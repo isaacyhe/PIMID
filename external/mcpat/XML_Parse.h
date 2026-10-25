@@ -544,6 +544,9 @@ typedef struct{
 	 * riding the DRAM channel, priced per bit crossed at this energy (pJ/bit,
 	 * given by PIMID from the part's DQ crossing); < 0 = not set. */
 	double link_io_pj_per_bit;
+	/* the supply (V) a TSV link switches at (the stacked part's core VDD);
+	 * <= 0 = the run's logic Vdd. */
+	double tsv_vdd;
 	/* PIMID 1.12.18: > 0 = the process node (nm) THIS instance is priced
 	 * at; 0 (default) = the processor's core_tech_node. A tree level's
 	 * links lie on the DRAM die or on logic, and each takes its own
