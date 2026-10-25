@@ -1280,6 +1280,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.link_kind);       f(lvl.link_span_area_mm2);
         f(lvl.link_parent_regions); f(lvl.tech_node_nm);
         f(lvl.link_span_processor);   // 1.12.19
+        f(lvl.link_io_pj_per_bit);    // user ruling 2026-10-25
         f(static_cast<uint64_t>(lvl.link_traversals));
         f(static_cast<uint64_t>(lvl.tsv_die_crossings));
         f(static_cast<uint64_t>(lvl.passthrough_accesses));   // 1.12.18
@@ -4156,6 +4157,8 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"link_span_area_mm2\" value=\"" << lvl.link_span_area_mm2 << "\"/>\n";
             xml << "      <param name=\"link_parent_regions\" value=\"" << lvl.link_parent_regions << "\"/>\n";
             xml << "      <param name=\"link_span_processor\" value=\"" << lvl.link_span_processor << "\"/>\n";   /* 1.12.23 */
+            if (lvl.link_kind == 2)   /* channel I/O energy of an off-package link */
+                xml << "      <param name=\"link_io_pj_per_bit\" value=\"" << lvl.link_io_pj_per_bit << "\"/>\n";
             xml << "      <param name=\"tech_node\" value=\"" << lvl.tech_node_nm << "\"/>\n";
             xml << "      <param name=\"link_throughput\" value=\"1\"/>\n";
             xml << "      <param name=\"link_latency\" value=\"1\"/>\n";

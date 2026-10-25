@@ -9691,6 +9691,31 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         const bool link_counts = garnet.level_links_present;
         const double die_mm2 = computeDramDieAreaMM2(config.memory_tech, false, 0);
         const bool stacked_part = config.memory_tech.rfind("HBM", 0) == 0;
+        /* (user ruling 2026-10-25): a NON-STACKED part's tree links whose parent is the rank,
+         * channel or system level leave the DRAM package and ride the DRAM channel (DIMM / board).
+         * They are priced as channel I/O per bit crossed -- the part's own DQ crossing energy, the
+         * termination + IDDQ of a read crossing per 64 B (the memory model's DQ rule, its published
+         * part record), / 512 b -- not as on-die wire over the DRAM die. No double count: the memory
+         * model charges the DQ crossing only to accesses that cross the DQ at the PE placement
+         * (crossesOffPackageDQ), and those run between the PE and the array BELOW the PE level, which
+         * the fabric pricing starts above (lvl >= pe_level); host accesses reach the array through the
+         * host memory controller, not the device fabric. A part with no termination and no IDDQ
+         * figure keeps the on-die wire and says NO PUBLISHED SOURCE FOUND. HBM (stacked) is
+         * unchanged: its rank level is the stack's base logic die (on-die wire) and the chip tier
+         * crosses TSVs. */
+        double chan_io_pj = -1.0, chan_term_nj = -1.0, chan_iddq_nj = -1.0;
+        if (!stacked_part && die_mm2 > 0.0) {
+            try {
+                pimid::RamulatorWrapper ro("", config.memory_tech);
+                ro.initialize();
+                chan_term_nj = ro.getTerminationEnergyNJ(false);
+                chan_iddq_nj = ro.getIddqEnergyNJ(false);
+                const double e = std::max(0.0, chan_term_nj) + std::max(0.0, chan_iddq_nj);
+                if (e > 0.0) chan_io_pj = e * 1e3 / 512.0;
+            } catch (...) {
+                chan_io_pj = -1.0;
+            }
+        }
         {
             uint64_t sum = 0;
             std::ostringstream per;
@@ -9879,6 +9904,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             lk.routers_present = 0;
             lk.has_global_link = 1;
             lk.link_kind = 0;
+            /* off-package links of a non-stacked part ride the DRAM channel */
+            const bool rides_channel = !stacked_part && parent >= 4;
+            if (rides_channel && chan_io_pj > 0.0) {
+                lk.link_kind = 2;
+                lk.link_io_pj_per_bit = chan_io_pj;
+            }
             /* the STRUCTURE the links span; McPAT derives the length */
             lk.link_span_area_mm2 = (die_mm2 > 0.0) ? die_mm2 : 0.0;
             lk.link_parent_regions = lvl_routers[parent];
@@ -9931,16 +9962,26 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                           << " router flit traversals vs " << lf << " up-link flit"
                              " traversals (equal on a pure pass-through level with no"
                              " endpoint)" << std::endl;
-            if (!on_die)
+            if (lk.link_kind == 2)
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                          << " links leave the DRAM package over the DRAM channel (user ruling"
+                             " 2026-10-25): priced as channel I/O, " << chan_io_pj << " pJ/bit per bit"
+                             " crossed = (DQ termination " << std::max(0.0, chan_term_nj) << " + IDDQ "
+                          << std::max(0.0, chan_iddq_nj) << " nJ per 64 B read crossing, the " << config.memory_tech
+                          << " part record's default grade) / 512 b -- the memory model's own DQ crossing;"
+                             " no on-die wire. Not charged twice: these fabric flits run above the PE level,"
+                             " where the memory model charges no DQ crossing" << std::endl;
+            else if (rides_channel)
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                          << " links leave the DRAM package, but " << config.memory_tech
+                          << " has no DQ termination and no IDDQ figure: NO PUBLISHED SOURCE FOUND for its"
+                             " channel I/O energy; priced as on-die wire over the die span (as before)"
+                          << std::endl;
+            else if (!on_die)
                 std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " links: NO PUBLISHED SOURCE FOUND for the geometry of an"
                              " off-die (rank/channel/system) fabric; the DRAM die's"
                              " span stands in for the logic side's" << std::endl;
-            if (!stacked_part && lvl == 3 && parent >= 4)
-                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
-                          << " links leave the DRAM chip for the rank: priced as on-die"
-                             " wire over the die span; NO PUBLISHED SOURCE FOUND for the"
-                             " package/board segment of a PIM fabric link" << std::endl;
             levels.push_back(lk);
         };
 

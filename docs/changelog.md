@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.55 -- off-package device-tree links are priced as DRAM-channel I/O
+
+- **Off-package links (user ruling 2026-10-25):** in a non-stacked part (DDR3/DDR4/DDR5, LPDDR5, GDDR6)
+  the tree links whose parent is the rank, channel or system level -- the DRAM chip's up-link to the rank and
+  the rank/channel/system levels -- leave the DRAM package and ride the DRAM channel on the DIMM or board. They
+  were priced as on-die CACTI wire over the DRAM die span (2.5-3.6 mm, ~0.8-1.1 pJ/bit at 22 nm). They are now
+  priced per bit crossed at the part's own DQ crossing energy: the termination + IDDQ of a read crossing per
+  64 B (the memory model's DQ rule, from the part record) / 512 b, McPAT fork `link_kind = 2`, no on-die wire,
+  no repeater leakage. DDR5 (4800 default grade): termination 1.07 + IDDQ 0.381 nJ per 64 B = ~2.8 pJ/bit.
+- **No double count:** the memory model charges the DQ crossing only to accesses that cross the DQ at the PE
+  placement (crossesOffPackageDQ) -- the path between the PE and the array below the PE level, which the
+  fabric pricing does not include (it starts at the PE level) -- and host accesses reach the array through the
+  host memory controller, not the device fabric.
+- **Not changed:** a part with no DQ termination and no IDDQ figure keeps the on-die wire and prints NO
+  PUBLISHED SOURCE FOUND; HBM (stacked) keeps its tree as before (its rank level is the stack's base logic die,
+  on-die wire; the chip tier crosses TSVs).
+
 ## 1.12.54 -- NoC links and buses on energy-efficient repeaters (Ho 2003 design point)
 
 - **Repeater sizing (user ruling 2026-10-25):** every NoC link and bus wire (device tree links, host ring

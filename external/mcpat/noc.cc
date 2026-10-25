@@ -171,7 +171,7 @@ void NoC::build_link_clock()
 {
 	/* PIMID 1.12.18 (merge): link_bus is a wire (interconnect) or a TSV
 	 * segment; only a wire inserts pipeline registers. */
-	if (!link_bus || XML->sys.NoC[ithNoC].link_kind == 1) return;   // 1 = TSV segment (no pipeline register)
+	if (!link_bus || XML->sys.NoC[ithNoC].link_kind == 1 || XML->sys.NoC[ithNoC].link_kind == 2) return;   // 1 = TSV segment, 2 = channel I/O: no on-die pipeline register
 	interconnect* wire = static_cast<interconnect*>(link_bus);
 	const double st = (wire->num_pipe_stages > 1) ? wire->num_pipe_stages - 1 : 0;
 	std::ostringstream src;
@@ -315,7 +315,32 @@ void NoC ::init_link_bus(double link_len_)
 
 	if (nocdynp.total_nodes >1) link_len /=2; //All links are shared by neighbors
 	}
-	if (XML->sys.NoC[ithNoC].link_kind == 1)
+	if (XML->sys.NoC[ithNoC].link_kind == 2)
+	{
+		/* PIMID (user ruling 2026-10-25): an OFF-PACKAGE device-tree link (a DRAM chip's up-link to
+		 * the rank, and the rank / channel / system levels of a non-stacked part) rides the DRAM channel
+		 * on the DIMM or board, not on-die wire. It is priced per bit crossed at the energy PIMID passes
+		 * (the part's own DQ crossing per bit: termination + IDDQ of a read crossing, the memory model's
+		 * DQ rule), x the level's flit bits per traversal. No on-die wire, no repeater leakage, no area
+		 * here: the DQ drivers and receivers are the DRAM's and the buffer's own I/O. */
+		const double bits = nocdynp.flit_size;
+		const double pj = XML->sys.NoC[ithNoC].link_io_pj_per_bit;
+		if (!(pj > 0.0)) {
+			std::cerr << "[link] FATAL (McPAT PIMID): noc" << ithNoC << " link_kind 2 (channel I/O) without a"
+			             " positive link_io_pj_per_bit (" << pj << ")." << std::endl;
+			exit(2);
+		}
+		link_io_flit.power.reset();
+		link_io_flit.power.readOp.dynamic = pj * 1e-12 * bits;
+		link_io_flit.area.set_area(0.0);
+		link_bus = &link_io_flit;
+		link_is_tsv = false;
+		std::cerr << "  [link] noc" << ithNoC << " channel I/O (off-package link over the DRAM channel): "
+		          << pj << " pJ/bit x " << bits << " b = " << link_io_flit.power.readOp.dynamic
+		          << " J per flit crossing; no on-die wire (McPAT length " << link_len << " um not used), no leakage,"
+		          << " no area" << std::endl;
+	}
+	else if (XML->sys.NoC[ithNoC].link_kind == 1)
 	{
 		/* PIMID 1.12.18: a die crossing, priced as a CACTI-3DD TSV
 		 * (Chen et al., "CACTI-3DD: Architecture-level modeling for 3D

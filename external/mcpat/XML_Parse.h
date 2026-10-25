@@ -540,6 +540,10 @@ typedef struct{
 	 * as is. A host's uncore crossbar: one port wire from each agent to the
 	 * crossbar at the die centre. 0 (default) = upstream / explicit span. */
 	int link_span_processor;
+	/* PIMID (user ruling 2026-10-25): link_kind 2 = an off-package link
+	 * riding the DRAM channel, priced per bit crossed at this energy (pJ/bit,
+	 * given by PIMID from the part's DQ crossing); < 0 = not set. */
+	double link_io_pj_per_bit;
 	/* PIMID 1.12.18: > 0 = the process node (nm) THIS instance is priced
 	 * at; 0 (default) = the processor's core_tech_node. A tree level's
 	 * links lie on the DRAM die or on logic, and each takes its own

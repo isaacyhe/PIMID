@@ -58,6 +58,7 @@ class NoC :public Component {
 	interconnect * link_wire;
 	TSV * link_tsv;
 	Component link_tsv_flit;
+	Component link_io_flit;   /* an off-package channel link, energy per bit x flit bits */
 	bool link_is_tsv;
 	NoCParam  nocdynp;
 	uca_org_t local_result;
