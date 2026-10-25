@@ -1028,6 +1028,33 @@ static void dqDuties(const pimid::RamulatorWrapper& ram, const DqData& d, bool d
         std::cout << q.str() << std::endl;
     }
 }
+/* (1.12.61) (user ruling 2026-10-25): the data-dependent factor on the column-burst energy of one direction of a
+ * group of interfaces, from its measured line data (1s fraction; DQ pin transitions between beats per transition
+ * opportunity, with the technology's bytes per beat). 1 when switched off, when the per-access term still folds
+ * activation (no counted ACTs: activation has no data term), or when no line was readable. The factor is printed. */
+static int dqBeatBytes(const std::string& tech);
+static double dqBurstFactor(const pimid::RamulatorWrapper& ram, const DqData& d, int dir, int line_bytes,
+                            const std::string& tech, bool enabled, bool burst_only, const std::string& who,
+                            const std::string& indent) {
+    std::ostringstream o;
+    o << indent << "[mem] data-pattern burst factor (user ruling 2026-10-25), " << who << (dir ? " writes: " : " reads: ");
+    double f = 1.0;
+    if (!enabled) o << "1 (power.models.dram_data_pattern: false)";
+    else if (!burst_only) o << "1 (the per-access term folds activation, which has no data term: no counted ACTs)";
+    else if (!d.present || d.lines[dir] == 0) o << "1 (no readable line data)";
+    else {
+        const double n = static_cast<double>(d.lines[dir]);
+        const double f1 = d.ones[dir] / (8.0 * line_bytes * n);
+        const int w = dqBeatBytes(tech);
+        const double opp = 8.0 * static_cast<double>(line_bytes - w) * n;
+        const double fdq = (w > 0 && w < line_bytes && opp > 0.0) ? d.toggles[dir] / opp : -1.0;
+        std::string how;
+        f = ram.dataPatternFactor(dir == 1, f1, fdq, &how);
+        o << std::setprecision(4) << f << " over " << d.lines[dir] << " line(s) (" << how << ")";
+    }
+    std::cout << o.str() << std::endl;
+    return f;
+}
 /* The termination at the formula's 0.5, printed beside the measured figure. */
 static std::string dqHalfNote(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr) {
     if (duty_rd < 0.0 && duty_wr < 0.0) return "";
@@ -2358,7 +2385,7 @@ static const char* kSchemaPaths[] = {
     "pim.pe.operand_width", "pim.pe.pg", "pim.pe.placement.connection", "pim.pe.placement.level", "pim.pe.placement.local_link_latency", "pim.pe.spm_bytes", "pim.pe.spm_stack_bytes", "pim.pe.spm_staging", "pim.pe.stack", "pim.pe.throughput_factor", "pim.pe.type",
     "pim.placement.connection", "pim.placement.level", "pim.placement.local_link_latency",
     "power.device_corner", "power.device_tech_node_nm", "power.enabled", "power.host_tech_node_nm", "power.interconnect_projection", "power.logic_reference_mhz", "power.mcpat_overrides",
-    "power.models.clock_network", "power.models.dram_activates_counted", "power.models.dram_bank_open_measured", "power.models.dram_dbi", "power.models.dram_refresh_counted", "power.models.mc_command_ops",
+    "power.models.clock_network", "power.models.dram_activates_counted", "power.models.dram_bank_open_measured", "power.models.dram_dbi", "power.models.dram_data_pattern", "power.models.dram_refresh_counted", "power.models.mc_command_ops",
     "power.periphery_device", "power.report_detail", "power.subarray_pitch_factor", "power.tech_node_nm", "power.temperature_c", "power.temperature_k", "power.termination_pj_per_bit",
     "power.models.fabric_tsv", "power.models.noc_links",   // 1.12.18
     "power.models.vector_moves_split", "power.models.dram_io_share_split", "power.models.dram_vpp_dynamic",   // 1.12.18: power bug batch H
@@ -2752,6 +2779,7 @@ struct UnifiedConfig {
     bool pm_dram_refresh_counted = true;    // power.models.dram_refresh_counted
     bool pm_dram_activates_counted = true;  // power.models.dram_activates_counted
     bool pm_dram_dbi = true;                // power.models.dram_dbi (user ruling 2026-10-25): data bus inversion where the standard has it
+    bool pm_dram_data_pattern = true;       // power.models.dram_data_pattern ((1.12.61) user ruling 2026-10-25, V6): data-dependent burst energy
     bool pm_dram_bank_open_measured = true; // power.models.dram_bank_open_measured
     bool pm_mc_command_ops = true;          // power.models.mc_command_ops
     /* 1.12.18: (power bug batch H) further switchable additions, all on by
@@ -13155,6 +13183,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double dq_duty_rd = -1.0, dq_duty_wr = -1.0;
             dqDuties(ram_oracle, zsim_stats.dq, config.pm_dram_dbi, config.cache_line_size,
                      "memory-interface", "  ", dq_duty_rd, dq_duty_wr);
+            /* (1.12.61) (user ruling 2026-10-25): the column burst at the run's measured data */
+            rd_energy *= dqBurstFactor(ram_oracle, zsim_stats.dq, 0, config.cache_line_size, config.memory_tech,
+                                       config.pm_dram_data_pattern, act_counted_nj >= 0.0, "memory-interface", "  ");
+            wr_energy *= dqBurstFactor(ram_oracle, zsim_stats.dq, 1, config.cache_line_size, config.memory_tech,
+                                       config.pm_dram_data_pattern, act_counted_nj >= 0.0, "memory-interface", "  ");
             const double iface_term_rd_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(false, dq_duty_rd) : 0.0;
             const double iface_term_wr_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(true, dq_duty_wr)  : 0.0;
             const double iface_drv_nj  = crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
@@ -14488,6 +14521,7 @@ struct ArrayAccessClass {
     const DqData* dq = nullptr;
     bool dbi_switch = true;
     int line_bytes = 64;
+    bool data_pattern = true;   // 1.12.61: power.models.dram_data_pattern
 };
 /* 1.12.18 (ruling 17 / R0605): the refresh commands the array's replayed
  * controller counted, over its replayed DRAM cycles; when present the energy
@@ -14764,6 +14798,11 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             double dq_duty_rd = -1.0, dq_duty_wr = -1.0;   // user ruling 2026-10-25: measured termination duty
             dqDuties(ram_oracle, c.dq ? *c.dq : DqData(), c.dbi_switch, c.line_bytes, c.who, "    ",
                      dq_duty_rd, dq_duty_wr);
+            /* (1.12.61) (user ruling 2026-10-25): the column burst at this class's measured data */
+            rd_nj *= dqBurstFactor(ram_oracle, c.dq ? *c.dq : DqData(), 0, c.line_bytes, memory_tech, c.data_pattern,
+                                   c.activates >= 0, c.who, "    ");
+            wr_nj *= dqBurstFactor(ram_oracle, c.dq ? *c.dq : DqData(), 1, c.line_bytes, memory_tech, c.data_pattern,
+                                   c.activates >= 0, c.who, "    ");
             const double iface_term_rd_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(false, dq_duty_rd) : 0.0;
             const double iface_term_wr_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(true, dq_duty_wr)  : 0.0;
             const double iface_drv_nj  = c.crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
@@ -16726,7 +16765,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             ArrayAccessClass c;
             c.who = "PE-originated";
             c.rd = rd; c.wr = wr;
-            c.dq = &zsim_stats.dev.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size;   // user ruling 2026-10-25
+            c.dq = &zsim_stats.dev.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size; c.data_pattern = config.pm_dram_data_pattern;   // user ruling 2026-10-25
             c.crosses_dq = sys_crosses_dq;
             c.dq_why = pe_dq_why;
             c.row_miss_frac = zsim_stats.rowMissFraction();
@@ -16749,7 +16788,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             ArrayAccessClass c;
             c.who = "host-originated";
             c.rd = rd; c.wr = wr;
-            c.dq = &zsim_stats.host.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size;   // user ruling 2026-10-25
+            c.dq = &zsim_stats.host.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size; c.data_pattern = config.pm_dram_data_pattern;   // user ruling 2026-10-25
             c.crosses_dq = host_crosses_dq;
             c.dq_why = host_dq_why;
             c.row_miss_frac = -1.0;
@@ -16774,7 +16813,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             ArrayAccessClass c;
             c.who = "coherence-flush";
             c.wr = wr;
-            c.dq = &zsim_stats.host.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size;   // user ruling 2026-10-25: the flush writebacks are counted in the host controllers' writes
+            c.dq = &zsim_stats.host.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size; c.data_pattern = config.pm_dram_data_pattern;   // user ruling 2026-10-25: the flush writebacks are counted in the host controllers' writes
             c.crosses_dq = host_crosses_dq;
             c.dq_why = host_dq_why;
             c.row_miss_frac = -1.0;
@@ -21295,6 +21334,7 @@ int main(int argc, char** argv) {
                 config.pm_dram_refresh_counted = yamlBool(pmn["dram_refresh_counted"], true, "power.models.dram_refresh_counted");
                 config.pm_dram_activates_counted = yamlBool(pmn["dram_activates_counted"], true, "power.models.dram_activates_counted");
                 config.pm_dram_dbi = yamlBool(pmn["dram_dbi"], true, "power.models.dram_dbi");   // user ruling 2026-10-25
+                config.pm_dram_data_pattern = yamlBool(pmn["dram_data_pattern"], true, "power.models.dram_data_pattern");   // 1.12.61
                 config.pm_dram_bank_open_measured = yamlBool(pmn["dram_bank_open_measured"], true, "power.models.dram_bank_open_measured");
                 config.pm_mc_command_ops = yamlBool(pmn["mc_command_ops"], true, "power.models.mc_command_ops");
                 config.model_coherence_directory = yamlBool(pmn["coherence_directory"], true, "power.models.coherence_directory");     // 1.12.18

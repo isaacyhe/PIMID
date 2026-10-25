@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.61 -- DRAM burst energy at the run's own data (DDR3, HBM2)
+
+- **Model (user ruling 2026-10-25):** the column-burst read and write energy is scaled by a factor from the
+  run's measured line data (the 1.12.58 counters), per interface group and direction, where the part record carries
+  a new optional `data_pattern` block; `power.models.dram_data_pattern: false` prices the record's burst as is.
+  - DDR3 (ONES_LINEAR): 1 + k (f_ones - 0.5), read k = +0.1733, write k = -0.0835 (DERIVED: Ghose et al.,
+    SIGMETRICS 2018, Table 5 bank+column interleaving, vendor means, normalised to the burst excess at 256 1s, times
+    the vendor-A I/O-driver correction 230/434 read, 111/311 write). Burst-to-burst bit toggling is not priced (the
+    counters see transitions inside a line only; its published effect is <= 0.08 of the excess).
+  - HBM2 (DQ_TOGGLE_RELATIVE): pJ(dq, 0.5, 0.5) / pJ(0.5, 0.5, 0.5) with the authors' fit pJ/bit = 3.1798 +
+    1.04 dq + 1.4875 tsv + 1.41 bg (Olgun et al., MICRO 2026; HBM-Power data-pattern model); dq = the measured DQ
+    pin transitions between beats per opportunity; the TSV and bank-group bus rates are not counted and stay 0.5.
+    Writes use the same factor, as the authors' configurations do.
+  - Both forms are normalised at uniform-random data, so a run whose data look random prices what it did before.
+    The factor applies to the column burst only (when the controller's ACTs are counted); ACT has no data term in
+    either source. Other technologies: no published data-dependent burst model in the tree (NO PUBLISHED SOURCE
+    FOUND); factor 1. The factor and its inputs print per group and direction.
+- **Data impact:** DDR3 and HBM2 read/write burst energy, by the run's data: DDR3 read -8.7 % (all 0s) to +8.7 %
+  (all 1s), write +4.2 % to -4.2 %; HBM2 -10.1 % (no DQ transitions) to +10.1 % (every pin every beat).
+
 ## 1.12.60 -- Checker: HBM2 background band from measured per-stack silicon
 
 - **Checker (user ruling 2026-10-26; scripts/power_sanity/power_sanity.py):** `HBM2.bg_mW_stack` [860, 1900] ->

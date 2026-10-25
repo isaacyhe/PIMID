@@ -338,6 +338,10 @@ public:
      * measured or the scheme's termination does not depend on the data
      * (SSTL, unterminated); *how says which and why. */
     struct DqDataCounts { uint64_t lines = 0, unread = 0, ones = 0, low_pod_dbi = 0, high_lvstl_dbi = 0; };
+    /* (1.12.61) (user ruling 2026-10-25): the data-dependent factor on the column-burst energy of one direction,
+     * from the measured 1s fraction and DQ pin-transition rate (< 0: not measured); 1 when the part record carries no
+     * data_pattern block or the input it needs was not measured (*how says which). */
+    double dataPatternFactor(bool is_write, double f_ones, double f_dq_toggle, std::string* how) const;
     double measuredDataDuty(const DqDataCounts& c, bool is_write, bool dbi_switch,
                             int line_bytes, std::string* how) const;
     /* Does data bus inversion apply to this technology's simulated part in

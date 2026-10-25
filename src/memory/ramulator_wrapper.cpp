@@ -2268,6 +2268,34 @@ bool RamulatorWrapper::dbiApplies(bool is_write, bool dbi_switch, std::string* w
     say("no data bus inversion modelled for this technology"); return false;
 }
 
+double RamulatorWrapper::dataPatternFactor(bool is_write, double f_ones, double f_dq_toggle, std::string* how) const {
+    /* (1.12.61) (user ruling 2026-10-25) */
+    std::string dt = dram_type_;
+    std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
+    const auto& p = pimid::params::dramPartRecord(dt).data_pattern;
+    std::ostringstream o;
+    double f = 1.0;
+    if (!p.valid) {
+        o << "NO PUBLISHED SOURCE FOUND for a data-dependent burst energy of this part (its record carries no data_pattern block)";
+    } else if (p.form == "ONES_LINEAR") {
+        const double k = is_write ? p.write_ones : p.read_ones;
+        if (f_ones < 0.0) o << "the 1s fraction was not measured";
+        else { f = 1.0 + k * (f_ones - 0.5); o << "1 + " << k << " x (1s " << f_ones << " - 0.5), " << p.provenance; }
+    } else {   // DQ_TOGGLE_RELATIVE
+        if (is_write && !p.apply_to_writes) o << "the record applies the form to reads only";
+        else if (f_dq_toggle < 0.0) o << "the DQ transition rate was not measured";
+        else {
+            const double num = p.floor_pj_bit + p.c_dq * f_dq_toggle + p.c_tsv * p.tsv_rate + p.c_bg * p.bg_rate;
+            const double den = p.floor_pj_bit + p.c_dq * p.ref_dq_rate + p.c_tsv * p.ref_tsv_rate + p.c_bg * p.ref_bg_rate;
+            f = num / den;
+            o << "pJ(dq " << f_dq_toggle << ", tsv " << p.tsv_rate << ", bg " << p.bg_rate << ") " << num << " / pJ(reference) " << den
+              << " pJ/b, " << p.provenance;
+        }
+    }
+    if (how) *how = o.str();
+    return f;
+}
+
 double RamulatorWrapper::measuredDataDuty(const DqDataCounts& c, bool is_write, bool dbi_switch,
                                           int line_bytes, std::string* how) const {
     const Ramulator::pimid_energy::TermElectricals te =

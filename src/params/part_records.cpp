@@ -309,6 +309,36 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         error = "part record " + path + " says technology '" + r.technology + "' but was loaded for '" + tech + "'";
         return false;
     }
+    /* (1.12.61) (user ruling 2026-10-25): the optional data_pattern block. */
+    if (n["data_pattern"]) {
+        const YAML::Node p = n["data_pattern"];
+        auto& d = r.data_pattern; d.valid = true;
+        if (!need(p, "form", d.form, error) || !need(p, "provenance", d.provenance, error) || !need(p, "source", d.source, error)) {
+            error = "part record " + path + ": data_pattern: " + error; return false;
+        }
+        if (d.form == "ONES_LINEAR") {
+            if (!need(p, "read_ones", d.read_ones, error) || !need(p, "write_ones", d.write_ones, error)) {
+                error = "part record " + path + ": data_pattern: " + error; return false;
+            }
+            if (std::fabs(d.read_ones) >= 2.0 || std::fabs(d.write_ones) >= 2.0) {
+                error = "part record " + path + ": data_pattern read_ones / write_ones must lie in (-2, 2) (the factor stays positive)"; return false;
+            }
+        } else if (d.form == "DQ_TOGGLE_RELATIVE") {
+            if (!need(p, "floor_pj_bit", d.floor_pj_bit, error) || !need(p, "c_dq", d.c_dq, error) || !need(p, "c_tsv", d.c_tsv, error) ||
+                !need(p, "c_bg", d.c_bg, error) || !need(p, "tsv_rate", d.tsv_rate, error) || !need(p, "bg_rate", d.bg_rate, error) ||
+                !need(p, "ref_dq_rate", d.ref_dq_rate, error) || !need(p, "ref_tsv_rate", d.ref_tsv_rate, error) ||
+                !need(p, "ref_bg_rate", d.ref_bg_rate, error)) {
+                error = "part record " + path + ": data_pattern: " + error; return false;
+            }
+            if (p["apply_to_writes"]) {
+                try { d.apply_to_writes = p["apply_to_writes"].as<bool>(); }
+                catch (const std::exception&) { error = "part record " + path + ": data_pattern.apply_to_writes is not true/false"; return false; }
+            }
+            if (!(d.floor_pj_bit > 0.0)) { error = "part record " + path + ": data_pattern.floor_pj_bit must be positive"; return false; }
+        } else {
+            error = "part record " + path + ": data_pattern.form '" + d.form + "' is not ONES_LINEAR or DQ_TOGGLE_RELATIVE"; return false;
+        }
+    }
     /* 1.12.25: optional voltage variants and tRFC bases. The record's own values are the default's; the run's
      * selection (setDramRecordSelection) replaces them here, so every reader of the record sees one part. */
     if (n["variants"]) {

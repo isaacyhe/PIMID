@@ -151,6 +151,16 @@ struct DramPartRecord {
     std::map<std::string, VariantRec> variants;
     std::string trfc_basis_default, trfc_basis;
     std::map<std::string, TrfcBasisRec> trfc_bases;
+    /* (1.12.61) (user ruling 2026-10-25): optional data-dependent column-burst energy (data_pattern block).
+     * ONES_LINEAR: factor 1 + k (f_ones - 0.5); DQ_TOGGLE_RELATIVE: pJ(dq, tsv, bg) / pJ(reference). */
+    struct DataPatternRec {
+        bool valid = false;
+        std::string form, provenance, source;
+        double read_ones = 0.0, write_ones = 0.0;
+        double floor_pj_bit = 0.0, c_dq = 0.0, c_tsv = 0.0, c_bg = 0.0, tsv_rate = 0.5, bg_rate = 0.5;
+        double ref_dq_rate = 0.5, ref_tsv_rate = 0.5, ref_bg_rate = 0.5;
+        bool apply_to_writes = true;
+    } data_pattern;
 };
 
 /* The directory the records are read from: $PIMID_PARAMS when set, else the

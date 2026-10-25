@@ -58,6 +58,25 @@ idd:
     source: "The measured rows are VDDC + VDDQ: Olgun et al., MICRO 2026 (arXiv:2610.14244) Table 1 'VDDQ: I/O supply rail (powers the data I/O interface)' and Sec. 4.2 'to measure current (IDD values) on VDDC and VDDQ rails', VPP not reported; so idd4r already holds the DRAM's DQ read I/O, and the 1.12.35 host read added the VDDQ band centre 0.23 pJ/b on top (double count). Read share = that same band centre (iddq_band_pj_bit 0.19-0.27, centre 0.23 pJ/b) x 307.2 Gb/s (128-bit channel x 2.4 Gb/s) / 1.2 V = 58.88 mA, DERIVED: a host read now prices array (idd4r - 58.88 - idd3n) + I/O 0.23 pJ/b = the measured 5.16 pJ/b, and a PE read on the DRAM die (no DQ crossing) gives the share up. Write share 0: NO PUBLISHED SOURCE FOUND for an HBM2 DRAM-side write I/O energy, and the host write priced no VDDQ term, so writes are unchanged."
   # stack_floor_mw: removed (1.12.46) (user ruling 2026-10-25): NO per-stack floor. The 821.3 mA the floor came from is the board current with the HBM2 stack powered off, which the measurement subtracts as non-DRAM (Olgun et al., MICRO 2026 / arXiv:2610.14244 Sec. 4.3; github.com/CMU-SAFARI/HBM-Power config/HBM2_1200MTs/power.json and docs/explanation/idd-derivation.md: "board power-off current (821.3 mA)", "DRAM device only"). Was 469.98 mW per stack (783.3 mA x 1.2 V / 2). docs/derivations/hbm_gddr6_idd.md sec. 1.11
   background_guard_mw_stack: { lo: 860.0, hi: 1900.0, source: "XPE 2023.1.2 (UltraScale+) all DRAM rails idle per stack (HBM_Data B29, B31, B37, B43 + Static_Data rows 720-722 leakage), VU37P/VU47P columns, 1.2-1.8 Gb/s, 25 C typ .. 100 C max: 0.86-1.90 W. GUARD ONLY, never priced" }
+# (1.12.61) (user ruling 2026-10-25): the data-dependent burst energy from the run's MEASURED DQ pin transitions between
+# beats (1.12.58 counters), the authors' published relative model; the TSV and bank-group bus rates are not counted and
+# stay at uniform random (0.5), the reference is uniform random on all three, so the record's IDD4R/IDD4W excess is the
+# uniform-random value: E = E_record x pJ(dq, 0.5, 0.5) / pJ(0.5, 0.5, 0.5).
+data_pattern:
+  form: DQ_TOGGLE_RELATIVE
+  floor_pj_bit: 3.1798
+  c_dq: 1.04
+  c_tsv: 1.4875
+  c_bg: 1.41
+  tsv_rate: 0.5        # not counted (the 2-bit TSV bus between beat i and i+2): uniform random
+  bg_rate: 0.5         # not counted (burst-to-burst bank-group bus): uniform random
+  ref_dq_rate: 0.5
+  ref_tsv_rate: 0.5
+  ref_bg_rate: 0.5
+  apply_to_writes: true   # as the authors' configurations (datapattern.apply_to_writes); their fit is to reads
+  provenance: DERIVED
+  source: "Olgun et al., MICRO 2026 (arXiv:2610.14244) Sec. 5.3 (DQ toggles 2 -> 64: read +32.0 %, write +82.0 %; bank-group bus toggling +29.4 %) and the authors' model, github.com/CMU-SAFARI/HBM-Power docs/explanation/data-pattern-model.md: pJ/bit = 3.1798 + 1.04 dq_rate + 1.4875 tsv_rate + 1.41 bg_rate (least squares over 32 beat patterns, R^2 about 0.87), relative form IDD4R_eff = IDD3N + (IDD4R - IDD3N) x pJ(knobs) / pJ(reference); config/HBM2_1200MTs/power.json (apply_to_writes true). The record's burst is the standard IDD4R loop (5.14 pJ/b measured) taken as uniform random (the measured random loop is 4.78, -7 %): stated. ACT: no data term (Sec. 5.2: no significant variation across rows; VAMPIRE Sec. 5.1)."
+
 component_factors: none   # HBM rows are measured means; no typical/maximum factor applies
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
   scheme: none
