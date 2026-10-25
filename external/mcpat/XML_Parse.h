@@ -547,6 +547,9 @@ typedef struct{
 	/* the supply (V) a TSV link switches at (the stacked part's core VDD);
 	 * <= 0 = the run's logic Vdd. */
 	double tsv_vdd;
+	/* PIMID: measured 0->1 transitions per wire-bit per traversal of this
+	 * instance's wires (link, bus or TSV); < 0 = not given (McPAT's full C V^2 per bit). */
+	double link_activity;
 	/* PIMID 1.12.18: > 0 = the process node (nm) THIS instance is priced
 	 * at; 0 (default) = the processor's core_tech_node. A tree level's
 	 * links lie on the DRAM die or on logic, and each takes its own

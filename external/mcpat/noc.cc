@@ -504,6 +504,23 @@ void NoC ::init_link_bus(double link_len_)
 			* nocdynp.global_linked_ports);
 
 	area.set_area(area.get_area()+ link_bus_tot_per_Router.area.get_area()* nocdynp.total_nodes);
+	/* PIMID: the measured activity and the effective energy, for the hand check. */
+	if (XML->sys.NoC[ithNoC].link_activity >= 0.0 && XML->sys.NoC[ithNoC].link_kind != 2 && nocdynp.flit_size > 0)
+	{
+		const double a = XML->sys.NoC[ithNoC].link_activity;
+		const double bits = nocdynp.flit_size;
+		if (link_is_tsv)
+			std::cerr << "  [link] noc" << ithNoC << " measured wire activity a01 " << a
+			          << " (0->1 transitions per wire-bit per crossing; random data 0.25): effective dynamic per bit per"
+			          << " crossing " << a << " x " << link_bus->power.readOp.dynamic / bits << " = "
+			          << a * link_bus->power.readOp.dynamic / bits << " J" << std::endl;
+		else if (link_len > 0)
+			std::cerr << "  [link] noc" << ithNoC << " measured wire activity a01 " << a
+			          << " (0->1 transitions per wire-bit per traversal; random data 0.25): effective dynamic per bit-mm "
+			          << a << " x " << link_bus->power.readOp.dynamic / bits / (link_len * 1e-3) << " = "
+			          << a * link_bus->power.readOp.dynamic / bits / (link_len * 1e-3) << " J at Vdd "
+			          << g_tp.peri_global.Vdd << " V" << std::endl;
+	}
 	link_bus_exist = true;
 	if (nocdynp.type) build_link_clock();   /* PIMID 1.12.18: global links, built after the chip area is known */
 }
@@ -624,7 +641,14 @@ void NoC::computeEnergy(bool is_tdp)
         		    ? std::max(0.0, XML->sys.NoC[ithNoC].tsv_die_crossings)
         		    : ((XML->sys.NoC[ithNoC].link_traversals >= 0)
         		           ? XML->sys.NoC[ithNoC].link_traversals : rtp_stats.readAc.access);
-        		set_pppm(pppm_t, link_acc, glp_nodes, glp_nodes, link_acc);
+        		/* PIMID (user ruling 2026-10-25, "Measured"): a wire's dynamic energy is C V^2 per
+        		 * 0->1 transition (DSENT / ORION 2.0 physical convention); McPAT's per-bit C V^2 is
+        		 * scaled by the MEASURED 0->1 transitions per wire-bit per traversal (link_activity;
+        		 * random data 0.25). Not for a channel-I/O instance (link_kind 2: the DQ crossing's
+        		 * own energy per bit). Runtime only: peak (TDP) keeps the full charge. */
+        		const double wact = (XML->sys.NoC[ithNoC].link_activity >= 0.0 && XML->sys.NoC[ithNoC].link_kind != 2)
+        		                  ? XML->sys.NoC[ithNoC].link_activity : 1.0;
+        		set_pppm(pppm_t, link_acc * wact, glp_nodes, glp_nodes, link_acc * wact);
         		link_bus->rt_power = link_bus->power * pppm_t;
         		rt_power = rt_power + link_bus->rt_power;
         	}

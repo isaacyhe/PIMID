@@ -1042,6 +1042,30 @@ static std::string dqHalfNote(const pimid::RamulatorWrapper& ram, double duty_rd
  *
  * These are extracted from zsim.out and used to generate synthetic trace events.
  */
+/* (user ruling 2026-10-25, "Measured"): measured wire activity counters (zsim nocWire /
+ * hostFabWire groups, ROI-windowed): per flit width, wire-bits carried and 0->1 transitions
+ * between successive flits of one source. */
+struct WireActivityCounts {
+    static const int NW = 6;
+    uint64_t bits[NW] = {0, 0, 0, 0, 0, 0}, rise[NW] = {0, 0, 0, 0, 0, 0}, toggles[NW] = {0, 0, 0, 0, 0, 0};
+    uint64_t packets = 0, unread = 0;
+    bool present = false;
+};
+static const uint32_t kWireWidths[WireActivityCounts::NW] = {8, 16, 32, 64, 128, 256};
+static WireActivityCounts g_dev_wire, g_host_wire;   // set by parseZSimOutputFile
+static const double kRandomWireActivity = 0.25;      // random data, C V^2 per 0->1 edge (DSENT / ORION 2.0)
+/* The measured 0->1 activity of W-bit flits; the random-data value (DERIVED) when nothing was
+ * measured at that width (no readable packets, or a width the counter does not cut). */
+static double wireActivity(const WireActivityCounts& w, uint32_t W, bool* measured) {
+    for (int i = 0; i < WireActivityCounts::NW; i++)
+        if (kWireWidths[i] == W && w.bits[i] > 0) {
+            if (measured) *measured = true;
+            return static_cast<double>(w.rise[i]) / static_cast<double>(w.bits[i]);
+        }
+    if (measured) *measured = false;
+    return kRandomWireActivity;
+}
+
 struct ZSimParsedOutput {
     uint64_t cycles = 0;
     uint64_t instrs = 0;
@@ -1124,6 +1148,7 @@ struct ZSimParsedOutput {
     /* 1.12.23: the host fabric (zsim hostFabric group, ROI-windowed) */
     uint64_t host_fab_data_msgs = 0, host_fab_data_hops = 0, host_fab_req_msgs = 0, host_fab_bus_wait = 0;
     bool host_fab_present = false;
+    WireActivityCounts dev_wire, host_wire;   // user ruling 2026-10-25
     /* 1.12.18: the PE memory interfaces' rd/wr
      * (pe-mi-N groups only: the counts the DRAM energy is priced on) and the
      * device replay's reads/writes (dramReplay group), compared after the
@@ -1707,6 +1732,24 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
             if (key == "hostFabDataHops") { out.host_fab_data_hops += val; continue; }
             if (key == "hostFabReqMsgs")  { out.host_fab_req_msgs += val; continue; }
             if (key == "hostFabBusWait")  { out.host_fab_bus_wait += val; continue; }
+            /* measured wire activity (unique names: nocWire* device, hostFabWire* host) */
+            {
+                WireActivityCounts* wc = (key.rfind("hostFabWire", 0) == 0) ? &out.host_wire
+                                       : (key.rfind("nocWire", 0) == 0) ? &out.dev_wire : nullptr;
+                if (wc) {
+                    const std::string k = key.substr(key.rfind("hostFabWire", 0) == 0 ? 11 : 7);
+                    wc->present = true;
+                    if (k == "Packets") { wc->packets += val; continue; }
+                    if (k == "Unread")  { wc->unread += val; continue; }
+                    for (int i = 0; i < WireActivityCounts::NW; i++) {
+                        const std::string ws = std::to_string(kWireWidths[i]);
+                        if (k == ws + "Bits")    { wc->bits[i] += val; break; }
+                        if (k == ws + "Rise")    { wc->rise[i] += val; break; }
+                        if (k == ws + "Toggles") { wc->toggles[i] += val; break; }
+                    }
+                    continue;
+                }
+            }
 
             /* 1.9.29: the group whose counters this line belongs to, or null when
              * the dump is a single-node (device-scope) one, where only the
@@ -2073,6 +2116,8 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
             std::cout << "[mem] PE-MI rd/wr " << out.pemi_rd << "/" << out.pemi_wr
                       << " == replayed reads/writes (checked) [1.12.18]" << std::endl;
     }
+    g_dev_wire = out.dev_wire;    // the measured wire activity the NoC pricing reads
+    g_host_wire = out.host_wire;
     return out;
 }
 
@@ -9860,6 +9905,23 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                           << " link flit traversals cannot be given to levels and the"
                              " tree's links are NOT priced in this run." << std::endl;
             }
+            {   /* the measured wire activity this fabric is priced with */
+                std::cout << "  [NoC] " << lbl << "wire activity (user ruling 2026-10-25): ";
+                if (g_dev_wire.packets > 0) {
+                    std::cout << "MEASURED on " << g_dev_wire.packets << " packets (" << g_dev_wire.unread
+                              << " unreadable, not counted): 0->1 transitions per wire-bit a01";
+                    for (int i = 0; i < WireActivityCounts::NW; i++)
+                        if (g_dev_wire.bits[i] > 0)
+                            std::cout << " " << kWireWidths[i] << "b " << static_cast<double>(g_dev_wire.rise[i]) / g_dev_wire.bits[i];
+                    std::cout << "; packet = 8 B header (the byte address: an ASSUMPTION, Garnet carries no payload) + the 64 B"
+                                 " line READ at the access; order = per source port in transfer order (the per-link order is"
+                                 " not known: Garnet carries no payload); random data would give 0.25";
+                } else {
+                    std::cout << "NOT MEASURED (" << g_dev_wire.unread << " packets unreadable: a multi-process, trace-driven"
+                                 " or analytical-NoC run); priced at the random-data value 0.25 (DERIVED)";
+                }
+                std::cout << "; links, buses and TSVs are charged C V^2 x a01 per bit per traversal" << std::endl;
+            }
             std::cout << "  [NoC] " << lbl << "links: die area " << die_mm2
                       << " mm^2 (" << config.memory_tech << ", preset organisation,"
                          " the calibrated CACTI die the memory report prints) spans"
@@ -9968,6 +10030,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     lk.vcs_per_port = 1;
                     lk.vc_buffer_entries = 1;
                     lk.flit_bits = W;
+                    lk.link_activity = wireActivity(g_dev_wire, static_cast<uint32_t>(W), nullptr);   // per die crossing
                     lk.clock_mhz = (garnet.clock_mhz > 0.0) ? garnet.clock_mhz : deviceCycleClockMHz(config);
                     lk.chip_coverage = chip_cov;
                     lk.on_dram_die = on_die;
@@ -10039,6 +10102,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             lk.vcs_per_port = 1;
             lk.vc_buffer_entries = 1;
             lk.flit_bits = W;
+            if (lk.link_kind != 2) lk.link_activity = wireActivity(g_dev_wire, static_cast<uint32_t>(W), nullptr);   // user ruling 2026-10-25
             lk.clock_mhz = (garnet.clock_mhz > 0.0) ? garnet.clock_mhz : deviceCycleClockMHz(config);
             lk.chip_coverage = chip_cov;
             lk.on_dram_die = on_die;
@@ -10243,6 +10307,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             const char* wsrc = nullptr;
             const int W = levelWidth(lvl, &wsrc);
             nc.flit_bits = W;
+            nc.link_activity = wireActivity(g_dev_wire, static_cast<uint32_t>(W), nullptr);   // a bus level's wire
             /* 1.11.60 (audit round 4, B014): ONE clock authority, numerator
              * and denominator alike. The duty-cycle conversion below asks
              * deviceCycleClockMHz() (1.11.57's A007 fix) for the clock the
@@ -15859,6 +15924,15 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     r.vcs_per_port = 1;
                     r.vc_buffer_entries = 1;
                     r.routers_present = 1; r.has_global_link = 0;
+                    /* the host data path's measured activity (256-bit flits, per sending stop) */
+                    bool host_act_meas = false;
+                    const double host_act = wireActivity(g_host_wire, 256, &host_act_meas);
+                    std::cout << "  [NoC] " << node.name << ": host " << topo << " wire activity: "
+                              << (host_act_meas ? "MEASURED a01 " : "NOT MEASURED, random-data a01 (DERIVED) ") << host_act
+                              << " (0->1 transitions per wire-bit on the 256-bit data path, per sending stop; "
+                              << g_host_wire.packets << " lines read, " << g_host_wire.unread << " unreadable)"
+                              << (topo == "bus" ? "; the 48-bit command/address bus: random-data 0.25 (DERIVED, not measured)" : "")
+                              << std::endl;
                     std::vector<NoCLevel> lv;
                     std::ostringstream what;
                     if (topo == "bus") {
@@ -15867,8 +15941,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         db.horizontal_nodes = 1; db.input_ports = 1; db.output_ports = 1;
                         db.total_accesses = flits;
                         db.duty_cycle = static_cast<double>(flits) / cyc;
+                        db.link_activity = host_act;   // user ruling 2026-10-25
                         NoCLevel ab = db;
                         ab.name = "host_bus_cmd"; ab.flit_bits = 48;
+                        ab.link_activity = kRandomWireActivity;   // command bits not read (DERIVED)
                         ab.total_accesses = reqs;
                         ab.duty_cycle = static_cast<double>(reqs) / cyc;
                         lv.push_back(db); lv.push_back(ab);
@@ -15884,6 +15960,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         NoCLevel lk = xb;
                         lk.name = "host_xbar_links";
                         lk.routers_present = 0; lk.has_global_link = 1;
+                        lk.link_activity = host_act;   // user ruling 2026-10-25
                         lk.horizontal_nodes = ports; lk.input_ports = 2; lk.output_ports = 2;
                         lk.link_span_processor = 1; lk.link_parent_regions = 1;
                         lk.link_traversals = static_cast<int64_t>(2 * flits);
@@ -15903,6 +15980,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         rl.name = "host_ring_links";
                         rl.routers_present = 0; rl.has_global_link = 1;
                         rl.link_span_processor = 2;   // (user ruling 2026-10-25): ring loop, 2 sqrt(A) / stops
+                        rl.link_activity = host_act;   // user ruling 2026-10-25
                         rl.input_ports = 2; rl.output_ports = 2;   // one link per direction per stop
                         rl.link_traversals = static_cast<int64_t>(hops * fpm);
                         rl.total_accesses = hops * fpm;

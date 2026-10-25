@@ -1282,6 +1282,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.link_span_processor);   // 1.12.19
         f(lvl.link_io_pj_per_bit);    // user ruling 2026-10-25
         f(lvl.tsv_vdd);               // user ruling 2026-10-25
+        f(lvl.link_activity);         // user ruling 2026-10-25
         f(static_cast<uint64_t>(lvl.link_traversals));
         f(static_cast<uint64_t>(lvl.tsv_die_crossings));
         f(static_cast<uint64_t>(lvl.passthrough_accesses));   // 1.12.18
@@ -4160,6 +4161,8 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"link_span_processor\" value=\"" << lvl.link_span_processor << "\"/>\n";   /* 1.12.23 */
             if (lvl.link_kind == 1 && lvl.tsv_vdd > 0.0)   /* the TSV interface supply */
                 xml << "      <param name=\"tsv_vdd\" value=\"" << lvl.tsv_vdd << "\"/>\n";
+            if (lvl.link_activity >= 0.0)   /* measured wire activity */
+                xml << "      <param name=\"link_activity\" value=\"" << lvl.link_activity << "\"/>\n";
             if (lvl.link_kind == 2)   /* channel I/O energy of an off-package link */
                 xml << "      <param name=\"link_io_pj_per_bit\" value=\"" << lvl.link_io_pj_per_bit << "\"/>\n";
             xml << "      <param name=\"tech_node\" value=\"" << lvl.tech_node_nm << "\"/>\n";

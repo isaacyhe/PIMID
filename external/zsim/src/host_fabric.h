@@ -46,6 +46,8 @@
 #include "galloc.h"
 #include "memory_hierarchy.h"
 #include "stats.h"
+#include "noc_wire_data.h"
+extern uint32_t lineBits;   // (user ruling 2026-10-25: measured wire activity)
 
 class HostFabric : public GlobAlloc {
     public:
@@ -59,6 +61,8 @@ class HostFabric : public GlobAlloc {
         volatile uint64_t busFree;
         Counter profDataMsgs, profDataHops, profReqMsgs, profBusWait;
         bool statsDone;
+        NocWireData wire;                  // measured data-path activity (user ruling 2026-10-25: measured wire activity)
+        NocWireData::Stream* wireStreams;  // one per stop: the sender's last flit
 
         uint32_t dist(uint32_t a, uint32_t b) const {
             const uint32_t d = (a > b) ? (a - b) : (b - a);
@@ -81,6 +85,7 @@ class HostFabric : public GlobAlloc {
                 while (m < mcs && (uint64_t)(c + 1) * mcs >= (uint64_t)(m + 1) * cores) mcStop[m++] = pos++;
             }
             while (m < mcs) mcStop[m++] = pos++;
+            wireStreams = new NocWireData::Stream[numStops];
         }
 
         Mode getMode() const { return mode; }
@@ -102,6 +107,9 @@ class HostFabric : public GlobAlloc {
             const bool get = (req.type == GETS || req.type == GETX);
             profReqMsgs.atomicInc();
             profDataMsgs.atomicInc();   // a GET is answered with a line; a PUTX carries one
+            /* the line on the data path, on the SENDER's stream (a GET's line comes
+             * back from b, a PUTX's goes from a). */
+            wire.countLine(wireStreams[(get ? b : a) % numStops], req.lineAddr << lineBits, 1u << lineBits);   // its own event: a fabric hop is not a DRAM access
             if (mode == RING) {
                 const uint32_t h = dist(a, b);
                 profDataHops.atomicInc(h);
@@ -140,6 +148,7 @@ class HostFabric : public GlobAlloc {
             profDataHops.init("hostFabDataHops", "Sum of the data messages' hops (ring: stops travelled; crossbar: 1 each; bus: 0)"); s->append(&profDataHops);
             profReqMsgs.init("hostFabReqMsgs", "Fabric accesses (one command each)"); s->append(&profReqMsgs);
             profBusWait.init("hostFabBusWait", "Bus: cycles accesses waited for the bus"); s->append(&profBusWait);
+            wire.initStats(s, "hostFabWire", "Measured host data-path wire activity (256-bit flits, per sending stop) (user ruling 2026-10-25: measured wire activity)");
             parentStat->append(s);
             return s;
         }

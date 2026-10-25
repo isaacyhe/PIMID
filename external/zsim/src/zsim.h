@@ -184,6 +184,7 @@ struct GlobSimInfo {
 
     // Garnet network for device NoC simulation (PIMID integration)
     GarnetNetwork* garnetNetwork;
+    class NocWireData* nocWire;   // measured device-fabric wire activity (user ruling 2026-10-25: measured wire activity)
     class DramEpochReplay* dramReplay;   // 1.11.98 (ruling 4 (c)): the device DRAM controller, replayed per epoch (nullptr = off)
     class DramEpochReplay* hostDramReplay;   // 1.12.18 (ruling 17 / R0605): the decoupled host memory's own replay (nullptr = none, or the host shares dramReplay)
     /* 1.12.18: (bug 7) the host memory controllers the coherence flush's

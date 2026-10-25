@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.59 -- NoC link, bus and TSV wires are charged on MEASURED data activity
+
+- **Wire activity (user ruling 2026-10-25, "Measured"):** McPAT charged every wire C V^2 per bit per
+  traversal (every bit fully charged on every flit). A wire draws C V^2 from the supply on a 0->1 transition
+  and nothing on 1->0 (the DSENT / ORION 2.0 convention), so random data costs a quarter of that. Every NoC
+  link, bus and TSV wire (device tree, host ring / crossbar / bus) is now charged C V^2 x a01 per bit per
+  traversal, where a01 = the MEASURED 0->1 transitions per wire-bit between successive flits.
+- **What is measured (zsim, external/zsim/src/noc_wire_data.h):** at each remote PE access that traverses the
+  tree (src != dst), the 64 B line (read once at the access, see below) is, with an
+  8 B header, cut into the fabric's flits at 8/16/32/64/128/256 b (ceil(576 / W) flits, the last zero-padded);
+  the 0->1 and all transitions between successive flits are counted per SOURCE PORT in transfer order (each PE
+  memory interface keeps its last flit). The host fabric does the same for each data message on its 256-bit
+  path, per sending stop. Counters: zsim groups `nocWire` and `hostFabWire` (ROI-rebased).
+- **What is not measured (stated):** Garnet carries no payload, so the true per-link order (other sources'
+  flits interleaved on a shared link) is unknown: per-source order is the proxy. The header's real bits are
+  not modelled: its 64 bits are the access's byte address (an assumption). The host bus's 48-bit command
+  bus is not read (random-data 0.25, DERIVED). A run whose lines cannot be read (multi-process MPI,
+  trace-driven, analytical NoC) is priced at the random-data 0.25 and says so. The DRAM-channel I/O links (off-package tree links)
+  keep their own per-bit DQ energy; routers are unchanged. Peak (TDP) keeps the full charge.
+- **One line read per access:** the PE memory interface reads each access's line once (the measured DQ
+  statistics' read, `process_vm_readv` on this process, with their readability rule) and hands the bytes to
+  both counters; the fabric packet of a remote access reuses them. The host fabric reads its data messages
+  itself: a fabric hop between caches is not a DRAM access.
+- **Determinism:** the counters are sums; a serial run reads the same lines in the same order every time.
+
 ## 1.12.58 -- DQ termination at the duty measured on the run's own data; data bus inversion where the standard has it
 
 - **Measured termination duty** (user ruling 2026-10-25). Every DRAM line read and writeback -- the host controllers

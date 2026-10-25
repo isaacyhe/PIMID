@@ -95,6 +95,7 @@ class HomeRoutedMemory : public MemObject {
 #include "tracing_cache.h"
 #include "port_virtualizer.h"
 #include "weave_md1_mem.h" //validation, could be taken out...
+#include "noc_wire_data.h"   // (user ruling 2026-10-25: measured wire activity)
 #include "zsim.h"
 
 extern void EndOfPhaseActions(); //in qemu_zsim_plugin.cpp
@@ -494,6 +495,7 @@ static void InitSystem(Config& config) {
     // GarnetNetwork inherits from Network, so we use a single Network* pointer
     Network* network = nullptr;
     zinfo->garnetNetwork = nullptr;  // Initialize to null
+    zinfo->nocWire = new NocWireData();   // measured wire activity (user ruling 2026-10-25: measured wire activity)
 
     string networkType = config.get<const char*>("sys.networkType", "");
     if (networkType == "garnet" || networkType == "mesh") {
@@ -1926,6 +1928,8 @@ static void InitSystem(Config& config) {
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);
     zinfo->roiRebaseStats->push_back(memStat);   // 1.11.90
+    zinfo->nocWire->initStats(zinfo->rootStat, "nocWire", "Measured device-fabric wire activity: bits carried and transitions between successive flits per source, per flit width (user ruling 2026-10-25: measured wire activity)");
+    zinfo->roiRebaseStats->push_back(zinfo->nocWire->stat());
     if (hostFabric) {   // 1.12.23: the host fabric counters, their own ROI-rebased group
         AggregateStat* hs = hostFabric->initStats(zinfo->rootStat);
         if (hs) zinfo->roiRebaseStats->push_back(hs);

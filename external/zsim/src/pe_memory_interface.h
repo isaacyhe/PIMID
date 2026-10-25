@@ -24,6 +24,7 @@
 #include <mutex>
 #include "g_std/g_string.h"
 #include "garnet_network.h"
+#include "noc_wire_data.h"   // (user ruling 2026-10-25: measured wire activity)
 #include "memory_hierarchy.h"
 #include "hierarchy_util.h"
 #include "sparse_htree.h"
@@ -95,6 +96,19 @@ protected:
     Counter profRemoteAccesses_;
     Counter profLocalLatency_;
     Counter profRemoteLatency_;
+    NocWireData::Stream wireStream_;   // this source port's last flit per width (user ruling 2026-10-25: measured wire activity)
+    /* The access's line, read ONCE per access and shared by the measured DQ statistics and the
+     * measured wire activity (user ruling 2026-10-25: measured wire activity): the DQ count reads it (localAccessLatency, which every
+     * access calls first); the fabric packet of the same access reuses it. Per thread: PEs that
+     * share this interface run on their own threads. */
+    struct AccessLine { uint64_t lineAddr = ~0ull; bool ok = false; uint32_t n = 0; uint8_t b[256]; };
+    static AccessLine& accessLine() { static thread_local AccessLine al; return al; }
+    static const AccessLine& readAccessLine(uint64_t lineAddr) {
+        AccessLine& al = accessLine();
+        al.lineAddr = lineAddr; al.n = 1u << lineBits;
+        al.ok = dqDataReadable && al.n <= sizeof(al.b) && pimidReadGuestBytes(lineAddr << lineBits, al.b, al.n);
+        return al;
+    }
     Counter profReads_;
     Counter profWrites_;
     DqDataStats dqStats_;   // the data of every line this interface reads or writes (user ruling 2026-10-25: measured termination duty)
@@ -822,6 +836,16 @@ public:
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
                 uint32_t srcNode = (uint32_t)mcId_ % gn->getNumNodes();
                 uint32_t dstNode = (uint32_t)dstEp % gn->getNumNodes();
+                /* (user ruling 2026-10-25: measured wire activity) the packet this access puts on
+                 * the tree -- 8 B header (the byte address, an assumption) + the line this access
+                 * already read (localAccessLatency above; no second read) -- counted on this
+                 * source port's stream. Only a traversing packet (src != dst), only before the
+                 * ROI end (as the fabric replay). */
+                if (zinfo->nocWire && srcNode != dstNode && !zinfo->terminationConditionMet) {
+                    const AccessLine& al = accessLine();
+                    zinfo->nocWire->countAccessBytes(wireStream_, req.lineAddr << lineBits,
+                                                     (al.ok && al.lineAddr == req.lineAddr) ? al.b : nullptr, al.n);
+                }
                 uint32_t networkLat;
                 // Synchronous shared-Garnet accounting (the ONLY detailed NoC):
                 // record this access and drain the batch on the critical path at
@@ -1383,10 +1407,12 @@ protected:
          * 8,297 L2 misses on the gemv probe). */
         if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
             profWrites_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            dqStats_.count(req.lineAddr, lineBits, true);   // the line's data on the DQ pins (user ruling 2026-10-25: measured termination duty)
+            { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (user ruling 2026-10-25: measured wire activity)
+              if (al.ok) dqStats_.countBytes(al.b, al.n, true); else dqStats_.unread[1].atomicInc(); }   // the line's data on the DQ pins (user ruling 2026-10-25: measured termination duty)
         } else {
             profReads_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            dqStats_.count(req.lineAddr, lineBits, false);
+            { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (user ruling 2026-10-25: measured wire activity)
+              if (al.ok) dqStats_.countBytes(al.b, al.n, false); else dqStats_.unread[0].atomicInc(); }
         }
         /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
          * well"): under exec-method message passing (thread-MPI) the replay runs
