@@ -21,7 +21,9 @@
  * (setarch -R makes the layout deterministic, so the shift is a deterministic
  * cycle drift on cache-sensitive cells -- measured: a 512 KB static table
  * moved the 1-core host baseline by 185 cycles). The global heap is one
- * region reserved at start-up, so allocating in it moves no mapping. */
+ * region reserved at start-up, so allocating in it moves no mapping.
+ * (Since (1.12.62) the launch reserves the guest address space (QEMU -B 0 -R), so
+ * a host mapping no longer moves a guest mapping either.) */
 const char* const kFpCensusNames[FP_CENSUS_CATS] = {
     "AddS", "MulS", "AddD", "MulD", "FmaS", "FmaD", "DivS", "DivD", "X87"};
 /* PIMID 1.12.18: (ruling 2026-10-23 #3) integer categories (decoder_simple.h). */

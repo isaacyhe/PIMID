@@ -85,29 +85,52 @@ A co-sim system has **two fabrics joined by one bridge**:
 
 **Given a deterministic instruction stream, the simulator is exact.** Repeated
 runs of a single-threaded workload produce bit-identical results -- cycles and
-access counts, every digit -- when they are launched the same way.
+access counts, every digit -- in any job, node or working directory.
 
-**The launch environment is part of the run.** The guest inherits pimid's
-environment block (plus `workload.env` and the OpenMP settings below), the
-environment strings are part of the guest's initial memory image, and the
-simulated address layout follows them: a different environment can place the
-workload's data at different addresses -- which addresses share a bank, a
-row, a channel. The instruction stream does not change; a memory-bound
-result can. Measured: 500 more bytes of environment moved a 65536-element
-serial `stream_triad` on HBM3 by 0.36% with identical instruction streams;
-small shapes (`bfs` 4096 vertices, `stream_triad` 1000, `gemv` 256) did not
-move. In 1.12.15 an in-order `gemv` 256 with one PE did: one binary with
-0 / 64 / 4096 bytes of extra environment gave 540746 / 540951 / 540805 cycles
-(each repeated exactly). The path of the build tree is part of that environment, so
-two builds of one source in folders whose paths differ in length differ the
-same way. So:
+**The launch fixes the guest's starting image (since (1.12.62)).** QEMU builds
+the guest's initial memory image from the host process: where its mappings
+go, the environment block and argument strings on its stack, and the 16
+`AT_RANDOM` bytes. The simulated address layout follows that image -- which
+addresses share a bank, a row, a channel, a cache set -- so a memory-bound
+result moves with it while the instruction stream stays the same. Through
+1.12.52 all of it followed the host:
 
-- **Results from different jobs are compared no finer than 0.5%.** Two jobs
-  rarely share an environment byte for byte (the job id, the working
-  directory and the scheduler's variables all live in it).
-- **When comparing two builds, run OLD and NEW from one working directory with
-  one environment.** Then a single-threaded comparison is exact again, and any
-  difference is the builds'.
+- the guest inherited pimid's whole environment (the job id, the working
+  directory, the scheduler's variables, the path of the build tree), and its
+  startup code walks that environment, so even the number of pre-ROI memory
+  accesses changed with it;
+- QEMU placed every guest mapping (program, dynamic linker, main stack,
+  thread stacks, heap arenas) in the host process's free address space, among
+  its own and the plugin's libraries, wherever the host threads' allocations
+  of that moment left room. In about 3% of runs a malloc arena of QEMU's RCU
+  thread was being created while the plugin loaded, its libraries landed
+  128 MiB lower, and the main stack moved (0x7ffff4851000 to 0x7ffff4ce5000 ..
+  0x7ffff5d42000); a multi-threaded run's thread stacks and arenas moved in
+  most runs;
+- `AT_RANDOM` came from the host's random generator.
+
+Measured over six jobs of the same configurations: a serial device cell
+spread by up to 4.9% in cycles, and none of 40 single-core host baselines
+repeated bit for bit. PIMID now launches QEMU with these options (QEMU's own
+user-mode options):
+
+| option | effect |
+|---|---|
+| `-B 0 -R 0x8000000000` | The guest address space [64 KiB, 512 GiB) is reserved at guest_base 0 before the program is loaded, and QEMU places every guest mapping in it with its own allocator, which no host thread touches. guest_base stays 0, so a guest address is still the host address. The bound stays below ZSim's shared heap (0xABBA000000). Needs `external/qemu-patches/0002-...` (see [Building](build.md)). |
+| `-s 8M` | The main stack is 8 MiB (QEMU's default), whatever the host's stack rlimit. |
+| `-seed 0` | `AT_RANDOM` and the guest's `getrandom()` are one fixed sequence. |
+| `-U` / `-E` | The guest's environment is `workload.env`, the variables PIMID sets for it (the OpenMP settings below, `LD_BIND_NOW=1`, the MPI shim's), and, from pimid's own environment, only `PIMID_*`, `OMP_*`, `GOMP_*`, `LC_*`, `PATH`, `LD_LIBRARY_PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE` and `TZ`. `PIMID_GUEST_ENV_PAD` then pads the strings QEMU copies to the stack (the program's name, the environment, the arguments) to a multiple of 4096 bytes. |
+
+So a serial workload's addresses depend on its configuration only -- the
+binary, its arguments, and the number of guest variables -- not on the job,
+the node, the working directory, the length of any path or value, or host
+address-space randomization. Measured over six jobs on five nodes, each in its
+own directory: all 107 serial cells (48 device, 40 single-core host
+baselines, 18 PE-type cells, the 1-core DDR5 baseline) repeated bit for bit in
+every simulated and priced figure. Two builds can be compared from any two
+directories. A variable a workload needs from the shell beyond those passed
+goes in `workload.env`. Every run prints the launch it used (`[guest]
+launch: ...`).
 
 **A parallel workload is timed by the model.** Its threads are real threads
 inside the emulator, but their simulated time does not come from the host's

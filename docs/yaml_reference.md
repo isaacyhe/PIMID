@@ -176,15 +176,15 @@ workload:
 | `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
 | `workload.mpich_path` | string | - | Deprecated and ignored, with a warning: PIMID no longer uses `mpirun`. |
 
-**The launch environment is part of a run.** The guest inherits pimid's own
-environment block (plus `workload.env` and the OpenMP settings PIMID adds), and
-the simulated address layout follows it. A memory-bound result can move with
-it while the instruction stream stays identical: 500 more bytes of environment
-moved a 65536-element serial `stream_triad` on HBM3 by 0.36%; small shapes
-(`bfs` 4096 vertices, `stream_triad` 1000, `gemv` 256) did not move. Compare
-results across jobs no finer than 0.5%, and when comparing two builds run both
-from one working directory with one environment. See
-[Reproducibility](architecture.md#reproducibility).
+**The guest's environment is set by the launch (since (1.12.62)).** The guest gets
+`workload.env`, the OpenMP settings PIMID adds, and from pimid's own environment
+only `PIMID_*`, `OMP_*`, `GOMP_*`, `LC_*`, `PATH`, `LD_LIBRARY_PATH`, `HOME`,
+`USER`, `LOGNAME`, `LANG`, `LANGUAGE` and `TZ`; any other variable a workload
+reads goes in `workload.env`. The strings on the guest's stack are padded to a
+fixed size, its `AT_RANDOM` bytes are seeded, and its address space is reserved
+by the launch, so a serial result no longer depends on the job, the node, the
+working directory or the length of any path: repeated runs are bit-identical.
+See [Reproducibility](architecture.md#reproducibility).
 
 ---
 

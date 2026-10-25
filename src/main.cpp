@@ -703,6 +703,129 @@ static void noteGuestBindNow() {
               << " symbol before main, so no lazy-binding resolution is counted on the thread that first calls a"
               << " library function [1.12.18, ruling 2026-10-24]" << std::endl;
 }
+/* (1.12.62): THE GUEST'S INITIAL IMAGE IS FIXED BY THE LAUNCH, NOT BY THE HOST.
+ *
+ * Three things the emulator copies from the host into the guest's starting
+ * state moved the simulated addresses with the host:
+ *  1. The address layout. Without a reserved guest address space QEMU places
+ *     every guest mapping (the program, its dynamic linker, the 8 MiB main
+ *     stack, later mmaps) top-down in the host process's free space, among
+ *     QEMU's and the plugin's own libraries. QEMU's RCU thread creates a glibc
+ *     malloc arena (a transient 128 MiB reservation trimmed to 64 MiB) at a
+ *     time set by the host scheduler; when that window overlapped the plugin's
+ *     dlopen the libraries landed 128 MiB lower and every guest mapping moved
+ *     (measured: 15 of 424 runs, main stack 0x7ffff4851000 -> 0x7ffff4ce5000 ..
+ *     0x7ffff5d42000). `-B 0 -R` reserves [mmap_min_addr, kGuestReservedVa) at
+ *     guest_base 0 before the program is loaded; QEMU then places every guest
+ *     mapping in that range with its own allocator, which no host thread
+ *     touches. guest_base stays 0, so guest and host addresses still coincide
+ *     (the plugins rely on it). The bound stays below ZSim's shared heap
+ *     (galloc.cpp GM_BASE_ADDR 0xABBA000000), which is mapped before it.
+ *  2. The environment. QEMU copies its whole environment block onto the guest
+ *     stack, so job ids, working directories and path lengths moved the
+ *     stack pointer at main. The guest now gets: workload.env, the variables
+ *     PIMID sets for it (OpenMP settings, LD_BIND_NOW, the MPI shim's), and
+ *     from pimid's own environment only PIMID_*, OMP_*, GOMP_*, LC_*, PATH,
+ *     LD_LIBRARY_PATH, HOME, USER, LOGNAME, LANG, LANGUAGE and TZ. A padding
+ *     variable (PIMID_GUEST_ENV_PAD) then brings the strings QEMU copies to
+ *     the stack (executable name, environment, arguments) to a multiple of
+ *     4096 bytes, so the stack pointer at main depends only on the number of
+ *     arguments and variables, not on their lengths.
+ *  3. AT_RANDOM. QEMU fills the 16 auxv random bytes (and answers getrandom())
+ *     from the host's generator; `-seed` makes both a fixed sequence.
+ * The main stack is sized explicitly (`-s 8M`, QEMU's default) so the host's
+ * stack rlimit does not size it.
+ * All of these are QEMU's documented user-mode options. */
+static const char* const kGuestReservedVa = "0x8000000000";   // 512 GiB < GM_BASE_ADDR 0xABBA000000
+static const char* const kGuestStackSize  = "8M";             // QEMU's TARGET_DEFAULT_STACK_SIZE
+static const char* const kGuestSeed       = "0";
+static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
+static const size_t      kGuestStringBlock = 4096;
+
+static bool guestEnvKept(const std::string& name, const std::map<std::string, std::string>& workloadEnv) {
+    if (workloadEnv.count(name)) return true;
+    static const char* const exact[] = {"PATH", "LD_LIBRARY_PATH", "HOME", "USER", "LOGNAME",
+                                        "LANG", "LANGUAGE", "TZ"};
+    for (const char* e : exact) if (name == e) return true;
+    static const char* const prefix[] = {"PIMID_", "OMP_", "GOMP_", "LC_"};
+    for (const char* p : prefix) if (name.compare(0, strlen(p), p) == 0) return true;
+    return false;
+}
+
+/* Called in the launch child after its last setenv(): the QEMU options that
+ * fix the guest's initial image (see above). guestSet are the NAME=VALUE
+ * entries the launch passes with -E (LD_BIND_NOW=1, a guest LD_PRELOAD);
+ * they are emitted here too. binary/args are the guest's argv. */
+static std::vector<std::string> guestLaunchOptions(const std::string& binary,
+                                                   const std::vector<std::string>& args,
+                                                   const std::vector<std::string>& guestSet,
+                                                   const std::map<std::string, std::string>& workloadEnv,
+                                                   size_t* guestVars) {
+    std::vector<std::string> o = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
+                                  "-seed", kGuestSeed};
+    std::map<std::string, std::string> genv;   // name -> NAME=VALUE, as the guest will see it
+    for (char** e = environ; e && *e; ++e) {
+        const std::string kv(*e);
+        const size_t eq = kv.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        const std::string name = kv.substr(0, eq);
+        if (guestEnvKept(name, workloadEnv) && name != kGuestEnvPadName) genv[name] = kv;
+        else { o.push_back("-U"); o.push_back(name); }
+    }
+    for (const auto& kv : guestSet) {
+        const size_t eq = kv.find('=');
+        if (eq == std::string::npos) continue;
+        genv[kv.substr(0, eq)] = kv;
+        o.push_back("-E"); o.push_back(kv);
+    }
+    size_t bytes = binary.size() + 1;   // QEMU copies the executable name (AT_EXECFN) ...
+    for (const auto& kv : genv) bytes += kv.second.size() + 1;   // ... the environment ...
+    bytes += binary.size() + 1;   // ... and argv: argv[0] is the executable name as given
+    for (const auto& a : args) bytes += a.size() + 1;
+    const size_t fixed = strlen(kGuestEnvPadName) + 2;   // "NAME=" and the terminating NUL
+    const size_t used = bytes + fixed;
+    const size_t pad = (kGuestStringBlock - used % kGuestStringBlock) % kGuestStringBlock;
+    o.push_back("-E"); o.push_back(std::string(kGuestEnvPadName) + "=" + std::string(pad, 'x'));
+    if (guestVars) *guestVars = genv.size() + 1;
+    return o;
+}
+
+static void noteGuestLaunch(size_t envVars) {
+    std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
+              << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
+              << kGuestSeed << "), " << envVars << " environment variables (workload.env, PIMID's own, and PIMID_* OMP_*"
+              << " GOMP_* LC_* PATH LD_LIBRARY_PATH HOME USER LOGNAME LANG LANGUAGE TZ from pimid's environment),"
+              << " strings padded to a multiple of " << kGuestStringBlock << " bytes [(1.12.62)]" << std::endl;
+}
+
+/* Builds the full QEMU command line of a launch child: qemu, the guest-image
+ * options (with the caller's -E entries), -plugin <plugin>, --, the guest's
+ * argv. */
+static std::vector<std::string> guestQemuArgv(const std::string& qemu,
+                                              const std::vector<std::string>& guestSet,
+                                              const std::string& pluginArg,
+                                              const std::string& binary,
+                                              const std::vector<std::string>& args,
+                                              const std::map<std::string, std::string>& workloadEnv) {
+    std::vector<std::string> v = {qemu};
+    size_t guestVars = 0;
+    const std::vector<std::string> g = guestLaunchOptions(binary, args, guestSet, workloadEnv, &guestVars);
+    noteGuestLaunch(guestVars);
+    std::cout << std::flush;
+    v.insert(v.end(), g.begin(), g.end());
+    v.push_back("-plugin"); v.push_back(pluginArg);
+    v.push_back("--"); v.push_back(binary);
+    v.insert(v.end(), args.begin(), args.end());
+    return v;
+}
+
+static void execGuestQemu(const std::vector<std::string>& argvOwned) {
+    std::vector<char*> a;
+    a.reserve(argvOwned.size() + 1);
+    for (const auto& s : argvOwned) a.push_back(const_cast<char*>(s.c_str()));
+    a.push_back(nullptr);
+    execvp(a[0], a.data());
+}
 static std::string findQemuBinary() {
     /* 1.11.55: an explicit override, first. Without it an A/B comparison
      * between two trees silently uses TWO DIFFERENT GUEST EMULATORS -- each
@@ -24098,22 +24221,11 @@ int main(int argc, char** argv) {
                             setenv(key.c_str(), val.c_str(), 1);
                         }
 
-                        // argv: qemu -plugin <plugin>,output=<trace> -- <workload> [args...]
-                        std::vector<std::string> argv_owned;
-                        argv_owned.push_back(qemu_binary);
-                        argv_owned.push_back("-E"); argv_owned.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
-                        argv_owned.push_back("-plugin");
-                        argv_owned.push_back(plugin_arg);
-                        argv_owned.push_back("--");
-                        argv_owned.push_back(config.workload_binary);
-                        for (const auto& wa : config.workload_args) argv_owned.push_back(wa);
-
-                        std::vector<char*> argv_cstr;
-                        argv_cstr.reserve(argv_owned.size() + 1);
-                        for (auto& s : argv_owned) argv_cstr.push_back(s.data());
-                        argv_cstr.push_back(nullptr);
-
-                        execvp(qemu_binary.c_str(), argv_cstr.data());
+                        // argv: qemu <guest-image options> -plugin <plugin>,output=<trace> -- <workload> [args...]
+                        // ((1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch, guestQemuArgv)
+                        execGuestQemu(guestQemuArgv(qemu_binary, {kGuestBindNowEnv},   // 1.12.18 (ruling 2026-10-24): bind at load
+                                                    plugin_arg, config.workload_binary, config.workload_args,
+                                                    config.workload_env));
                         std::cerr << "Error: execvp(" << qemu_binary << ") failed: "
                                   << strerror(errno) << std::endl;
                         _exit(127);
@@ -24229,19 +24341,10 @@ int main(int argc, char** argv) {
                     for (const auto& [key, val] : config.workload_env) {
                         setenv(key.c_str(), val.c_str(), 1);
                     }
-                    std::vector<const char*> args;
-                    args.push_back(qemu_binary.c_str());
-                    args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
-                    args.push_back("-plugin");
-                    args.push_back(plugin_arg.c_str());
-                    args.push_back("--");
-                    args.push_back(config.workload_binary.c_str());
-                    for (const auto& wa : config.workload_args) {
-                        args.push_back(wa.c_str());
-                    }
-                    args.push_back(nullptr);
-
-                    execvp(qemu_binary.c_str(), const_cast<char* const*>(args.data()));
+                    // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
+                    execGuestQemu(guestQemuArgv(qemu_binary, {kGuestBindNowEnv},   // 1.12.18 (ruling 2026-10-24): bind at load
+                                                plugin_arg, config.workload_binary, config.workload_args,
+                                                config.workload_env));
                     std::cerr << "Error: Failed to execute QEMU: " << strerror(errno) << std::endl;
                     _exit(1);
                 }
@@ -24650,25 +24753,12 @@ int main(int argc, char** argv) {
                     for (const auto& [key, val] : config.workload_env) {
                         setenv(key.c_str(), val.c_str(), 1);
                     }
-                    std::vector<const char*> args;
-                    std::string guest_preload;
-                    args.push_back(qemu_binary.c_str());
-                    args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
-                    if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
-                        guest_preload = "LD_PRELOAD=" + mpi_thread_lib;
-                        args.push_back("-E");
-                        args.push_back(guest_preload.c_str());
-                    }
-                    args.push_back("-plugin");
-                    args.push_back(plugin_arg.c_str());
-                    args.push_back("--");
-                    args.push_back(config.workload_binary.c_str());
-                    for (const auto& wa : config.workload_args) {
-                        args.push_back(wa.c_str());
-                    }
-                    args.push_back(nullptr);
-
-                    execvp(qemu_binary.c_str(), const_cast<char* const*>(args.data()));
+                    std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
+                    if (config.workload_type == "mpi" && config.mpi_ranks > 0)
+                        guest_set.push_back("LD_PRELOAD=" + mpi_thread_lib);
+                    // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
+                    execGuestQemu(guestQemuArgv(qemu_binary, guest_set, plugin_arg, config.workload_binary,
+                                                config.workload_args, config.workload_env));
                     std::cerr << "Error: Failed to execute QEMU: " << strerror(errno) << std::endl;
                     _exit(1);
                 }
@@ -25096,18 +25186,9 @@ int main(int argc, char** argv) {
                         std::string parg = plugin_path + ",cfg=" + zsim_cfg_path
                             + ",out=" + output_dir + ",procIdx=" + std::to_string(i);
 
-                        std::vector<const char*> args;
-                        args.push_back(qemu_binary.c_str());
-                        args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
-                        args.push_back("-plugin");
-                        args.push_back(parg.c_str());
-                        args.push_back("--");
-                        args.push_back(groups[i].binary.c_str());
-                        for (const auto& wa : groups[i].args)
-                            args.push_back(wa.c_str());
-                        args.push_back(nullptr);
-
-                        execvp(qemu_binary.c_str(), const_cast<char* const*>(args.data()));
+                        // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
+                        execGuestQemu(guestQemuArgv(qemu_binary, {kGuestBindNowEnv},   // 1.12.18 (ruling 2026-10-24): bind at load
+                                                    parg, groups[i].binary, groups[i].args, config.workload_env));
                         std::cerr << "Error: Failed to execute QEMU (process " << i << "): "
                                   << strerror(errno) << std::endl;
                         _exit(1);
@@ -25218,26 +25299,14 @@ int main(int argc, char** argv) {
                         setenv(key.c_str(), val.c_str(), 1);
                     }
 
-                    std::vector<const char*> args;
-                    std::string sys_guest_preload;
-                    args.push_back(qemu_binary.c_str());
-                    args.push_back("-E"); args.push_back(kGuestBindNowEnv);   // 1.12.18 (ruling 2026-10-24): bind at load
+                    std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
                     // LD_PRELOAD must be GUEST-scoped (qemu -E): a host-env preload
                     // would load the interposer into QEMU itself.
-                    if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
-                        sys_guest_preload = "LD_PRELOAD=" + sys_mpi_lib;
-                        args.push_back("-E");
-                        args.push_back(sys_guest_preload.c_str());
-                    }
-                    args.push_back("-plugin");
-                    args.push_back(plugin_arg.c_str());
-                    args.push_back("--");
-                    args.push_back(config.workload_binary.c_str());
-                    for (const auto& wa : config.workload_args) {
-                        args.push_back(wa.c_str());
-                    }
-                    args.push_back(nullptr);
-                    execvp(qemu_binary.c_str(), const_cast<char* const*>(args.data()));
+                    if (config.workload_type == "mpi" && config.mpi_ranks > 0)
+                        guest_set.push_back("LD_PRELOAD=" + sys_mpi_lib);
+                    // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
+                    execGuestQemu(guestQemuArgv(qemu_binary, guest_set, plugin_arg, config.workload_binary,
+                                                config.workload_args, config.workload_env));
                     std::cerr << "Error: Failed to execute QEMU: " << strerror(errno) << std::endl;
                     _exit(1);
                 }

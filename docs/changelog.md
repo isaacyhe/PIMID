@@ -6,6 +6,63 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.62 -- a serial run repeats bit for bit in any job: the guest's address space, environment and AT_RANDOM are fixed by the launch
+
+- **The problem** (user ruling 2026-10-25, "investigate + fix"). One configuration run in different jobs did not
+  repeat. Six jobs of 116 cells on 1.12.52, each in its own directory: 39 of 48 serial device cells, 0 of 40
+  single-core host baselines and 3 of 18 PE-type cells repeated bit for bit; a serial device cell spread by up to
+  4.9% in cycles (DDR4 vector_add 393433 .. 412931), a host baseline by up to 2.5%. In 15 of 424 runs (3.5%) the
+  guest's main stack was not at 0x7ffff4851000.
+- **Root causes.**
+  1. *Layout.* QEMU 10 and later hand a non-fixed guest mmap straight to the host kernel, so the guest's program,
+     dynamic linker, main stack, thread stacks and heap arenas were placed top-down among QEMU's and the plugin's
+     own libraries, wherever the host process had room at that moment. QEMU's RCU thread creates a glibc malloc
+     arena (a transient 128 MiB reservation trimmed to a 64 MiB-aligned heap) at a time the host scheduler picks;
+     when that window overlapped the plugin's dlopen, the plugin's libraries landed 128 MiB lower and every guest
+     mapping moved (main stack 0x7ffff4ce5000 .. 0x7ffff5d42000). Each guest thread's emulator thread creates its
+     own arena the same way: the set of guest thread-stack addresses differed between runs in every OpenMP and
+     co-sim cell.
+  2. *Environment.* The guest inherited pimid's whole environment block (job id, working directory, the
+     scheduler's variables, path lengths) and QEMU copies it onto the guest stack. The guest's startup code walks
+     it: the pre-ROI access count changed (66116 vs 66115 memory-controller accesses, DDR4 vector_add), and the
+     pre-ROI NoC state carried into the ROI moved the ROI time by 4.9%.
+  3. *AT_RANDOM* came from the host's random generator; *the main stack's size* from the host's stack rlimit.
+- **The fix** (src/main.cpp `guestQemuArgv`, used by every QEMU launch: device and system scope, single and multi
+  QEMU, trace generation, message-passing ranks). QEMU's own user-mode options:
+  - `-B 0 -R 0x8000000000`: the guest address space [64 KiB, 512 GiB) is reserved at guest_base 0 before the
+    program loads; QEMU places every guest mapping in it with its own allocator, which no host thread touches.
+    guest_base stays 0 (the plugins rely on it); the bound stays below ZSim's shared heap (0xABBA000000).
+  - `-s 8M` (QEMU's default stack size, now independent of the host rlimit) and `-seed 0` (AT_RANDOM and the
+    guest's getrandom()).
+  - `-U` / `-E`: the guest's environment is `workload.env`, PIMID's guest variables (the OpenMP settings,
+    LD_BIND_NOW, the MPI shim's) and, from pimid's environment, only PIMID_*, OMP_*, GOMP_*, LC_*, PATH,
+    LD_LIBRARY_PATH, HOME, USER, LOGNAME, LANG, LANGUAGE and TZ. `PIMID_GUEST_ENV_PAD` pads the strings QEMU copies
+    to the stack (program name, environment, arguments) to a multiple of 4096 bytes, so the stack pointer at main
+    depends on the number of arguments and variables, not their lengths.
+  - Every run prints the launch it used (`[guest] launch: ...`).
+- **QEMU must be rebuilt** with the new `external/qemu-patches/0002-x86_64-linux-user-reserved-va-without-vsyscall-page.patch`
+  (docs/build.md). Stock QEMU refuses `-R` for an x86_64 guest (`qemu-x86_64: Cannot allocate vsyscall page`): the
+  legacy vsyscall page lies outside any reservation. With the patch the guest runs without that page under `-R`,
+  as on a host booted with vsyscall=none; glibc reaches the time calls through the vDSO.
+- **Validation** (six jobs on five nodes, each in its own directory; the same 116 cells). All 107 serial cells
+  (48 device, 40 single-core host baselines, 18 PE-type cells, the 1-core DDR5 baseline) repeated bit for bit in
+  every simulated and priced line, against 42 of 107 before. The guest's stack pointer at main was the same with
+  3000 bytes of extra environment, a 777-byte PIMID_* value, a longer binary path, another working directory, and
+  with ASLR on. Three more jobs with ASLR on gave the same cycles, accesses and power in all serial cells; one
+  host-side McPAT report line (arrays sized for the clock: 4 instead of 7, same power) still changed with the host layout, so
+  `setarch -R` stays the advice for bit-stable logs (docs/build.md).
+- **Multi-threaded cells:** their results follow the host's interleaving of the guest threads; this release
+  changes only the launch (their thread stacks are now placed identically).
+- **Data impact: every exec cell moves once** (the guest's addresses are new; measured on 1.12.52): serial device cycles max 2.72%
+  (mean 0.32%), host baselines max 1.05% (mean 0.19%), PE-type cells max 1.85% (10 of 18 unchanged); power max
+  0.30%; every checksum unchanged. Multi-threaded cells: the 16-core DDR5 host baseline (OpenMP gemv under
+  PIMID_COSIM_NO_OFFLOAD) moves by about -14% (mean of six runs 17150 -> 14780 cycles). Neither layout is the correct one: the cell is sensitive to where its sixteen thread stacks
+  and heap arenas fall, and the old figure was one draw of the host's placement. The other multi-threaded cells
+  (OpenMP device cells, co-sim, the 4-core host baseline) move by less than 6%.
+- **Visible to users.** The guest no longer sees the rest of pimid's environment (a variable a workload needs goes
+  in `workload.env`); the guest's addresses lie below 512 GiB; the guest has no vsyscall page. docs/architecture.md
+  (Reproducibility), docs/yaml_reference.md (Workload) and docs/build.md (QEMU patches; ASLR) are updated.
+
 ## 1.12.61 -- DRAM burst energy at the run's own data (DDR3, HBM2)
 
 - **Model (user ruling 2026-10-25):** the column-burst read and write energy is scaled by a factor from the

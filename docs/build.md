@@ -17,6 +17,7 @@ not include it. The build expects it at `external/qemu/build/qemu-x86_64`:
 cd external/qemu
 git clone --depth 1 --branch v11.1.2 https://gitlab.com/qemu-project/qemu.git .
 git apply ../qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch
+git apply ../qemu-patches/0002-x86_64-linux-user-reserved-va-without-vsyscall-page.patch
 mkdir build && cd build
 ../configure --target-list=x86_64-linux-user --enable-plugins --enable-tcg \
              --disable-docs --disable-werror
@@ -30,11 +31,17 @@ ninja -j$(nproc) qemu-x86_64
 > cores. Its plugin header includes `<glib.h>`, so building PIMID's plugins needs the glib
 > development headers (found through `pkg-config glib-2.0`), which building QEMU needs anyway.
 >
-> **The patch in `external/qemu-patches/` is required.** QEMU 10 and later run a `REP` string
-> instruction (`memset`, `memcpy`) for up to 65535 iterations inside one block execution; ZSim
-> ends a phase only at a block boundary, so a long one piled its timing events into one phase and
-> overflowed ZSim's global heap. With a plugin loaded the patch runs one iteration per block
+> **Both patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
+> string instruction (`memset`, `memcpy`) for up to 65535 iterations inside one block execution;
+> ZSim ends a phase only at a block boundary, so a long one piled its timing events into one phase
+> and overflowed ZSim's global heap. With a plugin loaded the patch runs one iteration per block
 > execution, as QEMU 9.2 did. Both plugins stop with a message naming the patch if it is missing.
+> 0002 (since PIMID (1.12.62)): PIMID launches the guest with `-B 0 -R 0x8000000000`, a guest
+> address space reserved by QEMU, so that the guest's layout does not depend on the host process
+> (see [Reproducibility](architecture.md#reproducibility)). Stock QEMU refuses `-R` for an x86_64
+> guest -- the run stops with `qemu-x86_64: Cannot allocate vsyscall page` -- because the legacy
+> vsyscall page lies outside any reservation; the patch runs the guest without that page under
+> `-R`, as on a host booted with `vsyscall=none` (glibc reaches the time calls through the vDSO).
 
 ## Build PIMID
 
@@ -98,9 +105,15 @@ with the tree built and `PIMID_SRC_ROOT` naming the tree the binaries came from.
 
 ## Reproducibility (ASLR)
 
-Address-space layout randomization (ASLR) moves the guest's addresses, and
-cycle counts depend on them (about 1%); instruction and access counts do not.
-For bit-stable timing disable ASLR with `setarch`:
+Since (1.12.62) the guest's addresses do not depend on the host's address-space
+layout: the launch reserves the guest address space (see
+[Reproducibility](architecture.md#reproducibility)). Measured on 116 cells,
+three jobs with ASLR on against three with it off: every cycle count, access
+count and power figure of the 107 serial cells was the same. ASLR still
+reaches one report line on the host side: the McPAT clock-feasibility line
+("N array(s) sized by CACTI for this clock") listed 4 instead of 7 arrays for
+the OOO host core in one of the three ASLR runs, with the same power. For
+bit-stable logs keep ASLR off with `setarch`:
 
 ```bash
 setarch -R ./build/pimid --method exec --config <cfg>

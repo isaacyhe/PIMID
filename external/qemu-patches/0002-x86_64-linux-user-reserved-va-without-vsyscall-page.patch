@@ -1,0 +1,40 @@
+PIMID: run an x86_64 guest under -R (reserved_va) without the legacy vsyscall page
+
+PIMID launches the guest with "-B 0 -R 0x8000000000": QEMU reserves the guest
+address space at guest_base 0 before the program is loaded and places every
+guest mapping in it with its own allocator. Without -R, QEMU 10 and later hand
+a non-fixed guest mmap straight to the host kernel, so the guest's program,
+stack and heap land among QEMU's and the plugin's own mappings, wherever the
+host threads' allocations of the moment leave room; the simulated addresses
+then depend on the host process.
+
+QEMU refuses -R for an x86_64 guest ("Cannot allocate vsyscall page"): the
+legacy vsyscall page sits at 0xffffffffff600000, outside any reservation.
+With this patch the guest runs without that page under -R, as on a host
+booted with vsyscall=none. glibc calls the time functions through the vDSO,
+which QEMU provides; only binaries built against a glibc older than 2.14
+(2011) called into the vsyscall page. Without -R nothing changes.
+
+Applies to QEMU v11.1.2 (PIMID (1.12.62)). Apply inside external/qemu, after 0001:
+    git apply ../qemu-patches/0002-x86_64-linux-user-reserved-va-without-vsyscall-page.patch
+
+diff --git a/linux-user/x86_64/elfload.c b/linux-user/x86_64/elfload.c
+index 49a6f61..97224ac 100644
+--- a/linux-user/x86_64/elfload.c
++++ b/linux-user/x86_64/elfload.c
+@@ -33,8 +33,13 @@ bool init_guest_commpage(void)
+      */
+     if (reserved_va != 0 &&
+         TARGET_VSYSCALL_PAGE + TARGET_PAGE_SIZE - 1 > reserved_va) {
+-        error_report("Cannot allocate vsyscall page");
+-        exit(EXIT_FAILURE);
++        /*
++         * PIMID: with -R the guest runs without the legacy vsyscall page
++         * (as a host booted with vsyscall=none). glibc reaches the time
++         * calls through the vDSO, which QEMU provides; only binaries built
++         * against a pre-2011 glibc called into this page.
++         */
++        return true;
+     }
+     page_set_flags(TARGET_VSYSCALL_PAGE,
+                    TARGET_VSYSCALL_PAGE | ~TARGET_PAGE_MASK,
