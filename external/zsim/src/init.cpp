@@ -404,10 +404,12 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
     if (type == "Simple") {
         uint32_t bandwidth = config.get<uint32_t>("sys.mem.bandwidth", 6400);
         mem = new SimpleMemory(lineSize, frequency, bandwidth, latency, name);
+        static_cast<SimpleMemory*>(mem)->dqData().setBeatBytes(config.get<uint32_t>("sys.mem.dqBeatBytes", 8));   // measured DQ data: bytes per beat
     } else if (type == "WeaveSimple") {
         uint32_t bandwidth = config.get<uint32_t>("sys.mem.bandwidth", 6400);
         uint32_t boundLatency = config.get<uint32_t>("sys.mem.boundLatency", latency);
         mem = new WeaveSimpleMemory(lineSize, frequency, bandwidth, latency, boundLatency, domain, name);
+        static_cast<SimpleMemory*>(mem)->dqData().setBeatBytes(config.get<uint32_t>("sys.mem.dqBeatBytes", 8));
     } else if (type == "MD1" || type == "WeaveMD1") {
         panic("Memory controller type '%s' has been removed. Use 'Simple' (M/D/1 is always active) or 'WeaveSimple'.", type.c_str());
     } else if (type == "Ramulator") {
@@ -415,6 +417,7 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
         uint64_t cpuFreqHz = 1000000ULL * frequency;
         RamulatorMemory* rmem = new RamulatorMemory(ramCfg, cpuFreqHz, latency, domain, name);
         rmem->setBurstsPerLine(config.get<uint32_t>("sys.mem.burstsPerLine", 1));   // 1.11.96 (H01/H02)
+        rmem->dqData().setBeatBytes(config.get<uint32_t>("sys.mem.dqBeatBytes", 8));   // measured DQ data: bytes per beat (channel width / 8)
         mem = rmem;
     } else {
         panic("Invalid memory controller type %s", type.c_str());
@@ -1218,8 +1221,10 @@ static void InitSystem(Config& config) {
 
         // Save raw PEMemoryInterface pointers before SplitAddrMemory wrapping
         rawMIs.resize(mcCount);
-        for (uint32_t i = 0; i < mcCount; i++)
+        for (uint32_t i = 0; i < mcCount; i++) {
             rawMIs[i] = static_cast<PEMemoryInterface*>(mems[i]);
+            rawMIs[i]->dqData().setBeatBytes(config.get<uint32_t>("sys.hierarchy.dqBeatBytes", 8));   // measured DQ data: the device channel's bytes per beat
+        }
 
         /* 1.11.98 (sweep-94 ruling 4 (c)): ONE Ramulator2 instance per device
          * replays every interface's DRAM requests at the epoch boundary; the
@@ -1408,6 +1413,7 @@ static void InitSystem(Config& config) {
                     uint64_t cpuFreqHz = 1000000ULL * zinfo->freqMHz;
                     uint32_t domain = d * zinfo->numDomains / numDevices;
                     RamulatorMemory* rmc = new RamulatorMemory(ramCfg, cpuFreqHz, devLat, domain, mcName);
+                    rmc->dqData().setBeatBytes(config.get<uint32_t>("sys.hierarchy.dqBeatBytes", 8));
                     rmc->setPGDevice(true);   // 1.11.18: device-side PG tracker
                     rmc->setBurstsPerLine(config.get<uint32_t>((devPrefix + ".burstsPerLine").c_str(), 1));   // 1.11.96 (H01/H02)
                     mc = rmc;

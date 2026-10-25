@@ -3,6 +3,7 @@
 
 #include <map>
 #include <string>
+#include "dq_data_stats.h"
 #include "g_std/g_string.h"
 #include "memory_hierarchy.h"
 #include "pad.h"
@@ -31,6 +32,7 @@ class RamulatorMemory : public MemObject {
         Counter profWrites;
         Counter profTotalRdLat;
         Counter profTotalWrLat;
+        DqDataStats dqStats;   // (user ruling 2026-10-25: measured termination duty)
         /* 1.11.91 (audit R8-7): the measured bank-open fraction. Counters in
          * this controller's aggregate, which sits in the rebased "mem" group
          * (1.11.90 roiRebase), so both report the ROI window only. Registered
@@ -53,6 +55,7 @@ class RamulatorMemory : public MemObject {
         PAD();
 
     public:
+        DqDataStats& dqData() { return dqStats; }
         RamulatorMemory(const std::string& configFile,
                         uint64_t cpuFreqHz,
                         uint32_t _minLatency,

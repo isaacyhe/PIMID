@@ -30,6 +30,13 @@ public:
 	double getTimingMarginUI()      const { return io_tmargin; }
 	double getVoltageMarginV()      const { return io_vmargin; }
 
+	/* PIMID (user ruling 2026-10-25, measured termination duty): the
+	 * fraction of the time a DATA pin is driven LOW in the DDR4 (POD)
+	 * termination term. Upstream writes 0.5 into the formula; the DQS
+	 * strobes keep 0.5 (they toggle every UI whatever the data). At the
+	 * default 0.5 the term is bit-identical to upstream. */
+	double dq_data_low_duty = 0.5;
+
 private:
   IOTechParam *io_param;  
 

@@ -79,14 +79,15 @@ void Extio::extio_power_term()
 
    if (io_param->io_type == DDR4)
    { 
-	   power_termination_read=1000 * (g_ip->num_dq + g_ip->num_dqs) * 
+	   /* PIMID: data pins at dq_data_low_duty, strobes at 0.5 (extio.h) */
+	   power_termination_read=1000 * (g_ip->num_dq * (dq_data_low_duty / 0.5) + g_ip->num_dqs) * 
         io_param->vdd_io * io_param->vdd_io *0.5 * (1/(io_param->r_on + io_param->rpar_read + io_param->rs1_dq))
 		+ 1000 * g_ip->num_ca * io_param->vdd_io * io_param->vdd_io * 
         (0.5 / (2 * (io_param->r_on_ca + io_param->rtt_ca)));
 	
 	
  
-		power_termination_write = 1000 * (g_ip->num_dq + g_ip->num_dqs) * 
+		power_termination_write = 1000 * (g_ip->num_dq * (dq_data_low_duty / 0.5) + g_ip->num_dqs) * 
 		io_param->vdd_io * io_param->vdd_io * 0.5 * 
 		(1/(io_param->r_on + io_param->rpar_write)) + 
 		1000 * g_ip->num_ca * io_param->vdd_io * io_param->vdd_io * 

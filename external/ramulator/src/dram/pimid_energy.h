@@ -1932,7 +1932,13 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  * Per the band doctrine the range/set is stated here and the point chosen
  * within it. The override prices BOTH directions at the stated pJ/bit. */
 inline double terminationNJ(const std::string& tech, double term_override_pJ_per_bit,
-                            double rate_mts, bool is_write) {
+                            double rate_mts, bool is_write, double data_duty = 0.5) {
+    /* data_duty (user ruling 2026-10-25, measured termination duty): the
+     * fraction of data-pin time that draws termination current -- driven
+     * LOW for POD, driven HIGH for LVSTL -- measured on the run's own lines
+     * by the caller (DBI pins included when DBI is on). 0.5 is the
+     * unbiased-data value this formula carried before. SSTL draws in both
+     * states and does not take it. */
     if (term_override_pJ_per_bit >= 0.0)
         return term_override_pJ_per_bit * 512.0 / 1000.0;
 
@@ -1984,14 +1990,14 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
          * Switching energy on the unterminated line is capacitive and lives
          * in the IDD4R/IDD4W rows, same as the HBM return below. */
         if (r_trm <= 0.0) return 0.0;
-        const double kHighDuty = 0.5;
+        const double kHighDuty = data_duty;
         e_per_bit_pJ = kHighDuty * (vddq * vddq) / (r_drv + r_trm) * t_bit_s * 1e12;
     }
     else if (sch == TermScheme::POD) {
         // current only while LOW; loop = driver + terminator (R7: the pair
         // is direction-selected above -- read: DRAM RON + RX RTT_NOM class;
         // write: controller RON + DRAM RTT_WR class)
-        const double kLowDuty = 0.5;
+        const double kLowDuty = data_duty;
         e_per_bit_pJ = kLowDuty * (vddq * vddq) / (r_drv + r_trm) * t_bit_s * 1e12;
     } else {
         // SSTL: VTT = VDDQ/2 across the loop, drawn in both states

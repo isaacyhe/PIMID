@@ -74,6 +74,7 @@ void SimpleMemory::updateLatency() {
 void SimpleMemory::flushWriteback(Address lineAddr, uint64_t cycle, uint32_t srcId) {   // 1.12.18 (bug 7)
     if (hostReplay) (void)hostReplay->hostAccess(hostReplayMi, lineAddr, cycle, srcId, true, true);   // 1.12.18 (R2): the flush passes the wall-free clock
     profWrites.atomicInc();
+    dqStats.count(lineAddr, lineBits, true);
     zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);
 }
 
@@ -110,6 +111,7 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
         case PUTX:
             //Dirty wback
             profWrites.atomicInc();
+            dqStats.count(req.lineAddr, lineBits, true);
             profTotalWrLat.atomicInc(lat);   // 1.12.18: the latency charged
             __sync_fetch_and_add(&curPhaseAccesses, 1);
             /* 1.11.18 (audit go-through): a dirty writeback IS memory traffic
@@ -125,6 +127,7 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
             break;
         case GETS:
             profReads.atomicInc();
+            dqStats.count(req.lineAddr, lineBits, false);
             profTotalRdLat.atomicInc(lat);   // 1.12.18: the latency charged
             __sync_fetch_and_add(&curPhaseAccesses, 1);
             zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);  // 1.11.8 PG residency
@@ -132,6 +135,7 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
             break;
         case GETX:
             profReads.atomicInc();
+            dqStats.count(req.lineAddr, lineBits, false);
             profTotalRdLat.atomicInc(lat);   // 1.12.18: the latency charged
             __sync_fetch_and_add(&curPhaseAccesses, 1);
             zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);  // 1.11.8 PG residency

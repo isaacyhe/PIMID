@@ -2220,6 +2220,93 @@ double RamulatorWrapper::getActivatePrechargeEnergyNJ() const {   // 1.12.18
         / static_cast<double>(pe_chip_split_);   // 1.12.18: one chip's ACT when the chips are split
 }
 double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
+    return getTerminationEnergyNJ(is_write, -1.0);
+}
+
+/* User ruling 2026-10-25 (measured termination duty). DBI per standard:
+ *   DDR4 x8/x16: read and write DBI; a byte with more than four 0 bits is
+ *     inverted and DBI_n driven LOW. Micron MT40A 8Gb DDR4 data sheet,
+ *     "Data Bus Inversion" PDF p.179 (x8/x16 only, READ and WRITE, MR5
+ *     A11/A12) and "DBI During a READ Operation" p.180. x4 has none.
+ *   DDR5: NO data bus inversion in either direction. JESD79-5D (v1.41,
+ *     Nov 2025) defines none: the x8/x16 byte pin is DM_n/TDQS_t, "Input
+ *     Data Mask" (pin table, PDF p.41; 4.8.1 Write Data Mask, p.181); the
+ *     only inversion in the standard is the static CA strap (CAI) and the
+ *     read-training pattern invert (MR28/MR29).
+ *   LPDDR5: read and write DBI-DC (MR3 OP[6] read, OP[7] write; JESD209-5C
+ *     Table MR3, PDF p.177, both "Disabled (default)"); a byte with more
+ *     than four 1 bits is inverted and DMI driven HIGH (7.4.10, PDF
+ *     pp.311-314).
+ *   GDDR6: read and write DBIdc (JESD250D MR1 OP8 RDBI / OP9 WDBI, PDF
+ *     p.60; READ p.111, WRITE p.95); a byte with more than four 0 bits is
+ *     inverted and DBI_n driven LOW ("Data Bus Inversion (DBIdc)", PDF
+ *     pp.120-121) -- the POD rule, as DDR4.
+ * Everything else: raw data. */
+bool RamulatorWrapper::dbiApplies(bool is_write, bool dbi_switch, std::string* why) const {
+    auto say = [&](const char* s) { if (why) *why = s; };
+    if (!dbi_switch) { say("DBI switched off by the user (power.models.dram_dbi: false)"); return false; }
+    if (dram_type_ == "DDR4") {
+        const int w = presetWidthBits(device_width_, preset_org_.dq_bits);
+        if (w == 8 || w == 16) {
+            say(is_write ? "DDR4 x8/x16 write DBI (Micron MT40A p.179: DBI_n LOW on an inverted byte)"
+                         : "DDR4 x8/x16 read DBI (Micron MT40A p.180: more than four 0 bits -> invert, DBI_n LOW)");
+            return true;
+        }
+        say("DDR4 x4 has no DBI (Micron MT40A p.179)"); return false;
+    }
+    if (dram_type_ == "DDR5") { say("DDR5 has no data bus inversion in either direction (JESD79-5D: the byte pin is DM_n/TDQS_t, PDF p.41; 4.8.1 p.181)"); return false; }
+    if (dram_type_ == "LPDDR5") {
+        say(is_write ? "LPDDR5 write DBI-DC (JESD209-5C MR3 OP[7], 7.4.10 p.313)"
+                     : "LPDDR5 read DBI-DC (JESD209-5C MR3 OP[6], 7.4.10 p.314: more than four 1 bits -> invert, DMI HIGH)");
+        return true;
+    }
+    if (dram_type_ == "GDDR6") {
+        say(is_write ? "GDDR6 write DBIdc (JESD250D MR1 OP9 WDBI, p.95: DBI_n LOW on an inverted byte)"
+                     : "GDDR6 read DBIdc (JESD250D MR1 OP8 RDBI, pp.111/120-121: more than four 0 bits -> invert, DBI_n LOW)");
+        return true;
+    }
+    say("no data bus inversion modelled for this technology"); return false;
+}
+
+double RamulatorWrapper::measuredDataDuty(const DqDataCounts& c, bool is_write, bool dbi_switch,
+                                          int line_bytes, std::string* how) const {
+    const Ramulator::pimid_energy::TermElectricals te =
+        Ramulator::pimid_energy::terminationElectricalsFor(dram_type_);
+    using TS = Ramulator::pimid_energy::TermScheme;
+    if (!te.known || te.scheme == TS::SSTL || te.scheme == TS::NONE) {
+        if (how) *how = (te.known && te.scheme == TS::SSTL)
+            ? "SSTL draws termination current in both states: the data do not change it"
+            : "no data-dependent termination for this technology";
+        return -1.0;
+    }
+    if (c.lines == 0) {
+        if (how) *how = "no line data measured (" + std::to_string(c.unread) + " line(s) unreadable); the formula's 0.5 stays";
+        return -1.0;
+    }
+    const double bits = 8.0 * line_bytes * static_cast<double>(c.lines);
+    std::string dbi_why;
+    const bool dbi = dbiApplies(is_write, dbi_switch, &dbi_why);
+    double pins;
+    std::string what;
+    if (te.scheme == TS::POD) {
+        pins = dbi ? static_cast<double>(c.low_pod_dbi) : bits - static_cast<double>(c.ones);
+        what = "POD: data pins driven LOW";
+    } else {
+        pins = dbi ? static_cast<double>(c.high_lvstl_dbi) : static_cast<double>(c.ones);
+        what = "LVSTL: data pins driven HIGH";
+    }
+    if (how) {
+        std::ostringstream o;
+        o << what << (dbi ? " with DBI (DBI pins included)" : " (raw data)") << " over "
+          << c.lines << " line(s)";
+        if (c.unread) o << ", " << c.unread << " unreadable line(s) not in it";
+        o << "; DBI: " << dbi_why;
+        *how = o.str();
+    }
+    return pins / bits;
+}
+
+double RamulatorWrapper::getTerminationEnergyNJ(bool is_write, double data_duty) const {
     /* 1.11.40 (audit N8, user ruling: harness the model, do not table the
      * answer). The DQ termination energy now comes from CACTI-IO -- a real
      * off-chip IO model built from extracted parameters -- instead of the
@@ -2309,8 +2396,14 @@ double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
          * extio_power_term() pass. Direction-selected here. */
         const double term_pj = is_write ? io.energy_pj_per_bit_term
                                         : io.energy_pj_per_bit_term_rd;
-        if (io.valid && io.exact_map && term_pj > 0.0)
-            return term_pj * 512.0 / 1000.0;   // per 64 B
+        if (io.valid && io.exact_map && term_pj > 0.0) {
+            double t = term_pj;
+            if (data_duty >= 0.0) {   // user ruling 2026-10-25: the data pins at the measured duty
+                const double dq = is_write ? io.energy_pj_per_bit_term_dq : io.energy_pj_per_bit_term_dq_rd;
+                t = term_pj + (data_duty / 0.5 - 1.0) * dq;
+            }
+            return t * 512.0 / 1000.0;   // per 64 B
+        }
     }
     /* Fall back, and say so rather than reporting zero. */
     static bool warned = false;
@@ -2342,7 +2435,8 @@ double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
         }
     }
     return Ramulator::pimid_energy::terminationNJ(
-        dram_type_, energy_term_override_pJ_per_bit_, rate, is_write);   // 1.11.57 (D017) + R7
+        dram_type_, energy_term_override_pJ_per_bit_, rate, is_write,
+        data_duty >= 0.0 ? data_duty : 0.5);   // 1.11.57 (D017) + R7; measured duty (ruling 2026-10-25)
 }
 
 bool RamulatorWrapper::getTerminationEnergyBandNJ(double& lo_nj, double& hi_nj,

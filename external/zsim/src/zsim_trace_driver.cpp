@@ -59,6 +59,7 @@ GlobSimInfo* zinfo;
 uint32_t procIdx;
 uint32_t lineBits;
 uint64_t procMask;
+bool dqDataReadable = false;   // trace-driven: no guest memory behind the line addresses (dq_data_stats.h)
 Core* cores[MAX_THREADS];
 InstrFuncPtrs fPtrs[MAX_THREADS] ATTR_LINE_ALIGNED;
 

@@ -132,6 +132,14 @@ struct LinkIOResult {
      * CACTI-IO natively separates power_termination_read/write (extio.cc),
      * and the split consumer charges each direction its own loop. */
     double energy_pj_per_bit_term_rd = 0.0;
+    /* The DATA pins' share of the two termination figures above, at the
+     * formula's 0.5 low duty (user ruling 2026-10-25: measured termination
+     * duty): the figure minus a second pass with the data pins never LOW.
+     * Zero where the parameter set's termination does not depend on the
+     * data (SSTL, the serial and wide-I/O sets). The caller scales it by
+     * measured duty / 0.5. */
+    double energy_pj_per_bit_term_dq = 0.0;
+    double energy_pj_per_bit_term_dq_rd = 0.0;
 
     /* Is the technology->Mem_IO_type map EXACT, or a nearest neighbour? Only
      * exact maps are allowed to replace an existing result. An approximate map

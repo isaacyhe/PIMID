@@ -959,6 +959,84 @@ static std::string findPimidMpiLib() {
     return locatePimidComponent("libpimid_mpi.so", "", "pimid_mpi");
 }
 
+/* User ruling 2026-10-25 (measured termination duty): the data statistics of
+ * the lines that crossed a group of DRAM interfaces, summed over its mem-N /
+ * pe-mi-N groups (external/zsim/src/dq_data_stats.h names and defines every
+ * counter). [0] = line reads, [1] = line writebacks / stores. These are the
+ * per-interface counts a later data-dependent energy term reads: 1 bits,
+ * driven-low / driven-high pins under each DBI rule, inverted bytes, and the
+ * pin transitions between beats inside a line. */
+struct DqData {
+    uint64_t lines[2] = {}, unread[2] = {}, ones[2] = {}, low_pod_dbi[2] = {}, high_lvstl_dbi[2] = {};
+    uint64_t inv_pod[2] = {}, inv_lvstl[2] = {}, toggles[2] = {}, toggles_pod_dbi[2] = {}, toggles_lvstl_dbi[2] = {};
+    bool present = false;
+    bool take(const std::string& key, uint64_t v) {
+        if (key.size() < 5 || key.compare(0, 2, "dq") != 0) return false;
+        int d;
+        if (key.compare(2, 2, "Rd") == 0) d = 0;
+        else if (key.compare(2, 2, "Wr") == 0) d = 1;
+        else return false;
+        const std::string w = key.substr(4);
+        uint64_t* f = (w == "Lines") ? &lines[d] : (w == "Unread") ? &unread[d] : (w == "Ones") ? &ones[d]
+                    : (w == "LowPodDbi") ? &low_pod_dbi[d] : (w == "HighLvstlDbi") ? &high_lvstl_dbi[d]
+                    : (w == "InvPod") ? &inv_pod[d] : (w == "InvLvstl") ? &inv_lvstl[d]
+                    : (w == "Toggles") ? &toggles[d] : (w == "TogglesPodDbi") ? &toggles_pod_dbi[d]
+                    : (w == "TogglesLvstlDbi") ? &toggles_lvstl_dbi[d] : nullptr;
+        if (!f) return false;
+        *f += v; present = true;
+        return true;
+    }
+};
+/* Prints the counters of one group and returns, per direction, the measured
+ * termination duty the energy uses in place of the formula's 0.5 (< 0: not
+ * measured or not data-dependent; the reason is printed). */
+static void dqDuties(const pimid::RamulatorWrapper& ram, const DqData& d, bool dbi_switch,
+                     int line_bytes, const std::string& who, const std::string& indent,
+                     double& duty_rd, double& duty_wr) {
+    duty_rd = duty_wr = -1.0;
+    if (!d.present) {
+        std::cout << indent << "[mem] DQ data NOT MEASURED for the " << who
+                  << " lines: the run's dump carries no dq counters; the termination formula's 0.5 duty stays" << std::endl;
+        return;
+    }
+    for (int dir = 0; dir < 2; ++dir) {
+        const double bits = 8.0 * line_bytes * static_cast<double>(d.lines[dir]);
+        std::ostringstream o;
+        o << indent << "[mem] DQ data MEASURED (" << "user ruling 2026-10-25" << "), " << who
+          << (dir ? " writes: " : " reads: ") << d.lines[dir] << " line(s), " << d.unread[dir] << " unreadable";
+        if (bits > 0.0) {
+            const double n = static_cast<double>(d.lines[dir]);
+            o << std::setprecision(4) << "; 1s " << d.ones[dir] / bits
+              << "; driven LOW raw " << 1.0 - d.ones[dir] / bits << " / POD DBI " << d.low_pod_dbi[dir] / bits
+              << " (DBI_n included, " << d.inv_pod[dir] << " bytes inverted)"
+              << "; driven HIGH raw " << d.ones[dir] / bits << " / LVSTL DBI-DC " << d.high_lvstl_dbi[dir] / bits
+              << " (DMI included, " << d.inv_lvstl[dir] << " bytes inverted)"
+              << "; pin transitions per line raw " << d.toggles[dir] / n << " / POD DBI " << d.toggles_pod_dbi[dir] / n
+              << " / LVSTL DBI-DC " << d.toggles_lvstl_dbi[dir] / n << " (between beats inside a line)";
+        }
+        std::cout << o.str() << std::endl;
+        pimid::RamulatorWrapper::DqDataCounts c;
+        c.lines = d.lines[dir]; c.unread = d.unread[dir]; c.ones = d.ones[dir];
+        c.low_pod_dbi = d.low_pod_dbi[dir]; c.high_lvstl_dbi = d.high_lvstl_dbi[dir];
+        std::string how;
+        const double f = ram.measuredDataDuty(c, dir == 1, dbi_switch, line_bytes, &how);
+        (dir ? duty_wr : duty_rd) = f;
+        std::ostringstream q;
+        q << indent << "[mem] DQ termination duty, " << who << (dir ? " writes: " : " reads: ");
+        if (f >= 0.0) q << std::setprecision(4) << f << " MEASURED over " << c.lines << " line(s), in place of the formula's 0.5 (" << how << ")";
+        else          q << "the formula's 0.5 (" << how << ")";
+        std::cout << q.str() << std::endl;
+    }
+}
+/* The termination at the formula's 0.5, printed beside the measured figure. */
+static std::string dqHalfNote(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr) {
+    if (duty_rd < 0.0 && duty_wr < 0.0) return "";
+    std::ostringstream o;
+    o << " [measured duty; at the formula's 0.5: rd=" << ram.getTerminationEnergyNJ(false)
+      << " nJ, wr=" << ram.getTerminationEnergyNJ(true) << " nJ]";
+    return o.str();
+}
+
 /**
  * @brief Parsed ZSim output statistics for a single rank/instance.
  *
@@ -1051,6 +1129,7 @@ struct ZSimParsedOutput {
      * device replay's reads/writes (dramReplay group), compared after the
      * parse; a mismatch is warned, never substituted. */
     uint64_t pemi_rd = 0, pemi_wr = 0, replay_rd = 0, replay_wr = 0;
+    DqData dq;   // user ruling 2026-10-25: every interface group's line data (the device-scope pricing reads this)
     bool pemi_present = false, replay_rw_present = false;
     bool ctrlRowMeasured() const { return (ctrl_row_hits + ctrl_row_misses + ctrl_row_conflicts) > 0; }
     double rowMissFraction() const {
@@ -1144,6 +1223,7 @@ struct ZSimParsedOutput {
         uint64_t l1_INV = 0, l1_INVX = 0, l1_FWD = 0;   // l1i + l1d
         uint64_t l2_INV = 0, l2_INVX = 0, l2_FWD = 0;
         uint64_t mem_rd = 0, mem_wr = 0;
+        DqData dq;   // user ruling 2026-10-25: this group's interfaces' line data
         /* 1.11.91 (audit R8-7): the Ramulator2 bank-open counters of this
          * node's memory controllers (absent -> present stays false). */
         uint64_t bank_open_cycles = 0, bank_open_window = 0;
@@ -1871,6 +1951,11 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key.rfind("outside", 0) == 0)  { continue; }
                 /* 1.12.18 (ruling 17 / R0605): the host interfaces' share of a
                  * replayed controller (either instance). */
+                /* user ruling 2026-10-25: the interfaces' line data (mem-N, pe-mi-N) */
+                if (!host_replay_scope && !dev_replay_scope && out.dq.take(key, val)) {
+                    if (cgrp) cgrp->dq.take(key, val);
+                    continue;
+                }
                 {
                     ZSimParsedOutput::GroupCounters& hg = out.host;
                     bool hk = true;
@@ -2228,7 +2313,7 @@ static const char* kSchemaPaths[] = {
     "pim.pe.operand_width", "pim.pe.pg", "pim.pe.placement.connection", "pim.pe.placement.level", "pim.pe.placement.local_link_latency", "pim.pe.spm_bytes", "pim.pe.spm_stack_bytes", "pim.pe.spm_staging", "pim.pe.stack", "pim.pe.throughput_factor", "pim.pe.type",
     "pim.placement.connection", "pim.placement.level", "pim.placement.local_link_latency",
     "power.device_corner", "power.device_tech_node_nm", "power.enabled", "power.host_tech_node_nm", "power.interconnect_projection", "power.logic_reference_mhz", "power.mcpat_overrides",
-    "power.models.clock_network", "power.models.dram_activates_counted", "power.models.dram_bank_open_measured", "power.models.dram_refresh_counted", "power.models.mc_command_ops",
+    "power.models.clock_network", "power.models.dram_activates_counted", "power.models.dram_bank_open_measured", "power.models.dram_dbi", "power.models.dram_refresh_counted", "power.models.mc_command_ops",
     "power.periphery_device", "power.report_detail", "power.subarray_pitch_factor", "power.tech_node_nm", "power.temperature_c", "power.temperature_k", "power.termination_pj_per_bit",
     "power.models.fabric_tsv", "power.models.noc_links",   // 1.12.18
     "power.models.vector_moves_split", "power.models.dram_io_share_split", "power.models.dram_vpp_dynamic",   // 1.12.18: power bug batch H
@@ -2621,6 +2706,7 @@ struct UnifiedConfig {
      * by default. Off restores the earlier pricing and the report says so. */
     bool pm_dram_refresh_counted = true;    // power.models.dram_refresh_counted
     bool pm_dram_activates_counted = true;  // power.models.dram_activates_counted
+    bool pm_dram_dbi = true;                // power.models.dram_dbi (user ruling 2026-10-25): data bus inversion where the standard has it
     bool pm_dram_bank_open_measured = true; // power.models.dram_bank_open_measured
     bool pm_mc_command_ops = true;          // power.models.mc_command_ops
     /* 1.12.18: (power bug batch H) further switchable additions, all on by
@@ -7594,6 +7680,7 @@ static void emitZSimPcieBlock(std::ostream& out, const UnifiedConfig& config,
 }
 
 static int dramBurstsPerLine(const std::string& tech, const UnifiedConfig& config);   // 1.11.98: defined with the mem block
+static int dqBeatBytes(const std::string& tech);   // user ruling 2026-10-25: defined with the mem block
 /* 1.12.18 (ruling 17 / R0605): the device DRAM epoch replay predicate, one
  * copy -- the device hierarchy block arms it, and the host memory block joins
  * it when the device IS the host's memory. */
@@ -7630,6 +7717,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     // a writer. The plugin still receives the key it has always received.
     out << "        channelsPerSystem = 1;\n";
     out << "        dramChannels = " << config.hierarchy_dram_channels << ";\n";
+    out << "        dqBeatBytes = " << dqBeatBytes(config.memory_tech) << ";\n";   // user ruling 2026-10-25
     out << "        stackChannelsPerDie = " << stackChannelsPerDie(config, false) << ";\n";   // 1.12.18 (TSV layout)
     /* 1.11.98 (sweep-94 ruling 4 (c)): the live controller serves every element
      * type by epoch replay (dram_epoch_replay.h). On for DRAM technologies
@@ -8851,6 +8939,21 @@ static int dramBurstsPerLine(const std::string& tech, const UnifiedConfig& confi
     const int col = pimid::RamulatorWrapper::ramulatorColumnBytes(t);
     return std::max(1, config.cache_line_size / std::max(1, col));
 }
+/* User ruling 2026-10-25 (measured termination duty): the bytes one beat
+ * carries on the channel a line crosses -- the column bytes over the burst
+ * length the column table states (RamulatorWrapper: DDR3/DDR4 64-bit BL8,
+ * DDR5 32-bit sub-channel BL16, LPDDR5/GDDR6 16-bit channel BL16, HBM2
+ * pseudo-channel BL4, HBM3 BL8). Only the counted pin transitions between
+ * beats read it. */
+static int dqBeatBytes(const std::string& tech) {
+    const std::string t = canonicalMemTech(tech);
+    if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) return 8;
+    int bl = 8;
+    if (t == "DDR5" || t == "LPDDR5" || t == "GDDR6") bl = 16;
+    else if (t == "HBM2") bl = 4;
+    const int col = pimid::RamulatorWrapper::ramulatorColumnBytes(t);
+    return (col >= bl) ? col / bl : 8;
+}
 
 static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int mem_latency, const std::string& mem_tech) {
     std::string ct = config.zsim_mem_controller_type;
@@ -8862,6 +8965,7 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
         out << "        configFile = \"" << config.ramulator_config_file << "\";\n";
         out << "        latency = " << mem_latency << ";\n";
         out << "        burstsPerLine = " << dramBurstsPerLine(mem_tech, config) << ";\n";   // 1.11.96 (H01/H02)
+        out << "        dqBeatBytes = " << dqBeatBytes(mem_tech) << ";\n";   // user ruling 2026-10-25
         /* 1.11.98 (gate 1208A): ONE controller per channel. The generated
          * Ramulator YAML describes one channel (one controller per channel),
          * and sys.mem.controllers defaulted to 1, so a HOST_MC placement or a
@@ -8873,6 +8977,7 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
     } else if (ct == "weavesimple") {
         out << "    mem = {\n";
         out << "        type = \"WeaveSimple\";\n";
+        out << "        dqBeatBytes = " << dqBeatBytes(mem_tech) << ";\n";   // user ruling 2026-10-25
         out << "        latency = " << mem_latency << ";\n";
         out << "        bandwidth = " << config.md1_bandwidth_mbs << ";\n";
         out << "        boundLatency = " << bound_lat << ";\n";
@@ -8881,6 +8986,7 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
         // Simple (M/D/1 always active)
         out << "    mem = {\n";
         out << "        type = \"Simple\";\n";
+        out << "        dqBeatBytes = " << dqBeatBytes(mem_tech) << ";\n";   // user ruling 2026-10-25
         out << "        latency = " << mem_latency << ";\n";
         out << "        bandwidth = " << config.md1_bandwidth_mbs << ";\n";
         out << "    };\n";
@@ -12978,8 +13084,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * price the controller driver into the DRAM's RTT_WR class --
              * a deliberately stronger setting in every DDR family, so the
              * write crossing costs more than the read crossing. */
-            const double iface_term_rd_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(false) : 0.0;
-            const double iface_term_wr_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(true)  : 0.0;
+            /* user ruling 2026-10-25: the termination at the duty MEASURED on
+             * the run's own lines (DBI where the standard has it), in place of
+             * the formula's 0.5; the counters print either way. */
+            double dq_duty_rd = -1.0, dq_duty_wr = -1.0;
+            dqDuties(ram_oracle, zsim_stats.dq, config.pm_dram_dbi, config.cache_line_size,
+                     "memory-interface", "  ", dq_duty_rd, dq_duty_wr);
+            const double iface_term_rd_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(false, dq_duty_rd) : 0.0;
+            const double iface_term_wr_nj = crosses_dq ? ram_oracle.getTerminationEnergyNJ(true, dq_duty_wr)  : 0.0;
             const double iface_drv_nj  = crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
             /* 1.11.91 (audit R8-8): the DQ output rail (IDDQ), on the SAME
              * crossing rule as termination; an on-die placement pays none. */
@@ -13238,6 +13350,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
                           << iface_term_wr_nj
                           << " nJ (ctrl RON -> DRAM RTT_WR class)"
+                          << dqHalfNote(ram_oracle, dq_duty_rd, dq_duty_wr)   // user ruling 2026-10-25
                           << (wr_term_in_iddq ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "")   // 1.12.18
                           << " [R7 split]  CACTI-IO driver+PHY: "
                           << iface_drv_nj
@@ -14305,6 +14418,11 @@ struct ArrayAccessClass {
      * model's activate + precharge energy -- never both. */
     int64_t activates = -1;
     uint64_t out_rd = 0, out_wr = 0, out_acts = 0;   // 1.12.18 (R1): this class's requests outside the ROI (not priced)
+    /* user ruling 2026-10-25: the line data of the interfaces this class
+     * crossed (null: none parsed), the DBI switch and the line size */
+    const DqData* dq = nullptr;
+    bool dbi_switch = true;
+    int line_bytes = 64;
 };
 /* 1.12.18 (ruling 17 / R0605): the refresh commands the array's replayed
  * controller counted, over its replayed DRAM cycles; when present the energy
@@ -14578,8 +14696,11 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
              * 1.11.60 (A009/A010 revert, user-approved): termination-only, as
              * device scope. CACTI-IO's driver+PHY prints informational below.
              * 1.11.63 (R7): read/write split, as device scope. */
-            const double iface_term_rd_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(false) : 0.0;
-            const double iface_term_wr_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(true)  : 0.0;
+            double dq_duty_rd = -1.0, dq_duty_wr = -1.0;   // user ruling 2026-10-25: measured termination duty
+            dqDuties(ram_oracle, c.dq ? *c.dq : DqData(), c.dbi_switch, c.line_bytes, c.who, "    ",
+                     dq_duty_rd, dq_duty_wr);
+            const double iface_term_rd_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(false, dq_duty_rd) : 0.0;
+            const double iface_term_wr_nj = c.crosses_dq ? ram_oracle.getTerminationEnergyNJ(true, dq_duty_wr)  : 0.0;
             const double iface_drv_nj  = c.crosses_dq ? ram_oracle.getInterfaceDynamicEnergyNJ() : 0.0;
             const double c_rd_mj = rd_nj * static_cast<double>(c.rd) / 1e6;
             const double c_wr_mj = wr_nj * static_cast<double>(c.wr) / 1e6;
@@ -14640,6 +14761,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
                           << iface_term_wr_nj
                           << " nJ (ctrl RON -> DRAM RTT_WR class)"
+                          << dqHalfNote(ram_oracle, dq_duty_rd, dq_duty_wr)   // user ruling 2026-10-25
                           << (wr_term_in_iddq ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "")   // 1.12.18
                           << " [R7 split]  CACTI-IO driver+PHY: " << iface_drv_nj
                           << " nJ [INFORMATIONAL, NOT charged -- 1.11.60 revert:"
@@ -16526,6 +16648,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             ArrayAccessClass c;
             c.who = "PE-originated";
             c.rd = rd; c.wr = wr;
+            c.dq = &zsim_stats.dev.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size;   // user ruling 2026-10-25
             c.crosses_dq = sys_crosses_dq;
             c.dq_why = pe_dq_why;
             c.row_miss_frac = zsim_stats.rowMissFraction();
@@ -16548,6 +16671,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             ArrayAccessClass c;
             c.who = "host-originated";
             c.rd = rd; c.wr = wr;
+            c.dq = &zsim_stats.host.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size;   // user ruling 2026-10-25
             c.crosses_dq = host_crosses_dq;
             c.dq_why = host_dq_why;
             c.row_miss_frac = -1.0;
@@ -16572,6 +16696,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             ArrayAccessClass c;
             c.who = "coherence-flush";
             c.wr = wr;
+            c.dq = &zsim_stats.host.dq; c.dbi_switch = config.pm_dram_dbi; c.line_bytes = config.cache_line_size;   // user ruling 2026-10-25: the flush writebacks are counted in the host controllers' writes
             c.crosses_dq = host_crosses_dq;
             c.dq_why = host_dq_why;
             c.row_miss_frac = -1.0;
@@ -17528,6 +17653,7 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
         out << "        bandwidth = " << agg_mbs << ";\n";
     }
     out << "        controllers = 1;\n";
+    out << "        dqBeatBytes = " << dqBeatBytes(host.memory_tech) << ";\n";   // user ruling 2026-10-25
     /* 1.12.18 (ruling 17 / R0605, user: "make the power model complete"):
      * the host memory is replayed through Ramulator2 like the device memory.
      * The M/D/1 latency above stays as the bootstrap (accesses before the
@@ -21090,6 +21216,7 @@ int main(int argc, char** argv) {
                 const YAML::Node pmn = yaml_cfg["power"]["models"];
                 config.pm_dram_refresh_counted = yamlBool(pmn["dram_refresh_counted"], true, "power.models.dram_refresh_counted");
                 config.pm_dram_activates_counted = yamlBool(pmn["dram_activates_counted"], true, "power.models.dram_activates_counted");
+                config.pm_dram_dbi = yamlBool(pmn["dram_dbi"], true, "power.models.dram_dbi");   // user ruling 2026-10-25
                 config.pm_dram_bank_open_measured = yamlBool(pmn["dram_bank_open_measured"], true, "power.models.dram_bank_open_measured");
                 config.pm_mc_command_ops = yamlBool(pmn["mc_command_ops"], true, "power.models.mc_command_ops");
                 config.model_coherence_directory = yamlBool(pmn["coherence_directory"], true, "power.models.coherence_directory");     // 1.12.18

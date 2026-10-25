@@ -325,6 +325,26 @@ public:
      * into the DRAM write termination (RTT_WR class). Both the CACTI-IO
      * exact-map path and the scheme-table fallback carry the split. */
     double getTerminationEnergyNJ(bool is_write) const;   // ODT/termination per 64B
+    /* User ruling 2026-10-25 (measured termination duty): the same energy
+     * with the data pins' termination duty MEASURED (data_duty, from
+     * measuredDataDuty) in place of the formula's 0.5. data_duty < 0 is
+     * the one-argument form exactly. The user override
+     * (power.termination_pj_per_bit) is a stated per-bit energy and is not
+     * rescaled. */
+    double getTerminationEnergyNJ(bool is_write, double data_duty) const;
+    /* The measured duty of this technology's termination: POD counts the
+     * data pins driven LOW, LVSTL those driven HIGH, per data bit, with the
+     * DBI pins counted when DBI applies. Returns < 0 when nothing was
+     * measured or the scheme's termination does not depend on the data
+     * (SSTL, unterminated); *how says which and why. */
+    struct DqDataCounts { uint64_t lines = 0, unread = 0, ones = 0, low_pod_dbi = 0, high_lvstl_dbi = 0; };
+    double measuredDataDuty(const DqDataCounts& c, bool is_write, bool dbi_switch,
+                            int line_bytes, std::string* how) const;
+    /* Does data bus inversion apply to this technology's simulated part in
+     * this direction (user ruling 2026-10-25: ON where the standard
+     * supports it; dbi_switch = power.models.dram_dbi)? *why carries the
+     * source. */
+    bool dbiApplies(bool is_write, bool dbi_switch, std::string* why) const;
     /* 1.11.40 (N8): interface terms PIMID never modelled -- driver switching
      * and PHY per 64 B, and the IO area. Previously the DQ interface was
      * termination-only, which understated LPDDR5 by ~71x (the 142x quoted here

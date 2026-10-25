@@ -70,6 +70,7 @@ GlobSimInfo* zinfo;
 uint32_t procIdx;
 uint32_t lineBits;
 uint64_t procMask;
+bool dqDataReadable = false;   // measured DQ data: set at init (user ruling 2026-10-25: measured termination duty)
 Core* cores[MAX_THREADS];
 
 /* 1.9.0 thread-MPI epoch cut: per-core ROI state (0=ACTIVE, 1=QUIESCENT parked in
@@ -5483,6 +5484,11 @@ int qemu_plugin_install(qemu_plugin_id_t id,
 
     lineBits = __builtin_ctz(zinfo->lineSize);
     procMask = ((uint64_t)procIdx) << 32;
+    /* Measured DQ data: a line address is this process's guest address
+     * (guest_base 0) only when no other process shares the hierarchy -- with
+     * procIdx > 0 the process bits are OR-ed into it, and another process's
+     * lines are not in this address space. */
+    dqDataReadable = (procIdx == 0 && zinfo->numProcs == 1);
     perProcessEndFlag = 0;
 
     /* Compute core-type masks for co-sim domain routing.

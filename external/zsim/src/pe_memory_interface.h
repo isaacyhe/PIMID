@@ -33,6 +33,7 @@
 #include "pad.h"
 #include "stats.h"
 #include "zsim.h"
+#include "dq_data_stats.h"   // (user ruling 2026-10-25: measured termination duty)
 
 /**
  * PE Memory Interface: coverage routing + hierarchy traversal + M/D/1 queuing.
@@ -96,6 +97,7 @@ protected:
     Counter profRemoteLatency_;
     Counter profReads_;
     Counter profWrites_;
+    DqDataStats dqStats_;   // the data of every line this interface reads or writes (user ruling 2026-10-25: measured termination duty)
     /* 1.11.52 (audit D003): MEASURED row-buffer behaviour. The array energy
      * model weighted its activate/precharge term by a hardcoded
      * ROW_MISS_FRAC = 0.5 -- the dominant term in DRAM access energy set by
@@ -1223,6 +1225,7 @@ public:
 
     Counter* rdCounter() { return &profReads_; }    // 1.12.18 (R1): bound to the replay
     Counter* wrCounter() { return &profWrites_; }
+    DqDataStats& dqData() { return dqStats_; }
     uint32_t replayMi() const { return mcId_; }
     void initStats(AggregateStat* parentStat) override {
         AggregateStat* s = new AggregateStat();
@@ -1251,6 +1254,7 @@ public:
         s->append(&profReads_);
         profWrites_.init("wr", "Write requests");
         s->append(&profWrites_);
+        dqStats_.initStats(s);
         parentStat->append(s);
     }
 
@@ -1379,8 +1383,10 @@ protected:
          * 8,297 L2 misses on the gemv probe). */
         if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
             profWrites_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            dqStats_.count(req.lineAddr, lineBits, true);   // the line's data on the DQ pins (user ruling 2026-10-25: measured termination duty)
         } else {
             profReads_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            dqStats_.count(req.lineAddr, lineBits, false);
         }
         /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
          * well"): under exec-method message passing (thread-MPI) the replay runs

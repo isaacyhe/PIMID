@@ -6,6 +6,56 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.58 -- DQ termination at the duty measured on the run's own data; data bus inversion where the standard has it
+
+- **Measured termination duty** (user ruling 2026-10-25). Every DRAM line read and writeback -- the host controllers
+  (Simple, WeaveSimple, Ramulator) and the device PE memory interfaces -- reads its 64 B from the guest memory
+  (guest_base 0) at the point the interface counts the access, and counts per byte: 1 bits, pins driven LOW under
+  POD DBI, pins driven HIGH under LVSTL DBI-DC, inverted bytes, and the pin transitions between beats inside the line
+  (raw and under each DBI rule). The counters sit in every mem-N / pe-mi-N stats group (`dqRd*`, `dqWr*`, defined in
+  external/zsim/src/dq_data_stats.h), ROI-windowed like rd/wr, are parsed per host / device group and are printed
+  per access class (`[mem] DQ data MEASURED`, `[mem] DQ termination duty ... MEASURED over N line(s)`: the line
+  count stands next to every measured fraction, so a small sample is visible). They are the per-interface counts a
+  later data-dependent energy term can read; `pimidReadGuestBytes` and `DqDataStats::countBytes` let a second
+  consumer of the same line share one read. A line that cannot be read (a multi-process run, a trace-driven run,
+  an unmapped address) is counted as unreadable and in nothing else.
+- The DQ termination energy uses the measured fraction in place of 0.5: POD (DDR4, DDR5, GDDR6) the data-pin time
+  driven LOW, LVSTL (LPDDR5) the data-pin time driven HIGH, per data bit, DBI pins included when DBI applies.
+  CACTI-IO's DDR4-type term scales its data-pin share only (`Extio::dq_data_low_duty`; the DQS strobes, the
+  command/address pins and the bias are unchanged, and the term is bit-identical at 0.5); the scheme table takes
+  the duty as a parameter. SSTL (DDR3) does not depend on the data; HBM is unterminated; LPDDR5 DQ ODT is off by
+  the JEDEC default, so its termination stays 0. The user override `power.termination_pj_per_bit` is a stated
+  per-bit energy and is not rescaled. With no readable line the formula's 0.5 stays, and the log says so. The
+  printed termination line also gives the value at 0.5.
+- **Data bus inversion** (user rulings 2026-10-25), on where the standard has it; `power.models.dram_dbi: false`
+  prices the raw data. DDR4 x8/x16 read and write (Micron MT40A 8Gb DDR4 data sheet pp.179-180: a byte with more
+  than four 0 bits is inverted, DBI_n LOW); GDDR6 read and write DBIdc, the same POD rule (JESD250D MR1 OP8/OP9
+  p.60, WRITE p.95, READ p.111, DBIdc pp.120-121); LPDDR5 read and write DBI-DC (JESD209-5C MR3 OP[6]/OP[7] p.177,
+  7.4.10 pp.311-314: a byte with more than four 1 bits is inverted, DMI HIGH). DDR5 has no data bus inversion in
+  either direction: JESD79-5D defines none (the x8/x16 byte pin is DM_n/TDQS_t, pin table p.41; 4.8.1 Write Data
+  Mask p.181), so DDR5 prices raw data. DDR4 x4 has none.
+- **Impact** (8 kernels x 6 technologies, 16 alu PEs at RANK placement; and 1-core host baselines, whose ROI
+  sees 9-29 DRAM lines). Raw data are zero-heavy: LOW fraction 0.48-0.91 on the device lines (POD DBI
+  0.17-0.39), 0.60-0.80 on the host lines.
+  - DDR4 (DBI): read duty 0.17-0.39, write 0.13-0.19; DQ termination -15% to -45%, DRAM dynamic energy -9% to
+    -25% (host baselines: termination -19% to -36%, DRAM dynamic -7% to -17%).
+  - GDDR6 (DBI): read duty 0.17-0.39, write 0.13-0.19; DQ termination -12% to -34%, DRAM dynamic -5% to -12%.
+  - DDR5 (no DBI): read duty 0.48-0.91; DQ termination -3% to +56%, DRAM dynamic -1% to +16% (host: +14% to +41%
+    and +3% to +10%). The write termination stays the guard inside the IDDQ4W excess (1.12.18), not charged.
+  - DDR3, HBM3, LPDDR5: unchanged. Run total power moves by 0.3% or less on these runs (DRAM static dominates).
+  - Cycles and checksums are unchanged (B against N in one job at the same guest layout: no difference).
+- **Checker:** the Power Design Manager 2025.2.1 figures are UPPER GUARDS (user ruling 2026-10-25): host interface
+  termination, read and write, DDR5 <= 2.15 and LPDDR5 <= 1.46 pJ/bit (I/O on-chip dynamic); the controller's
+  traffic part, new `mc.nonclock_pJ_bit` (controller dynamic minus its printed clock network, per transaction)
+  <= 2.26 pJ/bit; `mc.dyn_pJ_bit` keeps the clock network and stays information. The XPE DDR4 read-termination
+  band is judged at the run's measured duty (x duty / 0.405: XPE's POD LOW 0.36 per pin x 9/8 pins per data
+  bit), and the notes carry the duty's line count. PHY idle is information only, an FPGA PHY not being an ASIC
+  reference; reference points per 64 bits: Versal hard HBM2E PHY 29 mW (PDM), Samsung 7 nm HBM2E PHY 3.1 mW (Hot
+  Chips 32 poster), a 40 nm LP mobile interface ~94-139 mW (Leibowitz et al., JSSC 2010, scaled from 8 lanes); a
+  measured DDR4/DDR5/LPDDR host-PHY idle: NO PUBLISHED SOURCE FOUND. Round: DDR4 read termination FLAG 8/8 (above
+  the duty-matched XPE band), DDR5 read termination FLAG 8/8 (above the PDM guard at the measured duty),
+  controller PASS on every run.
+
 ## 1.12.57 -- a host memory node no longer decides the host-device link
 
 - **Link class (user ruling 2026-10-25):** the host-device link class default looked at every DEVICE node,

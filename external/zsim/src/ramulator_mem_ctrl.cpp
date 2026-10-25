@@ -101,6 +101,7 @@ void RamulatorMemory::initStats(AggregateStat* parentStat) {
     profWrites.init("wr", "Write requests"); memStats->append(&profWrites);
     profTotalRdLat.init("rdlat", "Total latency experienced by read requests"); memStats->append(&profTotalRdLat);
     profTotalWrLat.init("wrlat", "Total latency experienced by write requests"); memStats->append(&profTotalWrLat);
+    dqStats.initStats(memStats);
     /* 1.11.91 (audit R8-7): ALWAYS registered. The first cut registered them
      * only when the device reported itself tracked at construction, and a
      * device whose init() had not yet run read as untracked, so no counter
@@ -154,6 +155,7 @@ uint64_t RamulatorMemory::access(MemReq& req) {
      * writes. Latency sums stay in the callback (they need the completion). */
     if (req.type != PUTS) {
         if (req.type == PUTX) profWrites.inc(); else profReads.inc();
+        dqStats.count(req.lineAddr, lineBits, req.type == PUTX);
     }
 
     if ((req.type != PUTS) && zinfo->eventRecorders[req.srcId]) {

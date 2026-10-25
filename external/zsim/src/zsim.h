@@ -735,6 +735,7 @@ extern Core* cores[MAX_THREADS]; //tid->core array
 extern uint32_t procIdx;
 extern uint32_t lineBits; //process-local for performance, but logically global
 extern uint64_t procMask;
+extern bool dqDataReadable;   // line addresses are this process's guest addresses (dq_data_stats.h)
 
 extern GlobSimInfo* zinfo;
 

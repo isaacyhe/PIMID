@@ -33,6 +33,7 @@
 #include "memory_hierarchy.h"
 #include "pad.h"
 #include "stats.h"
+#include "dq_data_stats.h"   // measured DQ data statistics (user ruling 2026-10-25: measured termination duty)
 
 // System-level Garnet network for detailed model
 #include "garnet_network.h"
@@ -74,6 +75,7 @@ class SimpleMemory : public MemObject {
         DramEpochReplay* hostReplay = nullptr;
         uint32_t hostReplayMi = 0;
         uint32_t hostPathCycles = 0;
+        DqDataStats dqStats;   // the data of every line this controller reads or writes back (user ruling 2026-10-25: measured termination duty)
         PAD();
 
     public:
@@ -81,6 +83,7 @@ class SimpleMemory : public MemObject {
         void setHostReplay(DramEpochReplay* r, uint32_t mi, uint32_t pathCycles) { hostReplay = r; hostReplayMi = mi; hostPathCycles = pathCycles; }
         Counter* rdCounter() { return &profReads; }    // 1.12.18 (R1): bound to the replay
         Counter* wrCounter() { return &profWrites; }
+        DqDataStats& dqData() { return dqStats; }
         /* 1.12.18: access(), telling the caller whether the replay priced it */
         uint64_t accessPriced(MemReq& req, bool* byReplay);
         /* 1.12.18: (bug 7) one coherence-flush writeback of line lineAddr
@@ -101,6 +104,7 @@ class SimpleMemory : public MemObject {
             profLoad.init("load", "Sum of load factors (0-100) per update"); memStats->append(&profLoad);
             profUpdates.init("ups", "Number of latency updates"); memStats->append(&profUpdates);
             profClampedLoads.init("clampedLoads", "Number of updates where the load was clamped to 95%"); memStats->append(&profClampedLoads);
+            dqStats.initStats(memStats);
             parentStat->append(memStats);
         }
 

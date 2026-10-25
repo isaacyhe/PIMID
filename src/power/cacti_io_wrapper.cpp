@@ -716,12 +716,30 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             g_ip->iostate = WRITE;
             io.extio_power_term();   // recompute so io's stored term is WRITE again
         }
+        /* The data pins' share at the 0.5 duty (user ruling 2026-10-25):
+         * the same two passes with the data pins never LOW, then the stored
+         * state is restored (duty 0.5, iostate WRITE). */
+        double term_wr0_mw = 0.0, term_rd0_mw = 0.0;
+        {
+            StdoutSilencer quiet;
+            io.dq_data_low_duty = 0.0;
+            io.extio_power_term();
+            term_wr0_mw = io.getIOPowerTermMW();
+            g_ip->iostate = READ;
+            io.extio_power_term();
+            term_rd0_mw = io.getIOPowerTermMW();
+            g_ip->iostate = WRITE;
+            io.dq_data_low_duty = 0.5;
+            io.extio_power_term();
+        }
         double payload_gbps = rate_mts * num_dq / 1000.0;
         double total_mw = r.io_power_term_mw + r.io_power_dynamic_mw + r.phy_power_mw;
         if (payload_gbps > 0.0) {
             r.energy_pj_per_bit = total_mw / payload_gbps;
             r.energy_pj_per_bit_term = r.io_power_term_mw / payload_gbps;
             r.energy_pj_per_bit_term_rd = term_rd_mw / payload_gbps;
+            r.energy_pj_per_bit_term_dq    = (r.io_power_term_mw - term_wr0_mw) / payload_gbps;
+            r.energy_pj_per_bit_term_dq_rd = (term_rd_mw - term_rd0_mw) / payload_gbps;
         }
         r.valid  = true;
         /* SUBSTITUTION GATE. An injected technology is no longer merely
