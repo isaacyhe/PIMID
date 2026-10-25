@@ -665,6 +665,10 @@ class DDR5 : public IDRAM, public Implementation {
           {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCL")  + V("nBL") + V("nCS") - V("nCWL"), .is_sibling = true},
           /// CAS <-> PREab
           {.level = "rank", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTP")},
+          /// PRE <-> PRE. 1.12.39 (user ruling 2026-10-25): tPPD 2 nCK between any two precharge commands
+          /// (PREpb/PREsb/PREab) of the rank (JESD79-5D Tables 334-336 "Precharge to Precharge command delay tPPD 2 nCK",
+          /// NOTE 7). nPPD was in the row, never enforced.
+          {.level = "rank", .preceding = {"PRE", "PREsb", "PREA"}, .following = {"PRE", "PREsb", "PREA"}, .latency = V("nPPD")},
           {.level = "rank", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
           /// RAS <-> RAS
           {.level = "rank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          

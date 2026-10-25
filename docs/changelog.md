@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.39 -- LPDDR5 same-bank-group read-to-write, tPPD in DDR5 and LPDDR5, LPDDR5 tXP
+
+- **LPDDR5 RD -> WR in the same bank group = 14 nCK (user ruling 2026-10-25, T3):** new bank-group constraint in
+  LPDDR5.cpp, RL + BL/n_max + RU(tWCK2DQO_HF max / tCK) - WL = 17 + 4 + 2 - 9 (JESD209-5C Table 347 p.488,
+  Table 462 p.584). It was 12 (the different-bank-group Table 348 value, rank scope only).
+- **tPPD = 2 nCK enforced** between any two precharges of a rank: DDR5 (PRE/PREsb/PREA, JESD79-5D Tables 334-336)
+  and LPDDR5 (PRE/PREA, JESD209-5C Table 381). nPPD was in both preset rows and never used.
+- **LPDDR5 tXP = max(3 nCK, 7 ns)** (JESD209-5C Table 245 p.331; was 7.5 ns) in main.cpp dramPdTxp, the replayed
+  controller's power-down exit (LPDDR5 power-down is off unless memory.power_down: true).
+- **Data impact:** small; same-bank-group read-to-write turnarounds on LPDDR5 +2 nCK; back-to-back precharges on
+  DDR5/LPDDR5 spaced by 2 nCK. Default LPDDR5 runs: tXP inert (power-down off).
+
 ## 1.12.38 -- DDR3 default bin DDR3_1600K (11-11-11), the Micron -125 part the record's currents describe
 
 - **DDR3 timing bin (user ruling 2026-10-25, T2):** params/dram/ddr3.yaml `timing_preset` DDR3_1600H -> DDR3_1600K.

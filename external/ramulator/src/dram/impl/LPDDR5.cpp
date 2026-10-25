@@ -546,6 +546,9 @@ class LPDDR5 : public IDRAM, public Implementation {
           /// CAS <-> PREab
           // 1.11.63: RD->PRE = BL/n_min + RU(tRBTP/tCK); WR->PRE = WL + BL/n_min + 1 + RU(tWR/tCK) (JESD209-5C Tbl 340 p.483)
           {.level = "rank", .preceding = {"RD16"}, .following = {"PREA"}, .latency = V("nBL16") + V("nRTP")},
+          /// PRE <-> PRE. 1.12.39 (user ruling 2026-10-25): tPPD 2 nCK between any two precharges of the rank
+          /// (JESD209-5C Table 381 "tPPD 2 nCK"; Tables 340-342 PRE->PRE = 2). nPPD was in the row, never enforced.
+          {.level = "rank", .preceding = {"PRE", "PREA"}, .following = {"PRE", "PREA"}, .latency = V("nPPD")},
           {.level = "rank", .preceding = {"WR16"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR")},          
           /// RAS <-> RAS
           {.level = "rank", .preceding = {"ACT-1"}, .following = {"ACT-1", "REFpb"}, .latency = V("nRRD")},          
@@ -569,6 +572,11 @@ class LPDDR5 : public IDRAM, public Implementation {
           {.level = "bankgroup", .preceding = {"WR16", "WR16A"}, .following = {"WR16", "WR16A"}, .latency = V("nCCDL")},          
           // 1.11.63: WL + BL/n_max + RU(tWTR_L/tCK) -- BL/n_max = 2*BL/n_min in BG mode (Tbl 340)
           {.level = "bankgroup", .preceding = {"WR16", "WR16A"}, .following = {"RD16", "RD16A"}, .latency = V("nCWL") + 2 * V("nBL16") + V("nWTRL")},
+          /* 1.12.39 (user ruling 2026-10-25): RD -> WR in the SAME bank group. JESD209-5C Table 347 (p.488):
+           * RL + BL/n_max + RU(tWCK2DQO(max)/tCK) - WL, BL/n_max = 2 x BL/n_min in BG mode, tWCK2DQO_HF max 1.6 ns
+           * (Table 462 p.584) -> RU(1.6/1.25) = 2: 17 + 4 + 2 - 9 = 14 nCK. The rank-level 12 above (Table 348,
+           * BL/n_min) stays for different bank groups. */
+          {.level = "bankgroup", .preceding = {"RD16", "RD16A"}, .following = {"WR16", "WR16A"}, .latency = V("nCL") + 2 * V("nBL16") + 2 - V("nCWL")},
           /// RAS <-> RAS
           {.level = "bankgroup", .preceding = {"ACT-1"}, .following = {"ACT-1"}, .latency = V("nRRD")},  
 
