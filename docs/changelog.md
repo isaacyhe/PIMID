@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.35 -- the host node-per-core reference band is node- and clock-scaled per run
+
+- **Checker (user ruling 2026-10-25, option (ii)):** `host.node_W_per_core` is judged against a DERIVED band scaled
+  to the run's host node and clock: low edge Cortex-A9 1.2 W (45 nm, 1 GHz; Blem et al., HPCA 2013) x the
+  published-silicon ratio 45 nm -> host node (DeepScaleTool, the per-op scaling table) x f / 1 GHz; high edge
+  Haswell-EP ~8 W/core (22 nm, 2.6 GHz; Desrochers et al., MEMSYS 2016) x the silicon ratio 22 nm -> host node x
+  f / 2.6 GHz. The frequency factor scales the whole published power, leakage included. 22 nm, 2 GHz: [1.14, 6.15]
+  W/core (was [1.2, 8]). The measured-activity value stays judged; the full-load value is information.
+  DDR5 4-core baseline: 1.157 W/core, FLAG -> PASS. No model change.
+
 ## 1.12.34 -- the power checker is tracked; it judges the in-order and OOO PEs on the alu PE's basis (information); flip-flop scaling closed
 
 - **The power checker is now tracked in the development repository** (user ruling 2026-10-25; it is not part of
