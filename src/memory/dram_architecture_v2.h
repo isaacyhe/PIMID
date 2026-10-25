@@ -996,12 +996,12 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
     arch->organization.rank_size_gb = 1;          // DERIVED: one 8 Gb device
 
     // ===== TIMING (preset GDDR6_2000_1350mV_double; tCK = 8E6 / 14000 = 571 ps) =====
-    // nRCD 26, nCL 24, nRP 26, nRAS 53, nBL 2.
+    // nRCD 27, nCL 24, nRP 27, nRAS 53, nBL 2 (1.12.43: Samsung K4Z80325BC Table 92; was 26/26).
     arch->timing.clock_freq_mhz = 1000.0 / 0.571;  // DERIVED: 1000 / tCK_ns
     arch->timing.data_rate_mtps = 14000;
-    arch->timing.tRCD_ns = 26 * 0.571;   // DERIVED: nRCD 26 x tCK 571 ps
+    arch->timing.tRCD_ns = 27 * 0.571;   // DERIVED: nRCD 27 x tCK 571 ps
     arch->timing.tCAS_ns = 24 * 0.571;   // DERIVED: nCL 24
-    arch->timing.tRP_ns  = 26 * 0.571;   // DERIVED: nRP 26
+    arch->timing.tRP_ns  = 27 * 0.571;   // DERIVED: nRP 27
     arch->timing.tRAS_ns = 53 * 0.571;   // DERIVED: nRAS 53
     arch->timing.tBurst_ns = 2 * 0.571;  // DERIVED: nBL 2 x tCK
 

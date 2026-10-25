@@ -348,10 +348,10 @@ void RamulatorWrapper::resolvePresetTiming() {
         preset_timing_ = makePresetTiming("LPDDR5_6400", "external/ramulator/src/dram/impl/LPDDR5.cpp timing_presets",
                                           6400, 2, 17, 15, 15, 34, 1250, 8, /*nWTR*/ 10);
     } else if (name == "GDDR6_2000_1350mV_double") {
-        /* GDDR6.cpp, row "GDDR6_2000_1350mV_double": nBL 2, nCL 24, nRCDRD 26, nRP 26, nRAS 53, tCK 571 ps,
+        /* GDDR6.cpp, row "GDDR6_2000_1350mV_double": nBL 2, nCL 24, nRCDRD 27, nRP 27 (1.12.43: Samsung Table 92), nRAS 53, tCK 571 ps,
          * tCK = 8E6/rate (rate 14000; 1.11.66: 8 bits/pin per CK, WCK 4x CK, DDR on WCK). */
         preset_timing_ = makePresetTiming("GDDR6_2000_1350mV_double", "external/ramulator/src/dram/impl/GDDR6.cpp timing_presets",
-                                          14000, 2, 24, 26, 26, 53, 571, 8, /*nWTR*/ 11);
+                                          14000, 2, 24, 27, 27, 53, 571, 8, /*nWTR*/ 11);
     } else if (name == "HBM2_2.4Gbps") {
         /* HBM2.cpp, row "HBM2_2.4Gbps": nBL 2, nCL/nRCDRD 20, nRP 18, nRAS 40, tCK 833 ps, tCK = 2E6/rate
          * (1.11.63, JESD235D: BL4 = 2 CK; tRP 15 ns = 18 CK). */

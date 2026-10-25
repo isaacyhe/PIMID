@@ -104,10 +104,20 @@ class GDDR6 : public IDRAM, public Implementation {
       //       name                 rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nFAW  nRFC nREFI nRREFD nRFCpb tCK_ps
       /* 1.12.42: despite the "2000" in the name this row runs at 14000 MT/s: CK 1750 MHz (tCK 571 ps), WCK 4x
        * CK, 14 Gb/s per pin (Samsung K4Z80325BC Rev 1.3 Table 92, JESD250D Fig. 1). The name is Ramulator's. */
-      {"GDDR6_2000_1350mV_double", {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
-      {"GDDR6_2000_1250mV_double", {14000,  2,  24,    30,     19,  30,   60,   89,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
+      /* 1.12.43 (user ruling 2026-10-25): the default row follows Samsung K4Z80325BC Rev. 1.3 (public) Table 92
+       * "AC Timings @ VDD&VDDQ=1.35V" p.157, rounded UP to 571 ps: tRCDRD 15 ns -> 27 (was 26 = 14.85 ns), tRP 15 ns
+       * -> 27 (was 26), tWR 15 ns -> 27 (was 26); tCCDL "3 / 4 tCK" (NOTE 29/35, MR-selected) with fCKBG3 2000 MHz
+       * >= the 1750 MHz CK of this row, so 3 (was 6, twice the sheet). nRC 79 -> 80 = nRAS 53 + nRP 27 (tRC 45 ns
+       * = tRAS 30 + tRP 15; DERIVED: the rounded cycle counts must still satisfy nRC >= nRAS + nRP). Unchanged and
+       * matching the sheet: tRCDWR 9 ns (16), tRAS 30 (53), tRRD max(4 ns, 2tCK) (7), tFAW 16 ns (28), tRTPL 4,
+       * tWTRS 2tCK+4 ns (9), tWTRL 4tCK+4 ns (11), tRFCab 120 / tRFCpb 60 ns. */
+      {"GDDR6_2000_1350mV_double", {14000,  2,  24,    27,     16,  27,   53,   80,   27,   4,   6,   2,    3,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
+      /* 1.12.43: the 1250 mV rows' nRC 89 < nRAS 60 + nRP 30. Samsung Table 93 "@ VDD&VDDQ=1.25V" p.159: tRC 51 ns
+       * -> RU(51/0.571) = 90 = nRAS + nRP. (Not changed, stated: Table 93 tRCDWR 11 ns = 20 and tFAW 24 ns = 43 nCK
+       * against the rows' 19 and 42.) */
+      {"GDDR6_2000_1250mV_double", {14000,  2,  24,    30,     19,  30,   60,   90,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
       {"GDDR6_2000_1350mV_quad",   {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
-      {"GDDR6_2000_1250mV_quad",   {14000,  2,  24,    30,     19,  30,   60,   89,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
+      {"GDDR6_2000_1250mV_quad",   {14000,  2,  24,    30,     19,  30,   60,   90,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},   // 1.12.43: nRC 90
     };
 
 

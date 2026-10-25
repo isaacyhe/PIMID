@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.43 -- GDDR6 default row on Samsung K4Z80325BC Table 92; 1250 mV rows nRC >= nRAS + nRP
+
+- **GDDR6_2000_1350mV_double (user ruling 2026-10-25, T5):** Samsung K4Z80325BC GDDR6 Rev. 1.3 (public copy),
+  Table 92 p.157 at 1.35 V, rounded up at tCK 571 ps: nRCDRD 26 -> 27, nRP 26 -> 27, nWR 26 -> 27 (15 ns each;
+  26 nCK = 14.85 ns was short), nCCDL 6 -> 3 (tCCDL 3/4 tCK, 3 allowed up to fCKBG3 2000 MHz; CK is 1750 MHz),
+  nRC 79 -> 80 (= nRAS 53 + nRP 27, DERIVED from tRC 45 = tRAS 30 + tRP 15). The wrapper transcription and the
+  GDDR6 architecture object follow (tRCD/tRP 15.42 ns).
+- **1250 mV rows:** nRC 89 -> 90 (Table 93 p.159 tRC 51 ns; = nRAS 60 + nRP 30). Stated, not changed: Table 93
+  tRCDWR 11 ns (20 nCK) and tFAW 24 ns (43 nCK) against the rows' 19 and 42.
+- **timing_check.py:** the KNOWN entries for the 1250 mV rows are removed; the check passes on its own.
+- **Data impact:** GDDR6 runs: row miss +1 nCK (tRCD) and conflict +2 nCK; same-bank-group column commands twice as
+  dense (tCCDL 3); write recovery +1 nCK.
+
 ## 1.12.42 -- non-default bins, tREFI rounded down, tRTPL for HBM read-to-precharge-all; timing sanity tool tracked
 
 - **Non-default bins (user ruling 2026-10-25, T4):** DDR3_800E 5-5-5 / nRC 20 -> 6-6-6 / nRC 21 (JESD79-3E Table
