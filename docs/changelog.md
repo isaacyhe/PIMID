@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.47 -- DDR3: fast power-down priced from the measured IDD2P1/IDD2N ratio
+
+- **Model (user ruling 2026-10-25):** the DDR3 record's power-down factor becomes pd = 0.29224 (was 0.566). Micron's
+  4 Gb Rev E sheet prints IDD2P1 (fast exit) = IDD2N = 32 mA, so power-down saved nothing; measured DDR3L silicon
+  (Ghose et al., SIGMETRICS 2018, Sec. 4.5) shows fast power-down cutting the measured IDD2N by 65.8 / 30.6 / 48.7 %
+  (vendors A/B/C). The factor applies the three-vendor mean ratio IDD2P1/IDD2N = 0.51633 to the typical IDD2N
+  (0.566 x 0.51633 = 0.29224; IDD2P_t 18.112 -> 9.352 mA), DERIVED; the mean is the convention of every other DDR3
+  factor of the same paper. Vendor band 0.342 .. 0.694. Both variants (DDR3 1.5 V, DDR3L 1.35 V). Record only
+  (params/dram/ddr3.yaml); no code change.
+- **Data impact:** DDR3 background (memory static) wherever the replayed controller measured power-down residency,
+  and every total that holds it; per-access, ACT and refresh energies unchanged.
+
 ## 1.12.46 -- HBM2/HBM3: no per-stack floor; the board power-off offset is 821.3 mA
 
 - **Model (user ruling 2026-10-25):** the HBM2 and HBM3 records lose their per-stack floor (469.98 / 430.82 mW). The

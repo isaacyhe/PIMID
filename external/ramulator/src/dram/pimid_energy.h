@@ -753,7 +753,10 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * generation, speed and 1.35 V class the anchor measured: standby
      * 0.566, premium 0.367/0.566, activate excess 0.43 ([G]'s IDD0 loop
      * ratio), burst excess 0.736 read / 0.542 write, refresh excess 0.829,
-     * power-down 0.566. Typical currents (static part): IDD2N 18.112,
+     * power-down 0.566 ((1.12.47), user ruling 2026-10-25: the record now carries
+     * pd 0.29224 = 0.566 x the measured IDD2P1/IDD2N 0.51633, so IDD2P_t =
+     * 9.352 mA; the values below are the earlier set, kept as history).
+     * Typical currents (static part): IDD2N 18.112,
      * IDD3N 18.112 + 6 x 0.6484 = 22.002, IDD4R 22.002 + 119 x 0.736 =
      * 109.586, IDD4W 22.002 + 87 x 0.542 = 69.156, IDD5B 18.112 + 203 x
      * 0.829 = 186.399, IDD2P 18.112 mA (fast exit; = IDD2N_t, as on the
