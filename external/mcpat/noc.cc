@@ -375,8 +375,9 @@ void NoC ::init_link_bus(double link_len_)
 				  link_len, &interface_ip, 3, true/*pipelinable*/, nocdynp.route_over_perc);
 		link_bus = link_wire;
 		/* PIMID 1.12.18: the per-link price, printed for the hand check
-		 * (energy per bit-mm = flit energy / bits / length). Router-level
-		 * links only: a bus level keeps its upstream behaviour and line. */
+		 * (energy per bit-mm = flit energy / bits / length). A bus level keeps
+		 * its upstream behaviour; its line is printed below (user ruling
+		 * 2026-10-25, print only). */
 		if (nocdynp.type)
 		{
 			const double bits = nocdynp.flit_size;
@@ -384,9 +385,33 @@ void NoC ::init_link_bus(double link_len_)
 			          << "wire model, type Global, interconnect projection "
 			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
 			          << "length " << link_len << " um ("
-			          << (explicit_len ? "0.5 x sqrt(span / parent regions), H-tree"
-			                           : "upstream mesh derivation")
+			          << ((XML->sys.NoC[ithNoC].link_span_processor == 2)
+			                  ? "2 x sqrt(die area) / stops, ring loop"   /* PIMID (user ruling 2026-10-25) */
+			                  : explicit_len ? "0.5 x sqrt(span / parent regions), H-tree"
+			                                 : "upstream mesh derivation")
 			          << "), " << bits << " b; per flit: dynamic "
+			          << link_wire->power.readOp.dynamic << " J, leakage "
+			          << link_wire->power.readOp.leakage << " W, gate leakage "
+			          << link_wire->power.readOp.gate_leakage << " W, area "
+			          << link_wire->area.get_area() << " um^2; dynamic per bit-mm "
+			          << ((bits > 0 && link_len > 0)
+			                  ? link_wire->power.readOp.dynamic / bits / (link_len * 1e-3)
+			                  : 0.0)
+			          << " J" << std::endl;
+		}
+		else
+		{
+			/* PIMID (user ruling 2026-10-25): a BUS level's wire, printed for the hand check like the
+			 * links above (print only; nothing priced changes). Its length is McPAT's upstream bus
+			 * derivation: sqrt(processor area x chip_coverage) (x sqrt(dram_periph_area) on the DRAM
+			 * die), / ((H+V)/2), / 2 when the bus has more than one node; McPAT charges it per access. */
+			const double bits = nocdynp.flit_size;
+			std::cerr << "  [link] noc" << ithNoC << " bus wire (McPAT interconnect, CACTI "
+			          << "wire model, type Global, interconnect projection "
+			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
+			          << "length " << link_len << " um (upstream bus derivation over "
+			          << nocdynp.horizontal_nodes << "x" << nocdynp.vertical_nodes << " nodes), "
+			          << bits << " b; per access: dynamic "
 			          << link_wire->power.readOp.dynamic << " J, leakage "
 			          << link_wire->power.readOp.leakage << " W, gate leakage "
 			          << link_wire->power.readOp.gate_leakage << " W, area "

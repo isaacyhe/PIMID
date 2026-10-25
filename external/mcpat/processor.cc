@@ -460,7 +460,20 @@ Processor::Processor(ParseXML *XML_interface)
 			  double link_len_scale = (XML->sys.dram_periph_family == 1 &&
 			                           XML->sys.NoC[i].on_dram_die)
 			      ? sqrt(XML->sys.dram_periph_area) : 1.0;
-			  if (XML->sys.NoC[i].link_span_processor)   /* 1.12.23: the processor's own area, um^2 */
+			  if (XML->sys.NoC[i].link_span_processor == 2)
+				  /* PIMID (user ruling 2026-10-25): a RING's stop-to-stop link. The ring is one loop
+				   * folded up and down the die through two columns of stops, as on Nehalem-EX (Rusu,
+				   * ISSCC 2009 / JSSC 45(1) 2010: cores and LLC slices in two columns of rows, the two
+				   * counter-rotating rings running through the slice columns, one stop per row). The loop
+				   * is ~2 die sides long and carries one link per stop:
+				   *   len = 2 x sqrt(die area) / stops   (DERIVED; square die).
+				   * The per-stop-tile alternative sqrt(area / stops) assumes square stop tiles, which a
+				   * two-column floorplan does not have (each stop's core + slice spans half the die
+				   * width), so it is not used. McPAT's upstream 2-D mesh derivation (side / ((H+V)/2) / 2)
+				   * gave half of this for a 1 x N ring. */
+				  nocs[i]->init_link_bus(2.0 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage)
+				                         / std::max(1, XML->sys.NoC[i].horizontal_nodes * XML->sys.NoC[i].vertical_nodes));
+			  else if (XML->sys.NoC[i].link_span_processor)   /* 1.12.23: the processor's own area, um^2 */
 				  nocs[i]->init_link_bus(0.5 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage
 				                                    / std::max(1, XML->sys.NoC[i].link_parent_regions)));
 			  else if (XML->sys.NoC[i].link_span_area_mm2 > 0 && XML->sys.NoC[i].link_parent_regions > 0)

@@ -314,7 +314,11 @@ per clock), optionally the crossbar or a shared bus -- from the data
 messages and hops the timing model measured; flit 256 b. It replaces the
 leakage-only placeholder that `<host>.noc` carried through 1.12.18; control
 messages are not priced on the ring and the crossbar (a lower bound); a
-1-core host has no fabric.
+1-core host has no fabric. Ring link length (user ruling 2026-10-25):
+2 x sqrt(host die area) / stops, the loop of the Nehalem-EX floorplan (two
+columns of core/LLC-slice rows, the rings through the slice columns; Rusu,
+ISSCC 2009 / JSSC 2010) on a square die -- DERIVED, no published stop spacing
+in mm; McPAT's upstream 2-D mesh formula gave half of it.
 
 PIMID 1.12.18, per-die process (`system.devices[].process`,
 `power.models.per_die_process`): each component is priced at the die it

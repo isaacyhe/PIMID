@@ -15623,8 +15623,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              *     controller; each stop a 3-port router (two directions + local),
              *     traversed (hops + 1) times per flit; the neighbour links, two per
              *     stop (one per direction), traversed hops times per flit. Their
-             *     length is McPAT's own 1-D derivation over the host die: the ring's
-             *     physical length is NO PUBLISHED SOURCE FOUND.
+             *     length (user ruling 2026-10-25) is the ring loop's: 2 x
+             *     sqrt(host die area) / stops, the Nehalem-EX floorplan (two columns
+             *     of core/slice rows, the rings through the slice columns; Rusu,
+             *     ISSCC 2009 / JSSC 2010) on a square die, derived in the McPAT fork
+             *     (link_span_processor = 2). The ring's physical stop spacing in mm is
+             *     NO PUBLISHED SOURCE FOUND: the length is DERIVED.
              *   crossbar: one router, a port per core, L3 slice and memory
              *     controller, once per flit; one port wire per agent each way over
              *     the processor's area, twice per flit.
@@ -15721,13 +15725,15 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         NoCLevel rl = rs;
                         rl.name = "host_ring_links";
                         rl.routers_present = 0; rl.has_global_link = 1;
+                        rl.link_span_processor = 2;   // (user ruling 2026-10-25): ring loop, 2 sqrt(A) / stops
                         rl.input_ports = 2; rl.output_ports = 2;   // one link per direction per stop
                         rl.link_traversals = static_cast<int64_t>(hops * fpm);
                         rl.total_accesses = hops * fpm;
                         rl.duty_cycle = static_cast<double>(hops * fpm) / (cyc * stops);
                         lv.push_back(rs); lv.push_back(rl);
                         what << "ring: " << stops << " stops (" << node.num_cores << " core/L3-slice stops + " << mcs
-                             << " memory-controller stops), 3-port stops, 2 links per stop; mean "
+                             << " memory-controller stops), 3-port stops, 2 links per stop of 2 x sqrt(host die)"
+                                " / stops each (ring loop, DERIVED from the Nehalem-EX floorplan); mean "
                              << (msgs ? static_cast<double>(hops) / static_cast<double>(msgs) : 0.0)
                              << " hops per data message (measured); " << rs.total_accesses << " stop traversals, "
                              << rl.link_traversals << " link traversals";

@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.53 -- the host ring's links get the ring loop's length
+
+- **Host ring link length (user ruling 2026-10-25):** each stop-to-stop link is 2 x sqrt(host die area) /
+  stops (McPAT fork, processor.cc, `link_span_processor = 2`), the loop of the Nehalem-EX floorplan -- cores and
+  LLC slices in two columns of rows, the two counter-rotating rings running through the slice columns, one stop
+  per row (Rusu, ISSCC 2009 / JSSC 45(1) 2010) -- on a square die. DERIVED: no published stop spacing in mm. The
+  per-stop-tile alternative sqrt(area / stops) assumes square stop tiles, which the two-column floorplan does not
+  have, and is not used. Root cause: the ring's links took McPAT's upstream 2-D mesh derivation, side / ((H+V)/2)
+  / 2, which for a 1 x N ring is half the loop pitch. 16-core host (18 stops): 0.733 -> ~1.47 mm; 4-core
+  (6 stops): 1.595 -> ~3.19 mm. Ring link dynamic and leakage scale with the length; the stops are unchanged.
+- **Observability (user ruling 2026-10-25):** a BUS level (the device tree's bank level) now prints its own
+  `[link] nocN bus wire` line -- length (McPAT's upstream bus derivation), width, energy per access and per
+  bit-mm -- like the tree's links. Print only: no priced number changes.
+
 ## 1.12.52 -- GDDR6: one die per two-channel device; the channels are the channel tier
 
 - **GDDR6 no longer carries its channel count in chips_per_rank** (user ruling 2026-10-25, clean fix; src/main.cpp).
