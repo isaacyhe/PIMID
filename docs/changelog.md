@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.50 -- HBM2 refresh energy at the measured part's 350 ns tRFC
+
+- **Model (user ruling 2026-10-25):** the HBM2 refresh energy per REF is VDD x (IDD5 - IDD2N) x 350 ns, the
+  all-bank tRFC the authors publish for the measured 8 Gb-channel part (HBM-Power config/HBM2_1200MTs/timing.json,
+  nRFC 210 at 1666.7 ps); the measured IDD5B loop excess is taken as measured, (1514.5 - 1087.4) / 8 = 53.3875 mA
+  per channel (the 266.7/260 period factor is gone). Energy only: record idd.trfc_ns 260 -> 350, idd5 121.288255 ->
+  119.9125 mA; the Ramulator timing (HBM2_2.4Gbps preset tRFC) is unchanged. 17.09 -> 22.42 nJ per REF per channel.
+  Stated conflict: the artifact's IDD5B loop source sets tRFC = 160 cycles (266.7 ns) beside a 350 ns comment.
+- **Data impact:** HBM2 refresh energy +31% (background +~11 mW per stack); nothing else.
+
 ## 1.12.49 -- HBM2 host reads price the DQ I/O once (I/O share)
 
 - **Model (user ruling 2026-10-25):** the HBM2 record gets an I/O share inside idd4r (58.88 mA = the VDDQ band
