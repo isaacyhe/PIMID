@@ -947,8 +947,8 @@ void RamulatorWrapper::initialize() {
          * record, registered beside the code table and cross-checked against
          * it (a mismatch refuses); step 2 reads it instead of the table. */
         Ramulator::pimid_energy::PartIddFacts pf;
-        for (const auto& kv : rec.idd.by_grade) {
-            const pimid::params::IddRow& r = kv.second;
+        /* (1.12.48) (user ruling 2026-10-25): one conversion for the grade rows and the per-width rows */
+        auto toSpec = [&](const pimid::params::IddRow& r) {
             Ramulator::pimid_energy::IDDSpec s{r.vdd, r.idd0, r.idd2n, r.idd3n, r.idd4r, r.idd4w, r.idd5,
                                               r.trfc_ns, r.trefi_ns, rec.idd.channels_basis, r.idd2p};
             if (r.has_iddq) { s.iddq3n = r.iddq3n; s.iddq4r = r.iddq4r; s.iddq4w = r.iddq4w; s.vddq = r.vddq;
@@ -961,8 +961,10 @@ void RamulatorWrapper::initialize() {
             s.e_actpre_pJ_override = rec.idd.e_actpre_pj_override;
             s.stack_floor_mw = rec.idd.stack_floor_mw;
             if (rec.idd.has_vpp_act) s.vpp_act_ratio = rec.idd.vpp_act_ratio;   // 1.12.18 (user ruling 2026-10-24)
-            pf.rows[kv.first] = s;
-        }
+            return s;
+        };
+        for (const auto& kv : rec.idd.by_grade) pf.rows[kv.first] = toSpec(kv.second);
+        for (const auto& kv : rec.idd.by_width) pf.width_rows[kv.first] = toSpec(kv.second);   // (1.12.48): idd.by_width
         pf.provenance = rec.idd.provenance; pf.idd3n_bank_state = rec.idd.idd3n_bank_state;
         pf.basis = rec.idd.basis; pf.channels_basis = rec.idd.channels_basis;
         pf.component_factors.apply = rec.component_factors.apply;
@@ -1413,7 +1415,11 @@ double RamulatorWrapper::modelledRateMTs() const {
 std::string RamulatorWrapper::energyKey() const {
     std::string dt = dram_type_;
     std::transform(dt.begin(), dt.end(), dt.begin(), ::toupper);
-    return (dt == "DDR5") ? dt + "-" + std::to_string(ddr5_grade_mtps_) : dram_type_;
+    if (dt == "DDR5") return dt + "-" + std::to_string(ddr5_grade_mtps_);
+    /* (1.12.48) (user ruling 2026-10-25): a device width the record publishes its own column for (idd.by_width) prices
+     * that row ("DDR3-x16"); a width it does not publish keeps the single row, as before. */
+    if (Ramulator::pimid_energy::hasWidthRow(dt, device_width_)) return dt + "-" + device_width_;
+    return dram_type_;
 }
 
 void RamulatorWrapper::setDdr5SpeedGrade(int mtps) {

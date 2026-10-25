@@ -46,6 +46,16 @@ idd:
   idd5: 235.0
   # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
   idd2p: 32.0
+  # (1.12.48) (user ruling 2026-10-25): the x16 device of the same die prices its OWN column (memory.dram.device_width: x16
+  # selects it); the columns Table 20 prints as "All" (IDD2N, IDD2P1, IDD5B) are inherited from the row above. Before this the
+  # x16 organisation was priced on the x8 currents.
+  by_width:
+    x16:
+      idd0: 66.0
+      idd3n: 47.0
+      idd4r: 235.0
+      idd4w: 171.0
+      source: "Micron MT41K 4 Gb DDR3L (4Gb_DDR3L.pdf Rev. Q 12/17) Table 20 'IDD Maximum Limits Die Rev. E for 1.35/1.5V Operation' p.43, x16, DDR3-1600 column, MAXIMA at TC 85 C: IDD0 66, IDD3N 47, IDD4R 235, IDD4W 171 mA (x4/x8: 55, 38, 157, 125); IDD2N 32, IDD2P1 32 and IDD5B 235 mA are 'All' widths (the row above); typical via the same component factors"
   trfc_ns: 260.0                   # 1.12.25: the 4 Gb sheet's tRFC (trfc_bases.datasheet); was 350 ns, the 8 Gb value
   trefi_ns: 7800.0
   source: "Micron MT41K 4 Gb DDR3L (4Gb_DDR3L.pdf Rev. R 09/18) Table 20 'IDD Maximum Limits Die Rev. E for 1.35/1.5V Operation' p.44 (p.43 in Rev. Q), x8, DDR3-1600 column, MAXIMA at TC 85 C (IDD5B burst refresh; IDD2P1 fast exit); the same column as Micron MT41J 4 Gb automotive DDR3 (4gb_automotive_ddr3_sdram.pdf Rev. B 04/13) Table 20 p.44; typical via the component factors"

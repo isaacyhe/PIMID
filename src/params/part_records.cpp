@@ -167,6 +167,26 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
             if (!readRow(b, row, err)) { error = "part record " + path + ": idd: " + err; return false; }
             r.idd.by_grade[0] = row;
         }
+        /* (1.12.48) (user ruling 2026-10-25): optional idd.by_width -- per-device-width columns of a single-grade record.
+         * Each width row is the single row with the columns the sheet prints for that width replacing it; a column
+         * the width row omits is the sheet's "All widths" value (the single row). Its source is required. */
+        if (b["by_width"]) {
+            if (!b["by_width"].IsMap() || b["by_width"].size() == 0 || r.idd.by_grade.size() != 1) {
+                error = "part record " + path + ": idd.by_width must be a non-empty map (x4 | x8 | x16) on a single-grade record"; return false;
+            }
+            for (const auto& kv : b["by_width"]) {
+                const std::string w = kv.first.as<std::string>("");
+                if (w != "x4" && w != "x8" && w != "x16") { error = "part record " + path + ": idd.by_width key '" + w + "' is not x4, x8 or x16"; return false; }
+                IddRow row = r.idd.by_grade.begin()->second;
+                std::string err;
+                const char* cols[] = {"idd0", "idd2n", "idd3n", "idd4r", "idd4w", "idd5", "idd2p"};
+                double* dst[] = {&row.idd0, &row.idd2n, &row.idd3n, &row.idd4r, &row.idd4w, &row.idd5, &row.idd2p};
+                for (int i = 0; i < 7; ++i)
+                    if (kv.second[cols[i]] && !need(kv.second, cols[i], *dst[i], err)) { error = "part record " + path + ": idd.by_width " + w + ": " + err; return false; }
+                if (!need(kv.second, "source", row.source, err)) { error = "part record " + path + ": idd.by_width " + w + ": " + err; return false; }
+                r.idd.by_width[w] = row;
+            }
+        }
         if (b["e_actpre_pj_override"] && !need(b, "e_actpre_pj_override", r.idd.e_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
         if (b["stack_floor_mw"] && !need(b, "stack_floor_mw", r.idd.stack_floor_mw, error)) { error = "part record " + path + ": idd: " + error; return false; }
         /* 1.12.18 (user ruling 2026-10-24, option 5): an HBM row states which loop its idd0 is */
@@ -325,6 +345,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                 error += ")"; return false;
             }
             for (auto& kv : r.idd.by_grade) kv.second.vdd = it->second.vdd;
+            for (auto& kv : r.idd.by_width) kv.second.vdd = it->second.vdd;   // (1.12.48): the width rows share the variant
             r.termination.vddq = it->second.vddq;
             if (r.variant != r.variant_default) r.termination.source += "; 1.12.25: variant " + r.variant + ": " + it->second.source;
         } else if (!want_v.empty()) {
@@ -339,6 +360,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                 error += ")"; return false;
             }
             for (auto& kv : r.idd.by_grade) kv.second.trfc_ns = it->second.trfc_ns;
+            for (auto& kv : r.idd.by_width) kv.second.trfc_ns = it->second.trfc_ns;   // (1.12.48): and the tRFC basis
         }
         /* a basis named for a record without trfc_bases is refused by the caller, which knows every record of the run */
     }
@@ -426,6 +448,13 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
                 if (!rec.idd.by_grade.count(g)) errors.push_back("idd.by_grade lacks the " + std::to_string(g) + " MT/s row (the three DDR5 grades this build transcribes)");
         } else if (!rec.idd.by_grade.count(0) || rec.idd.by_grade.size() != 1) {
             errors.push_back("idd must be a single row (no by_grade) for " + t);
+        }
+        for (const auto& kv : rec.idd.by_width) {   // (1.12.48) (user ruling 2026-10-25)
+            const IddRow& r = kv.second;
+            const std::string k = "idd.by_width " + kv.first;
+            if (r.idd0 < 0.0 || r.idd2n < 0.0 || r.idd3n < 0.0 || r.idd4r < 0.0 || r.idd4w < 0.0 || r.idd5 < 0.0 || r.idd2p < 0.0) errors.push_back(k + ": currents must be non-negative");
+            if (r.idd2p > r.idd2n) errors.push_back(k + ": idd2p " + fmt(r.idd2p) + " exceeds idd2n " + fmt(r.idd2n));
+            if (r.idd3n < r.idd2n || r.idd4r < r.idd3n || r.idd4w < r.idd3n || r.idd5 < r.idd2n) errors.push_back(k + ": needs idd3n >= idd2n, idd4r / idd4w >= idd3n, idd5 >= idd2n");
         }
         for (const auto& kv : rec.idd.by_grade) {
             const IddRow& r = kv.second;

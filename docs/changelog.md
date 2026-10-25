@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.48 -- DDR3 x16 prices the published x16 IDD column
+
+- **Model (user ruling 2026-10-25):** `memory.dram.device_width: x16` on DDR3 now prices the x16 column of the same
+  die: Micron MT41K 4 Gb DDR3L (Rev. Q 12/17) Table 20, Die Rev E, DDR3-1600, MAXIMA: IDD0 66, IDD3N 47, IDD4R 235,
+  IDD4W 171 mA (x8: 55, 38, 157, 125); IDD2N 32, IDD2P1 32, IDD5B 235 mA are "All" widths. Before, the x16
+  organisation (four devices per rank) was priced on the x8 currents. New optional record block `idd.by_width`
+  (params/dram/ddr3.yaml), parsed and validated by the loader, registered as the energy row "DDR3-x16" and selected by
+  the device width (RamulatorWrapper::energyKey). Other widths and technologies are unchanged.
+- **Data impact:** DDR3 x16 runs only: read and write burst, activate and active-standby (background) energy.
+
 ## 1.12.47 -- DDR3: fast power-down priced from the measured IDD2P1/IDD2N ratio
 
 - **Model (user ruling 2026-10-25):** the DDR3 record's power-down factor becomes pd = 0.29224 (was 0.566). Micron's

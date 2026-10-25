@@ -219,6 +219,7 @@ struct ReadEnergyGuardFacts {
 };
 struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
     std::map<int, IDDSpec> rows;         // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
+    std::map<std::string, IDDSpec> width_rows;   // (1.12.48) (user ruling 2026-10-25): per device width ("x16"), key "<TECH>-x16"
     std::string provenance;              // MEASURED | CALIBRATED | DERIVED
     std::string idd3n_bank_state;        // ALL_BANKS | ONE_BANK | UNVERIFIED
     std::string basis;                   // "per device" | "per channel"
@@ -446,8 +447,25 @@ inline int gradeOfKey(const std::string& key) {
     if (dash == std::string::npos) return 0;
     try { return std::stoi(key.substr(dash + 1)); } catch (...) { return 0; }
 }
+/* (1.12.48) (user ruling 2026-10-25): true when the part record carries its own row for this device width. */
+inline bool hasWidthRow(const std::string& tech, const std::string& width) {
+    const PartIddFacts* f = partIddFactsIfAny(tech);
+    return f && !width.empty() && f->width_rows.count(width) > 0;
+}
 inline IDDSpec iddTableFor(const std::string& tech) {
     const PartIddFacts* f = partIddFactsIfAny(tech);
+    {   /* (1.12.48) (user ruling 2026-10-25): a "<TECH>-x16" key takes the record's own width row; none: REFUSE */
+        const auto dash = tech.find('-');
+        if (f && dash != std::string::npos && dash + 1 < tech.size() && tech[dash + 1] == 'x') {
+            auto wt = f->width_rows.find(tech.substr(dash + 1));
+            if (wt == f->width_rows.end()) {
+                std::cerr << "[energy] FATAL: the " << baseTech(tech) << " part record has no " << tech.substr(dash + 1)
+                          << " row (idd.by_width); nothing is substituted." << std::endl;
+                std::exit(2);
+            }
+            return wt->second;
+        }
+    }
     if (!f || f->rows.empty()) {
         std::cerr << "[energy] FATAL: no part record registered for '" << baseTech(tech) << "' (its IDD row); since 1.11.105 "
                      "params/dram/<tech>.yaml is the only source of the IDD currents, tRFC/tREFI, the component factors, the "

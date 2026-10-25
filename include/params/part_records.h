@@ -60,6 +60,9 @@ struct IddBlock {
     std::string provenance;            // MEASURED | CALIBRATED | DERIVED
     std::string idd3n_bank_state;      // ALL_BANKS | ONE_BANK | UNVERIFIED
     std::map<int, IddRow> by_grade;    // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
+    /* (1.12.48) (user ruling 2026-10-25): optional per-device-width rows (key "x4" | "x8" | "x16") of a single-grade
+     * record: the single row with the width's own published columns replacing it (idd.by_width). */
+    std::map<std::string, IddRow> by_width;
     double e_actpre_pj_override = -1.0;   // GDDR6: the IDD7-route activation energy, pJ
     double stack_floor_mw = -1.0;         // HBM: the per-stack static floor, mW
     /* 1.12.18 (user ruling 2026-10-24, option 5): WHAT LOOP THE ROW'S idd0 IS. HBM records
