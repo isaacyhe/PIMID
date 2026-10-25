@@ -6,6 +6,43 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.51 -- the DRAM second supply rails: DDR4 refresh VPP, LPDDR5 VDD1, GDDR6 VPP
+
+- **Second supply rails priced from the published rows** (user ruling 2026-10-25). A check of the DRAM-device
+  energy against the datasheet IDD tables by the Micron TN-40-07 / TN-41-01 / TN-53-01 current-difference method
+  reproduced every VDD-rail term exactly and found the second rail missing on three records:
+  - **DDR4** (params/dram/ddr4.yaml): refresh VPP. Micron MT40A Rev B Table 148 publishes the distributed-refresh
+    IPP5R 5 mA (IPP3N 3 mA, note 22); `ipp.ipp5b` 47.571 mA is DERIVED from it exactly as `idd5` 457.4 is from
+    IDD5R: IPP3N + (IPP5R - IPP3N) x tREFI / tRFC, so VPP x (IPP5B - IPP2N) x tRFC = VPP x (IPP5R - IPP3N) x tREFI
+    = 39.0 nJ per REF per die. REF 148 -> 187 nJ.
+  - **LPDDR5** (params/dram/lpddr5.yaml): the 1.8 V VDD1 rail (the IPP slot) on activate, burst and refresh: Micron
+    Y52P Table 18 x16 7500 column IDD01 3.8, IDD4R1 18.0, IDD4W1 16.5, IDD51 24.0 mA; the burst increments scaled
+    x 6400/7500 as the VDD2H row is (IPP4R 15.771, IPP4W 14.491 mA). Maxima on both ends (no published typical
+    ratio for VDD1). rd +0.228, wr +0.206 pJ/bit; ACT +0.247 nJ; REF +8.5 nJ.
+  - **GDDR6** (params/dram/gddr6.yaml): the VPP rail, not priced before. Samsung K4Z80325BC Table 82 x32 HC14
+    per device halved to one channel: IPP2N = IPP3N = IPP4R/W 5 (note 2), IPP5B 38.5 mA, VPP 1.8 V (Table 79).
+    The activation VPP takes the record's IDD7 route, like its VDD part: new record field
+    `idd.vpp_actpre_pj_override` = 1.8 V x (IPP7 31 - IPP3N 10) mA / 175 M ACT/s per device = 216 pJ per channel
+    ACT (not scaled by the activate factor); the loader refuses it without `e_actpre_pj_override` and an ipp row,
+    or together with `ipp.ipp0`. Standby +9 mW per channel; ACT 1620 -> 1836 pJ; REF 32.3 -> 39.5 nJ.
+  - The GDDR6 IDD7 ACT rate stays 175 M ACT/s per device: Table 90 (pp.152-155) runs 4 ACT/READA per 80-nCK loop
+    per channel, one per 20 nCK x 0.57 ns (Table 91). A proposed 177.8 M/s (tRC / 4) was withdrawn on this reading.
+  - Code: `IDDSpec::e_actpre_vpp_pJ_override` and `vppActOverridePJ()` (pimid_energy.h, the three activation sites;
+    switch power.models.dram_vpp_dynamic as for every VPP term); the record loader and the record-to-spec map
+    (part_records.cpp, ramulator_wrapper.cpp); the VPP-row report line now covers LPDDR5 and GDDR6.
+- **Checker** (scripts/power_sanity/power_sanity.py): DDR4, LPDDR5 and GDDR6 reference bands, built like the DDR3/DDR5
+  rows ([typical, maximum] of the record's datasheet row, the second rail at its maximum on both ends, +-1%):
+  DDR4 grade-aware over the five Rev B Table 148 columns; LPDDR5 Y52P Table 18 x16 7500 + JESD209-5C Table 240,
+  refresh maximum = the largest published route (IDD5 at 210 ns, IDD5 at 280 ns, the IDD5AB average); GDDR6
+  K4Z80325BC Tables 82/90/91/92/79, per channel, activation on the IDD7 route. `--refs` prints them at the
+  record defaults.
+- Validation (round 1 against 1.12.35, the 54-run memory set: six DRAM types x three PE types serial, DDR3/DDR5 OMP,
+  DDR3/DDR5/HBM3 co-sim, four host baselines): 39 judged moves > 5%, all on DDR4/LPDDR5/GDDR6 rows; FLAGs with the
+  new bands 33 -> 3 (the 3 left are the pre-existing DDR3 pe.nonclock_pJ_instr), no new FLAG; serial DDR3/DDR5/HBM3
+  runs bit-identical. Memory power: DDR4 +10.9 to +11.3%, LPDDR5 +7.1 to +7.2%, GDDR6 +8.7 to +9.4%.
+- Open, for a ruling: the LPDDR5 IDD row is a 16 Gb die (JESD209-5C tRFCab 280 ns) priced at the 8 Gb preset's
+  210 ns; the GDDR6 area counts 2 dies for one 2-channel device (memorySystemDieCount returns the channel count).
+
 ## 1.12.50 -- HBM2 refresh energy at the measured part's 350 ns tRFC
 
 - **Model (user ruling 2026-10-25):** the HBM2 refresh energy per REF is VDD x (IDD5 - IDD2N) x 350 ns, the

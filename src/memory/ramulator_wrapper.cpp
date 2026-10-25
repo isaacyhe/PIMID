@@ -959,6 +959,7 @@ void RamulatorWrapper::initialize() {
             if (r.io_share_anchored) { s.io_anchor_rd_pj_bit = r.io_anchor_rd_pj_bit; s.io_anchor_wr_pj_bit = r.io_anchor_wr_pj_bit;
                                        s.io_channel_gbps = r.io_channel_gbps; }   // 1.12.18 (user ruling 2026-10-23)
             s.e_actpre_pJ_override = rec.idd.e_actpre_pj_override;
+            s.e_actpre_vpp_pJ_override = rec.idd.vpp_actpre_pj_override;   // user ruling 2026-10-25 (second supply rails)
             s.stack_floor_mw = rec.idd.stack_floor_mw;
             if (rec.idd.has_vpp_act) s.vpp_act_ratio = rec.idd.vpp_act_ratio;   // 1.12.18 (user ruling 2026-10-24)
             return s;
@@ -1030,14 +1031,16 @@ void RamulatorWrapper::initialize() {
                                             : "Kept inside every burst BY USER OPTION (power.models.dram_io_share_split: false): a"
                                               " crossing access also pays the IDDQ term, so its I/O is counted twice")
                                   << std::endl;
-                    if (dt != "DDR4" && dt != "DDR5") continue;   // the VPP active rows were checked for these records
+                    // the VPP active rows were checked for these records (user ruling 2026-10-25: LPDDR5 VDD1 and GDDR6 VPP too)
+                    if (dt != "DDR4" && dt != "DDR5" && dt != "LPDDR5" && dt != "GDDR6") continue;
                     if (!r.has_ipp) {
                         std::cout << "[params] " << row << " VPP rail (IPP0, IPP4R, IPP4W, IPP5B): NO PUBLISHED SOURCE FOUND"
                                      " (the row cites no IPP table); not priced" << std::endl;
                         continue;
                     }
                     std::string miss;
-                    if (r.ipp0 < 0.0) miss += " IPP0";
+                    const bool act_route = rec.idd.vpp_actpre_pj_override >= 0.0;   // user ruling 2026-10-25: VPP activation on the override route
+                    if (r.ipp0 < 0.0 && !act_route) miss += " IPP0";
                     if (r.ipp4r < 0.0) miss += " IPP4R";
                     if (r.ipp4w < 0.0) miss += " IPP4W";
                     if (r.ipp5b < 0.0) miss += " IPP5B";
@@ -1047,6 +1050,11 @@ void RamulatorWrapper::initialize() {
                               << (vpp_on ? "priced in the activate, burst and refresh terms (power.models.dram_vpp_dynamic)"
                                          : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false); standby IPP only")
                               << std::endl;
+                    if (act_route)
+                        std::cout << "[params] " << row << " VPP activate: " << rec.idd.vpp_actpre_pj_override
+                                  << " pJ per activation at the maximum, on the activation override's route (record idd.vpp_actpre_pj_override; "
+                                  << (vpp_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false)")
+                                  << "; IPP0 is not used: the IDD0 route is not this record's activation route)" << std::endl;
                     if (!miss.empty())
                         std::cout << "[params] " << row << ":" << miss << ": NO PUBLISHED SOURCE FOUND in the row's cited source ("
                                   << r.ipp_source << "); not priced" << std::endl;

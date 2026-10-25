@@ -139,6 +139,12 @@ struct IDDSpec {
      * Stored at the maxima like the currents; typicalFromSpec() scales it
      * by the activate-excess factor (19:30 component ruling). */
     double e_actpre_pJ_override = -1.0;
+    /* user ruling 2026-10-25 (second supply rails): the VPP share of an
+     * e_actpre_pJ_override activation, pJ per IDD unit, on the same route
+     * (GDDR6: VPP x (IPP7 - IPP3N) / the IDD7 loop's ACT rate). Stored and
+     * priced at the maximum like every VPP row (typicalFromSpec passes it
+     * through). < 0 = none. The loader refuses it together with ipp0. */
+    double e_actpre_vpp_pJ_override = -1.0;
     /* 1.11.91 (item 12, user ruling option (c)): a per-STACK static power,
      * mW, priced once per stack (not per channel) and added to the
      * memory system's background by backgroundSystemMW /
@@ -888,7 +894,11 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * so no code changes when they arrive. Until then the fields keep the
      * unset sentinel and the report prints n/a. [1.11.91 item 11: still
      * unset. Samsung Table 82 lists IPP0 14, IPP3N 10, IPP5 77, IPP7 31 mA
-     * but no IPP2N, and no anchor calibrates IPP; not priced.] */
+     * but no IPP2N, and no anchor calibrates IPP; not priced.] [User ruling
+     * 2026-10-25 (second supply rails): priced from the record, at the
+     * maxima: IPP2N = IPP3N = IPP4R/W = 10 / 2 mA (Table 82 note 2: IPP3N
+     * applies to all IDD2x/3x/4x), IPP5B 77 / 2, VPP 1.8 V; the activation
+     * VPP on the IDD7 route (idd.vpp_actpre_pj_override 216 pJ).] */
     /* 1.11.91 (item 11, R8-9/R8-5, user ruling 2026-09-26 18:44-19:00).
      * DERIVED. The old row (70/45/60/210/230/180) cited a Micron 8 Gb
      * GDDR6-14000 sheet the tree does not hold.
@@ -1647,6 +1657,12 @@ inline double vppActRatioPJ(const IDDSpec& s, double e_vdd_pJ) {
     if (!vppDynamicEnabled() || s.vpp_act_ratio < 0.0 || s.ipp0 >= 0.0 || !(e_vdd_pJ > 0.0)) return 0.0;
     return s.vpp_act_ratio * e_vdd_pJ;
 }
+/* user ruling 2026-10-25 (second supply rails): the VPP share of an override
+ * activation (GDDR6, the IDD7 route); same switch as the IPP route. */
+inline double vppActOverridePJ(const IDDSpec& s) {
+    if (!vppDynamicEnabled() || s.e_actpre_pJ_override < 0.0 || s.e_actpre_vpp_pJ_override < 0.0) return 0.0;
+    return s.e_actpre_vpp_pJ_override;
+}
 inline double vppBurstPJ(const IDDSpec& s, double tBurst, bool is_write) {
     if (!vppDynamicEnabled() || !(s.vpp > 0.0) || s.ipp3n < 0.0) return 0.0;
     const double ip = is_write ? s.ipp4w : s.ipp4r;
@@ -1677,6 +1693,7 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
     e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
     e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
+    e_actpre_pJ += vppActOverridePJ(s);   // user ruling 2026-10-25 (second supply rails): GDDR6 VPP on the IDD7 route
     /* 1.11.91 (R8-2): the burst's baseline is the standby the IDD4R loop
      * ran on top of -- all banks open on the ALL_BANKS parts, i.e. IDD3N
      * as specified. For ONE_BANK parts see the stated residual in the
@@ -1717,6 +1734,7 @@ inline double activatePrechargeNJ(const std::string& tech, double tRC, double tR
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);
     e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
     e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
+    e_actpre_pJ += vppActOverridePJ(s);   // user ruling 2026-10-25 (second supply rails): GDDR6 VPP on the IDD7 route
     return e_actpre_pJ / 1000.0 * devicesPerAccess(baseTech(tech), device_width);
 }
 inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
@@ -1750,6 +1768,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
     e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
     e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
+    e_actpre_pJ += vppActOverridePJ(s);   // user ruling 2026-10-25 (second supply rails): GDDR6 VPP on the IDD7 route
     double e_wr_pJ     = s.vdd * (s.idd4w - ioShareMA(s, true) - s.idd3n) * tBurst   // same baseline rule as the read (1.11.91); 1.12.18 (bug 2b/8a)
                          + vppBurstPJ(s, tBurst, true);                              // 1.12.18 (bug 3b)
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)
@@ -2090,7 +2109,7 @@ inline bool dqIoFromAnchoredShare(const std::string& tech) {
  * refresh and burst IPP rows (IPP5B, IPP4R/W, IPP0) were NOT priced before
  * 1.12.18 -- only the standby pair the ruling names (see vppActPrePJ /
  * vppBurstPJ / vppRefreshPerUnitPJ and the refresh term below). Returns < 0 when the row has no IPP
- * (HBM2/HBM3: no published value; GDDR6: pending the R8-9 row; DDR3: no VPP
+ * (HBM2/HBM3: no published value; DDR3: no VPP
  * rail; DDR5-3200: no sheet). */
 inline double ippUnitMW(const std::string& tech, double active_frac) {
     const IDDSpec s = iddFor(tech);

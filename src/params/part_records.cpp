@@ -189,6 +189,21 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         }
         if (b["e_actpre_pj_override"] && !need(b, "e_actpre_pj_override", r.idd.e_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
         if (b["stack_floor_mw"] && !need(b, "stack_floor_mw", r.idd.stack_floor_mw, error)) { error = "part record " + path + ": idd: " + error; return false; }
+        /* user ruling 2026-10-25 (second supply rails): the VPP share of an override activation (GDDR6, the IDD7 route) */
+        if (b["vpp_actpre_pj_override"]) {
+            if (!need(b, "vpp_actpre_pj_override", r.idd.vpp_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
+            if (!(r.idd.vpp_actpre_pj_override >= 0.0) || !(r.idd.e_actpre_pj_override >= 0.0)) {
+                error = "part record " + path + ": idd.vpp_actpre_pj_override must be non-negative and needs idd.e_actpre_pj_override (it is the VPP share of that route)"; return false;
+            }
+            for (const auto& kv : r.idd.by_grade) {
+                if (!kv.second.has_ipp || !(kv.second.vpp > 0.0)) {
+                    error = "part record " + path + ": idd.vpp_actpre_pj_override needs an ipp row with a positive vpp"; return false;
+                }
+                if (kv.second.ipp0 >= 0.0) {
+                    error = "part record " + path + ": idd.vpp_actpre_pj_override and an ipp.ipp0 row both price the VPP activation; give one"; return false;
+                }
+            }
+        }
         /* 1.12.18 (user ruling 2026-10-24, option 5): an HBM row states which loop its idd0 is */
         if (b["idd0_loop"] && !need(b, "idd0_loop", r.idd.idd0_loop, error)) { error = "part record " + path + ": idd: " + error; return false; }
         if ((r.technology == "HBM2" || r.technology == "HBM3") && r.idd.idd0_loop != "ONE_PC_PER_TRC") {

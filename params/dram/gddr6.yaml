@@ -36,10 +36,16 @@ idd:
   idd5: 395.0
   # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
   idd2p: 115.0
+  ipp: { ipp2n: 5.0, ipp3n: 5.0, vpp: 1.8, ipp4r: 5.0, ipp4w: 5.0, ipp5b: 38.5, source: "Samsung K4Z80325BC Rev 1.3 Table 82 p.146 x32 HC14 per device IPP3N 10, IPP5 77 mA, halved to one channel; IPP2N / IPP4R / IPP4W = IPP3N (note 2 p.146); VPP 1.8 V (Table 79 p.136); user ruling 2026-10-25 (second supply rails)" }
   trfc_ns: 120.0
   trefi_ns: 1900.0
   source: "Samsung K4Z80325BC GDDR6 Table 82 (HC14), per DEVICE maxima {430, 310, 460, 1220, 1470, 790, IDD2P 230} halved to one of the two channels; typical via the component factors"
-  e_actpre_pj_override: 3240.0   # IDD7 route: (IDD7 - IDD4R) x tRC per channel activation at the maxima = 3240 pJ (well-conditioned: the two loops share the read stream); typicalFromSpec x f.act
+  e_actpre_pj_override: 3240.0   # IDD7 route: 1.35 V x (IDD7 1640 - IDD4R 1220) mA / 175 M ACT/s per device = 3240 pJ per channel activation at the maxima (well-conditioned: the two loops share the read stream); typicalFromSpec x f.act. 175 M/s = Table 90 pp.152-155: 4 ACT/READA per 80-nCK loop per channel = one per 20 nCK x 0.57 ns (Table 91), x 2 channels
+  # user ruling 2026-10-25 (second supply rails): the VPP rail. Samsung K4Z80325BC Table 82 p.146 x32 HC14 per device: IPP3N 10 (note 2: applies to IDD2x, IDD3x, IDD4x and IDD6),
+  # IPP5 77, IPP7 31, IPP0 14 mA; Table 79 p.136 VPP 1.8 V; halved to one channel like the VDD row. IPP2N = IPP4R = IPP4W = IPP3N (note 2). IPP0 is NOT entered: the
+  # activation VPP takes the IDD7 route like the VDD part (the IDD0 route is ill-conditioned): VPP x (IPP7 31 - IPP3N 10) mA / 175 M ACT/s per device = 216 pJ per channel ACT,
+  # at the maximum (no published typical ratio for VPP: not scaled by f.act).
+  vpp_actpre_pj_override: 216.0
 component_factors:   # typical / maximum per component; applied by typicalFromSpec
   standby: 0.57
   standby_premium: 0.631578947368

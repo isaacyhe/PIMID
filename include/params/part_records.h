@@ -64,6 +64,10 @@ struct IddBlock {
      * record: the single row with the width's own published columns replacing it (idd.by_width). */
     std::map<std::string, IddRow> by_width;
     double e_actpre_pj_override = -1.0;   // GDDR6: the IDD7-route activation energy, pJ
+    /* user ruling 2026-10-25 (second supply rails): the VPP share of an e_actpre_pj_override activation, pJ per IDD
+     * unit, on the same route (GDDR6: IDD7 - IPP3N), at the maximum (not scaled by the activate factor). Needs
+     * e_actpre_pj_override and an ipp row; refused together with ipp.ipp0 (that would price the VPP activation twice). */
+    double vpp_actpre_pj_override = -1.0;
     double stack_floor_mw = -1.0;         // HBM: the per-stack static floor, mW
     /* 1.12.18 (user ruling 2026-10-24, option 5): WHAT LOOP THE ROW'S idd0 IS. HBM records
      * must say ONE_PC_PER_TRC: one 1 KB pseudo-channel activation per tRC per channel, the

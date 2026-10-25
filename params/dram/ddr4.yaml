@@ -39,7 +39,7 @@ idd:
   trfc_ns: 350.0
   trefi_ns: 7800.0
   source: "Micron MT40A 8 Gb DDR4 Rev B Table 148 p.332, x8, DDR4-2400, MAXIMA; typical via the component factors"
-  ipp: { ipp2n: 3.0, ipp3n: 3.0, vpp: 2.5, ipp0: 3.0, ipp4r: 3.0, ipp4w: 3.0, source: "MT40A Rev B T148 p.332 + note 22 p.334; VPP p.1; 1.12.18: IPP0 3 (T148 p.332, x8); IPP4R / IPP4W = IPP0 (p.314: IPP0 is the IPP of the active cases IDD0, IDD1, IDD4R, IDD4W); no IPP5B (T148 publishes IPP5R, distributed refresh, only)" }
+  ipp: { ipp2n: 3.0, ipp3n: 3.0, vpp: 2.5, ipp0: 3.0, ipp4r: 3.0, ipp4w: 3.0, ipp5b: 47.5714285714, source: "MT40A Rev B T148 p.332 + note 22 p.334; VPP p.1; 1.12.18: IPP0 3 (T148 p.332, x8); IPP4R / IPP4W = IPP0 (p.314: IPP0 is the IPP of the active cases IDD0, IDD1, IDD4R, IDD4W); IPP5B DERIVED from the distributed-refresh row exactly as idd5 is from IDD5R (user ruling 2026-10-25, second supply rails): IPP3N + (IPP5R 5 - IPP3N 3) x tREFI 7800 / tRFC 350 = 47.571 mA, so VPP x (IPP5B - IPP2N) x tRFC = VPP x (IPP5R - IPP3N) x tREFI = 39.0 nJ per REF" }
 component_factors:   # typical / maximum per component; applied by typicalFromSpec
   standby: 0.576
   standby_premium: 0.607638888889
