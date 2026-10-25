@@ -24,6 +24,13 @@ class HBM3 : public IDRAM, public Implementation {
       {"HBM3_2Gb",   {2<<10,  128,  {1, 2,  4,  4, 1<<13, 1<<6}}},
       {"HBM3_4Gb",   {4<<10,  128,  {1, 2,  4,  4, 1<<14, 1<<6}}},
       {"HBM3_8Gb",   {8<<10,  128,  {1, 2,  4,  4, 1<<15, 1<<6}}},  // density label fix (6->8 Gb); banks 32 = JEDEC HBM3
+      /* 1.12.41 (user ruling 2026-10-25): the 16 Gb die, 8-High part the record names. JESD238B.01 Table 4 p.6,
+       * column "16 Gb 8High": 8 Gb per channel, 4 Gb per PC, RA[13:0] = 16384 rows, CA[4:0], bank address
+       * "SID, BA[3:0]" = 2 SIDs x 16 banks = 32 banks per pseudo-channel, 1 KB page per PC. This model has no SID
+       * level: the second SID is folded into the bank-group count (8 BG x 4 banks per PC), so banks in different
+       * SIDs take tCCDS/tRRDS between them. tCCDR (READ to a different SID, vendor-specific tCCDS + 1..2 nCK,
+       * Table 93 NOTE 17) is NOT modelled. Density check: 2 x 8 x 4 x 16384 x 64 x 128 b = 8 Gb. */
+      {"HBM3_8Gb_8H", {8<<10, 128,  {1, 2,  8,  4, 1<<14, 1<<6}}},
     };
 
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
@@ -133,7 +140,11 @@ class HBM3 : public IDRAM, public Implementation {
        *  IO sense amp sits at the end of the bank (DDR/LPDDR) and ~2.5 ns
        *  where it sits mid-bank (GDDR/HBM) -- the physical reason HBM's
        *  column-to-column spacing is half the DDR figure. */
-      {"HBM3_6.4Gbps", {6400, 2, 26, 26, 26, 26, 53, 79, 26, 7, 13, 13, 2, 4, 5, 7, 7, 13, 13, 26, -1, -1, 6240, -1, 13, 625}},
+      /* 1.12.41 (user ruling 2026-10-25): nRP 26 -> 24 and nRC 79 -> 77. JESD238B.01 Table 84 p.153 (the
+       * standard's timing set for the IDD loops): tRC 48 ns, tRAS 33 ns, tRP 15 ns, NOTE 1 "nRAS = RU(tRAS/tCK),
+       * nRP = RU(tRP/tCK) ... nRAS + nRP = nRC": RU(15/0.625) = 24, nRAS 53 unchanged, nRC = 53 + 24 = 77
+       * (48 ns / 0.625 = 76.8). The 16 ns tRP above was not a JESD238B number. */
+      {"HBM3_6.4Gbps", {6400, 2, 26, 26, 26, 24, 53, 77, 26, 7, 13, 13, 2, 4, 5, 7, 7, 13, 13, 26, -1, -1, 6240, -1, 13, 625}},
     };
 
 
@@ -433,7 +444,9 @@ class HBM3 : public IDRAM, public Implementation {
        * so the other three keep the documented UPPER BOUND that 1.11.51 (N9)
        * put there -- tRFCab, since refreshing one bank cannot take longer than
        * refreshing them all -- and say so at the point of use below. */
-      constexpr int tRFCPB_TABLE[1][4] = {
+      /* 1.12.41: SUPERSEDED by the die-density lookup at the nRFCSB fill below (the per-channel key assumed a
+       * 4-High stack); kept for the record of the 4-High mapping. */
+      [[maybe_unused]] constexpr int tRFCPB_TABLE[1][4] = {
       //  2Gb   4Gb   8Gb  16Gb      (per-CHANNEL density; -1 = TBD in Table 93)
         {  -1,  200,   -1,   -1},
       };
@@ -529,8 +542,13 @@ class HBM3 : public IDRAM, public Implementation {
        * bound where the standard says TBD. At the density PIMID emits
        * (HBM3_4Gb = 4 Gb/channel = a 16 Gb die 4-High) that is 200 ns instead
        * of the 260 ns tRFCab bound -- the bound was 30% loose. */
-      if (tRFCPB_TABLE[0][density_id] > 0) {
-        m_timing_vals("nRFCSB") = JEDEC_rounding(tRFCPB_TABLE[0][density_id], tCK_ps);
+      /* 1.12.41: tRFCpb is keyed on DIE density (Table 93 NOTE 28), and the die-to-channel ratio is the stack's:
+       * 16 banks per PC (no SID, 4-High) = 4 channels per die, 32 banks per PC (SID folded, 8-High) = 2 channels
+       * per die. HBM3_8Gb_8H: 8 Gb/channel x 2 = a 16 Gb die -> tRFCpb 200 ns (Table 93 p.166; Table 84 p.153). */
+      const int die_mb = m_organization.density * ((banks_per_pc >= 32) ? 2 : 4);
+      const int tRFCPB_die_ns = (die_mb == 16384) ? 200 : (die_mb == 24576) ? 240 : -1;   // 8/32 Gb die: TBD
+      if (tRFCPB_die_ns > 0) {
+        m_timing_vals("nRFCSB") = JEDEC_rounding(tRFCPB_die_ns, tCK_ps);
       } else {
         m_timing_vals("nRFCSB") = JEDEC_rounding(tRFC_TABLE[0][density_id], tCK_ps);
       }

@@ -358,10 +358,10 @@ void RamulatorWrapper::resolvePresetTiming() {
         preset_timing_ = makePresetTiming("HBM2_2.4Gbps", "external/ramulator/src/dram/impl/HBM2.cpp timing_presets",
                                           2400, 2, 20, 20, 18, 40, 833, 2, /*nWTR*/ 10);
     } else if (name == "HBM3_6.4Gbps") {
-        /* HBM3.cpp, row "HBM3_6.4Gbps" in the CK domain: nBL 2, nCL/nRCDRD/nRP 26, nRAS 53, tCK 625 ps,
+        /* HBM3.cpp, row "HBM3_6.4Gbps" in the CK domain: nBL 2, nCL/nRCDRD 26, nRP 24, nRAS 53, tCK 625 ps,
          * tCK = 4E6/rate (JESD238B.01 Table 92: fCK = rate/4 in every bin). */
         preset_timing_ = makePresetTiming("HBM3_6.4Gbps", "external/ramulator/src/dram/impl/HBM3.cpp timing_presets",
-                                          6400, 2, 26, 26, 26, 53, 625, 4, /*nWTR*/ 13);
+                                          6400, 2, 26, 26, 24, 53, 625, 4, /*nWTR*/ 13);   // 1.12.41: nRP 24 (Table 84)
     } else {
         std::cerr << "[mem] FATAL: the part record for " << dt << " names timing preset '" << name
                   << "', which this build has no transcription of (DDR3_1600K/1600H, DDR4_2400R, DDR5_3200AN/4800B/5600B, "
@@ -437,6 +437,13 @@ void RamulatorWrapper::resolvePresetOrganization() {
         preset_org_ = makePresetOrg("HBM3_4Gb", "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
                                     512, 128, 1, 32, 16384, 64, true,
                                     /* 2 pseudo-channels x 4 BG folded = 8 groups x 4 banks per channel */ 8, 4);
+    } else if (dt == "HBM3" && name == "HBM3_8Gb_8H") {
+        /* 1.12.41: HBM3.cpp org_presets {"HBM3_8Gb_8H", {8<<10, 128, {1, 2, 8, 4, 1<<14, 1<<6}}}: 8 Gb per
+         * channel (1024 MB), 64 banks per channel (2 PC x 2 SID x 16) over 16384 rows -- JESD238B.01 Table 4
+         * "16 Gb 8High", the record's part. */
+        preset_org_ = makePresetOrg("HBM3_8Gb_8H", "external/ramulator/src/dram/impl/HBM3.cpp org_presets",
+                                    1024, 128, 1, 64, 16384, 64, true,
+                                    /* 2 pseudo-channels x 8 BG (SID folded) = 16 groups x 4 banks per channel */ 16, 4);
     } else if (dt == "HBM3" && name == "HBM3_8Gb") {
         /* HBM3.cpp org_presets {"HBM3_8Gb", {8<<10, 128, {1, 2, 4, 4, 1<<15, 1<<6}}}: 8 Gb per channel
          * (1024 MB), 32 banks per channel over 32768 rows -- the 16 Gb die's two channels, 8-high = 16 GB

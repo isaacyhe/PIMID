@@ -1568,7 +1568,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
      * below already divided by 32. Latent (nothing HBM3 read this field for
      * a live number in 1.11.65) but a disagreement in the register. */
     arch->organization.banks_per_bank_group = 4;  // JESD238B Tbl 4/5: 4 per group
-    arch->organization.bank_groups_per_chip = 8;  // 4 per pseudo-channel x 2 PC
+    arch->organization.bank_groups_per_chip = 16;  // 1.12.41: 4 per PC x 2 SID (folded) x 2 PC (HBM3_8Gb_8H)
     arch->organization.chips_per_rank = 16;  // 16 pseudo-channels
     arch->organization.ranks_per_channel = 1;  // Single stack
     arch->organization.subarray_size_kb = 1024;  // Same as HBM2
@@ -1576,7 +1576,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
      * channel over 2 pseudo-channels x 4 BG x 4 banks = 32 banks, so
      * 512/32 = 16 MB. See the HBM2 factory for the full note; HBM3's
      * pages_per_unit moves 4x with this. */
-    arch->organization.bank_size_mb = 16;  // preset HBM3_4Gb: 4 Gb/channel / 32 banks
+    arch->organization.bank_size_mb = 16;  // 1.12.41: preset HBM3_8Gb_8H: 8 Gb/channel / 64 banks (was the HBM3_4Gb note)
     /* 1.11.61 (ruling R2) -> 1.11.63 (R6-1): RECONCILED. The three-authority
      * disagreement this comment used to record is resolved, and this note
      * records the resolution rather than the disagreement.
@@ -1627,8 +1627,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->timing.data_rate_mtps = 6400;  // preset HBM3_6.4Gbps
     arch->timing.tRCD_ns = 16.0;  // JESD238 spec-minimum (was 10.0, below physical minimum)
     arch->timing.tCAS_ns = 16.0;  // JESD238
-    arch->timing.tRP_ns = 10.0;  // VERIFIED
-    arch->timing.tRAS_ns = 24.0;  // VERIFIED
+    arch->timing.tRP_ns = 15.0;  // 1.12.41: JESD238B.01 Table 84 (was 10.0 "VERIFIED", unsourced; stamped from the preset at run time)
+    arch->timing.tRAS_ns = 33.0;  // 1.12.41: JESD238B.01 Table 84 (was 24.0 "VERIFIED", unsourced; stamped from the preset at run time)
     arch->timing.tBurst_ns = 8.0 * 1000.0 / 6400.0;  // 8 beats @ 6400 MT/s = 1.25 ns
 
     // Inner-bank datapath timing (INFERRED - faster than HBM2)

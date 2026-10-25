@@ -14,7 +14,7 @@ feature_nm: 15.5                  # mid-value of the published range for this ge
 cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline pitch 2 F)
 density_mb_per_mm2: 20.48  # measured FULL-DIE density, user capacity basis (D11)
 density_source: "SK hynix HBM3 D1z 16 Gb core die, 0.16 Gb/mm^2 (SemiAnalysis; TechInsights floorplan analysis of H5VG7HMD83X020R) x 128"
-organization_preset: "HBM3_8Gb"   # 1.11.102: 8 Gb per channel x 16 channels = 16 GB stack = 8 x 16 Gb dies (JESD238: two channels per die); HBM3_4Gb was an 8 GB stack of 8 Gb dies
+organization_preset: "HBM3_8Gb_8H"   # 1.12.41 (user ruling 2026-10-25): JESD238B.01 Table 4 "16 Gb 8High" -- 32 banks/PC with SID, 16384 rows (was HBM3_8Gb, the 4-High 32 Gb-die layout: 16 banks/PC, 32768 rows); 1.11.102: 8 Gb per channel x 16 channels = 16 GB stack = 8 x 16 Gb dies (JESD238: two channels per die); HBM3_4Gb was an 8 GB stack of 8 Gb dies
 timing_preset: "HBM3_6.4Gbps"         # Ramulator timing preset (default knobs)
 channels: 16                   # channels the preset instantiates per stack
 channel_width_bits: 64   # 1.11.101 (step 2): JESD238B 2.x: sixteen 64-bit channels per stack, each two 32-bit pseudo-channels

@@ -3543,6 +3543,16 @@ struct UnifiedConfig {
  * chips in lock step (its row is chips x page; the replay fans it out). Returns the chips per rank, or 1 when
  * the split does not apply (RANK/CHANNEL/LOGIC_DIE placement, HBM, GDDR6, x16/x32 parts with one chip). The
  * replay applies the same rule (dram_epoch_replay.cpp, chipSplit_). */
+/* 1.12.41: the banks ONE DRAM DIE holds for a channel, for the CACTI die-area query. The Ramulator bank count per
+ * channel folds HBM3's stack ID (SID) into the bank groups (HBM3_8Gb_8H: 2 PC x 2 SID x 16 = 64), but a SID IS a
+ * core die (JESD238B.01 Table 4: 8-High "SID, BA[3:0]"; Table 85 NOTE: SID[1:0] selects the die pair), so one die
+ * holds 64 / 2 = 32 of a channel's banks -- the HBM2 and 4-High HBM3 figure, and inside CACTI's 1-32 bank range.
+ * Without this the 8-High query failed ("Number of banks out of range (1-32)") and the system total omitted the
+ * memory die. Other technologies: unchanged. */
+static uint32_t dramDieBanksForCacti(const std::string& tech, uint32_t banks_per_channel) {
+    if (tech == "HBM3" && banks_per_channel > 32 && banks_per_channel % 32 == 0) return 32;
+    return banks_per_channel;
+}
 static int dramPeChipSplit(const UnifiedConfig& c, const std::string& tech) {
     const bool rank_level = (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" || tech == "LPDDR5");
     const int cpr = c.hierarchy_chips_per_rank, nch = c.hierarchy_dram_channels;
@@ -5866,7 +5876,9 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * JEDEC gives them (BA[3:0] per pseudo-channel in both); they still
      * differ in channels per stack, which is the chips_per_rank column. */
     else if (tech == "HBM2") { banks_per_bg = 4; bg_per_chip = 8; chips_per_rank = 8; }
-    else if (tech == "HBM3")     { banks_per_bg = 4; bg_per_chip = 8; chips_per_rank = 16; }
+    /* 1.12.41 (user ruling 2026-10-25): HBM3 follows the record's HBM3_8Gb_8H (JESD238B.01 Table 4, 16 Gb
+     * 8-High: SID + BA[3:0] = 32 banks per pseudo-channel): 2 PC x 8 BG (SID folded) x 4 = 64 banks per channel. */
+    else if (tech == "HBM3")     { banks_per_bg = 4; bg_per_chip = 16; chips_per_rank = 16; }
     /* 1.9.35: the two lines above BOOK THE CHANNEL DIMENSION TWICE for HBM.
      * chips_per_rank is set to the channel count per stack, as the comment above
      * says, while the channel count is ALSO supplied separately as the tree's
@@ -13301,7 +13313,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     dram_cfg.line_size = std::max(64u, iow / 8u);
                 }
                 dram_cfg.associativity = 1;
-                dram_cfg.banks = std::max(1u, total_banks);
+                dram_cfg.banks = std::max(1u, dramDieBanksForCacti(config.memory_tech, total_banks));   // 1.12.41
                 /* 1.11.2: the DRAM die's process is derived from its
                  * technology generation, NOT taken from power.tech_node_nm
                  * (that knob now names logic domains only). */
@@ -13356,7 +13368,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     int bgc = (config.bg_per_chip_override > 0)
                               ? config.bg_per_chip_override
                               : ram_oracle.getBankGroupsPerChip();
-                    eff_cfg.banks = std::max(1, bpb * bgc);
+                    eff_cfg.banks = std::max(1u, dramDieBanksForCacti(config.memory_tech, static_cast<uint32_t>(std::max(1, bpb * bgc))));   // 1.12.41
                 }
                 pimid::CACTIWrapper cacti_eff(eff_cfg);
                 cacti_eff.initialize();
@@ -14027,7 +14039,7 @@ static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
         uint32_t iow = static_cast<uint32_t>(std::max(8, ram_oracle.getChipIOBits()));
         cfg.line_size = std::max(64u, iow / 8u);
         cfg.associativity = 1;
-        cfg.banks = std::max(1u, total_banks);
+        cfg.banks = std::max(1u, dramDieBanksForCacti(memory_tech, total_banks));   // 1.12.41
         cfg.tech_node_nm = pimid::CACTIWrapper::generationTableNm(memory_tech);
         cfg.is_cache = false;
         cfg.is_main_memory = true;
@@ -14063,9 +14075,9 @@ static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
          * 1.11.14 (k from the PRESET organisation, area from the EFFECTIVE
          * one); system scope now does the same when the node reconfigures. */
         if (effective_banks > 0 &&
-            static_cast<uint32_t>(effective_banks) != cfg.banks) {
+            dramDieBanksForCacti(memory_tech, static_cast<uint32_t>(effective_banks)) != cfg.banks) {   // 1.12.41
             auto eff_cfg = cfg;
-            eff_cfg.banks = static_cast<uint32_t>(effective_banks);
+            eff_cfg.banks = dramDieBanksForCacti(memory_tech, static_cast<uint32_t>(effective_banks));   // 1.12.41
             pimid::CACTIWrapper cacti_eff(eff_cfg);
             cacti_eff.initialize();
             /* 1.11.46 (L256): a reconfiguration CACTI cannot solve (e.g. more

@@ -6,6 +6,25 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.41 -- HBM3: the 16 Gb 8-High organisation (SID) and JESD238B.01 Table 84 tRP/tRC
+
+- **HBM3 org preset HBM3_8Gb_8H (user ruling 2026-10-25, T3):** JESD238B.01 Table 4 p.6 "16 Gb 8High": 8 Gb per
+  channel, RA[13:0] = 16384 rows, "SID, BA[3:0]" = 32 banks per pseudo-channel, 1 KB page. The record
+  (params/dram/hbm3.yaml) names it; it was HBM3_8Gb (16 banks/PC, 32768 rows = the 4-High 32 Gb-die layout).
+  No SID level exists in the model: the second SID is folded into the bank groups (8 BG x 4 banks per PC); tCCDR
+  (vendor tCCDS + 1..2 nCK, Table 93 NOTE 17) is not modelled. The wrapper transcription, main.cpp's per-tech
+  bank shape (bg_per_chip 8 -> 16, 64 banks per channel) and the architecture object follow.
+- **Per-bank refresh:** tREFIpb = tREFI / 32 (banks per PC, Table 93 p.166 8-High row) and tRFCpb 200 ns, now keyed
+  on the DIE density (Table 93 NOTE 28; 8 Gb/channel x 2 channels per die = 16 Gb). Inert under AllBank refresh.
+- **tRP / tRC:** HBM3_6.4Gbps nRP 26 -> 24, nRC 79 -> 77 (Table 84 p.153: tRP 15, tRAS 33, tRC 48 ns, NOTE 1
+  RU rounding and nRAS + nRP = nRC). The architecture object's unsourced tRP 10 / tRAS 24 "VERIFIED" literals
+  become 15 / 33 (stamped from the preset at run time).
+- **CACTI die-area query sees one die's banks:** main.cpp dramDieBanksForCacti(): a SID is a core die, so the HBM3
+  8-High die holds 64 / 2 = 32 of a channel's banks (CACTI's range is 1-32). Without it the query failed and the
+  system total omitted the memory die (found in this version's validation round).
+- **Data impact:** HBM3 runs: twice the banks per channel (bank-level PE placement, per-bank row buffers), half the
+  rows per bank; row miss 2 nCK (1.25 ns) faster.
+
 ## 1.12.40 -- GDDR6 bank-level ACT-to-ACT tRC restored
 
 - **GDDR6 same-bank ACT -> ACT = nRC (user ruling 2026-10-25, T3):** the constraint was commented out upstream
