@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.34 -- the power checker is tracked; it judges the in-order and OOO PEs on the alu PE's basis (information); flip-flop scaling closed
+
+- **The power checker is now tracked in the development repository** (user ruling 2026-10-25; it is not part of
+  the public tree), so checker-only versions ship the checker change itself.
+- **Checker (user ruling 2026-10-25 (3)):** the in-order (`DEVICE_INORDER`) and OOO device PEs get the alu PE's
+  metrics on the same basis -- `pe.inorder.*` / `pe.ooo.*`: core-only non-clock pJ/instr (before the DRAM-periphery
+  factor, the instruction and data stores reported apart), mW at IPC 1, and the clock tree per cycle (pins
+  excluded). INFORMATION, not judged: NO PUBLISHED SOURCE FOUND for a core-only dual-issue in-order or OOO core on
+  this basis; the notes cite the board-level Cortex-A8 (65 nm, 0.6 GHz, 2-way in-order, 0.8 W) and Cortex-A9
+  (45 nm, 1 GHz, 2-way OOO, 1.2 W) of Blem et al., HPCA 2013, and print the alu PE's RI5CY band for orientation
+  only. 22 nm in_order PE: core-only 5.19 pJ/instr, clock tree 1.32 pJ/cycle; OOO PE: 27.6, 3.13. No model change.
+- **Flip-flop node scaling at 22 nm: investigation closed** (user ruling 2026-10-25): every option (nearest row,
+  bracket over all rows, bracket within one device flavour) PASSES all 22 nm PE references; the nearest Stillmaker
+  & Baas row (1.12.31) is kept, and the two-row bracket stays printed.
+
 ## 1.12.33 -- published per-op logic energies scale with published silicon
 
 - **Per-operation logic energies, node-scaled by published silicon** (user ruling 2026-10-25; external/mcpat/logic.cc
