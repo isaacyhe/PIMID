@@ -371,8 +371,17 @@ void NoC ::init_link_bus(double link_len_)
 	}
 	else
 	{
+		/* PIMID (user ruling 2026-10-25): NoC links and buses on ENERGY-EFFICIENT repeaters, CACTI
+		 * wire type Global_ho: 0.8x the delay-optimal repeater size at 1.4x its spacing, the published
+		 * design point of R. Ho (PhD thesis, Stanford, 2003, Sec. 4.2: a 4% delay penalty for ~20% less
+		 * energy). The delay-optimal Global wire put 1.44x the wire's own capacitance in repeaters (22 nm),
+		 * and the DSENT authors list min-delay link sizing among the causes of a 5X+ link power
+		 * overestimate (Sun et al., NOCS 2012 talk). CACTI's Global_30 (lowest cost within a 30% delay
+		 * penalty, on a 100 um spacing grid) was the other candidate: a larger delay penalty than any
+		 * published NoC link rule, so not used. */
 		link_wire = new interconnect(name, Uncore_device, 1, 1, nocdynp.flit_size,
-				  link_len, &interface_ip, 3, true/*pipelinable*/, nocdynp.route_over_perc);
+				  link_len, &interface_ip, 3, true/*pipelinable*/, nocdynp.route_over_perc,
+				  true, Inorder, Global_ho);
 		link_bus = link_wire;
 		/* PIMID 1.12.18: the per-link price, printed for the hand check
 		 * (energy per bit-mm = flit energy / bits / length). A bus level keeps
@@ -382,7 +391,7 @@ void NoC ::init_link_bus(double link_len_)
 		{
 			const double bits = nocdynp.flit_size;
 			std::cerr << "  [link] noc" << ithNoC << " wire (McPAT interconnect, CACTI "
-			          << "wire model, type Global, interconnect projection "
+			          << "wire model, type Global_ho (repeaters 0.8x size, 1.4x spacing of delay-optimal; Ho 2003), interconnect projection "
 			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
 			          << "length " << link_len << " um ("
 			          << ((XML->sys.NoC[ithNoC].link_span_processor == 2)
@@ -407,7 +416,7 @@ void NoC ::init_link_bus(double link_len_)
 			 * die), / ((H+V)/2), / 2 when the bus has more than one node; McPAT charges it per access. */
 			const double bits = nocdynp.flit_size;
 			std::cerr << "  [link] noc" << ithNoC << " bus wire (McPAT interconnect, CACTI "
-			          << "wire model, type Global, interconnect projection "
+			          << "wire model, type Global_ho (repeaters 0.8x size, 1.4x spacing of delay-optimal; Ho 2003), interconnect projection "
 			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
 			          << "length " << link_len << " um (upstream bus derivation over "
 			          << nocdynp.horizontal_nodes << "x" << nocdynp.vertical_nodes << " nodes), "

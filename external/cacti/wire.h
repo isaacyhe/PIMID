@@ -98,6 +98,7 @@ class Wire : public Component
     static Component global_10;
     static Component global_20;
     static Component global_30;
+    static Component global_ho;   /* Ho 2003 energy-efficient repeaters */
     static Component low_swing;
     static double wire_width_init;
     static double wire_spacing_init;

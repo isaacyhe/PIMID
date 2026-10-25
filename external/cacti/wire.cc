@@ -101,6 +101,7 @@ Wire::Wire(
     Component Wire::global_10;
     Component Wire::global_20;
     Component Wire::global_30;
+    Component Wire::global_ho;   /* user ruling 2026-10-25 */
     Component Wire::low_swing;
 
     int Wire::initialized;
@@ -234,6 +235,17 @@ Wire::calculate_wire_stats()
 		  power.readOp.gate_leakage = global_20.power.readOp.gate_leakage * wire_length;
 		  repeater_spacing = global_20.area.w;
 		  repeater_size = global_20.area.h;
+		  area.set_area((wire_length/repeater_spacing) *
+				  compute_gate_area(INV, 1, min_w_pmos * repeater_size,
+						  g_tp.min_w_nmos_ * repeater_size, g_tp.cell_h_def));
+	  }
+	  else if (wt == Global_ho) {   /* PIMID (user ruling 2026-10-25) */
+		  delay = global_ho.delay * wire_length;
+		  power.readOp.dynamic = global_ho.power.readOp.dynamic * wire_length;
+		  power.readOp.leakage = global_ho.power.readOp.leakage * wire_length;
+		  power.readOp.gate_leakage = global_ho.power.readOp.gate_leakage * wire_length;
+		  repeater_spacing = global_ho.area.w;
+		  repeater_size = global_ho.area.h;
 		  area.set_area((wire_length/repeater_spacing) *
 				  compute_gate_area(INV, 1, min_w_pmos * repeater_size,
 						  g_tp.min_w_nmos_ * repeater_size, g_tp.cell_h_def));
@@ -695,6 +707,19 @@ Wire::init_wire(){
     }
   }
   repeated_wire.pop_back();
+  /* PIMID (user ruling 2026-10-25): the published energy-efficient repeater point of R. Ho, "On-Chip
+   * Wires: Scaling and Efficiency", PhD thesis, Stanford, 2003, Sec. 4.2: "underdriving the wires by 20%
+   * and over-spacing the repeaters by 40% leads to only a 4% delay penalty" and, at l = 1.4 and w = 0.8,
+   * "save 20% of the consumed energy". Evaluated with this wire's own model at 0.8x the delay-optimal
+   * repeater size and 1.4x its spacing (sp, si above). */
+  {
+    double del_ho = 0;
+    powerDef pow_ho = wire_model(sp * 1.4 * 1e-6, si * 0.8, &del_ho);
+    global_ho.delay = del_ho;
+    global_ho.power = pow_ho;
+    global_ho.area.h = si * 0.8;
+    global_ho.area.w = sp * 1.4 * 1e-6;   // m
+  }
   update_fullswing();
   Wire *l_wire = new Wire(Low_swing, 0.001/* 1 mm*/, 1);
   low_swing.delay = l_wire->delay;

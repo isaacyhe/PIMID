@@ -9664,7 +9664,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
          *             number of parent regions it is cut into (H-tree; user
          *             rule "call them in PIMID, don't add them to PIMID");
          *   wire      McPAT interconnect over the CACTI wire model, type
-         *             Global, at the level's process node (the DRAM array's
+         *             Global_ho (repeaters 0.8x the delay-optimal size at 1.4x
+         *             its spacing, Ho 2003; user ruling 2026-10-25; Global
+         *             before), at the level's process node (the DRAM array's
          *             CACTI table on the die, the logic node off it);
          *   die cross on a stacked part (HBM) the chip tier's up-link leaves
          *             the core die. Each transfer is charged the die
@@ -9730,7 +9732,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                          " each level; routers per level";
             for (int l = pe_level; l < 7; l++) std::cout << " L" << l << "=" << lvl_routers[l];
             std::cout << ", root at L" << root_lvl << ". Wire RC: CACTI's interconnect"
-                         " tables at the level's node (McPAT Global wire). NO PUBLISHED"
+                         " tables at the level's node (McPAT Global_ho wire: energy-efficient repeaters, Ho 2003). NO PUBLISHED"
                          " SOURCE FOUND for DRAM-process metal RC beyond CACTI's tables:"
                          " the on-die links are priced on CACTI's logic-process wire."
                       << std::endl;

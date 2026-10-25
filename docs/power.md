@@ -13,7 +13,7 @@ much as the results.
 | memory array (DRAM) | Ramulator2 | Ramulator2 | CACTI |
 | memory array (NVM) | NVSim | NVSim | NVSim |
 | caches | zsim | McPAT | CACTI |
-| interconnect | Garnet | McPAT (routers; links over CACTI wires since 1.12.18) | McPAT |
+| interconnect | Garnet | McPAT (routers; links over CACTI wires since 1.12.18, energy-efficient repeaters since 2026-10-25) | McPAT |
 | stacked-die crossings (HBM TSVs) | Garnet | CACTI-3DD, in the McPAT fork (1.12.18) | CACTI-3DD |
 | clock distribution | -- | McPAT fork, Wattch model (1.12.18) | -- |
 | memory controllers | Ramulator2 (replayed) | McPAT | McPAT |

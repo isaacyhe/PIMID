@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.54 -- NoC links and buses on energy-efficient repeaters (Ho 2003 design point)
+
+- **Repeater sizing (user ruling 2026-10-25):** every NoC link and bus wire (device tree links, host ring
+  and crossbar links, bus levels) is McPAT's interconnect over a new CACTI wire type, Global_ho: repeaters at
+  0.8x the delay-optimal size and 1.4x its spacing, evaluated with CACTI's own wire model (external/cacti/
+  wire.cc). Source: R. Ho, "On-Chip Wires: Scaling and Efficiency", PhD thesis, Stanford, 2003, Sec. 4.2:
+  "underdriving the wires by 20% and over-spacing the repeaters by 40% leads to only a 4% delay penalty"; at
+  l = 1.4, w = 0.8 one can "save 20% of the consumed energy". Root cause: the links used CACTI's delay-optimal
+  Global wire, whose repeaters carry 1.44x the wire's own capacitance at 22 nm (C_wire 0.185 fF/um, C_eff
+  0.511 fF/um with repeaters and short-circuit); the DSENT authors list min-delay link sizing among the causes
+  of a 5X+ link power overestimate (Sun et al., NOCS 2012 talk). Print-only CACTI probe at 22 nm: Global 275 ->
+  Global_ho 211 fJ/bit/mm (x0.77), repeater leakage x0.57, delay 344 -> 343 ps/mm. Links at 22 nm: 0.316 ->
+  ~0.242 pJ/bit/mm.
+- **Why not Global_30 (the ruling's first wording):** CACTI's Global_30 (lowest cost within a 30% delay penalty,
+  picked on a 100 um spacing grid) gives 158 fJ/bit/mm but slows every link by 22-30%; no published NoC link
+  rule accepts that penalty. Ho's point is the published, realistic one (4% delay).
+- **Wire resistance (cross-check requested with the ruling):** CACTI's Wire object draws width = spacing =
+  pitch/4 where its technology table uses pitch/2 (consistent with Intel 32 nm M2, Natarajan IEDM 2008), so its
+  r is ~3.4x high and its c ~1.37x low. With the resistivity divided by 3.4 the probe gives Global 275 and
+  Global_ho 211 fJ/bit/mm (both unchanged; delay falls 1.8x): the delay-optimal repeater capacitance per length,
+  c x sqrt((Cin+Cout)/(2 Cin)), does not depend on r, so neither does a fixed fraction of it. The r error does
+  not change this choice. The c error would raise every link's energy ~1.37x; the geometry fix awaits its own
+  ruling and is NOT in this version.
+- **Basis caveat:** McPAT charges C V^2 per bit per traversal (every bit taken as a transition). Keckler et
+  al. (IEEE Micro 2011, Table 1) give 240 / 150 / 115 fJ/bit/mm per transition (40 nm 0.9 V / 10 nm HF / 10 nm
+  LV) without stating whether a transition is C V^2 or C V^2 / 2; the data-weighted row (256 b over 10 mm at
+  50% transition probability, 310 pJ at 40 nm = 0.121 pJ/bit/mm) is the per-bit cost of random data, which
+  McPAT's every-bit-toggles convention does not model.
+
 ## 1.12.53 -- the host ring's links get the ring loop's length
 
 - **Host ring link length (user ruling 2026-10-25):** each stop-to-stop link is 2 x sqrt(host die area) /

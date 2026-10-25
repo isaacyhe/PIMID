@@ -110,6 +110,7 @@ enum Wire_type
     Full_swing /* models all global wires with different latencies (Global_x    )*/,
     Transmission /* tranmission lines with high area overhead */,
     Optical /* optical wires */,
+    Global_ho /* repeaters 0.8x the delay-optimal size, 1.4x its spacing (Ho 2003, Sec. 4.2) */,
     Invalid_wtype
 };
 
