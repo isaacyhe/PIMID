@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.60 -- Checker: HBM2 background band from measured per-stack silicon
+
+- **Checker (user ruling 2026-10-26; scripts/power_sanity/power_sanity.py):** `HBM2.bg_mW_stack` [860, 1900] ->
+  [430, 1900] mW. Low edge: measured per-stack idle, Olgun et al. (MICRO 2026, arXiv:2610.14244) Appendix A Table 5,
+  lowest board at 1200 MT/s 329.6 mA over two stacks x 1.2 V = 198 mW, x2 for the record's 2.4 Gb/s (idle measured
+  proportional to rate, ~0 intercept, 600-1200 MT/s; DERIVED beyond) + measured refresh 33.9 mW. Cross-check: AMD PDM
+  2025.2.1, Versal HBM, all 16 controllers at 0/0, Typical, 25 C: VCC_HBM idle exactly proportional to rate
+  (0.613 / 0.920 / 1.227 W at 1.6 / 2.4 / 3.2 Gb/s, two stacks), 477 mW per stack at 2.4 Gb/s (497 with VPP static).
+  High edge unchanged: XPE 2023.1.2 maximum (Maximum process, 100 C, 1.8 Gb/s, all DRAM rails). The old low edge 860
+  was XPE's 1.2 Gb/s dynamic rails without leakage; XPE's 550 mW rate-independent VDDQ idle term is not seen in the
+  measurement or in PDM. HBM2 background since 1.12.46/1.12.50 (629-641 mW per stack): FLAG -> PASS. No model change.
+
 ## 1.12.59 -- NoC link, bus and TSV wires are charged on MEASURED data activity
 
 - **Wire activity (user ruling 2026-10-25, "Measured"):** McPAT charged every wire C V^2 per bit per
