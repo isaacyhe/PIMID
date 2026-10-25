@@ -1390,6 +1390,17 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
  *          BL4 x 128 b = 64 B, 1 burst
  *   HBM3   one 64-bit channel (the IDD basis, JESD238B.01 cl.9.1) = 1 unit;
  *          BL8 x 64 b = 64 B, 1 burst (the IDD4R loop moves 64 B per 1.25 ns)
+ *          [(next) T1: the TIMING model now moves a 64 B line as two 32 B
+ *          pseudo-channel bursts (BL8 x 32 b, JESD238B.01 3.1.2; the Ramulator
+ *          channel_width 128, burstsPerLine 2). The ENERGY basis is unchanged
+ *          and stays right: the IDD4R/IDD4W row is the CHANNEL's current with
+ *          both pseudo-channels bursting, 64 B per 1.25 ns, so one 64 B line =
+ *          2 x 32 B at half the channel current x 1.25 ns each = the channel
+ *          current x 1 burst (1.25 ns) -- basis-neutral, as the GDDR6 note
+ *          above. Energy per bit and per access do not move; reads and writes
+ *          are counted per line (dram_epoch_replay acceptOne, w.b == 0) and
+ *          activates per ACT command, so the second column command of a line
+ *          is neither a second access nor a second activate.]
  *
  * For DDR3/4/5 path_bits IS the simulated Ramulator channel width, and
  * RamulatorWrapper::checkTranscribedOrganizationShape() REFUSES a run whose

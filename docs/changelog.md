@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.37 -- HBM3 pseudo-channel burst is 32 B (Ramulator channel_width 256 -> 128)
+
+- **HBM3 timing transfer size (user ruling 2026-10-25, T1):** `ramulatorChannelWidthBits("HBM3")` 256 -> 128
+  (src/memory/ramulator_wrapper.cpp). JESD238B.01 3.1.2 p.4: a pseudo-channel is 32 DQ, 256-bit prefetch, BL8 =
+  32 B per burst. The old 256 gave a 64 B column per nBL 2 (1.25 ns) on ONE pseudo-channel: 102.4 GB/s per channel
+  against the 64 pins x 6.4 Gb/s = 51.2 GB/s the standard allows (a bandwidth probe: 87.0 GB/s streamed on one
+  channel, above the pin limit), and a 2 KB address-map row against the 1 KB page. Now 32 B per column, 2 column
+  commands per 64 B line (burstsPerLine 2, as HBM2), 1 KB per row.
+- **Energy path unchanged, stated (pimid_energy.h accessPathFor note):** the HBM3 IDD row is the channel's current
+  with both pseudo-channels bursting (64 B per 1.25 ns); a line = 2 x 32 B at half that current = 1 channel burst,
+  so energy per bit and per access stay as they were; reads/writes are counted per line and activates per ACT.
+- **Data impact:** HBM3 runs: DRAM-bound run time rises toward the JEDEC bandwidth; row-hit fraction and ACT count
+  change with the 1 KB row span; background energy follows the run time. Every HBM3 result before this version
+  overstated per-channel bandwidth up to 2x.
+
 ## 1.12.36 -- sources: every value is cited to a public document or stated as not disclosable
 
 - **Citations** (user ruling 2026-10-25): values that came from vendor sources that cannot be disclosed publicly are

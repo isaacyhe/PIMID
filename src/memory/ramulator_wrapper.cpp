@@ -147,7 +147,12 @@ static int ramulatorChannelWidthBits(const std::string& dram_impl) {
     if (dram_impl == "DDR5") return 32;                           // 16 x 32 / 8 = 64 B: the 32-bit sub-channel's BL16
     if (dram_impl == "LPDDR5" || dram_impl == "GDDR6") return 32; // 8 x 32 / 8 = 32 B: a 16-bit channel's BL16
     if (dram_impl == "HBM2") return 128;                          // 2 x 128 / 8 = 32 B: a 64-bit pseudo-channel's BL4
-    if (dram_impl == "HBM3") return 256;                          // 2 x 256 / 8 = 64 B: a 64-bit pseudo-channel's BL8 (a mapper quantity)
+    /* (next) T1 (user ruling 2026-10-25): HBM3 256 -> 128. JESD238B.01 3.1.2 p.4: a pseudo-channel is 32 DQ with a
+     * 256-bit prefetch, i.e. BL8 x 32 bit = 32 B per burst. 256 made a 64 B column per nBL 2 (1.25 ns) on one
+     * pseudo-channel: 102.4 GB/s per channel against the 64-pin x 6.4 Gb/s = 51.2 GB/s the standard allows (probe:
+     * 87 GB/s streamed per channel), and a 2 KB address-map row against the 1 KB page. 128 gives 32 B per column,
+     * two columns per 64 B line (dramBurstsPerLine), exactly as HBM2. */
+    if (dram_impl == "HBM3") return 128;                          // 2 x 128 / 8 = 32 B: a 32-bit pseudo-channel's BL8
     return 64;
 }
 static int ramulatorPrefetch(const std::string& dram_impl) {
@@ -1573,8 +1578,9 @@ void RamulatorWrapper::parseConfiguration() {
              * 64); DDR5 32-bit sub-channel BL16 = 64 B (prefetch 16: 32);
              * LPDDR5 x16 BL16 = 32 B (prefetch 8: 32); GDDR6 x16 BL16 = 32 B
              * (prefetch 8: 32); HBM2 128-bit legacy BL2 = 32 B (prefetch 2:
-             * 128); HBM3 64-bit pseudo-channel BL8 = 64 B (prefetch 2: 256 --
-             * a mapper quantity, the column IS the whole 64 B burst). */
+             * 128); HBM3 32-bit pseudo-channel BL8 = 32 B (prefetch 2: 128;
+             * (next) T1: was 256, a 64 B column = twice the pseudo-channel's
+             * burst, JESD238B.01 3.1.2). */
             const std::string cw = std::to_string(ramulatorChannelWidthBits(dram_impl));
             return "Frontend:\n  impl: GEM5\n\nMemorySystem:\n  impl: GenericDRAM\n  clock_ratio: 1\n"
                    "  DRAM:\n    impl: " + dram_impl + "\n    org:\n      preset: " + org_preset +
