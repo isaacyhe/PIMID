@@ -6,6 +6,17 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.49 -- HBM2 host reads price the DQ I/O once (I/O share)
+
+- **Model (user ruling 2026-10-25):** the HBM2 record gets an I/O share inside idd4r (58.88 mA = the VDDQ band
+  centre 0.23 pJ/b x 307.2 Gb/s / 1.2 V, DERIVED), as HBM3 has. The measured HBM2 rows are VDDC + VDDQ (Olgun et
+  al., MICRO 2026, Table 1 and Sec. 4.2: the loops measure "on VDDC and VDDQ rails"; VDDQ "powers the data I/O
+  interface"), so the DQ read I/O is already inside idd4r; 1.12.35 added the 0.23 pJ/b band centre on every host
+  read again. Now a host read prices 5.16 pJ/b (array 4.93 + I/O 0.23, the measured standard IDD4R) instead of
+  5.39, and a PE read on the DRAM die (no DQ crossing) 4.93 instead of 5.16. Write share 0 (NO PUBLISHED SOURCE
+  FOUND for the HBM2 write I/O; writes unchanged). Record only (params/dram/hbm2.yaml).
+- **Data impact:** HBM2 read energy: host reads -4.3%, PE reads -4.5%; nothing else.
+
 ## 1.12.48 -- DDR3 x16 prices the published x16 IDD column
 
 - **Model (user ruling 2026-10-25):** `memory.dram.device_width: x16` on DDR3 now prices the x16 column of the same
