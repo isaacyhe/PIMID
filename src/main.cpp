@@ -4662,6 +4662,12 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
             if (tree.stackDie[r] > 0) dd.insert(tree.stackDie[r]);
         config.htree_dram_dies = !dd.empty() ? static_cast<int>(dd.size())
             : (pe_level <= 3 && config.htree_level_routers[3] > 0) ? config.htree_level_routers[3] : 1;
+        /* (1.12.52) GDDR6 die count: a chip-level router is one channel's slice of a device; a die carries the
+         * record's channels_per_die of them (1 for every other non-stacked part) */
+        if (dd.empty() && pimid::params::hasDramPartRecord(config.memory_tech)) {
+            const int cpd = std::max(1, pimid::params::dramPartRecord(config.memory_tech).channels_per_die);
+            config.htree_dram_dies = std::max(1, config.htree_dram_dies / cpd);
+        }
     }
     config.htree_endpoints      = tree.totalEndpoints();
     config.htree_abstract       = tree.numAbstract;
@@ -5857,7 +5863,14 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * GDDR6 ran on the placeholder table and the tree was never built from
      * the preset's two channels, so the disagreement could not fire. The
      * invariant did its job: a latent shape error, fatal on first contact. */
-    else if (tech == "GDDR6")    { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 2; }
+    /* (1.12.52) (user ruling 2026-10-25, GDDR6 die count, clean fix): chips_per_rank = 1. The note above is
+     * superseded: carrying the channel count in chips_per_rank folded GDDR6's two channels into the chip slot
+     * (channelBearingLevel 3, L4/L5 one router each) AND counted them again as channels where a consumer reads
+     * both -- 2 dies of a whole-device area, 2 per-die clock trunks, a 4-device (4 GiB) placement capacity for a
+     * 1 GiB device. The two channels are now the channel tier (one x16 channel slice per channel, as LPDDR5),
+     * the slot count is unchanged (16 banks x 2 unfolded channels = 32), and the device is the record's
+     * channels_per_die (2) channels: one die. */
+    else if (tech == "GDDR6")    { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     // HBM has 2 pseudo-channels/channel; PIMID has no pseudo-ch level, so fold
     // them into the BG count to match Ramulator2/JEDEC per-channel org:
     //   HBM2 {1,2,4,4} = 2 pch x 4 BG x 4 banks = 32 banks (8 BG/ch)
@@ -5911,7 +5924,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * this column carries for GDDR6 and HBM (the record's channels). */
     if (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" || tech == "LPDDR5")
         chips_per_rank = chipsPerRank(tech, config.dram_device_width);
-    else if (tech == "GDDR6" || tech == "HBM2" || tech == "HBM3")
+    else if (tech == "HBM2" || tech == "HBM3")   // (1.12.52): GDDR6 no longer carries its channels here (1, above)
         chips_per_rank = pimid::params::dramPartRecord(tech).channels;
 
     // Optional JEDEC device-width override (memory.dram.device_width: x4|x8|x16).
@@ -6823,9 +6836,12 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                         total_bytes = dev_mb * 1024ULL * 1024ULL;
                         cap_src = "the preset's stack capacity (" + std::to_string(dev_mb) + " MB)";
                     } else {
-                        const uint64_t chips = (uint64_t)std::max(1, config.hierarchy_chips_per_rank)
+                        /* (1.12.52) GDDR6 die count: the preset's device capacity spans channels_per_die channels (GDDR6: the
+                         * whole two-channel device), so the device count divides by it (1 for every other non-stacked part) */
+                        const uint64_t cpd = (uint64_t)std::max(1, pimid::params::dramPartRecord(tech).channels_per_die);
+                        const uint64_t chips = std::max<uint64_t>(1, (uint64_t)std::max(1, config.hierarchy_chips_per_rank)
                                              * (uint64_t)std::max(1, config.hierarchy_ranks_per_channel)
-                                             * (uint64_t)std::max(1, config.hierarchy_dram_channels);
+                                             * (uint64_t)std::max(1, config.hierarchy_dram_channels) / cpd);
                         total_bytes = dev_mb * 1024ULL * 1024ULL * chips;
                         cap_src = "the preset's device capacity (" + std::to_string(dev_mb) + " MB) x " + std::to_string(chips) + " device(s)";
                     }
@@ -14012,7 +14028,9 @@ static int memorySystemDieCount(const std::string& tech,
         const int stacks = (channels > per_stack) ? channels / per_stack : 1;
         return rec.stack_dies * stacks;
     }
-    if (tech == "LPDDR5" || tech == "GDDR6") return channels;
+    /* (1.12.52) GDDR6 die count: one die per channels_per_die channels (LPDDR5 1: a die per x16 channel; GDDR6 2) */
+    if (tech == "LPDDR5" || tech == "GDDR6")
+        return std::max(1, channels / std::max(1, pimid::params::dramPartRecord(tech).channels_per_die));
     return 1;
 }
 

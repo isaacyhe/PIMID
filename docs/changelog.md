@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.52 -- GDDR6: one die per two-channel device; the channels are the channel tier
+
+- **GDDR6 no longer carries its channel count in chips_per_rank** (user ruling 2026-10-25, clean fix; src/main.cpp).
+  chips_per_rank 2 -> 1: one x16 channel slice per channel, the channel tier carries the device's two channels
+  (as LPDDR5's four). Carrying the channels in the chip slot folded them (channelBearingLevel 3) and, wherever a
+  consumer also read the channel count, counted them twice:
+  - memorySystemDieCount returned the channel count: 2 dies of the whole-device area 37.03 mm^2 for ONE 8 Gb
+    device (the preset's 1024 MB / 1 GiB spans both channels; JESD250D 4.1 two channels per device; Samsung
+    K4Z80325BC Table 17 8 Gb = 2 x 4 Gb channels);
+  - the per-die clock trunk (htree_dram_dies = the chip-level router count) priced 2 DRAM dies;
+  - the placement capacity was device MB x chips_per_rank x ranks x channels = 1024 MB x 4 = 4 GiB (unit block
+    128 MB for a 1 GiB device).
+- **One rule, from the record**: new optional record field `channels_per_die` (gddr6.yaml 2, required there;
+  default 1, every other non-stacked part unchanged). The die population, the per-die clock-trunk die count and
+  the placement device count divide by it. The IDD background (2 units of the per-channel row = one device) was
+  never doubled and does not move.
+- **NoC ladder (shown explicitly, GDDR6 BANK, 16 PEs):** routers per level L1=16 L2=8 L3=2 L4=1 L5=1 L6=1 ->
+  L1=16 L2=8 L3=2 L4=2 L5=2 L6=1 (the LPDDR5 shape); the channel tier moves from the chip level (3) to the
+  channel level (5), so the projected link layers go 256/8/16/16 -> 8/16/16/16 b. Priced routers: L2 4x2, L3 2x1,
+  L4 rank 1x1 (r3p) -> L2 4x2, L3 2x1, L6 system 1x1 (r2p); L4/L5 become pass-through with their links priced
+  (L4 2x1, L5 2x1). NoC dynamic 73.8 -> 61.8 uW, leakage 0.639 -> 0.776 mW; logic-die area 14.27 -> 14.22 mm^2.
+  Bank-level slots unchanged (16 x 2 unfolded channels = 32); the replay is unfolded (16 banks per channel).
+- **Data impact (GDDR6, alu / in_order / ooo):** area with memory 88.33 / 111.00 / 118.26 -> 51.25 / 73.92 /
+  81.17 mm^2; DRAM-die trunk 26.29 / 26.61 / 26.61 -> 20.77 / 20.89 / 20.89 mW; total power -1.48 / -1.59 /
+  -1.44%; memory power unchanged for alu, -0.003% / +0.05% for in_order / ooo, whose windows move +0.025% / +0.07%
+  through the ladder change. Every other memory's serial cells are bit-identical in all simulated and priced
+  output.
+
 ## 1.12.51 -- the DRAM second supply rails: DDR4 refresh VPP, LPDDR5 VDD1, GDDR6 VPP
 
 - **Second supply rails priced from the published rows** (user ruling 2026-10-25). A check of the DRAM-device

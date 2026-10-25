@@ -134,6 +134,10 @@ struct DramPartRecord {
     int channels = 0;              // channels the preset instantiates (HBM: per stack; DDR5: the two 32-bit sub-channels of one DIMM channel)
     int channel_width_bits = 0;    // 1.11.101: JEDEC data width of ONE channel; the DDR family's devices per rank = this / device width
     int stack_dies = 0;            // HBM core dies per stack (0 for non-stacked)
+    /* (1.12.52) GDDR6 die count (user ruling 2026-10-25, clean fix): channels ONE die carries, for a non-stacked part.
+     * 1 (default) for the DDR family and LPDDR5 (one x16 channel per die); GDDR6 2 (JESD250D 4.1, required in its
+     * record). The die population, the per-die clock trunk and the placement capacity divide by it. */
+    int channels_per_die = 1;
     double die_capacity_gb = 0.0;  // HBM core die capacity (0 for non-stacked)
     std::vector<RefreshRung> refresh_ladder;
     IddBlock idd;                        // 1.11.104

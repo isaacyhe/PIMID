@@ -426,7 +426,7 @@ only the silence ended.
 | DDR5 at grade 3200 | 16 (2 x 8) | **128** (2 x 8 x 8 chips/rank) |
 | DDR5 at grade 4800 / 5600 | 32 (4 x 8) | **256** (the 16 Gb part's 8 chips x 32) |
 | LPDDR5 | 16 (4 x 4) | 16 -- its preset count IS 16, so no substitution |
-| GDDR6 | 16 (4 x 4) per channel | **32** (4 x 4 x 2 chips/rank) |
+| GDDR6 | 16 (4 x 4) per channel | 16 per channel, as asked, on each of the device's 2 channels (32 in all); since (1.12.52) the channels are the channel tier, not chips/rank, so no substitution (as LPDDR5) |
 | HBM2 | 32 (4 x 8) per channel | **256** |
 | HBM3 | 32 (4 x 8) per channel | **512** |
 

@@ -90,6 +90,12 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
             error = "part record " + path + ": " + error; return false;
         }
     }
+    /* (1.12.52) GDDR6 die count: the channels one die carries (GDDR6 must state it; default 1 elsewhere) */
+    if (n["channels_per_die"]) {
+        if (!need(n, "channels_per_die", r.channels_per_die, error)) { error = "part record " + path + ": " + error; return false; }
+    } else if (r.technology == "GDDR6") {
+        error = "part record " + path + ": required field 'channels_per_die' is missing (a GDDR6 device carries two channels, JESD250D 4.1)"; return false;
+    }
     if (!n["refresh_ladder"] || !n["refresh_ladder"].IsSequence() || n["refresh_ladder"].size() == 0) {
         error = "part record " + path + ": required sequence 'refresh_ladder' is missing or empty"; return false;
     }
@@ -443,6 +449,8 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
     }
     const bool stacked = (t == "HBM2" || t == "HBM3");
     if (stacked && rec.stack_dies < 1) errors.push_back("stack_dies must be at least 1 for a stacked part");
+    if (rec.channels_per_die < 1 || (!stacked && rec.channels > 0 && rec.channels % rec.channels_per_die != 0))
+        errors.push_back("channels_per_die must be at least 1 and divide channels");   // (1.12.52) GDDR6 die count
     /* 1.11.104 (IDD-RECORDS step 1): the measured data's own consistency.
      * No ordering rule between IDD3N and IDD2N: the measured HBM2 means have
      * IDD3N below IDD2N (the row's stated ill-conditioning), so that is data,

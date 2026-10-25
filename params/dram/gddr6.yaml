@@ -17,6 +17,7 @@ density_source: "Samsung K4Z80165BC D1z 8 Gb GDDR6, 8 Gb / 37.03 mm^2 whole die 
 organization_preset: "GDDR6_8Gb_x16"   # Ramulator org preset the run instantiates (default knobs)
 timing_preset: "GDDR6_2000_1350mV_double"         # Ramulator timing preset (default knobs)
 channels: 2                   # channels the preset instantiates
+channels_per_die: 2   # (1.12.52) (user ruling 2026-10-25, GDDR6 die count): one device = one die carries both channels (JESD250D 4.1 "devices having 2 channels/device"; Samsung K4Z80325BC Table 17: 8 Gb = 2 x 4 Gb channels); the preset's 1024 MB device capacity spans both
 channel_width_bits: 16   # 1.11.101 (step 2): JESD250D 4.1: two independent 16-bit channels per device
 refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
