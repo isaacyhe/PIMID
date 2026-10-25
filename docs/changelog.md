@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.46 -- HBM2/HBM3: no per-stack floor; the board power-off offset is 821.3 mA
+
+- **Model (user ruling 2026-10-25):** the HBM2 and HBM3 records lose their per-stack floor (469.98 / 430.82 mW). The
+  current it came from is the board current with the HBM2 stack powered off, which the measurement subtracts as
+  non-DRAM (Olgun et al., MICRO 2026, Sec. 4.3; the authors' repository names it "the FPGA board's power-off current
+  (821.3 mA)"). The per-channel currents are now (stack mean - 821.3 mA) / 8 (was 783.3 mA, from reading the same
+  file as one channel running): HBM2 IDD2N 76.025 -> 66.525, IDD3N 71.0 -> 61.5 mA at 2.4 Gb/s; HBM3 IDD2N = IDD3N
+  89.0 -> 77.875 mA; IDD0/IDD4R/IDD4W/IDD5/IDD2P move with the baseline, so activate, burst and refresh energies are
+  unchanged. Derivation: docs/derivations/hbm_gddr6_idd.md sec. 1.11. Records only (params/dram/hbm2.yaml,
+  hbm3.yaml); no code change.
+- **Data impact:** HBM2/HBM3 background (memory static) and every total that holds it; per-access, ACT and refresh
+  energies unchanged. HBM2 background per stack 1189.8 -> about 674 mW, HBM3 2120.4 -> about 1494 mW.
+
 ## 1.12.45 -- removals from the public tree: the vendor Verilog verification kit and a non-citable deck
 
 - **pimid/external/ramulator/verilog_verification/ deleted (user ruling 2026-10-25, T7a):** vendor Verilog sources
