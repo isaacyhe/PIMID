@@ -175,11 +175,6 @@ core AC timing tables or IDD tables.
 | tCCD_L family split, with cause | ~5 ns where the IO sense amp sits at the bank end (DDR/LPDDR) vs ~2.5 ns mid-bank (GDDR/HBM) | ISCA 2025 Tutorial slide 56 | Physical justification for our per-family tCCD_L values -- not derivable from the standards |
 | DDR5 latency-under-load validation target | DDR5-6400, 8 BG x 4 banks, 1/2 ranks, 32-entry R/W queues, 67/33 R/W, closed page, random: 54 ns unloaded; saturation ~17.5 GB/s (32 banks) and ~23.3 GB/s (64 banks) of 51.2 GB/s peak | ISCA 2025 Tutorial slides 93-95 (DRAMSys) | VALIDATION -- a fully specified, reproducible performance target; standards contain no performance data |
 
-NOT CITABLE (held for background only): "DRAM Lecture Tomishima"
-carries "Intel Confidential - Internal Use Only" on 85 of its 90 pages. No
-number from it may appear in a config, a figure, or the manuscript with
-that deck as its provenance.
-
 ## Round-5 calibration corrections (1.11.66, 2026-09-18)
 
 | Item | Value now | Source | Note |

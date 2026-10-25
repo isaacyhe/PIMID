@@ -291,35 +291,6 @@ The process is similar to that of adding a new implementation, but you will need
 ```cmake
 add_subdirectory(my_comp)
 ```
-## Verifying Ramulator 2.0's Memory Controller and DRAM Model
-We use the [Verilog model from Micron](https://www.micron.com/products/dram/ddr4-sdram/part-catalog/mt40a2g4trf-093e) to verify that the DRAM commands issued by Ramulator 2.0 do not cause timing or state transition violations.
-1. Generate the instruction traces
-```bash
-cd verilog_verification
-cd traces
-python3 tracegen.py --type SimpleO3 --pattern {stream,random} --num-insts ${NUM_INSTS} --output ${TRACE_FILE} --distance ${MEMREQ_INTENSITY}
-```
-2. Collect the DRAM command trace (with addresses and time stamps) from the simulations
-```bash
-cd ..
-./ramulator2 -f ./verification-config.yaml
-```
-3. Configure the Verilog model to match the configuration used by Ramulator 2.0:
-- DRAM Organization: "DDR4_8G_X8"
-- DRAM Frequency: "DDR4_2400"
-- Number of Ranks: 2
-
-We provide the already configured Verilog files in `verilog_verification/sources/`. 
-
-4. Convert the DRAM Command Trace to fit the testbench of the Verilog model. We provide a script `verilog_verification/trace_converter.py` to do so.
-```bash
-python3 trace_converter.py DDR4_8G_X8 2 DDR4_2400
-```
-5.  Then you can just start your Verilog simulator (e.g., ModelSim) and check for violations. We provide a script to parse the simulation output and check for errors `verilog_verification/trace_verifier.py`
-```bash
-python3 trace_verifier.py <trace_filepath> <output_filepath>
-```
-
 ## Reproducing the Results in our Ramulator 2.0 paper
 ### Simulation Performance Comparison with Other Simulators
 We put all scripts and configurations in `perf_comparison/`

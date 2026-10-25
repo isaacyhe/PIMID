@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.45 -- removals from the public tree: the vendor Verilog verification kit and a non-citable deck
+
+- **pimid/external/ramulator/verilog_verification/ deleted (user ruling 2026-10-25, T7a):** vendor Verilog sources
+  carrying "CONFIDENTIAL AND PROPRIETARY" headers and protected models, plus its trace converter/verifier scripts,
+  traces and config (19 files). The external/ramulator/README.md section "Verifying Ramulator 2.0's Memory
+  Controller and DRAM Model" that documented it is removed. No build file, script or other document references
+  the directory (checked: CMake, scripts/, tests/, docs/).
+- **Non-citable lecture deck no longer named (T7b):** its two "not citable" notes (this changelog's 1.11.64-era
+  entry and docs/sources.md) are removed. It informed no value anywhere in the tree (no config, figure or
+  provenance used it), so no replacement wording was needed.
+- **Data impact:** none; nothing simulated, built or priced used either.
+
 ## 1.12.44 -- LPDDR5 organisation follows the 16 Gb die of the record's IDD row
 
 - **LPDDR5 org preset LPDDR5_8Gb_x16 -> LPDDR5_16Gb_x16 (user ruling 2026-10-25, T6):** the record's IDD row is
@@ -6360,11 +6372,6 @@ an 82-96 mm^2 cross-vendor band rather than a point. docs/sources.md gains
 a vendor-silicon-papers section with the scope caveats that matter --
 notably that Chae's 0.25/0.29 pJ/bit is a SoC-side PHY figure with the
 DRAM die excluded, and must never be used as DRAM I/O energy.
-
-NOT CITABLE, recorded so nobody is tempted: "DRAM Lecture
-Tomishima" carries "Intel Confidential - Internal Use Only" on 85 of
-its 90 pages. Background reading only -- no citation, no figure, and no
-number from it in any config's provenance.
 
 STAGED, not bundled: the temperature-dependent refresh ladder. It is now
 sourced across three vendors (Intel's TEMP[2:0] 4x/2x/1x/0.5x/0.25x tREFI
