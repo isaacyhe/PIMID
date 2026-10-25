@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.36 -- sources: every value is cited to a public document or stated as not disclosable
+
+- **Citations** (user ruling 2026-10-25): values that came from vendor sources that cannot be disclosed publicly are
+  now cited to public documents where one gives them, and otherwise read "estimated from a vendor source that cannot
+  be disclosed publicly". No such source is named anywhere in the code, the docs or the printed lines, and local
+  document-archive paths are no longer quoted (each document is named by its title).
+  - GDDR6 power-down exit tXP 12 tCK: Samsung K4Z80325BC Rev. 1.3, Table 92 p.158 (same value; the printed source
+    string changes).
+  - GDDR6 tRFCab 120 ns: Samsung K4Z80325BC Table 92 (the 16 Gb column: same value, not disclosable source).
+  - LPDDR5 driver RON 40 ohm and VDDQ: Micron public LPDDR5X sheets Y52P / Y52Q / Y4BM (IDD-table note 4, p.1);
+    DQ ODT default Disable: JESD209-5C Table 84. LPDDR5 refresh rows: Y52Q Table 4 (8 Gb), Y4BM (12 Gb), Y52P Table
+    6 (16 Gb), unchanged.
+  - The HBM3 IDD2P band in docs/derivations/hbm_gddr6_idd.md now takes its low ratio from the public Y52P sheet
+    (IDD2P/IDD2N 3.9/32.5 = 0.12): band 16-98 mA, centre 40 mA (was 11-98 / 33). The model does not read this band
+    (the HBM3 row has used the HPCA 2017 ratio since 1.12.20).
+- No model value changes; cycles and checksums are unchanged.
+
 ## 1.12.35 -- the host node-per-core reference band is node- and clock-scaled per run
 
 - **Checker (user ruling 2026-10-25, option (ii)):** `host.node_W_per_core` is judged against a DERIVED band scaled
@@ -270,7 +287,7 @@ commented-out line and was archived in May 2026).
 - **Idle timer.** `memory.power_down_idle_clocks`, default 64 memory clocks (AMD BKDG 42301, PchgPDEnDelay /
   AggrPDDelay, BIOS default 00h = 64 clocks; the only published value found).
 - **tXP and IDD2P.** tXP: DDR3 max(3 nCK, 6 ns) (JESD79-3D), DDR4 max(4 nCK, 6 ns) (JESD79-4), DDR5 7.5 ns
-  (JESD79-5), LPDDR5 7.5 ns (JESD209-5), GDDR6 12 tCK (SK hynix H56G42A rev 1.1), HBM3 max(10 tCK, 7.5 ns)
+  (JESD79-5), LPDDR5 7.5 ns (JESD209-5), GDDR6 12 tCK (Samsung K4Z80325BC Rev. 1.3 Table 92), HBM3 max(10 tCK, 7.5 ns)
   (JESD238B.01); HBM2: NO PUBLISHED SOURCE FOUND (not modelled unless `memory.power_down_threshold_ns` supplies
   a tXP). IDD2P from each part record; HBM IDD2P DERIVED as IDD2N x 28/40 (the IDD2P/IDD2N pair of Chatterjee et
   al., HPCA 2017, Table II).
@@ -3627,7 +3644,7 @@ for DDR3/DDR4/DDR5 keeps the dilution, ONE_BANK for HBM2/HBM3/GDDR6 uses
 IDD3N as specified, UNVERIFIED for LPDDR5 keeps the 1.11.86 formula (the
 held LPDDR5-class sheets list values with no bank condition -- the public
 Y52P LPDDR5X sheet p.42 defers to "General LPDDR5/LPDDR5X Specifications
-2", not held -- and misc/JESD209-5C.pdf is image-only here). The burst terms subtract IDD3N from
+2", not held -- and JESD209-5C is image-only here). The burst terms subtract IDD3N from
 IDD4R/IDD4W; the sheets were read for the burst loop's bank state: DDR5
 p.451 IDD4R/IDD4W "All banks open, RD [WR] commands cycling through banks",
 MT40A p.317 "all banks open", MT41K pp.37-38 "All banks open" -- so on the
@@ -3844,12 +3861,10 @@ Per row:
   Rev A / Rev D maxima (4800B {103, 92, 142, 377, 349, 277, 88}, 5600B
   {53, 49, 91, 218, 241, 377, 47}) and the unsourced 3200 row (stated).
   The model-inputs line now prints `; IDD row DERIVED` for DDR5.
-- LPDDR5 DERIVED, RE-SOURCED (user ruling, same evening): the 8 Gb
-  LPDDR5-6400 sheet the row used since 1.11.63 is marked confidential on
-  every page and is no longer cited anywhere in the code comments or this
-  entry (older ledger entries are history and are left as written). The row now
-  reads the PUBLIC Micron Y52P LPDDR5X sheet (misc/315b-441b-561b-563b-
-  y52p-sdp-ddp-qdp-8dp-lpddr5x.pdf, Rev. H 03/2025, MT62F1G32D2 family, 16
+- LPDDR5 DERIVED, RE-SOURCED (user ruling, same evening): the vendor
+  source the row used since 1.11.63 cannot be disclosed publicly and is no
+  longer cited anywhere in the code comments or this entry (older ledger entries are history and are left as written). The row now
+  reads the PUBLIC Micron Y52P LPDDR5X sheet (Rev. H 03/2025, MT62F1G32D2 family, 16
   Gb die), Table 18 PDF pp.42-43, x16, 7500 Mb/s: VDD2H IDD0 53, IDD2N
   32.5, IDD3N 40, IDD4R 390, IDD4W 265, IDD52H 205, IDD2P 3.9 mA. Stored:
   standby and activate as-is, burst excess over IDD3N x 6400/7500
@@ -3857,7 +3872,7 @@ Per row:
   two-generation set. IDDQ (IDD3NQ 0.6, IDD4RQ 111.9 typical, IDD4WQ 0.6
   at 0.5 V) and the VDD1 pair in the IPP slot (IDD2N1 1.5, IDD3N1 2.8 at
   1.8 V) come from the same table, unfactored and not rate-scaled.
-  Uncited cross-check (confidential sheet): agrees within ~15% on burst
+  Uncited cross-check (a vendor source that cannot be disclosed publicly): agrees within ~15% on burst
   and standby. The same sheet's rate-unscaled row is `LPDDR5X` (DERIVED),
   NOT selectable: see OPEN.
 - GDDR6 DERIVED, and R8-5 decided: the row reads Samsung K4Z80325BC Table
@@ -5930,9 +5945,9 @@ round 5's code lane had flagged as 0.55x low, turn out to have been the
 vendor values all along; they are now DERIVED from the corrected preset and
 reproduce themselves (14.85 / 13.7 / 14.85 / 30.3 ns).
 
-GDDR6 tRFC: 360 ns (impl) and 220 (energy) were DDR4's columns. Both
+GDDR6 tRFC: 360 ns (impl) and 220 (energy) were DDR4's columns. The
 vendor sheets give tRFCab = 120 ns at 8 Gb and 16 Gb alike (Samsung Table
-92; SK hynix H56G42A Table 67). Refresh occupancy 18.9% -> 6.3%.
+92; the 16 Gb value estimated from a vendor source that cannot be disclosed publicly). Refresh occupancy 18.9% -> 6.3%.
 
 THE SHAPE CHECK -- the structural fix behind four defects. Every
 organization cross-check this tree had was a PRODUCT identity (density ==
@@ -6231,8 +6246,8 @@ a vendor-silicon-papers section with the scope caveats that matter --
 notably that Chae's 0.25/0.29 pJ/bit is a SoC-side PHY figure with the
 DRAM die excluded, and must never be used as DRAM I/O energy.
 
-NOT CITABLE, recorded so nobody is tempted: misc/"DRAM Lecture
-Tomishima.pdf" carries "Intel Confidential - Internal Use Only" on 85 of
+NOT CITABLE, recorded so nobody is tempted: "DRAM Lecture
+Tomishima" carries "Intel Confidential - Internal Use Only" on 85 of
 its 90 pages. Background reading only -- no citation, no figure, and no
 number from it in any config's provenance.
 
@@ -6262,11 +6277,11 @@ entries here are provenance and documentation. The corpus re-sim on
 The calibration release. R6 (2026-08-24, user): "we mainly rely on the
 ramulator models, but these models must be carefully calibrated to
 JEDEC/vendor spec/data we have. PIMID itself provides no such thing." A
-document campaign brought the full standards into misc/ -- JESD209-5C
+document campaign brought the full standards into the local archive -- JESD209-5C
 (LPDDR5/5X, 676 pp), JESD235D (HBM1/HBM2, 213 pp), the complete POD family
 (JESD8-19/20A/21C/24/25/30A = POD18/15/135/12/10/125), JESD305B.01, the
-Micron DDR3L/DDR4/DDR5 full datasheets, a Samsung and an SK hynix GDDR6
-part datasheet -- and every preset field they can check was checked. What
+Micron DDR3L/DDR4/DDR5 full datasheets, a Samsung GDDR6 part datasheet
+and vendor sources that cannot be disclosed publicly -- and every preset field they can check was checked. What
 remains uncheckable is now a named vendor-NDA list (HBM3 part spec; HBM2
 IDD), not a fog.
 
@@ -6275,8 +6290,8 @@ drifted / 233 uncheckable at the start) drove: GDDR6 tREFI 7800 -> 1900 ns
 (refresh occupancy 4.6% -> 18.9%) and nCCDS 4 -> 8 with the tREFI/nRFCpb
 column swap unwound; HBM3 re-derived into its CK domain (tCK = 625 ps,
 fCK = rate/4 per JESD238B Table 92; nCCDS 2 -> DQ utilisation 57% -> 100%,
-bandwidth uncap 1.75x); LPDDR5 IDD re-based on the Micron MT62F VDD2H
-column (~3x); DDR3_8Gb_x8 org corrected; DDR3/DDR5 ns rows re-keyed to the
+bandwidth uncap 1.75x); LPDDR5 IDD re-based on a VDD2H column estimated from a vendor source that cannot be disclosed publicly
+(~3x); DDR3_8Gb_x8 org corrected; DDR3/DDR5 ns rows re-keyed to the
 simulated bins (the DDR4 tRC bin-stamp, +1.1%, is the recorded judgment
 call -- gate 1173D measured its co-sim consequence at ~2%). R6 batch: the
 wrapper's capacity_/bandwidth_ literals are DERIVED from preset org x
@@ -6426,7 +6441,7 @@ whether that wobble is layout noise, as N6b says, or a residue worth chasing.
 The density batch: four rulings made interactively (2026-08-22) after the
 density investigation, plus the R6 principle stated 2026-08-24 that governs
 them all: PIMID relies on the Ramulator models, those models are calibrated to
-JEDEC and the vendor data in misc/, and PIMID ITSELF PROVIDES NO NUMBERS.
+JEDEC and the vendor data held locally, and PIMID ITSELF PROVIDES NO NUMBERS.
 
 R1 -- DDR-family density follows the preset. The architecture objects
 described devices 4x-32x less dense than the presets the wrapper simulates
@@ -8493,8 +8508,7 @@ and corrected three numbers along the way, two of them mine.
   is not delay.
 
 - **CORRECTION 2, inherited: "UPMEM DPU: 350-466 MHz" appears in no source we
-  hold.** It was in the code comment and I repeated it. Devaux, Hot Chips 31
-  (misc/) says "4Gb DDR4 2400 DRAM + 8 DPUs @500MHz" (p3, p4) and "14 pipe
+  hold.** It was in the code comment and I repeated it. Devaux, Hot Chips 31 says "4Gb DDR4 2400 DRAM + 8 DPUs @500MHz" (p3, p4) and "14 pipe
   stages needed to reach 500 MHz" (p10). The demonstrated band is 300 MHz
   (FIMDRAM, ISSCC 2021 25.4) to 500 MHz (UPMEM).
 
@@ -8895,7 +8909,7 @@ The termination table declared LPDDR5 "unterminated by design" and returned
 exactly 0. Micron's own datasheets say otherwise, in the feature list:
 "Programmable VSS on-die termination (ODT)", "Interface-LVSTL 0.5/0.3",
 "VDDQ = 0.50V ... 0.30V TYP (ODT off)", RON = 40 ohm
-(misc/MICT-S-A0025741931-1.pdf, misc/315b-441b-561b-y52q-*.pdf).
+(Micron public LPDDR5X sheets Y52P/Y52Q/Y4BM).
 
 - **LVSTL is a THIRD topology, not the absence of one.** POD terminates to
   VDDQ, SSTL to a VDDQ/2 mid-rail, LVSTL to VSS. Current flows while the

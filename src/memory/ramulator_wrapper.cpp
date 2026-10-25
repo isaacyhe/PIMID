@@ -2284,7 +2284,7 @@ double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
                   << std::endl;
         /* 1.11.52 (audit D008) asked that the unsourced input be named where
          * it is used; 1.11.63 retires the disclosure because the input is no
-         * longer unsourced. JESD209-5C (in misc/ since 2026-08-24), Table 84
+         * longer unsourced. JESD209-5C (held since 2026-08-24), Table 84
          * p.144: DQ ODT OP[2:0] "000B: Disable (Default)". The JEDEC default
          * operating point is UNTERMINATED, so the model's default termination
          * term is zero BY CITATION, and the old "which end of the 30-240 ohm
@@ -2315,7 +2315,7 @@ bool RamulatorWrapper::getTerminationEnergyBandNJ(double& lo_nj, double& hi_nj,
      * Tbl 89, typical column empty), a 4.0x spread in loop resistance.
      *
      * 1.11.63 RETIRES the band, because the question is now answered by the
-     * standard itself. JESD209-5C (misc/, acquired 2026-08-24), Table 84
+     * standard itself. JESD209-5C (acquired 2026-08-24), Table 84
      * p.144: DQ ODT OP[2:0] "000B: Disable (Default)"; the ladder is RZQ/1..
      * RZQ/6 with RZQ = 240 ohm and 111B RFU, and NT-ODT likewise defaults
      * off. The JEDEC default operating point is UNTERMINATED -- below the old
@@ -3071,7 +3071,7 @@ double RamulatorWrapper::getTRAS() const {
      * LPDDR5-6400 from the Micron datasheets in hand (tRAS min 42 ns);
      * GDDR6 from the same 16 Gb/s vendor-spec class getTRCD already cites --
      * a single-point source, flagged as such. */
-    if (dram_type_ == "GDDR6")   // 1.11.66: derived -- nRAS 53 x 0.571 = 30.3 (Samsung tRAS 30 ns; old 28.0 was SK hynix's)
+    if (dram_type_ == "GDDR6")   // 1.11.66: derived -- nRAS 53 x 0.571 = 30.3 (Samsung tRAS 30 ns; old 28.0 was estimated from a vendor source that cannot be disclosed publicly)
         return preset_timing_.derivable() ? preset_timing_.nRAS * preset_timing_.tCK_ns() : 28.0;
     /* 1.11.63 (R6, gate 1173C): derived -- nRAS x tCK (34 x 1.25 = 42.5;
      * the old 42.0 was the JEDEC ns min without the CK rounding). */

@@ -6,7 +6,7 @@ records come from, with their bands. Sections 0-3 were written for PIMID
 "old" or "recommended" in a section is the row at the time that section was
 written; the values in force are the part records `params/dram/hbm3.yaml`,
 `params/dram/hbm2.yaml` and `params/dram/gddr6.yaml`. "The tree" means the
-PIMID source tree; `misc/` is the local document archive listed in
+PIMID source tree; "the archive" is the local document archive listed in
 [docs/sources.md](../sources.md).
 
 Rows as they stood in 1.11.90:
@@ -23,8 +23,8 @@ trefi_ns, channels, idd2p.
 ## 0. Summary
 
 1. **GDDR6 does not need to be derived. The tree already holds a vendor IDD
-   table for the exact part it simulates.** The file
-   misc/52839ef626add36b171d2cdf17bacfd2.pdf is the Samsung K4Z80325BC
+   table for the exact part it simulates.** The archive
+   holds the Samsung K4Z80325BC
    datasheet (Rev. 1.3, Jan. 2020, 8 Gb GDDR6 SGRAM C-die, 187 pp.). I
    checked all 187 pages page by page and none carries a "Confidential"
    marking. Its Table 82 (PDF p.146) lists every IDD at 1.35 V, x32 mode,
@@ -84,7 +84,7 @@ trefi_ns, channels, idd2p.
 
 ### 1.1 The base: what the HBM2 numbers actually are
 
-Source data: misc/zen_hbm2_idd_36chips_summary.csv and
+Source data: the artifact files zen_hbm2_idd_36chips_summary.csv and
 zen_hbm2_idd_per_chip.csv. These come from the CMU-SAFARI "HBM-Power"
 artifact, https://github.com/CMU-SAFARI/HBM-Power/tree/artifact (fetched
 2026-09-26):
@@ -97,7 +97,7 @@ authors, venue or year. It only says "An accurate power model for high
 bandwidth memory (HBM) building on detailed power consumption
 characterization of 36 real HBM2 stacks". The title the project's index
 records ("An Experimental Study of High-Bandwidth Memory (HBM) Power
-Consumption", misc/zen_sources_index.csv) could NOT be confirmed from any
+Consumption") could NOT be confirmed from any
 fetched page, and no preprint was found. So cite it as a software/data
 artifact:
 
@@ -159,8 +159,8 @@ from zen_hbm2_idd_per_chip.csv.
 
 Energies derived from the base:
 - **Read burst, per bit:** e_r2 = 1.2 x (463.8 - 133.4) mA / 76.8 Gb/s =
-  **5.16 pJ/bit**. With the all-zero data pattern (misc/
-  zen_hbm2_beat_pattern_idd.csv, pattern 0000: 2540.8 mA stack) it is
+  **5.16 pJ/bit**. With the all-zero data pattern (CMU-SAFARI HBM-Power
+  beat-pattern IDD data, pattern 0000: 2540.8 mA stack) it is
   2.88 pJ/bit. If the one-PC reading were wrong it would be 2.58.
 - **Write burst, per bit:** e_w2 = 1.2 x 222.2 / 76.8 = **3.47 pJ/bit**.
 - **Activation:** E_act2 = 1.2 V x 7.65 mA x 48.3 ns = **444 pJ** per
@@ -174,8 +174,7 @@ Energies derived from the base:
 
 Cross-check of the base against O'Connor et al., "Fine-Grained DRAM:
 Energy-Efficient DRAM for Extreme Bandwidth Systems", MICRO-50, 2017
-(misc/MICRO_2017_Fine_Grained_DRAM.pdf;
-https://www.cs.utexas.edu/~skeckler/pubs/MICRO_2017_Fine_Grained_DRAM.pdf).
+(https://www.cs.utexas.edu/~skeckler/pubs/MICRO_2017_Fine_Grained_DRAM.pdf).
 p.3: "each HBM2 access incurs 3.92 pJ/bit of energy (including ECC
 overhead)". Table 3, p.10: row activation 909 pJ; pre-GSA 1.51,
 post-GSA 1.17 and I/O 0.80 pJ/b "at 50% activity rate".
@@ -316,10 +315,14 @@ Every factor is listed with its source; where none exists this says so.
 **IDD2P (precharge power-down).**
 - There is no citable HBM input. JESD238B.01 Table 83 defines IDD2P with
   tCK = tCK(min), i.e. the clock keeps running.
-- The only held sourced ratios IDD2P/IDD2N are GDDR6 230/310 = 0.74
-  (Samsung T82, PLL/DLL off) and LPDDR5 2.5/30 = 0.083 (MT62F T7).
-- Band 0.08-0.74 x IDD2N = **11-98 mA**. Centre is the geometric midpoint
-  of the ratio ends, 0.25, giving **33 mA**. This stays an un-sourced
+- The only public sourced ratios IDD2P/IDD2N are GDDR6 230/310 = 0.74
+  (Samsung T82, PLL/DLL off) and LPDDR5X 3.9/32.5 = 0.12 (Micron Y52P
+  Table 18, VDD2H, x16 7500). [Until the next release the low end was a
+  ratio of 0.083 estimated from a vendor source that cannot be disclosed publicly.]
+- Band 0.12-0.74 x IDD2N = **16-98 mA**. Centre is the geometric midpoint
+  of the ratio ends, 0.30, giving **40 mA**. (The shipped HBM3 row has used
+  the Chatterjee HPCA 2017 ratio 28/40 since 1.12.20; this band is not read
+  by the model.) This stays an un-sourced
   column and must be said so.
 
 ### 1.4 HBM3 table
@@ -333,7 +336,7 @@ Every factor is listed with its source; where none exists this says so.
 | IDD4R | 5.16 pJ/b at 76.8 Gb/s/ch (SAFARI, one PC, 1.2 Gb/s) | f_io 0.23 (O'Connor T3); V^2; k_proc [0.85,1] (SK hynix IEDM23); r_io [0.3,0.6] (judgement); 409.6 Gb/s/ch (JESD238B.01 T1 + 6.4 Gb/s) | 1575 mA (IDD3N + 1443) | IDD3N + 496..1701 |
 | IDD4W | 3.47 pJ/b (SAFARI) | same factors | 1102 mA (IDD3N + 970) | IDD3N + 334..1144 |
 | IDD5B | 17.1 nJ per PC-REF at tRFC 266.7 (SAFARI) | x2 PCs; (1.1/1.2)^b; rows/REF equal (JESD238B.01 T4); tRFC 260 (T84) | 237 mA (IDD2N + 105) | IDD2N + 25..110 |
-| IDD2P | none (SAFARI did not measure it) | ratio from sourced families: GDDR6 0.74, LPDDR5 0.083 | 33 mA | 11-98 |
+| IDD2P | none (SAFARI did not measure it) | ratio from sourced families: GDDR6 0.74, LPDDR5X 0.12 | 40 mA | 16-98 |
 
 **Recommended row:**
 
@@ -584,7 +587,7 @@ array part.
 
 ### 2.1 Search for a scaling base
 
-- JESD250D (misc/JESD250D.pdf) is held. Its IDD table, Table 65
+- JESD250D is held. Its IDD table, Table 65
   (printed p.153 / PDF p.165), has conditions only and no values, like
   the HBM standards.
 - Micron's public GDDR6 material has no IDD table.
@@ -594,15 +597,14 @@ array part.
   datasheet with a full IDD table is already held, and it is strictly a
   better base than any scaled GDDR5 table.
 - **The held table:** Samsung K4Z80325BC, "8Gb GDDR6 SGRAM C-die, 16M x
-  16Bit x 16 Banks x 2ch.", Rev. 1.3, Jan. 2020,
-  misc/52839ef626add36b171d2cdf17bacfd2.pdf.
+  16Bit x 16 Banks x 2ch.", Rev. 1.3, Jan. 2020.
   - Page 1 carries Samsung's standard "reserves the right to change ..."
     notice, and no page carries a confidentiality marking (all 187
     scanned).
   - Distributor listings for this part turned up in web search. A public
     copy was NOT downloaded (the LCSC URL returned HTML), so public
     availability is by listing only.
-  - The SK hynix H56G42A sheet was not opened or used.
+  - No other GDDR6 vendor source was used.
 
 ### 2.2 The table (Samsung K4Z80325BC Table 82, PDF p.146)
 

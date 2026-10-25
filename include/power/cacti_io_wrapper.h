@@ -54,7 +54,7 @@
  * lines set ron_value = 50 and rtt_value = 50 ohm and called them
  * "specification facts about the electrical layer -- the one kind of single
  * value that is legitimately a constant", naming no specification. Nothing in
- * this tree supports that: no PCIe electrical document is under misc/ (which
+ * this tree supports that: no PCIe electrical document is held locally (which
  * holds the JEDEC set the DRAM table cites -- JESD79-3D, JESD8-24, JESD8-21C,
  * JESD250D -- and no PCI-SIG material), and the only other 50 in the path is
  * upstream's own untraceable default, extio_technology.cc:874

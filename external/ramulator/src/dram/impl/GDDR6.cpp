@@ -416,16 +416,15 @@ class GDDR6 : public IDRAM, public Implementation {
       /* 1.11.66 (round 5, lane C): the table this replaces was DDR4's tRFC1/
        * tRFC2/tRFC4 column set (260/360/550 at 4/8/16 Gb -- JESD79-4's
        * numbers), inherited with the rest of this file and never a GDDR6
-       * value. Both held vendor sheets give the all-bank refresh cycle time
-       * directly, and they agree:
+       * value. The public vendor sheet gives the all-bank refresh cycle time
+       * directly:
        *   Samsung K4Z80325BC (8 Gb) Table 92 PDF p.158: tRFCab 120 ns
-       *   SK hynix H56G42A (16 Gb) Table 67 PDF p.157:  tRFCab 120 ns
-       * -- 120 ns at BOTH densities (GDDR6 refreshes per bank group in
+       * -- 120 ns, applied at both densities (GDDR6 refreshes per bank group in
        * parallel; the all-bank figure does not grow with density the way a
-       * DDR4 chip's does). The per-bank tRFCpb is 60 ns in both, which the
+       * DDR4 chip's does). The per-bank tRFCpb is 60 ns, which the
        * row's nRFCpb 105 x 0.571 = 60 ns already carries. JESD250D itself
-       * leaves the AC cell blank (vendor-specified), so the vendor sheets
-       * are the authority. With tREFI 1900 ns the refresh occupancy goes
+       * leaves the AC cell blank (vendor-specified), so the vendor sheet
+       * is the authority; the 16 Gb value is the same 120 ns, estimated from a vendor source that cannot be disclosed publicly. With tREFI 1900 ns the refresh occupancy goes
        * 360/1900 = 18.9% -> 120/1900 = 6.3%, which is what a 14 Gb/s GDDR6
        * channel actually loses to refresh. GDDR6 has no fine-granularity
        * refresh modes (no tRFC2/tRFC4 exist in JESD250D), so the table is
@@ -433,7 +432,7 @@ class GDDR6 : public IDRAM, public Implementation {
        * the same 120 with that stated. */
       constexpr int tRFC_TABLE[1][3] = {
       //  4Gb   8Gb  16Gb
-        { 120,  120,  120}, // tRFCab: Samsung Tbl 92 / SK hynix Tbl 67, 120 ns at 8 and 16 Gb
+        { 120,  120,  120}, // tRFCab: Samsung K4Z80325BC Tbl 92, 120 ns (16 Gb: same, vendor source not disclosable)
       };
 
       // tREFI(base) table (unit is nanosecond!)
@@ -482,7 +481,7 @@ class GDDR6 : public IDRAM, public Implementation {
        * selects it) and the two 32 Gb presets hit the [-1] read on every
        * instantiation -- those two are what this throw now refuses. The
        * alternative -- adding a 32 Gb column -- cannot be done from any
-       * source this tree holds: JESD250D (misc/JESD250D.pdf) leaves tRFCab
+       * source this tree holds: JESD250D leaves tRFCab
        * and tRFCpb as vendor-specific, printing "-" for both minimums in its
        * AC timing table, so there is no JEDEC per-density GDDR6 refresh row
        * to copy. (The three columns present here carry DDR4's tRFC1/tRFC2/

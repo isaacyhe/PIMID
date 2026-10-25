@@ -29,7 +29,7 @@ class DDR5 : public IDRAM, public Implementation {
 
     /* 1.11.63 (calibration): nRC 75/77/79 -> 76/78/80, then tagged
      * DERIVED-FROM-IDENTITY because JESD79-5 was not held. 1.11.64: IT IS
-     * HELD (misc/JESD79-5D.pdf, v1.41 published Nov 2025), and the fix is
+     * HELD (v1.41 published Nov 2025), and the fix is
      * UPGRADED TO CONFIRMED-NORMATIVE: Speed Bin Table NOTE 8, printed
      * p.407, verbatim -- "tRC(min) shall always be greater than or equal to
      * tRAS(min) + tRP(min), and when using the appropriate rounding
@@ -494,8 +494,7 @@ class DDR5 : public IDRAM, public Implementation {
 
       /* 1.11.63 raised nRRDL 5 -> 8 as DERIVED-FROM-IDENTITY with the caveat
        * "the real tRRD_L of a DDR5-3200 part is larger than this. Revisit
-       * when JESD79-5 ... is held." IT IS HELD NOW (misc/JESD79-5D.pdf,
-       * published Nov 2025), and the revisit says: 8 is EXACT. Table 334
+       * when JESD79-5 ... is held." IT IS HELD NOW (* published Nov 2025), and the revisit says: 8 is EXACT. Table 334
        * printed p.449: tRRD_L(1K) = tRRD_L(2K) = Max(8nCK, 5ns); at tCK =
        * 0.625 ns both terms are 8 nCK. CONFIRMED-NORMATIVE -- the identity
        * floor and the standard's value coincide, and the old caveat that the

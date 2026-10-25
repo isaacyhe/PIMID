@@ -19,7 +19,7 @@ class HBM2 : public IDRAM, public Implementation {
       {"Default",     {28,17,21,80,90,65, 3,3,3,3,3,40}},
     };
 
-    /* 1.11.64 (JESD235D, misc/JESD235D.pdf): THE BANK/ROW SPLIT, corrected.
+    /* 1.11.64 (JESD235D): THE BANK/ROW SPLIT, corrected.
      *
      * The comment this replaces asserted "Density scales via ROWS, not banks".
      * Table 4 ("HBM Channel Addressing"), printed p.6, says JEDEC scales BOTH,
@@ -71,7 +71,7 @@ class HBM2 : public IDRAM, public Implementation {
        * dead and the comment beside it read as the authority, which is the
        * worse half. -1 is this file's idiom for "supplied elsewhere" and the
        * completeness check below still catches a column nothing fills. */
-      /* 1.11.63 (calibration, JESD235D acquired 2026-08-24 -- misc/): the
+      /* 1.11.63 (calibration, JESD235D acquired 2026-08-24): the
        * full HBM1/HBM2 standard replaced the earlier identity-only pass, and
        * two of that pass's fixes turned out to have patched identities onto
        * wrong anchors (details below). Sources are page-exact; printed page

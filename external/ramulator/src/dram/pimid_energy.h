@@ -314,14 +314,14 @@ inline const char* iddRowProvenance(const std::string& key) {   // 1.11.105: fro
  *         Current: tCK = tCK(min); one bank is active" -> IDD3N.
  *   GDDR6 JESD250D Table 65 (PDF p.165, printed p.153): "Active Standby
  *         Current: tCK = tCK (min); tWCK = tWCK(min); one bank active" ->
- *         IDD3N. (The SK hynix sheet the audit also read is marked
- *         Confidential and is not cited, per the user's R8-9 ruling.)
+ *         IDD3N. (A further vendor source the audit read cannot be
+ *         disclosed publicly and is not cited, per the user's R8-9 ruling.)
  *
  *   UNVERIFIED
  *   LPDDR5 The public Micron Y52P LPDDR5X sheet (Table 18 PDF pp.42-43)
  *         lists the IDD values and on p.42 defers the conditions to
  *         "General LPDDR5/LPDDR5X Specifications 2", which is not held;
- *         the other held LPDDR5-class sheets likewise list values only; misc/JESD209-5C.pdf is an
+ *         the other held LPDDR5-class sheets likewise list values only; JESD209-5C is an
  *         image-only PDF that cannot be read on this node. The 1.11.86
  *         formula is kept, and the basis is printed UNVERIFIED, until the
  *         JESD209-5C condition table is read.
@@ -406,7 +406,7 @@ inline const char* idd3nBasisName(Idd3nBasis b) {
  * as a 45 C one. The multiplier below is what the standards and vendor
  * controller guides specify, applied to tREFI (duty = tRFC / tREFI).
  *
- * SOURCES (all in misc/):
+ * SOURCES (all held locally):
  *  DDR3/DDR4/DDR5, LPDDR5, GDDR6 -- one step: 2x refresh above 85 C.
  *    JESD79-5D Table 70 printed p.173: "tREFI1, 0 C <= TCASE <= 85 C, 3.9 us"
  *      and the 85 < TCASE <= 95 C row at 1.95 us (tREFI halves).
@@ -526,7 +526,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *          were read from; that stays a stated mismatch (F041).
      *
      *   HBM2   160.0 -> 260.0  DERIVED-FROM-IDENTITY, not sourced. The JESD235
-     *          family text is NOT held (misc/ carries only the HBM ballout
+     *          family text is NOT held (the local archive carries only the HBM ballout
      *          spreadsheet), so no external check is possible; but HBM2.cpp's
      *          own tRFC_TABLE gives 260 ns at the emitted HBM2_4Gb density.
      *          The two layers of one technology disagreed by 1.6x.
@@ -550,7 +550,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * neither held) so neither is moved. */
     /* 1.11.66 (round 5, F6 -- user ruling R8 #9): THE DDR5 ROW FOLLOWS THE
      * SPEED GRADE, because an IDD row and a timing row must describe one
-     * part. The held Micron MT60B 16 Gb die addenda (misc/) publish x8 IDD
+     * part. The held Micron MT60B 16 Gb die addenda publish x8 IDD
      * limits at exactly two grades, and both are B-bin parts:
      *   Rev A (Rev. D 02/2023) Table 6 pp.17-19, DDR5-4800B:
      *     IDD0 103, IDD2N 92, IDD3N 142, IDD4R 377, IDD4W 349, IDD5B 277,
@@ -683,7 +683,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
     /* [1.11.91: SUPERSEDED by the Rev B row below -- the 362 converted a
      * Rev A IDD5R against a standby that is not Rev A's. Kept as history.]
      * 1.11.66 (round 5, F5): idd5 155 -> 362 mA. The 155 had no source.
-     * Micron MT40A (misc/) tabulates IDD5R -- the DISTRIBUTED refresh current,
+     * Micron MT40A tabulates IDD5R -- the DISTRIBUTED refresh current,
      * one REF every tREFI averaged in (p.318 definition) -- not the burst
      * IDD5B this column means. Converting the same Rev A row the other
      * columns come from: IDD5B = IDD2N + (IDD5R - IDD2N) x tREFI / tRFC =
@@ -760,18 +760,16 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * sheet). Band (comment only): per-vendor ratios, e.g. IDD3N
      * 0.234-0.532. */
 // [former table row]     if (tech == "DDR3")   return {1.35,55,32,38,157,125,235, 350.0, 7800.0, 1, 32};   // MT41K Rev E T20 p.43, x8, 1600 (MAXIMA; typical via typicalFromSpec)
-    /* LPDDR5 row history. 1.11.63 re-based the column on an 8 Gb LPDDR5-6400
-     * Micron sheet in misc/; the user ruled on 2026-09-26 that that sheet is
-     * marked confidential on every page and is NOT to be cited, so its part
-     * number, pages and values are no longer quoted anywhere in this file.
-     * It survives only as the uncited cross-check named below. (Pre-1.11.63
+    /* LPDDR5 row history. 1.11.63 re-based the column on a vendor source
+     * that cannot be disclosed publicly (user ruling 2026-09-26: not to be
+     * cited), so nothing of it is quoted anywhere in this file. It survives
+     * only as the uncited cross-check named below. (Pre-1.11.63
      * the row traced to no held document; its burst currents were 3-4x
      * below every held LPDDR5-class part.)
      *
      * 1.11.91 (item 11, user ruling 2026-09-26): DERIVED from a PUBLIC sheet.
      * SOURCE: Micron Y52P LPDDR5X SDRAM, MT62F1G32D2 family
-     * (misc/315b-441b-561b-563b-y52p-sdp-ddp-qdp-8dp-lpddr5x.pdf, Rev. H
-     * 03/2025, no confidentiality marking; footer "Downloaded from
+     * (Rev. H 03/2025, no confidentiality marking; footer "Downloaded from
      * Arrow.com"), 16 Gb die, Table 18 "WT IDD Parameters - Single Die",
      * PDF pp.42-43, x16 mode, 7500 Mb/s column, maxima over process,
      * temperature and voltage (note 1), BG mode, DVFSC/DVFSQ disabled
@@ -801,7 +799,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * (step 2); standby, activate and refresh currents are the 16 Gb
      * die's, unscaled. trfc_ns stays 210 (the LPDDR5.cpp 8 Gb timing
      * identity; this sheet's tRFCab is 280 ns at 16 Gb, Table 6 p.11).
-     * UNCITED CROSS-CHECK (confidential sheet): agrees within ~15% on the
+     * UNCITED CROSS-CHECK (a vendor source that cannot be disclosed
+     * publicly): agrees within ~15% on the
      * burst and standby currents; its refresh and power-down currents are
      * lower by about a fifth and a third.
      * IDDQ (R8-8, VDDQ rail, charged only on accesses that cross the DQ):
@@ -870,8 +869,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * DERIVED. The old row (70/45/60/210/230/180) cited a Micron 8 Gb
      * GDDR6-14000 sheet the tree does not hold.
      * SOURCE OF THE MAXIMA: Samsung K4Z80325BC, 8Gb GDDR6 SGRAM C-die, Rev.
-     * 1.3 Jan 2020 (misc/52839ef626add36b171d2cdf17bacfd2.pdf; no
-     * confidentiality marking on any of its 187 pages), Table 82 PDF p.146,
+     * 1.3 Jan 2020 (no confidentiality marking on any of its 187 pages), Table 82 PDF p.146,
      * "IDD Specifications ... @ VDD&VDDQ=1.35V", x32 mode (2 ch x16), column
      * HC14 = 14 Gb/s, per DEVICE:
      *   IDD0 430  IDD2N 310  IDD3N 460  IDD4R 1220  IDD4W 1470
@@ -987,8 +985,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * MEASURED SILICON. The row this replaces (28/17/21/80/90/65 mA) traced
      * to no vendor table -- HBM2 datasheets are NDA-only and JESD235D prints
      * its IDD value columns empty by construction (Table 65 p.105). The
-     * CMU-SAFARI HBM-Power artifact (misc/zen_hbm2_idd_36chips_summary.csv,
-     * 2026) measured the JEDEC IDD loop patterns on 36 real HBM2 stacks
+     * CMU-SAFARI HBM-Power artifact (* 2026) measured the JEDEC IDD loop patterns on 36 real HBM2 stacks
      * (AMD Alveo U55C, DRAM Bender, ~800k samples) at the stack's primary
      * VDD rail. The conversion to this row's per-CHANNEL unit is JEDEC's
      * own: JESD235D cl. 9.1 printed p.100 -- "IDD and IPP measurements are
@@ -1812,7 +1809,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  *    LPDDR5 datasheets say otherwise, in the feature list itself:
  *    "Programmable VSS on-die termination (ODT)", "Interface-LVSTL 0.5/0.3",
  *    "VDDQ = 0.50V or 0.45V TYP; 0.30V TYP (ODT off)", RON = 40 ohm
- *    (misc/MICT-S-A0025741931-1.pdf; misc/315b-441b-561b-y52q-*.pdf).
+ *    (Micron public LPDDR5X sheets Y52P, Y52Q, Y4BM: Features p.1 and IDD-table note 4).
  *    So it is a THIRD topology: POD terminates to VDDQ, SSTL to a VDDQ/2
  *    mid-rail, LVSTL to VSS. Current flows while the driver holds the line
  *    HIGH -- the mirror of POD -- duty ~0.5 for unbiased data, loop = driver
@@ -1841,7 +1838,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  * both directions, with values (48/40 for DDR4/DDR5) that match no JEDEC
  * default and no vendor IDD condition -- and DDR5's citation ("POD11") named
  * a standard that DOES NOT EXIST (the POD family is POD18/15/135/125/12/10;
- * all six are in misc/). The two directions are different circuits:
+ * all six are held locally). The two directions are different circuits:
  *   READ : the DRAM drives (its calibrated RON) into the receiving side's
  *          termination (RTT_NOM class).
  *   WRITE: the controller drives into the DRAM's write termination (RTT_WR
@@ -1867,13 +1864,13 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  *           (Default); Micron IDD conditions are ODT-off).
  * CONTROLLER-SIDE WRITE DRIVER, sourced as a RANGE/SET with the applied
  * value inside it -- no assumption remains:
- *   DDR4/DDR5: Intel 743844-015 (misc/, Vol.1 of the 13th/14th-gen
+ *   DDR4/DDR5: Intel 743844-015 (Vol.1 of the 13th/14th-gen
  *   datasheet) Table 87 p.208 gives host RON_UP(DQ) = RON_DN(DQ) =
  *   30..50 ohm for DDR5, Table 86 p.207 the same for DDR4 (host RODT(DQ):
  *   30..240 / 40..200). Applied 34 (the DRAM-class RZQ/7 value) lies
  *   inside the range; its ends move the write loop (34+120=154) by only
  *   -3%/+10%.
- *   GDDR6: Achronix Speedster7t GDDR6 User Guide UG091 (misc/), Table 3
+ *   GDDR6: Achronix Speedster7t GDDR6 User Guide UG091, Table 3
  *   p.16: "DQ driver impedance (RON) 40/48/60 ohm" -- a host-controller
  *   PHY's settable set, matching the standard 60/40 and 48/40 pairings.
  *   Applied 40 is a member of the set; 48 or 60 would move the write
@@ -1888,7 +1885,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
     /* 1.11.26: LVSTL is a THIRD topology, not an absence of one. Micron's
      * LPDDR5 datasheets state "Programmable VSS on-die termination (ODT)" with
      * VDDQ = 0.50 V nominal ODT-on and 0.30 V ODT-off, RON = 40 ohm
-     * (misc/MICT-S-A0025741931-1.pdf, misc/315b-441b-561b-y52q-*.pdf). It
+     * (Micron public LPDDR5X sheets Y52P, Y52Q, Y4BM). It
      * terminates to GROUND -- the mirror image of POD, which terminates to
      * VDDQ. So current flows while the driver holds the line HIGH, duty ~0.5
      * for random data, across a loop of driver pull-up plus terminator. */
@@ -1973,7 +1970,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
  * iddqBandFor(). */
 /* IddqBand is declared beside ComponentFactors above (1.11.104). */
 /* HBM2/HBM3 IDDQ BAND. Cho et al., SK hynix, ISSCC 2018 12.3 Fig.12.3.1
- * (misc/): per-TSV driver current ~880 uA (multi-drop) and ~610 uA (spiral
+ *: per-TSV driver current ~880 uA (multi-drop) and ~610 uA (spiral
  * point-to-point) at 1.0 V and 3.3 Gb/s PRBS, i.e. 610e-6 x 1.0 / 3.3e9 =
  * 0.185 and 880e-6 x 1.0 / 3.3e9 = 0.267 pJ/bit: the band 0.19-0.27 pJ/bit
  * (chart-read; the pJ/bit derivation is the tree's, docs/sources.md). BAND,

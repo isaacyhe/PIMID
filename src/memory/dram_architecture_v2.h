@@ -1368,7 +1368,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * 1.11.66 (round 5, A2/F2): THE RESIDUAL IS RESOLVED, AND THE PRESET WAS
      * RIGHT. The 1.11.61 note that stood here claimed "a JEDEC DDR5 x8 device
      * really has 32 banks" and kept this object at 8 BG x 4 Ba against the
-     * preset's 8 BG x 2. JESD79-5D (misc/, published Nov 2025), Table 4
+     * preset's 8 BG x 2. JESD79-5D (published Nov 2025), Table 4
      * printed p.7: the 8 Gb x8 addressing is "BG Address BG0~BG2 | Bank
      * Address in a BG BA0 | # BG / # Banks per BG / # Banks = 8 / 2 / 16".
      * 32 banks (BA0~BA1) begins at 16 Gb (Tables 5-7). The preset
@@ -1592,7 +1592,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
      * not a die capacity.
      *
      * THE RULING (R6, user, 2026-08-24): PIMID relies on the Ramulator models,
-     * those models are calibrated to JEDEC and the vendor data in misc/, and
+     * those models are calibrated to JEDEC and the vendor data held locally, and
      * PIMID ITSELF PROVIDES NO NUMBERS -- so a PIMID-side literal that
      * paraphrases a preset must be DERIVED from it. The wrapper literal has no
      * standing; the object follows the preset. On the core-die unit R2 fixed,

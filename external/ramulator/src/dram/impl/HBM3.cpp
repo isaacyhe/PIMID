@@ -110,7 +110,7 @@ class HBM3 : public IDRAM, public Implementation {
        * nRFC/nRFCSB/nREFISB stay -1 (supplied by the per-density tables).
        *
        * 1.11.64 -- VENDOR SILICON CONFIRMS THE TWO LOAD-BEARING CLAIMS ABOVE,
-       * from two independent vendors (papers now in misc/):
+       * from two independent vendors (papers now held locally):
        *  (a) THE CK DOMAIN, tCK = data_rate / 4. This release-1.11.63 fix was
        *      derived from JESD238B.01 Table 92 and is now stated outright in
        *      silicon papers by both HBM3 makers:
@@ -510,7 +510,7 @@ class HBM3 : public IDRAM, public Implementation {
        *     consumes nRFCSB; a SameBank manager would over-price refresh
        *     time by the bound's slack -- conservative, and stated here.
        * 1.11.63 (calibration) SUPERSEDES half of (2): "JESD238 tables are
-       *     paywalled" is no longer true of this tree -- misc/JESD238B.01.pdf
+       *     paywalled" is no longer true of this tree
        *     is held, and its Table 93 printed p.166 DOES publish tRFCpb, at
        *     200 ns for a 16 Gb die (= the 4 Gb/channel org PIMID emits) and
        *     240 ns for 24 Gb, with 8 Gb and 32 Gb marked TBD. That value is

@@ -122,7 +122,7 @@ double CactiIOWrapper::linkBandwidthGBs(const std::string& link_type,
  * ron_value = 50 and rtt_value = 50 ohm as "specification facts about the
  * electrical layer" while naming no specification, in a file whose DRAM half
  * cites JESD79-3D, JESD8-24 and JESD8-21C by clause. There is no PCIe
- * electrical document in this tree to cite (misc/ holds the JEDEC set and no
+ * electrical document in this tree to cite (the local archive holds the JEDEC set and no
  * PCI-SIG material), and the only companion 50 is upstream's own
  * untraceable default at extio_technology.cc:874. The Serial branch also
  * hardcodes rtt1_dq_read = 50 and never reads g_ip->rtt_value, so the rtt
@@ -184,27 +184,26 @@ struct DramIOMap {
  * have, so 240 (RZQ, the LPDDR4/5 ODT reference) stands in.
  *
  * 1.11.59 (LPDDR5 IO sourcing): THE SEARCH FOR THAT OHM TABLE WAS RUN OVER THE
- * WHOLE misc/ ARCHIVE AND IT IS NOT THERE. Recorded so the next worker does
+ * WHOLE LOCAL DOCUMENT ARCHIVE AND IT IS NOT THERE. Recorded so the next worker does
  * not repeat it. What IS in hand, and what is not:
  *
  *   VDDQ = 0.50 V   SOURCED. "VDDQ = 0.50V or 0.45V TYP; 0.30V TYP (ODT off
- *                   only)" -- misc/315b-441b-561b-563b-y52p-*-lpddr5x.pdf p.1
+ *                   only)" -- Micron Y52P LPDDR5X sheet p.1
  *                   Features, "Ultra-low-voltage core and I/O power supplies".
  *                   The same sheet's IDD Table 18 note 5 (PDF p.43) states
  *                   the operating range VDDQ = 0.47-0.57 V (DVFSQ disabled).
- *                   [1.11.91: a second citation, to a sheet the user ruled
- *                   not citable (confidential marking), was removed here.]
+ *                   [1.11.91: a second citation, to a vendor source that
+ *                   cannot be disclosed publicly, was removed here.]
  *   RON  = 40 ohm   SOURCED. IDD-table Note 4, verbatim: "IDD4RQ value is
  *                   reference only. Typical value. Output load = 5pF; RON = 40
- *                   ohms; TC = 25 C" -- misc/315b-441b-561b-563b-y52p-*-
- *                   lpddr5x.pdf p.43 (Table 18 note 4); the identical note
- *                   appears in y52q p.33, MICT-S-A0025741931-1 p.30 and y4bm
- *                   p.25.
+ *                   ohms; TC = 25 C" -- Micron Y52P LPDDR5X sheet p.43
+ *                   (Table 18 note 4); the identical note
+ *                   appears in y52q p.33 and y4bm p.25.
  *   RTT             NOT FOUND, still. Every Micron part sheet states only
  *                   "Programmable VSS on-die termination (ODT)" (Features,
  *                   p.1) and defers the ohm table to "General LPDDR5/LPDDR5X
- *                   Specification 2", which misc/ does not hold; JESD209-5 is
- *                   not in misc/ either; and there is no LVSTL document in the
+ *                   Specification 2", which the local archive does not hold; JESD209-5 is
+ *                   not held either; and there is no LVSTL document in the
  *                   JESD8-* set we have (JESD8-19 POD18, -20A POD15, -21C
  *                   POD135, -23 wide-range CMOS, -24 POD12, -25 POD10).
  *                   The 240 ohm on the ZQ pin is NOT this number: it is the
@@ -213,7 +212,7 @@ struct DramIOMap {
  *                   y52p Table 11, p.22).
  *
  * THE ONE SOURCED THING WE NOW HAVE ABOUT RTT IS A BOUND, NOT A VALUE.
- * misc/743844-015.pdf (Intel doc 743844 rev 015, cl.13.2.2.4 Table 89,
+ * Intel doc 743844 rev 015 (cl.13.2.2.4 Table 89,
  * "LPDDR5/x Signal Group DC Specifications", p.211) gives the HOST-side
  * buffer: RODT(DQ) "On-die termination equivalent resistance for data
  * signals" Minimum 30, Maximum 240 ohm, TYPICAL COLUMN EMPTY; and RON_UP(DQ)
@@ -274,7 +273,7 @@ bool pimidElectricalFor(const std::string& t, PimidElectrical& e) {
      * RON=RZQ/7=34, RTT_NOM=RZQ/6=40, RTT_WR=RZQ/2=120 (MT41K p.32; MT40A
      * p.315; DDR5 core sheet p.453). The old DDR5 tag "POD11" named a
      * standard that does not exist -- the POD family is 18/15/135/125/12/10,
-     * all in misc/; DDR5's 1.1 V POD point is defined by JESD79-5 itself. */
+     * all held locally; DDR5's 1.1 V POD point is defined by JESD79-5 itself. */
     /* 1.12.25: DDR3's electricals are the part record's termination (the selected voltage variant: SSTL-15 at
      * 1.5 V by default, SSTL-135 at 1.35 V for DDR3L), so the interface and the IDD row describe one part. */
     if (t == "DDR3")   {
@@ -288,7 +287,7 @@ bool pimidElectricalFor(const std::string& t, PimidElectrical& e) {
     if (t == "GDDR6")  { e = {1.35, 60, 120, 40, true,  "POD135; rd 40+60 = Samsung K4Z80325BC p.166 driver/termination characteristics; wr 120 = p.144 IDD conditions (All ODTs at ZQ/2, ZQ=240); MR1 default is termination DISABLED (p.49) -- the IDD operating point is priced for layer-consistency"}; return true; }
     /* 1.11.59 (LPDDR5 IO sourcing): the note now carries the page-level
      * citations for the two values that ARE sourced and the bound that is all
-     * misc/ yields for the third. sourced stays false -- see the block above. */
+     * the local archive yields for the third. sourced stays false -- see the block above. */
     /* 1.11.63 (calibration, JESD209-5C acquired 2026-08-24): the RTT question
      * is CLOSED, and the answer is neither 240 nor any rung of the ladder.
      * JESD209-5C Table 84 (printed p.144, PDF p.182), verbatim:
@@ -415,11 +414,10 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
      * whose channel widths differ by 2x, and 128 was right for only one of
      * them.
      *
-     * HBM2 = 128 DQ per channel: JESD235B's ballout (misc/
-     * JESD235B-HBM_Ballout.zip) names 1024 DQ signals across exactly 8 channel
+     * HBM2 = 128 DQ per channel: JESD235B's ballout names 1024 DQ signals across exactly 8 channel
      * letters a..h -- DQa0..DQa127 -- so 1024 / 8 = 128.
      *
-     * HBM3 = 64 DQ per channel, and JESD238B.01 (misc/JESD238B.01.pdf, April
+     * HBM3 = 64 DQ per channel, and JESD238B.01 (April
      * 2025) says so three times:
      *   p.1 Scope:    "Each channel interface maintains a 64 bit data bus
      *                  operating at double data rate (DDR)."

@@ -31,7 +31,7 @@ class LPDDR5 : public IDRAM, public Implementation {
     /* 1.11.63 (calibration): THE LPDDR5 CLOCK DOMAIN, and three fields with it.
      *
      * This row had three different clock domains in it at once. The audit
-     * (misc/-sourced, JESD209-5 not held) established which one it is:
+     * (JESD209-5 not held) established which one it is:
      *
      *   The row's own timings imply tCK = 1.25 ns: nRCD 15 -> 18.75 ns,
      *   nRPpb 15 -> 18.75 ns, nRPab 17 -> 21.25 ns, nRAS 34 -> 42.5 ns,
@@ -46,9 +46,8 @@ class LPDDR5 : public IDRAM, public Implementation {
      * thirteen UNCHECKABLE nXX fields were authored in and JEDEC states LPDDR5
      * command timings in CK cycles. The derivation in set_timing_vals() is
      * corrected to match (8 bits/pin per CK, not 2), so this column's written
-     * 1250 is now also the value actually used. `rate` stays 6400 -- a real
-     * Micron speed grade [1.11.91: the sheet that showed it is ruled not
-     * citable (confidential marking); uncited cross-check] -- and the thirteen CK-domain
+     * 1250 is now also the value actually used. `rate` stays 6400 -- a JESD209-5C data
+     * rate (the vendor speed grade is estimated from a vendor source that cannot be disclosed publicly) -- and the thirteen CK-domain
      * nXX fields keep their cycle counts, which RESTORES their intended
      * nanoseconds instead of changing them.
      *
@@ -74,7 +73,7 @@ class LPDDR5 : public IDRAM, public Implementation {
      * The header's first column name is also corrected: it read "nBL" where
      * m_timings (below) says "nBL16". Position was already right.
      *
-     * 1.11.63 (calibration, JESD209-5C acquired 2026-08-24 -- misc/): the
+     * 1.11.63 (calibration, JESD209-5C acquired 2026-08-24): the
      * previously-UNCHECKABLE AC fields were verified against the standard
      * itself. Governing tables at 6400 Mb/s: the part is in BG MODE (cl.2.2.3
      * p.4: 16B mode is legal only <= 3200 Mb/s), so core timings come from
@@ -426,10 +425,11 @@ class LPDDR5 : public IDRAM, public Implementation {
       };
 
       /* 1.11.63 (calibration): tPBR2ACT at 8 Gb and 16 Gb, 8 -> 7.5 ns.
-       * SOURCES (both held in misc/):
-       *   8 Gb die  -- [1.11.91: the 8 Gb sheet first cited here is ruled
-       *     not citable (confidential marking); it remains an uncited
-       *     cross-check that agrees: 7.5 ns in BG and 16B mode.] The org
+       * SOURCES (public):
+       *   8 Gb die  -- Micron LPDDR5X Y52Q (Rev. G 05/2025), Table 4 refresh
+       *     parameters, PDF p.9: "tPBR2ACT | 7.5 | ns" (the 8 Gb sheet first
+       *     cited here was a vendor source that cannot be disclosed publicly;
+       *     it agrees). The org
        *     this model uses is BG mode (4 bank groups x 4 banks -- see
        *     org_presets), so the BG-mode value applies.
        *   16 Gb die -- Micron LPDDR5X Y52P (Rev. H 03/2025), Table 6 "Refresh
@@ -475,8 +475,9 @@ class LPDDR5 : public IDRAM, public Implementation {
        * one preset this throw now refuses. The alternative -- adding a 32 Gb
        * column -- would require a tRFCab/tRFCpb/tPBR2PBR figure for a 32 Gb
        * LPDDR5 die, and no such figure exists in any source this tree holds:
-       * the Micron LPDDR5/LPDDR5X datasheets in misc/ tabulate 8 Gb
-       * (210/120/90), 12 Gb (280/140/90) and 16 Gb (280/140/90) dies and stop
+       * the public Micron LPDDR5X datasheets tabulate 8 Gb (Y52Q Table 4:
+       * 210/120/90), 12 Gb (Y4BM: 280/140/90) and 16 Gb (Y52P Table 6:
+       * 280/140/90) dies and stop
        * there, because 32 Gb LPDDR5 parts are multi-die packages rather than
        * a 32 Gb die with its own refresh row. Inventing that column is not
        * allowed, so this preset refuses loudly instead of continuing on a

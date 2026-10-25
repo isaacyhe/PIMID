@@ -3558,8 +3558,8 @@ static int s_array_pe_chip_split = 1;
  *   DDR4   max(4 nCK, 6 ns)     JESD79-4
  *   DDR5   7.5 ns               JESD79-5
  *   LPDDR5 7.5 ns               JESD209-5
- *   GDDR6  12 nCK               SK hynix H56G42A 16 Gb GDDR6 data sheet rev 1.1, AC timing table "POWER-DOWN exit
- *                               time tXP 12 tCK" (PDF p.164); JESD250D lists tXP without a value
+ *   GDDR6  12 nCK               Samsung K4Z80325BC GDDR6 data sheet Rev. 1.3, Table 92 AC timings "POWER-DOWN exit
+ *                               time tXP 12 tCK" (PDF p.158; Table 93 p.162 the same); JESD250D lists tXP without a value
  *   HBM3   max(10 nCK, 7.5 ns)  JESD238B.01 AC timing table, Power-Down Timings, "POWER-DOWN EXIT time tXP
  *                               MAX(10 x tCK, 7.5) ns" (PDF p.178)
  *   HBM2   NO PUBLISHED SOURCE FOUND: JESD235D Table (PDF p.117) lists "Power-down exit time tXP" with no value */
@@ -3570,7 +3570,7 @@ static bool dramPdTxp(const UnifiedConfig& c, const std::string& t, double& ns, 
     else if (t == "DDR4")   { ns = 6.0; nck = 4;  src = "tXP max(4nCK,6ns), JESD79-4"; }
     else if (t == "DDR5")   { ns = 7.5;           src = "tXP 7.5ns, JESD79-5"; }
     else if (t == "LPDDR5") { ns = 7.5;           src = "tXP 7.5ns, JESD209-5"; }
-    else if (t == "GDDR6")  { nck = 12;           src = "tXP 12 tCK, SK hynix H56G42A GDDR6 rev 1.1 p.164"; }
+    else if (t == "GDDR6")  { nck = 12;           src = "tXP 12 tCK, Samsung K4Z80325BC Rev. 1.3 Table 92 p.158"; }
     else if (t == "HBM3")   { ns = 7.5; nck = 10; src = "tXP max(10nCK,7.5ns), JESD238B.01 p.178"; }
     else { src = "NO PUBLISHED SOURCE FOUND (JESD235D lists HBM2 tXP without a value)"; return false; }
     return true;
