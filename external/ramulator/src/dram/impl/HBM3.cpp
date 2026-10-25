@@ -50,7 +50,8 @@ class HBM3 : public IDRAM, public Implementation {
        * tables further down before anything reads them. This line used to
        * carry nRFC=706 with a comment claiming "tRFC=220ns @4Gb" -- a value
        * and a source that no run ever used: the table supplies 260 ns at the
-       * emitted HBM3_4Gb org, so the refresh occupancy this model simulates
+       * then-emitted HBM3_4Gb org (1.12.42: PIMID now emits HBM3_8Gb_8H, 8 Gb
+       * per channel -> 350 ns), so the refresh occupancy this model simulated
        * is 18% longer than the preset's own comment stated. The number was
        * dead and the comment beside it read as the authority, which is the
        * worse half. -1 is this file's idiom for "supplied elsewhere" and the
@@ -529,7 +530,7 @@ class HBM3 : public IDRAM, public Implementation {
        *     240 ns for 24 Gb, with 8 Gb and 32 Gb marked TBD. That value is
        *     now used where the standard supplies one; the tRFCab upper bound
        *     survives only for the columns the standard marks TBD. */
-      m_timing_vals("nREFISB") = JEDEC_rounding(tREFIsb_ns, tCK_ps);
+      m_timing_vals("nREFISB") = (long long)(tREFIsb_ns * 1000.0f) / tCK_ps;   /* 1.12.42: tREFI is a MAXIMUM -- round DOWN (as DDR5.cpp, JESD79-5D cl.13.2 max algorithm) */
       /* PIMID 1.11.59 (audit F035): the `if (nRFCSB == -1)` this replaces was
        * unconditionally true -- the one shipped preset sets that column to -1
        * -- while nRFC and nREFISB immediately above were overwritten with no
@@ -540,7 +541,8 @@ class HBM3 : public IDRAM, public Implementation {
       /* 1.11.63 (calibration): nRFCSB is tRFCpb where JESD238B.01 Table 93
        * (printed p.166) gives one, and only falls back to the tRFCab upper
        * bound where the standard says TBD. At the density PIMID emits
-       * (HBM3_4Gb = 4 Gb/channel = a 16 Gb die 4-High) that is 200 ns instead
+       * (then HBM3_4Gb = 4 Gb/channel = a 16 Gb die 4-High; 1.12.42: now HBM3_8Gb_8H = 8 Gb/channel x 2
+       * channels per die = a 16 Gb die 8-High, die-keyed above) that is 200 ns instead
        * of the 260 ns tRFCab bound -- the bound was 30% loose. */
       /* 1.12.41: tRFCpb is keyed on DIE density (Table 93 NOTE 28), and the die-to-channel ratio is the stack's:
        * 16 banks per PC (no SID, 4-High) = 4 channels per die, 32 banks per PC (SID folded, 8-High) = 2 channels
@@ -611,7 +613,7 @@ class HBM3 : public IDRAM, public Implementation {
           /// WR <-> RD, Minimum Read after Write
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTRS")},
           /// CAS <-> PREab
-          {.level = "pseudochannel", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTPS")},
+          {.level = "pseudochannel", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTPL")},   /* 1.12.42: tRTPL -- bank groups are enabled (JESD235D Table 6 p.8: tRTPL applies; JESD238B.01 one tRTP), was nRTPS */
           {.level = "pseudochannel", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
           /// RAS <-> RAS
           {.level = "pseudochannel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
@@ -621,7 +623,7 @@ class HBM3 : public IDRAM, public Implementation {
           /// RAS <-> REF
           {.level = "pseudochannel", .preceding = {"ACT"}, .following = {"REFab", "RFMab"}, .latency = V("nRC")},          
           {.level = "pseudochannel", .preceding = {"PRE", "PREA"}, .following = {"REFab", "RFMab"}, .latency = V("nRP")},          
-          {.level = "pseudochannel", .preceding = {"RDA"}, .following = {"REFab", "RFMab"}, .latency = V("nRP") + V("nRTPS")},          
+          {.level = "pseudochannel", .preceding = {"RDA"}, .following = {"REFab", "RFMab"}, .latency = V("nRP") + V("nRTPL")},   /* 1.12.42: tRTPL -- bank groups are enabled (JESD235D Table 6 p.8: tRTPL applies; JESD238B.01 one tRTP), was nRTPS */          
           {.level = "pseudochannel", .preceding = {"WRA"}, .following = {"REFab", "RFMab"}, .latency = V("nCWL") + V("nBL") + V("nWR") + V("nRP")},          
           {.level = "pseudochannel", .preceding = {"REFab", "RFMab"}, .following = {"ACT", "REFsb", "RFMsb"}, .latency = V("nRFC")},          
 

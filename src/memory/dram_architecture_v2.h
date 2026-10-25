@@ -1233,8 +1233,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     arch->timing.data_rate_mtps = 2400;  // preset HBM2_2.4Gbps
     arch->timing.tRCD_ns = 16.0;  // JESD235C spec-minimum (was 12.5, pre-audit optimistic)
     arch->timing.tCAS_ns = 16.0;  // JESD235C
-    arch->timing.tRP_ns = 12.5;  // VERIFIED
-    arch->timing.tRAS_ns = 28.0;  // VERIFIED
+    arch->timing.tRP_ns = 12.5;  // 1.12.42: NOT verified -- unsourced literal, overwritten from the preset (HBM2_2.4Gbps nRP 18 = 15 ns) at run time
+    arch->timing.tRAS_ns = 28.0;  // 1.12.42: NOT verified -- unsourced literal, overwritten from the preset (nRAS 40 = 33.3 ns) at run time
     arch->timing.tBurst_ns = 8.0 * 1000.0 / 2400.0;  // 8 beats @ 2400 MT/s = 3.33 ns
 
     // Inner-bank datapath timing (INFERRED, much faster than DDR4 due to TSV!)

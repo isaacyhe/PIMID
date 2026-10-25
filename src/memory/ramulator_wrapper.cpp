@@ -2786,7 +2786,7 @@ void RamulatorWrapper::enablePIMSupport(const std::string& dram_type) {
     } else if (dram_type_ == "HBM3") {
         dram_arch_ = pimid::memory::createHBM3_Verified();
         std::cout << "Using HBM3 architecture specs\n";
-        std::cout << "  Key HBM3 features: 4.0 GT/s, 16 pseudo-channels, 512 GB/s peak\n";
+        std::cout << "  Key HBM3 features: 6.4 Gb/s/pin, 16 x 64-bit channels (32 pseudo-channels), 819.2 GB/s peak\n";   // 1.12.42: was "4.0 GT/s, 16 pseudo-channels, 512 GB/s"
     } else {
         std::cerr << "Unknown DRAM type: " << dram_type_ << ", using DDR4\n";
         dram_arch_ = pimid::memory::createDDR4_2400_Verified();

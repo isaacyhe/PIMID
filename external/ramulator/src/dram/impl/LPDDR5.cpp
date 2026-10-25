@@ -474,7 +474,10 @@ class LPDDR5 : public IDRAM, public Implementation {
        * LPDDR5_32Gb_x16 hit the [-1] read on every instantiation and is the
        * one preset this throw now refuses. The alternative -- adding a 32 Gb
        * column -- would require a tRFCab/tRFCpb/tPBR2PBR figure for a 32 Gb
-       * LPDDR5 die, and no such figure exists in any source this tree holds:
+       * LPDDR5 die, and no such figure exists in any source this tree holds
+       * [1.12.42: NOT SO -- JESD209-5C Table 240 p.287 tabulates 32 Gb:
+       * tRFCab 380, tRFCpb 190, tpbR2pbR 90, tpbR2act 7.5 ns; adding the
+       * column needs its own ruling, so the preset still refuses]:
        * the public Micron LPDDR5X datasheets tabulate 8 Gb (Y52Q Table 4:
        * 210/120/90), 12 Gb (Y4BM: 280/140/90) and 16 Gb (Y52P Table 6:
        * 280/140/90) dies and stop
@@ -496,7 +499,7 @@ class LPDDR5 : public IDRAM, public Implementation {
       m_timing_vals("nRFCpb")    = JEDEC_rounding_RU(tRFCpb_TABLE[density_id], tCK_ps);
       m_timing_vals("nPBR2PBR")  = JEDEC_rounding_RU(tPBR2PBR_TABLE[density_id], tCK_ps);
       m_timing_vals("nPBR2ACT")  = JEDEC_rounding_RU(tPBR2ACT_TABLE[density_id], tCK_ps);
-      m_timing_vals("nREFI") = JEDEC_rounding_RU(tREFI_BASE, tCK_ps);   // 1.11.63: LPDDR5 rounds by plain RU() -- JESD209-5C Tbl 225/230 notes
+      m_timing_vals("nREFI") = (tREFI_BASE * 1000LL) / tCK_ps;   // 1.12.42: tREFI is a maximum (JESD209-5C Table 240 3.906 us): round DOWN, 3125 -> 3124 (RU() is the minimum-parameter rule of Tbl 225/230)
 
       // Overwrite timing parameters with any user-provided value
       // Rate and tCK should not be overwritten

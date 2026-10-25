@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.42 -- non-default bins, tREFI rounded down, tRTPL for HBM read-to-precharge-all; timing sanity tool tracked
+
+- **Non-default bins (user ruling 2026-10-25, T4):** DDR3_800E 5-5-5 / nRC 20 -> 6-6-6 / nRC 21 (JESD79-3E Table
+  62; the row was a copy of 800D). DDR3 2 KB-page tFAW at 2133 34 -> 38 nCK (Table 69: 35 ns / 0.937 ns). DDR4
+  2400T/U rows swapped to the file's own letter mapping (T = 17-17-17, U = 18-18-18; Micron MT40A Table 156 -083
+  / -083D; JESD79-4 is not held).
+- **tREFI is a maximum: rounded DOWN** in DDR3, DDR4, GDDR6, LPDDR5 (nREFI) and HBM2, HBM3 (nREFISB), as DDR5.cpp
+  already did (JESD79-5D cl.13.2 max algorithm). Moves: DDR4 9364 -> 9363, GDDR6 3328 -> 3327, LPDDR5 3125 -> 3124
+  nCK; DDR3, HBM2 and HBM3 nREFI unchanged.
+- **HBM2/HBM3 read-to-precharge-all (and RDA -> REFab) use tRTPL** (bank groups enabled; JESD235D Table 6 p.8), was
+  tRTPS.
+- **Housekeeping comments:** DDR3.cpp tRFC note (emits DDR3_4Gb_x8 with the 260 ns override), HBM3.cpp refresh notes
+  (HBM3_8Gb_8H), HBM2.cpp "KNOWN-DRIFTED, STAGED" org note marked resolved, GDDR6 preset name runs at 14 Gb/s,
+  LPDDR5 32 Gb comment (JESD209-5C Table 240 does tabulate 32 Gb; column not added), HBM2 architecture literals
+  no longer labelled VERIFIED, the wrapper's HBM3 banner (6.4 Gb/s, 819.2 GB/s).
+- **Tracked dev-only tool scripts/timing_sanity/** (outside pimid/): `timing_check.py` (static: DDR3/DDR4/DDR5 preset
+  cycle counts from the published formulas with each family's rounding; nRC >= nRAS + nRP, bank-level tRC, tREFI
+  floor, nPPD enforced on all seven impls) and `run_timing_sanity.py` + `probe.cpp` (dynamic, under sbatch:
+  streaming read bandwidth <= rate x pin width x channels and >= 50% of it; idle hit/closed/conflict latency =
+  the preset formulas). 1.12.35 fails 17 static checks; this version passes. KNOWN, not counted (awaiting a
+  ruling): GDDR6_2000_1250mV rows nRC 89 < nRAS + nRP 90.
+
 ## 1.12.41 -- HBM3: the 16 Gb 8-High organisation (SID) and JESD238B.01 Table 84 tRP/tRC
 
 - **HBM3 org preset HBM3_8Gb_8H (user ruling 2026-10-25, T3):** JESD238B.01 Table 4 p.6 "16 Gb 8High": 8 Gb per

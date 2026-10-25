@@ -102,6 +102,8 @@ class GDDR6 : public IDRAM, public Implementation {
        * The _quad rows are not shipped by PIMID; they receive the same clock
        * correction so the file is self-consistent. */
       //       name                 rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nFAW  nRFC nREFI nRREFD nRFCpb tCK_ps
+      /* 1.12.42: despite the "2000" in the name this row runs at 14000 MT/s: CK 1750 MHz (tCK 571 ps), WCK 4x
+       * CK, 14 Gb/s per pin (Samsung K4Z80325BC Rev 1.3 Table 92, JESD250D Fig. 1). The name is Ramulator's. */
       {"GDDR6_2000_1350mV_double", {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
       {"GDDR6_2000_1250mV_double", {14000,  2,  24,    30,     19,  30,   60,   89,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
       {"GDDR6_2000_1350mV_quad",   {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
@@ -500,7 +502,7 @@ class GDDR6 : public IDRAM, public Implementation {
       }
 
       m_timing_vals("nRFC")  = JEDEC_rounding(tRFC_TABLE[0][density_id], tCK_ps);
-      m_timing_vals("nREFI") = JEDEC_rounding(tREFI_BASE, tCK_ps);
+      m_timing_vals("nREFI") = (tREFI_BASE * 1000LL) / tCK_ps;   /* 1.12.42: tREFI is a MAXIMUM -- round DOWN (as DDR5.cpp, JESD79-5D cl.13.2 max algorithm; 3328 -> 3327 at 571 ps, JESD250D: tREFI max 1.9 us) */
 
       // Overwrite timing parameters with any user-provided value
       // Rate and tCK should not be overwritten

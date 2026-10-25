@@ -119,7 +119,9 @@ class HBM2 : public IDRAM, public Implementation {
        * nFAW. All IDD/IPP values likewise (Table 65 p.105 / Table 66 p.106
        * publish EMPTY value columns by construction).
        *
-       * KNOWN-DRIFTED, STAGED for the next release (R2 precedent: address-
+       * [1.12.42: RESOLVED -- the org presets below carry the Table 4 layout
+       * (16 banks/PC, RA[13:0] at 4 Gb/channel) since 1.11.64; the note is kept
+       * as history.] KNOWN-DRIFTED, STAGED for the next release (R2 precedent: address-
        * layout movers ship separately for attribution): the ORG presets.
        * Table 4 p.6 at 4 Gb/channel gives BA[3:0] = 16 banks/PC (4 groups x
        * 4) and RA[13:0] = 16384 rows; this org carries 8 banks/PC x 32768
@@ -435,7 +437,7 @@ class HBM2 : public IDRAM, public Implementation {
        * manager is always AllBank, which never consumes it -- so a value that
        * was wrong by 18.75x sat in a completeness-checked table that reads as
        * though every entry had been derived. */
-      m_timing_vals("nREFISB")  = JEDEC_rounding(tREFISB_TABLE[0][density_id], tCK_ps);
+      m_timing_vals("nREFISB")  = (tREFISB_TABLE[0][density_id] * 1000LL) / tCK_ps;   /* 1.12.42: tREFI is a MAXIMUM -- round DOWN (as DDR5.cpp, JESD79-5D cl.13.2 max algorithm) */
       /* PIMID 1.11.51 (N9): nRFCSB was never filled, so every instantiation
        * of this model died in the -1 completeness check. Filled with tRFC as
        * a stated UPPER BOUND (same reasoning as HBM3.cpp; AllBank refresh
@@ -517,7 +519,7 @@ class HBM2 : public IDRAM, public Implementation {
           /// WR <-> RD, Minimum Read after Write
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTRS")},
           /// CAS <-> PREab
-          {.level = "pseudochannel", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTPS")},
+          {.level = "pseudochannel", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTPL")},   /* 1.12.42: tRTPL -- bank groups are enabled (JESD235D Table 6 p.8: tRTPL applies; JESD238B.01 one tRTP), was nRTPS */
           {.level = "pseudochannel", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
           /// RAS <-> RAS
           {.level = "pseudochannel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
@@ -527,7 +529,7 @@ class HBM2 : public IDRAM, public Implementation {
           /// RAS <-> REF
           {.level = "pseudochannel", .preceding = {"ACT"}, .following = {"REFab"}, .latency = V("nRC")},          
           {.level = "pseudochannel", .preceding = {"PRE", "PREA"}, .following = {"REFab"}, .latency = V("nRP")},          
-          {.level = "pseudochannel", .preceding = {"RDA"}, .following = {"REFab"}, .latency = V("nRP") + V("nRTPS")},          
+          {.level = "pseudochannel", .preceding = {"RDA"}, .following = {"REFab"}, .latency = V("nRP") + V("nRTPL")},   /* 1.12.42: tRTPL -- bank groups are enabled (JESD235D Table 6 p.8: tRTPL applies; JESD238B.01 one tRTP), was nRTPS */          
           {.level = "pseudochannel", .preceding = {"WRA"}, .following = {"REFab"}, .latency = V("nCWL") + V("nBL") + V("nWR") + V("nRP")},          
           {.level = "pseudochannel", .preceding = {"REFab"}, .following = {"ACT", "REFsb"}, .latency = V("nRFC")},          
 

@@ -92,7 +92,9 @@ class DDR3 : public IDRAM, public Implementation {
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
       //   name       rate    nBL  nCL  nRCD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCD  nRRD  nWTR  nFAW  nRFC nREFI  nCS  tCK_ps
       {"DDR3_800D",   {800,    4,   5,   5,    5,    15,  20,    6,   4,   5,    4,   -1,    4,   -1,  -1,   -1,    2,  2500}},
-      {"DDR3_800E",   {800,    4,   5,   5,    5,    15,  20,    6,   4,   5,    4,   -1,    4,   -1,  -1,   -1,    2,  2500}},
+      /* 1.12.42 (user ruling 2026-10-25): DDR3_800E is 6-6-6, tRC 52.5 ns (JESD79-3E Table 62 p.159); the row was a
+       * copy of DDR3_800D (5-5-5, nRC 20). */
+      {"DDR3_800E",   {800,    4,   6,   6,    6,    15,  21,    6,   4,   5,    4,   -1,    4,   -1,  -1,   -1,    2,  2500}},
       {"DDR3_1066E",  {1066,   4,   6,   6,    6,    20,  26,    8,   4,   6,    4,   -1,    4,   -1,  -1,   -1,    2,  1876}},
       {"DDR3_1066F",  {1066,   4,   7,   7,    7,    20,  27,    8,   4,   6,    4,   -1,    4,   -1,  -1,   -1,    2,  1876}},
       {"DDR3_1066G",  {1066,   4,   8,   8,    8,    20,  28,    8,   4,   6,    4,   -1,    4,   -1,  -1,   -1,    2,  1876}},
@@ -410,7 +412,7 @@ class DDR3 : public IDRAM, public Implementation {
       constexpr int nFAW_TABLE[2][6] = {
       // 800   1066  1333  1600  1866  2133
         { 16,   20,   20,   24,   26,   27},  // 1 KB page (Table 66 p.170)
-        { 20,   27,   30,   32,   33,   34},  // 2 KB page (Table 66 p.170)
+        { 20,   27,   30,   32,   33,   38},  // 2 KB page (Table 66 p.170); 1.12.42: 2133 34 -> 38 (JESD79-3E Table 69: 35 ns / 0.937 ns = 37.4)
       };
 
       if (rate_id != -1) {
@@ -429,8 +431,10 @@ class DDR3 : public IDRAM, public Implementation {
        *   Average periodic
        *   refresh interval         tREFI   7.8    7.8  7.8  7.8  7.8  us
        * The 1/2/8 Gb columns and tREFI_BASE below were already right; only the
-       * 4 Gb column was low, by 40 ns (13%). Not the density PIMID simulates
-       * (it emits DDR3_8Gb_x8) but wrong, and it is the number the tree's own
+       * 4 Gb column was low, by 40 ns (13%). (1.12.42: since 1.12.25 PIMID
+       * emits DDR3_4Gb_x8 and overrides this column with the record's 260 ns,
+       * the Micron sheet's value -- see params/dram/ddr3.yaml trfc_bases.) It is
+       * the number the tree's own
        * energy layer had copied -- see the matching pimid_energy.h fix. */
       constexpr int tRFC_TABLE[4] = {
       // 1Gb   2Gb   4Gb   8Gb
@@ -469,7 +473,7 @@ class DDR3 : public IDRAM, public Implementation {
       }
 
       m_timing_vals("nRFC")  = JEDEC_rounding(tRFC_TABLE[density_id], tCK_ps);
-      m_timing_vals("nREFI") = JEDEC_rounding(tREFI_BASE, tCK_ps);
+      m_timing_vals("nREFI") = (tREFI_BASE * 1000LL) / tCK_ps;   /* 1.12.42: tREFI is a MAXIMUM -- round DOWN (as DDR5.cpp, JESD79-5D cl.13.2 max algorithm) */
 
       // Overwrite timing parameters with any user-provided value
       // Rate and tCK should not be overwritten
