@@ -5316,7 +5316,8 @@ static bool sharedMemoryCoupled(const UnifiedConfig& config) {
      * device. The first DEVICE node decides, which is what E27 guarantees is
      * unambiguous. */
     for (const auto& node : config.system_nodes) {
-        if (node.role == UnifiedConfig::SystemNode::DEVICE)
+        if (node.role == UnifiedConfig::SystemNode::DEVICE &&
+            node.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY)   // the first DEVICE, not a memory
             return node.is_default_mem;
     }
     return true;   // no device node at all: single-memory system, coupled
@@ -5373,7 +5374,8 @@ static bool sharedMemoryCoupled(const UnifiedConfig& config) {
 static double deviceCycleClockMHz(const UnifiedConfig& config) {
     if (config.scope == "system") {
         for (const auto& n : config.system_nodes) {
-            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.frequency_mhz > 0.0)
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY &&   // user ruling 2026-10-25
+                n.frequency_mhz > 0.0)
                 return n.frequency_mhz;
         }
     }
@@ -7804,6 +7806,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
             bool external = false;
             for (const auto& n : config.system_nodes)
                 if (n.role == UnifiedConfig::SystemNode::DEVICE &&
+                    n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY &&   // the host's own memory is not behind the link
                     n.attachment == UnifiedConfig::SystemNode::EXTERNAL) { external = true; break; }
             if (external && config.pcie_bandwidth_GBs > 0.0) {
                 double bwf = (device_bw_freq_mhz > 0.0) ? device_bw_freq_mhz : config.frequency_mhz;
@@ -15433,7 +15436,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 if (node.role == UnifiedConfig::SystemNode::HOST) {
                     int ndev = 0;
                     for (const auto& n2 : config.system_nodes)
-                        if (n2.role == UnifiedConfig::SystemNode::DEVICE) ++ndev;
+                        if (n2.role == UnifiedConfig::SystemNode::DEVICE &&
+                            n2.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY) ++ndev;   // a memory is not a link endpoint
                     link_units = (ndev > 0) ? ndev : 1;
                 }
                 ps.number_units = link_units;
@@ -16248,7 +16252,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             if (node.memory_tech.empty()) continue;
             if (node.role == UnifiedConfig::SystemNode::HOST && h_tech.empty())
                 h_tech = node.memory_tech;
-            if (node.role == UnifiedConfig::SystemNode::DEVICE && d_tech.empty())
+            if (node.role == UnifiedConfig::SystemNode::DEVICE && node.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY &&   // user ruling 2026-10-25
+                d_tech.empty())
                 d_tech = node.memory_tech;
         }
         const bool coupled = sharedMemoryCoupled(config);   // 1.11.40: one definition
@@ -16731,6 +16736,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                               node.tech_node_nm);               // 1.12.18: this node's own process
                 host_done = true;
             } else if (node.role == UnifiedConfig::SystemNode::DEVICE && !dev_done &&
+                       node.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY &&   // user ruling 2026-10-25
                        zsim_stats.dev.has_activity()) {
                 std::cout << "  [mem] " << node.name << " (" << node.memory_tech
                           << "): device-side array energy" << std::endl;
@@ -18056,7 +18062,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
     // emitter (single-host degenerate case).
     double sys_device_bw_freq_mhz = 0.0;
     for (const auto& n : config.system_nodes) {
-        if (n.role == UnifiedConfig::SystemNode::DEVICE && n.frequency_mhz > 0.0) {
+        if (n.role == UnifiedConfig::SystemNode::DEVICE && n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY &&   // user ruling 2026-10-25
+            n.frequency_mhz > 0.0) {
             sys_device_bw_freq_mhz = n.frequency_mhz;
             break;
         }
@@ -18071,6 +18078,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
         int dev_idx = 0;
         for (const auto& node : config.system_nodes) {
             if (node.role != UnifiedConfig::SystemNode::DEVICE) continue;
+            if (node.device_type == UnifiedConfig::SystemNode::MEMORY_ONLY) continue;   // as numDevices above; the memory is the host's
 
             // Auto-derive MC type from technology
             std::string mc_type = "Simple";
@@ -18227,7 +18235,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             bool host_dev = false;
             for (const auto& n : config.system_nodes) {
                 if ((n.name == lnk.src_name || n.name == lnk.dst_name) &&
-                    n.role == UnifiedConfig::SystemNode::DEVICE) host_dev = true;
+                    n.role == UnifiedConfig::SystemNode::DEVICE &&
+                    n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY) host_dev = true;   // user ruling 2026-10-25
             }
             /* 1.11.51 (N10): a declared link must never be IGNORED IN
              * SILENCE. The reference cosim.yaml declares only type+width --
@@ -18241,7 +18250,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
              * every other skip states itself and what was kept. */
             if (!host_dev && lnk.src_name.empty() && lnk.dst_name.empty()) {
                 for (const auto& n : config.system_nodes)
-                    if (n.role == UnifiedConfig::SystemNode::DEVICE)
+                    if (n.role == UnifiedConfig::SystemNode::DEVICE &&
+                        n.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY)   // user ruling 2026-10-25
                         { host_dev = true; break; }
                 if (host_dev)
                     std::cout << "  [xing] links entry '" << lnk.link_type
@@ -22545,6 +22555,11 @@ int main(int argc, char** argv) {
         const UnifiedConfig::SystemNode* dev_node = nullptr;   // 1.12.18: the first device (its array times a non-DRAM channel)
         for (const auto& n : config.system_nodes) {
             if (n.role != UnifiedConfig::SystemNode::DEVICE) continue;
+            /* (user ruling 2026-10-25): a system.memories[] entry (MEMORY_ONLY) is the host's own main
+             * memory, reached by the host memory controller, not over a host-device link: its attachment and
+             * is_default_mem must not decide the device's link class (an external memory made every internal
+             * device default to pcie_gen5). */
+            if (n.device_type == UnifiedConfig::SystemNode::MEMORY_ONLY) continue;
             if (!any_dev) { dev_tech = n.memory_tech; dev_node = &n; }
             any_dev = true;
             if (n.attachment == UnifiedConfig::SystemNode::EXTERNAL) all_internal = false;

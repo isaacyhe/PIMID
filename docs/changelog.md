@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.57 -- a host memory node no longer decides the host-device link
+
+- **Link class (user ruling 2026-10-25):** the host-device link class default looked at every DEVICE node,
+  and a `system.memories[]` entry is a DEVICE node of type MEMORY_ONLY. Its `attachment: external` (the host's
+  own main memory, reached by the host memory controller) made `all_internal` false, so an internally attached
+  PIM device (HBM3 on package) defaulted to `pcie_gen5` instead of `interposer` whenever a memory node existed.
+  The loop now skips MEMORY_ONLY nodes. The same blind spot, fixed: the host-link transfer cycles keyed on "any
+  EXTERNAL device", the host link-controller unit count (the memory counted as a second link endpoint), the zsim
+  SystemRouter device blocks (a block was written for the memory although `numDevices` excludes it), and the
+  declared-link host-device test. Hardened (right today only because `system.devices[]` is parsed before
+  `system.memories[]`): sharedMemoryCoupled, deviceCycleClockMHz, the coherence-flush device technology, the
+  device-side array energy pick and the zsim device-bandwidth clock. Runs without a memory node are unchanged.
+
 ## 1.12.56 -- the stacked part's TSV is re-sourced from published HBM silicon
 
 - **TSV (user ruling 2026-10-25):** the die-crossing TSV of a stacked part's tree (HBM chip tier) was
