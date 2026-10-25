@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.33 -- published per-op logic energies scale with published silicon
+
+- **Per-operation logic energies, node-scaled by published silicon** (user ruling 2026-10-25; external/mcpat/logic.cc
+  pimid_logic_op_scale): the published FPU / integer ALU / multiplier per-op energies (and so the DMA adder) scale
+  from their source node with DeepScaleTool (Sarangi & Baas, ISCAS 2021), a fit to Intel silicon (Holt, ISSCC 2016):
+  switching energy relative to 65 nm 130 2.52, 90 1.51, 65 1, 45 0.63, 40 0.55, 32 0.44, 28 0.37, 22 0.30, 14 0.19,
+  10 0.15, 7 0.11, log-log between rows (DERIVED). The fit is VOLTAGE-LESS (each node at Intel's nominal Vdd); a node
+  outside 7-130 nm keeps the CACTI ratio and says so. CACTI arrays and wires keep CACTI's Vdd-aware tables; the
+  CACTI ratio stays printed as the reference. 45 -> 22 nm: 0.256 (CACTI) -> 0.476; 45 -> 32 nm: 0.613 -> 0.698.
+- The published flip-flop keeps its 1.12.31 nearest-row scaling (the bracketing-row variant is under investigation).
+- 22 nm alu_core PE (before the DRAM-periphery factor): core-only non-clock 2.77 -> 2.95 pJ/instr, 1.89 -> 1.98 mW
+  at IPC 1; 32 nm 6.80 -> 6.87. Clock trees, cycles and checksums unchanged. Validation rounds: round 1 (against
+  1.12.32) 8 judged moves > 5% (the 22 nm core-only non-clock, +6.6%), no new FLAG; round 2 CONVERGED (no move > 5%).
+
 ## 1.12.32 -- a PE core's integer ops, bypass buses and store buffer, from published and derived values
 
 - Diagnosed first (kept McPAT XML, standalone McPAT at print level 5, 22 nm alu_core PE): of the core's 3.96 mW

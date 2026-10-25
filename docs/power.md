@@ -158,6 +158,16 @@ the NVMs, per-access energy on the measured accesses of every class plus the
 array leakage (x banks, after any measured array gating), in watts on the run's
 wall clock. Their area was already in System Total Area and is not added twice.
 
+## Node scaling of published per-op logic energies (1.12.33)
+
+The published per-operation energies (FPU, integer ALU and multiplier, the
+DMA adder) scale from their source node to the run node with the
+published-silicon ratio of DeepScaleTool (Sarangi & Baas, ISCAS 2021; a fit
+to Intel silicon, Holt ISSCC 2016), log-log between its table nodes. The fit
+is voltage-less: each node at its nominal supply. Nodes outside 7-130 nm
+keep the CACTI ratio (C_inv x Vdd^2), printed. CACTI arrays and wires stay
+CACTI's, Vdd-aware.
+
 ## PE core energy: integer ops, bypass, store buffer (1.12.32)
 
 (user rulings 2026-10-25, after a diagnostic run of standalone McPAT at

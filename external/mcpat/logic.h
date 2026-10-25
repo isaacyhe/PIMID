@@ -393,6 +393,8 @@ struct PimidDffPub {
 bool pimid_dff_published(double nm, double v, PimidDffPub &o);
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0, double *c_run = 0,
                                double *v_run = 0, double *v_src_cacti = 0);
+/* PIMID (next, Z12): the published-silicon (DeepScaleTool) node ratio for published per-op logic energies (logic.cc). */
+double pimid_logic_op_scale(double src_nm, double src_vdd, bool *silicon = 0);
 
 class FunctionalUnit :public Component{
 public:

@@ -146,6 +146,43 @@ bool pimid_dff_published(double nm, double v, PimidDffPub &o)
 	return true;
 }
 
+/* PIMID (next, user ruling 2026-10-25, Z12): the PUBLISHED-SILICON node ratio for the published per-operation LOGIC
+ * energies (FPU / ALU / MUL per-op, the DMA adder): DeepScaleTool (S. Sarangi, B. Baas, "DeepScaleTool: A Tool for the
+ * Accurate Estimation of Technology Scaling in the Deep-Submicron Era", ISCAS 2021), a fit to Intel silicon (Holt,
+ * ISSCC 2016 plenary), switching energy relative to 65 nm: 130 2.52, 90 1.51, 65 1, 45 0.63, 40 0.55, 32 0.44,
+ * 28 0.37, 22 0.30, 14 0.19, 10 0.15, 7 0.11 (the tool's Energy table). The fit is VOLTAGE-LESS (each node at Intel's
+ * nominal Vdd): the source Vdd is not used. A node between two table rows is interpolated log-log (DERIVED); a node
+ * outside 7-130 nm has NO PUBLISHED SOURCE FOUND and keeps the CACTI ratio (pimid_node_energy_scale), said so.
+ * CACTI arrays and wires keep CACTI's Vdd-aware tables. */
+static bool pimid_dst_energy(double nm, double &e)
+{
+	static const double t[][2] = {{7,0.11},{10,0.15},{14,0.19},{22,0.30},{28,0.37},{32,0.44},{40,0.55},{45,0.63},{65,1.0},{90,1.51},{130,2.52}};
+	const int n = sizeof(t)/sizeof(t[0]);
+	if (!(nm >= t[0][0] && nm <= t[n-1][0])) return false;
+	for (int i = 0; i < n - 1; i++)
+		if (nm >= t[i][0] && nm <= t[i+1][0])
+		{
+			if (nm == t[i][0]) { e = t[i][1]; return true; }
+			const double a = log(nm / t[i][0]) / log(t[i+1][0] / t[i][0]);
+			e = exp(log(t[i][1]) + a * (log(t[i+1][1]) - log(t[i][1])));
+			return true;
+		}
+	e = t[n-1][1]; return true;
+}
+
+double pimid_logic_op_scale(double src_nm, double src_vdd, bool *silicon)
+{
+	double es = 0, er = 0;
+	const double run_nm = g_ip ? g_ip->F_sz_nm : 0.0;
+	if (pimid_dst_energy(src_nm, es) && pimid_dst_energy(run_nm, er) && es > 0)
+	{
+		if (silicon) *silicon = true;
+		return er / es;
+	}
+	if (silicon) *silicon = false;
+	return pimid_node_energy_scale(src_nm, src_vdd);
+}
+
 /* PIMID 1.12.18: see logic.h. */
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src_o, double *c_run_o,
                                double *v_run_o, double *v_src_cacti_o)
@@ -1132,15 +1169,19 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			{"FP32 FMA",  30.9 / 2.08, 45, 0.9, "Galal 2012 Table 4.2, SP FMA 6-stage LVT 0.9 V 2.08 GHz: dynamic 30.9 mW / 2.08 GHz (leakage 1.2 mW is McPAT's)"},
 			{"FP64 FMA",  95.9 / 1.81, 45, 0.9, "Galal 2012 Table 4.2, DP FMA 6-stage LVT 0.9 V 1.81 GHz: dynamic 95.9 mW / 1.81 GHz (leakage 4.6 mW is McPAT's)"}};
 		double c_src = 0, c_run = 0, v_run = 0, v_src_cacti = 0;
-		const double k45 = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run, &v_src_cacti);
+		const double k45_cacti = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run, &v_src_cacti);
+		bool sil = false;
+		const double k45 = pimid_logic_op_scale(45.0, 0.9, &sil);   /* (next, Z12): published silicon */
 		pimid_pub = (k45 > 0);
 		std::cerr << "[mcpat fpu] core" << ithCore << " node scaling 45 -> " << interface_ip.F_sz_nm
 		          << " nm (CACTI tables, device type of this core): C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
 		          << " fF, Vdd 0.9 V (source, as printed) -> " << v_run << " V (CACTI run node; CACTI's own 45 nm Vdd is "
-		          << v_src_cacti << " V) => factor " << k45 << std::endl;
+		          << v_src_cacti << " V) => factor " << k45_cacti << " (reference); USED: "
+		          << (sil ? "published silicon (DeepScaleTool, Sarangi & Baas ISCAS 2021, Intel silicon; voltage-less) ratio "
+		                  : "NO PUBLISHED SOURCE FOUND for this node in the silicon fit: the CACTI ratio ") << k45 << std::endl;
 		for (int q = 0; q < 6; q++)
 		{
-			pimid_pub_e[q] = src[q].pj * 1e-12 * pimid_node_energy_scale(src[q].nm, src[q].vdd);
+			pimid_pub_e[q] = src[q].pj * 1e-12 * pimid_logic_op_scale(src[q].nm, src[q].vdd);   /* (next, Z12) */
 			std::cerr << "[mcpat fpu] core" << ithCore << " published " << src[q].name << ": " << src[q].pj << " pJ ("
 			          << src[q].cite << ") -> " << pimid_pub_e[q]*1e12 << " pJ per scalar op at the run node (USED)" << std::endl;
 		}
@@ -1155,10 +1196,10 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 add", pimid_pub_e[2], g); g.clear();
 		g.push_back({"Galal 2012 Fig. 3.7 DP multiplier Pmin 9.68 pJ (45 nm 0.9 V)", 9.68e-12*k45, true});
 		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 mult", pimid_pub_e[3], g); g.clear();
-		g.push_back({"FPnew (Mach et al., TVLSI 2021) Table IV FP32 FMA 9.44 pJ (GF 22FDX 0.8 V)", 9.44e-12*pimid_node_energy_scale(22.0, 0.8), false});
+		g.push_back({"FPnew (Mach et al., TVLSI 2021) Table IV FP32 FMA 9.44 pJ (GF 22FDX 0.8 V)", 9.44e-12*pimid_logic_op_scale(22.0, 0.8), false});
 		pimid_guard_report("[mcpat fpu]", ithCore, "FP32 FMA", pimid_pub_e[4], g); g.clear();
-		g.push_back({"FPnew (Mach et al., TVLSI 2021) FP64 FMA 26.7 pJ (GF 22FDX 0.8 V)", 26.7e-12*pimid_node_energy_scale(22.0, 0.8), false});
-		g.push_back({"Keckler et al., IEEE Micro 2011, Table 1, DFMA 50 pJ (40 nm 0.9 V)", 50e-12*pimid_node_energy_scale(40.0, 0.9), false});
+		g.push_back({"FPnew (Mach et al., TVLSI 2021) FP64 FMA 26.7 pJ (GF 22FDX 0.8 V)", 26.7e-12*pimid_logic_op_scale(22.0, 0.8), false});
+		g.push_back({"Keckler et al., IEEE Micro 2011, Table 1, DFMA 50 pJ (40 nm 0.9 V)", 50e-12*pimid_logic_op_scale(40.0, 0.9), false});
 		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 FMA", pimid_pub_e[5], g); g.clear();
 		std::cerr << "[mcpat fpu] core" << ithCore << " NO PUBLISHED SOURCE FOUND for FP divide/sqrt (single, double;"
 		          << " Galal 2012 and FPnew 2021 report none) and x87: those keep McPAT's per-op FPU energy" << std::endl;
@@ -1181,7 +1222,9 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 	if ((fu_type == ALU || fu_type == MUL) && XML->sys.pimid_int_alu_published)
 	{
 		double c_src = 0, c_run = 0, v_run = 0;
-		const double k45 = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run);
+		const double k45_cacti = pimid_node_energy_scale(45.0, 0.9, &c_src, &c_run, &v_run);
+		bool sil = false;
+		const double k45 = pimid_logic_op_scale(45.0, 0.9, &sil);   /* (next, Z12): published silicon, voltage-less */
 		pimid_int_pub = (k45 > 0);
 		const bool alu = (fu_type == ALU);
 		const double mcpat_ref_op = per_access_energy * g_tp.sckt_co_eff;   /* McPAT's per-op, for the prints */
@@ -1205,7 +1248,9 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " published (Horowitz ISSCC 2014"
 		          << " Fig. 1.1.9, 45 nm 0.9 V): " << (alu ? "Add 8 bit 0.03 pJ, 32 bit 0.1 pJ" : "Mult 8 bit 0.2 pJ, 32 bit 3.1 pJ")
 		          << "; node scaling 45 -> " << interface_ip.F_sz_nm << " nm: C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
-		          << " fF, Vdd 0.9 V -> " << v_run << " V => factor " << k45 << ": 8 bit " << pimid_int_e[0]*1e12
+		          << " fF, Vdd 0.9 V -> " << v_run << " V => CACTI factor " << k45_cacti << " (reference); USED "
+		          << (sil ? "published-silicon ratio (DeepScaleTool, ISCAS 2021; voltage-less) " : "CACTI ratio (node outside the silicon fit) ")
+		          << k45 << ": 8 bit " << pimid_int_e[0]*1e12
 		          << " pJ, 32 bit " << pimid_int_e[1]*1e12 << " pJ (USED); McPAT per-op (reference) "
 		          << mcpat_ref_op*1e12 << " pJ" << std::endl;
 		if (!alu)
