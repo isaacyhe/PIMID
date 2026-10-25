@@ -6,6 +6,15 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.40 -- GDDR6 bank-level ACT-to-ACT tRC restored
+
+- **GDDR6 same-bank ACT -> ACT = nRC (user ruling 2026-10-25, T3):** the constraint was commented out upstream
+  ("should this be added?"), so with auto-precharge a bank could re-activate 56 nCK after its ACT (nRCDRD + nRTP +
+  nRP) instead of nRC 79. Source: Samsung K4Z80325BC GDDR6 data sheet Rev. 1.3 (public), Table 92 p.157,
+  tRC 45 ns at 1.35 V = 79 nCK at 571 ps; JESD250D Table 73 NOTE 29.
+- **Data impact:** inert under the default open host policy and PE open page; live for any closed-page or
+  auto-precharge traffic on GDDR6.
+
 ## 1.12.39 -- LPDDR5 same-bank-group read-to-write, tPPD in DDR5 and LPDDR5, LPDDR5 tXP
 
 - **LPDDR5 RD -> WR in the same bank group = 14 nCK (user ruling 2026-10-25, T3):** new bank-group constraint in

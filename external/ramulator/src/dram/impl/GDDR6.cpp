@@ -605,7 +605,12 @@ class GDDR6 : public IDRAM, public Implementation {
           {.level = "bank", .preceding = {"REFpb"}, .following = {"ACT"}, .latency = V("nRFCpb")},   
 
           /// RAS <-> RAS
-          //{.level = "bank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRC")}, //should this be added?
+          /* 1.12.40 (user ruling 2026-10-25): RESTORED. ACTIVATE to ACTIVATE on the same bank is tRC. Samsung
+           * K4Z80325BC GDDR6 data sheet Rev. 1.3 (public copy), Table 92 "AC Timings @
+           * VDD&VDDQ=1.35V" p.157: "ACTIVATE to ACTIVATE command period tRC 45 ns" (= the preset's nRC 79 at
+           * 571 ps); JESD250D Table 73 NOTE 29: auto-precharge waits for tRAS(min). Without it RDA -> ACT was only
+           * nRTP + nRP = 30 nCK, so a bank could re-activate 56 nCK after its ACT instead of 79. */
+          {.level = "bank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRC")},
         }
       );
       #undef V
