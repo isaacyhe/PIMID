@@ -317,7 +317,12 @@ void RamulatorWrapper::resolvePresetTiming() {
         ddr5_grade_mtps_ = g;   // the grade every downstream key (energy row, org capacity) reads
         name = (g == 5600) ? "DDR5_5600B" : (g == 4800) ? "DDR5_4800B" : (g == 3200) ? "DDR5_3200AN" : rec.timing_preset;
     }
-    if (name == "DDR3_1600H") {
+    if (name == "DDR3_1600K") {
+        /* 1.12.38 (user ruling 2026-10-25): the record's default bin. DDR3.cpp timing_presets, row "DDR3_1600K":
+         * nBL 4, nCL/nRCD/nRP 11, nRAS 28, tCK 1250 ps (JESD79-3E Table 65 p.162: 13.75 ns; Micron MT41K -125). */
+        preset_timing_ = makePresetTiming("DDR3_1600K", "external/ramulator/src/dram/impl/DDR3.cpp timing_presets",
+                                          1600, 4, 11, 11, 11, 28, 1250, 2, /*nWTR*/ 6);
+    } else if (name == "DDR3_1600H") {
         // DDR3.cpp timing_presets, row "DDR3_1600H": nBL 4, nCL/nRCD/nRP 9, nRAS 28, tCK 1250 ps, tCK = 2E6/rate.
         preset_timing_ = makePresetTiming("DDR3_1600H", "external/ramulator/src/dram/impl/DDR3.cpp timing_presets",
                                           1600, 4, 9, 9, 9, 28, 1250, 2, /*nWTR*/ 6);
@@ -359,7 +364,7 @@ void RamulatorWrapper::resolvePresetTiming() {
                                           6400, 2, 26, 26, 26, 53, 625, 4, /*nWTR*/ 13);
     } else {
         std::cerr << "[mem] FATAL: the part record for " << dt << " names timing preset '" << name
-                  << "', which this build has no transcription of (DDR3_1600H, DDR4_2400R, DDR5_3200AN/4800B/5600B, "
+                  << "', which this build has no transcription of (DDR3_1600K/1600H, DDR4_2400R, DDR5_3200AN/4800B/5600B, "
                      "LPDDR5_6400, GDDR6_2000_1350mV_double, HBM2_2.4Gbps, HBM3_6.4Gbps). Add the row beside "
                      "Ramulator's or name a transcribed preset; nothing is substituted." << std::endl;
         std::exit(2);
@@ -2753,7 +2758,7 @@ void RamulatorWrapper::enablePIMSupport(const std::string& dram_type) {
     arch_device_width_bits_ = 0;
     if (dram_type_ == "DDR3") {
         dram_arch_ = pimid::memory::createDDR3_1600_Verified();   // 1.11.68
-        std::cout << "Using DDR3-1600H architecture specs\n";
+        std::cout << "Using DDR3-1600 architecture specs (bin stamped from the record's preset; default DDR3_1600K)\n";   // 1.12.38
     } else if (dram_type_ == "LPDDR5") {
         dram_arch_ = pimid::memory::createLPDDR5_6400_Verified(); // 1.11.69
         std::cout << "Using LPDDR5-6400 architecture specs\n";

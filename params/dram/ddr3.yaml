@@ -25,7 +25,7 @@ cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline
 density_mb_per_mm2: 16.569579288025892  # measured FULL-DIE density, user capacity basis (D11)
 density_source: "SK hynix 23 nm 4 Gb DDR3 SDRAM, 30.9 mm^2 die (ISSCC 2012 paper 2.3, 6F2 open-bitline): 4 Gb / 30.9 mm^2 x 128"
 organization_preset: "DDR3_4Gb_x8"   # Ramulator org preset the run instantiates (default knobs); 1.12.25: the 4 Gb die the currents describe (was DDR3_8Gb_x8)
-timing_preset: "DDR3_1600H"         # Ramulator timing preset (default knobs)
+timing_preset: "DDR3_1600K"         # Ramulator timing preset (default knobs); 1.12.38 (user ruling 2026-10-25): 1600K 11-11-11 = Micron MT41K -125 (Rev Q p.1 Table 1, 13.75 ns), the part the currents and tRFC 260 ns come from (was DDR3_1600H 9-9-9, a JEDEC bin no Micron 4 Gb part ships)
 channels: 1                   # channels the preset instantiates
 channel_width_bits: 64   # 1.11.101 (step 2): JESD79-3F 2.x: a 64-bit data channel; one rank = 64 / device width devices
 refresh_ladder:                    # JEDEC JESD79-3 extended temperature range: 2x refresh (tREFI/2) above 85 C

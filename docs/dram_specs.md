@@ -8,7 +8,7 @@ between the simulated parts and the latest shipping silicon.
 
 | Tech | Ramulator2 org preset | Timing preset | Data rate | Per-channel BW | Channels (PIMID) | Stack/part BW |
 |---|---|---|---|---|---|---|
-| DDR3 | `DDR3_4Gb_x8` (1.12.19; was `DDR3_8Gb_x8`) | `DDR3_1600H` | 1600 MT/s | 12.8 GB/s | 1 | 12.8 GB/s |
+| DDR3 | `DDR3_4Gb_x8` (1.12.19; was `DDR3_8Gb_x8`) | `DDR3_1600K` (1.12.38; was `DDR3_1600H`) | 1600 MT/s | 12.8 GB/s | 1 | 12.8 GB/s |
 | DDR4 | `DDR4_8Gb_x8` | `DDR4_2400R` | 2400 MT/s | 19.2 GB/s | 1 | 19.2 GB/s |
 | DDR5 | `DDR5_8Gb_x8` | `DDR5_3200AN` | 3200 MT/s | 25.6 GB/s | 1 | 25.6 GB/s |
 | LPDDR5 | `LPDDR5_8Gb_x16` | `LPDDR5_6400` | 6400 MT/s | 12.8 GB/s | 4 | 51.2 GB/s |

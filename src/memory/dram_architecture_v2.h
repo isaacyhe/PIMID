@@ -599,7 +599,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
 //=============================================================================
 
 inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
-    auto arch = std::make_unique<DRAMArchitectureV2>("DDR3-1600H", "DDR3");
+    auto arch = std::make_unique<DRAMArchitectureV2>("DDR3-1600K", "DDR3");   // 1.12.38: the record's default bin
 
     // ===== DATAPATH STAGES =====
 
@@ -673,14 +673,16 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
     arch->organization.chip_size_mb = 512;         // preset DDR3_4Gb_x8: 4 Gb device (1.12.25)
     arch->organization.rank_size_gb = 4;           // DERIVED: 8 x 512 MB (1.12.25)
 
-    // ===== TIMING (preset DDR3_1600H; tCK = 1E6 / (1600/2) = 1250 ps) =====
-    // The bin is CL9: nCL/nRCD/nRP 9, nRAS 28. Written as the arithmetic so
-    // applyPresetTimingsToArchitecture()'s stamp is a check, not a change.
+    // ===== TIMING (preset DDR3_1600K; tCK = 1E6 / (1600/2) = 1250 ps) =====
+    // 1.12.38 (user ruling 2026-10-25): the bin is CL11 (Micron MT41K -125,
+    // JESD79-3E Table 65): nCL/nRCD/nRP 11, nRAS 28 (was DDR3_1600H, CL9).
+    // Written as the arithmetic so applyPresetTimingsToArchitecture()'s stamp
+    // is a check, not a change.
     arch->timing.clock_freq_mhz = 800;    // 1600 MT/s DDR -> 800 MHz CK
     arch->timing.data_rate_mtps = 1600;
-    arch->timing.tRCD_ns = 9 * 1.25;      // DERIVED: DDR3_1600H nRCD 9 x tCK 1.25 ns
-    arch->timing.tCAS_ns = 9 * 1.25;      // DERIVED: nCL 9
-    arch->timing.tRP_ns  = 9 * 1.25;      // DERIVED: nRP 9
+    arch->timing.tRCD_ns = 11 * 1.25;     // DERIVED: DDR3_1600K nRCD 11 x tCK 1.25 ns
+    arch->timing.tCAS_ns = 11 * 1.25;     // DERIVED: nCL 11
+    arch->timing.tRP_ns  = 11 * 1.25;     // DERIVED: nRP 11
     arch->timing.tRAS_ns = 28 * 1.25;     // DERIVED: nRAS 28
     arch->timing.tBurst_ns = 5.0;         // VERIFIED: 8 beats @ 1600 MT/s
 

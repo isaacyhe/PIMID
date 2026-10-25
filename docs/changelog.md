@@ -6,6 +6,17 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.38 -- DDR3 default bin DDR3_1600K (11-11-11), the Micron -125 part the record's currents describe
+
+- **DDR3 timing bin (user ruling 2026-10-25, T2):** params/dram/ddr3.yaml `timing_preset` DDR3_1600H -> DDR3_1600K.
+  The record's IDD row and its tRFC 260 ns are the Micron MT41K 4 Gb sheet's DDR3-1600 column; Micron's only
+  DDR3-1600 grade is -125 = 11-11-11, tAA/tRCD/tRP 13.75 ns (MT41K Rev Q p.1 Table 1); JESD79-3E Table 65 p.162
+  DDR3-1600K: 13.75 ns, tRAS 35, tRC 48.75 ns. 1600H (9-9-9, 11.25 ns) is a JEDEC bin no Micron 4 Gb part ships.
+  nCL/nRCD/nRP 9 -> 11, nRC 37 -> 39 (Ramulator row unchanged; the record selects it). The wrapper gains the
+  DDR3_1600K transcription (1600H kept); the DDR3 architecture object's ns literals follow (13.75 ns).
+- **Data impact:** DDR3 runs: row-hit read 13 -> 15 nCK, closed 22 -> 26, conflict 31 -> 37 (timing probe);
+  tRC 46.25 -> 48.75 ns enters the activate energy (getTRC). Every DDR3 result since 1.12.25 is a 1600H result.
+
 ## 1.12.37 -- HBM3 pseudo-channel burst is 32 B (Ramulator channel_width 256 -> 128)
 
 - **HBM3 timing transfer size (user ruling 2026-10-25, T1):** `ramulatorChannelWidthBits("HBM3")` 256 -> 128
