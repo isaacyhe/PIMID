@@ -161,6 +161,7 @@ void uca_org_t::find_cyc()
 uca_org_t :: uca_org_t()
 :tag_array2(0),
  data_array2(0),
+ valid(false),   // PIMID (1.12.63): was left uninitialized; solve() copies default-constructed solutions into the result
  // McPAT compatibility: initialize CACTI 6.5-P fields
  uca_pg_reference(0)
 {

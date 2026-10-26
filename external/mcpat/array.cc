@@ -140,6 +140,11 @@ void ArrayST::compute_base_power()
         local_result.valid = false;
         return;
     }
+    /* PIMID (1.12.63): a solution with positive cycle and access times is valid. CACTI's
+     * uca_org_t::valid was never set (it held whatever memory the solution list
+     * allocated), and optimize_array copies the chosen candidate over local_result,
+     * so the clock-feasibility check (core.cc) skipped arrays at random. */
+    local_result.valid = true;
 //    if (name == "Int FrontRAT")
 //    {
 //    	cout<<name<<endl;

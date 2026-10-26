@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.63 -- McPAT's clock-feasibility check now sees every array CACTI solved
+
+- **The defect** (user ruling 2026-10-26). The `[mcpat timing]` check (1.12.18) checks only arrays whose solution is
+  marked valid. That flag was never defined:
+  - CACTI's `uca_org_t` constructor left `valid` uninitialized.
+  - `solve()` copies a default-constructed solution into the result (`find_optimal_uca`, `*res = *niter`).
+  - McPAT's `ArrayST::optimize_array` then copies the chosen candidate over `local_result`.
+  So the flag held whatever memory the solution list was allocated in. With ASLR off that garbage happened to
+  repeat. With ASLR on, one run in three counted 4 instead of 7 arrays on the OOO host core.
+  - On every run the check skipped most arrays: 7 of 26 on an OOO core, 2 of 9 on the other elements checked, and
+    0 of 17 on an in-order core, whose PASS was therefore vacuous.
+- **The fix** (external/cacti/cacti_interface.cc, external/mcpat/array.cc):
+  - `uca_org_t` starts with `valid = false`.
+  - `ArrayST::compute_base_power` marks a solution valid when CACTI returns a positive cycle time and access time;
+    the copied candidate carries that value.
+  - PIMID's own CACTI wrapper never read the field (src/memory/cacti_wrapper.cpp checks the access time and the
+    data array instead) and is unchanged.
+- **Data impact:**
+  - No simulated or priced figure moves. Six jobs, 116 cells: every serial cell repeats bit for bit and equals the
+    previous version in every cycle and power figure. The multi-threaded cells are unaffected by this change.
+  - The check now covers 26 arrays on an OOO core, 17 on an in-order core, and 9 on the other elements checked
+    (was 7 / 0 / 2).
+  - The verdict changes from PASS to FAIL in all 12 in-order and OOO PE cells (500 MHz, every memory technology).
+    One array misses its targets: the icache, cycle time 2.79 ns against the 2 ns period (access 0.81 ns). The
+    check reports this and does not change the clock or the power; whether that PE configuration should be
+    resized is a separate question.
+  - With ASLR on, the line is now the same in every run.
+
 ## 1.12.62 -- a serial run repeats bit for bit in any job: the guest's address space, environment and AT_RANDOM are fixed by the launch
 
 - **The problem** (user ruling 2026-10-25, "investigate + fix"). One configuration run in different jobs did not
