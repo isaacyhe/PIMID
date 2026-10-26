@@ -2185,6 +2185,23 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	                       clk_pipe_regs + clk_extra_regs, src.str(),
 	                       corepipe->clock_energy_per_reg, clockRate, XML->sys.Embedded,
 	                       Core_device, coredynp.core_ty, XML->sys.pimid_clock_network != 0);
+	  /* PIMID (next, user ruling 2026-10-26): the CORE-ONLY clock tree, printed for internal verification only
+	   * (pimid::debugChecks()): the same tree built over the core's own register sinks, the DMA registers apart
+	   * (as the instruction and data stores are reported apart from the core's energy). Cluster count, lengths and
+	   * local clock buffers follow the smaller sink count; the span is the same clocked logic. Nothing is priced
+	   * from it: the priced tree above keeps every sink. The second build repeats the first's technology setup
+	   * with the same inputs. */
+	  if (pimid::debugChecks() && clk_extra_regs > 0 && XML->sys.pimid_clock_network != 0)
+	  {
+		  ClockNetwork core_only;
+		  core_only.span_is_clocked_logic = true;
+		  std::ostringstream src_core;
+		  src_core << "pipeline registers " << clk_pipe_regs << " (the core's own register sinks; DMA registers "
+		           << clk_extra_regs << " apart)";
+		  core_only.compute(&interface_ip, "core" + std::to_string(ithCore) + " core-only", a,
+		                    clk_pipe_regs, src_core.str(), corepipe->clock_energy_per_reg, clockRate,
+		                    XML->sys.Embedded, Core_device, coredynp.core_ty, true);
+	  }
   }
   /* PIMID 1.12.18: (user ruling 2026-10-24) CLOCK FEASIBILITY OF
    * THE CORE AT ITS DEVICE. PIMID (next, user ruling 2026-10-26 (2)): the

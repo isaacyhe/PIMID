@@ -279,6 +279,12 @@ worst-case Miller factor of 1.5 on both sidewalls (0.246 / 0.239 fF/um at
 except the leaf nets). At other nodes no published silicon value is
 carried and the CACTI local wire is kept; the tree prints which it used.
 
+(next, user ruling 2026-10-26) With the internal diagnostic switch on
+(PIMID_DEBUG_CHECKS=1), a core with DMA registers also prints its tree
+built over the core's own register sinks alone ("coreN core-only"): same
+span, cluster count, lengths and local clock buffers recomputed for that
+sink count. It is printed, not priced; the priced tree keeps every sink.
+
 (next, user ruling 2026-10-25 A) THE FLIP-FLOP is re-sourced from two
 published open standard-cell libraries, node-scaled: Nangate 45 nm Open
 Cell Library DFF_X1 (1.10 V) and ASAP7 DFFHQNx1 RVT (0.70 V), from their

@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.77 -- the processing element's clock tree over its own registers, printed apart
+
+- **Report (user ruling 2026-10-26; external/mcpat/core.cc):** with the internal diagnostic switch on
+  (PIMID_DEBUG_CHECKS=1), a core with DMA registers also prints its clock tree built over the core's own register
+  sinks alone: the same clocked-logic span, with the leaf-cluster count, the global and local wire lengths and the
+  local clock buffers recomputed for that sink count ("[mcpat clock] coreN core-only"). It is printed, not priced:
+  the priced tree keeps every sink, DMA registers included. The DMA registers are reported apart in the same way as
+  the instruction and data stores.
+- **Data impact:** none on any priced number; one more diagnostic block per core when the switch is on.
+
 ## 1.12.76 -- a guest thread keeps a fixed identity and core, and a futex wait that sleeps leaves its core at once
 
 - **User ruling 2026-10-26**: ship "stable thread identity" and "futex waits as real leaves". Changes in
