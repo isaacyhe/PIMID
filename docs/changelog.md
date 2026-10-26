@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.72 -- the clock-feasibility report says how the arrays were sized
+
+- **The defect** (user ruling 2026-10-26 (2)). The `[mcpat timing]` line said the arrays were "sized by CACTI for
+  this clock", and the comment above the check said every array was sized against the cycle-time and access-time
+  targets of the clock. Neither holds:
+  - McPAT's clock-targeted search (`ArrayST::optimize_array`) runs only when the core's `opt_local` is set.
+  - PIMID describes every core with `opt_local=0`, upstream's setting "for cores with unknown timing".
+  - So CACTI sizes each array for energy-delay (McPAT's default weights: ED^2, no cycle-time weight), and the check
+    then compares that solution with the clock.
+- **The fix** (external/mcpat/core.cc, docs/power.md, docs/yaml_reference.md): the line reads "sized by CACTI for
+  energy-delay (McPAT clock search off, opt_local=0) and checked against this clock"; the comment and both documents
+  say the same.
+- **Data impact:** text only. No figure, verdict or array count moves.
+
 ## 1.12.71 -- a processing element's instruction cache is read at its fetch width
 
 - **The defect** (user ruling 2026-10-26 (1)). An in-order or out-of-order PE's 16 KB 4-way instruction cache was

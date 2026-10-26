@@ -931,10 +931,11 @@ dynamic power to 16.1 mW/PE at one instruction per cycle, above the published
 `system.devices[].process.logic_die.device_type` or
 `power.mcpat_overrides.device_type` still chooses. The run prints a
 clock-feasibility check at the corner in use (the clock is never changed): the
-McPAT fork's `[mcpat timing]` line (every array CACTI sized for the core --
-register files, buffers, DMA arrays -- against the cycle/access targets of the
-PE clock, PASS/FAIL) and the PE scratchpad's CACTI access time against one PE
-cycle. McPAT has no logic (ALU/bypass) delay model, so the datapath logic is
+McPAT fork's `[mcpat timing]` line: every array CACTI sized for the core --
+register files, buffers, DMA arrays -- is sized for energy-delay (McPAT's
+clock-targeted search is off, `opt_local=0`) and then checked against the
+cycle/access targets of the PE clock, PASS/FAIL; and the PE scratchpad's CACTI
+access time against one PE cycle. McPAT has no logic (ALU/bypass) delay model, so the datapath logic is
 not checked, and the run says so.
 
 `power.interconnect_projection` (`conservative` default, `aggressive`) selects

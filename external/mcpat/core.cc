@@ -2186,12 +2186,16 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	                       Core_device, coredynp.core_ty, XML->sys.pimid_clock_network != 0);
   }
   /* PIMID 1.12.18: (user ruling 2026-10-24) CLOCK FEASIBILITY OF
-   * THE CORE AT ITS DEVICE. Every array McPAT built for this core was sized by
-   * CACTI against a cycle-time target (throughput) and an access-time target
-   * (latency) derived from clockRate; McPAT keeps the best solution it found
-   * even when none meets them, and upstream warns only for associative arrays.
-   * Report the worst of each and PASS/FAIL. The ALU/bypass logic has no
-   * delay model in McPAT: not checked, and said so. */
+   * THE CORE AT ITS DEVICE. PIMID (next, user ruling 2026-10-26 (2)): the
+   * arrays are NOT sized for the clock. McPAT's clock-targeted search
+   * (ArrayST::optimize_array, run only when opt_for_clk && opt_local) is off:
+   * PIMID describes every core with opt_local=0 (upstream's setting "for
+   * cores with unknown timing"), so CACTI sizes each array for energy-delay
+   * (McPAT's default weights, ED^2, no cycle-time weight). Each array's cycle
+   * time and access time are then CHECKED against the targets McPAT derived
+   * from clockRate (throughput = the cycle-time target, latency = the
+   * access-time target). Report the worst of each and PASS/FAIL. The
+   * ALU/bypass logic has no delay model in McPAT: not checked, and said so. */
   {
 	  const double period = (clockRate > 0) ? 1.0 / clockRate : 0;
 	  size_t n = 0, nfail = 0; double wc = 0, wa = 0; std::string wcn, wan; std::ostringstream fails, all;
@@ -2209,7 +2213,8 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  }
 	  std::cerr << "[mcpat timing] core" << ithCore << " @ " << clockRate / 1e6 << " MHz (period " << period * 1e9
 	            << " ns), array periphery device " << interface_ip.data_arr_peri_global_tech_type
-	            << " (0 hp, 1 lstp, 2 lop): " << n << " array(s) sized by CACTI for this clock; worst cycle time "
+	            << " (0 hp, 1 lstp, 2 lop): " << n << " array(s) sized by CACTI for energy-delay (McPAT clock search off,"
+	               " opt_local=0) and checked against this clock; worst cycle time "
 	            << wc * 1e9 << " ns (" << wcn << "), worst access time " << wa * 1e9 << " ns (" << wan << ") -> "
 	            << (nfail ? "FAIL" : "PASS") << "; ALU/datapath logic delay NOT CHECKED (no logic delay model in McPAT)" << std::endl;
 	  if (n <= 16) std::cerr << "[mcpat timing] core" << ithCore << " arrays (access/target, cycle/target): " << all.str() << std::endl;
