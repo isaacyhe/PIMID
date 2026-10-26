@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.74 -- the published flip-flop scales to the run node with published silicon (DeepScaleTool)
+
+- **Node scaling of the published standard cells (user ruling 2026-10-26, "22 nm row: DeepScaleTool"):** the
+  Nangate 45 nm Open Cell Library flip-flop (DFF_X1, characterised at 1.10 V) that prices every McPAT register
+  (pipeline, controller and DMA registers, clock pins) was scaled to the run node with the Stillmaker & Baas 2017
+  Table 5 row NEAREST the node, the pair midpoint. At 22 nm that row is the 20 nm multi-gate row, whose energy
+  factor is about 2.5x below published 22 nm silicon. The applied ratio is now DeepScaleTool's (S. Sarangi,
+  B. Baas, "DeepScaleTool: A Tool for the Accurate Estimation of Technology Scaling in the Deep-Submicron Era",
+  IEEE ISCAS 2021; a fit to Intel silicon, switching energy relative to 65 nm, each node at its nominal Vdd), the
+  same table that scales the published FPU / ALU / MUL per-operation energies since 1.12.33: E(run node) / E(45 nm),
+  corrected from the library's 1.10 V to the 45 nm node's nominal 1.0 V, x (1.0 / 1.10)^2.
+- **Values:** 22 nm 0.3935 (was 0.1248, Stillmaker & Baas 20 nm row); 32 nm 0.5772 (was 0.4476, 32 nm row). The
+  register clock-pin capacitance follows as energy / V^2 (22 nm: 0.706 fF, was 0.224 fF). The [mcpat dff] line
+  prints the applied ratio, the ratio without the voltage correction (22 nm 0.476, 32 nm 0.698) and the
+  Stillmaker & Baas midpoint with its pair range as references.
+- **Scope:** a node outside DeepScaleTool's 7-130 nm table, or a run that picks the ASAP7 library (no published
+  nominal-voltage basis for its correction), keeps the Stillmaker & Baas midpoint and says so.
+- **Data impact (serial gemv cells, 16 PEs at 500 MHz, alu / in_order / ooo PEs on DDR3, DDR4, DDR5, HBM3,
+  LPDDR5, GDDR6):** McPAT register and clock energy rises; DRAM-side metrics are unchanged.
+  - alu PE, 32 nm (DDR3): pe.nonclock_pJ_instr 6.867 -> 7.702 (now inside [7.485, 12.62]); pe.mW_at_ipc1
+    4.580 -> 5.125; pe.clock_tree_pJ_cycle 1.599 -> 1.655.
+  - alu PE, 22 nm (DDR4, DDR5, HBM3, LPDDR5, GDDR6): pe.nonclock_pJ_instr 2.953 -> 4.685; pe.mW_at_ipc1
+    1.978 -> 3.106; pe.clock_tree_pJ_cycle 0.809 -> 0.918 (all inside their bands).
+  - in_order PE: core-only non-clock +7.8% (32 nm) / +35.5% (22 nm); ooo PE: +2.5% / +10.9%.
+  - memory-controller dynamic energy per access +1.0% (DDR3) to +5.3% (LPDDR5).
+  - Checker: the 32 nm alu PE's pe.nonclock_pJ_instr FLAG clears; no new FLAG.
+- **Invalidates:** every PE and memory-controller energy figure from earlier releases at 22 and 32 nm.
+
 ## 1.12.73 -- Diagnostic lines for internal verification are no longer printed by default
 
 - Diagnostic lines used for internal verification (per-block model and fabric derivations, reference and

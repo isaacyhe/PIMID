@@ -107,6 +107,18 @@ static int pimid_sb17_rows_nearest(double nm, double v, double f[2], int *row_nm
 	return n;
 }
 
+static bool pimid_dst_energy(double nm, double &e);   /* PIMID (DST): defined below */
+
+/* PIMID (DST, user ruling 2026-10-26, "22 nm row: DeepScaleTool"): the published-silicon node ratio for the CELL-BASED
+ * energies. The applied ratio of the Nangate 45 nm library (characterised at 1.10 V) to the run node is DeepScaleTool's
+ * (S. Sarangi, B. Baas, ISCAS 2021: switching energy relative to 65 nm, fitted to Intel silicon, each node at Intel's
+ * nominal Vdd; the same table pimid_logic_op_scale applies to the FPU / ALU / MUL per-op energies since 1.12.33),
+ * E(node) / E(45 nm), corrected from the library's 1.10 V to the 45 nm node's nominal 1.0 V: x (1.0 / 1.10)^2 (DERIVED;
+ * 22 nm 0.393, 32 nm 0.577). The voltage-less ratio (22 nm 0.476, 32 nm 0.698) and the Stillmaker & Baas pair midpoint
+ * (Table 5, the nearest row) are PRINTED as references. A node outside DeepScaleTool's 7-130 nm, or a run picking the
+ * ASAP7 library (no published nominal-voltage basis for its correction), keeps the Stillmaker & Baas midpoint, said so. */
+static const double PIMID_DST_V45_NOMINAL = 1.0;
+
 bool pimid_dff_published(double nm, double v, PimidDffPub &o)
 {
 	struct Lib { const char *name; double nm, v, c_ck, c_d, e_held, e_tog, e_q, e_d; };
@@ -136,7 +148,15 @@ bool pimid_dff_published(double nm, double v, PimidDffPub &o)
 		o.e_clock_lo = std::min(o.e_clock_lo, ec_s * rlo); o.e_clock_hi = std::max(o.e_clock_hi, ec_s * rhi);
 		if (li == pick)
 		{
-			const double r = 0.5 * (rlo + rhi);
+			double r = 0.5 * (rlo + rhi);
+			o.ratio_sb17 = r; o.dst = false; o.ratio_dst_vl = 0.0;
+			double es = 0, et = 0;   /* PIMID (DST) */
+			if (libs[li].nm == 45 && pimid_dst_energy(libs[li].nm, es) && pimid_dst_energy(nm, et) && es > 0)
+			{
+				o.ratio_dst_vl = et / es;
+				r = o.ratio_dst_vl * (PIMID_DST_V45_NOMINAL / libs[li].v) * (PIMID_DST_V45_NOMINAL / libs[li].v);
+				o.dst = true;
+			}
 			o.lib = libs[li].name; o.lib_nm = libs[li].nm; o.row_nm = trow; o.ratio = r; o.ratio_lo = rlo; o.ratio_hi = rhi;
 			o.c_ck = libs[li].c_ck * r * cr;
 			o.c_d  = libs[li].c_d * r * cr;
@@ -501,9 +521,12 @@ void DFFCell::compute_DFF_cell()
 			   const std::pair<long, long> key((long)(g_ip->F_sz_nm * 100), (long)(g_tp.peri_global.Vdd * 1000));
 			   if (shown.insert(key).second)
 				   pimid::debugStream(std::cerr) << "[mcpat dff] register at " << g_ip->F_sz_nm << " nm, " << g_tp.peri_global.Vdd << " V: "
-				             << pub.lib << " (the nearest published library), Stillmaker & Baas row " << pub.row_nm
-				             << " nm, energy ratio " << pub.ratio << " (pair range [" << pub.ratio_lo << ", " << pub.ratio_hi
-				             << "], midpoint): CK pin " << pub.c_ck*1e15 << " fF, D pin " << pub.c_d*1e15
+				             << pub.lib << " (the nearest published library), energy ratio APPLIED " << pub.ratio
+				             << (pub.dst ? " (DeepScaleTool, Sarangi & Baas ISCAS 2021, 45 nm -> run node, x (1.0/1.10)^2; voltage-less "
+				                         : " (Stillmaker & Baas pair midpoint; DeepScaleTool does not cover this case")
+				             << (pub.dst ? std::to_string(pub.ratio_dst_vl) : std::string("")) << "); reference: Stillmaker & Baas row "
+				             << pub.row_nm << " nm midpoint " << pub.ratio_sb17 << " (pair range [" << pub.ratio_lo << ", " << pub.ratio_hi
+				             << "]): CK pin " << pub.c_ck*1e15 << " fF, D pin " << pub.c_d*1e15
 				             << " fF, clock " << pub.e_clock*1e15 << " fJ/cycle, toggle +" << pub.e_switch*1e15
 				             << " fJ; bracket over both libraries: CK pin [" << pub.c_ck_lo*1e15 << ", " << pub.c_ck_hi*1e15
 				             << "] fF, clock [" << pub.e_clock_lo*1e15 << ", " << pub.e_clock_hi*1e15 << "] fJ/cycle."

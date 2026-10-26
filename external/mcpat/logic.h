@@ -390,6 +390,9 @@ int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2]
 struct PimidDffPub {
 	const char *lib; double lib_nm; int row_nm; double ratio, ratio_lo, ratio_hi;
 	double c_ck, c_d, e_clock, e_switch, c_ck_lo, c_ck_hi, e_clock_lo, e_clock_hi;
+	/* PIMID (DST, user ruling 2026-10-26): the ratio APPLIED is DeepScaleTool's when it covers the node (dst true);
+	 * the Stillmaker & Baas pair midpoint and the voltage-less DeepScaleTool ratio are kept for printing */
+	bool dst; double ratio_sb17, ratio_dst_vl;
 };
 bool pimid_dff_published(double nm, double v, PimidDffPub &o);
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0, double *c_run = 0,
