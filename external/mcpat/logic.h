@@ -354,6 +354,7 @@ public:
 	double n_clusters, a_reg_um2, cluster_side_um, c_local_per_um, wn, wp;   /* PIMID (next, F2) */
 	bool   span_is_clocked_logic;   /* PIMID (1.12.30): set by the owner when the tree area is clocked logic (a core) */
 	double cluster_area_um2, c_lcb_in, c_lcb_out, lcb_wn, lcb_wp;   /* PIMID (1.12.30): local nets, local clock buffers */
+	string c_local_source;     /* PIMID (next, CLK1): where c_local_per_um comes from */
 	double vdd, clock_hz, sckt;
 	double leak, gate_leak;    /* W per instance (repeaters) */
 	double lc_reduction, pg_reduction;

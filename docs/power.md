@@ -257,6 +257,20 @@ network itself (wire + repeaters), beside the published observation that
 the local clock buffers' load is generally more than ~10x the clock
 network's own (arXiv 1401.0015): printed, not judged.
 
+(next, user ruling 2026-10-26, CLK1) In a core tree the local clock nets
+are priced at MEASURED SILICON wire capacitance instead of CACTI's local
+wire: 0.200 fF/um at 32 nm (Natarajan et al., IEDM 2008: the measured
+median at M2, 112.5 nm pitch) and 0.169 fF/um at 22 nm (DERIVED: Auth et
+al., VLSI 2012, "13-18% lower capacitance than 32nm", midpoint), log-log
+between them. Silicon comb structures are measured with the neighbours
+grounded, the expected coupling of a clock net among signal wires that
+switch independently or stay quiet; CACTI's local wire carries a
+worst-case Miller factor of 1.5 on both sidewalls (0.246 / 0.239 fF/um at
+32 / 22 nm). Leaf clock nets are routed with default rules, unshielded
+(OpenROAD clock_tree_synthesis applies its non-default rule to every level
+except the leaf nets). At other nodes no published silicon value is
+carried and the CACTI local wire is kept; the tree prints which it used.
+
 (next, user ruling 2026-10-25 A) THE FLIP-FLOP is re-sourced from two
 published open standard-cell libraries, node-scaled: Nangate 45 nm Open
 Cell Library DFF_X1 (1.10 V) and ASAP7 DFFHQNx1 RVT (0.70 V), from their

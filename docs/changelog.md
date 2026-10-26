@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.67 -- core clock trees: local clock nets at measured silicon wire capacitance
+
+- **Model (user ruling 2026-10-26, CLK1; external/mcpat/logic.cc ClockNetwork):** in a core's clock tree the
+  local (leaf-cluster) nets are priced at measured silicon wire capacitance instead of CACTI's local wire: 32 nm
+  0.200 fF/um (Natarajan et al., IEDM 2008, Fig. 13a: measured median at M2, 112.5 nm pitch); 22 nm 0.169 fF/um
+  (DERIVED: Auth et al., VLSI 2012, "13-18% lower capacitance than 32nm", midpoint 15.5%); log-log between them.
+  CACTI's local wire (0.246 / 0.239 fF/um) carries a worst-case Miller factor of 1.5 on both sidewalls; silicon
+  combs are measured with grounded neighbours, the expected coupling of an unshielded leaf clock net (OpenROAD
+  CTS: non-default rules on every level except the leaf nets). Other nodes: NO PUBLISHED SOURCE FOUND, the CACTI
+  local wire is kept. The tree's print names the source. Global H-tree wire, repeaters and the other component
+  trees are unchanged.
+- **Data impact:** PE clock tree per cycle at activity 1 (register pins excluded): 32 nm (DDR3 die) alu_core
+  1.599 -> 1.365 pJ, in_order_core 2.583 -> 2.202, ooo_core 6.259 -> 5.380; 22 nm alu_core 0.809 -> 0.619,
+  in_order_core 1.322 -> 1.002, ooo_core 3.132 -> 2.372. PE power (gemv 256, serial, 16 PEs, six memories): alu_core
+  -1.9 % (32 nm) / -2.5 % (22 nm), in_order_core -0.8 %, ooo_core -0.3 % / -0.5 %; device total -0.03 % to -0.27 %.
+  Cycles unchanged.
+
 ## 1.12.66 -- the termination term is itemised internally
 
 - The DQ termination energy is computed per part (data pins, strobes, command/address, bias) for internal verification. Nothing is printed by default and no number changes.

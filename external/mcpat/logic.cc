@@ -735,6 +735,8 @@ ClockNetwork::ClockNetwork()
 {
 }
 
+static bool pimid_clock_local_wire_c(double nm, double &c, std::string &src);   /* PIMID (next, CLK1) */
+
 void ClockNetwork::compute(const InputParameter *configure_interface, const string &owner_,
 		double tree_area_um2_, double n_sinks_, const string &sink_source_,
 		double e_pin_per_reg_, double clock_hz_, bool embedded_,
@@ -809,6 +811,13 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	cluster_side_um = sqrt(cluster_area_um2);
 	local_len_um    = (k_eff > 1) ? n_clusters * 1.5 * cluster_side_um * (sqrt(k_eff) - 1.0) : 0.0;
 	c_local_per_um  = g_tp.wire_local.C_per_um;
+	c_local_source  = "CACTI local wire";
+	if (span_is_clocked_logic)
+	{   /* PIMID (next, user ruling 2026-10-26, CLK1): a core's local clock nets at measured silicon capacitance */
+		double c_sil = 0.0; std::string s;
+		if (pimid_clock_local_wire_c(l_ip.F_sz_nm, c_sil, s)) { c_local_per_um = c_sil; c_local_source = s; }
+		else c_local_source = "CACTI local wire (NO PUBLISHED SOURCE FOUND for a silicon value at this node)";
+	}
 	const double c_net_local = local_len_um * c_local_per_um;
 	/* (1.12.30) the LOCAL CLOCK BUFFER of each cluster, absent until now (the global wire ended unloaded and the
 	 * cluster nets were undriven): an inverting driver at stage effort 4 (logical effort's best stage effort
@@ -863,7 +872,7 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	          << n_clusters << " cluster nets of " << k_eff << " sinks over " << cluster_side_um << " um ("
 	          << (span_is_clocked_logic ? "the cluster's share of the clocked-logic area, " : "k register cells, ")
 	          << cluster_area_um2 << " um^2; register cell " << a_reg_um2 << " um^2) = " << local_len_um
-	          << " um of local wire (" << c_local_per_um*1e15 << " fF/um, unrepeated) + " << n_clusters
+	          << " um of local wire (" << c_local_per_um*1e15 << " fF/um, " << c_local_source << "; unrepeated) + " << n_clusters
 	          << " local clock buffers (FO4-sized: in " << c_lcb_in*1e15 << " fF on the global side, out "
 	          << c_lcb_out*1e15 << " fF) -> " << e_tree_local_cycle << " J/cycle + pins " << n_sinks*e_pin_reg
 	          << " J/cycle, gated by measured activity" << std::endl;
@@ -897,6 +906,30 @@ void ClockNetwork::set_powered(double r_gated, const string &src)
 
 bool ClockNetwork::split_enabled = true;   /* PIMID 1.12.18 (ruling #4) */
 double ClockNetwork::leaf_cluster_sinks = 30.0;   /* PIMID (next, F2): power.clock.leaf_cluster_sinks */
+
+/* PIMID (next, user ruling 2026-10-26, CLK1): MEASURED SILICON WIRE CAPACITANCE for the local clock nets of a core
+ * tree. 32 nm: 0.2 fF/um, the measured median at the M2 layer, 112.5 nm pitch (Natarajan et al., "A 32nm Logic
+ * Technology Featuring 2nd-Generation High-k + Metal-Gate Transistors ...", IEDM 2008, Fig. 13a). 22 nm: 0.169
+ * fF/um, DERIVED: the same layer family with "13-18% lower capacitance than 32nm" (Auth et al., "A 22nm
+ * High-Performance and Low-Power CMOS Technology Featuring Fully-Depleted Tri-Gate Transistors ...", VLSI 2012),
+ * the midpoint 15.5%. A node between the two is interpolated log-log (DERIVED). Other nodes: NO PUBLISHED SOURCE
+ * FOUND here; the CACTI local wire is kept and said so. Silicon comb structures are measured with the neighbours
+ * grounded, which is the expected coupling of a clock net among independently switching or quiet signal wires
+ * (CACTI's tables carry a worst-case Miller factor of 1.5 on both sidewalls: 0.246 / 0.239 fF/um at 32 / 22 nm). */
+static bool pimid_clock_local_wire_c(double nm, double &c, std::string &src)
+{
+	const double c32 = 0.200e-15, c22 = 0.200e-15 * (1.0 - 0.155);
+	if (fabs(nm - 32.0) < 1e-9) { c = c32; src = "measured silicon, 32 nm M2 (Natarajan, IEDM 2008)"; return true; }
+	if (fabs(nm - 22.0) < 1e-9) { c = c22; src = "DERIVED from silicon: 32 nm M2 0.2 fF/um less 15.5% (Auth, VLSI 2012: 13-18% lower than 32 nm)"; return true; }
+	if (nm > 22.0 && nm < 32.0)
+	{
+		const double a = log(nm / 22.0) / log(32.0 / 22.0);
+		c = exp(log(c22) + a * (log(c32) - log(c22)));
+		src = "DERIVED: log-log between the 22 and 32 nm silicon values";
+		return true;
+	}
+	return false;
+}
 
 double ClockNetwork::gated_cycle(double a, double pins_e) const
 {
