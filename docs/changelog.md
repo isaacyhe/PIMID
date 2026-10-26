@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.80 -- HBM3 refresh on the 16 Gb 8-High organisation: tRFCab 350 ns, two times the rows per REF
+
+- **Published HBM3/HBM3E data searched (user ruling 2026-10-27).** No HBM3 or HBM3E IDD table is public: JESD238B.01
+  Tables 90/91 (printed p.159) are templates ("Supplier data sheets include a max value"); the vendor product pages
+  give relative claims only (Samsung HBM3 "10% more power efficiency than our previous generation", footnoted to a
+  datasheet "available upon request"; Micron HBM3E "2.5X performance per watt" vs HBM2E and "~30% lower power" vs
+  competitors, no basis); the HBM3/HBM3E papers (Park et al. JSSC 2023, Ryu et al. JSSC 2023, Lee et al. ISSCC 2024
+  13.4) give no currents (Ryu: bank-group bus switching 22-42% of core-die power; Park: up to 15% better efficiency than
+  HBM2E); the H200 HBM3E measurement (CMU-SAFARI HBM-Power) is whole-board power, an upper bound only (5.8 pJ/bit
+  random-read slope including the GPU). The IDD row therefore stays DERIVED from the HBM2 measurement (NO PUBLISHED
+  SOURCE FOUND for an HBM3 IDD table).
+- **Re-sourced: tRFCab 260 -> 350 ns** (params/dram/hbm3.yaml). JESD238B.01 Table 93 (printed p.165) keys tRFCab on the
+  density per channel: the 16 Gb/die 8-High stack the record emits since 1.12.41 (HBM3_8Gb_8H, 8 Gb per channel) is
+  350 ns, the value the timing model's per-density table already uses; 260 ns is the 4-High (4 Gb per channel) row.
+- **Re-derived: refresh energy per channel REF 30.0 -> 60.1 nJ** (IDD5 182.875 -> 233.875 mA). The 1.11.91 derivation
+  prices a REF by the rows it refreshes; it assumed the 4 Gb/channel layout (16 banks per pseudo-channel, 32 rows x 1 KB
+  per PC per REF). The 8-High layout (JESD238B.01 Table 4: SID + BA[3:0], 32 banks per pseudo-channel, 16384 rows,
+  3.9 us) refreshes twice the rows per REF: 2 x 30.03 nJ = 60.06 nJ = 1.1 V x 156.0 mA x 350 ns (DERIVED).
+- **Data impact (HBM3, main 4ae4a924 cells, gemv 256):** refresh 122.9 -> 245.7 mW per stack; background per stack
+  1494 -> 1617 mW (+8.3%, inside the XPE guard 1060-2170); memory power +8.2 to +8.3% (device cells), +6.4% (co-sim);
+  the derived total read energy guard 3.91 -> 3.93 pJ/bit. Activate, burst and I/O unchanged.
+
 ## 1.12.79 -- LPDDR5 standby currents follow the run clock
 
 - LPDDR5 background standby currents (IDD2N/IDD3N and their VPP rows) scale with the run clock relative to the IDD table rate (6400/7500), estimated from a vendor source that cannot be disclosed publicly; power-down, refresh and the activate/burst baselines keep the record. LPDDR5 background per die 36.81 -> 33.62 mW (-8.7%), LPDDR5 memory power about -8.5%; logic power and other memories unchanged.
