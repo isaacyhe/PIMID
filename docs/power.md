@@ -244,13 +244,21 @@ net is unrepeated CACTI local wire, an H-tree to its k sinks, 1.5 d
 clocked logic (the flops sit among that logic), so a cluster's area is its
 share of it, A / ceil(N/k); in the other trees (caches, controllers,
 routers, links, whose area includes their arrays) it is k McPAT register
-cells. Each cluster has a LOCAL CLOCK BUFFER, an inverting driver sized at
-stage effort 4 (logical effort's best stage effort is about 4: Sutherland,
-Sproull, Harris, Logical Effort, 1999), input C = (net + pins) / 4, CACTI
-devices at the node: its input loads the global tree, its output diffusion
-switches with the cluster, its leakage is charged. The global part (wire,
-repeaters, buffer inputs) switches every powered cycle; the local nets,
-buffer outputs and register pins are gated by the measured activity
+cells. Each cluster has a LOCAL CLOCK BUFFER; (next, user ruling
+2026-10-26, CLK2) it is a two-inverter clock buffer priced from published
+liberty data: input C = C_load / 10 (C_load = the cluster's net + its
+register clock pins; OpenROAD TritonCTS grows a sink cluster to at most 10x
+the sink buffer's input capacitance), internal energy 0.5 x C_load x Vdd^2
+per cycle, so input + internal = 0.6 x C_load x Vdd^2. A liberty clock
+buffer at electrical effort 10 costs 0.49-0.59 of C_load Vdd^2 (Nangate45
+BUF/CLKBUF, ASAP7 BUFx2-x6f, typical corner), and the leaf buffers of a
+placed-and-routed 1,940-register RISC-V core (OpenROAD flow, Nangate45 and
+ASAP7, buffers sized by load, no dummy loads) cost 0.61-0.64. Its leakage
+is two CACTI inverters at the node. (Through 1.12.61 it was one inverter
+sized at stage effort 4, input C_load / 4, output diffusion only.) The
+global part (wire, repeaters, buffer inputs) switches every powered cycle;
+the local nets, buffer internal energy and register pins are gated by the
+measured activity
 (`power.models.clock_global_local`). Each tree prints the split and the
 ratio of its local load (nets + buffer outputs + pins) to the global
 network itself (wire + repeaters), beside the published observation that

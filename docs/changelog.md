@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.68 -- clock trees: two-stage local clock buffers priced from liberty data
+
+- **Model (user ruling 2026-10-26, CLK2; external/mcpat/logic.cc ClockNetwork):** every tree's leaf-cluster clock
+  buffer is a two-inverter clock buffer (the standard-cell clock buffer's structure: Nangate45 CLKBUF_X1-X3, ASAP7
+  BUFx2-x6f netlists) priced per cycle at 0.6 x C_load x Vdd^2, C_load = the cluster's net + its register clock pins:
+  input C_load / 10 on the global side (OpenROAD TritonCTS grows a sink cluster to at most 10x the sink buffer's input
+  capacitance), internal energy 0.5 x C_load x Vdd^2 with the cluster (liberty internal energy includes short circuit;
+  no sckt). Basis: liberty clock buffers at electrical effort 10 cost 0.49-0.59 (Nangate45 BUF_X1-X8, CLKBUF_X1-X3;
+  ASAP7 BUFx2-x6f; typical corner, all supply pins); the leaf buffers of a placed-and-routed 1,940-register RISC-V core
+  (OpenROAD flow scripts, Nangate45 and ASAP7, buffers sized by load, no dummy loads) cost 0.61-0.64. Leakage: two CACTI
+  inverters (DERIVED input widths C_load / 10 and C_load / sqrt(10)). Replaces the one-inverter buffer at stage effort
+  4 (input C_load / 4, output diffusion only, about 0.46 x C_load x Vdd^2 with sckt). The H-tree leaf length is
+  unchanged.
+- **Data impact:** PE clock tree per cycle at activity 1: 32 nm alu_core 1.365 -> 1.519 pJ, in_order_core
+  2.202 -> 2.455, ooo_core 5.380 -> 6.029; 22 nm alu_core 0.619 -> 0.675, in_order_core 1.002 -> 1.093, ooo_core
+  2.372 -> 2.632. The buffer input falls from C_load / 4 to C_load / 10, so the always-switching global part falls
+  and the activity-gated part rises: PE power (gemv 256, serial, 16 PEs, six memories) alu_core +0.1 % to +0.4 %,
+  in_order_core -0.1 % to -0.3 %, ooo_core 0.0 %; memory-controller clock tree -1.4 % to -3.0 %, NoC router clock
+  trees -7 % to -16 %; device total -0.3 % to -1.8 %. Cycles unchanged.
+
 ## 1.12.67 -- core clock trees: local clock nets at measured silicon wire capacitance
 
 - **Model (user ruling 2026-10-26, CLK1; external/mcpat/logic.cc ClockNetwork):** in a core's clock tree the

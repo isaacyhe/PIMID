@@ -819,26 +819,42 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 		else c_local_source = "CACTI local wire (NO PUBLISHED SOURCE FOUND for a silicon value at this node)";
 	}
 	const double c_net_local = local_len_um * c_local_per_um;
-	/* (1.12.30) the LOCAL CLOCK BUFFER of each cluster, absent until now (the global wire ended unloaded and the
-	 * cluster nets were undriven): an inverting driver at stage effort 4 (logical effort's best stage effort
-	 * is about 4: Sutherland, Sproull, Harris, "Logical Effort", 1999), DERIVED input C = (net + pins) / 4,
-	 * CACTI devices at this node (P/N ratio, drain capacitance, leakage). Its input is the global tree's
-	 * load (every powered cycle); its output diffusion switches with the cluster (gated). */
+	/* (next, user ruling 2026-10-26, CLK2) the LOCAL CLOCK BUFFER of each cluster is a two-inverter clock buffer
+	 * (the standard-cell clock buffer: Nangate 45 nm OCL CLKBUF_X1-X3, ASAP7 BUFx2-x6f, two inverting stages in
+	 * their netlists), priced per cycle from published liberty data rather than logical effort alone:
+	 *  - its input C is C_load / 10, C_load = the cluster's net + its register clock pins (OpenROAD TritonCTS
+	 *    grows a sink cluster to at most 10x the sink buffer's input capacitance); it loads the global tree
+	 *    (every powered cycle);
+	 *  - its internal energy (both stages' diffusion and gates, short circuit included) is 0.5 x C_load x Vdd^2
+	 *    per cycle, so that input + internal = 0.6 x C_load x Vdd^2. DERIVED: a liberty clock buffer at
+	 *    electrical effort 10 costs 0.49-0.59 (Nangate45 BUF_X1-X8 / CLKBUF_X1-X3, ASAP7 BUFx2-x6f; typical
+	 *    corner, rise + fall internal energy over all supply pins, per C_load Vdd^2, input included), and the
+	 *    leaf buffers of placed-and-routed CTS of a 1,940-register RISC-V core (OpenROAD flow, Nangate45 and
+	 *    ASAP7, no dummy loads, buffers sized by load) cost 0.61-0.64. It switches with the cluster (gated);
+	 *    liberty internal energy includes short circuit, so no sckt is applied to it.
+	 *  - leakage: two CACTI inverters at this node, input widths for C_load / 10 and C_load / sqrt(10) (DERIVED,
+	 *    equal stage effort). */
+	const double lcb_h = 10.0, lcb_overhead = 0.6;
 	c_lcb_in = c_lcb_out = 0.0;
 	if (k_leaf > 1 && n_clusters > 0 && k_eff > 0)
 	{
 		const double c_load = (c_net_local + k_eff * n_clusters * c_pin) / n_clusters;
 		const double c_per_um = gate_C(1.0, 0, false) - gate_C(0.0, 0, false);
-		const double w_tot = (c_per_um > 0) ? (c_load / 4.0) / c_per_um : 0.0;
 		const double r = pmos_to_nmos_sz_ratio();
-		lcb_wn = w_tot / (1.0 + r); lcb_wp = w_tot * r / (1.0 + r);
-		c_lcb_in  = gate_C(lcb_wn + lcb_wp, 0, false);
-		c_lcb_out = drain_C_(lcb_wn, NCH, 1, 1, g_tp.cell_h_def) + drain_C_(lcb_wp, PCH, 1, 1, g_tp.cell_h_def);
-		leak      += n_clusters * cmos_Isub_leakage(lcb_wn, lcb_wp, 1, inv) * vdd;
-		gate_leak += n_clusters * cmos_Ig_leakage(lcb_wn, lcb_wp, 1, inv) * vdd;
+		c_lcb_in  = c_load / lcb_h;
+		c_lcb_out = (lcb_overhead - 1.0 / lcb_h) * c_load;   /* internal energy / Vdd^2 */
+		const double w1 = (c_per_um > 0) ? c_lcb_in / c_per_um : 0.0;
+		const double w2 = (c_per_um > 0) ? (c_load / sqrt(lcb_h)) / c_per_um : 0.0;
+		lcb_wn = (w1 + w2) / (1.0 + r); lcb_wp = (w1 + w2) * r / (1.0 + r);
+		for (const double w : {w1, w2})
+		{
+			const double wn_s = w / (1.0 + r), wp_s = w * r / (1.0 + r);
+			leak      += n_clusters * cmos_Isub_leakage(wn_s, wp_s, 1, inv) * vdd;
+			gate_leak += n_clusters * cmos_Ig_leakage(wn_s, wp_s, 1, inv) * vdd;
+		}
 	}
 	e_global += n_clusters * c_lcb_in * vdd * vdd * sckt;
-	const double e_local = (c_net_local + n_clusters * c_lcb_out) * vdd * vdd * sckt;
+	const double e_local = c_net_local * vdd * vdd * sckt + n_clusters * c_lcb_out * vdd * vdd;
 	global_len_um = tree_len_um;
 	tree_len_um   = global_len_um + local_len_um;
 	e_tree_cycle  = e_global + e_local;
@@ -873,8 +889,8 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	          << (span_is_clocked_logic ? "the cluster's share of the clocked-logic area, " : "k register cells, ")
 	          << cluster_area_um2 << " um^2; register cell " << a_reg_um2 << " um^2) = " << local_len_um
 	          << " um of local wire (" << c_local_per_um*1e15 << " fF/um, " << c_local_source << "; unrepeated) + " << n_clusters
-	          << " local clock buffers (FO4-sized: in " << c_lcb_in*1e15 << " fF on the global side, out "
-	          << c_lcb_out*1e15 << " fF) -> " << e_tree_local_cycle << " J/cycle + pins " << n_sinks*e_pin_reg
+	          << " local clock buffers (two-stage clock buffers: in " << c_lcb_in*1e15 << " fF on the global side, internal "
+	          << c_lcb_out*1e15 << " fF x Vdd^2) -> " << e_tree_local_cycle << " J/cycle + pins " << n_sinks*e_pin_reg
 	          << " J/cycle, gated by measured activity" << std::endl;
 	if (k_leaf > 1)
 	{
@@ -888,7 +904,7 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 		const double c_loc  = c_net_local + n_clusters * c_lcb_out + n_sinks * c_pin;
 		std::cerr << "[mcpat clock] " << owner << ": local/global load ratio " << ((c_glob > 0) ? c_loc / c_glob : 0.0)
 		          << " (local " << c_loc*1e15 << " fF = nets " << c_net_local*1e15 << " + LCB outputs "
-		          << n_clusters * c_lcb_out*1e15 << " + " << n_sinks << " pins " << n_sinks*c_pin*1e15
+		          << n_clusters * c_lcb_out*1e15 << " (internal, as C) + " << n_sinks << " pins " << n_sinks*c_pin*1e15
 		          << "; global network " << c_glob*1e15 << " fF, LCB inputs " << c_lcb_in_all*1e15
 		          << " fF beside it); published observation > ~10x (arXiv 1401.0015)" << ((c_glob > 0 && c_loc / c_glob < 10.0)
 		          ? " -- BELOW it (printed, not judged)" : " -- consistent") << std::endl;
