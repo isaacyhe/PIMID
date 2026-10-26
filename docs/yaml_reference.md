@@ -356,9 +356,22 @@ core:
 | `core.in_order.mispredict_penalty_cycles` | int | record (`7`) | `in_order_core` refill bubble for a conditional mispredict, and for an indirect jump, call or return whose target the BTB/RAS missed (all resolved at execute). Also the in-order pipeline depth McPAT prices. Range 0..1000. Env `PIMID_INORDER_MISPRED_PENALTY` overrides it inside the core. |
 | `core.in_order.resteer_penalty_cycles` | int | record (`4`) | `in_order_core` decode-depth resteer: a taken direct branch that misses the BTB. Range 0..1000, and not above `mispredict_penalty_cycles`. Env `PIMID_INORDER_RESTEER_PENALTY` overrides it inside the core. |
 | `core.ooo.mispredict_penalty_cycles` | int | record (`17`) | `ooo_core`: how far the wrong path is fetched after a mispredict (the redirect itself is charged by resolution time). Wrong-path depth = ceil(penalty x fetch width / line size) lines. Range 0..1000. |
-| `core.ooo.fetch_width_bytes` | int | record (`16`) | `ooo_core` fetch width in bytes per cycle. Range 1..64, and not above `system.cache_line_size`. |
+| `core.ooo.fetch_width_bytes` | int | record (`16`) | `ooo_core` fetch width in bytes per cycle. Range 1..64, and not above `system.cache_line_size`. On a processing element it is also the bytes one instruction-cache read delivers (below). |
 
-A value outside its range is refused at load (rc 1). See [cores.md](cores.md)
+A value outside its range is refused at load (rc 1).
+
+The record's `in_order.fetch_width_bytes` (`16`, no config key) is the
+`in_order_core` fetch width. A processing element's instruction cache (an
+`in_order_core` or `ooo_core` PE) is read at its core type's fetch width: zsim
+counts the aligned fetch-width chunks every fetched block spans (`ifetchChunks`,
+wrong-path lines included on `ooo_core`), McPAT prices that many reads of a
+fetch-width output, and each line miss as one fill of line / width writes. The
+cache is still looked up, and its latency charged, once per line. The width
+follows Ariane's 16 kB 4-way instruction cache, which delivers a 32-bit fetch in
+one cycle (Zaruba and Benini, IEEE TVLSI 2019, Table II), at an x86 in-order
+core's 16 B ("16 bytes or two instructions per clock cycle", Knights Corner, A.
+Fog, *The microarchitecture of Intel, AMD and VIA CPUs*); the derivations are in
+the record. Host cores keep the full-line access, one read per line fetched. See [cores.md](cores.md)
 for the pipelines these values feed.
 
 ---

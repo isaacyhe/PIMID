@@ -141,6 +141,14 @@ class InOrderCore : public Core {
         uint64_t instrs;
         uint64_t uops;
         uint64_t bbls;
+        /* PIMID (1.12.71): instruction-cache reads at the fetch width. The front
+         * end reads the instruction cache one fetch-width chunk at a time;
+         * ifetchChunks counts the aligned chunks each fetched basic block
+         * spans. fetchChunkBytes is the required zsim key fetchBytesPerCycle
+         * (the core record's in_order.fetch_width_bytes). Counting only: the
+         * cache is still accessed, and its latency charged, once per line. */
+        uint64_t ifetchChunks = 0;
+        uint32_t fetchChunkBytes = 0;
 
         uint64_t curCycle; //phase 1 clock (in-order issue/commit cursor)
         uint64_t phaseEndCycle; //phase 1 end clock
@@ -233,6 +241,7 @@ class InOrderCore : public Core {
          * meaningless. */
         uint64_t roiBaseUops     = 0;
         uint64_t roiBaseBbls     = 0;
+        uint64_t roiBaseIfetchChunks = 0;   // PIMID (1.12.71)
         uint64_t roiBaseBranches = 0;
         uint64_t roiBaseTaken    = 0;   // 1.12.1: takenBranches
         uint64_t roiBaseMispred  = 0;
@@ -263,6 +272,7 @@ class InOrderCore : public Core {
                     uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty,
                     bool _staticNotTaken);
         void initStats(AggregateStat* parentStat);
+        void setFetchChunkBytes(uint32_t b) { fetchChunkBytes = b; }   // PIMID (1.12.71)
 
         uint64_t getInstrs() const {return instrs;}
         uint64_t getPhaseCycles() const;
@@ -316,6 +326,7 @@ class InOrderCore : public Core {
         void markRoiBegin() override {
             roiBaseInstrs = instrs; roiBaseCycle = getCycles();  // adjusted clock: pre-ROI phantom excluded
             roiBaseUops = uops; roiBaseBbls = bbls;              // 1.9.33
+            roiBaseIfetchChunks = ifetchChunks;                  // PIMID (1.12.71)
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseTaken = takenBranches;                        // 1.12.1
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns; roiBaseBtbMiss = btbMisses;   // 1.11.93 (F6)

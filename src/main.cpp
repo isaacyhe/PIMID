@@ -1438,6 +1438,8 @@ struct ZSimParsedOutput {
         bool bpWritesPresent = false;   // the dump carried the counters
 
         uint64_t l1i_fhGETS = 0, l1i_hGETS = 0, l1i_mGETS = 0;
+        uint64_t ifetch_chunks = 0;     // PIMID (1.12.71): instruction-cache reads at the fetch width (cores' ifetchChunks, ROI)
+        bool ifetch_present = false;    // the dump carried them
         uint64_t l1d_fhGETS = 0, l1d_hGETS = 0, l1d_mGETS = 0;
         uint64_t l1d_fhGETX = 0, l1d_hGETX = 0, l1d_mGETXIM = 0;
         uint64_t l2_hGETS = 0, l2_mGETS = 0, l2_hGETX = 0, l2_mGETXIM = 0;
@@ -1579,6 +1581,8 @@ struct ZSimParsedOutput {
     uint64_t l1i_fhGETS = 0;
     uint64_t l1i_hGETS = 0;
     uint64_t l1i_mGETS = 0;
+    uint64_t ifetch_chunks = 0;     // PIMID (1.12.71): instruction-cache reads at the fetch width (cores' ifetchChunks, ROI)
+    bool ifetch_present = false;
 
     // L1D: reads (fhGETS+hGETS+mGETS), writes (fhGETX+hGETX+mGETXIM), misses
     uint64_t l1d_fhGETS = 0;
@@ -2084,6 +2088,10 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 }
                 else if (key == "uops") { out.uops += val; if (grp) grp->uops += val; }
                 else if (key == "bbls") { out.bbls += val; if (grp) grp->bbls += val; }
+                else if (key == "ifetchChunks") {   // PIMID (next, user ruling 2026-10-26 (1))
+                    out.ifetch_chunks += val; out.ifetch_present = true;
+                    if (grp) { grp->ifetch_chunks += val; grp->ifetch_present = true; }
+                }
                 else if (key == "branches") { out.branches += val; if (grp) grp->branches += val; }
                 else if (key == "mispredBranches") {
                     out.mispredBranches += val; if (grp) grp->mispredBranches += val;
@@ -3054,6 +3062,7 @@ struct UnifiedConfig {
     int    core_inorder_resteer_penalty    = -1;   // core.in_order.resteer_penalty_cycles
     int    core_ooo_mispredict_penalty     = -1;   // core.ooo.mispredict_penalty_cycles
     int    core_ooo_fetch_width_bytes      = -1;   // core.ooo.fetch_width_bytes
+    int    core_inorder_fetch_width_bytes  = -1;   // core record in_order.fetch_width_bytes (record only; PIMID (1.12.71))
 
     // System configuration
     int frequency_mhz;
@@ -4396,6 +4405,18 @@ static int applyCoreRecord(UnifiedConfig& config) {
         std::cerr << "[params] FATAL: OOO fetch width " << config.core_ooo_fetch_width_bytes
                   << " B/cycle exceeds the " << config.cache_line_size
                   << " B line; the wrong-path fetch model steps at least one cycle per line." << std::endl;
+        return 1;
+    }
+    /* PIMID (next, user ruling 2026-10-26 (1)): the in-order fetch width, the
+     * width a processing element's instruction cache is read at (both core
+     * types; the OOO core's is core.ooo.fetch_width_bytes, whose width the
+     * power model uses only when it divides the line). A width that does not
+     * divide the line cannot be the cache's access width. */
+    config.core_inorder_fetch_width_bytes = io.fetch_width_bytes;
+    if (config.cache_line_size % config.core_inorder_fetch_width_bytes != 0) {
+        std::cerr << "[params] FATAL: in-order fetch width " << config.core_inorder_fetch_width_bytes
+                  << " B does not divide the " << config.cache_line_size
+                  << " B line; the instruction cache is read in fetch-width chunks of a line." << std::endl;
         return 1;
     }
     g_inorder_mispredict_penalty = config.core_inorder_mispredict_penalty;
@@ -12814,6 +12835,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     // Split cache stats from ZSim
     if (sys_dev_subset) {   // 1.11.94 (H22)
         mcpat.setL1IAccesses(D.l1i_total_reads(), D.l1i_mGETS);
+        mcpat.setL1IFetchChunks(D.ifetch_chunks, D.ifetch_present, (dev_profile == McPAT::DeviceProfile::OOO ? config.core_ooo_fetch_width_bytes
+                                   : dev_profile == McPAT::DeviceProfile::DEVICE_INORDER ? config.core_inorder_fetch_width_bytes : 0));   // PIMID (1.12.71)
         mcpat.setL1DAccesses(D.l1d_total_reads(), D.l1d_total_writes(), D.l1d_mGETS, D.l1d_mGETXIM);
         mcpat.setScratchpadAccesses(D.spm_reads, D.spm_writes, D.dma_lines, D.dma_cmd_reads, D.dma_cmd_writes);   // 1.12.18
         mcpat.setL2Accesses(D.l2_total_reads(), D.l2_total_writes(), D.l2_mGETS, D.l2_mGETXIM);
@@ -12821,6 +12844,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         feedCoherenceDirectory(mcpat, D, config.model_coherence_directory);   // 1.12.18
     } else {
     mcpat.setL1IAccesses(zsim_stats.l1i_total_reads(), zsim_stats.l1i_mGETS);
+    mcpat.setL1IFetchChunks(zsim_stats.ifetch_chunks, zsim_stats.ifetch_present, (dev_profile == McPAT::DeviceProfile::OOO ? config.core_ooo_fetch_width_bytes
+                                   : dev_profile == McPAT::DeviceProfile::DEVICE_INORDER ? config.core_inorder_fetch_width_bytes : 0));   // PIMID (1.12.71)
     mcpat.setL1DAccesses(zsim_stats.l1d_total_reads(), zsim_stats.l1d_total_writes(),
                          zsim_stats.l1d_mGETS, zsim_stats.l1d_mGETXIM);
     mcpat.setScratchpadAccesses(zsim_stats.spm_reads, zsim_stats.spm_writes, zsim_stats.dma_lines,
@@ -16458,6 +16483,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * parse and the attribution are fixed; see the parser note. */
             if (have_grp) {
                 mcpat.setL1IAccesses(grp->l1i_total_reads(), grp->l1i_mGETS);
+                /* PIMID (1.12.71): a device element's instruction cache is read at its fetch width;
+                 * a host core keeps the full-line access (no ruling for hosts). */
+                if (node.role == UnifiedConfig::SystemNode::DEVICE)
+                    mcpat.setL1IFetchChunks(grp->ifetch_chunks, grp->ifetch_present,
+                                            profile == McPAT::DeviceProfile::OOO ? config.core_ooo_fetch_width_bytes
+                                            : profile == McPAT::DeviceProfile::DEVICE_INORDER ? config.core_inorder_fetch_width_bytes : 0);
                 mcpat.setL1DAccesses(grp->l1d_total_reads(), grp->l1d_total_writes(),
                                      grp->l1d_mGETS, grp->l1d_mGETXIM);
                 mcpat.setScratchpadAccesses(grp->spm_reads, grp->spm_writes, grp->dma_lines,
@@ -17581,6 +17612,8 @@ public:
                 // 1.11.97 (R2313 (b)): the core record's two penalties (applyCoreRecord()).
                 cfg << "            mispredPenalty = " << config_.core_inorder_mispredict_penalty << ";\n";
                 cfg << "            resteerPenalty = " << config_.core_inorder_resteer_penalty << ";\n";
+                // PIMID (1.12.71): the fetch width the instruction-cache reads are counted at (core record).
+                cfg << "            fetchBytesPerCycle = " << config_.core_inorder_fetch_width_bytes << ";\n";
                 // 1.12.1 (#114): pag | none (pim.pe.branch_predictor, else the core record).
                 cfg << "            branchPredictor = \"" << inorderBpForZsim(config_.inorder_branch_predictor, "pim_pes") << "\";\n";
             } else if (core_type == "OoO") {
@@ -18424,6 +18457,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                  * same run-wide values the device-scope emitter writes. */
                 cfg << "            mispredPenalty = " << config.core_inorder_mispredict_penalty << ";\n";
                 cfg << "            resteerPenalty = " << config.core_inorder_resteer_penalty << ";\n";
+                // PIMID (1.12.71): the fetch width the instruction-cache reads are counted at (core record).
+                cfg << "            fetchBytesPerCycle = " << config.core_inorder_fetch_width_bytes << ";\n";
                 // 1.12.1 (#114): the node's own predictor (host or device), pag | none.
                 cfg << "            branchPredictor = \"" << inorderBpForZsim(node.inorder_branch_predictor, group_name) << "\";\n";
             } else if (core_type == "OoO") {

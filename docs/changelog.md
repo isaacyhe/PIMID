@@ -6,6 +6,50 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.71 -- a processing element's instruction cache is read at its fetch width
+
+- **The defect** (user ruling 2026-10-26 (1)). An in-order or out-of-order PE's 16 KB 4-way instruction cache was
+  priced as delivering a whole 64 B line per read, all four ways in parallel: 2048 bit lines sensed per fetch.
+  CACTI, sizing for energy-delay, laid that out as 64-row x 1024-column subarrays. Their wordline-reset and
+  bitline-precharge wires run 265 um on the local metal of an embedded part, so the array's random cycle was
+  2.79 ns at 22 nm (3.72 ns at 32 nm), against the 2 ns period of a 500 MHz PE. The clock-feasibility check failed
+  on every memory technology. A published cache of the same size and associativity delivers its fetch width, not
+  a line: Ariane's 16 kB 4-way instruction cache, at 22 nm, has a fetch latency of 1 at a 32-bit fetch width
+  (F. Zaruba, L. Benini, IEEE TVLSI 27(11), 2019, Sec. II and Table II; signed off at 902 MHz, SSG 0.72 V).
+- **The fix:**
+  - **Fetch width per core type** (core record, params/core/default.yaml):
+    - `in_order.fetch_width_bytes: 16` (new, record only). The guest code is x86. Knights Corner, an in-order
+      dual-issue x86 core at 22 nm, "can handle 16 bytes or two instructions per clock cycle" (A. Fog, The
+      microarchitecture of Intel, AMD and VIA CPUs, Knights Corner chapter). For issue width 1 no published
+      source was found, and the same 16 B is used.
+    - `ooo.fetch_width_bytes: 16` (unchanged): zsim's Westmere-matched core fetches 16 B wide.
+  - **zsim** (in_order_core, ooo_core, init): each core counts `ifetchChunks`, the aligned fetch-width chunks every
+    fetched basic block spans, on the ROI window. The out-of-order core adds every chunk of a wrong-path line. The
+    in-order core takes the width as the new required key `fetchBytesPerCycle`. Counting only: the cache is still
+    looked up, and its latency charged, once per line, so no cycle count moves.
+  - **McPAT input** (src/power/mcpat_wrapper.cpp, src/main.cpp): for a device element, the icache output
+    (`icache_config` field 6) is the fetch width, and `read_accesses` is the chunk count. The misses stay line
+    misses. The 2026-10-23 #6 note now says why the device icache no longer keeps 64. Host cores keep the full-line
+    output and one read per line fetched.
+  - **McPAT fork** (external/mcpat/core.cc `InstFetchU`): with an output narrower than the line, a line fill is
+    line / output array writes, as `LoadStoreU` charges the data cache's fills. A full-line output keeps one write
+    per miss.
+- **Data impact** (gemv 256, 16 PEs at 500 MHz, bank placement, six memory technologies; timing identical in every
+  cell):
+
+  | cells | check | icache reads | instruction-store energy | core power | system power |
+  |---|---|---|---|---|---|
+  | in-order PE, 22 nm (DDR4, DDR5, LPDDR5, GDDR6, HBM3) | FAIL -> PASS (worst array now dcacheMissBuffer, 1.09 ns) | 65,794 line reads -> 131,847 reads of 16 B | -3.8% (11.83 -> 5.68 pJ per read) | -0.51% | -0.02% to -0.10% |
+  | in-order PE, 32 nm (DDR3) | FAIL -> PASS (1.55 ns) | same | -7.4% | -0.92% | -0.11% |
+  | OOO PE, 22 nm | FAIL -> PASS (1.09 ns) | 67,083 -> 137,003 (wrong path included) | -2.0% | -0.15% | -0.02% to -0.08% |
+  | OOO PE, 32 nm (DDR3) | FAIL -> PASS (1.55 ns) | same | -5.6% | -0.30% | -0.13% |
+  | co-simulation, DDR5, 16 in-order / OOO PEs with a 32 KB icache | FAIL (2.84 ns) -> PASS (1.09 ns) | 62,055 -> 124,215 / 63,390 -> 129,555 | +9.1% / +11.4% (14.2 -> 7.7 pJ per read, twice the reads) | device +1.4% / +1.1% | +0.29% / +0.65% |
+  | host baseline (DDR5, 1 OOO core, 2 GHz) | PASS, unchanged | unchanged | unchanged | unchanged | unchanged |
+
+  - The host icache needs no change: at 2 GHz its 32 KB 4-way full-line array passes the check, because a host
+    core's arrays are built with global wires inside the mats.
+  - Compute-unit (ALU) elements keep their resident instruction store; nothing changes for them.
+
 ## 1.12.70 -- Device fabric: control messages carried (read = control request + data response, write = data request + control ack)
 
 - **Two messages per remote access (user ruling 2026-10-26):** a PE's remote read is a control request (PIMID's

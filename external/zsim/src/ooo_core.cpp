@@ -193,6 +193,9 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     auto zb = [this]() -> uint64_t { return bbls - roiBaseBbls; };
     LambdaStat<decltype(zb)>* bblsStat = new LambdaStat<decltype(zb)>(zb);
     bblsStat->init("bbls", "Basic blocks");
+    auto zfc = [this]() -> uint64_t { return ifetchChunks - roiBaseIfetchChunks; };   // PIMID (1.12.71)
+    LambdaStat<decltype(zfc)>* ifetchChunksStat = new LambdaStat<decltype(zfc)>(zfc);
+    ifetchChunksStat->init("ifetchChunks", "Instruction-cache reads at the fetch width (aligned fetch-width chunks fetched, wrong path included)");
     auto zbr = [this]() -> uint64_t { return branches - roiBaseBranches; };
     LambdaStat<decltype(zbr)>* branchesStat = new LambdaStat<decltype(zbr)>(zbr);
     branchesStat->init("branches", "Resolved branches fed to the predictor");
@@ -227,6 +230,7 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     coreStat->append(instrsStat);
     coreStat->append(uopsStat);
     coreStat->append(bblsStat);
+    coreStat->append(ifetchChunksStat);   // PIMID (1.12.71)
     coreStat->append(approxInstrsStat);
     coreStat->append(branchesStat);   // 1.9.33
     /* 1.11.16 (verification audit): the oooBbl-null-based syntheticInstrs
@@ -693,6 +697,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         for (uint32_t i = 0; i < wrongPathLines; i++) {
             uint64_t fetchLat = l1i->load(wrongPathAddr + lineSize*i, curCycle) - curCycle;
             cRec.record(curCycle, curCycle, curCycle + fetchLat);
+            ifetchChunks += lineSize / fetchBytesPerCycle;   // PIMID (1.12.71): a wrong-path line, read chunk by chunk
             uint64_t respCycle = reqCycle + fetchLat;
             if (respCycle > lastCommitCycle) {
                 break;
@@ -728,6 +733,10 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 
     // Simulate current bbl ifetch
     Address endAddr = bblAddr + bblInfo->bytes;
+    /* PIMID (1.12.71): the instruction-cache reads this block costs at the fetch
+     * width: the aligned fetch-width chunks [bblAddr, endAddr) spans. */
+    if (bblInfo->bytes > 0)
+        ifetchChunks += (endAddr - 1) / fetchBytesPerCycle - bblAddr / fetchBytesPerCycle + 1;
     for (Address fetchAddr = bblAddr; fetchAddr < endAddr; fetchAddr += lineSize) {
         // The Nehalem frontend fetches instructions in 16-byte-wide accesses.
         // Do not model fetch throughput limit here, decoder-generated stalls already include it

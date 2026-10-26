@@ -724,6 +724,7 @@ bool loadCoreRecord(CoreRecord& out, std::string& error) {
      * line size at apply time). */
     if (!coreInt(io, "in_order", "mispredict_penalty_cycles", 0, 1000, out.in_order.mispredict_penalty_cycles, out.file, error) ||
         !coreInt(io, "in_order", "resteer_penalty_cycles", 0, 1000, out.in_order.resteer_penalty_cycles, out.file, error) ||
+        !coreInt(io, "in_order", "fetch_width_bytes", 1, 64, out.in_order.fetch_width_bytes, out.file, error) ||   // PIMID (1.12.71)
         !coreInt(oo, "ooo", "mispredict_penalty_cycles", 0, 1000, out.ooo.mispredict_penalty_cycles, out.file, error) ||
         !coreInt(oo, "ooo", "fetch_width_bytes", 1, 64, out.ooo.fetch_width_bytes, out.file, error) ||
         !coreInt(oo, "ooo", "retire_width", 1, 64, out.ooo.retire_width, out.file, error))
@@ -788,7 +789,8 @@ std::string describeCoreRecord(const CoreRecord& rec) {
     std::ostringstream o;
     o << "[params] core record " << rec.file << ": " << rec.record
       << " (in_order: mispredict " << rec.in_order.mispredict_penalty_cycles << " cyc, resteer "
-      << rec.in_order.resteer_penalty_cycles << " cyc, retire = issue width, branch predictor "
+      << rec.in_order.resteer_penalty_cycles << " cyc, fetch " << rec.in_order.fetch_width_bytes
+      << " B/cyc, retire = issue width, branch predictor "
       << rec.in_order.branch_predictor << "; ooo: mispredict "
       << rec.ooo.mispredict_penalty_cycles << " cyc, fetch " << rec.ooo.fetch_width_bytes
       << " B/cyc, retire " << rec.ooo.retire_width

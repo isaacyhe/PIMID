@@ -155,6 +155,10 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zb)>* bblsStat = new LambdaStat<decltype(zb)>(zb);
     bblsStat->init("bbls", "Basic blocks");
     coreStat->append(bblsStat);
+    auto zfc = [this]() -> uint64_t { return ifetchChunks - roiBaseIfetchChunks; };   // PIMID (1.12.71)
+    LambdaStat<decltype(zfc)>* ifetchChunksStat = new LambdaStat<decltype(zfc)>(zfc);
+    ifetchChunksStat->init("ifetchChunks", "Instruction-cache reads at the fetch width (aligned fetch-width chunks fetched)");
+    coreStat->append(ifetchChunksStat);
     ProxyStat* decodedBblsStat = new ProxyStat();
     decodedBblsStat->init("decodedBbls", "BBLs run through the decoded in-order scoreboard [whole run]", &decodedBbls);
     coreStat->append(decodedBblsStat);
@@ -302,6 +306,10 @@ void InOrderCore::storeAndRecord(Address addr) {
 
 inline void InOrderCore::ifetch(Address bblAddr, BblInfo* bblInfo) {
     Address endBblAddr = bblAddr + bblInfo->bytes;
+    /* PIMID (1.12.71): the instruction-cache reads this block costs at the fetch
+     * width: the aligned fetch-width chunks [bblAddr, endBblAddr) spans. */
+    if (bblInfo->bytes > 0 && fetchChunkBytes > 0)
+        ifetchChunks += (endBblAddr - 1) / fetchChunkBytes - bblAddr / fetchChunkBytes + 1;
     for (Address fetchAddr = bblAddr; fetchAddr < endBblAddr; fetchAddr += (1 << lineBits)) {
         // Recorder-safe issue point: the serialized CoreRecorder chain requires
         // each RECORDED access to start at/after the previous response, so the

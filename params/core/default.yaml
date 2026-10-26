@@ -6,7 +6,8 @@
 #   core.in_order.mispredict_penalty_cycles / core.in_order.resteer_penalty_cycles
 #   core.ooo.mispredict_penalty_cycles      / core.ooo.fetch_width_bytes
 # replaces a field for that run (every core of that type, host and device) and
-# is reported as the user's number. The environment variables
+# is reported as the user's number. in_order.fetch_width_bytes is set by this
+# record only. The environment variables
 # PIMID_INORDER_MISPRED_PENALTY / PIMID_INORDER_RESTEER_PENALTY still override
 # the in-order values inside the core (sensitivity studies), as before.
 #
@@ -40,8 +41,24 @@
 #     (pim.pe.issue_width, resolved as main.cpp inorderTimingIssueWidth()).
 #     Only "issue" is accepted: an integer would price a retire limit the
 #     timing core does not have.
-#   (no fetch_width: the in-order core models no wrong-path fetch --
-#    in_order_core.cpp BranchFunc: "wrong-path fetches not modeled".)
+#   fetch_width_bytes: 16 (PIMID (1.12.71), user ruling 2026-10-26 (1)). The
+#     bytes one instruction-cache read delivers: a processing element's
+#     instruction cache is read at its fetch width, not a whole line per
+#     access, as Ariane's 16 kB 4-way instruction cache delivers its 32-bit
+#     fetch in one cycle (F. Zaruba, L. Benini, "The Cost of
+#     Application-Class Processing", IEEE TVLSI 27(11), 2019, Sec. II and
+#     Table II: fetch latency 1, fetch width 32 bit, 22 nm FDX). The guest
+#     code is x86, so the width is an x86 in-order core's: Knights Corner,
+#     the in-order dual-issue x86 core (22 nm, Pentium-derived dual pipeline),
+#     "can handle 16 bytes or two instructions per clock cycle" (A. Fog, "The
+#     microarchitecture of Intel, AMD and VIA CPUs", Knights Corner chapter).
+#     Two instructions per cycle is this core's default issue width
+#     (pim.pe.issue_width 2); for issue width 1: NO PUBLISHED SOURCE FOUND,
+#     the same 16 B is used. zsim counts the instruction-cache reads at this
+#     width (InOrderCore ifetchChunks, zsim key fetchBytesPerCycle); the
+#     cache is still looked up, and its latency charged, once per line.
+#     The in-order core models no wrong-path fetch (in_order_core.cpp
+#     BranchFunc: "wrong-path fetches not modeled").
 #   branch_predictor: pag. The value every in-order element takes when its
 #     config does not set pim.pe.branch_predictor (device scope),
 #     system.devices[].pim.pe.branch_predictor or system.hosts[].branch_predictor
@@ -90,6 +107,11 @@
 #     instructions are variable-length and zsim fetches in 16-byte-wide
 #     accesses (ooo_core.cpp FETCH_BYTES_PER_CYCLE 16, "The Nehalem frontend
 #     fetches instructions in 16-byte-wide accesses").
+#     PIMID (1.12.71), user ruling 2026-10-26 (1): on a processing element it is
+#     also the bytes one instruction-cache read delivers (see
+#     in_order.fetch_width_bytes); zsim counts the reads at this width
+#     (OOOCore ifetchChunks, wrong-path lines included). Host cores keep the
+#     full-line access.
 #   wrong-path fetch depth (DERIVED, R2355 (b), not a field):
 #     lines = ceil(mispredict_penalty_cycles x fetch_width_bytes / line size)
 #           = ceil(17 x 16 / 64) = ceil(4.25) = 5 lines at 64 B.
@@ -143,6 +165,7 @@ in_order:
   mispredict_penalty_cycles: 7
   resteer_penalty_cycles: 4
   retire_width: issue
+  fetch_width_bytes: 16
   branch_predictor: pag
 ooo:
   mispredict_penalty_cycles: 17

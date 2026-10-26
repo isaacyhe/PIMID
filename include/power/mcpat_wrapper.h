@@ -839,6 +839,12 @@ public:
 
     // Split cache stat setters -- use actual ZSim counters, not combined reads/writes
     void setL1IAccesses(uint64_t reads, uint64_t read_misses);
+    /* PIMID (next, user ruling 2026-10-26 (1)): a processing element's
+     * instruction cache is read at its fetch width. chunks = the cores'
+     * ifetchChunks (zsim, ROI), present = the dump carried them, fetch_bytes
+     * = the core type's fetch width (core record). Not called for host cores,
+     * which keep the full-line access. */
+    void setL1IFetchChunks(uint64_t chunks, bool present, int fetch_bytes);
     void setL1DAccesses(uint64_t reads, uint64_t writes, uint64_t read_misses, uint64_t write_misses);
     /* 1.12.18: the compute unit's scratchpad words read/written and the lines
      * its DMA engine moved (all cores, as every other count). */
@@ -1006,6 +1012,7 @@ private:
      * instruction supply and datapath were selected by different switches
      * (l1i_size_bytes vs device_profile_). */
     mutable bool warned_profile_split_ = false;
+    mutable bool warned_ifetch_width_ = false;   // PIMID (1.12.71)
     /* 1.11.56 (audit C017): latch for the one-time warning that no link
      * clock was supplied and the unsourced 350 MHz literal is in force. */
     mutable bool warned_link_clock_ = false;
@@ -1047,6 +1054,9 @@ private:
     // Split cache stats
     uint64_t l1i_reads_;
     uint64_t l1i_read_misses_;
+    uint64_t l1i_fetch_chunks_ = 0;   // PIMID (1.12.71): reads at the fetch width
+    bool     l1i_fetch_present_ = false;
+    int      l1i_fetch_bytes_ = 0;    // 0 = full-line access (host cores)
     uint64_t l1d_reads_;
     uint64_t l1d_writes_;
     uint64_t l1d_read_misses_;

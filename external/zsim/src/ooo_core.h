@@ -616,6 +616,12 @@ class OOOCore : public Core {
         uint64_t roiBaseUops     = 0;
         uint64_t roiBaseCCycles  = 0;  // 1.11.9
         uint64_t roiBaseBbls     = 0;
+        /* PIMID (1.12.71): instruction-cache reads at the fetch width
+         * (fetchBytesPerCycle): the aligned chunks each fetched basic block
+         * spans, plus every chunk of a wrong-path line. Counting only: the
+         * cache is still accessed, and its latency charged, once per line. */
+        uint64_t ifetchChunks = 0;
+        uint64_t roiBaseIfetchChunks = 0;
         uint64_t roiBaseBranches = 0;
         uint64_t roiBaseMispred  = 0;
         uint64_t roiBaseIndir    = 0;   // 1.11.93 (F6): see in_order_core.h
@@ -700,6 +706,7 @@ class OOOCore : public Core {
             roiBaseInstrs = instrs; roiBaseCycle = getCycles();  // adjusted clock: pre-ROI phantom excluded
             // 1.9.33: rebase the activity counters on the same window as instrs.
             roiBaseUops = uops; roiBaseBbls = bbls;
+            roiBaseIfetchChunks = ifetchChunks;   // PIMID (1.12.71)
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
             roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)

@@ -228,7 +228,7 @@ std::string describeCacheRecord(const CacheRecord& rec);
 struct CoreTypeRecord {
     int mispredict_penalty_cycles = -1;   // mispredict: in_order execute-depth bubble; ooo TOTAL redirect cost from resolution (1.12.0)
     int resteer_penalty_cycles = -1;      // BTB/RAS target resteer, decode depth (in_order)
-    int fetch_width_bytes = -1;           // wrong-path fetch bytes per cycle (ooo)
+    int fetch_width_bytes = -1;           // fetch bytes per cycle: ooo wrong-path step; both: a PE's instruction-cache read width (1.12.71)
     int retire_width = -1;                // commit width McPAT prices; in_order: -1 = issue width
     /* 1.12.1 (ticket #114): the in-order element's branch predictor, "pag" |
      * "none" (in_order only; ooo always runs its PAg). A config sets it per

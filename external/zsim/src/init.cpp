@@ -1772,9 +1772,14 @@ static void InitSystem(Config& config) {
                         if (branchPredictor != "pag" && branchPredictor != "none")
                             panic("%s: branchPredictor '%s' is not pag or none", group, branchPredictor.c_str());
                         const bool staticNotTaken = (branchPredictor == "none");
+                        /* PIMID (1.12.71): the fetch width (core record in_order.fetch_width_bytes),
+                         * the granule the instruction-cache reads are counted at. REQUIRED. */
+                        uint32_t inoFetchBytes = config.get<uint32_t>(prefix + "fetchBytesPerCycle");
+                        if (inoFetchBytes == 0) panic("%s: fetchBytesPerCycle must be >= 1 (core record in_order.fetch_width_bytes)", group);
                         InOrderCore* tcore = new (&inOrderCores[j]) InOrderCore(ic, dc, domain, name, issueWidth,
                                                                                 mispredPenalty, resteerPenalty,
                                                                                 staticNotTaken);
+                        tcore->setFetchChunkBytes(inoFetchBytes);
                         tcore->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.43 (E23)
                         zinfo->eventRecorders[coreIdx] = tcore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);

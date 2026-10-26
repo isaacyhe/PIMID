@@ -2521,10 +2521,17 @@ void InstFetchU::computeEnergy(bool is_tdp)
     	BTB->power_t.reset();
     }
 
+    /* PIMID (next, user ruling 2026-10-26 (1)): with an output narrower than
+     * the line (config field 6, a processing element's fetch width), a line
+     * fill is line/out_w array writes, as LoadStoreU charges the data cache's
+     * fills. A full-line output keeps upstream's one write per miss. */
+    const double icache_fill_writes =
+        (icache.caches->l_ip.out_w > 0 && icache.caches->l_ip.out_w < icache.caches->l_ip.line_sz*8)
+        ? icache.caches->l_ip.line_sz*8.0 / icache.caches->l_ip.out_w : 1.0;
     icache.power_t.readOp.dynamic	+= (icache.caches->stats_t.readAc.hit*icache.caches->local_result.power.readOp.dynamic+
     		//icache.caches->stats_t.readAc.miss*icache.caches->local_result.tag_array2->power.readOp.dynamic+
     		icache.caches->stats_t.readAc.miss*icache.caches->local_result.power.readOp.dynamic+ //assume tag data accessed in parallel
-    		icache.caches->stats_t.readAc.miss*icache.caches->local_result.power.writeOp.dynamic); //read miss in Icache cause a write to Icache
+    		icache.caches->stats_t.readAc.miss*icache_fill_writes*icache.caches->local_result.power.writeOp.dynamic); //read miss in Icache cause a write to Icache
     if (icache.missb) {
     icache.power_t.readOp.dynamic	+=  icache.missb->stats_t.readAc.access*icache.missb->local_result.power.searchOp.dynamic +
             icache.missb->stats_t.writeAc.access*icache.missb->local_result.power.writeOp.dynamic;//each access to missb involves a CAM and a write

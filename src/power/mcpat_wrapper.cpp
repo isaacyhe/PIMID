@@ -255,6 +255,12 @@ void McPATWrapper::setMeasuredPredictorWrites(uint64_t history_writes,
     power_computed_ = false;
 }
 
+void McPATWrapper::setL1IFetchChunks(uint64_t chunks, bool present, int fetch_bytes) {
+    l1i_fetch_chunks_ = chunks;
+    l1i_fetch_present_ = present;
+    l1i_fetch_bytes_ = fetch_bytes;
+}
+
 void McPATWrapper::setL1IAccesses(uint64_t reads, uint64_t read_misses) {
     l1i_reads_ = reads;
     l1i_read_misses_ = read_misses;
@@ -1250,6 +1256,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(static_cast<uint64_t>(per_core_run_cycles_.size()));
     for (uint64_t v : per_core_run_cycles_) f(v);
     f(l1i_reads_);      f(l1i_read_misses_);
+    f(l1i_fetch_chunks_); f(l1i_fetch_present_ ? 1 : 0); f(l1i_fetch_bytes_);   // PIMID (1.12.71)
     f(l1d_reads_);      f(l1d_writes_);    f(l1d_read_misses_); f(l1d_write_misses_);
     f(spm_reads_);      f(spm_writes_);    f(dma_lines_);                          // 1.12.18
     f(dma_cmd_reads_);  f(dma_cmd_writes_);
@@ -3749,10 +3756,36 @@ std::string McPATWrapper::generateXMLConfig() const {
             // multiplied by the core count).
             uint64_t l1i_reads_all = l1i_reads_;
             uint64_t l1i_misses_all = l1i_read_misses_;
+            /* PIMID (next, user ruling 2026-10-26 (1)): a processing element's
+             * instruction cache delivers its fetch width per read, not a whole
+             * line: the output (config field 6) is the core type's fetch width
+             * (core record: in_order / ooo fetch_width_bytes, 16 B) and the
+             * reads are the fetch-width chunks the cores fetched (zsim
+             * ifetchChunks), as Ariane's 16 kB 4-way instruction cache delivers
+             * its 32-bit fetch in one cycle (Zaruba and Benini, IEEE TVLSI 2019,
+             * Table II). The misses stay line misses; the fork charges each
+             * line fill as line / output writes (core.cc InstFetchU). Host
+             * cores keep the full-line access and the per-line count. */
+            int l1i_out_bytes = 64;
+            if (config_.device_scope && l1i_fetch_bytes_ > 0 && l1i_fetch_bytes_ < (int)config_.cache_line_bytes
+                && config_.cache_line_bytes % l1i_fetch_bytes_ == 0) {
+                if (l1i_fetch_present_) {
+                    l1i_out_bytes = l1i_fetch_bytes_;
+                    l1i_reads_all = l1i_fetch_chunks_;
+                    if (diagOnce(warned_ifetch_width_))
+                        std::cerr << "[power] PE instruction cache read at the fetch width: " << l1i_out_bytes
+                                  << " B per read, " << l1i_fetch_chunks_ << " reads (" << l1i_reads_
+                                  << " line fetches, " << l1i_read_misses_ << " line misses)" << std::endl;
+                } else if (diagOnce(warned_ifetch_width_)) {
+                    std::cerr << "[power] WARNING: the stats dump has no instruction-fetch chunk count"
+                                 " (ifetchChunks); the PE instruction cache is priced per line fetch with a"
+                                 " full-line output" << std::endl;
+                }
+            }
             xml << "      <component id=\"system.core" << i << ".icache\" name=\"icache\">\n";
             xml << "        <param name=\"icache_config\" value=\"" << config_.l1i_size_bytes
                 << "," << config_.cache_line_bytes << "," << config_.l1i_ways << "," << config_.l1i_banks
-                << ",1," << config_.l1i_latency_cycles << ",64,0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
+                << ",1," << config_.l1i_latency_cycles << "," << l1i_out_bytes << ",0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,0\"/>\n";
             xml << "        <stat name=\"read_accesses\" value=\"" << l1i_reads_all << "\"/>\n";
             xml << "        <stat name=\"read_misses\" value=\"" << l1i_misses_all << "\"/>\n";
@@ -3780,9 +3813,13 @@ std::string McPATWrapper::generateXMLConfig() const {
              * 512-bit read (the output H-tree dominated: 175 pJ per load at
              * 22 nm). The fork honours the field (core.cc LoadStoreU) and
              * charges line fills as line/16 writes. power.models.
-             * l1d_access_width: false restores the full line. The icache keeps
-             * 64: zsim counts one fetch per 64 B line per block, so each
-             * counted fetch does deliver up to a line. */
+             * l1d_access_width: false restores the full line. The icache of a
+             * processing element is read at its fetch width since PIMID (1.12.71)
+             * (user ruling 2026-10-26 (1), above): its reads are the
+             * fetch-width chunks zsim counts (ifetchChunks), not one per 64 B
+             * line. A host core's icache keeps the full line: zsim counts one
+             * fetch per 64 B line per block, so each counted host fetch
+             * delivers up to a line. */
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
             xml << "        <stat name=\"read_accesses\" value=\"" << l1d_reads_all << "\"/>\n";
             xml << "        <stat name=\"write_accesses\" value=\"" << l1d_writes_all << "\"/>\n";
