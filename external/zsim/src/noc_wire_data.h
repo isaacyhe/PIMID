@@ -62,6 +62,7 @@ class NocWireData {
         struct Stream {
             uint8_t last[NW][32];
             bool have = false;
+            uint32_t nextTag = 0;   // the source port's next outstanding-access tag (user ruling 2026-10-26: PIMID's own packet header)
             std::mutex mu;
         };
 
@@ -74,6 +75,8 @@ class NocWireData {
             char n[64], d[160];
             snprintf(n, sizeof(n), "%sPackets", prefix); packets.init(strdup(n), "packets whose data was read"); s->append(&packets);
             snprintf(n, sizeof(n), "%sUnread", prefix); unread.init(strdup(n), "packets whose data could not be read (not counted)"); s->append(&unread);
+            snprintf(n, sizeof(n), "%sWrPackets", prefix); wrPackets.init(strdup(n), "data messages that are write requests (header + address + line)"); s->append(&wrPackets);
+            snprintf(n, sizeof(n), "%sHdrBits", prefix); hdrBits.init(strdup(n), "header bits sent (PIMID's own header format)"); s->append(&hdrBits);
             for (int i = 0; i < NW; i++) {
                 snprintf(n, sizeof(n), "%s%uBits", prefix, width(i));
                 snprintf(d, sizeof(d), "wire-bits carried at %u b per flit (flits x width)", width(i));
@@ -118,18 +121,65 @@ class NocWireData {
             for (int i = wlo; i <= whi; i++) { bits[i].atomicInc(b[i]); rise[i].atomicInc(r[i]); toggles[i].atomicInc(t[i]); }
         }
 
-        /* The device fabric packet of one access: 8 B header (the byte address) +
-         * the line ALREADY READ for this access (line: lineBytes bytes, or nullptr
-         * when it could not be read). */
-        void countAccessBytes(Stream& st, uint64_t addr, const uint8_t* line, uint32_t lineBytes) {
+        /* PIMID's packet header (user ruling 2026-10-26: PIMID's own packet header), bounded to ONE 64-bit word -- the
+         * noc.header_bits (64) the fabric timing already moves with every data message, so
+         * timing and energy see the same 576-bit message. The device fabric moves one DATA
+         * message per remote access: a READ RESPONSE (the line, from the target back to the
+         * requester) or a WRITE REQUEST (the line, to the target). Fields, LSB first:
+         *   dst    nodeBits   destination node (Garnet node id): routing needs only this
+         *   src    nodeBits   source node: where the response / write ack returns
+         *   type   2          0 read request, 1 write request (+data), 2 read response (+data),
+         *                     3 write ack. The message class (virtual network) and the payload
+         *                     length are IMPLIED by the type (class per type; length = 0 or
+         *                     one line of the run's line size), so they take no bits.
+         *   tag    tagBits    the request's outstanding-access tag at the source port: the
+         *                     requesting PE's slot at the port (blocking cores, one request
+         *                     each), or the port's allocation order (OOO cores)
+         *   addr   the rest   WRITE REQUESTS (and read requests) only: the line address
+         *                     relative to the destination device's window, 64 - 2 nodeBits -
+         *                     2 - tagBits bits (34 at the defaults: windows up to 1 TiB).
+         *                     The caller subtracts the window base: a declared device
+         *                     window's start, else the device address map's span (the
+         *                     units' contiguous blocks, pagesPerUnit x units)
+         * A read response carries no address (matched by tag); the unused bits are zero. */
+        struct HeaderLayout { uint32_t nodeBits = 12, tagBits = 4; bool oooTags = false;
+                              uint32_t addrBits() const { return 64 - 2 * nodeBits - 2 - tagBits; } };
+        HeaderLayout hdr;
+        Counter wrPackets, hdrBits;
+
+        /* One data message on stream st: the 64-bit header word from the fields' real values,
+         * then the line ALREADY READ for this access (line: lineBytes bytes, or nullptr). */
+        /* addrOffset: the line's offset in the destination's address window (the caller
+         * subtracts the window base); slotTag: the requesting PE's slot at this source port
+         * (a blocking core has one outstanding request: its slot IS its tag). With an OOO
+         * core (several outstanding requests per core) the tag is the port's allocation
+         * order instead. */
+        void countDataMessage(Stream& st, uint32_t dst, uint32_t src, bool isWrite, uint64_t addrOffset,
+                              uint32_t slotTag, const uint8_t* line, uint32_t lineBytes) {
+            const uint64_t lineAddr = addrOffset;
             uint8_t pkt[8 + 128];
             if (!line || lineBytes > 128) {
                 unread.atomicInc();
                 return;
             }
-            memcpy(pkt, &addr, 8);
+            uint32_t tag;
+            if (hdr.oooTags) { std::lock_guard<std::mutex> g(st.mu); tag = st.nextTag++; }
+            else tag = slotTag;
+            const uint64_t nmask = (1ull << hdr.nodeBits) - 1, tmask = (1ull << hdr.tagBits) - 1;
+            const uint32_t ab = hdr.addrBits();
+            uint64_t w = 0; uint32_t pos = 0;
+            // a response returns to the requester: dst = the requesting port, src = the target
+            w |= ((uint64_t)(isWrite ? dst : src) & nmask) << pos; pos += hdr.nodeBits;
+            w |= ((uint64_t)(isWrite ? src : dst) & nmask) << pos; pos += hdr.nodeBits;
+            w |= (uint64_t)(isWrite ? 1 : 2) << pos; pos += 2;
+            w |= ((uint64_t)tag & tmask) << pos; pos += hdr.tagBits;
+            if (isWrite && ab > 0) w |= (lineAddr & ((ab >= 64) ? ~0ull : ((1ull << ab) - 1))) << pos;
+            const uint32_t hb = isWrite ? 64 : pos;   // bits that carry fields (the rest of the word is zero)
+            memcpy(pkt, &w, 8);
             memcpy(pkt + 8, line, lineBytes);
             countPacket(st, pkt, 8 + lineBytes, 0, NW - 1);
+            hdrBits.atomicInc(hb);
+            if (isWrite) wrPackets.atomicInc();
         }
 
         /* A host fabric data message: the line only, on the 256-bit data path. */

@@ -836,14 +836,29 @@ public:
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
                 uint32_t srcNode = (uint32_t)mcId_ % gn->getNumNodes();
                 uint32_t dstNode = (uint32_t)dstEp % gn->getNumNodes();
-                /* (user ruling 2026-10-25: measured wire activity) the packet this access puts on
-                 * the tree -- 8 B header (the byte address, an assumption) + the line this access
-                 * already read (localAccessLatency above; no second read) -- counted on this
-                 * source port's stream. Only a traversing packet (src != dst), only before the
+                /* (user ruling 2026-10-25: measured wire activity) the data message this access
+                 * puts on the tree -- PIMID's own header with its real field values (user ruling 2026-10-26: PIMID's own packet header)
+                 * (destination, source, type, tag; the line address on a write request) + the line
+                 * this access already read (localAccessLatency above; no second read) -- counted on
+                 * this source port's stream. Only a traversing packet (src != dst), only before the
                  * ROI end (as the fabric replay). */
                 if (zinfo->nocWire && srcNode != dstNode && !zinfo->terminationConditionMet) {
                     const AccessLine& al = accessLine();
-                    zinfo->nocWire->countAccessBytes(wireStream_, req.lineAddr << lineBits,
+                    const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+                    /* the line's offset in its window (user ruling 2026-10-26: PIMID's own packet header): a declared device window
+                     * holding the address (system scope), else the device's own address map,
+                     * whose contiguous unit blocks repeat every units x pagesPerUnit pages */
+                    uint64_t off = req.lineAddr % ((uint64_t)std::max(1u, totalUnits_)
+                                                   * std::max(1u, zinfo->hierarchy.pagesPerUnit) * 64ull);
+                    const uint64_t ba = (uint64_t)req.lineAddr << lineBits;
+                    for (uint32_t ni = 0; ni < zinfo->nodeMap.numNodes && ni < 16; ni++)
+                        if (zinfo->nodeMap.nodes[ni].role == 1 && zinfo->nodeMap.nodes[ni].addrEnd > zinfo->nodeMap.nodes[ni].addrStart &&
+                            ba >= zinfo->nodeMap.nodes[ni].addrStart && ba < zinfo->nodeMap.nodes[ni].addrEnd) {
+                            off = (ba - zinfo->nodeMap.nodes[ni].addrStart) >> lineBits;
+                            break;
+                        }
+                    const uint32_t slot = req.srcId % std::max(1u, zinfo->hierarchy.pesPerMC);   // the PE's slot at this port
+                    zinfo->nocWire->countDataMessage(wireStream_, dstNode, srcNode, wr, off, slot,
                                                      (al.ok && al.lineAddr == req.lineAddr) ? al.b : nullptr, al.n);
                 }
                 uint32_t networkLat;

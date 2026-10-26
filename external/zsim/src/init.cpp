@@ -496,6 +496,21 @@ static void InitSystem(Config& config) {
     Network* network = nullptr;
     zinfo->garnetNetwork = nullptr;  // Initialize to null
     zinfo->nocWire = new NocWireData();   // measured wire activity (user ruling 2026-10-25: measured wire activity)
+    {   /* PIMID's packet header field widths (user ruling 2026-10-26: PIMID's own packet header) (one 64-bit word):
+         *   node ids  12 bits: the fabric's nodes are the PE endpoints (at most 2048, the
+         *             MAX_THREADS clamp in autoGeneratePEMemMap) plus the memory / aggregated
+         *             region endpoints -- 4096 ids;
+         *   tag       ceil(log2(M)) bits, M = the PE outstanding-access window the run uses
+         *             (sys.hierarchy.nocMlpDegree, noc.mlp; 10 by default -> 4 bits);
+         *   address   the rest of the word: 64 - 24 - 2 - tag (34 at the defaults). */
+        const uint32_t m = std::max<uint32_t>(2, config.get<uint32_t>("sys.hierarchy.nocMlpDegree", 10));
+        uint32_t tb = 0; while ((1u << tb) < m) tb++;
+        zinfo->nocWire->hdr.tagBits = tb;
+        zinfo->nocWire->hdr.nodeBits = 12;
+        /* the tag: a blocking PE (alu / in-order) has one request outstanding, so its slot at
+         * the port is its tag; an OOO PE has several, tagged in the port's allocation order */
+        zinfo->nocWire->hdr.oooTags = config.get<bool>("sys.hierarchy.peOooTags", false);
+    }
 
     string networkType = config.get<const char*>("sys.networkType", "");
     if (networkType == "garnet" || networkType == "mesh") {

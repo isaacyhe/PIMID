@@ -345,8 +345,12 @@ in mm; McPAT's upstream 2-D mesh formula gave half of it.
 (user ruling 2026-10-25, "Measured"), wire activity: every NoC link, bus
 and TSV wire is charged C V^2 per 0->1 transition (the DSENT / ORION 2.0
 physical convention), on the MEASURED data: zsim reads each fabric packet's
-64 B line from the guest memory at the access (header: the byte address, an
-assumption) and counts the 0->1 transitions between successive flits of each
+64 B line from the guest memory at the access, headed by PIMID's own 64-bit
+packet header word with its real field values (user ruling 2026-10-26):
+destination and source node 12 b each, type 2 b, tag ceil(log2 noc.mlp) b,
+and on write requests the line address relative to the device window in the
+remaining bits (34 at the defaults; counted as the line address's low bits);
+message class and length are implied by the type. It is the same 64-bit header the fabric timing moves -- and counts the 0->1 transitions between successive flits of each
 source port, per flit width (zsim groups nocWire, hostFabWire). Random data
 gives 0.25 per wire-bit; McPAT's per-bit C V^2 is scaled by the measured value
 at runtime (peak keeps the full charge). Unreadable runs (multi-process,

@@ -1251,6 +1251,7 @@ struct WireActivityCounts {
     static const int NW = 6;
     uint64_t bits[NW] = {0, 0, 0, 0, 0, 0}, rise[NW] = {0, 0, 0, 0, 0, 0}, toggles[NW] = {0, 0, 0, 0, 0, 0};
     uint64_t packets = 0, unread = 0;
+    uint64_t wr_packets = 0, hdr_bits = 0;   // PIMID's own header (user ruling 2026-10-26: PIMID's own packet header)
     bool present = false;
 };
 static const uint32_t kWireWidths[WireActivityCounts::NW] = {8, 16, 32, 64, 128, 256};
@@ -1943,6 +1944,8 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                     wc->present = true;
                     if (k == "Packets") { wc->packets += val; continue; }
                     if (k == "Unread")  { wc->unread += val; continue; }
+                    if (k == "WrPackets") { wc->wr_packets += val; continue; }
+                    if (k == "HdrBits")   { wc->hdr_bits += val; continue; }
                     for (int i = 0; i < WireActivityCounts::NW; i++) {
                         const std::string ws = std::to_string(kWireWidths[i]);
                         if (k == ws + "Bits")    { wc->bits[i] += val; break; }
@@ -8197,6 +8200,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         int mlpM = config.noc_mlp_degree;
         if (mlpM < 1) mlpM = 10;   // no explicit noc.mlp: the single default
         out << "        nocMlpDegree = " << mlpM << ";\n";
+        out << "        peOooTags = " << (config.pe_type == "ooo_core" ? "true" : "false") << ";\n";   // the header tag's source (user ruling 2026-10-26: PIMID's own packet header)
     }
 
     // Flattened mapping: offsets as space-separated, data as space-separated
@@ -10121,8 +10125,16 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     for (int i = 0; i < WireActivityCounts::NW; i++)
                         if (g_dev_wire.bits[i] > 0)
                             std::cout << " " << kWireWidths[i] << "b " << static_cast<double>(g_dev_wire.rise[i]) / g_dev_wire.bits[i];
-                    std::cout << "; packet = 8 B header (the byte address: an ASSUMPTION, Garnet carries no payload) + the 64 B"
-                                 " line READ at the access; order = per source port in transfer order (the per-link order is"
+                                    std::cout << "; packet = PIMID's own 64-bit header word (destination and source node 12 b each, type"
+                                 " 2 b, tag ceil(log2 noc.mlp) b; the line address (its offset in the destination window) in the rest,"
+                                 " write requests only; message class and length implied by the type; the fields' real values),"
+                                 " the same 64 b the fabric timing moves (noc.header_bits); tag = the requesting PE's slot at"
+                                 " its port (blocking cores) or the port's allocation order (OOO); address = the window offset),"
+                                 " + the 64 B line READ at the access: "
+                              << (g_dev_wire.packets - g_dev_wire.wr_packets) << " read responses, " << g_dev_wire.wr_packets
+                              << " write requests, mean bits carrying fields "
+                              << (g_dev_wire.packets ? static_cast<double>(g_dev_wire.hdr_bits) / g_dev_wire.packets : 0.0)
+                              << " of 64; order = per source port in transfer order (the per-link order is"
                                  " not known: Garnet carries no payload); random data would give 0.25";
                 } else {
                     std::cout << "NOT MEASURED (" << g_dev_wire.unread << " packets unreadable: a multi-process, trace-driven"
@@ -23270,6 +23282,42 @@ int main(int argc, char** argv) {
     // Synthesize system nodes from device/cosim config (backward compat)
     synthesizeSystemNodes(config);
     normalizeSystemConfig(config);
+
+    /* (user ruling 2026-10-26: PIMID's own packet header): the header's line-address field is 64 - 24 - 2 - tag bits, the tag
+     * ceil(log2 noc.mlp) (4 at the default 10). Its reach, 2^(bits + 6) bytes, must cover the
+     * device's address window: the device address map (units x pagesPerUnit x 4 KB) and any
+     * declared system.devices[].address window. A larger device is REFUSED; a noc.mlp that
+     * widens the tag says what it costs the address field. Checked once the system
+     * nodes carry their windows (normalizeSystemConfig). */
+    {
+        const int m = std::max(2, (config.noc_mlp_degree >= 1) ? config.noc_mlp_degree : 10);
+        int tb = 0; while ((1 << tb) < m) tb++;
+        const int ab = 64 - 2 * 12 - 2 - tb;
+        if (ab <= 6) {
+            std::cerr << "[config] ERROR: noc.mlp=" << m << " needs a " << tb << "-bit header tag, leaving " << ab
+                      << " bits for the line address in the 64-bit fabric header." << std::endl;
+            return 1;
+        }
+        const uint64_t reach = (ab + 6 >= 64) ? ~0ull : (1ull << (ab + 6));
+        const std::string reachTxt = (reach >= (1ull << 30)) ? std::to_string(reach >> 30) + " GB"
+                                                              : std::to_string(reach >> 20) + " MB";
+        if (tb > 4)
+            std::cout << "  [noc] WARNING: noc.mlp=" << m << " widens the header tag to " << tb << " bits; the line-address"
+                         " field shrinks to " << ab << " bits, a window reach of " << reachTxt << std::endl;
+        const uint64_t span = (uint64_t)std::max(1, config.pages_per_unit) * 4096ull
+                            * (uint64_t)std::max(1LL, (long long)config.total_mem_orgs);
+        uint64_t worst = span; std::string what = "the device address map (" + std::to_string(span >> 20) + " MB)";
+        for (const auto& n : config.system_nodes)
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.addr_end > n.addr_start && n.addr_end - n.addr_start > worst) {
+                worst = n.addr_end - n.addr_start;
+                what = "the window of '" + n.name + "' (" + std::to_string(worst >> 30) + " GB)";
+            }
+        if (worst > reach) {
+            std::cerr << "[config] ERROR: " << what << " exceeds the fabric header's address reach of " << reachTxt
+                      << " (" << ab << " line-address bits of the 64-bit header at noc.mlp=" << m << ")." << std::endl;
+            return 1;
+        }
+    }
 
     // Explicit system-scope configs parse the host's core count into the HOST
     // system node (see line ~7052), but config.host_num_cores stays at its

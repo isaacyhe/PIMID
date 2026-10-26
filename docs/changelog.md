@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.69 -- PIMID's own NoC packet header in one 64-bit word; wire activity counted on its real field values
+
+- **Header format (user ruling 2026-10-26, "keep it within 64 bits"):** the device fabric's data message (one per
+  remote access: a read response or a write request) is headed by ONE 64-bit word that PIMID defines from what its
+  fabric carries, LSB first: destination node 12 b, source node 12 b, type 2 b (read request / write request /
+  read response / write ack), tag ceil(log2 M) b, and on requests the line address relative to the destination
+  device's window in the remaining bits. Widths from the code's limits: node ids -- at most 2048 PE endpoints (the
+  MAX_THREADS clamp in autoGeneratePEMemMap) plus the memory / aggregated-region endpoints, 4096 ids; tag -- M = the
+  PE outstanding-access window (noc.mlp, 10 by default -> 4 b); address -- 64 - 24 - 2 - 4 = 34 b at the
+  defaults, line offsets in a window of up to 2^34 x 64 B = 1 TiB (device windows are 4 GB granules, one 4 GB
+  window by default). The message class (virtual network) and the payload length are implied by the type and take
+  no bits; Garnet routes on the destination alone. Worst case (a write request) = 64 b exactly; a read response
+  uses 30 b of the word.
+- **Timing and energy agree:** the word is the 64-bit noc.header_bits the fabric timing already moves with every
+  data message, so both see the same 576-bit message (64 + 512) cut into the same flits; no timing change.
+- **Wire activity on the real header:** the 0->1 transitions between successive flits see the word's real field
+  values in place of the 8-byte byte-address stand-in: destination, source, type; the tag from the cores' real
+  outstanding state (a blocking alu / in-order PE has one request outstanding, so its slot at the port is its tag;
+  an OOO PE's tags follow the port's allocation order); and the write request's line address as its offset in the
+  destination window (a declared device window's start subtracted, else the device address map's span, units x
+  pagesPerUnit pages).
+- **Guard:** a device whose address map or declared window exceeds the header's address reach (2^(address bits +
+  6) bytes, 1 TiB at the defaults) is refused at load; a noc.mlp that widens the tag says how far the address
+  field and its reach shrink.
+
 ## 1.12.68 -- clock trees: two-stage local clock buffers priced from liberty data
 
 - **Model (user ruling 2026-10-26, CLK2; external/mcpat/logic.cc ClockNetwork):** every tree's leaf-cluster clock
