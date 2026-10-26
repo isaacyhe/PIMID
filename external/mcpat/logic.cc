@@ -29,6 +29,7 @@
  *
  ***************************************************************************/
 
+#include "common/debug_checks.h"
 #include "logic.h"
 #include <vector>      /* PIMID 1.12.18: guard lists */
 #include <algorithm>
@@ -223,12 +224,12 @@ static void pimid_guard_report(const char *tag, int core, const std::string &wha
 	double lo = 0, hi = 0; int nr = 0;
 	for (size_t j = 0; j < g.size(); j++)
 	{
-		std::cerr << tag << " core" << core << " guard for " << what << ": " << g[j].label << " = "
+		pimid::debugStream(std::cerr) << tag << " core" << core << " guard for " << what << ": " << g[j].label << " = "
 		          << g[j].e*1e12 << " pJ at the run node" << (g[j].lower_bound ? " (lower bound)" : "")
 		          << "; used value / guard = " << ((g[j].e > 0) ? e/g[j].e : 0.0) << std::endl;
 		if (g[j].lower_bound) {
 			if (e < g[j].e)
-				std::cerr << tag << " core" << core << " WARNING: " << what << " " << e*1e12
+				pimid::debugStream(std::cerr) << tag << " core" << core << " WARNING: " << what << " " << e*1e12
 				          << " pJ is BELOW the published lower bound " << g[j].label << std::endl;
 			continue;
 		}
@@ -237,10 +238,10 @@ static void pimid_guard_report(const char *tag, int core, const std::string &wha
 	}
 	if (nr >= 2) {
 		if (e < lo || e > hi)
-			std::cerr << tag << " core" << core << " WARNING: " << what << " " << e*1e12 << " pJ is OUTSIDE the guard range ["
+			pimid::debugStream(std::cerr) << tag << " core" << core << " WARNING: " << what << " " << e*1e12 << " pJ is OUTSIDE the guard range ["
 			          << lo*1e12 << ", " << hi*1e12 << "] pJ" << std::endl;
 		else
-			std::cerr << tag << " core" << core << " " << what << " " << e*1e12 << " pJ is inside the guard range ["
+			pimid::debugStream(std::cerr) << tag << " core" << core << " " << what << " " << e*1e12 << " pJ is inside the guard range ["
 			          << lo*1e12 << ", " << hi*1e12 << "] pJ" << std::endl;
 	}
 }
@@ -499,7 +500,7 @@ void DFFCell::compute_DFF_cell()
 			   static std::set<std::pair<long, long> > shown;
 			   const std::pair<long, long> key((long)(g_ip->F_sz_nm * 100), (long)(g_tp.peri_global.Vdd * 1000));
 			   if (shown.insert(key).second)
-				   std::cerr << "[mcpat dff] register at " << g_ip->F_sz_nm << " nm, " << g_tp.peri_global.Vdd << " V: "
+				   pimid::debugStream(std::cerr) << "[mcpat dff] register at " << g_ip->F_sz_nm << " nm, " << g_tp.peri_global.Vdd << " V: "
 				             << pub.lib << " (the nearest published library), Stillmaker & Baas row " << pub.row_nm
 				             << " nm, energy ratio " << pub.ratio << " (pair range [" << pub.ratio_lo << ", " << pub.ratio_hi
 				             << "], midpoint): CK pin " << pub.c_ck*1e15 << " fF, D pin " << pub.c_d*1e15
@@ -869,7 +870,7 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	pg_reduction = power_gating_leakage_reduction(false);
 	built = true;
 
-	std::cerr << "[mcpat clock] " << owner << ": area " << tree_area_um2*1e-6 << " mm^2 (D "
+	pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << ": area " << tree_area_um2*1e-6 << " mm^2 (D "
 	          << side_um << " um), sinks N " << n_sinks << " (" << sink_source << "), H-tree "
 	          << h_levels << " levels to " << n_clusters << " cluster buffers, L = global + local = " << tree_len_um << " um; global wire "
 	          << (l_ip.wt == Global ? "Global" : (l_ip.wt == Global_30 ? "Global_30" : "other"))
@@ -880,7 +881,7 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 	          << " MHz; per cycle: tree " << e_tree_cycle << " J + pins (ungated) "
 	          << n_sinks*e_pin_reg << " J; repeater leakage " << leak << " W, gate "
 	          << gate_leak << " W" << std::endl;
-	std::cerr << "[mcpat clock] " << owner << ": split (" << ((k_leaf > 1) ? "F2 leaf clusters of k = " : "")
+	pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << ": split (" << ((k_leaf > 1) ? "F2 leaf clusters of k = " : "")
 	          << ((k_leaf > 1) ? std::to_string((int)k_leaf) : std::string("no leaf clusters: the leaves are component tree roots, not registers"))
 	          << ((k_leaf > 1) ? " sinks [OpenROAD TritonCTS sink-cluster cap 30; IBM US 8,458,634 B2: 24-32 latches per local clock buffer]" : "")
 	          << "): GLOBAL H-tree to " << n_clusters << " cluster buffers L 1.5 D (sqrt(N/k) - 1) = " << global_len_um
@@ -902,7 +903,7 @@ void ClockNetwork::compute(const InputParameter *configure_interface, const stri
 		const double c_lcb_in_all = n_clusters * c_lcb_in;
 		const double c_glob = (vdd > 0 && sckt > 0) ? e_global / (sckt * vdd * vdd) - c_lcb_in_all : 0.0;
 		const double c_loc  = c_net_local + n_clusters * c_lcb_out + n_sinks * c_pin;
-		std::cerr << "[mcpat clock] " << owner << ": local/global load ratio " << ((c_glob > 0) ? c_loc / c_glob : 0.0)
+		pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << ": local/global load ratio " << ((c_glob > 0) ? c_loc / c_glob : 0.0)
 		          << " (local " << c_loc*1e15 << " fF = nets " << c_net_local*1e15 << " + LCB outputs "
 		          << n_clusters * c_lcb_out*1e15 << " (internal, as C) + " << n_sinks << " pins " << n_sinks*c_pin*1e15
 		          << "; global network " << c_glob*1e15 << " fF, LCB inputs " << c_lcb_in_all*1e15
@@ -961,7 +962,7 @@ void ClockNetwork::set_running(bool halt_on, double r_mean, double r_max, const 
 	if (!(r_mean >= 0))
 	{
 		running_source = "NO MEASURED RUNNING TIME: global part every powered cycle (nothing invented)";
-		std::cerr << "[mcpat clock] " << owner << ": idle halt: " << running_source << std::endl;
+		pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << ": idle halt: " << running_source << std::endl;
 		return;
 	}
 	running     = (r_mean > 1.0) ? 1.0 : r_mean;
@@ -1013,17 +1014,17 @@ void ClockNetwork::set_power(double tdp_dyn, double rt_gated, double rt_ungated_
 void ClockNetwork::report_runtime(const string &what, double seconds) const
 {
 	const double g = rt_power.readOp.dynamic;
-	std::cerr << "[mcpat clock] " << owner << " runtime: ungated " << what << " = " << rt_ungated
+	pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << " runtime: ungated " << what << " = " << rt_ungated
 	          << " J (" << ((seconds > 0) ? rt_ungated/seconds : 0.0) << " W, reference); GATED (Wattch cc2, activity "
 	          << activity << " = " << activity_source << ") " << g << " J over " << seconds << " s = "
 	          << ((seconds > 0) ? g/seconds : 0.0) << " W dynamic (charged); leakage "
 	          << rt_power.readOp.leakage << " W + gate " << rt_power.readOp.gate_leakage << " W" << std::endl;
-	std::cerr << "[mcpat clock] " << owner << " runtime split (ruling #4): GLOBAL (H-tree levels but the last, every powered"
+	pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << " runtime split (ruling #4): GLOBAL (H-tree levels but the last, every powered"
 	          << " cycle; powered " << powered << " = " << powered_source << ") " << rt_global << " J = "
 	          << ((seconds > 0) ? rt_global/seconds : 0.0) << " W; LOCAL (last level + pins, gated) " << g - rt_global
 	          << " J = " << ((seconds > 0) ? (g - rt_global)/seconds : 0.0) << " W" << std::endl;
 	if (halt)   /* PIMID 1.12.18 (idle halt) */
-		std::cerr << "[mcpat clock] " << owner << " runtime idle halt (power.models.idle_halt): running fraction "
+		pimid::debugStream(std::cerr) << "[mcpat clock] " << owner << " runtime idle halt (power.models.idle_halt): running fraction "
 		          << running << " (max " << running_max << "; " << running_source << "), global part on " << global_on()
 		          << " of the cycles; HALTED (clock off, not charged) " << rt_halted << " J = "
 		          << ((seconds > 0) ? rt_halted/seconds : 0.0) << " W; leakage unchanged" << std::endl;
@@ -1155,7 +1156,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		const char* fu_nm = (fu_type == FPU) ? "FPU" : (fu_type == ALU) ? "ALU" : "MUL";
 		if (!XML->sys.pimid_fu_base_energy)
 		{
-			std::cerr << "[mcpat fu] core" << ithCore << " " << fu_nm << ": McPAT OOO fixed base energy "
+			pimid::debugStream(std::cerr) << "[mcpat fu] core" << ithCore << " " << fu_nm << ": McPAT OOO fixed base energy "
 			          << base_energy << " W (x execution time " << executionTime << " s = "
 			          << base_energy*executionTime*g_tp.sckt_co_eff << " J runtime incl. sckt "
 			          << g_tp.sckt_co_eff << ") NOT charged (power.models.mcpat_fu_base_energy: false;"
@@ -1163,7 +1164,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			base_energy = 0;
 		}
 		else
-			std::cerr << "[mcpat fu] core" << ithCore << " " << fu_nm << ": McPAT OOO fixed base energy "
+			pimid::debugStream(std::cerr) << "[mcpat fu] core" << ithCore << " " << fu_nm << ": McPAT OOO fixed base energy "
 			          << base_energy << " W charged BY USER OPTION (power.models.mcpat_fu_base_energy: true)" << std::endl;
 	}
 
@@ -1222,7 +1223,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		bool sil = false;
 		const double k45 = pimid_logic_op_scale(45.0, 0.9, &sil);   /* (next, Z12): published silicon */
 		pimid_pub = (k45 > 0);
-		std::cerr << "[mcpat fpu] core" << ithCore << " node scaling 45 -> " << interface_ip.F_sz_nm
+		pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " node scaling 45 -> " << interface_ip.F_sz_nm
 		          << " nm (CACTI tables, device type of this core): C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
 		          << " fF, Vdd 0.9 V (source, as printed) -> " << v_run << " V (CACTI run node; CACTI's own 45 nm Vdd is "
 		          << v_src_cacti << " V) => factor " << k45_cacti << " (reference); USED: "
@@ -1231,14 +1232,14 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		for (int q = 0; q < 6; q++)
 		{
 			pimid_pub_e[q] = src[q].pj * 1e-12 * pimid_logic_op_scale(src[q].nm, src[q].vdd);   /* (next, Z12) */
-			std::cerr << "[mcpat fpu] core" << ithCore << " published " << src[q].name << ": " << src[q].pj << " pJ ("
+			pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " published " << src[q].name << ": " << src[q].pj << " pJ ("
 			          << src[q].cite << ") -> " << pimid_pub_e[q]*1e12 << " pJ per scalar op at the run node (USED)" << std::endl;
 		}
-		std::cerr << "[mcpat fpu] core" << ithCore << " FRONTIER CAVEAT (FP64 add/mult): Galal Fig. 3.7 plots energy vs"
+		pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " FRONTIER CAVEAT (FP64 add/mult): Galal Fig. 3.7 plots energy vs"
 		          << " area-per-throughput, not delay; Pmin is an asymptote, the knee (used) matches a ~1 GHz design"
 		          << " (Table 4.2 DP FMA 0.81 V 0.95 GHz), and the 1.81 GHz DP FMA sits at ~1.7x its knee: a ~2 GHz"
 		          << " adder/multiplier is likely above the value used" << std::endl;
-		std::cerr << "[mcpat fpu] core" << ithCore << " NOTE (FMA): Galal Table 4.2's own W/Gops column (FMA = 2 flops)"
+		pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " NOTE (FMA): Galal Table 4.2's own W/Gops column (FMA = 2 flops)"
 		          << " (leakage + dynamic) gives 14.4 pJ (SP) / 50.6 pJ (DP), 3-5% below dynamic power / frequency (used)" << std::endl;
 		std::vector<PimidGuard> g;
 		g.push_back({"Galal 2012 Fig. 3.7 DP adder Pmin 2.5 pJ (45 nm 0.9 V)", 2.5e-12*k45, true});
@@ -1250,7 +1251,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		g.push_back({"FPnew (Mach et al., TVLSI 2021) FP64 FMA 26.7 pJ (GF 22FDX 0.8 V)", 26.7e-12*pimid_logic_op_scale(22.0, 0.8), false});
 		g.push_back({"Keckler et al., IEEE Micro 2011, Table 1, DFMA 50 pJ (40 nm 0.9 V)", 50e-12*pimid_logic_op_scale(40.0, 0.9), false});
 		pimid_guard_report("[mcpat fpu]", ithCore, "FP64 FMA", pimid_pub_e[5], g); g.clear();
-		std::cerr << "[mcpat fpu] core" << ithCore << " NO PUBLISHED SOURCE FOUND for FP divide/sqrt (single, double;"
+		pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " NO PUBLISHED SOURCE FOUND for FP divide/sqrt (single, double;"
 		          << " Galal 2012 and FPnew 2021 report none) and x87: those keep McPAT's per-op FPU energy" << std::endl;
 	}
 
@@ -1289,12 +1290,12 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			pimid_int_e16 = (0.03e-12 + 8.0 * (0.1e-12 - 0.03e-12) / 24.0) * k45;
 			pimid_int_e64 = 2.0 * pimid_int_e[1];
 			per_access_energy = pimid_int_e64 / g_tp.sckt_co_eff;   /* x sckt below = the 64-bit add */
-			std::cerr << "[mcpat int] core" << ithCore << " ALU add/logic LINEAR in width (DERIVED from the two published"
+			pimid::debugStream(std::cerr) << "[mcpat int] core" << ithCore << " ALU add/logic LINEAR in width (DERIVED from the two published"
 			          << " points): 16 bit " << pimid_int_e16*1e12 << " pJ, 64 bit = 2 x 32 bit " << pimid_int_e64*1e12
 			          << " pJ (USED, also for unclassified ALU accesses); McPAT's per-op literal " << mcpat_ref_op*1e12
 			          << " pJ no longer used" << std::endl;
 		}
-		std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " published (Horowitz ISSCC 2014"
+		pimid::debugStream(std::cerr) << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " published (Horowitz ISSCC 2014"
 		          << " Fig. 1.1.9, 45 nm 0.9 V): " << (alu ? "Add 8 bit 0.03 pJ, 32 bit 0.1 pJ" : "Mult 8 bit 0.2 pJ, 32 bit 3.1 pJ")
 		          << "; node scaling 45 -> " << interface_ip.F_sz_nm << " nm: C_inv " << c_src*1e15 << " fF -> " << c_run*1e15
 		          << " fF, Vdd 0.9 V -> " << v_run << " V => CACTI factor " << k45_cacti << " (reference); USED "
@@ -1303,7 +1304,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		          << " pJ, 32 bit " << pimid_int_e[1]*1e12 << " pJ (USED); McPAT per-op (reference) "
 		          << mcpat_ref_op*1e12 << " pJ" << std::endl;
 		if (!alu)
-			std::cerr << "[mcpat int] core" << ithCore << " NO PUBLISHED SOURCE FOUND for 16- and 64-bit multiply and integer"
+			pimid::debugStream(std::cerr) << "[mcpat int] core" << ithCore << " NO PUBLISHED SOURCE FOUND for 16- and 64-bit multiply and integer"
 			          << " divide: McPAT's per-op energy kept" << std::endl;
 	}
 
@@ -1374,7 +1375,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 		{
 			const double a_pub = kge * 1e3 * ge22 * k22;   /* um^2, one unit, run node */
 			const double r = a_pub / area_t;
-			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
+			pimid::debugStream(std::cerr) << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
 			          << (XML->sys.Embedded ? "embedded" : "server") << " scope): McPAT literal " << area_t*1e-6
 			          << " mm^2 per unit (reference) -> PUBLISHED " << kge << " kGE x " << ge22 << " um^2/GE x (" << F
 			          << "/22)^2 = " << a_pub*1e-6 << " mm^2 per unit (USED; " << cite << "); ratio " << r
@@ -1382,7 +1383,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			          << gate_leakage*r << " W per unit; x " << num_fu << " units, x macro layout overhead "
 			          << g_tp.macro_layout_overhead << std::endl;
 			if (fu_type == FPU && w == 32)
-				std::cerr << "[mcpat fu area] core" << ithCore << " FPU guard (not used): DERIVED FP32-only RI5CY FPU"
+				pimid::debugStream(std::cerr) << "[mcpat fu area] core" << ithCore << " FPU guard (not used): DERIVED FP32-only RI5CY FPU"
 				          << " 69 - (147 - 147/1.29) = " << 69.0 - (147.0 - 147.0/1.29) << " kGE = "
 				          << (69.0 - (147.0 - 147.0/1.29))*1e3*ge22*k22*1e-6 << " mm^2 at the run node (the published"
 				          << " TP-FPU also carries FP16/FP16alt lanes; it has no DIVSQRT)" << std::endl;
@@ -1390,7 +1391,7 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			{
 				const double ge65 = 0.077e6 / 53.5e3;   /* um^2 per GE, Gautschi 2017 Table V (65 nm) */
 				const double g = ((fu_type == ALU) ? 8.3 : 12.6) * 1e3 * ge65 * (F / 65.0) * (F / 65.0);
-				std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " guard (not used): Gautschi et al."
+				pimid::debugStream(std::cerr) << "[mcpat fu area] core" << ithCore << " " << fu_nm << " guard (not used): Gautschi et al."
 				          << " 2017 Sec. IV-F, 65 nm, " << ((fu_type == ALU) ? "8.3" : "12.6") << " kGE x " << ge65
 				          << " um^2/GE (Table V) x (" << F << "/65)^2 = " << g*1e-6 << " mm^2 (USED / guard = "
 				          << a_pub/g << ")" << std::endl;
@@ -1403,12 +1404,12 @@ FunctionalUnit::FunctionalUnit(ParseXML *XML_interface, int ithCore_, InputParam
 			 * = sqrt of its published area (a square unit, DERIVED), not McPAT's "Sun's data" literal. */
 			const double h_mcpat = FU_height;
 			FU_height = sqrt(a_pub) * num_fu;
-			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " height (bypass length): McPAT literal "
+			pimid::debugStream(std::cerr) << "[mcpat fu area] core" << ithCore << " " << fu_nm << " height (bypass length): McPAT literal "
 			          << h_mcpat << " um -> sqrt(published area) x " << num_fu << " unit(s) = " << FU_height
 			          << " um (USED, DERIVED)" << std::endl;
 		}
 		else
-			std::cerr << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
+			pimid::debugStream(std::cerr) << "[mcpat fu area] core" << ithCore << " " << fu_nm << " (" << w << " bit, "
 			          << (XML->sys.Embedded ? "embedded" : "server") << " scope): NO PUBLISHED SOURCE FOUND ("
 			          << ((fu_type == FPU) ? "no FPnew configuration matches this FP datapath; the host x86-64 FP/SIMD datapath is >= 128 bit"
 			                               : "64-bit integer units are not broken out in FPnew Fig. 6 or Gautschi 2017")
@@ -1518,11 +1519,11 @@ void FunctionalUnit::computeEnergy(bool is_tdp)
 			{
 				const double before = rt_power.readOp.dynamic;
 				rt_power.readOp.dynamic = (per_access_energy*(acc - rep) + base_energy*executionTime)*sckRation + pub;
-				std::cerr << "[mcpat fpu] core" << ithCore << " runtime: " << acc << " FPU ops; published (instr / scalar ops x pJ):";
+				pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " runtime: " << acc << " FPU ops; published (instr / scalar ops x pJ):";
 				static const char* const nm[6] = {"FP32 add", "FP32 mult", "FP64 add", "FP64 mult", "FP32 FMA", "FP64 FMA"};
 				for (int q = 0; q < 6; q++)
-					std::cerr << " " << nm[q] << " " << ins[q] << " / " << ln[q] << " x " << pimid_pub_e[q]*1e12 << ";";
-				std::cerr << " = " << pub << " J; McPAT per-op " << per_access_energy*sckRation*1e12 << " pJ x " << (acc - rep)
+					pimid::debugStream(std::cerr) << " " << nm[q] << " " << ins[q] << " / " << ln[q] << " x " << pimid_pub_e[q]*1e12 << ";";
+				pimid::debugStream(std::cerr) << " = " << pub << " J; McPAT per-op " << per_access_energy*sckRation*1e12 << " pJ x " << (acc - rep)
 				          << " other FP ops (div/sqrt " << ins[6] + ins[7] << ", x87 " << ins[8] << ", rest min/max/cmp/cvt/shuffle "
 				          << (acc - rep - ins[6]-ins[7]-ins[8]) << "); McPAT-only reference " << before << " J -> FPU dynamic "
 				          << rt_power.readOp.dynamic << " J" << std::endl;
@@ -1531,7 +1532,7 @@ void FunctionalUnit::computeEnergy(bool is_tdp)
 				std::cerr << "[mcpat fpu] core" << ithCore << " WARNING: classified FP instructions (" << rep
 				          << ") exceed the FPU accesses (" << acc << "): bases disagree, McPAT's per-op energy kept" << std::endl;
 			else
-				std::cerr << "[mcpat fpu] core" << ithCore << " runtime: no classified FP add/mult/FMA counted (" << acc
+				pimid::debugStream(std::cerr) << "[mcpat fpu] core" << ithCore << " runtime: no classified FP add/mult/FMA counted (" << acc
 				          << " FPU ops at McPAT's per-op energy)" << std::endl;
 		}
 		/* PIMID 1.12.18 (ruling 2026-10-23 #3): the decoder's 8- and 32-bit
@@ -1552,7 +1553,7 @@ void FunctionalUnit::computeEnergy(bool is_tdp)
 				const double before = rt_power.readOp.dynamic;
 				const double pub = pimid_int_e[0]*n8 + pimid_int_e[1]*n32 + pimid_int_e16*n16 + pimid_int_e64*n64;
 				rt_power.readOp.dynamic = (per_access_energy*(acc - rep) + base_energy*executionTime)*sckRation + pub;
-				std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: " << acc
+				pimid::debugStream(std::cerr) << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: " << acc
 				          << " accesses; published: 8 bit " << n8 << " x " << pimid_int_e[0]*1e12 << " pJ + 32 bit " << n32
 				          << " x " << pimid_int_e[1]*1e12 << " pJ" << (alu ? " + DERIVED 16 bit " : "") << (alu ? n16 : 0.0)
 				          << (alu ? " x " : "") << (alu ? pimid_int_e16*1e12 : 0.0) << (alu ? " pJ + 64 bit " : "") << (alu ? n64 : 0.0)
@@ -1567,7 +1568,7 @@ void FunctionalUnit::computeEnergy(bool is_tdp)
 				std::cerr << "[mcpat int] core" << ithCore << " WARNING: classified 8/32-bit integer ops (" << rep
 				          << ") exceed the " << (alu ? "ALU" : "MUL") << " accesses (" << acc << "): bases disagree, McPAT's per-op energy kept" << std::endl;
 			else
-				std::cerr << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: no 8/32-bit operation counted ("
+				pimid::debugStream(std::cerr) << "[mcpat int] core" << ithCore << " " << (alu ? "ALU" : "MUL") << " runtime: no 8/32-bit operation counted ("
 				          << acc << " accesses at McPAT's per-op energy)" << std::endl;
 		}
 

@@ -18,6 +18,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "common/debug_checks.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1529,6 +1530,7 @@ static void recordProtocolTailStats() {
  * "usable" subtracts the wake penalty from every qualifying gap, which is what
  * the gap actually yields -- entry and exit are paid out of the idle window. */
 static void dumpGapHistograms() {
+    if (!pimid::debugChecks()) return;   // internal diagnostic lines
     struct Item { const char* name; GapHist* h; };
     Item items[2] = { {"noc", &zinfo->pgres.nocGaps},
                       {"devMC", &zinfo->pgres.devMCGaps} };

@@ -28,6 +28,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.”
  *
  ***************************************************************************/
+#include "common/debug_checks.h"
 #include "io.h"
 #include "parameter.h"
 #include "const.h"
@@ -717,7 +718,7 @@ MemoryController::MemoryController(ParseXML *XML_interface,InputParameter* inter
 		  regs += st * w * nch;
 		  src << " " << arr[ai]->name << " " << st << "x" << w;
 	  }
-	  std::cerr << "NO PUBLISHED SOURCE FOUND: memory-controller logic pipeline depth and backend/PHY register count "
+	  pimid::debugStream(std::cerr) << "NO PUBLISHED SOURCE FOUND: memory-controller logic pipeline depth and backend/PHY register count "
 	               "(McPAT's five-stage MC pipeline, memoryctrl.cc, is uncited); the clock tree is priced over the "
 	               "controller's array port registers only -- a lower bound." << std::endl;
 	  clk_hz = XML->sys.mc.mc_clock * 1e6;

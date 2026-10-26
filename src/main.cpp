@@ -26,6 +26,7 @@
  */
 
 #include <iostream>
+#include "common/debug_checks.h"
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -1163,7 +1164,7 @@ static void dqDuties(const pimid::RamulatorWrapper& ram, const DqData& d, bool d
               << "; pin transitions per line raw " << d.toggles[dir] / n << " / POD DBI " << d.toggles_pod_dbi[dir] / n
               << " / LVSTL DBI-DC " << d.toggles_lvstl_dbi[dir] / n << " (between beats inside a line)";
         }
-        std::cout << o.str() << std::endl;
+        pimid::debugStream(std::cout) << o.str() << std::endl;
         pimid::RamulatorWrapper::DqDataCounts c;
         c.lines = d.lines[dir]; c.unread = d.unread[dir]; c.ones = d.ones[dir];
         c.low_pod_dbi = d.low_pod_dbi[dir]; c.high_lvstl_dbi = d.high_lvstl_dbi[dir];
@@ -1174,7 +1175,7 @@ static void dqDuties(const pimid::RamulatorWrapper& ram, const DqData& d, bool d
         q << indent << "[mem] DQ termination duty, " << who << (dir ? " writes: " : " reads: ");
         if (f >= 0.0) q << std::setprecision(4) << f << " MEASURED over " << c.lines << " line(s), in place of the formula's 0.5 (" << how << ")";
         else          q << "the formula's 0.5 (" << how << ")";
-        std::cout << q.str() << std::endl;
+        pimid::debugStream(std::cout) << q.str() << std::endl;
     }
 }
 /* (1.12.61) (user ruling 2026-10-25): the data-dependent factor on the column-burst energy of one direction of a
@@ -1201,7 +1202,7 @@ static double dqBurstFactor(const pimid::RamulatorWrapper& ram, const DqData& d,
         f = ram.dataPatternFactor(dir == 1, f1, fdq, &how);
         o << std::setprecision(4) << f << " over " << d.lines[dir] << " line(s) (" << how << ")";
     }
-    std::cout << o.str() << std::endl;
+    pimid::debugStream(std::cout) << o.str() << std::endl;
     return f;
 }
 /* The termination at the formula's 0.5, printed beside the measured figure. */
@@ -1215,8 +1216,7 @@ static void topologyLine(const pimid::RamulatorWrapper& ram, const std::string& 
  * printed when PIMID_DEBUG_CHECKS=1 (user ruling 2026-10-26: checkers are
  * internal). Every number printed is already in the charged term above it. */
 static void dqPartsLine(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr, const std::string& indent) {
-    const char* dbg = std::getenv("PIMID_DEBUG_CHECKS");
-    if (!dbg || std::string(dbg) != "1") return;
+    if (!pimid::debugChecks()) return;
     std::ostringstream o;
     o << indent << "[mem] DQ termination parts (pJ/bit):";
     for (int w = 0; w < 2; ++w) {
@@ -1232,7 +1232,7 @@ static void dqPartsLine(const pimid::RamulatorWrapper& ram, double duty_rd, doub
     std::cout << o.str() << std::endl;
 }
 static std::string dqHalfNote(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr) {
-    if (duty_rd < 0.0 && duty_wr < 0.0) return "";
+    if ((duty_rd < 0.0 && duty_wr < 0.0) || !pimid::debugChecks()) return "";
     std::ostringstream o;
     o << " [measured duty; at the formula's 0.5: rd=" << ram.getTerminationEnergyNJ(false)
       << " nJ, wr=" << ram.getTerminationEnergyNJ(true) << " nJ]";
@@ -10007,7 +10007,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         }
         if (surviving_levels == 0) { surviving_levels = 1; surviving_weight = 1.0; }
         if (surviving_levels != num_active)
-            std::cout << "  [NoC] " << (num_active - surviving_levels)
+            pimid::debugStream(std::cout) << "  [NoC] " << (num_active - surviving_levels)
                       << " hierarchy level(s) are pure pass-through wire: no router"
                          " is priced there (1.12.18: their links are, below); chip"
                          " coverage is normalised over the "
@@ -10139,7 +10139,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                 const bool eq = (sum == garnet.link_traversals &&
                                  garnet.link_traversals_unattributed == 0 &&
                                  garnet.link_traversals_overattributed == 0);
-                std::cout << "  [NoC] " << lbl << "link flit traversals by level (edge"
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "link flit traversals by level (edge"
                              " owned by its child router's level):" << per.str()
                           << "; sum " << sum << " vs global link_traversals "
                           << garnet.link_traversals << " (unattributed "
@@ -10163,14 +10163,14 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                              " tree's links are NOT priced in this run." << std::endl;
             }
             {   /* the measured wire activity this fabric is priced with */
-                std::cout << "  [NoC] " << lbl << "wire activity (user ruling 2026-10-25): ";
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "wire activity (user ruling 2026-10-25): ";
                 if (g_dev_wire.packets > 0) {
-                    std::cout << "MEASURED on " << g_dev_wire.packets << " packets (" << g_dev_wire.unread
+                    pimid::debugStream(std::cout) << "MEASURED on " << g_dev_wire.packets << " packets (" << g_dev_wire.unread
                               << " unreadable, not counted): 0->1 transitions per wire-bit a01";
                     for (int i = 0; i < WireActivityCounts::NW; i++)
                         if (g_dev_wire.bits[i] > 0)
-                            std::cout << " " << kWireWidths[i] << "b " << static_cast<double>(g_dev_wire.rise[i]) / g_dev_wire.bits[i];
-                                    std::cout << "; packet = PIMID's own 64-bit header word (destination and source node 12 b each, type"
+                            pimid::debugStream(std::cout) << " " << kWireWidths[i] << "b " << static_cast<double>(g_dev_wire.rise[i]) / g_dev_wire.bits[i];
+                                    pimid::debugStream(std::cout) << "; packet = PIMID's own 64-bit header word (destination and source node 12 b each, type"
                                  " 2 b, tag ceil(log2 noc.mlp) b; the line address (its offset in the destination window) in the rest,"
                                  " requests only (write requests; read requests, which are control messages); message class and length implied by the type; the fields' real values),"
                                  " the same 64 b the fabric timing moves (noc.header_bits); tag = the requesting PE's slot at"
@@ -10183,17 +10183,17 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                               << " of 64; order = per source port in transfer order (the per-link order is"
                                  " not known: Garnet carries no payload); random data would give 0.25";
                 } else {
-                    std::cout << "NOT MEASURED (" << g_dev_wire.unread << " packets unreadable: a multi-process, trace-driven"
+                    pimid::debugStream(std::cout) << "NOT MEASURED (" << g_dev_wire.unread << " packets unreadable: a multi-process, trace-driven"
                                  " or analytical-NoC run); priced at the random-data value 0.25 (DERIVED)";
                 }
-                std::cout << "; links, buses and TSVs are charged C V^2 x a01 per bit per traversal" << std::endl;
+                pimid::debugStream(std::cout) << "; links, buses and TSVs are charged C V^2 x a01 per bit per traversal" << std::endl;
             }
-            std::cout << "  [NoC] " << lbl << "links: die area " << die_mm2
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "links: die area " << die_mm2
                       << " mm^2 (" << config.memory_tech << ", preset organisation,"
                          " the calibrated CACTI die the memory report prints) spans"
                          " each level; routers per level";
-            for (int l = pe_level; l < 7; l++) std::cout << " L" << l << "=" << lvl_routers[l];
-            std::cout << ", root at L" << root_lvl << ". Wire RC: CACTI's interconnect"
+            for (int l = pe_level; l < 7; l++) pimid::debugStream(std::cout) << " L" << l << "=" << lvl_routers[l];
+            pimid::debugStream(std::cout) << ", root at L" << root_lvl << ". Wire RC: CACTI's interconnect"
                          " tables at the level's node (McPAT Global_ho wire: energy-efficient repeaters, Ho 2003). NO PUBLISHED"
                          " SOURCE FOUND for DRAM-process metal RC beyond CACTI's tables:"
                          " the on-die links are priced on CACTI's logic-process wire."
@@ -10248,7 +10248,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                 return;
             }
             const bool tsv = stacked_part && lvl == 3 && parent >= 4;
-            std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " (" << base
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " (" << base
                       << ") up-links L" << lvl << "->L" << parent << ": dies crossed per"
                          " transfer " << diesCrossed(lvl, parent) << "; " << lf
                       << " link flit traversals" << std::endl;
@@ -10313,12 +10313,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                         hist << " " << kv.first << ":" << kv.second;
                         pk_tot += kv.second; dsum += (uint64_t)kv.first * kv.second;
                     }
-                    std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " TSVs ("
+                    pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " TSVs ("
                               << lk.name << "): die-boundary crossings per packet (crossings:packets)"
                               << hist.str() << "; " << pk_tot << " packets, " << dsum
                               << " packet-boundary crossings, mean "
                               << (pk_tot ? static_cast<double>(dsum) / pk_tot : 0.0) << std::endl;
-                    std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " TSVs ("
+                    pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " TSVs ("
                               << lk.name << "): " << fd << " flit x boundary crossings (MEASURED, "
                               << (garnet.level_source == "tier_walk" ? "analytical tier walk"
                                                                      : "Garnet path walk")
@@ -10379,7 +10379,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             }
             lk.duty_cycle = (net_cycles > 0.0)
                 ? static_cast<double>(acc) / (net_cycles * n_links) : 0.0;
-            std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " links ("
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " links ("
                       << lk.name << "): " << n_links << " up-link(s) to L" << parent
                       << ", traversals " << acc << " = " << pk << " packet crossings x "
                       << fW << " flits (" << cutText(W) << ", " << wsrc
@@ -10402,13 +10402,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                         " priced on this wire" : "")
                       << std::endl;
             if (passthrough && garnet.level_router_traversals[lvl] != lf)
-                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " cross-check: " << garnet.level_router_traversals[lvl]
                           << " router flit traversals vs " << lf << " up-link flit"
                              " traversals (equal on a pure pass-through level with no"
                              " endpoint)" << std::endl;
             if (lk.link_kind == 2)
-                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " links leave the DRAM package over the DRAM channel (user ruling"
                              " 2026-10-25): priced as channel I/O, " << chan_io_pj << " pJ/bit per bit"
                              " crossed = (DQ termination " << std::max(0.0, chan_term_nj) << " + IDDQ "
@@ -10417,13 +10417,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                              " no on-die wire. Not charged twice: these fabric flits run above the PE level,"
                              " where the memory model charges no DQ crossing" << std::endl;
             else if (rides_channel)
-                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " links leave the DRAM package, but " << config.memory_tech
                           << " has no DQ termination and no IDDQ figure: NO PUBLISHED SOURCE FOUND for its"
                              " channel I/O energy; priced as on-die wire over the die span (as before)"
                           << std::endl;
             else if (!on_die)
-                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " links: NO PUBLISHED SOURCE FOUND for the geometry of an"
                              " off-die (rank/channel/system) fabric; the DRAM die's"
                              " span stands in for the logic side's" << std::endl;
@@ -10500,7 +10500,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                      * stacked part's die crossings as TSVs, see
                      * diesCrossed). */
                     if (has_levels && garnet.level_router_traversals[lvl] > 0)
-                        std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+                        pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                                   << " (" << nc.name << "): "
                                   << garnet.level_router_traversals[lvl]
                                   << " flit traversals of pass-through routers"
@@ -10742,7 +10742,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
              * crossings x flits at this level's width, and whether measured),
              * and the line carries the router shape handed to McPAT (ports,
              * VCs per vnet, buffers per VC) as run facts. */
-            std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level)
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                       << " (" << nc.name << "): " << how.str()
                       << "; duty " << duty << " = accesses/(" << net_cycles
                       << " net cycles x " << nodes << " nodes, priced as "
@@ -10754,7 +10754,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                        : (ports_from_tree ? " (widest router built at this level)"
                                                           : " (literal: no tree was built)"))
                       << vcText();
-            std::cout << (it_dc != overrides.end() || it_cc != overrides.end() ||
+            pimid::debugStream(std::cout) << (it_dc != overrides.end() || it_cc != overrides.end() ||
                           it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
                       << std::endl;
             if (!(duty >= 0.0 && duty <= 1.0)) {
@@ -10777,7 +10777,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             if (nc.type != 0) {
                 emitLinks(lvl, nc.name, nc.on_dram_die, nc.chip_coverage, false);
             } else if (link_counts && garnet.level_link_traversals[lvl] > 0) {
-                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " ("
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " ("
                           << nc.name << ") is a McPAT BUS: the bus is this level's wire,"
                              " charged by McPAT with the level's " << nc.total_accesses
                           << " accesses; its " << garnet.level_link_traversals[lvl]
@@ -10829,13 +10829,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                         acc_given += c.total_accesses;
                         c.chip_coverage = nc.chip_coverage * (double)count / (double)class_nodes_total;
                         levels.push_back(c);
-                        std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " class " << c.name << ": " << count
+                        pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " class " << c.name << ": " << count
                                   << " node(s) x " << ports << " ports, " << c.total_accesses << " traversals (H19)";
                         if (pt_on)   // 1.12.18
-                            std::cout << ", of which " << c.passthrough_accesses << " pass-through (priced as"
+                            pimid::debugStream(std::cout) << ", of which " << c.passthrough_accesses << " pass-through (priced as"
                                          " wire), " << (c.total_accesses - c.passthrough_accesses)
                                       << " router accesses to McPAT";
-                        std::cout << std::endl;
+                        pimid::debugStream(std::cout) << std::endl;
                         emitted++;
                     };
                     int classes_left = (eps_here > 0 ? 1 : 0);
@@ -10917,7 +10917,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         } else if (nc.type != 0) {
             nc.has_global_link = 1;
             nc.link_traversals = static_cast<int64_t>(garnet.link_traversals);
-            std::cout << "  [NoC] " << lbl << "flat links: " << garnet.link_traversals
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "flat links: " << garnet.link_traversals
                       << " link flit traversals (MEASURED), McPAT's mesh link model"
                          " (length from the die area and the node count)" << std::endl;
         }
@@ -10927,7 +10927,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
          * FUNCTION, so a run that takes this path must not be the one that
          * stays silent -- that is how the claim went stale in the first
          * place. */
-        std::cout << "  [NoC] " << lbl << "flat (" << nc.name << "): accesses " << accesses
+        pimid::debugStream(std::cout) << "  [NoC] " << lbl << "flat (" << nc.name << "): accesses " << accesses
                   << " " << unit
                   << "; duty " << duty << " = accesses/(" << flat_net_cycles
                   << " net cycles x " << flat_nodes << " nodes, priced as "
@@ -11866,7 +11866,7 @@ static void setLinkModelParams(const UnifiedConfig& config, pimid::McPATWrapper:
 template <class S>
 static void feedCoherenceDirectory(pimid::McPATWrapper& m, const S& s, bool enabled) {
     m.setCoherenceDirectoryEvents(s.l1_coh_events(), s.l2_coh_events(), enabled);
-    std::cout << "  [mcpat] coherence events parsed (zsim, received from the "
+    pimid::debugStream(std::cout) << "  [mcpat] coherence events parsed (zsim, received from the "
                  "parent directory): L1 INV=" << s.l1_INV << " INVX=" << s.l1_INVX
               << " FWD=" << s.l1_FWD << "; L2 INV=" << s.l2_INV << " INVX="
               << s.l2_INVX << " FWD=" << s.l2_FWD << std::endl;
@@ -13666,8 +13666,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             if (!iddq_published)
                 std::cout << "; iddq= n/a (no IDDQ row for " << config.memory_tech << ")";
             else if (iddq_band && crosses_dq)
-                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ [BAND " << iddq_rd_lo
-                          << "-" << iddq_rd_hi << "], wr " << iddq_wr_nj << " nJ";
+            {
+                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ";
+                if (pimid::debugChecks()) std::cout << " [BAND " << iddq_rd_lo << "-" << iddq_rd_hi << "]";
+                std::cout << ", wr " << iddq_wr_nj << " nJ";
+            }
             else
                 std::cout << "; iddq= rd " << iddq_rd_nj << " nJ, wr " << iddq_wr_nj << " nJ";
             std::cout << std::endl;
@@ -13690,14 +13693,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                           << iface_term_wr_nj
                           << " nJ (ctrl RON -> DRAM RTT_WR class)"
                           << dqHalfNote(ram_oracle, dq_duty_rd, dq_duty_wr)   // user ruling 2026-10-25
-                          << (wr_term_in_iddq ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "")   // 1.12.18
-                          << " [R7 split]  CACTI-IO driver+PHY: "
+                          << ((wr_term_in_iddq && pimid::debugChecks()) ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "");   // 1.12.18
+                if (pimid::debugChecks())
+                    std::cout << " [R7 split]  CACTI-IO driver+PHY: "
                           << iface_drv_nj
                           << " nJ [INFORMATIONAL, NOT charged -- 1.11.60: the"
                              " controller-side PHY is already priced by McPAT"
                              " (withPHY=1 at these placements), so charging"
                              " this too double-counts one crossing]"
-                          << std::endl;
+                         ;
+                std::cout << std::endl;
                 /* 1.11.82 (audit round 6): A SOURCED ZERO MUST SAY IT IS ONE.
                  *
                  * Three of the seven technologies print 0.000 nJ here, and
@@ -13734,12 +13739,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 {
                     double t_lo = 0.0, t_hi = 0.0; std::string t_prov;
                     if (ram_oracle.getTerminationEnergyBandNJ(t_lo, t_hi, t_prov)) {
-                        std::cout << "    termination BAND " << t_lo << "-" << t_hi
+                        pimid::debugStream(std::cout) << "    termination BAND " << t_lo << "-" << t_hi
                                   << " nJ [" << t_prov << "]" << std::endl;
                     }
                 }
                 if (iface_drv_nj <= 0.0)
-                    std::cout << "    NOTE: CACTI-IO has no exact parameter map"
+                    pimid::debugStream(std::cout) << "    NOTE: CACTI-IO has no exact parameter map"
                                  " for this technology, so no informational"
                                  " driver/PHY figure is available." << std::endl;
             }
@@ -15088,8 +15093,11 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             if (!iddq_published)
                 std::cout << "; iddq= n/a (no IDDQ row for " << memory_tech << ")";
             else if (iddq_band && c.crosses_dq)
-                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ [BAND " << iddq_rd_lo
-                          << "-" << iddq_rd_hi << "], wr " << iddq_wr_nj << " nJ";
+            {
+                std::cout << "; iddq= rd " << iddq_rd_nj << " nJ";
+                if (pimid::debugChecks()) std::cout << " [BAND " << iddq_rd_lo << "-" << iddq_rd_hi << "]";
+                std::cout << ", wr " << iddq_wr_nj << " nJ";
+            }
             else
                 std::cout << "; iddq= rd " << iddq_rd_nj << " nJ, wr " << iddq_wr_nj << " nJ";
             std::cout << std::endl;
@@ -15111,10 +15119,12 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                           << iface_term_wr_nj
                           << " nJ (ctrl RON -> DRAM RTT_WR class)"
                           << dqHalfNote(ram_oracle, dq_duty_rd, dq_duty_wr)   // user ruling 2026-10-25
-                          << (wr_term_in_iddq ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "")   // 1.12.18
-                          << " [R7 split]  CACTI-IO driver+PHY: " << iface_drv_nj
+                          << ((wr_term_in_iddq && pimid::debugChecks()) ? " [GUARD, NOT charged: inside the IDDQ4W excess, measured with RTT_WR enabled]" : "");   // 1.12.18
+                if (pimid::debugChecks())
+                    std::cout << " [R7 split]  CACTI-IO driver+PHY: " << iface_drv_nj
                           << " nJ [INFORMATIONAL, NOT charged -- 1.11.60 revert:"
-                             " McPAT already prices the PHY here]" << std::endl;
+                             " McPAT already prices the PHY here]";
+                std::cout << std::endl;
                 /* 1.11.82's rule, now that host accesses reach this branch
                  * on every technology: a sourced zero says it is one. */
                 if (iface_term_rd_nj == 0.0 && iface_term_wr_nj == 0.0) {
@@ -15133,7 +15143,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                 }
                 double t_lo = 0.0, t_hi = 0.0; std::string t_prov;   // 1.11.59
                 if (ram_oracle.getTerminationEnergyBandNJ(t_lo, t_hi, t_prov))
-                    std::cout << "      termination BAND " << t_lo << "-" << t_hi
+                    pimid::debugStream(std::cout) << "      termination BAND " << t_lo << "-" << t_hi
                               << " nJ [" << t_prov << "]" << std::endl;
             }
             std::cout << std::defaultfloat;
@@ -16113,7 +16123,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     if (measured.size() >= 2) {
                         mcpat.setNoCLevels(measured);
                         noc_from_measurement = true;
-                        std::cout << "  [NoC] " << node.name << ": priced from measured Garnet"
+                        pimid::debugStream(std::cout) << "  [NoC] " << node.name << ": priced from measured Garnet"
                                   << " (" << measured.size() << " levels, "
                                   << g.total_packets << " packets, "
                                   << g.total_flits << " flits, "
@@ -16211,7 +16221,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     /* the host data path's measured activity (256-bit flits, per sending stop) */
                     bool host_act_meas = false;
                     const double host_act = wireActivity(g_host_wire, 256, &host_act_meas);
-                    std::cout << "  [NoC] " << node.name << ": host " << topo << " wire activity: "
+                    pimid::debugStream(std::cout) << "  [NoC] " << node.name << ": host " << topo << " wire activity: "
                               << (host_act_meas ? "MEASURED a01 " : "NOT MEASURED, random-data a01 (DERIVED) ") << host_act
                               << " (0->1 transitions per wire-bit on the 256-bit data path, per sending stop; "
                               << g_host_wire.packets << " lines read, " << g_host_wire.unread << " unreadable)"
@@ -16278,7 +16288,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                              << rl.link_traversals << " link traversals";
                     }
                     mcpat.setNoCLevels(lv);
-                    std::cout << "  [NoC] " << node.name << ": host " << topo << " priced [1.12.19]: " << what.str()
+                    pimid::debugStream(std::cout) << "  [NoC] " << node.name << ": host " << topo << " priced [1.12.19]: " << what.str()
                               << "; " << msgs << " data messages x " << fpm << " flits of " << flit_bits
                               << " b (Nehalem-EX data ring 32 B/direction, Hot Chips 21; Westmere-EP width: NO PUBLISHED"
                                  " SOURCE FOUND) = " << (flits * static_cast<uint64_t>(flit_bits)) << " data bits over "
@@ -16346,7 +16356,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     pe_lvl.chip_coverage = pe_nodes / tot;
                     mc_lvl.chip_coverage = mc_nodes / tot;
                     two_levels[0].chip_coverage = pe_lvl.chip_coverage;
-                    std::cout << "  [NoC] " << node.name
+                    pimid::debugStream(std::cout) << "  [NoC] " << node.name
                               << ": placeholder fabric coverage split "
                               << pe_lvl.chip_coverage << " / "
                               << mc_lvl.chip_coverage
@@ -20911,6 +20921,7 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
 }
 
 int main(int argc, char** argv) {
+    (void)pimid::debugChecks();   // latch the internal diagnostic switch once, at startup
     UnifiedConfig config;
     std::string config_file;
     bool parsing_workload_args = false;

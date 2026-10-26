@@ -29,6 +29,7 @@
  *
  ***************************************************************************/
 
+#include "common/debug_checks.h"
 #include "io.h"
 #include "parameter.h"
 #include "const.h"
@@ -148,7 +149,7 @@ router_accesses(0)
 		std::ostringstream src;
 		src << "matrix-arbiter flip-flops " << I << "x" << V << "(" << V << "-1)/2 + " << O << "x" << I
 		    << "(" << I << "-1)/2";
-		std::cerr << "NO PUBLISHED SOURCE FOUND: router pipeline/output register count (CACTI's router model "
+		pimid::debugStream(std::cerr) << "NO PUBLISHED SOURCE FOUND: router pipeline/output register count (CACTI's router model "
 		             "counts no pipeline register); the router clock tree is priced over its arbiter flip-flops "
 		             "only -- a lower bound." << std::endl;
 		clk_router.compute(&interface_ip, name + std::to_string(ithNoC) + " router", router->area.get_area(), ff,
@@ -335,7 +336,7 @@ void NoC ::init_link_bus(double link_len_)
 		link_io_flit.area.set_area(0.0);
 		link_bus = &link_io_flit;
 		link_is_tsv = false;
-		std::cerr << "  [link] noc" << ithNoC << " channel I/O (off-package link over the DRAM channel): "
+		pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " channel I/O (off-package link over the DRAM channel): "
 		          << pj << " pJ/bit x " << bits << " b = " << link_io_flit.power.readOp.dynamic
 		          << " J per flit crossing; no on-die wire (McPAT length " << link_len << " um not used), no leakage,"
 		          << " no area" << std::endl;
@@ -412,7 +413,7 @@ void NoC ::init_link_bus(double link_len_)
 		link_bus = &link_tsv_flit;
 		link_is_tsv = true;
 		/* stderr: the fork's stdout is /dev/null (see wrapper). */
-		std::cerr << "  [link] noc" << ithNoC << " TSV RE-SOURCED: pitch " << pimid_tsv_pitch_um
+		pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " TSV RE-SOURCED: pitch " << pimid_tsv_pitch_um
 		          << " um [HBM2E JSSC 2021], length " << pimid_tsv_len_um << " um [HBM3 JSSC 2023 core die],"
 		          << " load " << pimid_tsv_c_load * 1e15 << " fF per die crossing DERIVED [Cho ISSCC 2018 Fig."
 		          << " 12.3.1: 880 uA/TSV, 1.0 V, 3.3 Gb/s PRBS, 9 loads; spiral P2P 610 uA -> "
@@ -423,7 +424,7 @@ void NoC ::init_link_bus(double link_len_)
 		          << cacti_c_table * 1e15 << " fF, pitch " << cacti_pitch_table << " um, length "
 		          << cacti_len_table << " um; CACTI chain + new load at the logic Vdd " << cacti_chain_dyn
 		          << " J (reference, not charged)" << std::endl;
-		std::cerr << "  [link] noc" << ithNoC << " TSV driver chain and table geometry (CACTI-3DD, Coarse = industry"
+		pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " TSV driver chain and table geometry (CACTI-3DD, Coarse = industry"
 		          << " reported, interconnect projection " << g_ip->ic_proj_type
 		          << ", " << g_ip->F_sz_nm << " nm table): pitch " << g_tp.tsv_pitch
 		          << " um, diameter " << g_tp.tsv_diameter << " um, length "
@@ -458,7 +459,7 @@ void NoC ::init_link_bus(double link_len_)
 		if (nocdynp.type)
 		{
 			const double bits = nocdynp.flit_size;
-			std::cerr << "  [link] noc" << ithNoC << " wire (McPAT interconnect, CACTI "
+			pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " wire (McPAT interconnect, CACTI "
 			          << "wire model, type Global_ho (repeaters 0.8x size, 1.4x spacing of delay-optimal; Ho 2003), interconnect projection "
 			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
 			          << "length " << link_len << " um ("
@@ -483,7 +484,7 @@ void NoC ::init_link_bus(double link_len_)
 			 * derivation: sqrt(processor area x chip_coverage) (x sqrt(dram_periph_area) on the DRAM
 			 * die), / ((H+V)/2), / 2 when the bus has more than one node; McPAT charges it per access. */
 			const double bits = nocdynp.flit_size;
-			std::cerr << "  [link] noc" << ithNoC << " bus wire (McPAT interconnect, CACTI "
+			pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " bus wire (McPAT interconnect, CACTI "
 			          << "wire model, type Global_ho (repeaters 0.8x size, 1.4x spacing of delay-optimal; Ho 2003), interconnect projection "
 			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
 			          << "length " << link_len << " um (upstream bus derivation over "
@@ -510,12 +511,12 @@ void NoC ::init_link_bus(double link_len_)
 		const double a = XML->sys.NoC[ithNoC].link_activity;
 		const double bits = nocdynp.flit_size;
 		if (link_is_tsv)
-			std::cerr << "  [link] noc" << ithNoC << " measured wire activity a01 " << a
+			pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " measured wire activity a01 " << a
 			          << " (0->1 transitions per wire-bit per crossing; random data 0.25): effective dynamic per bit per"
 			          << " crossing " << a << " x " << link_bus->power.readOp.dynamic / bits << " = "
 			          << a * link_bus->power.readOp.dynamic / bits << " J" << std::endl;
 		else if (link_len > 0)
-			std::cerr << "  [link] noc" << ithNoC << " measured wire activity a01 " << a
+			pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " measured wire activity a01 " << a
 			          << " (0->1 transitions per wire-bit per traversal; random data 0.25): effective dynamic per bit-mm "
 			          << a << " x " << link_bus->power.readOp.dynamic / bits / (link_len * 1e-3) << " = "
 			          << a * link_bus->power.readOp.dynamic / bits / (link_len * 1e-3) << " J at Vdd "
@@ -612,7 +613,7 @@ void NoC::computeEnergy(bool is_tdp)
         		{
         			const double e_acc = router->buffer.power.readOp.dynamic + router->buffer.power.writeOp.dynamic
         			                   + router->crossbar.power.readOp.dynamic + router->arbiter.power.readOp.dynamic;
-        			std::cerr << "[mcpat noc] NoC " << ithNoC << " runtime: " << moved
+        			pimid::debugStream(std::cerr) << "[mcpat noc] NoC " << ithNoC << " runtime: " << moved
         			          << " pass-through accesses NOT charged as router accesses (priced on the links): "
         			          << moved << " x " << e_acc << " J = " << moved*e_acc << " J = "
         			          << moved*e_acc/nocdynp.executionTime << " W of router dynamic removed; "
@@ -869,7 +870,7 @@ void NoC::set_noc_param()
 		const double d0 = nocdynp.duty_cycle;
 		router_accesses = T - P;
 		if (T > 0) nocdynp.duty_cycle = d0 * (router_accesses / T);
-		std::cerr << "[mcpat noc] NoC " << ithNoC << ": pass-through routers as wire: router accesses "
+		pimid::debugStream(std::cerr) << "[mcpat noc] NoC " << ithNoC << ": pass-through routers as wire: router accesses "
 		          << T << " - " << P << " pass-through = " << router_accesses
 		          << "; duty_cycle " << d0 << " -> " << nocdynp.duty_cycle
 		          << " (x " << (T > 0 ? router_accesses / T : 0.0) << ")" << std::endl;

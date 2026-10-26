@@ -28,6 +28,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.”
  *
  ***************************************************************************/
+#include "common/debug_checks.h"
 #include "io.h"
 #include "parameter.h"
 #include "const.h"
@@ -394,7 +395,7 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 		   *   clock [Hz]) [bits/cycle]. */
 		  const double bits_per_cycle = XML->sys.pcie.lanes * XML->sys.pcie.lane_rate_gts * 1e9 / pciep.clockRate;
 		  ucie_ref_ctrl_pj = (bits_per_cycle > 0.0) ? ctrl_dyn_per_cycle / bits_per_cycle * 1e12 : 0.0;
-		  std::cerr << "[link] CROSS-CHECK (McPAT PIMID 1.12.18, reference only, NOT charged): McPAT's own"
+		  pimid::debugStream(std::cerr) << "[link] CROSS-CHECK (McPAT PIMID 1.12.18, reference only, NOT charged): McPAT's own"
 		               " link controller dynamic (Cadence ChipEstimate 65 nm PCIe controller, scaled by McPAT"
 		               " to " << interface_ip.F_sz_nm << " nm, Vdd " << g_tp.peri_global.Vdd
 		            << " V) for this link (" << XML->sys.pcie.lanes << " lanes x " << XML->sys.pcie.lane_rate_gts
@@ -457,7 +458,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     			ucie_phy_w = ucie_phy_joules / execTimeSec;
     			rt_power.readOp.dynamic = ucie_phy_joules / execTimeSec / (units * pciep.clockRate);
     		}
-    		std::cerr << "[link] UCIe (McPAT PIMID 1.12.18): link.phy = " << bytes
+    		pimid::debugStream(std::cerr) << "[link] UCIe (McPAT PIMID 1.12.18): link.phy = " << bytes
     		          << " B x 8 x (analog " << ucie_analog_pj << " + digital " << ucie_digital_pj
     		          << " = " << ucie_pj_per_bit << " pJ/bit) = " << ucie_phy_joules
     		          << " J over " << execTimeSec << " s = " << ucie_phy_w << " W"
@@ -575,7 +576,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     			static bool said = false;
     			if (!said) {
     				said = true;
-    				std::cerr << "[link] E008: removed McPAT's SerDes dynamic ("
+    				pimid::debugStream(std::cerr) << "[link] E008: removed McPAT's SerDes dynamic ("
     				          << serdes_rt_w << " W at measured duty "
     				          << pciep.perc_load << ") from the runtime basis;"
     				             " the measured pJ/bit term prices that same"
@@ -786,7 +787,7 @@ void PCIeController::set_pcie_param()
 		  if (ucie_user_pj) {
 			  ucie_analog_pj  = XML->sys.pcie.phy_pj_per_bit;
 			  ucie_digital_pj = 0.0;
-			  std::cerr << "[link] UCIe link energy (McPAT PIMID 1.12.18): " << ucie_analog_pj
+			  pimid::debugStream(std::cerr) << "[link] UCIe link energy (McPAT PIMID 1.12.18): " << ucie_analog_pj
 			            << " pJ/bit [user value: power.link.pj_per_bit_override] replaces the whole per-bit"
 			               " figure (analog PHY + digital interface); no node row applied." << std::endl;
 		  } else {
@@ -803,14 +804,14 @@ void PCIeController::set_pcie_param()
 			  if (ucie_node_nm == 3) {
 				  ucie_analog_pj  = (pkg == 1) ? cdn_ap : cdn_sp;
 				  ucie_digital_pj = ms_dig;
-				  std::cerr << "[link] UCIe 3 nm " << pkg_s << " package (McPAT PIMID 1.12.18): analog PHY "
+				  pimid::debugStream(std::cerr) << "[link] UCIe 3 nm " << pkg_s << " package (McPAT PIMID 1.12.18): analog PHY "
 				            << ucie_analog_pj << " pJ/bit MEASURED [Melek et al. (Cadence), JSSC 2026,"
 				               " DOI 10.1109/JSSC.2026.3651425: " << (pkg == 1
 				                   ? "\"297 mW of measured analog power ... 0.29 pJ/bit analog power efficiency\","
 				                     " 64 lanes x 16 Gb/s, VDD 0.75 V, VDDH 1.2 V, VCCIO 0.45 V, PLL included]"
 				                   : "\"analog power efficiency of 0.52 pJ/bit running at 16 Gb/s/pin for a 25 mm"
 				                     " channel\", VDD 0.75 V, VDDH 1.2 V, PLL included]") << std::endl;
-				  std::cerr << "[link] UCIe 3 nm digital interface: " << ucie_digital_pj << " pJ/bit MEASURED-DIFFERENCE"
+				  pimid::debugStream(std::cerr) << "[link] UCIe 3 nm digital interface: " << ucie_digital_pj << " pJ/bit MEASURED-DIFFERENCE"
 				               " = 0.33 - 0.23 [Shivnaraine et al. (Microsoft), ISSCC 2026 8.3, DOI"
 				               " 10.1109/ISSCC49663.2026.11409276: \"0.33pJ/b (0.23pJ/b PHY only) at 24Gb/s\", 0.75 V];"
 				               " flow control, calibration, error correction, repair: a UCIe-LIKE digital interface,"
@@ -849,7 +850,7 @@ void PCIeController::set_pcie_param()
 				  const double ref_analog = ms_dig * node_ratio;
 				  const double ref_sb20 = ms_dig * (0.198 / 0.111);   /* [SB17] Table 2: 20 nm 0.198 fJ / 7 nm 0.111 fJ */
 				  if (pkg == 1)
-					  std::cerr << "[link] UCIe 22 nm advanced package (McPAT PIMID 1.12.18): analog PHY "
+					  pimid::debugStream(std::cerr) << "[link] UCIe 22 nm advanced package (McPAT PIMID 1.12.18): analog PHY "
 					            << ucie_analog_pj << " pJ/bit DERIVED = 1.2 pJ/b [Mondal et al. (Intel), ISSCC 2026"
 					               " 8.1, DOI 10.1109/ISSCC49663.2026.11409120, 22nm FinFET standard package, 0.45 TX +"
 					               " 0.69 RX + 0.06 PI+QH] x (0.29 / 0.52) [Melek et al. (Cadence), JSSC 2026: same-node"
@@ -858,38 +859,38 @@ void PCIeController::set_pcie_param()
 					               " integrated, 30 mm SP channel), across vendors; this link runs at "
 					            << XML->sys.pcie.lane_rate_gts << " GT/s." << std::endl;
 				  else
-					  std::cerr << "[link] UCIe 22 nm standard package (McPAT PIMID 1.12.18): analog PHY "
+					  pimid::debugStream(std::cerr) << "[link] UCIe 22 nm standard package (McPAT PIMID 1.12.18): analog PHY "
 					            << ucie_analog_pj << " pJ/bit MEASURED [Mondal et al. (Intel), ISSCC 2026 8.1, DOI"
 					               " 10.1109/ISSCC49663.2026.11409120: \"1.2pJ/b (0.45, 0.69, and 0.06pJ/b in TX, RX, and"
 					               " PI+QH ...; a PLL is not integrated in this work)\", 48 Gb/s, VDD 0.7 V, 30 mm];"
 					               " this link runs at " << XML->sys.pcie.lane_rate_gts << " GT/s." << std::endl;
-				  std::cerr << "[link] UCIe 22 nm digital interface: " << ucie_digital_pj << " pJ/bit DERIVED (APPLIED)"
+				  pimid::debugStream(std::cerr) << "[link] UCIe 22 nm digital interface: " << ucie_digital_pj << " pJ/bit DERIVED (APPLIED)"
 				               " = 0.10 pJ/b [Microsoft ISSCC 2026 8.3, 3 nm: 0.33 - 0.23] x E22/E7 " << k_22_7
 				            << " = CACTI C_inv x Vdd^2 22 nm (" << c22 * 1e15 << " fF, " << v22 << " V) / 32 nm ("
 				            << c32 * 1e15 << " fF, " << v32 << " V) = " << k_cacti
 				            << " x Stillmaker & Baas, Integration 58 (2017) 74-81, Table 2 FO4 inverter energy 32 nm"
 				               " 0.51 fJ (0.97 V) / 7 nm 0.111 fJ (0.8 V) = " << k_sb
 				            << ". LOWER BOUND: the published chain stops at 7 nm (7 -> 3 nm taken as 1)." << std::endl;
-				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (a), not applied: analog node"
+				  pimid::debugStream(std::cerr) << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (a), not applied: analog node"
 				               " ratio 0.10 x (1.2 / 0.52 = " << node_ratio << ") = " << ref_analog
 				            << " pJ/bit [Intel ISSCC 2026 8.1 SP / Cadence JSSC 2026 SP]" << std::endl;
-				  std::cerr << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (b), not applied: Stillmaker & Baas,"
+				  pimid::debugStream(std::cerr) << "[link] UCIe 22 nm digital interface, INTERNAL REFERENCE (b), not applied: Stillmaker & Baas,"
 				               " Integration 58 (2017) 74-81, Table 2's own 20 nm row (Multi-Gate, 0.9 V, FO4 inverter 0.198 fJ),"
 				               " the nearest published node to 22 nm: 0.10 x (0.198 / 0.111) = " << ref_sb20 << " pJ/bit" << std::endl;
 				  const double ref_min = std::min(ref_analog, ref_sb20);
 				  const double ref_max = std::max(ref_analog, ref_sb20);
 				  if (ucie_digital_pj < ref_min || ucie_digital_pj > ref_max)
-					  std::cerr << "[link] WARNING (McPAT PIMID 1.12.18, guard): applied 22 nm digital interface "
+					  pimid::debugStream(std::cerr) << "[link] WARNING (McPAT PIMID 1.12.18, guard): applied 22 nm digital interface "
 					            << ucie_digital_pj << " pJ/bit is OUTSIDE the internal references [" << ref_min
 					            << ", " << ref_max << "] pJ/bit" << std::endl;
 				  else
-					  std::cerr << "[link] guard (McPAT PIMID 1.12.18): applied 22 nm digital interface "
+					  pimid::debugStream(std::cerr) << "[link] guard (McPAT PIMID 1.12.18): applied 22 nm digital interface "
 					            << ucie_digital_pj << " pJ/bit lies within the internal references [" << ref_min
 					            << ", " << ref_max << "] pJ/bit" << std::endl;
 			  }
 		  }
 		  ucie_pj_per_bit = ucie_analog_pj + ucie_digital_pj;
-		  std::cerr << "[link] UCIe link model (McPAT PIMID 1.12.18): " << pkg_s << " package, "
+		  pimid::debugStream(std::cerr) << "[link] UCIe link model (McPAT PIMID 1.12.18): " << pkg_s << " package, "
 		            << XML->sys.pcie.lanes << " lanes x " << r << " GT/s, "
 		            << (ucie_user_pj ? std::string("user value") : std::to_string(ucie_node_nm) + " nm row")
 		            << ": analog PHY " << ucie_analog_pj << " + digital interface " << ucie_digital_pj

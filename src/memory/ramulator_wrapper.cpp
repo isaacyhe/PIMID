@@ -1,3 +1,4 @@
+#include "common/debug_checks.h"
 #include "power/cacti_io_wrapper.h"   // 1.11.40 (N8): harnessed IO model
 #include <iostream>
 #include "memory/ramulator_wrapper.h"
@@ -1035,7 +1036,7 @@ void RamulatorWrapper::initialize() {
                     // the VPP active rows were checked for these records (user ruling 2026-10-25: LPDDR5 VDD1 and GDDR6 VPP too)
                     if (dt != "DDR4" && dt != "DDR5" && dt != "LPDDR5" && dt != "GDDR6") continue;
                     if (!r.has_ipp) {
-                        std::cout << "[params] " << row << " VPP rail (IPP0, IPP4R, IPP4W, IPP5B): NO PUBLISHED SOURCE FOUND"
+                        pimid::debugStream(std::cout) << "[params] " << row << " VPP rail (IPP0, IPP4R, IPP4W, IPP5B): NO PUBLISHED SOURCE FOUND"
                                      " (the row cites no IPP table); not priced" << std::endl;
                         continue;
                     }
@@ -1057,7 +1058,7 @@ void RamulatorWrapper::initialize() {
                                   << (vpp_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false)")
                                   << "; IPP0 is not used: the IDD0 route is not this record's activation route)" << std::endl;
                     if (!miss.empty())
-                        std::cout << "[params] " << row << ":" << miss << ": NO PUBLISHED SOURCE FOUND in the row's cited source ("
+                        pimid::debugStream(std::cout) << "[params] " << row << ":" << miss << ": NO PUBLISHED SOURCE FOUND in the row's cited source ("
                                   << r.ipp_source << "); not priced" << std::endl;
                 }
             }
@@ -1336,7 +1337,7 @@ void RamulatorWrapper::initialize() {
                      energyKey(), getTRC(), getTRAS(), getAccessBurstNs(), device_width_,
                      static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()),
                      static_cast<double>(getRowStrideBytes())))
-                std::cout << line << std::endl;
+                pimid::debugStream(std::cout) << line << std::endl;
         }
     }
 

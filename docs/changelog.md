@@ -6,6 +6,13 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.73 -- Diagnostic lines for internal verification are no longer printed by default
+
+- Diagnostic lines used for internal verification (per-block model and fabric derivations, reference and
+  guard-band comparisons, including those that printed as warnings, measured data-pattern counters, source
+  notes) are no longer printed by default. The power report, the standard reports, run information, and the
+  warnings and errors about the run itself are unchanged, and no computed value changes.
+
 ## 1.12.72 -- the clock-feasibility report says how the arrays were sized
 
 - **The defect** (user ruling 2026-10-26 (2)). The `[mcpat timing]` line said the arrays were "sized by CACTI for

@@ -29,6 +29,7 @@
  *
  ***************************************************************************/
 
+#include "common/debug_checks.h"
 #include "io.h"
 #include "parameter.h"
 #include "array.h"
@@ -124,7 +125,7 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 		  else if (cacheL==L3) kids = XML->sys.L3[ithCache].dir_sharers;
 		  if (kids > 0) sharers = kids;
 		  dir_overhead = ceil(sharers/8.0)*8/(cachep.blockW*8);
-		  std::cerr << "[mcpat dir] " << cachep.name << ": SBT sharer bits/line "
+		  pimid::debugStream(std::cerr) << "[mcpat dir] " << cachep.name << ": SBT sharer bits/line "
 		            << (int)(ceil(sharers/8.0)*8) << " = ceil(" << sharers << "/8)*8 ("
 		            << (kids > 0 ? "dir_sharers: the cache's children" : "number_of_cores (upstream)")
 		            << "; number_of_cores " << XML->sys.number_of_cores << " would give "
@@ -640,7 +641,7 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 	  const double stages = (ct > 0) ? ceil(at/ct) : 1.0;
 	  const double psv = unicache.caches->l_ip.out_w + unicache.caches->l_ip.tag_w;
 	  if (!(ct > 0))
-		  std::cerr << "NO PUBLISHED SOURCE FOUND: " << cachep.name << " pipeline depth (CACTI returned no cycle time; one register stage is counted)" << std::endl;
+		  pimid::debugStream(std::cerr) << "NO PUBLISHED SOURCE FOUND: " << cachep.name << " pipeline depth (CACTI returned no cycle time; one register stage is counted)" << std::endl;
 	  if (cacheL==L2 && XML->sys.Private_L2)
 		  clk_instances = (XML->sys.homogeneous_cores==1) ? XML->sys.number_of_cores : 1;
 	  else if (cacheL==L2)

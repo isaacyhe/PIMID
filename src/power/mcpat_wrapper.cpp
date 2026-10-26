@@ -1,4 +1,5 @@
 #include "wire.h"   // 1.11.106: pimid_cacti_wire_zeroed_count (the CACTI zeroed-wire ledger)
+#include "common/debug_checks.h"
 #include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include "power/mcpat_wrapper.h"
 #include <iostream>
@@ -1757,7 +1758,7 @@ void McPATWrapper::computePower() {
              * :3959-4043), and UndiffCore sets only `power` -- never rt_power
              * -- and is added to the core total from `power` (core.cc:4047),
              * so a runtime split cannot see it. */
-            std::cout << "  [CoreBreakdown] core template, "
+            pimid::debugStream(std::cout) << "  [CoreBreakdown] core template, "
                       << (device_profile_ == DeviceProfile::DEVICE_ALU
                               ? "DEVICE_ALU" : "DEVICE_INORDER")
                       << " (dynamic: all " << config_.num_cores
@@ -1810,16 +1811,16 @@ void McPATWrapper::computePower() {
              *       apart.
              *   (3) undiffCore: in the total, not in the blocks (above).
              * The blocks are a SHAPE, not an addend of the total. */
-            std::cout << "  [CoreBreakdown] blocks sum=" << tot << "W (core template:"
+            pimid::debugStream(std::cout) << "  [CoreBreakdown] blocks sum=" << tot << "W (core template:"
                          " all-core dynamic, one core's runtime leakage)";
-            if (core_tot > 0.0) std::cout << "  core total=" << core_tot << "W ("
+            if (core_tot > 0.0) pimid::debugStream(std::cout) << "  core total=" << core_tot << "W ("
                                           << config_.num_cores
                                           << " core(s): same dynamic, peak leakage of"
                                              " every core, plus the undifferentiated"
                                              " core) -- the blocks are a shape, not"
                                              " an addend";
-            std::cout << std::endl;
-            std::cout << "  [CoreBreakdown] ifu+lsu+mmu = " << absent << "W = "
+            pimid::debugStream(std::cout) << std::endl;
+            pimid::debugStream(std::cout) << "  [CoreBreakdown] ifu+lsu+mmu = " << absent << "W = "
                       << (100.0 * absent / tot) << "% of the block sum -- an UPPER BOUND on what an "
                          "ALU model removes, not the error: it includes apportioned pipeline power, "
                          "and instruction supply and address generation are still required."
@@ -1829,7 +1830,7 @@ void McPATWrapper::computePower() {
     /* 1.11.93 (F6): the branch predictor McPAT built for a core that runs
      * one (inside ifu above), stated so its pricing can be checked. */
     if (core_btb_area_mm2_ > 0.0 || core_bpt_area_mm2_ > 0.0) {
-        std::cout << "  [CoreBreakdown] branch predictor (core template, inside ifu):"
+        pimid::debugStream(std::cout) << "  [CoreBreakdown] branch predictor (core template, inside ifu):"
                      " BTB area " << core_btb_area_mm2_ << " mm^2, direction"
                      " predictor + RAS area " << core_bpt_area_mm2_
                   << " mm^2, runtime " << core_bp_w_ << " W" << std::endl;
@@ -2517,7 +2518,7 @@ void McPATWrapper::printComponentBreakdown() const {
          * rule 2026-10-23); leakage before the power-gating interpolation */
         std::cout << "    of which clock network (McPAT, Wattch model, gated by measured activity): "
                   << ck.runtime_dynamic << " W dynamic, " << ck.total_leakage << " W leakage" << std::endl;
-        std::cout << "      clock network UNGATED dynamic (reference, in no total): "
+        pimid::debugStream(std::cout) << "      clock network UNGATED dynamic (reference, in no total): "
                   << ((iu != clock_ungated_w_.end()) ? iu->second : 0.0) << " W" << std::endl;
     };
     auto print_component = [&print_clock](const std::string& name, const PowerMetrics& power,
@@ -2580,20 +2581,22 @@ void McPATWrapper::printComponentBreakdown() const {
         /* 1.12.18: the ledger split McPAT's UCIe model reports. link.phy is
          * McPAT's own number (bytes x 8 x pJ/bit); link.controller is the
          * rest of the McPAT link component (area, leakage; no dynamic). */
-        if (link_readback_.ucie)
+        if (link_readback_.ucie) {
             std::cout << "    link.phy (UCIe analog PHY + digital interface, McPAT, "
                       << (link_readback_.user_pj ? std::string("user value")
                                                  : std::to_string(link_readback_.node_nm) + " nm row")
                       << "): "
                       << link_readback_.phy_w << " W, " << link_readback_.phy_joules
                       << " J at " << link_readback_.analog_pj << " + " << link_readback_.digital_pj
-                      << " = " << link_readback_.ucie_pj_per_bit << " pJ/bit; McPAT controller"
-                         " reference " << link_readback_.ref_ctrl_pj << " pJ/bit (cross-check, not"
-                         " charged); link.controller dynamic excluded ("
+                      << " = " << link_readback_.ucie_pj_per_bit << " pJ/bit; ";
+            if (pimid::debugChecks())
+                std::cout << "McPAT controller reference " << link_readback_.ref_ctrl_pj << " pJ/bit (cross-check, not charged); ";
+            std::cout << "link.controller dynamic excluded ("
                       << link_readback_.ctrl_dyn_excluded_w << " W not charged); clock "
                       << link_readback_.clock_mhz << " MHz"
                       << (link_readback_.clock_derived ? " (derived in McPAT)" : " (given)")
                       << std::endl;
+        }
         std::cout << "    Area:    " << getComponentArea(ComponentType::PCIE)
                   << " mm^2" << std::endl;
     }
@@ -3773,7 +3776,7 @@ std::string McPATWrapper::generateXMLConfig() const {
                     l1i_out_bytes = l1i_fetch_bytes_;
                     l1i_reads_all = l1i_fetch_chunks_;
                     if (diagOnce(warned_ifetch_width_))
-                        std::cerr << "[power] PE instruction cache read at the fetch width: " << l1i_out_bytes
+                        pimid::debugStream(std::cerr) << "[power] PE instruction cache read at the fetch width: " << l1i_out_bytes
                                   << " B per read, " << l1i_fetch_chunks_ << " reads (" << l1i_reads_
                                   << " line fetches, " << l1i_read_misses_ << " line misses)" << std::endl;
                 } else if (diagOnce(warned_ifetch_width_)) {
@@ -4055,7 +4058,7 @@ std::string McPATWrapper::generateXMLConfig() const {
                 if (diagnostics_live_) {
                     const int l1_per_core = (config_.l1i_size_bytes > 0 ? 1 : 0)
                                           + (config_.l1d_size_bytes > 0 ? 1 : 0);
-                    std::cout << "  [mcpat] L2 directory (SBT merged_dir=1): "
+                    pimid::debugStream(std::cout) << "  [mcpat] L2 directory (SBT merged_dir=1): "
                               << coh_l1_events_ << " directory writes (INV+INVX+FWD "
                                  "received by the L1s) over " << nl2
                               << " L2 instance(s) = " << l2_dir_wr_per
@@ -4143,7 +4146,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <stat name=\"homenode_write_misses\" value=\"0\"/>\n";
             xml << "      <stat name=\"dir_duty_cycle\" value=\"" << l3_dir_duty << "\"/>\n";
             if (diagnostics_live_) {
-                std::cout << "  [mcpat] L3 directory (SBT merged_dir=1): "
+                pimid::debugStream(std::cout) << "  [mcpat] L3 directory (SBT merged_dir=1): "
                           << l3_dir_wr << " directory writes (INV+INVX+FWD received by the "
                           << (l3_kids_l2 ? "L2s" : "L1s") << "), dir_duty_cycle "
                           << l3_dir_duty << "; sharer bits/line "

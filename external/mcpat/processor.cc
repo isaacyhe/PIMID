@@ -28,6 +28,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.”
  *
  ***************************************************************************/
+#include "common/debug_checks.h"
 #include <string.h>
 #include <iostream>
 #include <stdio.h>
@@ -146,7 +147,7 @@ Processor::Processor(ParseXML *XML_interface)
 	  return pimid_ip(pimid_fam1 && XML->sys.NoC[ni].on_dram_die);
   };
   if (logic_die_override)
-	  std::cerr << "[mcpat tech] per-die process: logic die " << ip_logic_die.F_sz_nm << " nm device "
+	  pimid::debugStream(std::cerr) << "[mcpat tech] per-die process: logic die " << ip_logic_die.F_sz_nm << " nm device "
 	            << ip_logic_die.data_arr_peri_global_tech_type << "; "
 	            << (pimid_fam1 ? "DRAM die (cores, caches, controllers, on-die NoC levels) " : "every component is on the logic die; chip ")
 	            << interface_ip.F_sz_nm << " nm device " << interface_ip.data_arr_peri_global_tech_type << std::endl;
@@ -739,7 +740,7 @@ Processor::Processor(ParseXML *XML_interface)
               if (!warned_leak_basis && ref > 0.0 &&
                   std::fabs(plainLeak - plainLeakRt) > 1e-9 * ref) {
                   warned_leak_basis = true;
-                  std::cerr << "[fam] peak vs runtime leakage on " << who << ": "
+                  pimid::debugStream(std::cerr) << "[fam] peak vs runtime leakage on " << who << ": "
                             << plainLeak << " vs " << plainLeakRt
                             << " W. EXPECTED upstream (McPAT scales the execution "
                                "unit's runtime leakage with utilisation); PIMID "
@@ -829,7 +830,7 @@ Processor::Processor(ParseXML *XML_interface)
           double logic_frac = onPitchLogicShare();
           pitch_core_mul = 1.0 + (fpitch - 1.0) * logic_frac;
           /* stderr: the fork's stdout is /dev/null (see wrapper). */
-          std::cerr << "  [fam] pitch penalty " << fpitch
+          pimid::debugStream(std::cerr) << "  [fam] pitch penalty " << fpitch
                     << " applies to the on-pitch logic share ("
                     << logic_frac << " of core area) -> effective x"
                     << pitch_core_mul << "; SRAM macro blocks keep their"
@@ -868,7 +869,7 @@ Processor::Processor(ParseXML *XML_interface)
           bool any_on_die = false;
           for (int ni = 0; ni < numNOC; ni++) {
               if (!XML->sys.NoC[ni].on_dram_die) {
-                  std::cerr << "  [fam] noc" << ni << ": off-die fabric"
+                  pimid::debugStream(std::cerr) << "  [fam] noc" << ni << ": off-die fabric"
                             << " (rank/channel/system tier) stays logic-priced."
                             << std::endl;
                   continue;
@@ -954,7 +955,7 @@ Processor::Processor(ParseXML *XML_interface)
               mcs.rt_power.readOp.dynamic += phy_rt_dyn  * (1.0 - fd);
               mcs.area.set_area(mcs.area.get_area()
                                 + phy_area_tot * (1.0 - fa));
-              std::cerr << "  [fam] MC PHY empirical dynamic/area kept at"
+              pimid::debugStream(std::cerr) << "  [fam] MC PHY empirical dynamic/area kept at"
                         << " their measured values; family applies to the"
                         << " MC's logic backend and to leakage." << std::endl;
           }
@@ -1027,7 +1028,7 @@ Processor::Processor(ParseXML *XML_interface)
       double before = core.area.get_area();
       core.area.set_area(before * mul);
       area.set_area(area.get_area() + core.area.get_area() - before);
-      std::cerr << "  [fam] SUBARRAY pitch x" << p
+      pimid::debugStream(std::cerr) << "  [fam] SUBARRAY pitch x" << p
                 << " on a logic-family die: applied to the on-pitch logic "
                 << "share (" << lf << " of core area) -> core area x"
                 << mul << "." << std::endl;
@@ -1053,7 +1054,7 @@ Processor::Processor(ParseXML *XML_interface)
 	   * these roots is built just below (its own line, in no component). */
 	  auto rep = [&](const char *who, const Component &c, const Component &tot, double ung, double glob) {
 		  if (c.power.readOp.dynamic == 0 && c.power.readOp.leakage == 0 && c.rt_power.readOp.dynamic == 0) return;
-		  std::cerr << "[mcpat clock] aggregate " << who << ": runtime dynamic " << c.rt_power.readOp.dynamic
+		  pimid::debugStream(std::cerr) << "[mcpat clock] aggregate " << who << ": runtime dynamic " << c.rt_power.readOp.dynamic
 		            << " W = GLOBAL " << glob << " W (H-tree levels but the last, every powered cycle) + LOCAL "
 		            << c.rt_power.readOp.dynamic - glob << " W (last level + pins, gated by measured activity)"
 		            << " (ungated reference " << ung
@@ -1216,7 +1217,7 @@ Processor::Processor(ParseXML *XML_interface)
 			  td.peak_w += tr.power.readOp.dynamic;
 			  td.rt_w += tr.rt_power.readOp.dynamic;
 			  td.ungated_w += tr.rt_ungated;
-			  std::cerr << "[mcpat clock] " << own.str() << ": " << cnt << " die(s) of " << a_die_um2*1e-6 << " mm^2 (" << a_src
+			  pimid::debugStream(std::cerr) << "[mcpat clock] " << own.str() << ": " << cnt << " die(s) of " << a_die_um2*1e-6 << " mm^2 (" << a_src
 			            << "), " << n_die << " root(s) per die, L " << tr.tree_len_um << " um at " << tip.F_sz_nm
 			            << " nm; " << e_cyc << " J/cycle/die x " << f*1e-6 << " MHz x on " << on << " x " << cnt
 			            << (d == 1 && pimid_fam1 ? " x periphery dyn factor" : "") << " = " << tr.rt_power.readOp.dynamic
@@ -1230,7 +1231,7 @@ Processor::Processor(ParseXML *XML_interface)
 		  power = power + dsum.power;
 		  rt_power = rt_power + dsum.rt_power;
 		  trunk_dies.push_back(td);
-		  std::cerr << "[mcpat clock] trunk " << td.name << " (x" << cnt << "; leaves: " << whos << "): runtime dynamic "
+		  pimid::debugStream(std::cerr) << "[mcpat clock] trunk " << td.name << " (x" << cnt << "; leaves: " << whos << "): runtime dynamic "
 		            << td.rt_w << " W (on " << td.on << "), ungated " << td.ungated_w << " W, peak " << td.peak_w
 		            << " W; leakage " << td.leak_w << " W + gate " << td.gate_w << " W" << std::endl;
 	  }

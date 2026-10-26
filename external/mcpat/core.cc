@@ -29,6 +29,7 @@
  *
  ***************************************************************************/
 
+#include "common/debug_checks.h"
 #include "io.h"
 #include "parameter.h"
 #include "const.h"
@@ -240,7 +241,7 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 	  (void)ib_group;
 	  const int ib_rows = (ib_entries > 0) ? ib_rows_p2 : XML->sys.core[ithCore].instruction_buffer_size;
 	  if (ib_entries > 0)
-		  std::cerr << "[mcpat ifu] core" << ithCore << " instruction buffer from the timing core: " << ib_entries
+		  pimid::debugStream(std::cerr) << "[mcpat ifu] core" << ithCore << " instruction buffer from the timing core: " << ib_entries
 		            << " instruction(s), fetch width " << XML->sys.core[ithCore].fetch_width
 		            << (ib_is_latch ? " -> the IF/ID pipeline latch McPAT's pipeline model already prices; no separate array"
 		                            : " -> array rows") << (ib_is_latch ? std::string("") : " " + std::to_string(ib_rows_need) + " needed, built " + std::to_string(ib_rows) + " (CACTI: power of two, >= MINSUBARRAYROWS) of 1 instruction")
@@ -888,7 +889,7 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 		  const double e64 = hpj[h]*1e-12*k;
 		  const double ehi = e64 * ((interface_ip.out_w > 64) ? interface_ip.out_w/64.0 : 1.0);
 		  const double ec  = dcache.caches->local_result.power.readOp.dynamic;
-		  std::cerr << "[mcpat l1] core" << ithCore << " dcache " << cap/1024 << " KB " << interface_ip.assoc << "-way, line "
+		  pimid::debugStream(std::cerr) << "[mcpat l1] core" << ithCore << " dcache " << cap/1024 << " KB " << interface_ip.assoc << "-way, line "
 		            << interface_ip.line_sz << " B, access width " << interface_ip.out_w << " bit, mode normal, "
 		            << interface_ip.num_rw_ports << " rw port(s): CACTI read " << ec*1e12 << " pJ, write "
 		            << dcache.caches->local_result.power.writeOp.dynamic*1e12 << " pJ per access (USED); guard Horowitz ISSCC 2014"
@@ -896,7 +897,7 @@ LoadStoreU::LoadStoreU(ParseXML* XML_interface, int ithCore_, InputParameter* in
 		            << " pJ at the run node, range [" << e64*1e12 << ", " << ehi*1e12 << "] pJ for a " << interface_ip.out_w
 		            << "-bit access" << std::endl;
 		  if (ec < e64 || ec > ehi)
-			  std::cerr << "[mcpat l1] core" << ithCore << " WARNING: dcache CACTI read " << ec*1e12
+			  pimid::debugStream(std::cerr) << "[mcpat l1] core" << ithCore << " WARNING: dcache CACTI read " << ec*1e12
 			            << " pJ is OUTSIDE the Horowitz guard range" << std::endl;
 	  }
 	  dcache.area.set_area(dcache.area.get_area()+ dcache.caches->local_result.area);
@@ -2134,7 +2135,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  const double rd = exu->rfu->IRF->local_result.power.readOp.dynamic;
 	  const double dec = m->power_row_predecoder_drivers.readOp.dynamic + m->power_row_predecoder_blocks.readOp.dynamic
 	                   + m->power_row_decoders.readOp.dynamic;
-	  std::cerr << "[mcpat decode] core" << ithCore << ": operand decoder REMOVED (would be " << ifu->id_operand_e_access*1e12
+	  pimid::debugStream(std::cerr) << "[mcpat decode] core" << ithCore << ": operand decoder REMOVED (would be " << ifu->id_operand_e_access*1e12
 	            << " pJ per instruction): the integer register file's read already decodes the register index -- CACTI"
 	            << " read " << rd*1e12 << " pJ, of which row predecoder + decoder " << dec*1e12 << " pJ" << std::endl;
   }
@@ -2175,7 +2176,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  src << "pipeline registers " << clk_pipe_regs << " (corepipe " << corepipe->num_piperegs
 	      << " x " << coredynp.num_pipelines << " pipeline(s) x " << n_exist << "/" << nu << " units)";
 	  if (clk_extra_regs > 0) src << " + DMA registers " << clk_extra_regs;
-	  std::cerr << "[mcpat clock] core" << ithCore << ": tree span DERIVED = clocked logic " << a*1e-6 << " mm^2 = pipeline"
+	  pimid::debugStream(std::cerr) << "[mcpat clock] core" << ithCore << ": tree span DERIVED = clocked logic " << a*1e-6 << " mm^2 = pipeline"
 	            << " registers " << a_pipe*1e-6 << " + integer ALU " << a_alu*1e-6 << " + mul/div " << a_mul*1e-6
 	            << " + decoders " << a_dec*1e-6 << " mm^2 (core area " << area.get_area()*1e-6
 	            << " mm^2; FPU and arrays excluded)" << std::endl;
@@ -2211,13 +2212,13 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 		  if (!ok) { ++nfail; fails << (fails.tellp() > 0 ? "; " : "") << t.name << " access " << t.access * 1e9
 		      << " ns (target " << t.lat * 1e9 << "), cycle " << t.cycle * 1e9 << " ns (target " << t.thr * 1e9 << ")"; }
 	  }
-	  std::cerr << "[mcpat timing] core" << ithCore << " @ " << clockRate / 1e6 << " MHz (period " << period * 1e9
+	  pimid::debugStream(std::cerr) << "[mcpat timing] core" << ithCore << " @ " << clockRate / 1e6 << " MHz (period " << period * 1e9
 	            << " ns), array periphery device " << interface_ip.data_arr_peri_global_tech_type
 	            << " (0 hp, 1 lstp, 2 lop): " << n << " array(s) sized by CACTI for energy-delay (McPAT clock search off,"
 	               " opt_local=0) and checked against this clock; worst cycle time "
 	            << wc * 1e9 << " ns (" << wcn << "), worst access time " << wa * 1e9 << " ns (" << wan << ") -> "
 	            << (nfail ? "FAIL" : "PASS") << "; ALU/datapath logic delay NOT CHECKED (no logic delay model in McPAT)" << std::endl;
-	  if (n <= 16) std::cerr << "[mcpat timing] core" << ithCore << " arrays (access/target, cycle/target): " << all.str() << std::endl;
+	  if (n <= 16) pimid::debugStream(std::cerr) << "[mcpat timing] core" << ithCore << " arrays (access/target, cycle/target): " << all.str() << std::endl;
 	  if (nfail) std::cerr << "[mcpat timing] core" << ithCore << " WARNING: " << nfail << " array(s) miss the "
 	                      << clockRate / 1e6 << " MHz targets: " << fails.str()
 	                      << ". The clock is NOT changed; power is priced at the requested clock." << std::endl;
@@ -3573,7 +3574,7 @@ void LoadStoreU::pimid_store_buffer_stats()
 	LSQ->stats_t.readAc.access  = st;
 	LSQ->stats_t.writeAc.access = st;
 	const double after = st*(LSQ->local_result.power.readOp.dynamic + LSQ->local_result.power.writeOp.dynamic);
-	std::cerr << "[mcpat lsq] core" << ithCore << " in-order PE: store buffer only (ruling 2026-10-25 #3): " << st
+	pimid::debugStream(std::cerr) << "[mcpat lsq] core" << ithCore << " in-order PE: store buffer only (ruling 2026-10-25 #3): " << st
 	          << " stores x (write " << LSQ->local_result.power.writeOp.dynamic*1e12 << " + read "
 	          << LSQ->local_result.power.readOp.dynamic*1e12 << " pJ), none of the " << ld << " loads = " << after
 	          << " J (McPAT queue, 2 x (search + read) + 2 x write per load and store: " << before << " J)" << std::endl;
@@ -4504,7 +4505,7 @@ void Core::computeEnergy(bool is_tdp)
 			/* peak is per cycle and set by the peak call; the runtime call keeps it */
 			clockNetwork.set_power(is_tdp ? e_ung : clockNetwork.power.readOp.dynamic, e_gat, e_ung, 1.0);
 			power = power + clockNetwork.power;
-			std::cerr << "[mcpat clock] core" << ithCore << (is_tdp ? " peak" : " runtime")
+			pimid::debugStream(std::cerr) << "[mcpat clock] core" << ithCore << (is_tdp ? " peak" : " runtime")
 			          << " (J per " << (is_tdp ? "cycle" : "run") << "): tree " << clk_tree_e
 			          << " + pipeline pins clocked " << clk_pin_ungated << " - already in the pipeline "
 			          << clk_pin_counted << " + DMA register pins " << clk_extra_e << " = ungated " << e_ung
@@ -4517,7 +4518,7 @@ void Core::computeEnergy(bool is_tdp)
 			 * energy, printed so the PE references can be judged on the CORE-only quantity (RI5CY Table V is
 			 * core-only; its I$ and TCDM are separate). McPAT-priced, before any DRAM-periphery factor. */
 			if (!is_tdp && XML->sys.Embedded)
-				std::cerr << "[mcpat stores] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
+				pimid::debugStream(std::cerr) << "[mcpat stores] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
 				          << " DRAM-periphery factor): instruction store " << ((ifu && ifu->exist) ? ifu->icache.rt_power.readOp.dynamic : 0.0)
 				          << " J; data store " << ((lsu && lsu->exist) ? lsu->dcache.rt_power.readOp.dynamic : 0.0)
 				          << " J; DMA " << ((lsu && lsu->exist) ? lsu->dma.rt_power.readOp.dynamic : 0.0) << " J" << std::endl;
@@ -4683,7 +4684,7 @@ void Core::computeEnergy(bool is_tdp)
 			/* peak is per cycle and set by the peak call; the runtime call keeps it */
 			clockNetwork.set_power(is_tdp ? e_ung : clockNetwork.power.readOp.dynamic, e_gat, e_ung, 1.0);
 			rt_power = rt_power + clockNetwork.rt_power;
-			std::cerr << "[mcpat clock] core" << ithCore << (is_tdp ? " peak" : " runtime")
+			pimid::debugStream(std::cerr) << "[mcpat clock] core" << ithCore << (is_tdp ? " peak" : " runtime")
 			          << " (J per " << (is_tdp ? "cycle" : "run") << "): tree " << clk_tree_e
 			          << " + pipeline pins clocked " << clk_pin_ungated << " - already in the pipeline "
 			          << clk_pin_counted << " + DMA register pins " << clk_extra_e << " = ungated " << e_ung
@@ -4696,7 +4697,7 @@ void Core::computeEnergy(bool is_tdp)
 			 * energy, printed so the PE references can be judged on the CORE-only quantity (RI5CY Table V is
 			 * core-only; its I$ and TCDM are separate). McPAT-priced, before any DRAM-periphery factor. */
 			if (!is_tdp && XML->sys.Embedded)
-				std::cerr << "[mcpat stores] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
+				pimid::debugStream(std::cerr) << "[mcpat stores] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
 				          << " DRAM-periphery factor): instruction store " << ((ifu && ifu->exist) ? ifu->icache.rt_power.readOp.dynamic : 0.0)
 				          << " J; data store " << ((lsu && lsu->exist) ? lsu->dcache.rt_power.readOp.dynamic : 0.0)
 				          << " J; DMA " << ((lsu && lsu->exist) ? lsu->dma.rt_power.readOp.dynamic : 0.0) << " J" << std::endl;
@@ -4726,30 +4727,30 @@ void Core::computeEnergy(bool is_tdp)
 				const int ns = pimid_sb17_energy_factors(45, 0.9, fs, ts);
 				const int nt = pimid_sb17_energy_factors(row, v, ft, tt);
 				const bool ooo = (coredynp.core_ty == OOO);
-				std::cerr << "[mcpat decode] core" << ithCore << (ooo ? " (OOO)" : " (in-order)") << " runtime: decode " << dec_pj << " pJ/instr + clock at activity 1 "
+				pimid::debugStream(std::cerr) << "[mcpat decode] core" << ithCore << (ooo ? " (OOO)" : " (in-order)") << " runtime: decode " << dec_pj << " pJ/instr + clock at activity 1 "
 				          << clk_pj << " pJ/cycle = " << dec_pj + clk_pj << " pJ/instr at IPC 1 (" << ni << " instructions; x86 "
 				          << (coredynp.x86 ? 1 : 0) << ", decoder output load " << ifu->decode_fanout
 				          << " minimum-size gates DERIVED = the clock tree's pipeline-register sinks; McPAT-priced at "
 				          << node << " nm, " << v << " V, before any DRAM-periphery family factor)";
 				if (ooo)
-					std::cerr << "; reference: Horowitz ISSCC 2014 Fig. 1.1.9 is a simple IN-ORDER processor -- NO PUBLISHED SOURCE FOUND"
+					pimid::debugStream(std::cerr) << "; reference: Horowitz ISSCC 2014 Fig. 1.1.9 is a simple IN-ORDER processor -- NO PUBLISHED SOURCE FOUND"
 					             " for an out-of-order core's decode + clock (not judged)";
 				else if (ns > 0 && nt > 0)
 				{
 					double lo = 1e300, hi = 0;
 					for (int a = 0; a < ns; a++) for (int b = 0; b < nt; b++)
 					{ const double r = ft[b] / fs[a]; lo = std::min(lo, r); hi = std::max(hi, r); }
-					std::cerr << "; reference band (not judged until the clock-tree model is reviewed): Horowitz ISSCC 2014"
+					pimid::debugStream(std::cerr) << "; reference band (not judged until the clock-tree model is reviewed): Horowitz ISSCC 2014"
 					          << " Fig. 1.1.9 Control 39 pJ (45 nm 0.9 V) x Stillmaker & Baas 2017"
 					          << " Table 5 " << row << " nm" << ((row != node) ? " (nearest row to " + std::to_string(node) + " nm)" : std::string())
 					          << " at " << v << " V / 45 nm at 0.9 V [" << lo << ", " << hi << "] = [" << 39.0*lo << ", "
 					          << 39.0*hi << "] pJ/instr";
 					const double t = dec_pj + clk_pj;
-					std::cerr << " (ratio to the band: " << t / (39.0*lo) << " x its low end, " << t / (39.0*hi) << " x its high end)";
+					pimid::debugStream(std::cerr) << " (ratio to the band: " << t / (39.0*lo) << " x its low end, " << t / (39.0*hi) << " x its high end)";
 				}
 				else
-					std::cerr << "; reference: NO PUBLISHED SOURCE FOUND for a Stillmaker & Baas Table 5 row at " << node << " nm";
-				std::cerr << std::endl;
+					pimid::debugStream(std::cerr) << "; reference: NO PUBLISHED SOURCE FOUND for a Stillmaker & Baas Table 5 row at " << node << " nm";
+				pimid::debugStream(std::cerr) << std::endl;
 			}
 		}
 //		cout << "EXE = " << exu->power.readOp.dynamic*clockRate  << " W" << endl;
