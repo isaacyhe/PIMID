@@ -176,14 +176,16 @@ workload:
 | `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
 | `workload.mpich_path` | string | - | Deprecated and ignored, with a warning: PIMID no longer uses `mpirun`. |
 
-**The guest's environment is set by the launch (since (1.12.62)).** The guest gets
-`workload.env`, the OpenMP settings PIMID adds, and from pimid's own environment
-only `PIMID_*`, `OMP_*`, `GOMP_*`, `LC_*`, `PATH`, `LD_LIBRARY_PATH`, `HOME`,
-`USER`, `LOGNAME`, `LANG`, `LANGUAGE` and `TZ`; any other variable a workload
-reads goes in `workload.env`. The strings on the guest's stack are padded to a
-fixed size, its `AT_RANDOM` bytes are seeded, and its address space is reserved
-by the launch, so a serial result no longer depends on the job, the node, the
-working directory or the length of any path: repeated runs are bit-identical.
+**The guest's environment is set by the launch (since (1.12.64)).** The guest gets,
+in sorted order, `workload.env`, the OpenMP settings PIMID adds, and from pimid's
+own environment only `OMP_*`, `GOMP_*` and the `PIMID_*` variables the shipped
+guest code reads. `PATH`, `LD_LIBRARY_PATH`, `HOME`, `LANG` and the other
+installation and user values are not passed: a workload that needs one (a guest
+library outside the system paths, say) sets it in `workload.env`. The strings on
+the guest's stack are padded to a fixed size, its `AT_RANDOM` bytes are seeded,
+and its address space is reserved by the launch, so a serial result does not
+depend on the job, the node, the working directory, the installation's paths or
+the order of the launching script's variables: repeated runs are bit-identical.
 See [Reproducibility](architecture.md#reproducibility).
 
 ---

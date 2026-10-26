@@ -119,12 +119,12 @@ user-mode options):
 | `-B 0 -R 0x8000000000` | The guest address space [64 KiB, 512 GiB) is reserved at guest_base 0 before the program is loaded, and QEMU places every guest mapping in it with its own allocator, which no host thread touches. guest_base stays 0, so a guest address is still the host address. The bound stays below ZSim's shared heap (0xABBA000000). Needs `external/qemu-patches/0002-...` (see [Building](build.md)). |
 | `-s 8M` | The main stack is 8 MiB (QEMU's default), whatever the host's stack rlimit. |
 | `-seed 0` | `AT_RANDOM` and the guest's `getrandom()` are one fixed sequence. |
-| `-U` / `-E` | The guest's environment is `workload.env`, the variables PIMID sets for it (the OpenMP settings below, `LD_BIND_NOW=1`, the MPI shim's), and, from pimid's own environment, only `PIMID_*`, `OMP_*`, `GOMP_*`, `LC_*`, `PATH`, `LD_LIBRARY_PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE` and `TZ`. `PIMID_GUEST_ENV_PAD` then pads the strings QEMU copies to the stack (the program's name, the environment, the arguments) to a multiple of 4096 bytes. |
+| `-U` / `-E` | Every variable of pimid's environment is removed and the guest's set is added back in sorted order (since (1.12.64); QEMU writes the strings in its list order, so a string's address follows the strings around it, and the guest's startup scans them). The set is `workload.env`, the variables PIMID sets for the guest (the OpenMP settings below, `LD_BIND_NOW=1`, the MPI shim's), and, from pimid's own environment, `OMP_*`, `GOMP_*` and the `PIMID_*` variables the shipped guest code reads. Installation and user values (`PATH`, `LD_LIBRARY_PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TZ`, path-valued `PIMID_*` such as `PIMID_QEMU`) are not passed; a workload that needs one sets it in `workload.env`. `PIMID_GUEST_ENV_PAD` then pads the strings QEMU copies to the stack (the program's name, the environment, the arguments) to a multiple of 4096 bytes. A value holding a comma, which QEMU's `-E` cannot carry, is passed in the host's order, with a warning. |
 
 So a serial workload's addresses depend on its configuration only -- the
-binary, its arguments, and the number of guest variables -- not on the job,
-the node, the working directory, the length of any path or value, or host
-address-space randomization. Measured over six jobs on five nodes, each in its
+binary, its arguments and the guest variables it is given -- not on the job,
+the node, the working directory, the installation's paths, the order in which a
+script sets its variables, or host address-space randomization. Measured over six jobs on five nodes, each in its
 own directory: all 107 serial cells (48 device, 40 single-core host
 baselines, 18 PE-type cells, the 1-core DDR5 baseline) repeated bit for bit in
 every simulated and priced figure. Two builds can be compared from any two

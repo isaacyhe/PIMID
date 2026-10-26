@@ -6,6 +6,43 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.64 -- the guest's environment holds configuration values only, in a fixed order
+
+- **The defect** (follow-up to the launch fix above). That fix padded the strings QEMU copies to the guest's stack to
+  a fixed size, so the stack pointer at main no longer moved. The strings themselves still did.
+  - QEMU writes the environment in its list order, inserting each variable at the head (util/envlist.c). So the
+    guest's order was the reverse of pimid's environment, and each string's address followed the lengths of the
+    strings around it.
+  - The guest still received installation and user values: PATH, LD_LIBRARY_PATH, HOME, and every PIMID_* variable,
+    including PIMID_QEMU, the emulator's path.
+  - The guest's startup scans these strings (the dynamic linker, getenv, the OpenMP runtime's OMP_* parsing), and
+    their alignment changes how many loads it makes: one pre-ROI memory access more or less was enough to move the
+    ROI.
+  - Measured on one serial cell launched four ways (the same variables set in another order; PIMID_QEMU through a
+    longer path; another working directory with extra variables): DDR4 vector_add 418459 / 399408 / 418459 /
+    399408 cycles; host baselines up to 0.2% apart.
+- **The fix** (src/main.cpp, guestLaunchOptions):
+  - Every variable of pimid's environment is removed (-U). The guest's set is added back (-E) in sorted order:
+    workload.env, the variables PIMID sets for the guest, and from pimid's environment OMP_*, GOMP_* and the 16
+    PIMID_* variables the shipped guest code reads (instrumentation API, MPI shim, benchmarks/include, splash3
+    barnes).
+  - PATH, LD_LIBRARY_PATH, HOME, USER, LOGNAME, LANG, LANGUAGE, LC_*, TZ and path-valued PIMID_* variables are no
+    longer passed. A workload that needs one sets it in workload.env. No shipped configuration, example or gate cell
+    relies on them; the shipped kernels load their libraries from the system paths.
+  - A value holding a comma (QEMU's -E splits on commas) stays in the host's order, with a warning.
+  - The MPI shim's shared-memory name has a fixed width ("/pimid_mpi_%010d"), so each rank's guest environment
+    has one length.
+- **Validation:**
+  - The same four launches now give one value per cell: DDR4 vector_add 393426, host DDR3 vector_add 18096, host
+    DDR3 stencil_2d 91969.
+  - Six jobs x 116 cells: all 107 serial cells are bit-identical.
+- **Data impact (serial cells against the launch fix's own validation):**
+  - device cycles max 5.21% (mean 0.67%, 6 of 48 unchanged);
+  - host baselines max 1.60% (mean 0.27%);
+  - PE-type cells max 0.11%;
+  - power max 0.51%;
+  - every checksum unchanged.
+
 ## 1.12.63 -- McPAT's clock-feasibility check now sees every array CACTI solved
 
 - **The defect** (user ruling 2026-10-26). The `[mcpat timing]` check (1.12.18) checks only arrays whose solution is

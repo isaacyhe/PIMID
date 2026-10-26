@@ -723,14 +723,14 @@ static void noteGuestBindNow() {
  *     (galloc.cpp GM_BASE_ADDR 0xABBA000000), which is mapped before it.
  *  2. The environment. QEMU copies its whole environment block onto the guest
  *     stack, so job ids, working directories and path lengths moved the
- *     stack pointer at main. The guest now gets: workload.env, the variables
- *     PIMID sets for it (OpenMP settings, LD_BIND_NOW, the MPI shim's), and
- *     from pimid's own environment only PIMID_*, OMP_*, GOMP_*, LC_*, PATH,
- *     LD_LIBRARY_PATH, HOME, USER, LOGNAME, LANG, LANGUAGE and TZ. A padding
- *     variable (PIMID_GUEST_ENV_PAD) then brings the strings QEMU copies to
- *     the stack (executable name, environment, arguments) to a multiple of
- *     4096 bytes, so the stack pointer at main depends only on the number of
- *     arguments and variables, not on their lengths.
+ *     stack pointer at main. The guest now gets, in a fixed order (see
+ *     guestLaunchOptions): workload.env, the variables PIMID sets for it
+ *     (OpenMP settings, LD_BIND_NOW, the MPI shim's), and from pimid's own
+ *     environment only OMP_*, GOMP_* and the PIMID_* variables the shipped
+ *     guest code reads. A padding variable (PIMID_GUEST_ENV_PAD) then brings
+ *     the strings QEMU copies to the stack (executable name, environment,
+ *     arguments) to a multiple of 4096 bytes, so the stack pointer at main
+ *     depends only on the number of arguments and variables.
  *  3. AT_RANDOM. QEMU fills the 16 auxv random bytes (and answers getrandom())
  *     from the host's generator; `-seed` makes both a fixed sequence.
  * The main stack is sized explicitly (`-s 8M`, QEMU's default) so the host's
@@ -742,20 +742,34 @@ static const char* const kGuestSeed       = "0";
 static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
 static const size_t      kGuestStringBlock = 4096;
 
+/* (1.12.64): the guest's environment holds configuration values only, in a fixed
+ * order. QEMU writes the strings in its list order (each variable is inserted at
+ * the head, util/envlist.c), so a string's address follows the lengths and the
+ * order of the strings around it, and the guest's startup scans them (ld.so,
+ * getenv, the OpenMP runtime's OMP_* parsing): the length of an installation
+ * path, or the order in which a job script set its variables, changed the
+ * number of loads it made. Every host variable is therefore removed (-U) and
+ * the guest's set is added back (-E) in sorted order; installation and user
+ * values (PATH, LD_LIBRARY_PATH, HOME, ... and path-valued PIMID_* variables
+ * such as PIMID_QEMU) are not part of it. */
+static const char* const kGuestPimidVars[] = {   // the PIMID_* variables the shipped guest code reads
+    "PIMID_ACTIVE", "PIMID_NUM_PES", "PIMID_MEMORY_TECH", "PIMID_PLACEMENT_LEVEL",            // instrumentation API
+    "PIMID_MPI_RANKS", "PIMID_MPI_RANK", "PIMID_MPI_SHM", "PIMID_MPI_TRACE",                   // MPI shim
+    "PIMID_MPI_CONTEND_POINTS", "PIMID_DEBUG_CONTEND", "PIMID_PIM_RUNTIME",
+    "PIMID_HOST_CORES", "PIMID_DEVICE_PES", "PIMID_SPM_CHECK_BYTES",                            // benchmarks/include
+    "PIMID_BARNES_POOL_FAULT", "PIMID_BARNES_COINCIDE_FAULT"};                                 // splash3 barnes
+
 static bool guestEnvKept(const std::string& name, const std::map<std::string, std::string>& workloadEnv) {
     if (workloadEnv.count(name)) return true;
-    static const char* const exact[] = {"PATH", "LD_LIBRARY_PATH", "HOME", "USER", "LOGNAME",
-                                        "LANG", "LANGUAGE", "TZ"};
-    for (const char* e : exact) if (name == e) return true;
-    static const char* const prefix[] = {"PIMID_", "OMP_", "GOMP_", "LC_"};
-    for (const char* p : prefix) if (name.compare(0, strlen(p), p) == 0) return true;
+    if (name.compare(0, 4, "OMP_") == 0 || name.compare(0, 5, "GOMP_") == 0) return true;
+    for (const char* v : kGuestPimidVars) if (name == v) return true;
     return false;
 }
 
 /* Called in the launch child after its last setenv(): the QEMU options that
  * fix the guest's initial image (see above). guestSet are the NAME=VALUE
- * entries the launch passes with -E (LD_BIND_NOW=1, a guest LD_PRELOAD);
- * they are emitted here too. binary/args are the guest's argv. */
+ * entries the launch adds (LD_BIND_NOW=1, a guest LD_PRELOAD); binary/args
+ * are the guest's argv. */
 static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                                                    const std::vector<std::string>& args,
                                                    const std::vector<std::string>& guestSet,
@@ -763,39 +777,51 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                                                    size_t* guestVars) {
     std::vector<std::string> o = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
                                   "-seed", kGuestSeed};
-    std::map<std::string, std::string> genv;   // name -> NAME=VALUE, as the guest will see it
+    std::map<std::string, std::string> genv;   // name -> NAME=VALUE, sorted by name
+    std::vector<std::string> inherited;        // kept values QEMU's -E cannot carry (a comma)
     for (char** e = environ; e && *e; ++e) {
         const std::string kv(*e);
         const size_t eq = kv.find('=');
         if (eq == std::string::npos || eq == 0) continue;
         const std::string name = kv.substr(0, eq);
+        if (guestEnvKept(name, workloadEnv) && name != kGuestEnvPadName && kv.find(',', eq) != std::string::npos) {
+            inherited.push_back(kv);   // stays in QEMU's list, in the host's order
+            continue;
+        }
+        o.push_back("-U"); o.push_back(name);
         if (guestEnvKept(name, workloadEnv) && name != kGuestEnvPadName) genv[name] = kv;
-        else { o.push_back("-U"); o.push_back(name); }
     }
     for (const auto& kv : guestSet) {
         const size_t eq = kv.find('=');
-        if (eq == std::string::npos) continue;
-        genv[kv.substr(0, eq)] = kv;
-        o.push_back("-E"); o.push_back(kv);
+        if (eq != std::string::npos) genv[kv.substr(0, eq)] = kv;
+    }
+    for (const auto& kv : inherited) {
+        std::cerr << "[guest] WARNING: " << kv.substr(0, kv.find('='))
+                  << " holds a comma, which QEMU's -E cannot carry: it is passed in the host's order, so the"
+                     " guest's initial image follows the order of pimid's environment" << std::endl;
     }
     size_t bytes = binary.size() + 1;   // QEMU copies the executable name (AT_EXECFN) ...
     for (const auto& kv : genv) bytes += kv.second.size() + 1;   // ... the environment ...
+    for (const auto& kv : inherited) bytes += kv.size() + 1;
     bytes += binary.size() + 1;   // ... and argv: argv[0] is the executable name as given
     for (const auto& a : args) bytes += a.size() + 1;
     const size_t fixed = strlen(kGuestEnvPadName) + 2;   // "NAME=" and the terminating NUL
     const size_t used = bytes + fixed;
     const size_t pad = (kGuestStringBlock - used % kGuestStringBlock) % kGuestStringBlock;
+    /* -E inserts at the head of QEMU's list: added in descending name order, the
+     * pad last, the guest's list is the pad, then the variables in ascending order. */
+    for (auto it = genv.rbegin(); it != genv.rend(); ++it) { o.push_back("-E"); o.push_back(it->second); }
     o.push_back("-E"); o.push_back(std::string(kGuestEnvPadName) + "=" + std::string(pad, 'x'));
-    if (guestVars) *guestVars = genv.size() + 1;
+    if (guestVars) *guestVars = genv.size() + inherited.size() + 1;
     return o;
 }
 
 static void noteGuestLaunch(size_t envVars) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
-              << kGuestSeed << "), " << envVars << " environment variables (workload.env, PIMID's own, and PIMID_* OMP_*"
-              << " GOMP_* LC_* PATH LD_LIBRARY_PATH HOME USER LOGNAME LANG LANGUAGE TZ from pimid's environment),"
-              << " strings padded to a multiple of " << kGuestStringBlock << " bytes [(1.12.62)]" << std::endl;
+              << kGuestSeed << "), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
+              << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), strings padded"
+              << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]" << std::endl;
 }
 
 /* Builds the full QEMU command line of a launch child: qemu, the guest-image
@@ -24184,7 +24210,10 @@ int main(int argc, char** argv) {
                 std::string pimid_mpi_lib = findPimidMpiLib();   // exits 2 if missing (1.11.91 item 13)
 
                 // Unique shm name per launch so concurrent pimid invocations don't collide
-                std::string shm_name = "/pimid_mpi_" + std::to_string(getpid());
+                /* (1.12.64): fixed width, so each rank's guest environment (PIMID_MPI_SHM) has one length */
+                char shm_buf[32];
+                snprintf(shm_buf, sizeof shm_buf, "/pimid_mpi_%010d", (int)getpid());
+                std::string shm_name = shm_buf;
 
                 std::cout << "MPI transport: libpimid_mpi.so (shm=" << shm_name << ")" << std::endl;
                 std::cout << "Launching " << ranks << " ranks (PIMID-managed multi-process)" << std::endl;
