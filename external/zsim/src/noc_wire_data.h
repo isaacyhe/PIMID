@@ -77,6 +77,7 @@ class NocWireData {
             snprintf(n, sizeof(n), "%sUnread", prefix); unread.init(strdup(n), "packets whose data could not be read (not counted)"); s->append(&unread);
             snprintf(n, sizeof(n), "%sWrPackets", prefix); wrPackets.init(strdup(n), "data messages that are write requests (header + address + line)"); s->append(&wrPackets);
             snprintf(n, sizeof(n), "%sHdrBits", prefix); hdrBits.init(strdup(n), "header bits sent (PIMID's own header format)"); s->append(&hdrBits);
+            snprintf(n, sizeof(n), "%sCtrlPackets", prefix); ctrlPackets.init(strdup(n), "control messages (read requests, write acks: the header word alone)"); s->append(&ctrlPackets);
             for (int i = 0; i < NW; i++) {
                 snprintf(n, sizeof(n), "%s%uBits", prefix, width(i));
                 snprintf(d, sizeof(d), "wire-bits carried at %u b per flit (flits x width)", width(i));
@@ -123,9 +124,11 @@ class NocWireData {
 
         /* PIMID's packet header (user ruling 2026-10-26: PIMID's own packet header), bounded to ONE 64-bit word -- the
          * noc.header_bits (64) the fabric timing already moves with every data message, so
-         * timing and energy see the same 576-bit message. The device fabric moves one DATA
-         * message per remote access: a READ RESPONSE (the line, from the target back to the
-         * requester) or a WRITE REQUEST (the line, to the target). Fields, LSB first:
+         * timing and energy see the same 576-bit message. (user ruling 2026-10-26: control messages): a remote
+         * access is TWO messages -- a read: a READ REQUEST (control: the header word alone, to
+         * the target) + a READ RESPONSE (the line, back to the requester); a write: a WRITE
+         * REQUEST (the line, to the target) + a WRITE ACK (control, back) -- the 64-bit
+         * control_message_bits Garnet moves for its Control class. Fields, LSB first:
          *   dst    nodeBits   destination node (Garnet node id): routing needs only this
          *   src    nodeBits   source node: where the response / write ack returns
          *   type   2          0 read request, 1 write request (+data), 2 read response (+data),
@@ -145,7 +148,7 @@ class NocWireData {
         struct HeaderLayout { uint32_t nodeBits = 12, tagBits = 4; bool oooTags = false;
                               uint32_t addrBits() const { return 64 - 2 * nodeBits - 2 - tagBits; } };
         HeaderLayout hdr;
-        Counter wrPackets, hdrBits;
+        Counter wrPackets, hdrBits, ctrlPackets;
 
         /* One data message on stream st: the 64-bit header word from the fields' real values,
          * then the line ALREADY READ for this access (line: lineBytes bytes, or nullptr). */
@@ -156,15 +159,25 @@ class NocWireData {
          * order instead. */
         void countDataMessage(Stream& st, uint32_t dst, uint32_t src, bool isWrite, uint64_t addrOffset,
                               uint32_t slotTag, const uint8_t* line, uint32_t lineBytes) {
+            countAccess(st, dst, src, isWrite, addrOffset, slotTag, line, lineBytes, false);
+        }
+        /* One remote access (user ruling 2026-10-26: control messages): with ctrl, its control message
+         * (a read's request before its response; a write's ack after its request) on the
+         * same stream, in transfer order, under the access's one tag. */
+        void countAccess(Stream& st, uint32_t dst, uint32_t src, bool isWrite, uint64_t addrOffset,
+                         uint32_t slotTag, const uint8_t* line, uint32_t lineBytes, bool ctrl) {
             const uint64_t lineAddr = addrOffset;
             uint8_t pkt[8 + 128];
-            if (!line || lineBytes > 128) {
-                unread.atomicInc();
-                return;
-            }
             uint32_t tag;
             if (hdr.oooTags) { std::lock_guard<std::mutex> g(st.mu); tag = st.nextTag++; }
             else tag = slotTag;
+            const bool lineOk = line && lineBytes <= 128;
+            if (ctrl && !isWrite) countControl(st, dst, src, false, lineAddr, tag);
+            if (!lineOk) {
+                unread.atomicInc();
+                if (ctrl && isWrite) countControl(st, dst, src, true, lineAddr, tag);
+                return;
+            }
             const uint64_t nmask = (1ull << hdr.nodeBits) - 1, tmask = (1ull << hdr.tagBits) - 1;
             const uint32_t ab = hdr.addrBits();
             uint64_t w = 0; uint32_t pos = 0;
@@ -180,6 +193,25 @@ class NocWireData {
             countPacket(st, pkt, 8 + lineBytes, 0, NW - 1);
             hdrBits.atomicInc(hb);
             if (isWrite) wrPackets.atomicInc();
+            if (ctrl && isWrite) countControl(st, dst, src, true, lineAddr, tag);
+        }
+        /* A control message: the header word alone. A read request (type 0) goes to the
+         * target and carries the line address; a write ack (type 3) returns to the writer,
+         * matched by its tag (no address). */
+        void countControl(Stream& st, uint32_t dst, uint32_t src, bool ack, uint64_t lineAddr, uint32_t tag) {
+            const uint64_t nmask = (1ull << hdr.nodeBits) - 1, tmask = (1ull << hdr.tagBits) - 1;
+            const uint32_t ab = hdr.addrBits();
+            uint64_t w = 0; uint32_t pos = 0;
+            w |= ((uint64_t)(ack ? src : dst) & nmask) << pos; pos += hdr.nodeBits;
+            w |= ((uint64_t)(ack ? dst : src) & nmask) << pos; pos += hdr.nodeBits;
+            w |= (uint64_t)(ack ? 3 : 0) << pos; pos += 2;
+            w |= ((uint64_t)tag & tmask) << pos; pos += hdr.tagBits;
+            if (!ack && ab > 0) w |= (lineAddr & ((ab >= 64) ? ~0ull : ((1ull << ab) - 1))) << pos;
+            uint8_t pkt[8];
+            memcpy(pkt, &w, 8);
+            countPacket(st, pkt, 8, 0, NW - 1);
+            hdrBits.atomicInc(ack ? pos : 64);
+            ctrlPackets.atomicInc();
         }
 
         /* A host fabric data message: the line only, on the 256-bit data path. */

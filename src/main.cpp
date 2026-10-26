@@ -1252,6 +1252,7 @@ struct WireActivityCounts {
     uint64_t bits[NW] = {0, 0, 0, 0, 0, 0}, rise[NW] = {0, 0, 0, 0, 0, 0}, toggles[NW] = {0, 0, 0, 0, 0, 0};
     uint64_t packets = 0, unread = 0;
     uint64_t wr_packets = 0, hdr_bits = 0;   // PIMID's own header (user ruling 2026-10-26: PIMID's own packet header)
+    uint64_t ctrl_packets = 0;               // control messages (user ruling 2026-10-26: control messages)
     bool present = false;
 };
 static const uint32_t kWireWidths[WireActivityCounts::NW] = {8, 16, 32, 64, 128, 256};
@@ -1946,6 +1947,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                     if (k == "Unread")  { wc->unread += val; continue; }
                     if (k == "WrPackets") { wc->wr_packets += val; continue; }
                     if (k == "HdrBits")   { wc->hdr_bits += val; continue; }
+                    if (k == "CtrlPackets") { wc->ctrl_packets += val; continue; }
                     for (int i = 0; i < WireActivityCounts::NW; i++) {
                         const std::string ws = std::to_string(kWireWidths[i]);
                         if (k == ws + "Bits")    { wc->bits[i] += val; break; }
@@ -9875,14 +9877,36 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
     /* 1.11.92 (F4/F7): flits per packet as Garnet cut them (true flits over
      * packets), used to turn a level's measured flit traversals back into
-     * packet crossings before they are re-cut at the level's own width. Every
-     * injection in this tree is a data message, so the ratio is exact; if
-     * control packets are ever recorded it becomes their mix-weighted mean
-     * and the re-cut below applies the data size to both. */
+     * packet crossings before they are re-cut at the level's own width.
+     * (user ruling 2026-10-26: control messages): the fabric carries data messages (576 b) and
+     * control messages (the 64-bit header word); fpp is then their packet-
+     * weighted mean, and the re-cut takes the same mean at the level's width
+     * (flitsAt). A remote access's two messages cross the same levels (one
+     * each way), so every level carries the classes in the run's proportion;
+     * the MPI message packets (data only) are the exception, priced in the
+     * run's mix. With no control message the re-cut is the data size, as
+     * before. */
     const uint64_t pkts_counted = garnet.data_packets + garnet.control_packets;
     const double fpp = (pkts_counted > 0 && garnet.total_flits > 0)
         ? static_cast<double>(garnet.total_flits) / static_cast<double>(pkts_counted)
         : static_cast<double>((data_bits + garnet_flit - 1) / garnet_flit);
+    const uint32_t ctrl_bits = garnet.control_msg_bits > 0 ? garnet.control_msg_bits : 64;
+    const bool has_ctrl = garnet.control_packets > 0 && pkts_counted > 0;
+    auto flitsAt = [&](int Wd) -> double {
+        const uint32_t w = static_cast<uint32_t>(std::max(1, Wd));
+        const uint32_t fd = (data_bits + w - 1) / w;
+        if (!has_ctrl) return static_cast<double>(fd);
+        const uint32_t fc = (ctrl_bits + w - 1) / w;
+        return (static_cast<double>(garnet.data_packets) * fd + static_cast<double>(garnet.control_packets) * fc)
+             / static_cast<double>(pkts_counted);
+    };
+    auto cutText = [&](int Wd) -> std::string {
+        std::ostringstream t;
+        if (!has_ctrl) t << data_bits << " b at " << Wd << " b";
+        else t << data_bits << " b data / " << ctrl_bits << " b control messages, " << garnet.data_packets << ":"
+               << garnet.control_packets << " packets, at " << Wd << " b";
+        return t.str();
+    };
 
     const int vcs  = std::max(1, config.noc_vcs_per_vnet);
     const int bufs = std::max(1, config.noc_buffers_per_vc);
@@ -10127,12 +10151,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                             std::cout << " " << kWireWidths[i] << "b " << static_cast<double>(g_dev_wire.rise[i]) / g_dev_wire.bits[i];
                                     std::cout << "; packet = PIMID's own 64-bit header word (destination and source node 12 b each, type"
                                  " 2 b, tag ceil(log2 noc.mlp) b; the line address (its offset in the destination window) in the rest,"
-                                 " write requests only; message class and length implied by the type; the fields' real values),"
+                                 " requests only (write requests; read requests, which are control messages); message class and length implied by the type; the fields' real values),"
                                  " the same 64 b the fabric timing moves (noc.header_bits); tag = the requesting PE's slot at"
                                  " its port (blocking cores) or the port's allocation order (OOO); address = the window offset),"
                                  " + the 64 B line READ at the access: "
-                              << (g_dev_wire.packets - g_dev_wire.wr_packets) << " read responses, " << g_dev_wire.wr_packets
-                              << " write requests, mean bits carrying fields "
+                              << (g_dev_wire.packets - g_dev_wire.wr_packets - g_dev_wire.ctrl_packets) << " read responses, " << g_dev_wire.wr_packets
+                              << " write requests, " << g_dev_wire.ctrl_packets
+                              << " control messages (read requests and write acks: the header word alone), mean bits carrying fields "
                               << (g_dev_wire.packets ? static_cast<double>(g_dev_wire.hdr_bits) / g_dev_wire.packets : 0.0)
                               << " of 64; order = per source port in transfer order (the per-link order is"
                                  " not known: Garnet carries no payload); random data would give 0.25";
@@ -10224,8 +10249,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                      * built channel routers. McPAT prices both (CACTI-3DD). */
                     const char* wsrc = nullptr;
                     const int W = levelWidth(lvl, &wsrc);
-                    const uint32_t fW = (data_bits + static_cast<uint32_t>(W) - 1) /
-                                        static_cast<uint32_t>(W);
+                    const double fW = flitsAt(W);
                     const uint64_t fd = garnet.level_tsv_die_crossings[lvl];
                     const double pkd = static_cast<double>(fd) / fpp;
                     const uint64_t dacc = static_cast<uint64_t>(std::llround(pkd * fW));
@@ -10278,7 +10302,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                               << (garnet.level_source == "tier_walk" ? "analytical tier walk"
                                                                      : "Garnet path walk")
                               << ") = " << pkd << " packet-boundary crossings x " << fW
-                              << " flits (" << data_bits << " b at " << W << " b, " << wsrc
+                              << " flits (" << cutText(W) << ", " << wsrc
                               << ") = " << dacc << " flit-boundary crossings to McPAT; "
                               << segs << " TSV segment(s) of " << W << " TSVs (sum of the die"
                                  " index over the built channel routers); mean "
@@ -10294,8 +10318,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             if (!config.power_model_noc_links) return;
             const char* wsrc = nullptr;
             const int W = levelWidth(lvl, &wsrc);
-            const uint32_t fW = (data_bits + static_cast<uint32_t>(W) - 1) /
-                                static_cast<uint32_t>(W);
+            const double fW = flitsAt(W);
             const double pk = static_cast<double>(lf) / fpp;
             const uint64_t acc = static_cast<uint64_t>(std::llround(pk * fW));
             NoCLevel lk;
@@ -10338,7 +10361,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " links ("
                       << lk.name << "): " << n_links << " up-link(s) to L" << parent
                       << ", traversals " << acc << " = " << pk << " packet crossings x "
-                      << fW << " flits (" << data_bits << " b at " << W << " b, " << wsrc
+                      << fW << " flits (" << cutText(W) << ", " << wsrc
                       << "); crossings = " << lf << " link flit traversals / " << fpp
                       << " flits per packet, "
                       << (garnet.level_source == "tier_walk" ? "from the analytical tier walk"
@@ -10553,14 +10576,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             double level_weight = 1.0 / (1 + lvl - pe_level);
             uint64_t level_accesses = 0;
             std::ostringstream how;
-            const uint32_t fW = (data_bits + static_cast<uint32_t>(W) - 1) /
-                                static_cast<uint32_t>(W);
+            const double fW = flitsAt(W);
             if (has_levels) {
                 const double pk = static_cast<double>(garnet.level_router_traversals[lvl]) / fpp;
                 level_accesses = static_cast<uint64_t>(std::llround(pk * fW));
                 how << "accesses " << level_accesses << " = " << pk
-                    << " packet crossings x " << fW << " flits (" << data_bits
-                    << " b at " << W << " b, " << wsrc << "); crossings = "
+                    << " packet crossings x " << fW << " flits (" << cutText(W)
+                    << ", " << wsrc << "); crossings = "
                     << garnet.level_router_traversals[lvl]
                     << " router flit traversals / " << fpp << " flits per packet, "
                     << (garnet.level_source == "tier_walk"
@@ -19776,18 +19798,18 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
         config.noc_routing_table_file = yamlString(root["noc"]["routing_table_file"], config.noc_routing_table_file, sc.pfx + "noc.routing_table_file");
         // Message sizes in bits (0 = use defaults: control=64, data=576)
         config.noc_control_msg_bits = yamlInt(root["noc"]["control_message_bits"], config.noc_control_msg_bits, sc.pfx + "noc.control_message_bits");
-        /* 1.11.93: the key is read and reaches Garnet, but no call site
-         * injects a Control message (one data packet per access; the
-         * response is charged as 2 x one-way), so it steers nothing --
-         * see the 1.11.92 open items. Said once per process, not
-         * modelled. */
-        if (root["noc"]["control_message_bits"]) {
+        /* (user ruling 2026-10-26: control messages): the key sizes the control messages
+         * every remote access now injects (a read's request, a write's ack).
+         * PIMID's control message is its 64-bit header word; another size is
+         * moved by the fabric timing and the flit counts, while the measured
+         * wire activity still counts the 64-bit word. Said once per process. */
+        if (root["noc"]["control_message_bits"] && config.noc_control_msg_bits > 0 && config.noc_control_msg_bits != 64) {
             static bool warned_ctrl_bits = false;
             if (!warned_ctrl_bits) {
                 warned_ctrl_bits = true;
-                std::cerr << "[config] WARNING: " << sc.pfx << "noc.control_message_bits is"
-                             " accepted but inert in this release: every"
-                             " fabric injection is a Data message" << std::endl;
+                std::cerr << "[config] WARNING: " << sc.pfx << "noc.control_message_bits = " << config.noc_control_msg_bits
+                          << ": the fabric moves control messages of this size; the measured wire activity"
+                             " counts PIMID's 64-bit header word" << std::endl;
             }
         }
         config.noc_data_msg_bits = yamlInt(root["noc"]["data_message_bits"], config.noc_data_msg_bits, sc.pfx + "noc.data_message_bits");

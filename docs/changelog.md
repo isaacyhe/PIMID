@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.70 -- Device fabric: control messages carried (read = control request + data response, write = data request + control ack)
+
+- **Two messages per remote access (user ruling 2026-10-26):** a PE's remote read is a control request (PIMID's
+  64-bit header word alone, `noc.control_message_bits`, Garnet's Control class) to the target and a data response
+  (header + 64 B line, 576 b, the Data class) back; a remote write is a data request and a control ack back. Before,
+  each access injected one data message from requester to target and was charged 2 x its one-way latency.
+- **Timing:** both messages are replayed on Garnet (contention, flits, router and link traversals). The access
+  pays request leg + response leg, each at its own class's measured pair latency: the per-pair table has a data
+  plane and a control plane, published and epoch-frozen exactly as before (a pair with no sample takes the ladder
+  cost of its distance). The response is injected when the request has arrived and the target's access is done
+  (request stamp + request leg + target latency). Thread-MPI pricing reads the epoch's mean over all messages; with
+  one message of each class per access, 2 x that mean is the mean control leg + the mean data leg. The standalone
+  MC hop carries the same two messages. Not changed: the shared multi-rank NoC log (PIMID_NOC_SHM, process-MPI)
+  carries no message class and stays one data message per access; MPI message packets stay data messages; the
+  analytical NoC records the control message's tier walk (counts and energy) and keeps its ladder round trip.
+- **Energy:** a level's measured flit traversals become packet crossings over the run's mean flits per packet and
+  are re-cut at the level's width with the same packet-weighted mean of the two sizes (576 b data, 64 b control);
+  a remote access's two messages cross the same levels, so the mix holds level by level (the MPI data packets are
+  the exception). The measured wire activity counts each control message on its source port's stream in transfer
+  order (a read's request before its response, a write's ack after its request) with its real fields: a read
+  request (type 0) carries destination, source, tag and the window-relative line address; a write ack (type 3)
+  carries destination, source and tag. New counter `nocWireCtrlPackets`; the NoC report line lists the control
+  messages.
+- **`noc.control_message_bits`** is live (it was accepted but inert): it sizes the control messages; a value
+  other than 64 warns that the wire activity counts the 64-bit header word.
+- **Impact:** device-fabric flits per remote access rise by ceil(64 / W) (8 at 8 b, 1 at 64 b and wider); the read
+  request leg shortens to the control message's serialisation; NoC dynamic energy and the OpenMP / co-sim run times
+  change. Runs without fabric traffic (serial device cells, host-only runs) are unchanged.
+
 ## 1.12.69 -- PIMID's own NoC packet header in one 64-bit word; wire activity counted on its real field values
 
 - **Header format (user ruling 2026-10-26, "keep it within 64 bits"):** the device fabric's data message (one per

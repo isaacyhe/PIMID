@@ -837,11 +837,11 @@ public:
     // -- Phase-level batch: record all PE remote accesses with their
     //    real ZSim cycle timestamps, then replay through Garnet.
     /* 1.11.92 (F2): `ctrl` selects MessageSizeType::Control (control_msg_bits)
-     * over Data (data_msg_bits) for the injection. Every recording site in
-     * this tree records a data-bearing access (one packet per access, RTT =
-     * 2 x its one-way latency), so all of them pass Data today; the field
-     * exists so a control injection is flitised and counted at its own size
-     * the moment one is recorded. */
+     * over Data (data_msg_bits) for the injection. (user ruling 2026-10-26: control messages): a
+     * remote PE access records its two messages -- a read: a control request
+     * (src -> dst) + a data response (dst -> src); a write: a data request +
+     * a control ack -- each flitised and counted at its own size. The MPI
+     * message packets stay data. */
     struct BatchAccess { uint32_t src, dst; uint64_t cycle; uint8_t ctrl = 0; };
 private:
     std::vector<BatchAccess> phaseBatch_;
@@ -852,7 +852,15 @@ private:
      * the same way batchAvgLatency_ is; read lock-free by the PE interfaces. */
     std::unique_ptr<std::atomic<uint32_t>[]> pairLat_;
     uint32_t pairLatN_ = 0;
-    void ensurePairTable_() { if (!pairLat_ && numNodes_ > 0) { pairLatN_ = numNodes_; pairLat_.reset(new std::atomic<uint32_t>[(size_t)numNodes_ * numNodes_]); for (size_t i = 0; i < (size_t)numNodes_ * numNodes_; ++i) pairLat_[i].store(0, std::memory_order_relaxed); } }
+    /* (user ruling 2026-10-26: control messages): one plane per message class -- data (cells
+     * 0 .. N^2-1, the table it always was) and control (N^2 .. 2 N^2-1) --
+     * so a control message and a data message of one pair are priced at their
+     * own measured latencies. Keys of the per-pair accumulators carry the
+     * class in bit 63 (src << 32 | dst otherwise, as before). */
+    static constexpr uint64_t kPairCtrlKey = 1ull << 63;
+    size_t pairCells_() const { return 2 * (size_t)pairLatN_ * pairLatN_; }
+    size_t pairIdx_(uint32_t src, uint32_t dst, bool ctrl) const { return (ctrl ? (size_t)pairLatN_ * pairLatN_ : 0) + (size_t)src * pairLatN_ + dst; }
+    void ensurePairTable_() { if (!pairLat_ && numNodes_ > 0) { pairLatN_ = numNodes_; pairLat_.reset(new std::atomic<uint32_t>[pairCells_()]); for (size_t i = 0; i < pairCells_(); ++i) pairLat_[i].store(0, std::memory_order_relaxed); } }
     volatile uint64_t batchLastPhase_ = 0;
     lock_t batchLock_;
 
@@ -998,9 +1006,9 @@ public:
         return batchAvgLatency_.load(std::memory_order_relaxed);
     }
     /* 1.11.97 (H09): this pair's smoothed latency; 0 when no packet of this pair has been replayed yet. */
-    uint32_t getPairLatency(uint32_t src, uint32_t dst) const {
+    uint32_t getPairLatency(uint32_t src, uint32_t dst, bool ctrl = false) const {   // ctrl: the control-message plane (user ruling 2026-10-26: control messages)
         if (!pairLat_ || src >= pairLatN_ || dst >= pairLatN_) return 0;
-        return pairLat_[(size_t)src * pairLatN_ + dst].load(std::memory_order_relaxed);
+        return pairLat_[pairIdx_(src, dst, ctrl)].load(std::memory_order_relaxed);
     }
 
     // -- 1.9.0 epoch-frozen feedback API -------------------------------------
@@ -1073,7 +1081,7 @@ public:
     void enterCutAxis() {
         futex_lock(&epochLock_);
         ensurePairTable_();
-        bootSnap_.pair.assign((size_t)pairLatN_ * pairLatN_, 0);
+        bootSnap_.pair.assign(pairCells_(), 0);
         for (size_t i = 0; pairLat_ && i < bootSnap_.pair.size(); ++i) bootSnap_.pair[i] = pairLat_[i].load(std::memory_order_relaxed);
         bootSnap_.avg = batchAvgLatency_.load(std::memory_order_relaxed);
         epochPairAcc_.clear(); epochAvgLat_.clear(); snaps_.clear();
@@ -1094,11 +1102,11 @@ public:
         --it;
         return &it->second;
     }
-    uint32_t frozenPairLatency(int64_t e, uint32_t src, uint32_t dst) {
+    uint32_t frozenPairLatency(int64_t e, uint32_t src, uint32_t dst, bool ctrl = false) {   // ctrl: the control plane (user ruling 2026-10-26: control messages)
         futex_lock(&epochLock_);
         const FrozenSnap* s = snapFor_(e);
         uint32_t v = 0;
-        if (src < pairLatN_ && dst < pairLatN_ && (size_t)src * pairLatN_ + dst < s->pair.size()) v = s->pair[(size_t)src * pairLatN_ + dst];
+        if (src < pairLatN_ && dst < pairLatN_ && pairIdx_(src, dst, ctrl) < s->pair.size()) v = s->pair[pairIdx_(src, dst, ctrl)];
         futex_unlock(&epochLock_);
         return v;
     }
@@ -1128,15 +1136,15 @@ public:
             for (const auto& kv : it->second) {
                 sum += kv.second.first; cnt += kv.second.second;
                 if (!pairLat_ || kv.second.second == 0) continue;
-                const uint32_t ps = (uint32_t)(kv.first >> 32), pd = (uint32_t)(kv.first & 0xffffffffu);
+                const uint32_t ps = (uint32_t)((kv.first >> 32) & 0x7fffffffu), pd = (uint32_t)(kv.first & 0xffffffffu);
                 if (ps >= pairLatN_ || pd >= pairLatN_) continue;
-                pairLat_[(size_t)ps * pairLatN_ + pd].store((uint32_t)(kv.second.first / kv.second.second), std::memory_order_relaxed);
+                pairLat_[pairIdx_(ps, pd, (kv.first & kPairCtrlKey) != 0)].store((uint32_t)(kv.second.first / kv.second.second), std::memory_order_relaxed);
             }
             if (cnt) batchAvgLatency_.store((uint32_t)(sum / cnt), std::memory_order_relaxed);
             frozenEpochsPublished_++;
             if (cutAxis_) {   // 1.12.18: the epoch's snapshot, read by key
                 FrozenSnap& sn = snaps_[it->first];
-                sn.pair.resize((size_t)pairLatN_ * pairLatN_);
+                sn.pair.resize(pairCells_());
                 for (size_t i = 0; i < sn.pair.size(); ++i) sn.pair[i] = pairLat_[i].load(std::memory_order_relaxed);
                 sn.avg = batchAvgLatency_.load(std::memory_order_relaxed);
                 anyPublished_ = true; lastPublishedEpoch_ = it->first;
@@ -1280,6 +1288,7 @@ private:
         std::unordered_map<uint64_t, uint64_t> tagToInjectTick;
         std::unordered_map<uint64_t, uint32_t> tagToSrc;  // epoch-dump attribution
         std::unordered_map<uint64_t, uint32_t> tagToDst;  // 1.11.97 (H09): per-pair attribution
+        std::unordered_map<uint64_t, uint8_t> tagToCtrl;  // the message class (user ruling 2026-10-26: control messages)
         std::map<uint64_t, std::pair<uint64_t,uint32_t>> perPairLat;   // (src<<32|dst) -> {latSum, cnt}
         std::map<uint32_t, std::pair<uint64_t,uint32_t>> perSrcLat;  // src->{latSum,cnt}
         std::unordered_set<uint32_t> dstSet;
@@ -1334,6 +1343,7 @@ private:
                     tagToInjectTick[tag] = gem5::curTickRef();
                     tagToSrc[tag] = acc.src;
                     tagToDst[tag] = acc.dst;   // 1.11.97 (H09)
+                    if (acc.ctrl) tagToCtrl[tag] = 1;
                     tag++;
                 }
                 nextInjectIdx++;
@@ -1360,7 +1370,8 @@ private:
                             ps.first += lat; ps.second += 1;
                             auto dt = tagToDst.find(pktTag);   // 1.11.97 (H09)
                             if (dt != tagToDst.end()) {
-                                auto& pp = perPairLat[((uint64_t)st->second << 32) | dt->second];
+                                const uint64_t ck = tagToCtrl.count(pktTag) ? kPairCtrlKey : 0;   // the class plane (user ruling 2026-10-26: control messages)
+                                auto& pp = perPairLat[ck | ((uint64_t)st->second << 32) | dt->second];
                                 pp.first += lat; pp.second += 1;
                             }
                         }
@@ -1399,10 +1410,10 @@ private:
             ensurePairTable_();
             if (pairLat_ && !frozenPublish_) {
                 for (const auto& kv : perPairLat) {
-                    uint32_t ps = (uint32_t)(kv.first >> 32), pd = (uint32_t)(kv.first & 0xffffffffu);
+                    uint32_t ps = (uint32_t)((kv.first >> 32) & 0x7fffffffu), pd = (uint32_t)(kv.first & 0xffffffffu);
                     if (ps >= pairLatN_ || pd >= pairLatN_ || kv.second.second == 0) continue;
                     uint32_t nv = (uint32_t)(kv.second.first / kv.second.second);
-                    auto& cell = pairLat_[(size_t)ps * pairLatN_ + pd];
+                    auto& cell = pairLat_[pairIdx_(ps, pd, (kv.first & kPairCtrlKey) != 0)];
                     uint32_t ov = cell.load(std::memory_order_relaxed);
                     cell.store((ov == 0) ? nv : (ov + nv) / 2, std::memory_order_relaxed);
                 }
@@ -1779,6 +1790,9 @@ public:
                 uint32_t mn = 0, mx = 0; uint64_t sum = 0, n = 0;
                 for (size_t i = 0; i < (size_t)pairLatN_ * pairLatN_; ++i) { uint32_t v = pairLat_[i].load(std::memory_order_relaxed); if (!v) continue; if (!n || v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
                 info("  Per-pair latency (H09): %lu source-destination pairs sampled; min %u, max %u, mean %.1f cycles (unsampled pairs take the ladder cost of their distance)", (unsigned long)n, mn, mx, n ? (double)sum / n : 0.0);
+                mn = mx = 0; sum = n = 0;   // the control-message plane (user ruling 2026-10-26: control messages)
+                for (size_t i = (size_t)pairLatN_ * pairLatN_; i < pairCells_(); ++i) { uint32_t v = pairLat_[i].load(std::memory_order_relaxed); if (!v) continue; if (!n || v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
+                if (n) info("  Per-pair latency, control messages: %lu pairs sampled; min %u, max %u, mean %.1f cycles", (unsigned long)n, mn, mx, (double)sum / n);
             }
         }
     }

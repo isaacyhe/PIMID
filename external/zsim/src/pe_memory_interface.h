@@ -783,7 +783,7 @@ public:
             // own MC (fewest hops -> fastest), coarser placement reaches a distant
             // shared MC (more hops). Keep it for device-only AND co-sim.
             if (zinfo->hierarchy.mcStandalone) {
-                lat += mcHopLatency(targetUnit, req.cycle, req.srcId);
+                lat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
                 // E16 site 1: the ONLY fabric traffic a local access makes.
                 zinfo->pgres.noc.touch(zinfo->numPhases);
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
@@ -820,7 +820,7 @@ public:
                     // the fabric is marked only for the MC hop, as in the local
                     // path -- not by falling through to the routed-path marker.
                     if (zinfo->hierarchy.mcStandalone) {
-                        lat += mcHopLatency(targetUnit, req.cycle, req.srcId);
+                        lat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
                         zinfo->pgres.noc.touch(zinfo->numPhases);
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
                     }
@@ -836,6 +836,21 @@ public:
                 zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
                 uint32_t srcNode = (uint32_t)mcId_ % gn->getNumNodes();
                 uint32_t dstNode = (uint32_t)dstEp % gn->getNumNodes();
+                /* (user ruling 2026-10-26: control messages): the access is two messages on Garnet's
+                 * own classes -- a read: a CONTROL request (the 64-bit header word,
+                 * src -> dst) + a DATA response (header + line, dst -> src); a write: a
+                 * DATA request + a CONTROL ack. Both are replayed (contention, flits) and
+                 * the access pays request leg + response leg, each at its class's
+                 * measured pair latency. The response leaves the target when the
+                 * request has arrived and the target's access is done (request stamp +
+                 * request leg + remoteLat). The shared multi-rank log (PIMID_NOC_SHM)
+                 * carries no message class: there the access stays one data message
+                 * (RTT = 2 x its one-way latency), as before. */
+                const bool isWr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+                const bool ctrlMsgs = (sharedNoc() == nullptr);
+                const bool reqCtrl = ctrlMsgs && !isWr;
+                uint64_t respStamp = 0; bool respRec = false;
+                uint32_t legReq = 0, legResp = 0;
                 /* (user ruling 2026-10-25: measured wire activity) the data message this access
                  * puts on the tree -- PIMID's own header with its real field values (user ruling 2026-10-26: PIMID's own packet header)
                  * (destination, source, type, tag; the line address on a write request) + the line
@@ -858,8 +873,9 @@ public:
                             break;
                         }
                     const uint32_t slot = req.srcId % std::max(1u, zinfo->hierarchy.pesPerMC);   // the PE's slot at this port
-                    zinfo->nocWire->countDataMessage(wireStream_, dstNode, srcNode, wr, off, slot,
-                                                     (al.ok && al.lineAddr == req.lineAddr) ? al.b : nullptr, al.n);
+                    zinfo->nocWire->countAccess(wireStream_, dstNode, srcNode, wr, off, slot,
+                                                (al.ok && al.lineAddr == req.lineAddr) ? al.b : nullptr, al.n,
+                                                ctrlMsgs);   // + its control message (user ruling 2026-10-26: control messages)
                 }
                 uint32_t networkLat;
                 // Synchronous shared-Garnet accounting (the ONLY detailed NoC):
@@ -912,9 +928,11 @@ public:
                     // axis (skew-free); the replay/fold is NOT done here on the access
                     // path -- it is done at the phase barrier by the single-threaded
                     // barrier cut (foldByCut from EndOfPhaseActions).
-                    if (zinfo->hierarchy.mpiNocBaselined)
-                        gn->recordBatchAccess(srcNode, dstNode,
-                                              perCoreRoiRel(req.srcId, req.cycle));
+                    if (zinfo->hierarchy.mpiNocBaselined) {
+                        respStamp = perCoreRoiRel(req.srcId, req.cycle);
+                        gn->recordBatchAccess(srcNode, dstNode, respStamp, reqCtrl);
+                        respRec = ctrlMsgs;
+                    }
                 } else {
                     // OMP / non-MPI: record on the global phase clock. 1.12.18
                     // (ruling 2026-10-24, epoch-frozen): no inline drain by the
@@ -924,10 +942,10 @@ public:
                     // 1.12.18 (ruling 2026-10-24, full mechanism): after the ROI
                     // baseline on the core's ROI-relative clock, folded at the
                     // consistent cut (as thread-MPI); before it on the phase grid.
-                    if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
-                        gn->recordBatchAccess(srcNode, dstNode, cutRoiRel(req.srcId, req.cycle));
-                    else
-                        gn->recordBatchAccess(srcNode, dstNode, phaseStamp(req.cycle));
+                    respStamp = (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
+                              ? cutRoiRel(req.srcId, req.cycle) : phaseStamp(req.cycle);
+                    gn->recordBatchAccess(srcNode, dstNode, respStamp, reqCtrl);
+                    respRec = ctrlMsgs;
                 }
                 if (sn && zinfo->numPhases > batchLastPhase_) {
                     __sync_fetch_and_add(&zinfo->hierarchy.nocInlineDrain, 1);
@@ -958,12 +976,17 @@ public:
                         garnetLat = forceAnalyticalPricing()
                             ? 0
                             : epochFrozenNocLat(gn, sn, req.cycle, req.srcId);
+                        /* the epoch's mean over every replayed message: with each access
+                         * replaying one message of each class, 2 x the mean is the mean
+                         * control leg + the mean data leg (user ruling 2026-10-26: control messages) */
+                        legReq = legResp = garnetLat;
                     } else {
                         /* 1.11.97 (review H09 / x02-7): THIS PAIR's measured latency,
                          * not the batch-wide mean -- a near unit and a far one used
                          * to cost the same. A pair with no sample yet takes the
                          * ladder cost of its tree distance (the analytical tier
                          * walk), never the global average. */
+                        int64_t fe = -2;   // -2: the live table
                         if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined) {
                             /* 1.12.18 (ruling 2026-10-24): the frozen per-pair table
                              * of epoch k - lag, k the epoch of this access on its
@@ -971,9 +994,16 @@ public:
                             const uint32_t E = gn->detEpochPhases();
                             const uint64_t eL = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * (E > 0 ? E : 1);
                             const uint64_t k = cutRoiRel(req.srcId, req.cycle) / eL;
-                            garnetLat = gn->frozenPairLatency((k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1, srcNode, dstNode);
-                        } else
-                        garnetLat = gn->getPairLatency(srcNode, dstNode);
+                            fe = (k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1;
+                        }
+                        /* (user ruling 2026-10-26: control messages): each leg at its own class's pair latency
+                         * (the request src -> dst, the response dst -> src) */
+                        auto pairOf = [&](uint32_t s, uint32_t d, bool c) -> uint32_t {
+                            return (fe != -2) ? gn->frozenPairLatency(fe, s, d, c) : gn->getPairLatency(s, d, c);
+                        };
+                        legReq = pairOf(srcNode, dstNode, reqCtrl);
+                        legResp = ctrlMsgs ? pairOf(dstNode, srcNode, ctrlMsgs && isWr) : legReq;
+                        garnetLat = (legReq && legResp) ? legReq : 0;
                         if (garnetLat == 0) {
                             /* 1.11.97 (H09 + ruling 7 (c)): the unsampled pair's ladder
                              * cost is its distance on the BUILT tree. */
@@ -988,14 +1018,22 @@ public:
                                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
                             }
                             profPairFallback_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                            /* a leg with no sample yet takes the ladder cost (user ruling 2026-10-26: control messages) */
+                            if (!legReq) legReq = garnetLat;
+                            if (!legResp) legResp = garnetLat;
                         } else {
                             profPairSampled_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                         }
                     }
-                    networkLat = (garnetLat > 0)
-                        ? 2 * garnetLat
-                        : 2 * zinfo->hierarchy.nocAvgOneWayLatency;
+                    if (!legReq) legReq = zinfo->hierarchy.nocAvgOneWayLatency;
+                    if (!legResp) legResp = zinfo->hierarchy.nocAvgOneWayLatency;
+                    networkLat = legReq + legResp;   // request leg + response leg (user ruling 2026-10-26: control messages)
                 }
+                /* the response message (user ruling 2026-10-26: control messages): from the target back to the
+                 * requester, injected when the request has arrived (its leg) and the
+                 * target's access is done (remoteLat), on the request's clock axis */
+                if (respRec && !postRoi && srcNode != dstNode)
+                    gn->recordBatchAccess(dstNode, srcNode, respStamp + legReq + remoteLat, ctrlMsgs && isWr);
 
                 uint32_t totalLat = networkLat + remoteLat + 2 * localLinkLat_;
                 // DRAM channel bandwidth bottleneck (accuracy fix): the H-tree
@@ -1009,7 +1047,7 @@ public:
                 }
                 // Standalone MC: extra core -> MC node hop on top of routing.
                 if (zinfo->hierarchy.mcStandalone) {
-                    totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId);
+                    totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
                 }
                 noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
             profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
@@ -1054,9 +1092,15 @@ public:
                     zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
             if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
-                if (myUnit != targetUnit)
+                if (myUnit != targetUnit) {
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links, false, tsvDies,
                         fromTree && zinfo->hierarchy.stackChannelsPerDie > 0);   // 1.12.18
+                    /* the access's control message (a read's request, a write's ack) over
+                     * the same tiers (user ruling 2026-10-26: control messages); the analytical ladder
+                     * charges the round trip as before */
+                    zinfo->garnetNetwork->recordTierWalk(perLevel, links, true, tsvDies,
+                        fromTree && zinfo->hierarchy.stackChannelsPerDie > 0);
+                }
             }
             // hierLat = per-tier hop-based latency through the LCA path (no double-counting)
             uint32_t hierLat = fromTree ? (uint32_t)walkCost : (uint32_t)computeHierTraversal(
@@ -1225,7 +1269,7 @@ public:
             }
             // Standalone MC: extra core -> MC node hop on top of routing.
             if (zinfo->hierarchy.mcStandalone) {
-                totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId);
+                totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
             }
             noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
             profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
@@ -1555,7 +1599,7 @@ protected:
     // RTT (core -> MC node -> and back) charged on top of the access. In
     // cycle-accurate mode this routes real packets through Garnet so the MC
     // traffic shows up in network contention; otherwise it is analytical.
-    uint32_t mcHopLatency(uint32_t targetUnit, uint64_t cycle, uint32_t srcId = 0) {
+    uint32_t mcHopLatency(uint32_t targetUnit, uint64_t cycle, uint32_t srcId = 0, bool isWr = false) {
         (void)srcId;
         GarnetNetwork* gn = zinfo->garnetNetwork;
         if (gn && gn->isCycleAccurate()) {
@@ -1563,15 +1607,18 @@ protected:
             // MC node for memory org `targetUnit` is modeled as node `targetUnit`.
             uint32_t mcNode = targetUnit % gn->getNumNodes();
             // Post-ROI: charge, but never record (POST-ROI GUARD in access()).
+            /* (user ruling 2026-10-26: control messages): the hop is the access's two messages, a
+             * read's control request + data response, a write's data request + control
+             * ack; the response is stamped one mean one-way latency after the request. */
+            uint64_t hopStamp = 0;
             if (!zinfo->terminationConditionMet) {
                 // Global-phase-clock stamp; thread-MPI folds at the barrier, OMP
                 // drains inline (single process).
                 // 1.12.18 (ruling 2026-10-24): folded at the phase barrier, no inline drain;
                 // single-process runs after the ROI baseline on the ROI-relative clock.
-                if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
-                    gn->recordBatchAccess(srcNode, mcNode, cutRoiRel(srcId, cycle));
-                else
-                    gn->recordBatchAccess(srcNode, mcNode, phaseStamp(cycle));
+                hopStamp = (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
+                         ? cutRoiRel(srcId, cycle) : phaseStamp(cycle);
+                gn->recordBatchAccess(srcNode, mcNode, hopStamp, !isWr);
             }
             uint32_t garnetLat;
             if (mpiThreadDetPricing()) {
@@ -1586,6 +1633,10 @@ protected:
             } else {
                 garnetLat = gn->getBatchAvgLatency();
             }
+            const uint32_t oneWay = (garnetLat > 0) ? garnetLat : zinfo->hierarchy.nocAvgOneWayLatency;
+            if (!zinfo->terminationConditionMet)
+                gn->recordBatchAccess(mcNode, srcNode, hopStamp + oneWay, isWr);
+            /* the mean over both classes' messages: 2 x it = control leg + data leg */
             return (garnetLat > 0)
                 ? 2 * garnetLat
                 : 2 * zinfo->hierarchy.nocAvgOneWayLatency;

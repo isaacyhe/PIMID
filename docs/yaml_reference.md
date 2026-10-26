@@ -652,7 +652,7 @@ noc:
 | `noc.flit_size_bits` | int | `128` | Garnet flit width in bits, a multiple of 8 between 8 and 4096 (refused otherwise, rc 1). Reaches Garnet's network-interface flit and the topology emitter (a ladder rung runs at its true width up to the flit). |
 | `noc.header_bits` | int | `64` | Data-message header in bits. The derived data message is `system.cache_line_size` x 8 + this (576 bits for 64 B lines). Must be >= 0. |
 | `noc.data_message_bits` | int | derived | Data-message size in bits. `0` or absent = `system.cache_line_size` x 8 + `noc.header_bits`. Sets a packet's flit count (message bits / flit width). |
-| `noc.control_message_bits` | int | `64` | Accepted but INERT, with a warning: every fabric injection is a Data message, so no Control message is ever sized by it. |
+| `noc.control_message_bits` | int | `64` | The size of the device fabric's control messages (Garnet's Control class): a remote read's request and a remote write's ack, each PIMID's 64-bit header word alone. Another value is moved by the timing and the flit counts, with a warning: the measured wire activity counts the 64-bit word. |
 | `noc.pg` | bool | `false` | Power-gate the device fabric over its measured idle residency. |
 
 ### Per-Level Overrides (`noc.levels`)
