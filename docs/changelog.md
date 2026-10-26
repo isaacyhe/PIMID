@@ -6,6 +6,10 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.79 -- LPDDR5 standby currents follow the run clock
+
+- LPDDR5 background standby currents (IDD2N/IDD3N and their VPP rows) scale with the run clock relative to the IDD table rate (6400/7500), estimated from a vendor source that cannot be disclosed publicly; power-down, refresh and the activate/burst baselines keep the record. LPDDR5 background per die 36.81 -> 33.62 mW (-8.7%), LPDDR5 memory power about -8.5%; logic power and other memories unchanged.
+
 ## 1.12.78 -- LPDDR5 read I/O current scaled to the run data rate
 
 - The LPDDR5 VDDQ read current (IDD4RQ, given at 7500 Mb/s) now has its excess over standby scaled to the run rate (6400/7500), the rule the record already applies to the read and write burst currents: read I/O 0.5435 -> 0.4637 pJ/bit (-14.7%), estimated from a vendor source that cannot be disclosed publicly. No other number changes.

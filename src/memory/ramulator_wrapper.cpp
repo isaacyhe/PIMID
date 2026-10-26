@@ -957,6 +957,7 @@ void RamulatorWrapper::initialize() {
                               s.iddq_wr_includes_rtt_wr = r.iddq_wr_includes_rtt_wr; }   // 1.12.18
             if (r.has_ipp)  { s.ipp2n = r.ipp2n; s.ipp3n = r.ipp3n; s.vpp = r.vpp;
                               s.ipp0 = r.ipp0; s.ipp4r = r.ipp4r; s.ipp4w = r.ipp4w; s.ipp5b = r.ipp5b; }   // 1.12.18 (bug 3b)
+            s.standby_clock_scale = r.standby_clock_scale;   // (1.12.79): background standby clock scaling
             if (r.has_io_share) { s.idd4r_io = r.idd4r_io; s.idd4w_io = r.idd4w_io; }   // 1.12.18 (bug 2b/8a)
             if (r.io_share_anchored) { s.io_anchor_rd_pj_bit = r.io_anchor_rd_pj_bit; s.io_anchor_wr_pj_bit = r.io_anchor_wr_pj_bit;
                                        s.io_channel_gbps = r.io_channel_gbps; }   // 1.12.18 (user ruling 2026-10-23)

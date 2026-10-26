@@ -122,6 +122,11 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                 !need(m, "idd3n", row.idd3n, err) || !need(m, "idd4r", row.idd4r, err) || !need(m, "idd4w", row.idd4w, err) ||
                 !need(m, "idd5", row.idd5, err) || !need(m, "idd2p", row.idd2p, err) || !need(m, "trfc_ns", row.trfc_ns, err) ||
                 !need(m, "trefi_ns", row.trefi_ns, err) || !need(m, "source", row.source, err)) return false;
+            if (m["standby_clock"]) {   /* (1.12.79): optional; scale in (0, 1] with its source */
+                const YAML::Node c = m["standby_clock"];
+                if (!need(c, "scale", row.standby_clock_scale, err) || !need(c, "source", row.standby_clock_source, err)) { err = "standby_clock: " + err; return false; }
+                if (!(row.standby_clock_scale > 0.0 && row.standby_clock_scale <= 1.0)) { err = "standby_clock: scale must be in (0, 1]"; return false; }
+            }
             if (m["iddq"]) {
                 const YAML::Node q = m["iddq"]; row.has_iddq = true;
                 if (!need(q, "iddq3n", row.iddq3n, err) || !need(q, "iddq4r", row.iddq4r, err) || !need(q, "iddq4w", row.iddq4w, err) ||

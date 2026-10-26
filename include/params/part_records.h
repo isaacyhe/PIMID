@@ -44,6 +44,10 @@ struct IddRow {
     bool iddq_wr_includes_rtt_wr = false; std::string iddq_wr_rtt_source;
     bool has_ipp = false;  double ipp2n = -1.0, ipp3n = -1.0, vpp = -1.0; std::string ipp_source;                      // VPP rail, when published
     double ipp0 = -1.0, ipp4r = -1.0, ipp4w = -1.0, ipp5b = -1.0;   // 1.12.18 (bug 3b): the VPP active rows, when published (optional in ipp)
+    /* (1.12.79) optional idd.standby_clock: the standby currents (IDD2N/IDD3N and their IPP pair) of a row measured at a
+     * faster clock than the one modelled, scaled by modelled / measured rate for the BACKGROUND only (power-down,
+     * refresh and the activate/burst baselines keep the row). 1.0 = none. */
+    double standby_clock_scale = 1.0; std::string standby_clock_source;
     /* 1.12.18 (bug 2b/8a): the I/O-equivalent share inside idd4r / idd4w of a
      * row that carries one (optional block idd.io_share). */
     bool has_io_share = false; double idd4r_io = -1.0, idd4w_io = -1.0; std::string io_share_provenance, io_share_source;

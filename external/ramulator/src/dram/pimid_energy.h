@@ -173,6 +173,10 @@ struct IDDSpec {
      * loops), IPP5B (all-bank refresh). < 0 = the row's source does not
      * publish it: nothing is priced for it. */
     double ipp0 = -1.0, ipp4r = -1.0, ipp4w = -1.0, ipp5b = -1.0;
+    /* (1.12.79) record idd.standby_clock: the BACKGROUND standby states (IDD2N / IDD3N and the IPP2N / IPP3N pair) of a
+     * row measured at a faster clock, x modelled / measured rate. Power-down, refresh and every activate / burst
+     * baseline keep the row. 1.0 = none (every row but LPDDR5). Passed through typicalFromSpec unchanged. */
+    double standby_clock_scale = 1.0;
     /* 1.12.18: the sheet measured IDDQ4W with the DRAM's
      * RTT_WR enabled (record iddq.wr_includes_rtt_wr): the write termination
      * DC current is inside IDDQ4W - IDDQ3N. */
@@ -2122,7 +2126,8 @@ inline double ippUnitMW(const std::string& tech, double active_frac) {
     if (s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) return -1.0;
     if (active_frac < 0.0) active_frac = 0.0;
     if (active_frac > 1.0) active_frac = 1.0;
-    double mw = s.vpp * (s.ipp3n * active_frac + s.ipp2n * (1.0 - active_frac));
+    const double k_clk = (s.standby_clock_scale > 0.0) ? s.standby_clock_scale : 1.0;   // (1.12.79) standby clock scaling
+    double mw = s.vpp * (s.ipp3n * active_frac + s.ipp2n * (1.0 - active_frac)) * k_clk;
     /* 1.12.18: (bug 3b) the pump rail's refresh: for the tRFC/tREFI duty the
      * unit draws IPP5B in place of its state's standby IPP, as the VDD
      * background does with IDD5 (stateWithRefreshMW). refreshMW() carries the
@@ -2337,8 +2342,9 @@ inline double backgroundUnitCoreMW(const std::string& tech, double pre_share,
     IDDSpec s = iddFor(tech, temperature_k);
     const double kHysteresisDerate = 0.99;
     /* Each state pays its OWN refresh (E15) -- see stateWithRefreshMW. */
-    const double active_mw = stateWithRefreshMW(s, s.idd3n);  // IDD3N, row open
-    double pre_mw          = stateWithRefreshMW(s, s.idd2n);  // IDD2N, precharged
+    const double k_clk = (s.standby_clock_scale > 0.0) ? s.standby_clock_scale : 1.0;   // (1.12.79) standby clock scaling
+    const double active_mw = stateWithRefreshMW(s, s.idd3n * k_clk);  // IDD3N, row open
+    double pre_mw          = stateWithRefreshMW(s, s.idd2n * k_clk);  // IDD2N, precharged
     double pd_mw           = stateWithRefreshMW(s, s.idd2p);  // IDD2P, CKE low
     /* 1.11.91 (audit R8-11): THE IDLE DESCENT CANNOT COST MORE THAN THE
      * ACTIVE STATE IT DESCENDS FROM. The pd <= pre guard below existed; the
