@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.75 -- a host core's contention stalls are counted once in the run window
+
+- **The defect** (gate check "replayed DRAM time ~ pricing window": 7.6 us replayed vs 8.0 us priced on the 16-core
+  DDR5 host baseline).
+  - The host pricing window was the larger of the ROI run time and max over host cores of (unhalted cycles +
+    cCycles).
+  - The weave already adds every contention stall to the core's clock (OOOCoreRecorder::cSimEnd: curCycle += skew,
+    gapCycles += skew), and cCycles is the sum of those skews. So each stall was counted twice.
+  - The window then ran past the ROI end, which is where the DRAM replay stops. The time-based terms (background,
+    refresh, the McPAT run-time terms) were priced over time no replayed DRAM cycle covered.
+  - In the 1.12.61 validation set, 31 of 45 cells with a host window were priced over a window longer than their run
+    time, by up to 2.5%. On the 16-core baseline the excess reached 5.5% (838 contention cycles on the critical core),
+    past the checker's 5% band.
+- **The fix** (src/main.cpp, the zsim.out parser): host_wall_cycles is the maximum over host cores of the unhalted
+  cycles; cCycles is not added. The 1.9.10 note that the unhalted count excludes contention is corrected in place.
+- **Validation** (six jobs x 116 cells):
+  - On the 16-core baseline the replayed DRAM time equals the pricing window in every run (7.1 .. 7.5 us).
+  - Every simulated figure is unchanged: cycles identical in all 106 serial cells.
+- **Data impact (priced figures only):**
+  - 30 single-core host baselines: total power up to +0.47%, because the same energy is spread over the shorter,
+    correct window.
+  - The multi-core host baselines and co-sim hosts are priced over their run time.
+  - Device and PE-type cells are unchanged.
+
 ## 1.12.74 -- the published flip-flop scales to the run node with published silicon (DeepScaleTool)
 
 - **Node scaling of the published standard cells (user ruling 2026-10-26, "22 nm row: DeepScaleTool"):** the

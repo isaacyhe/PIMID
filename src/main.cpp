@@ -1278,11 +1278,17 @@ struct ZSimParsedOutput {
 
     // 1.9.10 co-sim power-integration fix: contention-INCLUSIVE wall-clock cycle
     // counts, tracked per core group. `cycles` above is the FIRST core's unhalted
-    // (contention-excluded) count, which grossly understates the true runtime for
+    // count ((1.12.75): it includes the contention stalls, see host_wall_cycles), which grossly understates the true runtime for
     // memory-contended or offloaded workloads and was inflating co-sim/baseline
     // McPAT power by 1-3 orders of magnitude. These give each system node a runtime
     // that matches the window over which its accesses actually occurred.
-    //   host_wall_cycles = max over host cores of (unhalted cycles + contention cycles)
+    //   host_wall_cycles = max over host cores of (unhalted cycles)
+    //     (1.12.75): the unhalted count already holds the contention stalls -- the
+    //     weave adds each stall to the core's clock (OOOCoreRecorder::cSimEnd:
+    //     curCycle += skew, gapCycles += skew) and cCycles is the sum of those
+    //     skews -- so adding cCycles counted every stall twice. The window then
+    //     ran past the ROI end (by the critical core's cCycles) and the
+    //     time-based terms were priced over time the DRAM replay never covered.
     //   dev_wall_cycles  = max over device PEs of (simulated cycles)  [Garnet-timed;
     //                      device PE cycles already fold in memory-network stalls]
     // Only consumed by runPerNodePowerAnalysis (system scope). The device-SCOPE
@@ -2131,12 +2137,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                         out.host_wall_cycles = std::max(out.host_wall_cycles, val);
                     else if (core_group == CoreGroup::DEVICE)
                         out.dev_wall_cycles = std::max(out.dev_wall_cycles, val);
-                } else if (key == "cCycles" && core_group == CoreGroup::HOST) {
-                    // Host cores report "cCycles" (contention stall cycles) separately
-                    // from unhalted "cycles"; the true elapsed time is their sum.
-                    out.host_wall_cycles =
-                        std::max(out.host_wall_cycles, cur_core_cycles + val);
                 }
+                /* (1.12.75): cCycles is NOT added: the unhalted "cycles" above already
+                 * include the contention stalls (see host_wall_cycles). */
             }
 
             /* Each cache/MC counter feeds BOTH the all-nodes total (used by the
