@@ -337,6 +337,11 @@ public:
      * (power.termination_pj_per_bit) is a stated per-bit energy and is not
      * rescaled. */
     double getTerminationEnergyNJ(bool is_write, double data_duty) const;
+    /* The parts of that same figure (nJ per 64 B): data pins at the duty, strobes, command/address, and the rest
+     * (bias, clock bias, pin leakage). Returns the path the figure took. */
+    std::string getTerminationPartsNJ(bool is_write, double data_duty, double& dq, double& dqs, double& ca, double& rest) const;
+    /* The DQ loop behind those parts (CACTI-IO path): false when the figure did not come from CACTI-IO. */
+    bool getTerminationLoop(double& vddq, double& ron, double& rtt_rd, double& rtt_wr, double& stub) const;
     /* The measured duty of this technology's termination: POD counts the
      * data pins driven LOW, LVSTL those driven HIGH, per data bit, with the
      * DBI pins counted when DBI applies. Returns < 0 when nothing was

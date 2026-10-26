@@ -755,6 +755,8 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
         } else if (stub_changed) {
             iop.recomputeSwing();   // the stub enters rpar and every swing
         }
+        r.loop_vddq = iop.vdd_io; r.loop_ron = iop.r_on; r.loop_rtt_rd = iop.rtt1_dq_read;
+        r.loop_rtt_wr = iop.rtt1_dq_write; r.loop_stub = iop.rs1_dq;
         Extio io(&iop);
         {
             StdoutSilencer quiet;
@@ -820,6 +822,19 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             io.dq_data_low_duty = 0.5;
             io.extio_power_term();
         }
+        double term_wr_nodqs = 0.0, term_rd_nodqs = 0.0, term_wr_noca = 0.0, term_rd_noca = 0.0;
+        {
+            StdoutSilencer quiet;
+            const int keep_dqs = g_ip->num_dqs, keep_ca = g_ip->num_ca;
+            g_ip->num_dqs = 0;
+            io.extio_power_term(); term_wr_nodqs = io.getIOPowerTermMW();
+            g_ip->iostate = READ; io.extio_power_term(); term_rd_nodqs = io.getIOPowerTermMW(); g_ip->iostate = WRITE;
+            g_ip->num_dqs = keep_dqs; g_ip->num_ca = 0;
+            io.extio_power_term(); term_wr_noca = io.getIOPowerTermMW();
+            g_ip->iostate = READ; io.extio_power_term(); term_rd_noca = io.getIOPowerTermMW(); g_ip->iostate = WRITE;
+            g_ip->num_ca = keep_ca;
+            io.extio_power_term();   // stored state: duty 0.5, iostate WRITE, all pins
+        }
         double payload_gbps = rate_mts * num_dq / 1000.0;
         double total_mw = r.io_power_term_mw + r.io_power_dynamic_mw + r.phy_power_mw;
         if (payload_gbps > 0.0) {
@@ -828,6 +843,10 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             r.energy_pj_per_bit_term_rd = term_rd_mw / payload_gbps;
             r.energy_pj_per_bit_term_dq    = (r.io_power_term_mw - term_wr0_mw) / payload_gbps;
             r.energy_pj_per_bit_term_dq_rd = (term_rd_mw - term_rd0_mw) / payload_gbps;
+            r.energy_pj_per_bit_term_dqs    = (r.io_power_term_mw - term_wr_nodqs) / payload_gbps;
+            r.energy_pj_per_bit_term_dqs_rd = (term_rd_mw - term_rd_nodqs) / payload_gbps;
+            r.energy_pj_per_bit_term_ca     = (r.io_power_term_mw - term_wr_noca) / payload_gbps;
+            r.energy_pj_per_bit_term_ca_rd  = (term_rd_mw - term_rd_noca) / payload_gbps;
         }
         r.valid  = true;
         /* SUBSTITUTION GATE. An injected technology is no longer merely

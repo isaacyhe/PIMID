@@ -2352,6 +2352,41 @@ double RamulatorWrapper::measuredDataDuty(const DqDataCounts& c, bool is_write, 
     return pins / bits;
 }
 
+std::string RamulatorWrapper::getTerminationPartsNJ(bool is_write, double data_duty, double& dq, double& dqs, double& ca, double& rest) const {
+    const double total = getTerminationEnergyNJ(is_write, data_duty);
+    dq = dqs = ca = 0.0; rest = total;
+    if (energy_term_override_pJ_per_bit_ >= 0.0) return "user override (power.termination_pj_per_bit), not split";
+    const double rate = modelledRateMTs();
+    const int ndq = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
+    if (rate > 0.0 && ndq > 0) {
+        PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
+        const double term_pj = is_write ? io.energy_pj_per_bit_term : io.energy_pj_per_bit_term_rd;
+        if (io.valid && io.exact_map && term_pj > 0.0) {
+            const double k = 512.0 / 1000.0;
+            const double dq05 = is_write ? io.energy_pj_per_bit_term_dq : io.energy_pj_per_bit_term_dq_rd;
+            dq  = dq05 * (data_duty >= 0.0 ? data_duty / 0.5 : 1.0) * k;
+            dqs = (is_write ? io.energy_pj_per_bit_term_dqs : io.energy_pj_per_bit_term_dqs_rd) * k;
+            ca  = (is_write ? io.energy_pj_per_bit_term_ca : io.energy_pj_per_bit_term_ca_rd) * k;
+            rest = total - dq - dqs - ca;
+            return "CACTI-IO parameter set";
+        }
+    }
+    dq = total; rest = 0.0;
+    return "scheme table (data pins only)";
+}
+
+bool RamulatorWrapper::getTerminationLoop(double& vddq, double& ron, double& rtt_rd, double& rtt_wr, double& stub) const {
+    vddq = ron = rtt_rd = rtt_wr = 0.0; stub = -1.0;
+    if (energy_term_override_pJ_per_bit_ >= 0.0) return false;
+    const double rate = modelledRateMTs();
+    const int ndq = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
+    if (!(rate > 0.0 && ndq > 0)) return false;
+    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
+    if (!(io.valid && io.exact_map)) return false;
+    vddq = io.loop_vddq; ron = io.loop_ron; rtt_rd = io.loop_rtt_rd; rtt_wr = io.loop_rtt_wr; stub = io.loop_stub;
+    return true;
+}
+
 double RamulatorWrapper::getTerminationEnergyNJ(bool is_write, double data_duty) const {
     /* 1.11.40 (audit N8, user ruling: harness the model, do not table the
      * answer). The DQ termination energy now comes from CACTI-IO -- a real

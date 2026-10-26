@@ -140,6 +140,11 @@ struct LinkIOResult {
      * measured duty / 0.5. */
     double energy_pj_per_bit_term_dq = 0.0;
     double energy_pj_per_bit_term_dq_rd = 0.0;
+    /* The strobes' and the command/address pins' shares (each: the figure minus a pass without those pins). */
+    double energy_pj_per_bit_term_dqs = 0.0, energy_pj_per_bit_term_dqs_rd = 0.0;
+    double energy_pj_per_bit_term_ca = 0.0, energy_pj_per_bit_term_ca_rd = 0.0;
+    /* The DQ loop the termination figures used: rail, driver, far-end termination (read / write) and series stub, ohm. */
+    double loop_vddq = 0.0, loop_ron = 0.0, loop_rtt_rd = 0.0, loop_rtt_wr = 0.0, loop_stub = -1.0;
 
     /* Is the technology->Mem_IO_type map EXACT, or a nearest neighbour? Only
      * exact maps are allowed to replace an existing result. An approximate map

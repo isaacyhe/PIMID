@@ -6,6 +6,10 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.66 -- the termination term is itemised internally
+
+- The DQ termination energy is computed per part (data pins, strobes, command/address, bias) for internal verification. Nothing is printed by default and no number changes.
+
 ## 1.12.65 -- memory topology per memory node; the DQ series stub follows it
 
 - **Memory topology** (user rulings 2026-10-26): `memory.topology` (`system.hosts[].memory.topology` for a host memory)

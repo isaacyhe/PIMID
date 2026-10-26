@@ -1211,6 +1211,26 @@ static void topologyLine(const pimid::RamulatorWrapper& ram, const std::string& 
     std::cout << indent << "[mem] memory topology: " << t.name << (t.defaulted ? " (default)" : " (memory.topology)")
               << "; DQ/DQS series stub " << t.stub_ohm << " ohm -- " << t.source << std::endl;
 }
+/* The parts of the charged DQ termination, for the internal power checks only:
+ * printed when PIMID_DEBUG_CHECKS=1 (user ruling 2026-10-26: checkers are
+ * internal). Every number printed is already in the charged term above it. */
+static void dqPartsLine(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr, const std::string& indent) {
+    const char* dbg = std::getenv("PIMID_DEBUG_CHECKS");
+    if (!dbg || std::string(dbg) != "1") return;
+    std::ostringstream o;
+    o << indent << "[mem] DQ termination parts (pJ/bit):";
+    for (int w = 0; w < 2; ++w) {
+        double dq, dqs, ca, rest;
+        const std::string path = ram.getTerminationPartsNJ(w == 1, w ? duty_wr : duty_rd, dq, dqs, ca, rest);
+        const double k = 1000.0 / 512.0;
+        o << (w ? "; wr " : " rd ") << std::setprecision(4) << "DQ " << dq * k << " + DQS " << dqs * k << " + CA " << ca * k
+          << " + bias/clock " << rest * k << " = " << (dq + dqs + ca + rest) * k << " [" << path << "]";
+    }
+    double v, ron, rr, rw, st;
+    if (ram.getTerminationLoop(v, ron, rr, rw, st))
+        o << "; loop VDDQ " << v << " V, RON " << ron << ", RTT rd " << rr << " / wr " << rw << ", stub " << st << " ohm";
+    std::cout << o.str() << std::endl;
+}
 static std::string dqHalfNote(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr) {
     if (duty_rd < 0.0 && duty_wr < 0.0) return "";
     std::ostringstream o;
@@ -13605,6 +13625,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 }
             }
             if (crosses_dq) {
+                dqPartsLine(ram_oracle, dq_duty_rd, dq_duty_wr, "    ");   // PIMID_DEBUG_CHECKS=1 only
                 std::cout << "    termination:   rd=" << iface_term_rd_nj
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
                           << iface_term_wr_nj
@@ -15025,6 +15046,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                 }
             }
             if (c.crosses_dq) {
+                dqPartsLine(ram_oracle, dq_duty_rd, dq_duty_wr, "      ");   // PIMID_DEBUG_CHECKS=1 only
                 std::cout << "      termination: rd=" << iface_term_rd_nj
                           << " nJ (DRAM RON -> RX RTT_NOM class), wr="
                           << iface_term_wr_nj
