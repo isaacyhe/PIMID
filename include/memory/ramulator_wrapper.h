@@ -2,6 +2,7 @@
 #define PIMID_RAMULATOR_WRAPPER_H
 
 #include "common/types.h"
+#include "power/cacti_io_wrapper.h"   // (user ruling 2026-10-26): CactiIOWrapper::DramTopology
 #include <string>
 #include <memory>
 #include <functional>
@@ -325,6 +326,10 @@ public:
      * into the DRAM write termination (RTT_WR class). Both the CACTI-IO
      * exact-map path and the scheme-table fallback carry the split. */
     double getTerminationEnergyNJ(bool is_write) const;   // ODT/termination per 64B
+    /* (user ruling 2026-10-26) the memory node's topology (memory.topology; "" = the
+     * technology's default). Refused requests stop the run with the reason. */
+    void setTopology(const std::string& requested);
+    PIMID::CactiIOWrapper::DramTopology topology() const;
     /* User ruling 2026-10-25 (measured termination duty): the same energy
      * with the data pins' termination duty MEASURED (data_duty, from
      * measuredDataDuty) in place of the formula's 0.5. data_duty < 0 is
@@ -686,6 +691,7 @@ private:
     // PIM Support Components
     bool pim_enabled_;
     std::string dram_type_;
+    std::string topology_req_;   // (user ruling 2026-10-26) memory.topology as given ("" = default)
     bool anchor_quiet_ = false;   // 1.11.61 (D4): reference anchor, no provenance warnings
     double row_miss_frac_ = -1.0;   // 1.11.52 (D003): measured; <0 = unmeasured
     /* 1.11.46 (L181): device width for the whole-rank array-energy basis.

@@ -1,5 +1,6 @@
 /* PIMID 1.11.40 -- CACTI-IO harness. See include/power/cacti_io_wrapper.h. */
 #include "power/cacti_io_wrapper.h"
+#include <cctype>
 #include "params/part_records.h"   // 1.12.18: the DDR5 row reads the record's grade
 
 #include <cmath>
@@ -451,10 +452,83 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
     return -1;
 }
 
+/* (user ruling 2026-10-26) Memory topology and the DQ series stub.
+ *   DDR3 udimm/sodimm/rdimm: 15 ohm -- "an external 15-ohm stub resistor, RS,
+ *     on each of the DQS and DQ signals soldered on the DIMM" (Altera AN-520,
+ *     DDR3 SDRAM Interface Termination and Layout Guidelines, May 2009, p.10).
+ *   DDR4 udimm/sodimm/rdimm: 15 ohm -- "Unless otherwise noted, resistor
+ *     values are 15 ohm +/- 5%", every DQ/DQS/DM drawn with one (Samsung DDR4
+ *     UDIMM M378A / SODIMM M471A data sheets, Rev 1.1 Jun 2018, pp.10-12).
+ *     No DDR4-RDIMM-specific public figure was found; the DIMM value is used.
+ *   DDR5 rdimm: 15 ohm -- "DQ / Strobe ... 15 ohm ... Series Resistor, place
+ *     close to edge finger" (JESD305B.01, DDR5 RDIMM common standard, PDF p.32).
+ *   DDR5 udimm/sodimm: 0 -- no DQ series resistor in the public DDR5 UDIMM /
+ *     SODIMM data (UniIC SCA08GU04M1F1C 2022 and SCA16GE03C2F1C 2025 DQ maps
+ *     p.14, no resistor column, where its DDR5 RDIMM map has "Damping RES.";
+ *     SK hynix HMCG..MEBUA Rev 1.0 2021 p.12, HMCG..AEBSA Rev 1.1 2022 p.13);
+ *     AMD UG863 v1.12 DDR5 signals: "None, uses ODT to 40 ohm".
+ *   soldered: 0 -- "If a single DRAM device is on a DQ, no series resistor
+ *     is required" (Micron TN-40-40 DDR4 Point-to-Point Design Guide, Rev. H
+ *     p.31, Table 12 note 1).
+ * Defaults: DDR3/DDR4/DDR5 rdimm (the host baselines are server class: the
+ * host-path latency is calibrated to Sapphire Rapids / Genoa sockets);
+ * LPDDR5, GDDR6, HBM2, HBM3 soldered (their only topology). LRDIMM (data
+ * buffers) and CAMM2 / LPCAMM2 are not modelled and are refused. */
+bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::string& requested,
+                                         DramTopology& out, std::string& err) {
+    const bool ddr = (tech == "DDR3" || tech == "DDR4" || tech == "DDR5");
+    const bool soldered_only = (tech == "LPDDR5" || tech == "GDDR6" || tech == "HBM2" || tech == "HBM3");
+    std::string t = requested;
+    for (auto& ch : t) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (!ddr && !soldered_only) {
+        if (t.empty()) { out = DramTopology(); out.name = "n/a"; out.source = "not a DRAM interface"; out.defaulted = true; return true; }
+        err = "memory.topology applies to DRAM only ('" + tech + "' has no DQ interface)";
+        return false;
+    }
+    if (t == "lrdimm") { err = "lrdimm is not modelled (its data buffers are not in the interface model); use rdimm"; return false; }
+    if (t == "camm2" || t == "lpcamm2" || t == "camm") { err = "CAMM2 / LPCAMM2 is not modelled; use soldered"; return false; }
+    out = DramTopology();
+    out.defaulted = t.empty();
+    if (t.empty()) t = ddr ? "rdimm" : "soldered";
+    const bool known = (t == "rdimm" || t == "udimm" || t == "sodimm" || t == "soldered");
+    if (!known) {
+        err = "unknown memory.topology '" + requested + "'; allowed: rdimm, udimm, sodimm, soldered";
+        return false;
+    }
+    if (soldered_only && t != "soldered") {
+        err = "'" + t + "' is not a " + tech + " topology; " + tech + " allows: soldered";
+        return false;
+    }
+    out.name = t;
+    if (t == "soldered") {
+        out.stub_ohm = 0.0;
+        out.source = "no DQ series resistor point-to-point (Micron TN-40-40 Rev. H p.31, Table 12 note 1)";
+    } else if (tech == "DDR3") {
+        out.stub_ohm = 15.0;
+        out.source = "15 ohm DQ/DQS stub resistor on the DIMM (Altera AN-520, May 2009, p.10)";
+    } else if (tech == "DDR4") {
+        out.stub_ohm = 15.0;
+        out.source = (t == "rdimm")
+            ? "15 ohm, the DDR4 DIMM value (Samsung M378A/M471A data sheets Rev 1.1 Jun 2018 pp.10-12; no DDR4-RDIMM-specific public figure)"
+            : "15 ohm +/-5% on every DQ/DQS/DM (Samsung M378A/M471A data sheets Rev 1.1 Jun 2018 pp.10-12, note 1)";
+    } else if (t == "rdimm") {   // DDR5
+        out.stub_ohm = 15.0;
+        out.source = "15 ohm DQ / Strobe series resistor (JESD305B.01, DDR5 RDIMM, PDF p.32)";
+    } else {                     // DDR5 udimm / sodimm
+        out.stub_ohm = 0.0;
+        out.source = "no DQ series resistor in public DDR5 UDIMM/SODIMM data (UniIC 2022/2025 DQ maps p.14; SK hynix 2021 p.12, 2022 p.13); AMD UG863 v1.12: DDR5 DQ 'None, uses ODT'";
+    }
+    if (out.defaulted)
+        out.source += ddr ? "; default for DDR3/DDR4/DDR5: rdimm (the host baselines are server class)"
+                          : "; the only topology for this technology";
+    return true;
+}
+
 LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
                                            int num_dq,
                                            double rate_mts,
-                                           double activity) {
+                                           double activity,
+                                           double stub_ohm) {
     LinkIOResult r;
     DramIOMap m;
     if (!dramIOMapFor(tech, m)) {
@@ -617,6 +691,18 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
 
     try {
         IOTechParam iop(g_ip, m.type, 8, 8, num_dq, 0, 1, freq_mhz);
+        /* (user ruling 2026-10-26) the node's DQ series stub. Only a stub that differs
+         * from the parameter set's own (15 for the DDR3/DDR4 sets, 0 for the
+         * others) is written, so a default-topology run is unchanged. */
+        double stub = stub_ohm;
+        if (stub < 0.0) {
+            DramTopology ti; std::string terr;
+            stub = resolveDramTopology(tech, "", ti, terr) ? ti.stub_ohm : -1.0;
+        }
+        bool stub_changed = false;
+        if (stub >= 0.0 && (iop.rs1_dq != stub || iop.rs2_dq != stub)) {
+            iop.rs1_dq = stub; iop.rs2_dq = stub; stub_changed = true;
+        }
         /* INJECT PIMID'S SOURCED ELECTRICALS and re-derive. This is what lets a
          * technology CACTI-IO predates be modelled rather than merely borrowed:
          * the rail voltage, termination and driver impedance come from JEDEC and
@@ -666,6 +752,8 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             iop.rtt2_dq_read  = 1e12;
             iop.rtt2_dq_write = 1e12;
             iop.recomputeSwing();
+        } else if (stub_changed) {
+            iop.recomputeSwing();   // the stub enters rpar and every swing
         }
         Extio io(&iop);
         {

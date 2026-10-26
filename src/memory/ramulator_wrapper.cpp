@@ -7,6 +7,7 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
 #include <set>
 #include <yaml-cpp/yaml.h>
 
@@ -2219,6 +2220,23 @@ double RamulatorWrapper::getActivatePrechargeEnergyNJ() const {   // 1.12.18
         static_cast<int>(getBanksPerBankGroup() * getBankGroupsPerChip()))
         / static_cast<double>(pe_chip_split_);   // 1.12.18: one chip's ACT when the chips are split
 }
+void RamulatorWrapper::setTopology(const std::string& requested) {
+    PIMID::CactiIOWrapper::DramTopology t; std::string err;
+    if (!PIMID::CactiIOWrapper::resolveDramTopology(dram_type_, requested, t, err)) {
+        std::cerr << "[config] FATAL: memory.topology: " << err << std::endl;
+        std::exit(1);
+    }
+    topology_req_ = requested;
+}
+
+PIMID::CactiIOWrapper::DramTopology RamulatorWrapper::topology() const {
+    PIMID::CactiIOWrapper::DramTopology t; std::string err;
+    if (!PIMID::CactiIOWrapper::resolveDramTopology(dram_type_, topology_req_, t, err)) {
+        t = PIMID::CactiIOWrapper::DramTopology(); t.stub_ohm = -1.0; t.name = "invalid"; t.source = err;
+    }
+    return t;
+}
+
 double RamulatorWrapper::getTerminationEnergyNJ(bool is_write) const {
     return getTerminationEnergyNJ(is_write, -1.0);
 }
@@ -2409,7 +2427,7 @@ double RamulatorWrapper::getTerminationEnergyNJ(bool is_write, double data_duty)
          * active for the whole of it. Averaging by a duty cycle here would
          * charge the access for the idle time around it. */
         PIMID::LinkIOResult io =
-            PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0);
+            PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
         /* ONLY AN EXACT MAP MAY REPLACE A RESULT. DDR3/DDR4/DDR5 map exactly
          * onto CACTI-IO parameter sets. LPDDR5 and HBM do not -- they borrow
          * LPDDR2 and WideIO, whose parameters were fitted for different
@@ -2539,7 +2557,7 @@ double RamulatorWrapper::getInterfaceDynamicEnergyNJ() const {
     const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
     if (rate <= 0.0 || ndq <= 0) return 0.0;
     PIMID::LinkIOResult io =
-        PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0);
+        PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
     if (!io.valid || !io.exact_map) return 0.0;   // exact maps only, as above
     const double non_term = io.energy_pj_per_bit - io.energy_pj_per_bit_term;
     return (non_term > 0.0) ? non_term * 512.0 / 1000.0 : 0.0;
@@ -2553,7 +2571,7 @@ double RamulatorWrapper::getInterfacePhyStaticMW() const {
     const double rate = modelledRateMTs();
     const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
     if (rate <= 0.0 || ndq <= 0) return 0.0;
-    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0);
+    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
     if (!io.valid || !io.exact_map) return 0.0;
     return (io.phy_static_power_mw > 0.0) ? io.phy_static_power_mw : 0.0;
 }
@@ -2589,7 +2607,7 @@ double RamulatorWrapper::getInterfaceAreaMM2() const {
     const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
     if (rate <= 0.0 || ndq <= 0) return 0.0;
     PIMID::LinkIOResult io =
-        PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0);
+        PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
     if (!io.valid || !io.exact_map) return 0.0;
     if (io.io_area_withheld) {
         io_area_withheld_ = true;

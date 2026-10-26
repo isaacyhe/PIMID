@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.65 -- memory topology per memory node; the DQ series stub follows it
+
+- **Memory topology** (user rulings 2026-10-26): `memory.topology` (`system.hosts[].memory.topology` for a host memory)
+  names the memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between
+  the connector and the DRAM in the termination loop (CACTI-IO `rs1_dq` / `rs2_dq`): DDR3 and DDR4 DIMMs 15 ohm (Altera
+  AN-520 p.10; Samsung DDR4 UDIMM M378A / SODIMM M471A data sheets Rev 1.1 pp.10-12), DDR5 RDIMM 15 ohm (JESD305B.01
+  PDF p.32), DDR5 UDIMM/SODIMM none (public UniIC and SK hynix module data; AMD UG863 v1.12), soldered none (Micron
+  TN-40-40 Rev. H p.31). DDR4 RDIMM takes the DDR4 DIMM value: no RDIMM-specific public figure was found.
+- Defaults: DDR3/DDR4/DDR5 `rdimm` -- the host baselines are server class (the host-path latency is calibrated to
+  Sapphire Rapids and Genoa sockets) -- so their numbers do not change; LPDDR5, GDDR6, HBM2 and HBM3 `soldered`, their
+  only topology. Under `is_default_mem: true` the host memory is the device's array and takes the device's topology.
+- Refused, with the reason: an unknown value, a DIMM topology on LPDDR5/GDDR6/HBM, any value on SRAM/STT-MRAM/PCM/ReRAM,
+  `lrdimm` (its data buffers are not modelled), `camm2`/`lpcamm2`.
+- The log prints the topology, the stub and its source (`[mem] memory topology: ...`).
+- **Impact:** GDDR6 loses the 15 ohm DIMM stub its CACTI-IO parameter set carried. On 8 kernels with 16 alu PEs at RANK
+  placement: read DQ termination +7.0% to +9.2%, write +3.2% to +3.6%, the channel-I/O price of NoC links that leave
+  the DRAM package +9.8%, DRAM dynamic energy +1.3% to +3.4%, total power +0.01% to +0.03%. DDR3/DDR4/DDR5 (`rdimm`),
+  LPDDR5 and HBM: unchanged. A `soldered` DDR4 or DDR5 memory, or a DDR5 `udimm`/`sodimm`, prices the read termination
+  16-18% and the write termination 7-8% higher than `rdimm`. Cycles and checksums are unchanged.
+
 ## 1.12.64 -- the guest's environment holds configuration values only, in a fixed order
 
 - **The defect** (follow-up to the launch fix above). That fix padded the strings QEMU copies to the guest's stack to

@@ -1205,6 +1205,12 @@ static double dqBurstFactor(const pimid::RamulatorWrapper& ram, const DqData& d,
     return f;
 }
 /* The termination at the formula's 0.5, printed beside the measured figure. */
+static void topologyLine(const pimid::RamulatorWrapper& ram, const std::string& indent) {   // (user ruling 2026-10-26)
+    const PIMID::CactiIOWrapper::DramTopology t = ram.topology();
+    if (t.name == "n/a") return;
+    std::cout << indent << "[mem] memory topology: " << t.name << (t.defaulted ? " (default)" : " (memory.topology)")
+              << "; DQ/DQS series stub " << t.stub_ohm << " ohm -- " << t.source << std::endl;
+}
 static std::string dqHalfNote(const pimid::RamulatorWrapper& ram, double duty_rd, double duty_wr) {
     if (duty_rd < 0.0 && duty_wr < 0.0) return "";
     std::ostringstream o;
@@ -2508,7 +2514,7 @@ static const char* kSchemaPaths[] = {
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
     "memory.array_pg", "memory.bank_kb", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
-    "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology",
+    "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology", "memory.topology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
     "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.dram.ddr3_variant", "memory.dram.trfc_basis", "memory.row_policy.host_idle_timeout_clocks", "memory.row_policy.host_closed_mode", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
@@ -2599,7 +2605,7 @@ static const char* kSchemaPaths[] = {
     "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz", "system.hosts[].issue_width",
     "system.hosts[].mem.bandwidth_gbs", "system.hosts[].mem.capacity_gb", "system.hosts[].mem.channels", "system.hosts[].mem.technology", "system.hosts[].memory.bandwidth_mbs",
     "system.hosts[].memory.channels", "system.hosts[].memory.dram_replay", "system.hosts[].memory.host_path.coherence_ns", "system.hosts[].memory.host_path.fabric_ns", "system.hosts[].memory.host_path.mc_pipeline_ns",
-    "system.hosts[].memory.host_path.phy_ns", "system.hosts[].memory.latency_adder_ns", "system.hosts[].memory.technology", "system.hosts[].name", "system.hosts[].noc.hop_cycles",
+    "system.hosts[].memory.host_path.phy_ns", "system.hosts[].memory.latency_adder_ns", "system.hosts[].memory.technology", "system.hosts[].memory.topology", "system.hosts[].name", "system.hosts[].noc.hop_cycles",
     "system.hosts[].noc.model", "system.hosts[].noc.topology", "system.hosts[].num_cores", "system.hosts[].pg", "system.hosts[].tech_node_nm", "system.hosts[].workload.args",
     "system.hosts[].workload.binary", "system.hosts[].workload.env",
     "system.launch.ack_bytes", "system.launch.cmd_bytes", "system.launch.dispatch_ns", "system.launch.doorbell_ns",
@@ -2758,6 +2764,7 @@ struct UnifiedConfig {
 
     // Memory configuration
     std::string memory_tech;
+    std::string memory_topology;   // memory.topology (user ruling 2026-10-26): "" = the technology's default
     int num_banks;
     int subarrays_per_bank;
     bool subarrays_per_bank_user_set = false;  // true when user set the count directly
@@ -3567,6 +3574,7 @@ struct UnifiedConfig {
 
         // Memory
         std::string memory_tech = "DDR4";
+        std::string memory_topology;   // memory.topology (user ruling 2026-10-26): "" = the technology's default
         int ports_per_bank = 1;
         int banks = 0;                 // 0 = use global default
 
@@ -3869,6 +3877,7 @@ static int dramPeChipSplit(const UnifiedConfig& c, const std::string& tech) {
 }
 /* the shared/device array's split for reportSharedMemoryArrayEnergy (set around its device-side calls only) */
 static int s_array_pe_chip_split = 1;
+static std::string s_array_topology;   // (user ruling 2026-10-26) memory.topology of the array being priced ("" = default)
 /* 1.12.20 (user rulings 2026-10-23 "1 and 3", 2026-10-24): DRAM PRECHARGE POWER-DOWN.
  * tXP per technology = max(nck x tCK, ns), the published power-down exit time; returns false (and says why) when
  * none is published. memory.power_down_threshold_ns overrides it (the user's tXP).
@@ -3936,6 +3945,7 @@ static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& conf
     w.setRowPolicyKnobs(config.row_policy_host_idle_timeout, config.row_policy_host_closed_mode);   // 1.12.18 (row policy ruling)
     w.setWriteDrainKnobs(config.write_high_watermark, config.write_low_watermark);   // 1.12.18 (write drain)
     w.setTerminationOverridePJPerBit(config.termination_pj_per_bit);
+    w.setTopology(config.memory_topology);   // (user ruling 2026-10-26)
 }
 
 
@@ -8769,6 +8779,7 @@ static int resolveMemoryTopology(UnifiedConfig& config) {
                              "host's main memory)." << std::endl;
             }
             host->memory_tech = dev->memory_tech;
+            host->memory_topology = dev->memory_topology;   // (user ruling 2026-10-26): the device's array
         }
     } else {
         // Separate memory: the host must declare its own main memory tech.
@@ -13330,6 +13341,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * the run's own lines (DBI where the standard has it), in place of
              * the formula's 0.5; the counters print either way. */
             double dq_duty_rd = -1.0, dq_duty_wr = -1.0;
+            topologyLine(ram_oracle, "  ");   // (user ruling 2026-10-26)
             dqDuties(ram_oracle, zsim_stats.dq, config.pm_dram_dbi, config.cache_line_size,
                      "memory-interface", "  ", dq_duty_rd, dq_duty_wr);
             /* (1.12.61) (user ruling 2026-10-25): the column burst at the run's measured data */
@@ -14843,6 +14855,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
     try {
         pimid::RamulatorWrapper ram_oracle("", memory_tech);
         ram_oracle.setDeviceWidth(device_width);   // 1.11.46 (L181)
+        ram_oracle.setTopology(s_array_topology);   // (user ruling 2026-10-26)
         ram_oracle.setPeChipSplit(s_array_pe_chip_split);   // 1.12.18: the device/shared array at a chip-level placement
         /* 1.11.63 (R7): gate 1173B E3 caught the knob half-wired (parsed,
          * never applied). Set before initialize(), both scopes. */
@@ -14899,6 +14912,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
         double total_rd_mj = 0.0, total_wr_mj = 0.0, total_iface_mj = 0.0;
         double total_iddq_mj = 0.0;   // 1.11.91 (R8-8)
         double total_act_mj = 0.0;    // 1.12.18 (R0605): counted activates
+        bool topo_said = false;   // (user ruling 2026-10-26): the topology line once per array
         for (const auto& c : classes) {
             if (c.rd + c.wr == 0) continue;
             /* 1.11.89 (fix 1): the measured row-miss fraction, per class,
@@ -14945,6 +14959,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
              * device scope. CACTI-IO's driver+PHY prints informational below.
              * 1.11.63 (R7): read/write split, as device scope. */
             double dq_duty_rd = -1.0, dq_duty_wr = -1.0;   // user ruling 2026-10-25: measured termination duty
+            if (!topo_said) { topologyLine(ram_oracle, "    "); topo_said = true; }   // (user ruling 2026-10-26): once per array
             dqDuties(ram_oracle, c.dq ? *c.dq : DqData(), c.dbi_switch, c.line_bytes, c.who, "    ",
                      dq_duty_rd, dq_duty_wr);
             /* (1.12.61) (user ruling 2026-10-25): the column burst at this class's measured data */
@@ -16635,14 +16650,16 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
          * unchanged. Only genuinely decoupled systems -- host with its own
          * memory block, device with another technology, the case that used
          * to abort -- charge per node. */
-        std::string h_tech, d_tech;
+        std::string h_tech, d_tech, h_topo, d_topo;
         for (const auto& node : config.system_nodes) {
             if (node.memory_tech.empty()) continue;
-            if (node.role == UnifiedConfig::SystemNode::HOST && h_tech.empty())
-                h_tech = node.memory_tech;
+            if (node.role == UnifiedConfig::SystemNode::HOST && h_tech.empty()) {
+                h_tech = node.memory_tech; h_topo = node.memory_topology;
+            }
             if (node.role == UnifiedConfig::SystemNode::DEVICE && node.device_type != UnifiedConfig::SystemNode::MEMORY_ONLY &&   // user ruling 2026-10-25
-                d_tech.empty())
-                d_tech = node.memory_tech;
+                d_tech.empty()) {
+                d_tech = node.memory_tech; d_topo = node.memory_topology;
+            }
         }
         const bool coupled = sharedMemoryCoupled(config);   // 1.11.40: one definition
         /* 1.11.15 (audit): the coherence-flush footprint is host dirty lines
@@ -17021,6 +17038,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                    zsim_stats.host.bank_open_cycles,
                                    zsim_stats.host.bank_open_window);
                 s_array_pe_chip_split = dramPeChipSplit(config, tech);   // 1.12.18: the shared array
+                s_array_topology = d_tech.empty() ? h_topo : d_topo;   // (user ruling 2026-10-26)
                 mem_power_total += reportSharedMemoryArrayEnergy(tech, cls,
                                               r_shared,
                                               config.mem_power_down,        // 1.11.45: split flag (was pg_mc)
@@ -17103,6 +17121,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 cls.push_back(hostClass(zsim_stats.host.mem_rd,
                                         zsim_stats.host.mem_wr + (host_replayed ? 0 : flush_wr)));  // 1.11.15; 1.12.18
                 if (host_replayed && flush_wr > 0) cls.push_back(flushClass(flush_wr));   // 1.12.18
+                s_array_topology = node.memory_topology;   // (user ruling 2026-10-26)
                 mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech, cls,
                                               r_host,                             // 1.11.89: host MC's own
                                               config.mem_power_down,  // 1.11.45: split flag (1.11.41)
@@ -17139,6 +17158,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 std::vector<ArrayAccessClass> cls;
                 s_array_pe_chip_split = dramPeChipSplit(config, node.memory_tech);   // 1.12.18: the decoupled device array
                 cls.push_back(peClass(zsim_stats.dev.mem_rd, zsim_stats.dev.mem_wr));
+                s_array_topology = node.memory_topology;   // (user ruling 2026-10-26)
                 mem_power_total += reportSharedMemoryArrayEnergy(node.memory_tech, cls,
                                               r_dev,                              // 1.11.89: device MC's own
                                               config.mem_power_down,  // 1.11.45: split flag (1.11.41)
@@ -19979,6 +19999,15 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
                 std::exit(1);
             }
         }
+        /* (user ruling 2026-10-26) memory.topology: validated against the technology here. */
+        config.memory_topology = yamlString(root["memory"]["topology"], config.memory_topology, sc.pfx + "memory.topology");
+        {
+            PIMID::CactiIOWrapper::DramTopology t; std::string err;
+            if (!PIMID::CactiIOWrapper::resolveDramTopology(config.memory_tech, config.memory_topology, t, err)) {
+                std::cerr << "ERROR: " << sc.pfx << "memory.topology: " << err << std::endl;
+                std::exit(1);
+            }
+        }
 
         config.num_banks = yamlInt(root["memory"]["banks"], config.num_banks, sc.pfx + "memory.banks");
         if (root["memory"]["bank_kb"]) {   // 1.11.94 (row 15): SRAM/NVM bank size, a part parameter
@@ -22142,6 +22171,14 @@ int main(int argc, char** argv) {
                         if (h["memory"]) {
                             node.memory_tech = canonicalMemTech(
                                 yamlString(h["memory"]["technology"], node.memory_tech, hpath + ".memory.technology"));
+                            node.memory_topology = yamlString(h["memory"]["topology"], node.memory_topology, hpath + ".memory.topology");   // (user ruling 2026-10-26)
+                            {
+                                PIMID::CactiIOWrapper::DramTopology t; std::string err;
+                                if (!PIMID::CactiIOWrapper::resolveDramTopology(node.memory_tech, node.memory_topology, t, err)) {
+                                    std::cerr << "ERROR: " << hpath << ".memory.topology: " << err << std::endl;
+                                    std::exit(1);
+                                }
+                            }
                             // Optional per-channel BW / channel-count overrides
                             // (auto-derived from technology when absent).
                             node.mem_bandwidth_mbs =
@@ -22518,6 +22555,7 @@ int main(int argc, char** argv) {
                             dev->frequency_mhz = static_cast<int>(node.frequency_mhz);
                         node.tech_node_nm = dev->tech_node_nm;
                         node.memory_tech = dev->memory_tech;
+                        node.memory_topology = dev->memory_topology;   // (user ruling 2026-10-26)
                         node.ports_per_bank = dev->ports_per_bank;
                         node.banks = given("memory.banks") ? dev->num_banks : 0;   // 0 = the run's (the top level's, or the default)
 

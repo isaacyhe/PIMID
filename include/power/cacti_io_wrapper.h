@@ -185,10 +185,27 @@ public:
      * Returns valid=false with `source` naming the reason when the technology
      * has no CACTI-IO counterpart. The mapping is approximate for technologies
      * postdating the model and every approximation is named in `source`. */
+    /* (user ruling 2026-10-26) stub_ohm: the DQ/DQS series resistor between the
+     * connector and the DRAM (CACTI-IO rs1_dq / rs2_dq) for the memory
+     * node's topology; < 0 = the technology's default topology
+     * (resolveDramTopology). */
     static LinkIOResult computeDramIO(const std::string& tech,
                                       int num_dq,
                                       double rate_mts,
-                                      double activity);
+                                      double activity,
+                                      double stub_ohm = -1.0);
+    /* The memory topology of a DRAM node (user ruling 2026-10-26): requested
+     * "" = the technology's default. Fills `out` (name, stub, the stub's
+     * source, whether it was the default) and returns true, or returns false
+     * with `err` saying why the request is refused. */
+    struct DramTopology {
+        std::string name;
+        double stub_ohm = 0.0;
+        std::string source;
+        bool defaulted = false;
+    };
+    static bool resolveDramTopology(const std::string& tech, const std::string& requested,
+                                    DramTopology& out, std::string& err);
 
     /* DRAM specification primitives -- rate and channel width. Both are fixed
      * by the standard, so they are the legitimate kind of table entry. <0 for
