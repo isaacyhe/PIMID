@@ -145,6 +145,11 @@ access reads an earlier epoch's per-pair NoC latency and DRAM service latency
 by epoch index from its own clock, never a live value. Message-passing ranks
 use the same mechanism and also meet at their rendezvous. The run time is the
 ROI's elapsed wall-clock time, the latest ROI end on the cores' own clocks.
+Since (1.12.76) a guest thread's identity is its QEMU vCPU index (the guest's own
+thread-creation order), its host/device domain is read by its parent at the
+clone, it runs on a fixed home core of its domain (core vcpu mod n, as libgomp
+places thread i under `OMP_PROC_BIND=true`; `PIMID_NO_PE_PIN=1` turns this off),
+and a futex wait that sleeps leaves its core at once.
 
 **Regressions can be gated exactly.** Run the single-threaded build and
 require bit-identical output; it costs one run. The settings below keep the

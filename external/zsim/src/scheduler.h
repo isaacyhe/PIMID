@@ -383,6 +383,13 @@ class Scheduler : public GlobAlloc, public Callee {
             futex_unlock(&schedLock);
         }
 
+        /* (1.12.76): treat a syscall (by its synthetic PC) as blocking from the start */
+        void markBlockingSyscall(uint32_t pid, uint64_t pc) {
+            futex_lock(&schedLock);
+            if (pid < blockingSyscalls.size()) blockingSyscalls[pid].insert(pc);
+            futex_unlock(&schedLock);
+        }
+
         uint32_t sync(uint32_t pid, uint32_t tid, uint32_t cid) {
             futex_lock(&schedLock);
             ThreadInfo* th = contexts[cid].curThread;

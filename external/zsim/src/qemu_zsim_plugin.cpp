@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <algorithm>
+#include <sys/syscall.h>
 #include <atomic>
 #include <unordered_map>
 #include <map>   // 1.11.97: barrier-generation table
@@ -172,6 +173,12 @@ static uint32_t vcpuToTid[MAX_VCPUS];
 static uint32_t g_coreOwner[MAX_THREADS];
 static uint64_t g_coreForeignBinds[MAX_THREADS] = {};
 static uint32_t nextTid = 0;
+static const uint64_t kFutexWaitSynthPc = 0x2000 + 202;   // (1.12.76): futex WAIT-class ops (see syscall_cb)
+/* (1.12.76): a new thread's domain is read by its parent at the clone (the guest's
+ * own order), not by the new thread when QEMU first runs it. */
+static int g_cloneDomPending[MAX_VCPUS];
+static std::mutex g_cloneMu;
+static std::map<int, int> g_cloneDom;   // child OS tid -> domain read at the parent's clone
 static std::mutex tidMutex;
 
 /* 1.9.20 (defect #15): deterministic device-PE homes.
@@ -1751,7 +1758,7 @@ static void SimThreadFini(uint32_t tid) {
  * that migrates back to the host and returns later reclaims the same PE, so the
  * placement is stable end-to-end and not just per-migration. */
 static const g_vector<bool>& deviceMaskFor(uint32_t tid) {
-    if (!g_pin_device_homes || !g_mpi_thread_mode) return device_mask;
+    if (!g_pin_device_homes) return device_mask;   // (1.12.76): every mode, not thread-MPI only
     if (tid >= MAX_THREADS || device_core_list.empty()) return device_mask;
 
     uint32_t vcpu = tidToVcpu[tid];
@@ -1787,13 +1794,43 @@ static const g_vector<bool>& deviceMaskFor(uint32_t tid) {
     return m;
 }
 
+/* (1.12.76): host homes, as the device homes above: thread vcpu -> host core
+ * host_core_list[vcpu % n], one owner per core; a thread that collides keeps the
+ * whole host mask. With OMP_PROC_BIND=true / OMP_PLACES=cores (set by PIMID)
+ * libgomp binds thread i to place i: this is that placement. */
+static g_vector<uint32_t> host_core_list;
+static g_vector<uint32_t> host_home_owner;
+static g_vector<g_vector<bool>> host_home_mask;
+static bool g_host_pin_warned = false;
+static const g_vector<bool>& hostMaskFor(uint32_t tid) {
+    if (!g_pin_device_homes || tid >= MAX_THREADS || host_core_list.empty()) return host_mask;
+    const uint32_t vcpu = tidToVcpu[tid];
+    if (vcpu == UNINITIALIZED_CID) return host_mask;
+    std::lock_guard<std::mutex> lock(pinMutex);
+    const uint32_t idx = vcpu % (uint32_t)host_core_list.size();
+    if (host_home_owner[idx] != UNINITIALIZED_CID && host_home_owner[idx] != vcpu) {
+        if (!g_host_pin_warned) {
+            g_host_pin_warned = true;
+            warn("[ZSim] host pinning: vcpu %u and vcpu %u share host core %u (%lu host cores); the later thread "
+                 "keeps the whole host mask", vcpu, host_home_owner[idx], host_core_list[idx],
+                 (unsigned long)host_core_list.size());
+        }
+        return host_mask;
+    }
+    host_home_owner[idx] = vcpu;
+    g_vector<bool>& m = host_home_mask[tid];
+    if (m.size() != zinfo->numCores) m.resize(zinfo->numCores, false);
+    for (uint32_t i = 0; i < zinfo->numCores; i++) m[i] = false;
+    m[host_core_list[idx]] = true;
+    return m;
+}
 static void ensureThreadInit(uint32_t tid) {
     if (thread_initialized[tid]) return;
     thread_initialized[tid] = true;
 
     const g_vector<bool>& mask =
         (thread_domain[tid].load() == DOMAIN_DEVICE) ? deviceMaskFor(tid)
-                                                     : host_mask;
+                                                     : hostMaskFor(tid);   // (1.12.76): pinned host home
 
     info("Thread %d starting (domain=%s)", tid,
          thread_domain[tid].load() == DOMAIN_DEVICE ? "DEVICE" : "HOST");
@@ -1922,7 +1959,15 @@ static uint32_t getOrAssignTid(unsigned int vcpu_index) {
         return vcpuToTid[vcpu_index];
     }
 
-    uint32_t tid = nextTid++;
+    /* (1.12.76): a thread's tid is its vCPU index, QEMU's cpu index, which the
+     * parent assigns at the clone (cpu_get_free_index: one past the highest in
+     * use), in the guest's own thread-creation order. Through 1.12.61 the tid was
+     * nextTid++ in the order QEMU ran the plugin's vCPU-init callbacks, which QEMU
+     * runs asynchronously on each new thread when it first executes, so the
+     * host scheduler numbered the threads. */
+    if (vcpu_index >= MAX_THREADS) return MAX_THREADS;
+    uint32_t tid = vcpu_index;
+    if (tid >= nextTid) nextTid = tid + 1;
     if (vcpu_index < MAX_VCPUS) {
         vcpuToTid[vcpu_index] = tid;
     }
@@ -5152,6 +5197,10 @@ static void stackAtRoiBeginReg() {
 }
 
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
+    if (num == 56 && ret > 0 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // (1.12.76): hand the domain to the child
+        std::lock_guard<std::mutex> g(g_cloneMu);
+        g_cloneDom[(int)ret] = g_cloneDomPending[vcpu_index];
+    }
     if (num == 202 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // 1.12.18 (ruling 2026-10-23, "sync to waker")
         const uint32_t t = vcpuToTid[vcpu_index];
         if (t < MAX_THREADS) wakeSyncOnFutexReturn(t, ret);
@@ -5187,8 +5236,21 @@ static void vcpu_init_cb(unsigned int vcpu_index, void *userdata) {
         thread_initialized[tid] = false;
         /* Inherit DEVICE domain if spawned inside an active offload region,
          * so device-worker threads map to device PEs, not host cores. */
-        thread_domain[tid].store(
-            g_in_device_region.load() ? DOMAIN_DEVICE : DOMAIN_HOST);
+        int dom = g_in_device_region.load() ? DOMAIN_DEVICE : DOMAIN_HOST;
+        if (vcpu_index > 0) {   // (1.12.76): the domain its parent read at the clone (the parent records it as the clone returns)
+            const int me = (int)syscall(SYS_gettid);
+            bool found = false;
+            for (int spin = 0; spin < 200000 && !found; spin++) {   // at most ~2 s
+                {
+                    std::lock_guard<std::mutex> g(g_cloneMu);
+                    auto it = g_cloneDom.find(me);
+                    if (it != g_cloneDom.end()) { dom = it->second; g_cloneDom.erase(it); found = true; }
+                }
+                if (!found) usleep(10);
+            }
+            if (!found) warn("[ZSim] thread %d: no clone record from its parent; its domain is read now", tid);
+        }
+        thread_domain[tid].store(dom);
     }
 }
 
@@ -5230,6 +5292,8 @@ static void syscall_cb(unsigned int vcpu_index,
     /* 1.12.17: guest thread stacks (MAP_STACK = 0x20000, CLONE_THREAD = 0x10000) */
     if (num == 9 && (a4 & 0x20000)) g_stackMapLen[vcpu_index] = a2;
     else if (num == 56 && (a1 & 0x10000) && a2 && zinfo) stackOnClone(a2);
+    if (num == 56 && (a1 & 0x10000))   // (1.12.76): the child's domain, as its parent sees it at the clone
+        g_cloneDomPending[vcpu_index] = g_in_device_region.load() ? DOMAIN_DEVICE : DOMAIN_HOST;
     else if (num == 11 && zinfo && zinfo->stackRanges) stackOnUnmap(a1, a2);
     uint32_t tid = vcpuToTid[vcpu_index];
     if (tid == UNINITIALIZED_CID || tid >= MAX_THREADS) return;
@@ -5310,6 +5374,20 @@ static void syscall_cb(unsigned int vcpu_index,
              * Offset by 0x1000 to avoid address 0 (which could confuse
              * the blacklist's unordered_set). */
             uint64_t synth_pc = 0x1000 + (uint64_t)num;
+            /* (1.12.76): a futex wait that will sleep has its own synthetic PC, marked
+             * blocking at start-up: it leaves the core at once, as the OS takes a
+             * sleeping thread off its CPU. WAIT / WAIT_BITSET / WAIT_REQUEUE_PI
+             * sleep only while the word holds the expected value (the kernel
+             * returns EAGAIN otherwise), so a wait whose word has already changed
+             * keeps the core, as do the WAKE-class ops; the PI lock ops (LOCK_PI,
+             * LOCK_PI2) take the blocking path. Guest and host addresses coincide
+             * (guest_base 0). */
+            if (num == 202) {
+                const uint32_t c7 = (uint32_t)(a2 & 0x7f);
+                if (c7 == 6 || c7 == 13) synth_pc = kFutexWaitSynthPc;
+                else if ((c7 == 0 || c7 == 9 || c7 == 11) && a1 &&
+                         *(volatile uint32_t*)(uintptr_t)a1 == (uint32_t)a3) synth_pc = kFutexWaitSynthPc;
+            }
             if (num == 202) wakeSyncOnFutexEntry(tid, cid, a1, a2, a5);   // 1.12.18 (ruling 2026-10-23, "sync to waker")
             zinfo->sched->syscallLeave(procIdx, tid, cid, synth_pc,
                                        (int)num, a1, a2);
@@ -5580,18 +5658,18 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     device_home_mask.resize(MAX_THREADS);
     if (getenv("PIMID_NO_PE_PIN") && atoi(getenv("PIMID_NO_PE_PIN")) != 0) {
         g_pin_device_homes = false;
-        info("[ZSim] 1.9.20 PE pinning DISABLED via PIMID_NO_PE_PIN "
-             "(rank->PE placement reverts to scheduler order, i.e. run-to-run "
-             "nondeterministic)");
+        info("[ZSim] PE and host-core pinning DISABLED via PIMID_NO_PE_PIN "
+             "(threads take cores in the scheduler's order)");
     } else if (!device_core_list.empty()) {
-        info("[ZSim] 1.9.20 PE pinning active: %lu device PEs, rank->PE home = "
-             "vcpu_index %% %lu (deterministic placement)",
+        info("[ZSim] 1.9.20 PE pinning active: %lu device PEs, thread home = "
+             "vcpu_index %% %lu (fixed placement; every mode since (1.12.76))",
              (unsigned long)device_core_list.size(),
              (unsigned long)device_core_list.size());
     }
 
     bool has_device = false;
     for (auto b : device_mask) if (b) { has_device = true; break; }
+    /* host homes ((1.12.76)): set below, after the ALU/Null-only promotion */
     bool has_host = false;
     for (auto b : host_mask) if (b) { has_host = true; break; }
 
@@ -5609,6 +5687,12 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         }
         info("[ZSim] ALU/Null-only config: all device cores promoted to host for QEMU execution");
     }
+
+    /* (1.12.76): host homes (hostMaskFor), over the final host mask */
+    host_core_list.clear();
+    for (uint32_t i = 0; i < zinfo->numCores; i++) if (host_mask[i]) host_core_list.push_back(i);
+    host_home_owner.assign(host_core_list.size(), UNINITIALIZED_CID);
+    host_home_mask.resize(MAX_THREADS);
 
     /* Initialize co-sim thread state */
     for (uint32_t i = 0; i < MAX_THREADS; i++) {
@@ -5648,6 +5732,16 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     }
     if (g_mpi_thread_mode) {
         info("[ZSim] MPI: emulated ranks in-process (deterministic serial weave)");
+    }
+    /* (1.12.76): a futex wait leaves its core at once. ZSim kept a thread in a
+     * syscall on its core ("fake leave") and its watchdog turned the leave into a
+     * real one after a stall measured in host time; every shared-memory run had
+     * futex blacklisted that way after its first stall. Message-passing runs keep
+     * the old path: their mailbox waits are modelled by the transport. */
+    if (!g_mpi_thread_mode && !getenv("PIMID_MPI_RANK")) {
+        zinfo->sched->markBlockingSyscall(procIdx, kFutexWaitSynthPc);   // futex WAIT-class ops
+        zinfo->sched->markBlockingSyscall(procIdx, 0x1000 + 449);        // futex_waitv
+        info("[ZSim] futex waits leave the core at once (futex WAIT-class ops, futex_waitv) [(1.12.76)]");
     }
     {   /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): simulation.lock_sync, default on;
          * never under thread-MPI (see lockRmw) */

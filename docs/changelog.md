@@ -6,6 +6,41 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.76 -- a guest thread keeps a fixed identity and core, and a futex wait that sleeps leaves its core at once
+
+- **User ruling 2026-10-26**: ship "stable thread identity" and "futex waits as real leaves". Changes in
+  external/zsim/src/qemu_zsim_plugin.cpp and scheduler.h:
+  1. *Thread id = QEMU vCPU index.*
+     - The vCPU index is QEMU's cpu index, assigned by the parent at the clone in the guest's own
+       thread-creation order.
+     - The tid used to be handed out in the order QEMU ran the plugin's vCPU-init callbacks. QEMU runs those on
+       each new thread when it first executes (plugins/core.c, async_run_on_cpu), so the host scheduler numbered
+       the threads.
+  2. *Domain at the clone.* A new thread's host/device domain is read by its parent at the clone (the guest's
+     order), not by the new thread when QEMU first runs it.
+  3. *Fixed homes in every mode.*
+     - Host cores: home = host core list[vcpu % n].
+     - Device PEs: home = device PE list[vcpu % n]. This was already the rule under thread-MPI; it now applies in
+       every mode.
+     - A thread that would share a home keeps the whole mask, as before.
+     - This is the placement libgomp makes under the OMP_PROC_BIND=true / OMP_PLACES=cores settings PIMID sets
+       (thread i on place i).
+     - PIMID_NO_PE_PIN=1 turns off both kinds of home.
+  4. *A futex wait that sleeps leaves its core at once.*
+     - Applies to WAIT / WAIT_BITSET / WAIT_REQUEUE_PI whose word still holds the expected value, and to the PI lock
+       ops. The OS likewise takes a sleeping thread off its CPU.
+     - ZSim kept a thread in such a syscall on its core ("fake leave"). Its watchdog turned the leave into a real
+       one after a stall measured in host time, and every shared-memory run had futex blacklisted that way after
+       its first stall.
+     - A wait whose word has already changed returns at once (EAGAIN) and keeps the core, as do the WAKE-class ops.
+     - Message-passing runs keep the old path: their mailbox waits are modelled by the transport.
+- **Validation** (six jobs x 116 cells):
+  - All 106 serial cells are unchanged in every cycle and power figure, and the 1-core DDR5 baseline is unchanged.
+  - Mean cycles of the multi-threaded cells (three runs each, measured on 1.12.72), against the previous version:
+    - OpenMP device cells -10.9% (HBM3) .. +7.0% (LPDDR5);
+    - co-sim DDR5 +0.3%, co-sim HBM3 -0.2%;
+    - host baselines 4 / 16 cores -0.8% / +0.7%.
+
 ## 1.12.75 -- a host core's contention stalls are counted once in the run window
 
 - **The defect** (gate check "replayed DRAM time ~ pricing window": 7.6 us replayed vs 8.0 us priced on the 16-core
