@@ -6,6 +6,10 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.78 -- LPDDR5 read I/O current scaled to the run data rate
+
+- The LPDDR5 VDDQ read current (IDD4RQ, given at 7500 Mb/s) now has its excess over standby scaled to the run rate (6400/7500), the rule the record already applies to the read and write burst currents: read I/O 0.5435 -> 0.4637 pJ/bit (-14.7%), estimated from a vendor source that cannot be disclosed publicly. No other number changes.
+
 ## 1.12.77 -- the processing element's clock tree over its own registers, printed apart
 
 - **Report (user ruling 2026-10-26; external/mcpat/core.cc):** with the internal diagnostic switch on
