@@ -49,6 +49,17 @@ component_factors:   # typical / maximum per component; applied by typicalFromSp
   refresh: 0.83
   pd: 0.576
   source: "Shi et al. [S] per-component ratios (standby 0.576, premium 0.350/0.576, act 0.540, burst 0.553 rd / 0.430 wr, pd 0.576); refresh 0.83 from Ghose [G]"
+# (1.12.82) (user ruling 2026-10-27): the data-dependent column-burst energy, transferred from the
+# DDR3 measurement (NO PUBLISHED SOURCE FOUND for a DDR4 measurement of the dependence). Relative form, normalised at
+# uniform-random data: E_burst = E_record x (1 + k x (f_ones - 0.5)), f_ones = the 1 bits of the run's raw line data
+# (the array stores raw data; DBI acts on the pins only).
+data_pattern:
+  form: ONES_LINEAR
+  read_ones: 0.1733
+  write_ones: -0.0835
+  provenance: DERIVED
+  source: "Transfer from DDR3 (params/dram/ddr3.yaml data_pattern): Ghose et al., SIGMETRICS 2018 (arXiv:1807.05102) Table 5 bank+column interleaving, vendor means, I/O-driver corrected (vendor A 230/434 read, 111/311 write). The authors state that 'due to the large number of similarities between the design of DDR3 memory and DDR4 memory, we believe that the general trends observed in our characterization should apply to DDR4 DRAM as well' (Sec. 3.2), leaving DDR4 to future work. Assumptions stated: the same relative sensitivity of the core burst to the 1s fraction in DDR4 (planar DRAM core, same bank/column datapath); DDR4 measured data: NO PUBLISHED SOURCE FOUND (Mathew et al. DATE 2018 and Shi et al. arXiv:2411.17960 vary no data)."
+
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
   scheme: POD
   vddq: 1.2

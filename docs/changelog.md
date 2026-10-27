@@ -6,6 +6,15 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.82 -- DDR4 burst energy at the run's own data (transferred from the DDR3 measurement)
+
+- **Model (user ruling 2026-10-27):** the DDR4 record gets a `data_pattern` block (form ONES_LINEAR) with the
+  DDR3 coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table
+  5, I/O-corrected), on the 1s fraction of the run's raw line data. DERIVED transfer: no published DDR4 measurement of
+  the dependence exists; the DDR3 study's authors state its trends should apply to DDR4. Normalised at uniform-random
+  data. Record only (params/dram/ddr4.yaml).
+- **Data impact:** DDR4 read burst energy -8.7 % (all 0s) to +8.7 % (all 1s), write +4.2 % to -4.2 %.
+
 ## 1.12.81 -- HBM3 burst energy at the run's own data
 
 - **Model (user ruling 2026-10-27):** the HBM3 record gets the `data_pattern` block (form DQ_TOGGLE_RELATIVE) with the
