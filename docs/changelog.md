@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.121 -- after the ROI the program runs to its exit without entering the scheduler
+
+- **Defect (gate 1.12.114, baseline_DDR5_omp_gemv_16core).** The run printed its power report but no BENCH_CHECKSUM:
+  it took 10 min 19 s instead of about 20 s, i.e. the program did not reach its exit within the 600 s the simulator
+  waits after the ROI, and the run was then ended, which discards the guest's buffered output ("[HOOKS] ROI end" and
+  the checksum). After the ROI the program runs unsimulated, but its syscalls (a futex wait, a write) and its threads'
+  exits still entered the scheduler: a leave there can end a phase and run the end-of-phase work for cores that no
+  longer move, and a thread that was waiting in the barrier when the ROI ended was never let go.
+- **Fix.** Once the stats are written and the program runs on unsimulated, the timing plugin returns from guest
+  syscalls and thread exits before the scheduler, and every thread still waiting in the barrier for its turn or for
+  the next phase is released.
+- **Data impact:** none. Every simulated figure is written before this point; the 116-cell set is unchanged, bit for
+  bit, and every cell printed its checksum.
+
 ## 1.12.120 -- a workload.env loader variable reaches only the guest
 
 - **Defect (src/main.cpp, the launch children).** Each launch copied every `workload.env` entry into its own

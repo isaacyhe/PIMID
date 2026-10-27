@@ -3250,6 +3250,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                     g_postRoiSince = postRoiWallSec();
                     __sync_synchronize();
                     g_postRoiFree = 1;
+                    if (zinfo->sched) zinfo->sched->releaseForPostRoi();   // (1.12.121): no thread is left waiting in the barrier
                     zinfo->terminationConditionMet = true;
                 }
             }
@@ -4481,6 +4482,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             g_postRoiSince = postRoiWallSec();
             __sync_synchronize();
             g_postRoiFree = 1;
+            if (zinfo->sched) zinfo->sched->releaseForPostRoi();   // (1.12.121): no thread is left waiting in the barrier
             zinfo->terminationConditionMet = true;
             return;
         }
@@ -4504,6 +4506,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             g_postRoiSince = postRoiWallSec();
             __sync_synchronize();
             g_postRoiFree = 1;
+            if (zinfo->sched) zinfo->sched->releaseForPostRoi();   // (1.12.121): no thread is left waiting in the barrier
             zinfo->terminationConditionMet = true;
         }
     } else if (opcode == ZSIM_MAGIC_OP_WORK_BEGIN) {
@@ -4837,6 +4840,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
             g_postRoiSince = postRoiWallSec();
             __sync_synchronize();
             g_postRoiFree = 1;
+            if (zinfo->sched) zinfo->sched->releaseForPostRoi();   // (1.12.121): no thread is left waiting in the barrier
             zinfo->terminationConditionMet = true;
             return;
         }
@@ -4860,6 +4864,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
             g_postRoiSince = postRoiWallSec();
             __sync_synchronize();
             g_postRoiFree = 1;
+            if (zinfo->sched) zinfo->sched->releaseForPostRoi();   // (1.12.121): no thread is left waiting in the barrier
             zinfo->terminationConditionMet = true;
         }
     } else if (opcode == ZSIM_MAGIC_OP_WORK_BEGIN) {
@@ -5321,6 +5326,7 @@ static void vcpu_exit_cb(unsigned int vcpu_index, void *userdata) {
         uint32_t tid = vcpuToTid[vcpu_index];
         if (tid != UNINITIALIZED_CID && tid < MAX_THREADS) {
             if (!thread_initialized[tid]) return;  // never started
+            if (pimidPostRoiFree()) return;   // (1.12.121): after the ROI a thread ends unsimulated (see syscall_cb)
             /* Leave scheduler if still scheduled */
             uint32_t cid = cids[tid];
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
@@ -5482,6 +5488,11 @@ static void syscall_cb(unsigned int vcpu_index,
             info("Guest exit status %d: the workload did not complete normally", g_guest_exit_status);
         SimEnd();
     }
+    /* (1.12.121): after the ROI the program runs unsimulated; its syscalls no longer
+     * enter the scheduler (a leave there could end a phase and run the end-of-phase
+     * work for cores that will never move again, holding the thread, and with it
+     * the program's exit and its output after the ROI) */
+    if (pimidPostRoiFree()) return;
     if (cid == INVALID_CID || cid == UNINITIALIZED_CID) return;
 
     /* For potentially blocking syscalls, use the scheduler's adaptive

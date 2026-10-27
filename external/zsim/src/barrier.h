@@ -201,6 +201,22 @@ class Barrier : public GlobAlloc {
             }
         }
 
+        /* (1.12.121): the ROI is over and the program runs on to its exit unsimulated
+         * (no thread reaches the barrier again): every thread waiting for its turn or
+         * for the next phase is let go, or it would wait forever and the program with
+         * it (its output after the ROI lost when the run is ended). Called with
+         * schedLock held. */
+        void releaseAllWaiting() {
+            for (uint32_t i = 0; i < runListSize; i++) {
+                const uint32_t t = runList[i];
+                if (threadList[t].state != WAITING) continue;
+                threadList[t].state = RUNNING;
+                runningThreads++;
+                if (__sync_bool_compare_and_swap(&threadList[t].futexWord, 1, 0))
+                    syscall(SYS_futex, &threadList[t].futexWord, FUTEX_WAKE, 1, nullptr, nullptr, 0);
+            }
+        }
+
     private:
         inline void checkEndPhase(uint32_t tid) {
             if (curThreadIdx == runListSize && runningThreads == 0) {

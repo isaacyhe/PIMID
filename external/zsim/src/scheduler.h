@@ -390,6 +390,12 @@ class Scheduler : public GlobAlloc, public Callee {
             futex_unlock(&schedLock);
         }
 
+        void releaseForPostRoi() {   // (1.12.121): see Barrier::releaseAllWaiting
+            futex_lock(&schedLock);
+            bar.releaseAllWaiting();
+            futex_unlock(&schedLock);
+        }
+
         uint32_t sync(uint32_t pid, uint32_t tid, uint32_t cid) {
             futex_lock(&schedLock);
             ThreadInfo* th = contexts[cid].curThread;
