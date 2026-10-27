@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.126 -- thread-MPI results are now the same in every run
+
+- **Fixed rank order (on by default, thread-MPI: ranks as threads of one process, device scope, co-sim and host
+  baselines).** The ranks keep the simulator's own schedule -- one rank at a time, a whole phase each, in the order
+  of a seeded shuffle drawn at every phase end -- and it is made repeatable with the machinery of the shared-memory
+  fixed order (1.12.123): a rank that joins mid-phase takes its place by its position in that phase's shuffle, a turn
+  passes on only once the ranks it woke have joined and the ranks it put to sleep are queued in the kernel, and a
+  mailbox wait (futex) leaves the core at once instead of holding it until the scheduler's wall-clock watchdog forced
+  a leave. The ranks' clocks stay where the transport puts them (send stamps, the rendezvous arrival, the
+  frozen-clock comm window). Process-mode MPI ranks are unchanged.
+- **Root cause.** Which rank ran next came from the host: a rank blocked in a mailbox wait kept the core until the
+  watchdog, measured in wall time, made it leave, and a rank woken by a message joined whenever its host thread got
+  there. That order decides which message an MPI_ANY_SOURCE receive takes first and the order in which the senders
+  reserve the shared contention points, so the run times followed the scheduling of the host.
+- **Why not turns by clock.** Ordering the ranks' turns by their clocks, as the shared-memory runs do, also repeats
+  but runs in-order and out-of-order rank cores up to 60% longer (mpi_bfs_inorder, mpi_bfs_ooo): their compute
+  between messages took about twice the cycles for the same instructions, because short turns by clock interleave
+  the ranks' memory traffic far more finely than the phase-long turns the MPI transport was built and calibrated on.
+  The shuffle order keeps that interleaving.
+- **Data impact (head 7e833a0f, two node types, 12 runs of the 1.12.125 build; ROI run time of the single new value vs
+  1.12.125's mean):** serial, OpenMP and co-sim OpenMP cells (116) unchanged, bit for bit (run time, power, checksum).
+  Thread-MPI cells, now one value each and the same on both node types: mpi_bfs_alu +0.3%, mpi_bfs_inorder +0.4%,
+  mpi_bfs_ooo +0.9%, mpi_gemv_alu, mpi_triad_alu and mpi_hist_alu unchanged, cosim_DDR5_mpi_gemv +1.4%,
+  cosim_HBM3_mpi_triad -2.3%, cosim_DDR5_mpi_bfs -8.5%, base_mpi_triad_16 -0.4%, base_mpi_gemv_4 -0.4%,
+  base_mpi_bfs_16 +3.9%; each within 1.5 standard deviations of 1.12.125's runs (base_mpi_bfs_16 0.6% above 1.12.125's
+  largest value). Host time: device-scope and host-baseline MPI cells +15 to +45%, co-sim MPI cells unchanged.
+- **base_mpi_bfs_16: a bias of the fixed order on this cell.** The cell gives one value per program path (the path
+  is part of the program's input, 1.12.125); that value is one draw from the fixed-order distribution, which on this
+  cell runs 3-4% above the 1.12.125 host-driven order (about 1.6 of 1.12.125's standard deviations). The other 11 MPI cells
+  sit near 1.12.125's mean. Measured on one node, 48 runs of the 1.12.125 build against the fixed order under 32 different
+  shuffle seeds (ROI run time, cycles):
+
+  | program path | the 1.12.125 build, 48 runs | fixed order, 32 seeds | fixed order, shipped seed |
+  |---|---|---|---|
+  | absolute | mean 97166, sd 2367, 92473..102310 | mean 101079, sd 3827, 94323..111343 | 102895 |
+  | through a `..` component | mean 93828, sd 1931, 90348..99964 | mean 96827, sd 3133, 90209..102968 | 94885 |
+
+  The extra time is partly compute between messages (+2 to 3%, same instructions) and partly waiting for message
+  arrivals; message latency, link contention and the number of receives are the same as 1.12.125's.
+
 ## 1.12.125 -- the program path is documented as part of the program's input
 
 - **Documented (docs/architecture.md, Reproducibility; user ruling 2026-10-27).** PIMID passes the program path

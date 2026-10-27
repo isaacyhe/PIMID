@@ -31,6 +31,8 @@ std::atomic<uint8_t> g_detCredit[MAX_THREADS];
 uint64_t (*g_detClockOf)(uint32_t cid) = nullptr;
 void (*g_detTurnStart)() = nullptr;
 void (*g_detBeforeLeave)(uint32_t tid) = nullptr;
+bool g_detClockMode = true;
+uint64_t g_detShufKey[MAX_THREADS];
 #include "bithacks.h"
 #include <fstream>
 #include <regex>

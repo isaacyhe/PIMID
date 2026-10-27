@@ -60,6 +60,8 @@ extern std::atomic<uint8_t> g_detCredit[MAX_THREADS];    // per tid: its next jo
 extern uint64_t (*g_detClockOf)(uint32_t cid);           // a core's clock (the global phase axis)
 extern void (*g_detTurnStart)();                         // run by a thread as its turn starts
 extern void (*g_detBeforeLeave)(uint32_t tid);           // run before a thread leaves its core
+extern bool g_detClockMode;                              // (1.12.126): turns by clock; false = by place in the seeded shuffle
+extern uint64_t g_detShufKey[MAX_THREADS];               // (1.12.126): a core's place in this phase's seeded shuffle
 static inline bool detBefore(uint32_t a, uint32_t b) {   // turn order: earlier clock first, then lower id
     if (g_detClockOf) { const uint64_t ca = g_detClockOf(a), cb = g_detClockOf(b); if (ca != cb) return ca < cb; }
     return a < b;
@@ -321,7 +323,7 @@ class Barrier : public GlobAlloc {
                 }
 
                 //NOTE: If this is a performance hog, the algorithm can be rewritten to be top-down and threads can be woken up as soon as they are reordered. So far, I've seen this has negligible overheads though.
-                if (g_detOrder) {   // (1.12.123): the next phase starts in turn order (no shuffle)
+                if (g_detOrder && g_detClockMode) {   // (1.12.123): the next phase starts in turn order (no shuffle)
                     for (uint32_t i = 1; i < runListSize; i++) {
                         uint32_t v = runList[i]; int32_t j = (int32_t)i - 1;
                         while (j >= 0 && detBefore(v, runList[j])) { runList[j + 1] = runList[j]; j--; }
@@ -341,6 +343,9 @@ class Barrier : public GlobAlloc {
                         threadList[itid].lastIdx = j;
                         threadList[jtid].lastIdx = i;
                     }
+                    /* (1.12.126): with the fixed order by shuffle (message-passing runs), a core
+                     * that joins later in the phase takes its place by this position */
+                    if (g_detOrder) for (uint32_t i = 0; i < runListSize; i++) g_detShufKey[runList[i]] = i;
                 }
             }
         }

@@ -191,7 +191,16 @@ mask; and threads waiting for a core are served by phase and thread id. The
 simulated time still comes from the model; the host decides neither the order
 in which threads touch shared state nor which core a thread gets. The cost is
 host time: OpenMP device cells take about a fifth longer to simulate.
-Message-passing runs keep their own ordering.
+Since (1.12.126) thread-MPI runs (ranks as threads of one process) are also the same
+in every run: the ranks keep the simulator's own order, one rank at a time for a
+whole phase in the order of a seeded shuffle drawn at each phase end, and that
+order is made repeatable the same way (a rank that joins mid-phase takes its place
+by its position in the shuffle; a turn passes on only once the ranks it woke have
+joined and the ranks it put to sleep are queued in the kernel; a mailbox wait
+leaves the core at once). The ranks' clocks stay where the transport puts them,
+so which message a receive takes first and the order of the contention
+reservations no longer come from the host. Process-mode MPI ranks keep their own
+ordering.
 
 **Regressions can be gated exactly.** Run the single-threaded build and
 require bit-identical output; it costs one run. The settings below keep the

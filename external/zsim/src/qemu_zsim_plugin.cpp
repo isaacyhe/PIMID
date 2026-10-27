@@ -6061,9 +6061,10 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     /* (1.12.76): a futex wait leaves its core at once. ZSim kept a thread in a
      * syscall on its core ("fake leave") and its watchdog turned the leave into a
      * real one after a stall measured in host time; every shared-memory run had
-     * futex blacklisted that way after its first stall. Message-passing runs keep
-     * the old path: their mailbox waits are modelled by the transport. */
-    if (!g_mpi_thread_mode && !getenv("PIMID_MPI_RANK")) {
+     * futex blacklisted that way after its first stall. Since (1.12.126) thread-MPI
+     * runs do the same (their mailbox waits are still timed by the transport);
+     * process-mode MPI ranks keep the old path. */
+    if (!getenv("PIMID_MPI_RANK")) {
         zinfo->sched->markBlockingSyscall(procIdx, kFutexWaitSynthPc);   // futex WAIT-class ops
         zinfo->sched->markBlockingSyscall(procIdx, 0x1000 + 449);        // futex_waitv
         info("[ZSim] futex waits leave the core at once (futex WAIT-class ops, futex_waitv) [(1.12.76)]");
@@ -6082,11 +6083,32 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         g_detBeforeLeave = [](uint32_t tid) {
             if (in_roi.load()) detSettle((tid < MAX_THREADS && g_detCredit[tid].load()) ? 1 : 0);
         };
-        g_detClockOf = [](uint32_t cid) -> uint64_t {
-            return (cid < zinfo->numCores && zinfo->cores[cid]) ? zinfo->cores[cid]->lockClock() : 0;
-        };
-        info("[ZSim] fixed thread order: one core at a time, turns of at most %lu cycles by clock (shared-memory runs) [(1.12.123)]", (unsigned long)kDetTurnCycles);
-        g_detQ = kDetTurnCycles;
+        if (!g_mpi_thread_mode) {
+            g_detClockOf = [](uint32_t cid) -> uint64_t {
+                return (cid < zinfo->numCores && zinfo->cores[cid]) ? zinfo->cores[cid]->lockClock() : 0;
+            };
+            info("[ZSim] fixed thread order: one core at a time, turns of at most %lu cycles by clock (shared-memory runs) [(1.12.123)]", (unsigned long)kDetTurnCycles);
+            g_detQ = kDetTurnCycles;
+        } else {
+            /* (1.12.126): thread-MPI ranks keep zsim's own turn order -- one rank at a time,
+             * a whole phase each, in the order of the seeded shuffle drawn at every
+             * phase end -- made repeatable: a rank that joins mid-phase (woken, its
+             * message arrived) takes its place by its position in that shuffle, and
+             * a turn passes on only once the ranks it woke have joined and the ranks
+             * it put to sleep are queued in the kernel (as above). The ranks' clocks
+             * stay where the transport puts them (send stamps, rendezvous arrivals,
+             * the frozen-clock comm window), so the timing model is unchanged; the
+             * order of the ranks' turns, and with it which message a receive takes
+             * first and the order of the contention reservations, no longer comes
+             * from the host. Turns by clock are not used here: they change the
+             * interleaving the transport was calibrated with (in-order and
+             * out-of-order rank cores ran up to 60% longer). */
+            g_detClockMode = false;
+            for (uint32_t i = 0; i < MAX_THREADS; i++) g_detShufKey[i] = (1ull << 32) + i;
+            g_detClockOf = [](uint32_t cid) -> uint64_t { return cid < MAX_THREADS ? g_detShufKey[cid] : cid; };
+            g_detQ = 0;
+            info("[ZSim] fixed rank order: one rank at a time, a phase each, in the seeded shuffle order (thread-MPI) [(1.12.126)]");
+        }
     }
     {   /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): simulation.lock_sync, default on;
          * never under thread-MPI (see lockRmw) */
