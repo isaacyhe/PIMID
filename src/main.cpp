@@ -14006,6 +14006,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * DQ PHY (McPAT is told withPHY=0 there); it used to be added at every
              * placement. System scope adds no PHY static term (checked). */
             const double phy_static_mw = crosses_dq ? ram_oracle.getInterfacePhyStaticMW() : 0.0;   // 1.11.98 (row 28)
+            std::string rcd_s_src, rcd_d_src;   // (user ruling 2026-10-27) the RDIMM register
+            const double rcd_static_mw = crosses_dq ? ram_oracle.getRcdStaticMW(&rcd_s_src) : 0.0;
+            const double rcd_drive_nj = crosses_dq ? ram_oracle.getRcdDriveEnergyNJ(&rcd_d_src) : 0.0;
+            if (rcd_static_mw > 0.0 || rcd_drive_nj > 0.0)
+                std::cout << "  [mem] RDIMM register (RCD): static " << rcd_static_mw << " mW (" << rcd_s_src << "); output drive "
+                          << rcd_drive_nj << " nJ per access (" << rcd_d_src << ")" << std::endl;
             double leakage_mw = bg_power_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0);   // 1.11.91: + the VPP rail
 
             double total_rd_nj = rd_energy * zsim_stats.mem_rd;
@@ -14015,6 +14021,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                   + iface_term_wr_chg * zsim_stats.mem_wr;   // 1.12.18: once
             const double total_iddq_nj = iddq_rd_nj * zsim_stats.mem_rd
                                        + iddq_wr_nj * zsim_stats.mem_wr;   // 1.11.91 (R8-8)
+            const double total_rcd_nj = rcd_drive_nj * (zsim_stats.mem_rd + zsim_stats.mem_wr);   // (user ruling 2026-10-27)
             /* 1.12.18: what the device total adds. Background is summed once
              * (leakage_mw IS background + VPP, not a further term); with the
              * controller replayed, refresh is charged as COUNTED (ruling (c)):
@@ -14025,14 +14032,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 double static_mw = leakage_mw;
                 if (ref_energy_measured_mw >= 0.0) static_mw += ref_energy_measured_mw - ref_duty_mw;
                 if (phy_static_mw > 0.0) static_mw += phy_static_mw;
+                if (rcd_static_mw > 0.0) static_mw += rcd_static_mw;   // (user ruling 2026-10-27)
                 devmem.have = true;
-                devmem.dyn_nj = total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj + total_iddq_nj;
+                devmem.dyn_nj = total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj + total_iddq_nj + total_rcd_nj;
                 devmem.static_mw = static_mw;
                 std::ostringstream n;
                 n << config.memory_tech << " (Ramulator2): background " << leakage_mw << " mW";
                 if (ref_energy_measured_mw >= 0.0)
                     n << ", refresh charged as counted " << ref_energy_measured_mw << " mW in place of the datasheet duty " << ref_duty_mw << " mW";
                 if (phy_static_mw > 0.0) n << ", PHY static " << phy_static_mw << " mW";
+                if (rcd_static_mw > 0.0) n << ", RDIMM register static " << rcd_static_mw << " mW";   // (user ruling 2026-10-27)
                 if (config.memory_tech.rfind("HBM", 0) == 0)
                     n << "; background DERIVED (user ruling 2026-10-23): no published HBM standby current, scaled from measured HBM2 by voltage and data rate (power.md)";
                 devmem.note = n.str();
@@ -14192,11 +14201,13 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * the column still parses, it just means something else now. */
             pimid::fmt_scoped(std::cout) << "  Total dynamic:   " << std::setprecision(6)
                       << (total_rd_nj + total_wr_nj + total_act_nj + total_iface_nj
-                          + total_iddq_nj) / 1e6
+                          + total_iddq_nj + total_rcd_nj) / 1e6
                       << " mJ (rd=" << total_rd_nj / 1e6 << " + wr=" << total_wr_nj / 1e6
                       << " + act=" << total_act_nj / 1e6
                       << " + iddq=" << total_iddq_nj / 1e6   // 1.11.91 (R8-8)
-                      << " + iface=" << total_iface_nj / 1e6
+                      << " + iface=" << total_iface_nj / 1e6;
+            if (total_rcd_nj > 0.0) std::cout << " + rcd=" << total_rcd_nj / 1e6;   // (user ruling 2026-10-27)
+            pimid::fmt_scoped(std::cout) << std::setprecision(6)
                       /* 1.11.91 (audit R8-12): the label said "termination +
                        * driver/PHY" -- true for 1.11.58-59 only. Since the
                        * 1.11.60 revert total_iface_nj sums the termination
@@ -15415,6 +15426,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                           r_res, pd_used);   // 1.11.91 (R8-7)
 
         double total_rd_mj = 0.0, total_wr_mj = 0.0, total_iface_mj = 0.0;
+        double total_rcd_mj = 0.0;   // (user ruling 2026-10-27) RDIMM register output drive
         double total_iddq_mj = 0.0;   // 1.11.91 (R8-8)
         double total_act_mj = 0.0;    // 1.12.18 (R0605): counted activates
         bool topo_said = false;   // (user ruling 2026-10-26): the topology line once per array
@@ -15489,6 +15501,14 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
                 (iface_term_rd_nj * static_cast<double>(c.rd)
                  + iface_term_wr_chg * static_cast<double>(c.wr)) / 1e6;
             total_rd_mj += c_rd_mj; total_wr_mj += c_wr_mj; total_iface_mj += c_if_mj;
+            {   // (user ruling 2026-10-27) the RDIMM register's output drive for this class's accesses
+                std::string rsrc;
+                const double rcd_nj = c.crosses_dq ? ram_oracle.getRcdDriveEnergyNJ(&rsrc) : 0.0;
+                if (rcd_nj > 0.0) {
+                    total_rcd_mj += rcd_nj * static_cast<double>(c.rd + c.wr) / 1e6;
+                    std::cout << "    [mem] RDIMM register (RCD) output drive: " << rcd_nj << " nJ per access (" << rsrc << ")" << std::endl;
+                }
+            }
             /* 1.11.91 (audit R8-8): IDDQ on the class's own crossing answer. */
             bool iddq_band = false;
             double iddq_rd_lo = 0.0, iddq_rd_hi = 0.0;
@@ -15633,12 +15653,14 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * correction -- what is printed here is the whole DQ interface since
          * 1.11.58, not the termination component of it. */
         pimid::fmt_scoped(std::cout) << "  Array dynamic: " << std::setprecision(3)
-                  << (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj + total_act_mj)
+                  << (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj + total_act_mj + total_rcd_mj)
                   << " mJ (rd=" << total_rd_mj
                   << " + act=" << total_act_mj   // 1.12.18 (R0605): counted activates
                   << " + wr=" << total_wr_mj
                   << " + iddq=" << total_iddq_mj   // 1.11.91 (R8-8)
-                  << " + iface=" << total_iface_mj
+                  << " + iface=" << total_iface_mj;
+        if (total_rcd_mj > 0.0) pimid::fmt_scoped(std::cout) << std::setprecision(3) << " + rcd=" << total_rcd_mj;   // (user ruling 2026-10-27)
+        pimid::fmt_scoped(std::cout) << std::setprecision(3)
                   << " [termination only; driver/PHY informational, not summed])"   // 1.11.91 (R8-12)
                   << std::defaultfloat << std::endl;
         computeDramDieAreaMM2(memory_tech, /*print=*/true,
@@ -15647,7 +15669,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
          * clock. Energy terms divide by the same seconds node power uses;
          * background is already a rate. */
         if (wall_seconds > 0.0) {
-            return (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj + total_act_mj)
+            return (total_rd_mj + total_wr_mj + total_iface_mj + total_iddq_mj + total_act_mj + total_rcd_mj)
                        / 1000.0 / wall_seconds
                    + (bg_mw + ref_delta_mw + (ipp_mw > 0.0 ? ipp_mw : 0.0)) / 1000.0;   // 1.11.91 (R8-8); 1.12.18 counted refresh
         }
@@ -17226,6 +17248,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
      * controller that drives the pins, and the shared array's memory term
      * carries none. power.models.host_mc_phy_static: false leaves it out. */
     std::vector<std::pair<std::string, double>> host_mc_phy_w;
+    std::vector<std::pair<std::string, double>> host_rcd_w;   // (user ruling 2026-10-27) RDIMM register static, one RCD per host memory
     int    mem_die_count = 0;      // 1.11.46 (L237): population, for the report
     double mem_die_mm2  = 0.0;
     int    mem_die_techs = 0;      // 1.11.56 (A031): how many technologies were priced
@@ -17792,6 +17815,16 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     q.initialize();
                     mw = q.getInterfacePhyStaticMW();
                     phy_src = q.getInterfacePhyStaticSource();   // (user ruling 2026-10-27)
+                    {   // (user ruling 2026-10-27) the RDIMM register of this host memory
+                        q.setTopology(coupled ? (d_tech.empty() ? h_topo : d_topo) : node.memory_topology);
+                        std::string rsrc;
+                        const double rmw = q.getRcdStaticMW(&rsrc);
+                        if (rmw > 0.0) {
+                            host_rcd_w.push_back({node.name, rmw / 1000.0});
+                            std::cout << "  [mem] " << node.name << " RDIMM register (RCD) static " << rmw << " mW (" << rsrc
+                                      << "; one RCD; ledger " << node.name << ".memory_rcd)" << std::endl;
+                        }
+                    }
                 } catch (const std::exception& e) {
                     std::cerr << "[mem] NOTE: " << node.name << " memory-controller PHY static unavailable ("
                               << e.what() << "); not charged, stated here." << std::endl;
@@ -17892,6 +17925,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         }
     }
     sys_power += host_uncore_total_w;
+    for (const auto& p : host_rcd_w) sys_power += p.second;   // (user ruling 2026-10-27)
     pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(2)
               << sys_power << " W (" << sys_dyn << " dyn + " << sys_leak << " leak";
     if (mem_power_total > 0.0) {
@@ -17906,6 +17940,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_phy_total_w << " host-MC PHY static";
     if (host_uncore_total_w > 0.0)   // (1.12.97)
         pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_uncore_total_w << " host uncore";
+    {   // (user ruling 2026-10-27) the RDIMM registers' static power, its own ledger line
+        double rcd_w = 0.0;
+        for (const auto& p : host_rcd_w) rcd_w += p.second;
+        if (rcd_w > 0.0) pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << rcd_w << " RDIMM register static";
+    }
     std::cout << ")" << std::endl;
     /* 1.11.9 (#86, audit): the memory die is silicon too. (1.11.51, L243:
      * the original justification here -- that device scope already counted
@@ -17990,6 +18029,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         if (mem_power_total != 0.0) add("memory.array", mem_power_total);
         for (const auto& p : host_mc_phy_w) add(p.first + ".memory_controllers_phy", p.second);   // 1.12.18
         for (const auto& p : host_uncore_w) if (p.second != 0.0) add(p.first + ".uncore_static", p.second);   // (1.12.97)
+        for (const auto& p : host_rcd_w) add(p.first + ".memory_rcd", p.second);   // (user ruling 2026-10-27)
         double lsum = 0.0;
         for (const auto& t : ledger) lsum += t.w;
         if (std::fabs(lsum - sys_power) > 1e-9 * std::max(1.0, std::fabs(sys_power))) {

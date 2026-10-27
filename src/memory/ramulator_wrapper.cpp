@@ -2260,6 +2260,73 @@ void RamulatorWrapper::setTopology(const std::string& requested) {
     topology_req_ = requested;
 }
 
+/* (user ruling 2026-10-27) RDIMM register clock driver (RCD). No DDR4 or DDR5 RCD
+ * power figure is published (vendor datasheets and the JEDEC IDD tables are not
+ * public); both terms are DERIVED and labelled so.
+ *   Static (PLL and output clocks, every powered cycle): the one published
+ *   register split, David, Fallin, Gorbatov, Hanebutte, Mutlu, "Memory Power
+ *   Management via Dynamic Voltage/Frequency Scaling", ICAC 2011, Table 3 (a 4GB
+ *   DDR3 DRx4 RDIMM): "SelfRefresh" 0.92 / 0.77 W against "SelfRefresh -
+ *   Register Off" 0.56 / 0.56 W at DDR3-1333 / 800 -- the register PLL and
+ *   output clocks, 0.36 / 0.21 W. Linear in the data rate through the two points
+ *   and scaled by (VDD_RCD / 1.5 V)^2: DDR4 RCD 1.2 V (Renesas 4RCD0124KC0
+ *   short-form datasheet R10DO0025EU0100 p.1), DDR5 RCD 1.1 V (Montage
+ *   M88DR5RCD01/03 product briefs PB0013/PB0015). DERIVED and EXTRAPOLATED
+ *   (user ruling 2026-10-27: extrapolate with the data rate): the measured
+ *   points are DDR3-800 and DDR3-1333; DDR4-2400 is 1.8x and DDR5-4800 3.6x the
+ *   highest measured rate.
+ *   Output drive into the DRAMs, per access: DDR4 -- the RCD drives the DIMM's
+ *   command/address network to VTT, the parameter set's CA network (the
+ *   network CACTI-IO prices for an unbuffered DIMM, now behind the register);
+ *   DDR5 -- US 10,401,899 B2 (IDT), Table 1 text: an RCD output LOW draws
+ *   16.4 mA at 1.1 V (Ron 27 + Rterm 40 ohm), 15 command/address outputs per
+ *   channel; LOW half the time over the sub-channel burst of the access
+ *   (64 B on 32 DQ). DERIVED. */
+double RamulatorWrapper::getRcdStaticMW(std::string* src) const {
+    if (topology().name != "rdimm" || !(dram_type_ == "DDR4" || dram_type_ == "DDR5")) return 0.0;
+    const double rate = modelledRateMTs();
+    if (!(rate > 0.0)) return 0.0;
+    const double w15 = 0.21 + (0.36 - 0.21) * (rate - 800.0) / (1333.0 - 800.0);   // W at DDR3 1.5 V
+    const double v = (dram_type_ == "DDR5") ? 1.1 : 1.2;
+    const double mw = 1000.0 * w15 * (v / 1.5) * (v / 1.5);
+    if (src) {
+        std::ostringstream o;
+        o << "DERIVED: register PLL + output clocks, David et al. ICAC 2011 Table 3 (DDR3 RDIMM: 0.36 / 0.21 W at 1333 / 800), "
+             "EXTRAPOLATED linearly in rate from the measured 800-1333 MT/s to " << rate << " MT/s (" << rate / 1333.0
+          << "x the highest measured rate) = " << w15 << " W at 1.5 V, x (" << v << " V / 1.5 V)^2";
+        *src = o.str();
+    }
+    return mw;
+}
+
+double RamulatorWrapper::getRcdDriveEnergyNJ(std::string* src) const {
+    if (topology().name != "rdimm" || !(dram_type_ == "DDR4" || dram_type_ == "DDR5")) return 0.0;
+    const double rate = modelledRateMTs();
+    const int ndq = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
+    if (!(rate > 0.0 && ndq > 0)) return 0.0;
+    if (dram_type_ == "DDR5") {
+        const double p_low_mw = 1.1 * 16.4;                    // US 10,401,899 B2: 16.4 mA at 1.1 V per LOW output
+        const double t_burst_ns = 512.0 / (32.0 * rate) * 1000.0;   // 64 B on a 32-bit sub-channel
+        const double nj = 15.0 * 0.5 * p_low_mw * t_burst_ns / 1000.0;
+        if (src) {
+            std::ostringstream o;
+            o << "DERIVED: 15 RCD outputs x " << p_low_mw << " mW while LOW (US 10,401,899 B2, Ron 27 + Rterm 40 ohm, 1.1 V) x 0.5 x "
+              << t_burst_ns << " ns (64 B on a 32-bit sub-channel)";
+            *src = o.str();
+        }
+        return nj;
+    }
+    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
+    if (!(io.valid && io.exact_map)) return 0.0;
+    if (src) {
+        std::ostringstream o;
+        o << "DERIVED: the DIMM's command/address network to VTT (the parameter set's CA network, " << io.energy_pj_per_bit_term_ca_rd
+          << " pJ/bit), driven by the RCD";
+        *src = o.str();
+    }
+    return io.energy_pj_per_bit_term_ca_rd * 512.0 / 1000.0;
+}
+
 std::string RamulatorWrapper::rdimmCaNote() const {   // (user ruling 2026-10-27)
     if (topology().name != "rdimm") return "";
     const double rate = modelledRateMTs();

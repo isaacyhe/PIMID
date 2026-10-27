@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.118 -- the RDIMM register (RCD) power, DDR4 and DDR5
+
+- **RDIMM register** (user ruling 2026-10-27): an `rdimm` DDR4/DDR5 memory now pays its register clock driver. No
+  DDR4 or DDR5 register power is published; both terms are DERIVED:
+  - static (PLL and output clocks): the DDR3 RDIMM register's 0.36 / 0.21 W at DDR3-1333 / 800 (D. David et al.,
+    "Memory Power Management via Dynamic Voltage/Frequency Scaling", ICAC 2011, Table 3: "SelfRefresh" against
+    "SelfRefresh - Register Off"), linear in the data rate and x (VDD / 1.5 V)^2 with the DDR4 register at 1.2 V
+    (Renesas 4RCD0124KC0 short-form datasheet p.1) and the DDR5 register at 1.1 V (Montage M88DR5RCD01 / RCD03 product
+    briefs): 423 mW at DDR4-2400, 718 mW at DDR5-4800, one register per host memory (ledger `<host>.memory_rcd`; a
+    device memory adds it to its static power at a crossing placement). EXTRAPOLATED (user ruling 2026-10-27): the
+    measured points are DDR3-800 and DDR3-1333; DDR4-2400 is 1.8x and DDR5-4800 3.6x the highest measured rate.
+  - output drive into the DRAMs, per access: DDR4 the DIMM's command/address network to VTT (the CACTI-IO parameter
+    set's network, 0.300 nJ per access at DDR4-2400); DDR5 15 outputs x 1.1 V x 16.4 mA, LOW half the time over the
+    64 B sub-channel burst (US 10,401,899 B2), 0.451 nJ per access at DDR5-4800.
+- Impact (1-core host baselines, 8 kernels): total power +0.42 W (DDR4, +13%) and +0.72 W (DDR5, +21%); a device
+  memory at RANK placement +55% (DDR4) and +63% (DDR5) of the device power. Cycles unchanged.
+
 ## 1.12.117 -- an RDIMM's command/address path ends at its register
 
 - **RDIMM command/address** (user ruling 2026-10-27): on an `rdimm` memory the host drives the register (RCD) inputs,

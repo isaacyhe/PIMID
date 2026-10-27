@@ -338,6 +338,11 @@ public:
      * charged (pJ/bit) and the DIMM-side CA network it replaces; "" when
      * not an RDIMM or no model. */
     std::string rdimmCaNote() const;
+    /* (user ruling 2026-10-27) the RDIMM register (RCD), DDR4/DDR5 rdimm only (0
+     * otherwise): its static power (PLL and output clocks, mW, one RCD) and
+     * its output drive into the DRAMs per 64 B access (nJ). *src says how. */
+    double getRcdStaticMW(std::string* src = nullptr) const;
+    double getRcdDriveEnergyNJ(std::string* src = nullptr) const;
     /* User ruling 2026-10-25 (measured termination duty): the same energy
      * with the data pins' termination duty MEASURED (data_duty, from
      * measuredDataDuty) in place of the formula's 0.5. data_duty < 0 is
