@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.99 -- Serial links: the link class in the co-sim bridge, ASPM L1 exit latency, one timing preset per class, PCIe / CXL lane widths
+
+- **One preset per class (user ruling 2026-10-27):** the link classes' timing presets lived in two tables that disagreed
+  (a named `power.link.link_type` other than `interposer` kept gen5's 63 GB/s and 500 ns whatever it was; the
+  `system.network.links` table and the attachment's default had their own). One table now fills the unset fields
+  wherever a class is named or defaulted, and the run prints it.
+- **Bandwidth computed from the specification and the lanes,** one direction: rate x lanes x encoding x the data link
+  layer's share / 8. PCIe gen3/4/5 x16 14.48 / 28.97 / 57.93 GB/s (was 15.75 / 31.5 / 63): "The DLL adds around 8-10%
+  of overheads due to flow control and acknowledgment messages, leaving around 57.88 Gb/s" of a gen3 x8 link's 62.96
+  (Neugebauer et al., SIGCOMM 2018). CXL 3.0 rides PCIe 6.0, 64 GT/s PAM4 in 256 B flits with 236 B of TLP: 118 GB/s
+  (was 126). NVLink 3.0 300 GB/s (an A100's 12 links x 25 GB/s per direction; was 50), NVLink 4.0 450 GB/s (an H100's
+  900 GB/s total; was 100). The interposer is one UCIe advanced-package module at the 16 GT/s its energy rows are
+  measured at: 128 GB/s (was 256, the module's top-rate figure at 32 GT/s).
+- **Lanes:** a PCIe / CXL link's width (`power.link.num_lanes`, or a `system.network.links[]` entry's `lanes`, which is
+  now accepted) scales its preset bandwidth and is the width its energy is priced at; 1, 2, 4, 8 or 16, else refused.
+- **Latency and header:** CXL 80 ns (CXL-attached memory adds 70-90 ns over local, Pond, ASPLOS 2023; was 200 / 100
+  ns); PCIe 500 ns is the measured gen3 64 B DMA read (493-547 ns, Neugebauer et al.), carried for gen4/gen5 (no
+  published measurement); PCIe header 24 B (MWr: 2 framing + 6 DLL + 4 + 12, ibid.; was 20). NVLink, UALink latency
+  and the coherence extras: NO PUBLISHED SOURCE FOUND, carried and said so.
+- **The link class in the co-sim bridge (user ruling 2026-10-27):** the host-device boundary charge (`system.bridge`)
+  came from the device's memory technology alone, so an externally attached PCIe device was timed as its DDR channel
+  (DDR4: 20 ns, 19.2 GB/s) and the link class priced only energy. Over any class but `dram_channel` (whose row is the
+  link) a crossing now pays: latency = the link's per-transaction latency (PCIe 500 ns: a 64 B DMA read, the HOST side's
+  memory access included) + the device memory path (the technology row: the DEVICE side's wire and controller
+  pipeline), disjoint parts; + the link's coherence extra (a CXL class replaces the row's own cxl_mem flit overhead);
+  bandwidth = min(link, device memory path); bytes = payload + the link's header (PCIe 24 B). An explicit
+  `system.bridge` setting still wins; the run prints the composition.
+- **ASPM L1 exit latency (user ruling 2026-10-27):** a SerDes-class link (PCIe, CXL; NVLink, UALink carried) that has
+  been idle longer than its L1 entry timer is in L1, and the next transfer first pays the L1 exit: 5 us (Intel's
+  recommended device L1 exit, "L1: <5us", IDF 2010 PCIS002; a shipping endpoint reports 4-8 us, Microchip AN2949),
+  entry after 8 us of idle (the L1 entrance latency Linux programs into a DesignWare controller, Tegra194, linux-pci
+  2026-05; the timer is implementation-specific, so a stated choice within the published settings). A UCIe link wakes
+  with no penalty (ISSCC 2026 8.3) and a DRAM channel has no ASPM. New counters `xingL1Exits`, `xingL0IdleNs`.
+- **Impact:** co-sim runs over a link class: the offload's boundary transfers (launch command and ack, flush, DMA
+  payloads) take the link's latency and the narrower bandwidth (an external PCIe gen5 DDR4 device: 520 ns per
+  transaction, 19.2 GB/s, + 5 us at each wake from L1; an on-package HBM3 device over UCIe: 35 ns, 128 GB/s), and the
+  presets reach the system-network latency of a declared `system.network.links` entry. A device that is the host's
+  memory (`dram_channel`), device-scope and host-only runs: unchanged. Energy: the PCIe framing priced per crossing
+  follows the 24 B header.
+
 ## 1.12.98 -- the host's awake-idle floor per core, printed beside published package-side figures
 
 - **Report (src/main.cpp):** system scope prints, under each host's component breakdown, what the run charges a host

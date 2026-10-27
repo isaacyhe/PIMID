@@ -3684,15 +3684,44 @@ static uint32_t getPCIeLatency(uint32_t transfer_bytes = 0) {
  * getPCIeLatency for system-scope co-sim; the flat model remains the fallback
  * for legacy configs with no sys.bridge block.
  */
+/* (user ruling 2026-10-27: serial links calibrated): THE LINK'S ASPM L1. A transfer that finds the
+ * host-device link idle for longer than its L1 entry timer finds it in L1 and
+ * pays the L1 exit latency first; the idle time up to the timer was spent in L0.
+ * One link: the state is global, on the reference (phase) clock the bridge's
+ * cycles are in. The counters feed the link's idle energy (xingL1Exits,
+ * xingL0IdleNs); the residency in L1 is the rest of the run. */
+static std::mutex g_linkStateMutex;
+static bool g_linkSeen = false;
+static uint64_t g_linkFreeAt = 0;
+static uint32_t linkL1ExitCharge(uint32_t xferCycles) {
+    if (!zinfo || zinfo->bridge.l1EntryCycles == 0) return 0;
+    std::lock_guard<std::mutex> g(g_linkStateMutex);
+    const uint64_t now = zinfo->globPhaseCycles;
+    uint32_t exitc = 0;
+    if (!g_linkSeen || now > g_linkFreeAt + zinfo->bridge.l1EntryCycles) {
+        exitc = zinfo->bridge.l1ExitCycles;
+        __sync_fetch_and_add(&zinfo->xing.l1Exits, 1);
+    }
+    if (g_linkSeen && now > g_linkFreeAt) {
+        const uint64_t l0 = std::min<uint64_t>(now - g_linkFreeAt, zinfo->bridge.l1EntryCycles);
+        __sync_fetch_and_add(&zinfo->xing.l0IdleNs, l0 * 1000ull / std::max<uint32_t>(1, zinfo->freqMHz));
+    }
+    g_linkSeen = true;
+    g_linkFreeAt = std::max(g_linkFreeAt, now) + exitc + xferCycles;
+    return exitc;
+}
+
 static uint32_t getBridgeLatency(uint32_t transfer_bytes = 0) {
     if (!zinfo || !zinfo->bridge.enabled) return 0;
     uint32_t base = zinfo->bridge.phyLatencyCycles + zinfo->bridge.protocolOverheadCycles;
     uint32_t serCycles = 0;
-    if (zinfo->bridge.bytesPerCycle > 0.0 && transfer_bytes > 0) {
+    /* (user ruling 2026-10-27: serial links calibrated): the link's framing crosses with the payload */
+    const uint32_t wire_bytes = transfer_bytes + zinfo->bridge.headerBytes;
+    if (zinfo->bridge.bytesPerCycle > 0.0 && wire_bytes > 0) {
         serCycles = static_cast<uint32_t>(
-            std::ceil(static_cast<double>(transfer_bytes) / zinfo->bridge.bytesPerCycle));
+            std::ceil(static_cast<double>(wire_bytes) / zinfo->bridge.bytesPerCycle));
     }
-    return base + serCycles;
+    return base + serCycles + linkL1ExitCharge(base + serCycles);
 }
 
 /**

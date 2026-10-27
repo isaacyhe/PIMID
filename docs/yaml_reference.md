@@ -1097,9 +1097,9 @@ blocks is refused (1.11.106).
 | `power.link.enabled` | bool | `true` | Price the host-device link (its energy and its controller). A declared link enables pricing by default; an explicit `false` keeps the link's timing and drops its energy. |
 | `power.link.link_type` | string | the attachment's class | Link class: `pcie_gen3`, `pcie_gen4`, `pcie_gen5`, `cxl_2_0`, `cxl_3_0`, `nvlink_3_0`, `nvlink_4_0`, `nvlink_c2c`, `ualink_1_0`, `interposer` or `dram_channel` (see [Link Types](#link-types-system-scope)). Absent: the class follows `system.devices[].attachment`. A named class overrides that default with a `[link]` note; a `system.network.links[].type` is the authoritative type when one is declared. Any other word is refused. |
 | `power.link.model` | string | `"simple"` | Link timing model word: `simple` (includes M/D/1 queuing; `md1` is an alias), `analytical` or `detailed`; any other word is refused. Read only under `scope: cosim`, where it is the system network's model when `system.network.model` is not given (1.12.2: a given `system.network` block is honoured there, as at system scope; giving both model keys with different words is refused, rc 2). Under `scope: system` `system.network.model` governs and this key is not used. |
-| `power.link.base_latency_ns` | double | `500.0` | Per-transaction overhead (ns). When not set, the `interposer` class fills 5 ns and `dram_channel` the part's tRCD + tCL. |
-| `power.link.bandwidth_GBs` | double | `63.0` | Peak bandwidth (GB/s). When not set, `interposer` fills 256 and `dram_channel` the part's channel bandwidth. |
-| `power.link.num_lanes` | int | `16` | Lane count of the link controller McPAT prices (an interposer is counted in 64-lane modules instead). |
+| `power.link.base_latency_ns` | double | `500.0` | Per-transaction overhead (ns). When not set, the class's preset ([Link Types](#link-types-system-scope)); `dram_channel` the part's tRCD + tCL. |
+| `power.link.bandwidth_GBs` | double | `63.0` | Peak bandwidth (GB/s), one direction. When not set, the class's preset (rate x lanes x encoding x data-link share); `dram_channel` the part's channel bandwidth. |
+| `power.link.num_lanes` | int | `16` | Lane count of a PCIe / CXL link (1, 2, 4, 8 or 16): the link controller McPAT prices and the preset bandwidth. NVLink, UALink and an interposer have their own lane structure. |
 | `power.link.num_units` | int | `1` | Link units of the host-link controller. Read only by the system-scope `trace` method's power path; the `exec` co-simulation prices one unit per device, and device scope prices no host link. |
 | `power.link.num_channels` | int | `16` | Channel count of the same controller, read on the same path as `num_units` and only when `num_lanes` <= 0 (the lane count is used otherwise). |
 | `power.link.duty_cycle` | double | measured | Link duty-cycle OVERRIDE (0-1), printed beside the measured value. Absent: the co-simulation derives it from the measured crossing bytes over the link's capacity and the run's time (since 1.11.40); the `trace` path takes 0.01. |
@@ -1107,7 +1107,7 @@ blocks is refused (1.11.106).
 | `power.link.pj_per_bit_override` | double | unset | Link energy in pJ/bit, replacing the class's cited value; the printed band is then omitted (an overridden figure has no sourced range). Also prices a `dram_channel` crossing, which otherwise carries no separate link energy. |
 | `power.link.process_node_nm` | int | the die's node | Process node (nm) of the die the `interposer` link sits on; it selects the UCIe energy row McPAT prices the link with (1.12.18, user ruling 2026-10-23). Exactly two values are accepted: `22` and `3`; anything else is refused at load. Absent: the node of the die McPAT prices (`power.tech_node_nm`, default 22 -> the 22 nm row); a die at a node other than 22 with no key is refused by McPAT, naming the two supported nodes. 3 nm is not a CACTI node, so this key is separate from `power.tech_node_nm`: it changes ONLY the link's per-bit energy, not the die's CACTI/McPAT tables. Rows (pJ/bit, analog PHY + digital interface): 3 nm advanced 0.29 + 0.10, 3 nm standard 0.52 + 0.10, 22 nm standard 1.2 + 0.192 (digital DERIVED, lower bound), 22 nm advanced 0.669 (DERIVED) + 0.192 (DERIVED, lower bound); sources and derivations in [power.md](power.md#the-host-device-link-ucie). With `power.link.pj_per_bit_override` no row is needed. A `power.link` section holding only this key does not mark the link timing as configured. Alias `power.pcie.process_node_nm`. |
 | `power.link.controller_clock_mhz` | int | the class's published clock | Link controller clock (MHz, > 0; 0 or a negative value is refused) for ANY link class (1.12.18). Absent: PCIe/CXL take the PIPE-derived clock; `interposer` takes the UCIe D2D adapter clock McPAT derives as lanes x lane rate / (8 x 64 B FDI) (64 x 16 GT/s -> 2000 MHz; sources in [power.md](power.md#the-host-device-link-ucie)); `nvlink_*` and `ualink_1_0` have no published controller clock and are REFUSED at load without this key (they used to run on a 1000 MHz ASSUMED clock). A given value is printed as the user's. |
-| `power.link.header_bytes` | int | the class's | Protocol framing bytes per transaction: charged by the timing model and priced at the link's pJ/bit. Absent: the class's value (PCIe 20; CXL, NVLink and UALink 16; `interposer` and `dram_channel` 0). `0` is a real value. |
+| `power.link.header_bytes` | int | the class's | Protocol framing bytes per transaction: charged by the timing model and priced at the link's pJ/bit. Absent: the class's value (PCIe 24, the MWr header with framing and DLL, Neugebauer et al. SIGCOMM 2018; CXL, NVLink and UALink 16; `interposer` and `dram_channel` 0). `0` is a real value. |
 | `power.link.coherence_extra_ns` | double | `0.0` | Average extra latency (ns) of a coherent access over the link. |
 
 ---
@@ -1497,7 +1497,13 @@ Two-layer host<->device link (`protocol` x `phy`). Carries only boundary
 traffic (launch cmd/ack, Case-1 flush, Case-2 DMA). All fields optional;
 unset fields default from the **device** memory technology. Supersedes the
 flat `system.network.links[].type` charge whenever a system-scope config is
-emitted. See [cosim.md](cosim.md) for the per-tech default table and
+emitted. (1.12.99) (user ruling 2026-10-27): over a host-device link class other
+than `dram_channel` the unset latency is the link's per-transaction latency +
+the technology row's (disjoint: host-side and device-side), the bandwidth the
+narrower of the link and the row's aggregate, the link's coherence extra and
+header bytes are added, and a SerDes-class link (PCIe, CXL, NVLink, UALink)
+charges the ASPM L1 exit (5 us) to a transfer that finds it idle longer than
+its L1 entry timer (8 us). The keys below still override. See [cosim.md](cosim.md) for the per-tech default table and
 [cosim_calibration.md](cosim_calibration.md) for the anchors.
 
 ```yaml
@@ -1585,7 +1591,7 @@ system:
 | `system.network.virtual_channels_per_vn` | int | `1` | VCs per virtual network. |
 | `system.network.input_buffer_depth` | int | `4` | Input buffer depth. |
 | `system.network.output_buffer_depth` | int | `4` | Output buffer depth. |
-| `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-system-scope) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` is REFUSED (rc 2, "NOT IMPLEMENTED", since 1.11.57): no lane count scales the link; set `bandwidth_GBs`. **Superseded by [`system.bridge`](#host-device-bridge-co-sim)** for the host<->device boundary charge in co-sim; still parsed for backward compatibility. |
+| `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-system-scope) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` (PCIe / CXL only: 1, 2, 4, 8 or 16; other classes have a fixed lane structure and refuse it) sets the width the preset bandwidth and the link energy follow (it was refused from 1.11.57 to (1.12.99), when no lane count scaled the link). **Superseded by [`system.bridge`](#host-device-bridge-co-sim)** for the host<->device boundary charge in co-sim; still parsed for backward compatibility. |
 
 ### Host Block (`host`, `scope: cosim`) -- retired in 1.12.8
 
@@ -1758,20 +1764,25 @@ analytical override on the MPI path (A/B only; not the default). See
 
 The same eleven classes are accepted by `system.network.links[].type` and
 `power.link.link_type`; any other word is refused. The timing columns are the
-preset a `system.network.links[]` entry takes for the fields it does not set.
+ONE preset a class fills the unset fields with, wherever it is named or
+defaulted (`power.link`, `system.network.links[]`, the attachment's class).
+Bandwidth is computed, one direction: lane rate x lanes x encoding x the data
+link layer's share, / 8 (PCIe: 57.88 of 62.96 Gb/s, Neugebauer et al.,
+SIGCOMM 2018); the PCIe / CXL rows are x16 and scale with `power.link.num_lanes`
+or an entry's `lanes` (1, 2, 4, 8, 16).
 
 | Value | Base latency | Bandwidth | Header | Coherence extra | Description |
 |-------|--------------|-----------|--------|-----------------|-------------|
-| `pcie_gen3` | 500 ns | 15.75 GB/s | 20 B | 0 ns | PCIe Gen 3 (PCI-SIG 8 GT/s per lane, x16; since 1.11.106) |
-| `pcie_gen4` | 500 ns | 31.5 GB/s | 20 B | 0 ns | PCIe Gen 4 (16 GT/s per lane, x16) |
-| `pcie_gen5` | 500 ns | 63 GB/s | 20 B | 0 ns | PCIe Gen 5 (32 GT/s per lane, x16) |
-| `cxl_2_0` | 200 ns | 63 GB/s | 16 B | 50 ns | CXL 2.0 (PCIe Gen 5 based) |
-| `cxl_3_0` | 100 ns | 126 GB/s | 16 B | 30 ns | CXL 3.0 (PCIe Gen 6 based) |
-| `nvlink_3_0` | 700 ns | 50 GB/s | 16 B | 0 ns | NVLink 3.0 (proprietary accelerator fabric) |
-| `nvlink_4_0` | 500 ns | 100 GB/s | 16 B | 0 ns | NVLink 4.0 (proprietary accelerator fabric) |
-| `nvlink_c2c` | 100 ns | 450 GB/s | 16 B | 50 ns | NVLink-C2C (chip-to-chip) |
-| `ualink_1_0` | 200 ns | 100 GB/s | 16 B | 40 ns | UALink 1.0 (accelerator fabric) |
-| `interposer` | 5 ns | 256 GB/s | 0 B | 0 ns | Silicon interposer (2.5D on-package: low latency, high bandwidth, no protocol framing) |
+| `pcie_gen3` | 500 ns | 14.48 GB/s | 24 B | 0 ns | PCIe Gen 3 (8 GT/s per lane, 128b/130b, x16). Latency: a 64 B DMA read over Gen3 x8, minimum 493-520 ns, median 547 ns (Neugebauer et al., SIGCOMM 2018, Fig. 6); header: MWr 24 B = 2 framing + 6 DLL + 4 + 12 (ibid.) |
+| `pcie_gen4` | 500 ns | 28.97 GB/s | 24 B | 0 ns | PCIe Gen 4 (16 GT/s per lane, x16); latency carried from Gen3 (NO PUBLISHED SOURCE FOUND for Gen4) |
+| `pcie_gen5` | 500 ns | 57.93 GB/s | 24 B | 0 ns | PCIe Gen 5 (32 GT/s per lane, x16); latency carried from Gen3 (NO PUBLISHED SOURCE FOUND for Gen5) |
+| `cxl_2_0` | 80 ns | 63.02 GB/s | 16 B | 50 ns | CXL 2.0 (PCIe Gen 5 electrical). Latency: CXL-attached memory adds 70-90 ns over local (Li et al., "Pond", ASPLOS 2023); header and coherence extra carried (NO PUBLISHED SOURCE FOUND) |
+| `cxl_3_0` | 80 ns | 118 GB/s | 16 B | 30 ns | CXL 3.0 (PCIe 6.0 electrical: 64 GT/s PAM4, 256 B flits with 236 B of TLP); latency as CXL 2.0 (DERIVED: no hardware measurement published) |
+| `nvlink_3_0` | 700 ns | 300 GB/s | 16 B | 0 ns | NVLink 3.0, an A100's 12 links x 25 GB/s per direction (NVIDIA Ampere in-depth blog, 2020); latency NO PUBLISHED SOURCE FOUND, carried |
+| `nvlink_4_0` | 500 ns | 450 GB/s | 16 B | 0 ns | NVLink 4.0, an H100's 18 links, 900 GB/s total (NVIDIA); latency NO PUBLISHED SOURCE FOUND, carried |
+| `nvlink_c2c` | 100 ns | 450 GB/s | 16 B | 50 ns | NVLink-C2C, 900 GB/s total (NVIDIA, Hot Chips 34); latency NO PUBLISHED SOURCE FOUND, carried |
+| `ualink_1_0` | 200 ns | 100 GB/s | 16 B | 40 ns | UALink 1.0 x4 at 200 GT/s per lane; latency NO PUBLISHED SOURCE FOUND, carried |
+| `interposer` | 5 ns | 128 GB/s | 0 B | 0 ns | One UCIe advanced-package module, 64 lanes x 16 GT/s (the rate the UCIe energy rows are measured at; UCIe 1.1: 256 GB/s per module at 32 GT/s). Latency: UCIe 1.1 KPI < 2 ns Tx + Rx one way; 4.2 ns measured end to end (ISSCC 2026 8.3) |
 | `dram_channel` | tRCD + tCL | channels x channel width x data rate | 0 B | 0 ns | The device's own DRAM channel (1.11.103): a DIMM-resident DDR-family device. Timing from the part record; no separate link energy (the channel's I/O and termination are in the DRAM energy model) and no link controller (the host memory controller is priced as itself). |
 
 **Default class (1.11.103, ruling COSIM-LINK-CLASS).** When no class is

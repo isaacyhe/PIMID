@@ -919,6 +919,9 @@ static void InitSystem(Config& config) {
         zinfo->bridge.protocolOverheadCycles = config.get<uint32_t>("sys.bridge.protocolOverheadCycles", 0);
         zinfo->bridge.channels = config.get<uint32_t>("sys.bridge.channels", 1);
         zinfo->bridge.uncachedCycles = config.get<uint32_t>("sys.bridge.uncachedCycles", 0);
+        zinfo->bridge.headerBytes = config.get<uint32_t>("sys.bridge.headerBytes", 0);       // (user ruling 2026-10-27: serial links calibrated)
+        zinfo->bridge.l1EntryCycles = config.get<uint32_t>("sys.bridge.l1EntryCycles", 0);
+        zinfo->bridge.l1ExitCycles = config.get<uint32_t>("sys.bridge.l1ExitCycles", 0);
         const char* bpc = config.get<const char*>("sys.bridge.bytesPerCycle", "0.0");
         zinfo->bridge.bytesPerCycle = atof(bpc);
         info("[ZSim] Host<->device bridge %s (phy=%u cyc + proto=%u cyc, %.4f B/cyc, c=%u, uncached=%u cyc)",
@@ -2118,6 +2121,14 @@ static void InitGlobalStats() {
     xFlush->init("xingFlushBytes", "Coherence-flush footprint bytes crossed",
                  (uint64_t*)&zinfo->xing.flushBytes);
     zinfo->rootStat->append(xFlush);
+    ProxyStat* xL1 = new ProxyStat();   // (user ruling 2026-10-27: serial links calibrated)
+    xL1->init("xingL1Exits", "Host-device transfers that found the link in ASPM L1 (charged its exit latency)",
+              (uint64_t*)&zinfo->xing.l1Exits);
+    zinfo->rootStat->append(xL1);
+    ProxyStat* xL0i = new ProxyStat();
+    xL0i->init("xingL0IdleNs", "Idle time the link spent in L0 before entering L1 (the ASPM entry timer), ns",
+               (uint64_t*)&zinfo->xing.l0IdleNs);
+    zinfo->rootStat->append(xL0i);
     ProxyStat* xFlushMc = new ProxyStat();   // 1.12.18 (bug 7)
     xFlushMc->init("xingFlushMcLines", "Coherence-flush line writebacks sent to the host memory controllers",
                    (uint64_t*)&zinfo->xing.flushMcLines);

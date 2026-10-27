@@ -1305,6 +1305,7 @@ struct ZSimParsedOutput {
     uint64_t xing_count = 0;
     uint64_t xing_flush_bytes = 0;
     uint64_t xing_flush_mc_lines = 0;   // 1.12.18 (bug 7): of those, the line writebacks sent to the host memory controllers
+    uint64_t xing_l1_exits = 0, xing_l0_idle_ns = 0;   // (user ruling 2026-10-27: serial links calibrated)
     /* 1.11.8 (#84): PG residency (latch-last root scalars + per-group
      * per-core sums). r_idle = 1 - activePhases/phases at consumption. */
     uint64_t pg_anycore_active = 0;
@@ -2043,6 +2044,8 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "xingCount") { out.xing_count = val; }
                 else if (key == "xingFlushBytes") { out.xing_flush_bytes = val; }
                 else if (key == "xingFlushMcLines") { out.xing_flush_mc_lines = val; }   // 1.12.18 (bug 7)
+                else if (key == "xingL1Exits") { out.xing_l1_exits = val; }   // (user ruling 2026-10-27: serial links calibrated)
+                else if (key == "xingL0IdleNs") { out.xing_l0_idle_ns = val; }
                 else if (key == "mixInt") { out.mix_int += val; if (grp) grp->mix_int += val; }
                 else if (key == "mixMul") { out.mix_mul += val; if (grp) grp->mix_mul += val; }
                 else if (key == "mixFp")  { out.mix_fp  += val; if (grp) grp->mix_fp  += val; }
@@ -3807,6 +3810,7 @@ struct UnifiedConfig {
           * and is what stays. */
         double base_latency_ns = 500.0;
         double bandwidth_GBs = 63.0;
+        int lanes = -1;                    // (user ruling 2026-10-27: serial links calibrated): PCIe / CXL width; -1 = power.link.num_lanes
         int header_bytes = 20;             // protocol overhead per transaction
         double coherence_extra_ns = 0.0;   // average extra latency for coherent access
     };
@@ -9343,6 +9347,26 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
  * Handles all topologies (not just MESH_2D). Computes mesh dimensions for
  * grid topologies, derives effective routing from topology if not overridden.
  */
+/* (user ruling 2026-10-27: serial links calibrated): ASPM L1 of a SerDes-class host-device link.
+ * Exit: 5 us, Intel's recommended device L1 exit latency, "L1: <5us" ("L1 w/ PLLs
+ * off: <=20us (Not recommended for devices on servers)") (J. Jeyaseelan, D. Fair,
+ * "Device Guidelines for PCI Express Technology Extensions", Intel IDF 2010,
+ * PCIS002); a shipping endpoint reports "4 us to less than 8 us (Default)"
+ * (Microchip AN2949, LAN743x, 2019, Link Capabilities L1 Exit Latency).
+ * Entry: 8 us of idle, the L1 entrance latency the Linux driver programs into a
+ * DesignWare PCIe controller (PORT_AFR, encodings 1, 2, 4, ... 64 us; Tegra194
+ * 8000 ns, M. Maddireddy, "PCI: tegra194: ASPM L1 entrance latency", linux-pci,
+ * 2026-05-15); the timer is implementation-specific (the device's own idle
+ * counter, Microchip AN2949), so this is a stated choice within the published
+ * settings. Applied to the PCIe, CXL, NVLink and UALink classes (NVLink, UALink:
+ * carried from PCIe, DERIVED). A UCIe link wakes with no penalty (ISSCC 2026 8.3)
+ * and a DRAM channel has no ASPM: none. */
+static const double kLinkL1ExitNs = 5000.0;
+static const double kLinkL1EntryNs = 8000.0;
+static bool linkHasAspmL1(const std::string& t) {
+    return t.rfind("pcie_gen", 0) == 0 || t.rfind("cxl", 0) == 0 || t.rfind("nvlink", 0) == 0 || t.rfind("ualink", 0) == 0;
+}
+
 /* 1.11.94 (sweep-94 row 6, user (b)): the per-transaction header follows the
  * protocol the link class names -- PCIe TLP 12/16 B + 4 B seq/CRC = 20 B for
  * gen4/gen5; CXL.mem 68 B flits carrying 64 B and the NVLink/UALink framing
@@ -9350,10 +9374,66 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
  * Mirrors the system.network.links presets below; a per-link header_bytes
  * override remains for a protocol the presets do not list. */
 static int headerBytesForLinkClass(const std::string& link_type) {
-    if (link_type == "pcie_gen3" || link_type == "pcie_gen4" || link_type == "pcie_gen5") return 20;
+    /* (user ruling 2026-10-27: serial links calibrated): 24 B, "MWr_Hdr is 24B (2B framing, 6B DLL
+     * header, 4B TLP header, and 12B MWr header)", MRd 24 B, CplD 20 B (Neugebauer
+     * et al., SIGCOMM 2018, Sec. 2; 64-bit addressing). */
+    if (link_type == "pcie_gen3" || link_type == "pcie_gen4" || link_type == "pcie_gen5") return 24;
     if (link_type.rfind("interposer", 0) == 0) return 0;
     if (link_type == "dram_channel") return 0;   // 1.11.103: a DRAM channel carries no transaction framing
     return 16;   // cxl_*, nvlink_*, ualink_*
+}
+
+/* (user ruling 2026-10-27: serial links calibrated): ONE timing preset per link class, used by every
+ * place a class fills unset timing fields (power.link, system.network.links, the
+ * attachment's default class). Bandwidth is COMPUTED from the class's
+ * specification primitives and lane count (CactiIOWrapper::linkBandwidthGBs:
+ * rate x lanes x encoding x data-link share / 8), one direction:
+ *   PCIe gen3/4/5 x16 14.49 / 28.97 / 57.93 GB/s (the DLL share, see
+ *     linkDllEfficiency); lanes 1, 2, 4, 8 or 16 (power.link.num_lanes, or a
+ *     links entry's lanes);
+ *   CXL 2.0 on gen5 63.02 GB/s x16; CXL 3.0 on PCIe 6.0 64 GT/s x 236/256 = 118 GB/s x16;
+ *   NVLink 3.0 300, 4.0 450, C2C 450 GB/s (the device's link set, see specFor);
+ *   UALink 1.0 x4 100 GB/s (200 GT/s per lane);
+ *   interposer: one UCIe advanced-package module, 64 lanes x 16 GT/s = 128 GB/s,
+ *     the rate the UCIe energy rows are measured at (UCIe 1.1 white paper: 256
+ *     GB/s per module per direction at its top rate, 32 GT/s).
+ * Latency (per transaction):
+ *   PCIe 500 ns: a 64 B DMA read over gen3 x8, "a minimum of 520ns and a median of
+ *     547ns" (Xeon E5), minimum 493 ns (Xeon E3) (Neugebauer et al. SIGCOMM 2018,
+ *     Fig. 6); NO PUBLISHED SOURCE FOUND for gen4/gen5, carried;
+ *   CXL 80 ns: a CXL-attached memory adds 70-90 ns over a local access (Li et al.,
+ *     "Pond: CXL-Based Memory Pooling Systems for Cloud Platforms", ASPLOS 2023);
+ *     the round-trip port alone 25 ns (ibid.); CXL 3.0 DERIVED the same (no
+ *     hardware measurement published); was 200 / 100 ns;
+ *   NVLink, UALink: NO PUBLISHED SOURCE FOUND, carried (700 / 500 / 100 / 200 ns);
+ *   interposer 5 ns: UCIe 1.1 white paper "Latency (Tx + Rx) < 2ns" (FDI to bump
+ *     and back); 4.2 ns measured end to end (Shivnaraine et al., ISSCC 2026 8.3).
+ * Header bytes: PCIe 24 (headerBytesForLinkClass); others carried (16; 0 on an
+ * interposer). Coherence extra: carried, NO PUBLISHED SOURCE FOUND (CXL 50 / 30,
+ * C2C 50, UALink 40). Returns false for a class with no preset (dram_channel). */
+struct LinkClassTiming { double lat_ns = -1.0, bw_GBs = -1.0, coh_ns = 0.0; int hdr = 0; int lanes = -1; };
+static bool linkClassTimingPreset(const std::string& t, int lanes, LinkClassTiming& o) {
+    if (t == "dram_channel" || t.empty()) return false;
+    const bool lane_class = (t.rfind("pcie_gen", 0) == 0) || (t.rfind("cxl", 0) == 0);
+    if (lane_class && lanes > 0 && lanes != 1 && lanes != 2 && lanes != 4 && lanes != 8 && lanes != 16) {
+        std::cerr << "[config] FATAL: " << t << " link width x" << lanes << " is not a PCIe link width"
+                     " (1, 2, 4, 8 or 16 lanes)." << std::endl;
+        std::exit(2);
+    }
+    o.lanes = lane_class ? ((lanes > 0) ? lanes : 16) : PIMID::CactiIOWrapper::linkDefaultLanes(t);
+    o.bw_GBs = PIMID::CactiIOWrapper::linkBandwidthGBs(t, o.lanes);
+    o.hdr = headerBytesForLinkClass(t);
+    o.coh_ns = 0.0;
+    if (t.rfind("pcie_gen", 0) == 0)  o.lat_ns = 500.0;
+    else if (t == "cxl_2_0")          { o.lat_ns = 80.0;  o.coh_ns = 50.0; }
+    else if (t == "cxl_3_0")          { o.lat_ns = 80.0;  o.coh_ns = 30.0; }
+    else if (t == "nvlink_3_0")       o.lat_ns = 700.0;
+    else if (t == "nvlink_4_0")       o.lat_ns = 500.0;
+    else if (t == "nvlink_c2c")       { o.lat_ns = 100.0; o.coh_ns = 50.0; }
+    else if (t == "ualink_1_0")       { o.lat_ns = 200.0; o.coh_ns = 40.0; }
+    else if (t.rfind("interposer", 0) == 0) o.lat_ns = 5.0;
+    else return false;
+    return o.bw_GBs > 0.0;
 }
 
 static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config) {
@@ -18331,7 +18411,12 @@ struct BridgeDefaults {
     int    channels;
     double protocol_overhead_ns;   // per-transaction protocol handshake
     double uncached_ns;            // pure serialized cross-bridge access
+    /* (user ruling 2026-10-27: serial links calibrated): the host-device link class composed in */
+    int    header_bytes = 0;       // the link's framing per transaction
+    double l1_entry_ns = 0.0;      // ASPM L1 entry timer (0 = no ASPM L1)
+    double l1_exit_ns = 0.0;       // ASPM L1 exit latency
 };
+
 
 // Locked per-tech defaults (HANDOFF ISSUE 6 table + calibration corrections).
 static BridgeDefaults bridgeDefaultsForTech(const std::string& tech_in) {
@@ -18439,6 +18524,50 @@ static BridgeDefaults resolveBridge(UnifiedConfig& config,
 
     d.protocol = protocol;
     d.phy = phy;
+    /* (user ruling 2026-10-27: serial links calibrated): THE LINK CLASS IS IN THE BRIDGE. The bridge
+     * was the device memory technology's row only, so an externally attached
+     * PCIe device was timed as its DDR channel (20 ns, 19.2 GB/s for DDR4) and the
+     * link class priced energy alone. A host-device crossing over a link class
+     * (every class but dram_channel, whose row IS the link) now pays, per
+     * transaction:
+     *   latency   = the link's per-transaction latency (the class preset or
+     *               power.link.base_latency_ns; PCIe: a 64 B DMA read over the link,
+     *               the far end's memory access included, Neugebauer et al.
+     *               SIGCOMM 2018) + the device's memory path (the row: wire +
+     *               command-interface / MC pipeline on the device side). The two
+     *               are disjoint: the link figure's memory access is the HOST
+     *               side's, the row is the DEVICE side's;
+     *             + the link's coherence extra (the class preset); a CXL class
+     *               replaces the row's own cxl_mem flit overhead (the same flits);
+     *             + the ASPM L1 exit when the transfer finds the link in L1
+     *               (the plugin; kLinkL1ExitNs / kLinkL1EntryNs);
+     *   bandwidth = min(the link's, the device memory path's aggregate);
+     *   bytes     = payload + the link's header (PCIe 24 B).
+     * An explicit system.bridge setting still wins (below). */
+    {
+        const std::string& lt = config.pcie_link_type;
+        if (!lt.empty() && lt != "dram_channel" && config.pcie_base_latency_ns >= 0.0 && config.pcie_bandwidth_GBs > 0.0) {
+            const double row_lat = d.latency_ns, row_agg = d.bandwidth_gbs * std::max(1, d.channels), row_proto = d.protocol_overhead_ns;
+            const double agg = std::min(config.pcie_bandwidth_GBs, row_agg);
+            d.latency_ns = config.pcie_base_latency_ns + row_lat;
+            d.bandwidth_gbs = agg / std::max(1, d.channels);
+            const bool cxl_link = (lt.rfind("cxl", 0) == 0);
+            d.protocol_overhead_ns = ((cxl_link && d.protocol == "cxl_mem") ? 0.0 : row_proto) + config.pcie_coherence_extra_ns;
+            d.header_bytes = (config.pcie_header_bytes >= 0) ? config.pcie_header_bytes : headerBytesForLinkClass(lt);
+            if (linkHasAspmL1(lt)) { d.l1_entry_ns = kLinkL1EntryNs; d.l1_exit_ns = kLinkL1ExitNs; }
+            std::cout << "  [link] bridge composed from the link class " << lt << ": latency = link " << config.pcie_base_latency_ns
+                      << " ns + device memory path " << row_lat << " ns (" << device_tech << " row) = " << d.latency_ns
+                      << " ns; protocol " << d.protocol_overhead_ns << " ns (row " << row_proto << ", link coherence "
+                      << config.pcie_coherence_extra_ns << (cxl_link && d.protocol == "cxl_mem" ? ", the row's cxl_mem flit overhead replaced" : "")
+                      << "); bandwidth = min(link " << config.pcie_bandwidth_GBs << ", memory path " << row_agg << ") = " << agg
+                      << " GB/s; header " << d.header_bytes << " B per transaction; ASPM L1: "
+                      << (d.l1_entry_ns > 0.0 ? "entry after " + std::to_string((int)(d.l1_entry_ns / 1000)) + " us idle, exit "
+                                                 + std::to_string((int)(d.l1_exit_ns / 1000)) + " us (Intel IDF 2010; DesignWare entrance latency)"
+                                              : std::string("none (the class wakes without an exit latency)"))
+                      << (config.bridge_latency_ns >= 0.0 || config.bridge_bandwidth_gbs > 0.0 ? "; system.bridge settings override" : "")
+                      << std::endl;
+        }
+    }
     // Numeric fields: user override (>=0 / >0) or tech default. If the user
     // overrode protocol but not the overhead, fall to the protocol's default
     // overhead so an override reads sensibly.
@@ -18475,6 +18604,9 @@ static void emitZSimBridgeBlock(std::ostream& out, const BridgeDefaults& d,
     pimid::fmt_scoped(out) << "        bytesPerCycle = \"" << std::fixed << std::setprecision(4)
         << bytes_per_cycle << "\";\n" << std::defaultfloat;
     out << "        uncachedCycles = " << unc_cyc << ";\n";
+    out << "        headerBytes = " << std::max(0, d.header_bytes) << ";\n";   // (user ruling 2026-10-27: serial links calibrated)
+    out << "        l1EntryCycles = " << (uint32_t)(d.l1_entry_ns * f / 1000.0 + 0.5) << ";\n";
+    out << "        l1ExitCycles = " << (uint32_t)(d.l1_exit_ns * f / 1000.0 + 0.5) << ";\n";
     out << "    };\n";
 }
 
@@ -19020,6 +19152,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                           << std::endl;
             }
             config.pcie_link_type = lnk.link_type;
+            /* (user ruling 2026-10-27: serial links calibrated): the declared width is the link's, for its energy too */
+            if (lnk.lanes > 0) config.pcie_num_lanes = lnk.lanes;
             if (!config.pcie_timing_configured) {
                 config.pcie_timing_configured = true;
                 /* 1.11.47 (FIX-PRE-FLEET L176): a declared link enables link
@@ -22384,15 +22518,21 @@ int main(int argc, char** argv) {
                 config.pcie_header_bytes = yamlInt(pc["header_bytes"], config.pcie_header_bytes, pc_path + ".header_bytes");
                 config.pcie_coherence_extra_ns =
                     yamlDouble(pc["coherence_extra_ns"], config.pcie_coherence_extra_ns, pc_path + ".coherence_extra_ns");
-                // Interposer preset (2.5D on-package): fill only fields the user
-                // did NOT set explicitly, so an interposer link is one knob away.
-                // Preset matches the explicit system.network.links interposer
-                // entry (2.5D on-package): low latency, high BW, no overhead.
-                if (config.pcie_link_type == "interposer") {
-                    if (!pc["base_latency_ns"])   config.pcie_base_latency_ns = 5.0;      // ~few ns on-package
-                    if (!pc["bandwidth_GBs"])     config.pcie_bandwidth_GBs   = 256.0;    // 2.5D interposer BW
-                    if (!pc["header_bytes"])      config.pcie_header_bytes    = 0;        // no protocol framing
-                    if (!pc["coherence_extra_ns"])config.pcie_coherence_extra_ns = 0.0;   // no protocol coherence
+                /* (user ruling 2026-10-27: serial links calibrated): a NAMED class fills the fields the user
+                 * did not set from its one preset (linkClassTimingPreset). Only the
+                 * interposer did; a named pcie_gen3 kept gen5's 63 GB/s. */
+                {
+                    LinkClassTiming lt;
+                    if (pc["link_type"] && linkClassTimingPreset(config.pcie_link_type, config.pcie_num_lanes, lt)) {
+                        if (!pc["base_latency_ns"])    config.pcie_base_latency_ns = lt.lat_ns;
+                        if (!pc["bandwidth_GBs"])      config.pcie_bandwidth_GBs   = lt.bw_GBs;
+                        if (!pc["header_bytes"])       config.pcie_header_bytes    = lt.hdr;
+                        if (!pc["coherence_extra_ns"]) config.pcie_coherence_extra_ns = lt.coh_ns;
+                        std::cout << "  [link] " << config.pcie_link_type << " timing preset for the fields the config did not set: base "
+                                  << config.pcie_base_latency_ns << " ns, " << config.pcie_bandwidth_GBs << " GB/s (x" << lt.lanes << "), header "
+                                  << config.pcie_header_bytes << " B, coherence " << config.pcie_coherence_extra_ns << " ns (" << pc_path
+                                  << ".link_type)" << std::endl;
+                    }
                 }
             }
 
@@ -23072,40 +23212,39 @@ int main(int argc, char** argv) {
                                                "ualink_1_0, interposer, dram_channel",
                                                "take the pcie_gen5 preset");
                             }
-                            // 1.11.57 (latent B033): see SystemLinkConfig.
+                            /* (user ruling 2026-10-27: serial links calibrated): lanes is IMPLEMENTED (1.11.57 B033
+                             * refused it because nothing scaled the rate): a PCIe / CXL
+                             * entry's preset bandwidth is rate x lanes x encoding x DLL
+                             * share (linkClassTimingPreset). Other classes have a fixed
+                             * lane structure and refuse it. */
                             if (lnk["lanes"]) {
-                                std::cerr << "[config] FATAL: "
-                                             "system.network.links[].lanes is NOT "
-                                             "IMPLEMENTED -- the link's rate comes "
-                                             "from bandwidth_GBs or the type "
-                                             "preset, and no lane count scales it. "
-                                             "Set bandwidth_GBs instead."
-                                          << std::endl;
-                                std::exit(2);
+                                link.lanes = yamlInt(lnk["lanes"], -1, lpath + ".lanes");
+                                const bool lane_class = (link.link_type.rfind("pcie_gen", 0) == 0) || (link.link_type.rfind("cxl", 0) == 0);
+                                if (!lane_class) {
+                                    std::cerr << "[config] FATAL: " << lpath << ".lanes: a " << link.link_type
+                                              << " link has a fixed lane structure; set bandwidth_GBs instead." << std::endl;
+                                    std::exit(2);
+                                }
                             }
                             link.base_latency_ns = yamlDouble(lnk["base_latency_ns"], -1.0, lpath + ".base_latency_ns");
                             link.bandwidth_GBs = yamlDouble(lnk["bandwidth_GBs"], -1.0, lpath + ".bandwidth_GBs");
 
                             // Apply presets from link type if not explicitly set
-                            // Presets: {latency_ns, bw_GBs, header_bytes, coherence, coh_extra_ns}
                             if (link.base_latency_ns < 0 || link.bandwidth_GBs < 0) {
-                                double preset_lat = 500.0, preset_bw = 63.0;
-                                int preset_hdr = 20; double preset_coh_ns = 0.0;
-                                if (link.link_type == "pcie_gen3")        { preset_lat = 500.0; preset_bw = 15.75; preset_hdr = 20; }   // 1.11.106: PCI-SIG 8 GT/s x16 (R106-6 (a))
-                                else if (link.link_type == "pcie_gen4")   { preset_lat = 500.0; preset_bw = 31.5; preset_hdr = 20; }
-                                else if (link.link_type == "pcie_gen5")   { preset_lat = 500.0; preset_bw = 63.0; preset_hdr = 20; }
-                                else if (link.link_type == "cxl_2_0")    { preset_lat = 200.0; preset_bw = 63.0; preset_hdr = 16; preset_coh_ns = 50.0; }
-                                else if (link.link_type == "cxl_3_0")    { preset_lat = 100.0; preset_bw = 126.0; preset_hdr = 16; preset_coh_ns = 30.0; }
-                                else if (link.link_type == "nvlink_3_0") { preset_lat = 700.0; preset_bw = 50.0; preset_hdr = 16; }
-                                else if (link.link_type == "nvlink_4_0") { preset_lat = 500.0; preset_bw = 100.0; preset_hdr = 16; }
-                                else if (link.link_type == "nvlink_c2c") { preset_lat = 100.0; preset_bw = 450.0; preset_hdr = 16; preset_coh_ns = 50.0; }
-                                else if (link.link_type == "ualink_1_0") { preset_lat = 200.0; preset_bw = 100.0; preset_hdr = 16; preset_coh_ns = 40.0; }
-                                else if (link.link_type == "interposer") { preset_lat = 5.0;   preset_bw = 256.0; preset_hdr = 0; }
-                                else if (link.link_type == "dram_channel") { preset_lat = -1.0; preset_bw = -1.0; preset_hdr = 0; }   // 1.11.103: the channel's timing comes from the device's part record once the device node is known (loadConfig's link-class block)
-                                if (link.base_latency_ns < 0) link.base_latency_ns = preset_lat;
-                                if (link.bandwidth_GBs < 0)   link.bandwidth_GBs = preset_bw;
-                                link.header_bytes = preset_hdr;
-                                link.coherence_extra_ns = preset_coh_ns;
+                                /* (user ruling 2026-10-27: serial links calibrated): the class's one preset (linkClassTimingPreset). */
+                                LinkClassTiming lt;
+                                if (linkClassTimingPreset(link.link_type, (link.lanes > 0) ? link.lanes : config.pcie_num_lanes, lt)) {
+                                    if (link.base_latency_ns < 0) link.base_latency_ns = lt.lat_ns;
+                                    if (link.bandwidth_GBs < 0)   link.bandwidth_GBs = lt.bw_GBs;
+                                    link.header_bytes = lt.hdr;
+                                    link.coherence_extra_ns = lt.coh_ns;
+                                    std::cout << "  [link] " << link.link_type << " timing preset for the fields the config did not set: base "
+                                              << link.base_latency_ns << " ns, " << link.bandwidth_GBs << " GB/s (x" << lt.lanes << "), header "
+                                              << link.header_bytes << " B, coherence " << link.coherence_extra_ns << " ns (" << lpath << ")" << std::endl;
+                                } else if (link.link_type == "dram_channel") {   // 1.11.103: the channel's timing comes from the device's part record once the device node is known (loadConfig's link-class block)
+                                    link.base_latency_ns = -1.0; link.bandwidth_GBs = -1.0;
+                                    link.header_bytes = 0; link.coherence_extra_ns = 0.0;
+                                }
                             }
 
                             config.system_network.links.push_back(link);
@@ -23360,14 +23499,15 @@ int main(int argc, char** argv) {
                 config.pcie_link_type = implied;
                 for (auto& l : config.system_network.links) if (!l.type_user_set) l.link_type = implied;
                 std::cout << "  [link] host-device link class: " << implied << " (the attachment's default: " << why << "; ruling COSIM-LINK-CLASS)" << std::endl;
-                if (implied == "interposer") {
-                    if (!config.pcie_base_latency_user_set) config.pcie_base_latency_ns = 5.0;      // the named-interposer preset (2.5D on-package)
-                    if (!config.pcie_bandwidth_user_set)    config.pcie_bandwidth_GBs   = 256.0;
-                    if (config.pcie_header_bytes < 0)       config.pcie_header_bytes    = 0;
-                    if (!config.pcie_coherence_user_set)    config.pcie_coherence_extra_ns = 0.0;
-                    std::cout << "  [link] interposer timing preset for the fields the config did not set: base " << config.pcie_base_latency_ns
-                              << " ns, " << config.pcie_bandwidth_GBs << " GB/s, header " << config.pcie_header_bytes << " B, coherence "
-                              << config.pcie_coherence_extra_ns << " ns (the same preset a named interposer takes)" << std::endl;
+                LinkClassTiming lt;   /* (user ruling 2026-10-27: serial links calibrated): every class, one preset (was: interposer only) */
+                if (linkClassTimingPreset(implied, config.pcie_num_lanes, lt)) {
+                    if (!config.pcie_base_latency_user_set) config.pcie_base_latency_ns = lt.lat_ns;
+                    if (!config.pcie_bandwidth_user_set)    config.pcie_bandwidth_GBs   = lt.bw_GBs;
+                    if (config.pcie_header_bytes < 0)       config.pcie_header_bytes    = lt.hdr;
+                    if (!config.pcie_coherence_user_set)    config.pcie_coherence_extra_ns = lt.coh_ns;
+                    std::cout << "  [link] " << implied << " timing preset for the fields the config did not set: base " << config.pcie_base_latency_ns
+                              << " ns, " << config.pcie_bandwidth_GBs << " GB/s (x" << lt.lanes << "), header " << config.pcie_header_bytes << " B, coherence "
+                              << config.pcie_coherence_extra_ns << " ns (the same preset a named " << implied << " takes)" << std::endl;
                 }
             } else {
                 if (from_links) config.pcie_link_type = configured;

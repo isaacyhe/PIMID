@@ -1,5 +1,6 @@
 /* PIMID 1.11.40 -- CACTI-IO harness. See include/power/cacti_io_wrapper.h. */
 #include "power/cacti_io_wrapper.h"
+#include <algorithm>
 #include <cctype>
 #include "params/part_records.h"   // 1.12.18: the DDR5 row reads the record's grade
 
@@ -40,12 +41,28 @@ bool specFor(const std::string& t, LinkSpec& s) {
     if (t.rfind("pcie_gen3", 0) == 0) { s = {8.0,  128, 130, 16, true,  "PCIe 3.0: 8 GT/s, 128b/130b"};  return true; }
     if (t.rfind("pcie_gen4", 0) == 0) { s = {16.0, 128, 130, 16, true,  "PCIe 4.0: 16 GT/s, 128b/130b"}; return true; }
     if (t.rfind("pcie_gen5", 0) == 0) { s = {32.0, 128, 130, 16, true,  "PCIe 5.0: 32 GT/s, 128b/130b"}; return true; }
-    /* CXL rides the PCIe gen5 electrical layer -- same rate and encoding, so it
-     * is DERIVED from gen5 rather than restated, and the two cannot drift. */
+    /* (user ruling 2026-10-27: serial links calibrated): CXL 3.0 rides the PCIe 6.0 electrical layer,
+     * 64 GT/s PAM4 in 256 B flits of which 236 B carry TLPs (6 B DLP, 8 B CRC,
+     * 6 B FEC: D. Das Sharma, "PCI Express 6.0 Specification", OpenFabrics
+     * workshop 2022, flit layout slide); CXL 1.1/2.0 ride gen5. */
+    if (t.rfind("cxl_3", 0) == 0)     { s = {64.0, 236, 256, 16, true,  "CXL 3.0 on PCIe 6.0 electrical: 64 GT/s PAM4, 256 B flit, 236 B TLP"}; return true; }
     if (t.rfind("cxl", 0) == 0)       { s = {32.0, 128, 130, 16, true,  "CXL on PCIe gen5 electrical"}; return true; }
     /* UCIe advanced package: parallel, unencoded, 64 lanes per module. */
     if (t.rfind("interposer", 0) == 0){ s = {16.0, 1, 1, 64, false, "UCIe advanced package module"}; return true; }
-    if (t.rfind("nvlink", 0) == 0)    { s = {25.0, 1, 1, 8,  true,  "NVLink GRS-class per-pin rate"}; return true; }
+    /* (user ruling 2026-10-27: serial links calibrated): the NVLink classes at their published
+     * per-pair rates and the device's full link set (one direction):
+     *   3.0 (A100): 50 Gb/s per signal pair, 4 pairs per link, 12 links = 48 pairs,
+     *       25 GB/s per link per direction, 600 GB/s total (NVIDIA, "NVIDIA
+     *       Ampere Architecture In-Depth", developer blog, 2020);
+     *   4.0 (H100): 18 links, 900 GB/s total (NVIDIA H100 product page); 2 pairs
+     *       per link at 100 Gb/s (PAM4) per the NVLink article of Wikipedia
+     *       (secondary: NVIDIA publishes the total only);
+     *   C2C (Grace Hopper): 900 GB/s total (NVIDIA, Hot Chips 34 blog, 2022-08-19);
+     *       10 links x 9 data signals at 40 Gb/s per direction (Hot Chips 34
+     *       slides, J. Evans, "NVIDIA Grace"). */
+    if (t.rfind("nvlink_3", 0) == 0)  { s = {50.0, 1, 1, 48, true,  "NVLink 3.0 (A100): 50 Gb/s per pair, 12 links x 4 pairs"}; return true; }
+    if (t.rfind("nvlink_4", 0) == 0)  { s = {100.0, 1, 1, 36, true, "NVLink 4.0 (H100): 100 Gb/s per pair, 18 links x 2 pairs"}; return true; }
+    if (t.rfind("nvlink_c2c", 0) == 0){ s = {40.0, 1, 1, 90, true,  "NVLink-C2C: 40 Gb/s per signal, 10 links x 9 signals"}; return true; }
     if (t.rfind("ualink", 0) == 0)    { s = {200.0, 1, 1, 4, true,  "UALink 200G per lane"}; return true; }
     return false;
 }
@@ -78,6 +95,11 @@ double CactiIOWrapper::linkRateGTs(const std::string& link_type) {
     return specFor(link_type, s) ? s.rate_gt_s : -1.0;
 }
 
+int CactiIOWrapper::linkDefaultLanes(const std::string& link_type) {
+    LinkSpec s;
+    return specFor(link_type, s) ? s.default_lanes : -1;
+}
+
 double CactiIOWrapper::linkEncodingEfficiency(const std::string& link_type) {
     LinkSpec s;
     if (!specFor(link_type, s)) return -1.0;
@@ -94,7 +116,9 @@ double CactiIOWrapper::linkControllerClockMHz(const std::string& link_type) {
                              (link_type.rfind("cxl", 0) == 0);
     if (!pipe_family) return -1.0;
     const double kPipeWidthBits = 32.0;   // stated convention, PIPE rev 7.1
-    return s.rate_gt_s * 1000.0 / kPipeWidthBits;
+    /* (user ruling 2026-10-27: serial links calibrated): a 64 GT/s (CXL 3.0) class keeps the gen5
+     * controller clock: NO PUBLISHED SOURCE FOUND for its PIPE width here. */
+    return std::min(s.rate_gt_s, 32.0) * 1000.0 / kPipeWidthBits;
 }
 
 double CactiIOWrapper::linkBandwidthGBs(const std::string& link_type,
@@ -105,7 +129,20 @@ double CactiIOWrapper::linkBandwidthGBs(const std::string& link_type,
     /* GT/s is transfers per second; encoding efficiency converts to payload
      * bits; /8 gives bytes. This is the whole of what 63.0 used to assert:
      * gen5 x16 -> 32 * 16 * (128/130) / 8 = 63.0 GB/s exactly. */
-    return s.rate_gt_s * lanes * linkEncodingEfficiency(link_type) / 8.0;
+    return s.rate_gt_s * lanes * linkEncodingEfficiency(link_type) * linkDllEfficiency(link_type) / 8.0;
+}
+
+/* (user ruling 2026-10-27: serial links calibrated): the PCIe data link layer's share. "The DLL adds
+ * around 8-10% of overheads due to flow control and acknowledgment messages,
+ * leaving around 57.88 Gb/s available at the TLP layer" of a gen3 x8 link's
+ * 62.96 Gb/s (R. Neugebauer et al., "Understanding PCIe performance for end host
+ * networking", SIGCOMM 2018, Sec. 2, from the specification's recommended
+ * values): 57.88 / 62.96 = 0.9193, applied to the PCIe gen3/4/5 classes (the same
+ * DLL; DERIVED for gen4/5). CXL.cache/mem and the other classes carry their own
+ * framing (their header bytes) and take 1. */
+double CactiIOWrapper::linkDllEfficiency(const std::string& link_type) {
+    if (link_type.rfind("pcie_gen", 0) == 0) return 57.88 / 62.96;
+    return 1.0;
 }
 
 /* 1.11.57 (latent C024, and C009 with it): CactiIOWrapper::computeLink() USED

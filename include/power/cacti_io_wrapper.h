@@ -237,6 +237,10 @@ public:
      * only kind of single value that belongs in a table. <0 if unknown. */
     static double linkRateGTs(const std::string& link_type);
     static double linkEncodingEfficiency(const std::string& link_type);
+    /* (user ruling 2026-10-27: serial links calibrated) the data link layer's share (PCIe: 57.88/62.96, Neugebauer et al. SIGCOMM 2018). */
+    static double linkDllEfficiency(const std::string& link_type);
+    /* the class's published lane (pair) count when it has one fixed by the product, else -1 */
+    static int linkDefaultLanes(const std::string& link_type);
 };
 
 }  // namespace PIMID

@@ -442,6 +442,12 @@ struct GlobSimInfo {
         double   bytesPerCycle = 0.0;         // AGGREGATE bandwidth (per-ch x channels)
         uint32_t channels = 1;
         uint32_t uncachedCycles = 0;          // pure serialized cross-bridge access
+        /* (user ruling 2026-10-27: serial links calibrated): the host-device link's framing per
+         * transaction and its ASPM L1 timers (0 = the link class has no ASPM L1:
+         * a DRAM channel, a UCIe link) */
+        uint32_t headerBytes = 0;
+        uint32_t l1EntryCycles = 0;           // idle time after which the link is in L1
+        uint32_t l1ExitCycles = 0;            // charged to a transfer that finds it in L1
     } bridge;
 
     // Case-1 COHERENCE flush accounting (1.7.2, HANDOFF ISSUE 3). In a unified
@@ -514,6 +520,8 @@ struct GlobSimInfo {
         volatile uint64_t count = 0;       // discrete crossings (all types)
         volatile uint64_t flushBytes = 0;  // coherence-flush footprint bytes
         volatile uint64_t flushMcLines = 0;   // 1.12.18 (bug 7): of those, the line writebacks sent to the host memory controllers
+        volatile uint64_t l1Exits = 0;        // (user ruling 2026-10-27: serial links calibrated): transfers that found the link in L1
+        volatile uint64_t l0IdleNs = 0;       // idle time the link spent in L0 before entering L1 (the entry timer), ns
     } xing;
 
     /* 1.11.8 (#84): per-object ACTIVE-PHASE marking for power-gating
