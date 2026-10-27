@@ -6,6 +6,13 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.110 -- the NVM array's write power is stated
+
+- **Report (src/main.cpp):** a device-scope NVM run prints its array write power: "[nvm] write power: <writes> writes x
+  <energy> = <J> over <window> = <W> average; one writing bank draws <W> for <ns>; no device write-power budget is
+  applied". Writes are priced per access, and nothing limits how many banks write at once.
+- **Data impact:** none on any priced number.
+
 ## 1.12.109 -- RERAM is characterised on a 1T1R cell
 
 - **Power and timing (new external/nvsim/RRAM_1T1R.cell; src/memory/nvsim_wrapper.cpp; src/main.cpp report text;

@@ -12072,6 +12072,7 @@ struct NonDramArrayPrice {
     double wr_nj = 0.0;
     double leak_mw = 0.0;    // whole array (x banks), after measured gating
     double area_mm2 = 0.0;   // whole array (x banks)
+    double wr_ns = 0.0;      // (1.12.110): one bank's write latency (NVM; 0 = not reported)
 };
 struct NonDramGateInput {
     bool requested = false;          // memory.array_pg (1.11.41 memory-side flag)
@@ -12354,6 +12355,7 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
     double area = nvsim.getArea() * banks;
     p.rd_nj = rd_energy; p.wr_nj = wr_energy;
     p.leak_mw = leakage; p.area_mm2 = area;
+    p.wr_ns = nvsim.getWriteLatency() * 1e9;   // (1.12.110)
     return p;
 }
 
@@ -13493,6 +13495,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         double static_mw = 0.0;   // background incl. refresh (measured when counted), VPP, PHY static
         double area_mm2 = 0.0;    // the populated memory silicon
         std::string note;         // provenance the total must carry
+        uint64_t nvm_writes = 0;  // (1.12.110): NVM array writes, their energy each and write time
+        double nvm_wr_nj = 0.0, nvm_wr_ns = 0.0;
     } devmem;
     std::ostringstream devmem_sink;
     std::streambuf* devmem_saved = detail_summary ? std::cout.rdbuf(devmem_sink.rdbuf()) : nullptr;
@@ -14322,6 +14326,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double total_wr_nj = wr_energy * zsim_stats.mem_wr;
 
             std::cout << "  Technology:      " << config.memory_tech << " (NVSim)" << std::endl;
+            devmem.nvm_writes = zsim_stats.mem_wr;   // (1.12.110): NVM writes for the write-power line
+            devmem.nvm_wr_nj = wr_energy;
+            devmem.nvm_wr_ns = price.wr_ns;
             pimid::fmt_scoped(std::cout) << "  Per-access:      read=" << std::fixed << std::setprecision(3)
                       << rd_energy << " nJ, write=" << wr_energy << " nJ" << std::endl;
             std::cout << "  Leakage:         " << leakage << " mW" << std::endl;
@@ -14495,6 +14502,16 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         const auto lp = mcpat.getSystemPower();
         const double mem_dyn_w = (devmem.have && window_s > 0.0) ? devmem.dyn_nj * 1e-9 / window_s : 0.0;
         const double mem_static_w = devmem.have ? devmem.static_mw / 1000.0 : 0.0;
+        /* (1.12.110): the NVM array's write power, stated. Writes are priced per access and
+         * no device write-power budget limits how many run at once; this line gives the
+         * measured average and the draw of one writing bank, so a budget can be judged. */
+        if (devmem.nvm_writes > 0 && devmem.nvm_wr_ns > 0.0 && window_s > 0.0) {
+            const double e_j = devmem.nvm_wr_nj * 1e-9 * static_cast<double>(devmem.nvm_writes);
+            pimid::fmt_scoped(std::cout) << std::setprecision(6) << "  [nvm] write power: " << devmem.nvm_writes
+                << " writes x " << devmem.nvm_wr_nj << " nJ = " << e_j << " J over " << window_s << " s = "
+                << e_j / window_s << " W average; one writing bank draws " << devmem.nvm_wr_nj / devmem.nvm_wr_ns
+                << " W for " << devmem.nvm_wr_ns << " ns; no device write-power budget is applied" << std::endl;
+        }
         const double total_w = lp.total_power + mem_dyn_w + mem_static_w;
         std::cout << "\n--- System Total ---" << std::endl;
         pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(6) << total_w
