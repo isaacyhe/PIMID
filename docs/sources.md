@@ -92,17 +92,21 @@ DERIVED / CALIBRATED).
 
 | Quantity | Value in use | Source | Consumed at |
 |---|---|---|---|
-| PCIe gen3/4/5 pJ/bit | gen3 4.0; gen4 1.93 (TX-only) - 6.0; gen5 7.6 - 11.4 | published PHY surveys, per-entry comments | `linkEnergyBandPJPerBit()` |
-| NVLink pJ/bit | 1.17 - 1.30 | NVIDIA NVLink4 claims | same |
+| PCIe gen3/4/5 pJ/bit | gen3 4.0 - 6.8; gen4 6.0 - 7.35 (1.93 TX-only, a bound below); gen5 7.6 - 11.4 | Analog Bits figures (T. Simon, SemiWiki, 2021-12-02: Gen3 4 pJ/bit, ~6.8 mW/Gbps at 28 nm; Gen4 6 pJ/bit, 117.7 mW/lane at 16 Gb/s; Gen5 8LPP 7.6 pJ/bit); Bichan et al. (Intel), CICC 2020, 11.4 pJ/bit incl. PLL; Bae et al., MDPI Electronics 10(1):68, 2021 (TX only) | `linkEnergyBandPJPerBit()` |
+| NVLink pJ/bit | C2C 1.3; NVLink 3/4 1.17 - 1.30 carried (NO PUBLISHED SOURCE FOUND for the board-level PHY; a lower bound) | NVIDIA Hot Chips 34 blog, 2022-08-19 (C2C 1.3 pJ/bit); Poulton et al., JSSC 54(1), 2019 (GRS 1.17 pJ/b) | same |
+| SerDes ASPM L1 (priced between transfers) | 25 mW per lane per end (20-30 mW; 10-25 mW in 2012); L1.2 ~40 uW per x4 PHY (not used) | Synopsys technical bulletins (R. Solomon 2015; S. Knowlton 2012); carried to Gen4/5, CXL, NVLink, UALink (DERIVED) | McPAT `iocontrollers.cc` |
+| SerDes L0 (entry timer, L1 exits) | lanes x line rate x the class's pJ/bit, each end | DERIVED (a link in L0 transmits at line rate) | same |
+| ASPM L1 exit / entry timer | 5 us / 8 us | Intel IDF 2010 PCIS002 ("L1: <5us"); Microchip AN2949 (4-8 us); DesignWare L1 entrance latency 8000 ns, Tegra194 (linux-pci, 2026-05) | `kLinkL1ExitNs` / `kLinkL1EntryNs` (main.cpp), plugin `linkL1ExitCharge` |
+| UCIe idle (clock-gated) | 0.05 / 0.33 of the full-rate per-bit power | Shivnaraine et al. (Microsoft), ISSCC 2026 8.3; UCIe 1.1 KPI savings >= 85% | McPAT `iocontrollers.cc` |
 | UCIe pJ/bit (LEGACY band) | 0.25 - 0.5 | UCIe consortium figures | same; used only with `power.models.ucie_link: false` |
 | UCIe analog PHY, 3 nm | advanced 0.29; standard 0.52 pJ/bit (measured) | Melek et al. (Cadence), IEEE JSSC vol. 61 no. 7, July 2026, DOI 10.1109/JSSC.2026.3651425 | McPAT `iocontrollers.cc` (two-node rows, 1.12.18) |
 | UCIe analog PHY, 22 nm | standard 1.2 pJ/bit (measured, 48 Gb/s, PLL not integrated); advanced 0.669 DERIVED = 1.2 x 0.29/0.52 | Mondal et al. (Intel), ISSCC 2026 8.1, DOI 10.1109/ISSCC49663.2026.11409120; package ratio from Cadence above | same |
 | D2D digital interface, 3 nm | 0.10 pJ/bit = 0.33 - 0.23 (UCIe-like, not the UCIe adapter) | Shivnaraine et al. (Microsoft), ISSCC 2026 8.3, DOI 10.1109/ISSCC49663.2026.11409276 | same |
 | D2D digital interface, 22 nm | 0.192 pJ/bit DERIVED, lower bound = 0.10 x CACTI C_inv x Vdd^2 (22/32 nm, each at its own feature size; 0.284 before) x 0.51/0.111; guard band 0.178 ([SB17] Table 2 20 nm row) .. 0.231 (analog node ratio) | Stillmaker & Baas, Integration 58 (2017) 74-81, Table 2; CACTI tables | same |
 | D2D digital 22 nm internal references (never applied) | analog node ratio 0.231; [SB17] Table 2 20 nm row 0.10 x 0.198/0.111 = 0.178 (user ruling 2026-10-24: the former TSMC-press reference was circular and is removed) | Intel/Cadence above; Stillmaker & Baas, Integration 58 (2017) 74-81, Table 2 | same (guard: WARNING outside [min, max]) |
-| UALink pJ/bit | 3.5 (200G-class SerDes row) | D1 sourcing | same |
+| UALink pJ/bit | 4.5 - 6.0 (host SerDes with DSP, 112G class; no 200G figure published) | Bernadskiy et al., arXiv 2510.15893, 2025 (the former 3.5 is not in it) | same |
 | Interposer I/O | 0.3 pJ/bit (app toggle) / 0.80 (50%) | O'Connor et al., MICRO-50 2017 Table 3 | MC interposer tier (D2) |
-| SerDes per-lane rates | PCIe 8/16/32 GT/s; NVLink4 100G; UALink 200G | PCI-SIG / vendor | `memoryctrl.cc` PIMID block |
+| SerDes per-lane rates | PCIe 8/16/32 GT/s; CXL 3.0 64 GT/s; NVLink 3.0 50G x 48, 4.0 100G x 36, C2C 40G x 90; UALink 200G x 4 | PCI-SIG; NVIDIA (A100 blog 2020, H100, Hot Chips 34); UALink 1.0 | `CactiIOWrapper` specFor (one table for timing and energy) |
 | PIPE controller width convention | 32-bit -> gen3 250 / gen4 500 / gen5+CXL 1000 MHz | Intel PIPE spec rev 7.1 | link controller clock |
 | Link bandwidth | rate x lanes x encoding (derived, no constant) | spec primitives | `linkBandwidthGBs()` |
 

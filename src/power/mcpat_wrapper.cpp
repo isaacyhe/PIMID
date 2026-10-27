@@ -2,6 +2,7 @@
 #include "common/debug_checks.h"
 #include "common/format_scope.h"  // 1.12.15: scoped stream formats
 #include "power/mcpat_wrapper.h"
+#include "power/cacti_io_wrapper.h"   // (user ruling 2026-10-27: serial links calibrated): one lane-rate table
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -609,13 +610,12 @@ static void periphFamilyFactorsCfg(int table_nm, int logic_node_nm,
  * Returns <=0 when the class is unknown, which leaves McPAT's historical 4
  * rather than inventing a rate for something we cannot name. */
 double McPATWrapper::linkSerDesLaneGbps(const std::string& link_type) {
-    if (link_type.rfind("pcie_gen3", 0) == 0) return 8.0;
-    if (link_type.rfind("pcie_gen4", 0) == 0) return 16.0;
-    if (link_type.rfind("pcie_gen5", 0) == 0) return 32.0;
-    if (link_type.rfind("cxl", 0)      == 0) return 32.0;
-    if (link_type.rfind("nvlink", 0)   == 0) return 100.0;
-    if (link_type.rfind("ualink", 0)   == 0) return 200.0;
-    return -1.0;
+    /* (user ruling 2026-10-27: serial links calibrated): the class's lane rate from the ONE
+     * specification table (CactiIOWrapper specFor), which the timing preset
+     * reads too. This table had NVLink at 100 Gb/s against specFor's 25 and CXL
+     * 3.0 at gen5's 32. */
+    if (!linkHasSerDes(link_type)) return -1.0;
+    return PIMID::CactiIOWrapper::linkRateGTs(link_type);
 }
 
 bool McPATWrapper::linkHasSerDes(const std::string& link_type) {
@@ -633,6 +633,10 @@ bool McPATWrapper::linkHasSerDes(const std::string& link_type) {
  * user's power.link.num_lanes to govern. */
 int McPATWrapper::linkLanesPerModule(const std::string& link_type) {
     if (link_type.rfind("interposer", 0) == 0) return 64;   // UCIe advanced pkg
+    /* (user ruling 2026-10-27: serial links calibrated): NVLink and UALink have the product's own
+     * lane (signal pair) structure (specFor); PCIe / CXL: the user's lanes. */
+    if (link_type.rfind("nvlink", 0) == 0 || link_type.rfind("ualink", 0) == 0)
+        return PIMID::CactiIOWrapper::linkDefaultLanes(link_type);
     return -1;                                              // SerDes classes: user lanes
 }
 
@@ -664,9 +668,18 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
      *                INCLUDING PLL and clocking (IEEE, doc 9075947)
      * The 1.5x spread is mostly what the measurement counted: clocking in or
      * out. That is a boundary, not noise, so both ends are carried. */
+    /* (user ruling 2026-10-27: serial links calibrated): sources named. 7.6: Analog Bits Gen5/SAS4
+     * SerDes on Samsung 8LPP, "0.583 sq. mm and 7.6 pj/bit" (T. Simon, "Low Power
+     * High Performance PCIe SerDes IP for Samsung Silicon", SemiWiki, 2021-12-02,
+     * from M. Tirupattur's SAFE Forum talk); 11.4: Intel, "A 32Gb/s NRZ 37dB SerDes
+     * in 10nm CMOS to Support PCI Express Gen 5 Protocol", CICC 2020 (M. Bichan et
+     * al.), "11.4pJ/bit including PLL and clocking". Reference (not in the band):
+     * NVIDIA's NVLink-C2C "1.3 picojoules per bit ... 5x the energy efficiency of
+     * the existing PCIe Gen 5 standard" (NVIDIA blog, 2022-08-19) puts gen5 at
+     * ~6.5 pJ/bit (DERIVED). */
     if (link_type.rfind("pcie_gen5", 0) == 0) {
         b.lo = 7.6; b.hi = 11.4;
-        b.provenance = "Samsung 8LPP 7.6 (excl clocking) .. 10nm CMOS 11.4 (incl PLL+clocking)";
+        b.provenance = "7.6 Analog Bits Gen5 SerDes Samsung 8LPP (SemiWiki 2021) .. 11.4 Intel 10nm incl PLL+clocking (CICC 2020)";
         return b;
     }
     /* PCIe gen4. TWO published figures, and the gap between them is a
@@ -679,25 +692,27 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
      * link can reach, not an achievable full-link figure. Carried as the band
      * floor with that stated, because hiding it would discard the measurement
      * and inventing a TX+RX total from it would be fabrication. */
+    /* (user ruling 2026-10-27: serial links calibrated): a second FULL-SerDes point, "It uses 117.7
+     * mW per lane at 16Gbps (7.35mW/Gbps)" (the Gen4 SerDes of a Samsung NVMe SSD,
+     * SemiWiki 2021-12-02, as above), beside "The Gen4 silicon is 1-16G with power
+     * coming in at 6 pj/bit" (ibid.). The band is the two full-link figures; the
+     * 1.93 transmitter-only figure (W. Bae, S.-Y. Cho, D.-K. Jeong, MDPI
+     * Electronics 10(1):68, 2021) stays a stated bound below it. */
     if (link_type.rfind("pcie_gen4", 0) == 0) {
-        b.lo = 1.93; b.hi = 6.0;
-        /* 1.11.56 (audit C002): mark the floor as a BOUND, so the scalar the
-         * XML is priced from stops being the midpoint of it. The band text
-         * three lines up already said 1.93 is a figure no complete link can
-         * reach, and the applied number was 0.5*(1.93+6.0) = 3.965 -- 0.66x
-         * the only full-link source in the entry. Averaging an unreachable
-         * end into an applied value is not a band, it is a discount. With the
-         * flag set, applied() returns the full-link end and the band is still
-         * reported whole, floor included, so nothing is hidden. */
-        b.lo_is_bound = true;
-        b.provenance = "1.93 TX-ONLY 28nm (LOWER BOUND, not a full link; excluded from the applied value) .. 6.0 full SerDes Samsung 7LPP/5LPE (applied)";
+        b.lo = 6.0; b.hi = 7.35;
+        b.provenance = "6.0 Analog Bits Gen4 Samsung 7LPP/5LPE .. 7.35 Gen4 SSD SerDes 117.7 mW/lane at 16G (SemiWiki 2021); 1.93 TX-only 28nm (MDPI 2021) is a bound below the band";
         return b;
     }
     /* PCIe gen3: one figure, and it RETIRES the 5.0 this table used to return,
      * which had no source. Analog Bits Gen3 1-8G on Samsung 7LPP/5LPE. */
+    /* (user ruling 2026-10-27: serial links calibrated): a second point, "~54mW and ~6.8 mW/Gbps" (PCIe
+     * Gen3 in 28 FDSOI and 28LP bulk, dynamic power; SemiWiki 2021-12-02, as above);
+     * the Synopsys PHY target "less than 5mW/Gb/lane" (R. Solomon, "Power Gating:
+     * Reducing PCI Express Power Consumption to Mobile Levels", Synopsys technical
+     * bulletin, 2015) lies inside. */
     if (link_type.rfind("pcie_gen3", 0) == 0) {
-        b.lo = b.hi = 4.0; b.single_point = true;
-        b.provenance = "4.0 full SerDes Samsung 7LPP/5LPE (semiwiki); retires unsourced 5.0";
+        b.lo = 4.0; b.hi = 6.8;
+        b.provenance = "4.0 Analog Bits Gen3 Samsung 7LPP/5LPE .. 6.8 Gen3 28nm FDSOI/LP dynamic (SemiWiki 2021)";
         return b;
     }
     /* CXL rides the gen5 PHY plus a coherence delta, so its band is the gen5
@@ -730,6 +745,11 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
         b.lo = g5.lo + coherence_delta;
         b.hi = g5.hi + coherence_delta;
         b.provenance = "gen5 band + 1.4 coherence delta (delta UNSOURCED: difference of two retired scalars, not a measurement)";
+        /* (user ruling 2026-10-27: serial links calibrated): CXL 3.0 runs the PCIe 6.0 64 GT/s PAM4
+         * PHY; NO PUBLISHED SOURCE FOUND for a 64 GT/s PCIe 6.0 PHY's energy per
+         * bit, so the gen5 band is carried for it and the text says so. */
+        if (link_type.rfind("cxl_3", 0) == 0)
+            b.provenance = "gen5 band + 1.4 coherence delta, CARRIED for a 64 GT/s PCIe 6.0 PHY: NO PUBLISHED SOURCE FOUND (delta UNSOURCED)";
         return b;
     }
     /* UCIe. The range was ALREADY sourced and written down here, then thrown
@@ -748,9 +768,21 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
      *   1.30 pJ/bit  NVIDIA's product-level figure for NVLink
      * A research PHY and a shipped product are different claims; keeping both
      * ends preserves that rather than averaging one into the other. */
+    /* (user ruling 2026-10-27: serial links calibrated): the 1.30 is NVLink-C2C's, "data transfers that
+     * consume just 1.3 picojoules per bit" (NVIDIA blog on Hot Chips 34,
+     * 2022-08-19), an on-package link; the 1.17 is J. Poulton et al., "A 1.17-pJ/b,
+     * 25-Gb/s/pin Ground-Referenced Single-Ended Serial Link for Off- and
+     * On-Package Communication", JSSC 54(1), 2019, 16 nm. NO PUBLISHED SOURCE FOUND
+     * for the board-level NVLink 3.0 / 4.0 PHY; both are carried for it as a
+     * LOWER BOUND (short-reach figures), and C2C takes its own figure. */
+    if (link_type.rfind("nvlink_c2c", 0) == 0) {
+        b.lo = b.hi = 1.30; b.single_point = true;
+        b.provenance = "1.3 NVLink-C2C (NVIDIA, Hot Chips 34 blog 2022)";
+        return b;
+    }
     if (link_type.rfind("nvlink", 0) == 0) {
         b.lo = 1.17; b.hi = 1.30;
-        b.provenance = "1.17 measured PHY 16nm FinFET (JSSC 2019) .. 1.30 NVIDIA product figure";
+        b.provenance = "board-level NVLink 3/4 PHY: NO PUBLISHED SOURCE FOUND; carried 1.17 GRS 16nm (JSSC 2019) .. 1.30 NVLink-C2C (NVIDIA 2022), short-reach figures, a LOWER BOUND";
         return b;
     }
     /* UALink 200G. SOURCED, and it RETIRES the 8.0 that D1 assumed from
@@ -759,9 +791,15 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
      * link DSP (arXiv 2510.15893). The old assumption was 2.3x above it.
      * Single point: only the short-reach case is published, so a longer-reach
      * UALink would sit above this and that end is NOT sourced. */
+    /* (user ruling 2026-10-27: serial links calibrated): the 3.5 is NOT in the cited paper. arXiv
+     * 2510.15893 (M. Bernadskiy et al., "Accelerating Frontier MoE Training with 3D
+     * Integrated Optics", 2025) states: "host SerDes in an LPO-based system are
+     * expected to rely on DSPs and be in the range of 4.5-6 pJ/bit" and "5 pJ/bit
+     * for LR class 112 Gb/s PAM-4 SerDes with DSP", citing ISSCC 2021 11.2 and
+     * ISSCC 2022 (5 nm LR). 112G-class figures: NO PUBLISHED SOURCE FOUND at 200G. */
     if (link_type.rfind("ualink", 0) == 0) {
-        b.lo = b.hi = 3.5; b.single_point = true;
-        b.provenance = "3.5 @200G short-reach incl SerDes+DSP (arXiv 2510.15893); long-reach end NOT sourced; retires assumed 8.0";
+        b.lo = 4.5; b.hi = 6.0;
+        b.provenance = "4.5-6 host SerDes with DSP, 112G class (arXiv 2510.15893); 200G NOT published; retires 3.5 (not in the cited paper)";
         return b;
     }
     /* 1.11.103 (ruling COSIM-LINK-CLASS): a DIMM-resident device is reached
@@ -1313,6 +1351,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(pcie_stats_.lane_rate_gts);     f(pcie_stats_.phy_pj_per_bit);
     f(pcie_stats_.link_energy_end);
     f(pcie_stats_.link_node_nm);      // 1.12.18: two-node UCIe rows
+    f(pcie_stats_.link_l0_idle_s); f(pcie_stats_.link_l1_exits); f(pcie_stats_.link_l1_exit_s);
 
     // --- setter state: power gating and profile ---
     f(pg_spec_.pg_core);  f(pg_spec_.pg_noc);  f(pg_spec_.pg_mc);
@@ -4507,6 +4546,11 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <stat name=\"total_load_perc\" value=\"" << pcie_stats_.total_load_perc << "\"/>\n";
         xml << "      <stat name=\"transferred_bytes\" value=\"" << pcie_stats_.transferred_bytes << "\"/>\n";
         xml << "      <stat name=\"link_pj_per_bit\" value=\"" << pcie_stats_.link_pj_per_bit << "\"/>\n";
+        /* (user ruling 2026-10-27: serial links calibrated): the idle link is priced (L0 SerDes; UCIe clock-gated). */
+        xml << "      <param name=\"link_idle_l0\" value=\"1\"/>\n";
+        xml << "      <param name=\"link_l0_idle_s\" value=\"" << pcie_stats_.link_l0_idle_s << "\"/>\n";
+        xml << "      <param name=\"link_l1_exits\" value=\"" << pcie_stats_.link_l1_exits << "\"/>\n";
+        xml << "      <param name=\"link_l1_exit_s\" value=\"" << pcie_stats_.link_l1_exit_s << "\"/>\n";
         /* 1.12.18: UCIe link class parameters (iocontrollers.cc, PIMID 1.12.18). */
         xml << "      <param name=\"link_class\" value=\"" << pcie_stats_.link_class << "\"/>\n";
         if (pcie_stats_.lane_rate_gts > 0.0) {

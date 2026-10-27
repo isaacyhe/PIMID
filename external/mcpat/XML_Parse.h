@@ -687,6 +687,15 @@ typedef struct{
 	double phy_pj_per_bit;
 	int link_energy_end;
 	int link_node_nm;   /* PIMID 1.12.18: see above */
+	/* PIMID (user ruling 2026-10-27: serial links calibrated): 1 = price the link when it carries no
+	 * traffic: a SerDes class in ASPM L1 between transfers, in L0 for its entry
+	 * timer and its L1 exits (link_l0_idle_s, link_l1_exits x link_l1_exit_s,
+	 * measured by the plugin); a UCIe link clock-gated (0.05 of 0.33 pJ/b,
+	 * Shivnaraine et al. ISSCC 2026 8.3). 0 (default) = bytes only (upstream). */
+	int link_idle_l0;
+	double link_l0_idle_s;
+	double link_l1_exits;
+	double link_l1_exit_s;
 } system_pcie;
 
 typedef struct{

@@ -16182,6 +16182,15 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 ps.transferred_bytes =
                     charge_here ? static_cast<double>(xbytes) : 0.0;   // link priced once
                 ps.link_pj_per_bit = pjbit;
+                /* (user ruling 2026-10-27: serial links calibrated): the link's measured idle; the L1 exit
+                 * latency the bridge charged (the tail after the last transfer
+                 * spends one entry timer in L0) */
+                if (linkHasAspmL1(config.pcie_link_type)) {
+                    ps.link_l1_exits = static_cast<double>(zsim_stats.xing_l1_exits);
+                    ps.link_l1_exit_s = kLinkL1ExitNs * 1e-9;
+                    ps.link_l0_idle_s = static_cast<double>(zsim_stats.xing_l0_idle_ns) * 1e-9
+                                      + (zsim_stats.xing_l1_exits > 0 ? kLinkL1EntryNs * 1e-9 : 0.0);
+                }
                 /* 1.11.42 (audit E21): DERIVED, was a two-valued literal
                  * (gen3 500, everything else 1000). The clock cancels out of
                  * the SerDes and byte-driven terms but linearly scales the
@@ -16246,6 +16255,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                * report it as a measurement -- a reader must be
                                * able to see what peak link dynamic was scaled
                                * by without reading the source. */
+                              << ("; idle: " + std::string(ucie_in_mcpat
+                                    ? "clock-gated at 0.05/0.33 of the full-rate per-bit power (ISSCC 2026 8.3), in McPAT"
+                                    : (dram_channel_link ? "none (no link)"
+                                       : "ASPM L1 between transfers (25 mW per lane per end, Synopsys 2015), L0 for the 8 us entry timer and "
+                                         + std::to_string(zsim_stats.xing_l1_exits) + " L1 exit(s) of 5 us, in McPAT; the whole-run L0 figure is printed there")))
                               << ", peak duty " << ps.duty_cycle
                               << (config.pcie_duty_cycle_user_set ? " [OVERRIDE]" : " [derived: bytes/time]")
                               << (link_unpriced ? " [link dynamic UNPRICED: unknown link type]" : "")

@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.100 -- Serial links: the idle link is priced (SerDes in ASPM L1 between transfers, UCIe clock-gated); the per-class energy re-sourced
+
+- **The idle link (user ruling 2026-10-27: ASPM L1 when idle):** a PCIe / CXL / NVLink / UALink link was priced as
+  bytes crossed x pJ/bit, as if its SerDes were off between transfers; a gen5 x16 link that moved 128 B in a run cost
+  0.0075 W per end (controller leakage). Each end is now priced over the run: in ASPM L1 between transfers at 25 mW per
+  lane ("each lane of a PCIe PHY in "L1" could still be consuming 20-30 milliwatts", R. Solomon, Synopsys technical
+  bulletin, 2015; a Gen3-era PHY figure carried to the later classes, DERIVED); in L0 for the L1 entry timer after each
+  transfer and during each L1 exit (the timing model's 8 us / 5 us, measured per run by the plugin) at lanes x line rate
+  x the class's pJ/bit (a link in L0 transmits at line rate); the active bits at bytes x 8 x pJ/bit, as before. The
+  whole-run L0 figure is printed beside it as information (gen5 x16: 4.86 W per end). A UCIe link that carries nothing
+  is clock-gated: 0.05 of 0.33 pJ/b full-rate power (Shivnaraine et al., ISSCC 2026 8.3; UCIe 1.1 KPI savings >= 85%),
+  over the time it does not move the measured bytes.
+- **Energy per bit re-sourced:** gen3 4.0 - 6.8 (was 4.0), gen4 6.0 - 7.35 (was 1.93 - 6.0, applied 6.0; the 1.93
+  transmitter-only figure stays a bound below), gen5 7.6 - 11.4 (sources named: Analog Bits Gen5 on 8LPP, SemiWiki
+  2021; Intel 10 nm incl. PLL, CICC 2020). UALink 4.5 - 6.0 (was 3.5, which is not in the cited paper; host SerDes with
+  DSP at 112G, arXiv 2510.15893). NVLink-C2C 1.3 (NVIDIA); NVLink 3/4 keep 1.17 - 1.30 as a lower bound, NO PUBLISHED
+  SOURCE FOUND for the board-level PHY. CXL 3.0 (user ruling 2026-10-27: scale from gen5): the gen5 band carried per
+  bit to the 64 GT/s PAM4 PHY, DERIVED (no published 64 GT/s PCIe 6.0 PHY energy and no published PAM4-vs-NRZ
+  scaling at this rate); its L1 and L0 terms take the 64 GT/s line rate.
+- **One lane-rate table** for timing and energy: NVLink 3.0 50 Gb/s x 48 pairs, 4.0 100 Gb/s x 36, C2C 40 Gb/s x 90,
+  CXL 3.0 64 GT/s (the energy side had NVLink at 100 Gb/s on 16 lanes and CXL 3.0 at 32).
+- **Impact:** co-sim runs with a SerDes-class host-device link (an externally attached device, or a named PCIe / CXL /
+  NVLink / UALink class): each end adds its L1 floor, lanes x 25 mW (x16: 0.4 W; NVLink 3.0 48 pairs: 1.2 W), plus
+  its L0 windows. Interposer (UCIe) links add their clock-gated idle (3 nm: 0.06 W per module). A device that is the
+  host's memory (`dram_channel`), device-scope and host-only runs: unchanged.
+
 ## 1.12.99 -- Serial links: the link class in the co-sim bridge, ASPM L1 exit latency, one timing preset per class, PCIe / CXL lane widths
 
 - **One preset per class (user ruling 2026-10-27):** the link classes' timing presets lived in two tables that disagreed

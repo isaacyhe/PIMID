@@ -1455,6 +1455,10 @@ void ParseXML::parse(char* filepath)
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"phy_pj_per_bit")==0) {sys.pcie.phy_pj_per_bit=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_energy_end")==0) {sys.pcie.link_energy_end=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_node_nm")==0) {sys.pcie.link_node_nm=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.12.18: two-node UCIe rows */
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_idle_l0")==0) {sys.pcie.link_idle_l0=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (user ruling 2026-10-27) */
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_l0_idle_s")==0) {sys.pcie.link_l0_idle_s=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_l1_exits")==0) {sys.pcie.link_l1_exits=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_l1_exit_s")==0) {sys.pcie.link_l1_exit_s=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 
 			}
 			itmp=xNode3.nChildNode("stat");
@@ -2029,6 +2033,8 @@ void ParseXML::initialize() //Initialize all
 	sys.pcie.phy_pj_per_bit=-1.0;
 	sys.pcie.link_energy_end=1;
 	sys.pcie.link_node_nm=0;   /* PIMID 1.12.18: 0 = the run's node (iocontrollers.cc) */
+	sys.pcie.link_idle_l0=0;   /* PIMID (user ruling 2026-10-27: serial links calibrated) */
+	sys.pcie.link_l0_idle_s=0; sys.pcie.link_l1_exits=0; sys.pcie.link_l1_exit_s=0;
 	//system_flash_controller
 	sys.flashc.mc_clock =1;
 	sys.flashc.number_mcs=1;

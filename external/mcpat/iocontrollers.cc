@@ -447,7 +447,30 @@ void PCIeController::computeEnergy(bool is_tdp)
     			execTimeSec = XML->sys.total_cycles / (XML->sys.target_core_clockrate * 1e6);
     		const double bytes = XML->sys.pcie.link_energy_end ? XML->sys.pcie.transferred_bytes : 0.0;
     		ucie_phy_joules = bytes * 8.0 * ucie_pj_per_bit * 1e-12;
-    		if (bytes > 0.0) {
+    		/* PIMID (user ruling 2026-10-27: serial links calibrated): THE IDLE LINK. A UCIe link that
+    		 * carries nothing is clock-gated, not off: "When fully clock gated, the
+    		 * system achieves a power efficiency of 0.05pJ/b" against "0.33pJ/b at
+    		 * 24Gb/s" at 0% clock gating, with zero wake penalty (R. Shivnaraine et
+    		 * al., ISSCC 2026 8.3, 3 nm); the UCIe 1.1 white paper's KPI "Power
+    		 * savings estimated at >= 85%" with 0.5-1 ns entry/exit agrees (0.05/0.33 =
+    		 * 15%). Priced at that fraction of the full-rate per-bit power over the
+    		 * time the link is not moving the measured bytes (DERIVED at 22 nm: the
+    		 * same fraction). Once, at the end that prices the link. */
+    		double ucie_idle_j = 0.0;
+    		if (XML->sys.pcie.link_idle_l0 == 1 && XML->sys.pcie.link_energy_end && execTimeSec > 0.0 &&
+    		    XML->sys.pcie.lanes > 0 && XML->sys.pcie.lane_rate_gts > 0.0) {
+    			const double rate_bps = XML->sys.pcie.lanes * XML->sys.pcie.lane_rate_gts * 1e9;
+    			const double busy_s = std::min(execTimeSec, bytes * 8.0 / rate_bps);
+    			const double idle_frac = 0.05 / 0.33;
+    			ucie_idle_j = idle_frac * rate_bps * ucie_pj_per_bit * 1e-12 * (execTimeSec - busy_s);
+    			ucie_phy_joules += ucie_idle_j;
+    			pimid::debugStream(std::cerr) << "[link] UCIe idle (McPAT PIMID, clock-gated): " << idle_frac
+    			          << " x " << XML->sys.pcie.lanes << " lanes x " << XML->sys.pcie.lane_rate_gts << " GT/s x "
+    			          << ucie_pj_per_bit << " pJ/bit = " << idle_frac * rate_bps * ucie_pj_per_bit * 1e-12
+    			          << " W over " << (execTimeSec - busy_s) << " s idle of " << execTimeSec << " s = " << ucie_idle_j
+    			          << " J [0.05 / 0.33 pJ/b fully clock-gated vs active, Shivnaraine et al. ISSCC 2026 8.3]" << std::endl;
+    		}
+    		if (bytes > 0.0 || ucie_idle_j > 0.0) {
     			if (execTimeSec <= 0.0) {
     				std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): UCIe link carries "
     				          << bytes << " measured bytes but the run has no measured time"
@@ -470,6 +493,53 @@ void PCIeController::computeEnergy(bool is_tdp)
     		             " McPAT's per-lane controller term also prices; link.controller area"
     		             " and leakage kept. NO PUBLISHED SOURCE FOUND: transaction-layer"
     		             " dynamic above the FDI, not priced." << std::endl;
+    		return;
+    	}
+    	/* PIMID (user ruling 2026-10-27: serial links calibrated): THE IDLE SerDes LINK, IN ASPM L1.
+    	 * Between transfers a PCIe-class link sits in L0 for its L1 entry timer and
+    	 * in L1 after it; a transfer that finds it in L1 runs its L1 exit in L0 (the
+    	 * plugin measures both: link_l0_idle_s, link_l1_exits; the exit latency and
+    	 * the timer are PIMID's kLinkL1ExitNs / kLinkL1EntryNs). Each END prices:
+    	 *   L0 idle  (entry windows + exits) x lanes x line rate x pJ/bit (a link in
+    	 *            L0 transmits at line rate: its per-bit figure x the line rate);
+    	 *   L1       the rest of the run outside L0 and the active transfers x lanes
+    	 *            x 25 mW: "each lane of a PCIe PHY in "L1" could still be
+    	 *            consuming 20-30 milliwatts of power" (R. Solomon, "Power Gating:
+    	 *            Reducing PCI Express Power Consumption to Mobile Levels", Synopsys
+    	 *            technical bulletin, 2015-10-26; 10-25 mW, S. Knowlton, Synopsys,
+    	 *            2012), the band's middle; a Gen3-era PHY figure, carried to
+    	 *            Gen4/5, CXL, NVLink and UALink (DERIVED);
+    	 * and the energy end adds the active bits (bytes x 8 x pJ/bit, as before).
+    	 * McPAT's SerDes dynamic is removed (E008, the same silicon). The whole-run
+    	 * L0 figure is printed beside it (INFORMATION). */
+    	if (XML->sys.pcie.link_idle_l0 == 1 && pciep.withPHY &&
+    	    XML->sys.pcie.link_pj_per_bit > 0 && pciep.serdes_lane_gbps > 0.0 &&
+    	    XML->sys.total_cycles > 0 && XML->sys.target_core_clockrate > 0)
+    	{
+    		const double T = XML->sys.total_cycles / (XML->sys.target_core_clockrate * 1e6);
+    		double serdes_rt = SerDer_dyn_saved * pciep.num_channels * pciep.perc_load;
+    		rt_power.readOp.dynamic -= serdes_rt;
+    		if (rt_power.readOp.dynamic < 0.0) rt_power.readOp.dynamic = 0.0;
+    		const double lanes = pciep.num_channels;
+    		const double p_l0 = lanes * pciep.serdes_lane_gbps * 1e9 * XML->sys.pcie.link_pj_per_bit * 1e-12;
+    		const double kL1WPerLane = 0.025;
+    		const double p_l1 = lanes * kL1WPerLane;
+    		const double units = (XML->sys.pcie.number_units > 0) ? (double)XML->sys.pcie.number_units : 1.0;
+    		const double bytes_all = XML->sys.pcie.transferred_bytes;
+    		const double active_s = std::min(T, bytes_all * 8.0 / (lanes * pciep.serdes_lane_gbps * 1e9));
+    		const double l0_s = std::min(T - active_s, XML->sys.pcie.link_l0_idle_s +
+    		                             XML->sys.pcie.link_l1_exits * XML->sys.pcie.link_l1_exit_s);
+    		const double l1_s = std::max(0.0, T - active_s - l0_s);
+    		const double e_end = p_l0 * l0_s + p_l1 * l1_s;
+    		const double e_bits = bytes_all * 8.0 * XML->sys.pcie.link_pj_per_bit * 1e-12;   // 0 at the far end
+    		const double clk = (pciep.clockRate > 0) ? pciep.clockRate : 1.0;
+    		rt_power.readOp.dynamic += (e_end / T) / clk + (e_bits / T) / (units * clk);
+    		pimid::debugStream(std::cerr) << "[link] SerDes idle (McPAT PIMID, ASPM L1): " << lanes << " lanes; L0 "
+    		          << l0_s << " s x " << p_l0 << " W (" << pciep.serdes_lane_gbps << " Gb/s x "
+    		          << XML->sys.pcie.link_pj_per_bit << " pJ/bit) + L1 " << l1_s << " s x " << p_l1
+    		          << " W (25 mW/lane) per end; active " << active_s << " s (" << bytes_all << " B, "
+    		          << e_bits << " J at this end); run " << T << " s; whole-run L0 would be " << p_l0
+    		          << " W per end (INFORMATION)" << std::endl;
     		return;
     	}
     	/* PIMID 1.11.7 (#85): activity-driven link energy. When PIMID

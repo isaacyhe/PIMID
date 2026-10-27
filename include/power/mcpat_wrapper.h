@@ -285,6 +285,8 @@ public:
          * its run's node. A structural parameter only -- the rows and their
          * arithmetic live in iocontrollers.cc. */
         int    link_node_nm = 0;
+        /* (user ruling 2026-10-27: serial links calibrated): the link's measured idle (plugin) */
+        double link_l0_idle_s = 0.0, link_l1_exits = 0.0, link_l1_exit_s = 0.0;
     };
 
     /* 1.12.18: what McPAT's link model reported, read back from the child

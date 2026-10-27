@@ -464,8 +464,15 @@ What McPAT computes for the interposer class (UCIe advanced package, 64 lanes,
   figure splits it. The run prints the amount left out. NO PUBLISHED SOURCE
   FOUND: transaction-layer dynamic energy above the FDI; it is not priced.
 
-PCIe, CXL, NVLink and UALink keep their per-bit path (the pJ/bit selected from
-the cited band, bytes x pJ/bit inside McPAT, McPAT's SerDes dynamic removed).
+PCIe, CXL, NVLink and UALink keep their per-bit band (the pJ/bit selected from
+the cited band, McPAT's SerDes dynamic removed), priced over the run in its
+link states ((1.12.100), user ruling 2026-10-27): ASPM L1 between transfers at 25 mW
+per lane per end (Synopsys 2015: 20-30 mW), L0 for the 8 us L1 entry timer after
+each transfer and during each 5 us L1 exit (the timing model charges the exit;
+the plugin counts both) at lanes x line rate x pJ/bit, the active bits at bytes x
+8 x pJ/bit. The whole-run L0 figure is printed as information. A UCIe link that carries nothing is
+clock-gated, at 0.05/0.33 of its full-rate per-bit power (Shivnaraine et al.,
+ISSCC 2026 8.3; the UCIe 1.1 KPI: savings >= 85%, 0.5-1 ns entry/exit).
 NVLink and UALink need `power.link.controller_clock_mhz`: they have no published
 controller clock, and the run is refused without one. `power.models.ucie_link:
 false` restores the pre-1.12.18 interposer pricing.
