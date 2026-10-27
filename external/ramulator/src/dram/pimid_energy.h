@@ -473,6 +473,10 @@ inline bool hasWidthRow(const std::string& tech, const std::string& width) {
  * from power.temperature_k); 0 = unset, the record's currents as stored. One run-wide value so every consumer
  * of the row (background, refresh, activate, burst, guards) prices the same currents. */
 inline int& runIddTemperatureK() { static int k = 0; return k; }
+/* (1.12.101): the temperature a caller that states none is priced at: the run's once it is set, else 358 K (the top of
+ * the nominal refresh range, the historical default). The guard lines and the derived per-bit read energy used the
+ * 358 K literal whatever the run's temperature. */
+inline int defaultEnergyTemperatureK() { return runIddTemperatureK() > 0 ? runIddTemperatureK() : 358; }
 /* The row at the run's temperature, from the record's idd_temperature block (none: unchanged). */
 inline IDDSpec iddAtRunTemperature(IDDSpec s, const PartIddFacts& f, const std::string& tech) {
     const int tk = runIddTemperatureK();
@@ -1384,13 +1388,13 @@ inline IDDSpec typicalFromSpec(const IDDSpec& spec, const ComponentFactors& f,
 }
 /* The stored (maximum) row at a temperature -- for the record and for a
  * before/after comparison; the model does not price it. */
-inline IDDSpec iddSpecFor(const std::string& tech, int temperature_k = 358) {
+inline IDDSpec iddSpecFor(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
     IDDSpec s = iddTableFor(tech);
     s.trefi_ns *= refreshTempFactor(baseTech(tech), temperature_k);
     return s;
 }
 /* The row every consumer prices: typical (1.11.91 item 11). */
-inline IDDSpec iddFor(const std::string& tech, int temperature_k = 358) {
+inline IDDSpec iddFor(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
     IDDSpec s = typicalFromSpec(iddTableFor(tech), componentFactorsFor(tech),
                                 idd3nBasisFor(baseTech(tech)));
     s.trefi_ns *= refreshTempFactor(baseTech(tech), temperature_k);
@@ -2225,12 +2229,12 @@ inline double stateWithRefreshMW(const IDDSpec& s, double idd_state) {
  * IDD2N) x duty). It is the share of stateWithRefreshMW() a counted-refresh substitution removes: each state's
  * duty then stands at IDD2N (state x (1 - duty) + IDD2N x duty), and the counted energy adds the excess, so no
  * state is charged twice. backgroundUnitMW() no longer calls it. */
-inline double refreshMW(const std::string& tech, int temperature_k = 358) {   // 1.11.65
+inline double refreshMW(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {   // 1.11.65
     IDDSpec s = iddFor(tech, temperature_k);
     return s.vdd * (s.idd5 - s.idd2n) * (s.trfc_ns / s.trefi_ns)   // 1.12.18 (user ruling 2026-10-23): IDD2N baseline (was IDD3N)
          + vppRefreshPerUnitPJ(s) / s.trefi_ns;   // 1.12.18 (bug 3b): the VPP refresh, pJ/ns = mW
 }
-inline double backgroundMW(const std::string& tech, int temperature_k = 358) {
+inline double backgroundMW(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
     IDDSpec s = iddFor(tech, temperature_k);
     return stateWithRefreshMW(s, s.idd3n);   // == vdd*idd3n + refreshMW(tech, T)
 }
@@ -2416,7 +2420,7 @@ inline double backgroundUnitCoreMW(const std::string& tech, double pre_share,
 }
 inline double backgroundUnitStatesMW(const std::string& tech, double active_frac,
                                      double r_pd, bool pg_enabled,
-                                     int temperature_k = 358,
+                                     int temperature_k = defaultEnergyTemperatureK(),
                                      double* r_pd_used = nullptr) {
     if (active_frac < 0.0) active_frac = 0.0;
     if (active_frac > 1.0) active_frac = 1.0;
@@ -2424,7 +2428,7 @@ inline double backgroundUnitStatesMW(const std::string& tech, double active_frac
                                 temperature_k, r_pd_used);
 }
 inline double backgroundUnitMW(const std::string& tech, double r_idle,
-                               bool pg_enabled, int temperature_k = 358) {
+                               bool pg_enabled, int temperature_k = defaultEnergyTemperatureK()) {
     if (r_idle < 0.0) r_idle = 0.0;
     if (r_idle > 1.0) r_idle = 1.0;
     return backgroundUnitCoreMW(tech, r_idle, r_idle, pg_enabled,
@@ -2438,7 +2442,7 @@ inline double backgroundSystemMW(const std::string& tech, double r_idle,
                                  const std::string& device_width = "",
                                  int ranks_per_channel = 1,
                                  int channels = 1,        // 1.11.52 (A015)
-                                 int temperature_k = 358) {   // 1.11.65
+                                 int temperature_k = defaultEnergyTemperatureK()) {   // 1.11.65
     const double floor_mw = stackFloorSystemMW(tech, channels);   // 1.11.91 (item 12)
     return backgroundUnitMW(tech, r_idle, pg_enabled, temperature_k) *
            static_cast<double>(backgroundUnits(baseTech(tech), device_width,
@@ -2452,7 +2456,7 @@ inline double backgroundSystemStatesMW(const std::string& tech, double active_fr
                                        const std::string& device_width = "",
                                        int ranks_per_channel = 1,
                                        int channels = 1,
-                                       int temperature_k = 358,
+                                       int temperature_k = defaultEnergyTemperatureK(),
                                        double* r_pd_used = nullptr) {
     const double floor_mw = stackFloorSystemMW(tech, channels);   // 1.11.91 (item 12)
     return backgroundUnitStatesMW(tech, active_frac, r_pd, pg_enabled,
@@ -2482,7 +2486,7 @@ inline double activateEnergyNJ(const std::string& tech, double tRC, double tRAS,
     return arrayReadNJ(tech, tRC, tRAS, tBurst, bank_override_pJ_per_byte, device_width, 1.0, banks_per_device)
          - arrayReadNJ(tech, tRC, tRAS, tBurst, bank_override_pJ_per_byte, device_width, 0.0, banks_per_device);
 }
-inline double refreshEnergyPerCommandNJ(const std::string& tech, int temperature_k = 358) {
+inline double refreshEnergyPerCommandNJ(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
     IDDSpec s = iddFor(tech, temperature_k);
     return (s.vdd * (s.idd5 - s.idd2n) * s.trfc_ns + vppRefreshPerUnitPJ(s)) / 1000.0;   // 1.12.18 (bug 3b): + VPP; (user ruling 2026-10-23): IDD2N baseline (was IDD3N)
 }
@@ -2597,19 +2601,19 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
     }
     /* 1.12.18 (user ruling 2026-10-24, floor option 2): THE BACKGROUND GUARD per stack -- the
      * datasheet background the report starts from (active standby IDD3N, no idle descent, refresh
-     * at the datasheet duty, 358 K) plus the per-stack floor, against XPE like-for-like (DRAM
+     * at the datasheet duty, at the run's temperature since (1.12.101); 358 K before) plus the per-stack floor, against XPE like-for-like (DRAM
      * VDD + VDDQ + VPP rails). Printed, never priced. */
     if (pf->bg_guard.valid) {
         const IDDSpec rs = iddFor(tech);
         const int ch = (rs.channels > 0) ? rs.channels : 1;
-        const double bg = backgroundSystemMW(tech, 0.0, false, device_width, 1, ch, 358);
+        const double bg = backgroundSystemMW(tech, 0.0, false, device_width, 1, ch, defaultEnergyTemperatureK());   // (1.12.101): the run's temperature
         const double fl = stackFloorSystemMW(tech, ch);
         const double st = std::max(1, hbmStacks(tech, ch));
         const double per_stack = bg / st;
         const auto& g = pf->bg_guard;
         const bool in = (per_stack >= g.lo_mw - 1e-9 && per_stack <= g.hi_mw + 1e-9);
         std::ostringstream o; o.setf(std::ios::fixed); o.precision(1);
-        o << "[guard] " << (in ? "" : "WARNING: ") << bt << " background per stack " << per_stack << " mW (datasheet: active standby + refresh at 358 K over "
+        o << "[guard] " << (in ? "" : "WARNING: ") << bt << " background per stack " << per_stack << " mW (datasheet: active standby + refresh at " << defaultEnergyTemperatureK() << " K over "
           << ch << " channels + stack floor " << (fl > 0.0 ? fl / st : 0.0) << " mW) vs XPE 2023.1.2 like-for-like [" << g.lo_mw << ", " << g.hi_mw
           << "] mW (DRAM VDD + VDDQ + VPP rails, record idd.background_guard_mw_stack) -> "
           << (in ? "inside" : (per_stack < g.lo_mw ? "BELOW (reported, not tuned)" : "ABOVE (reported, not tuned)"));

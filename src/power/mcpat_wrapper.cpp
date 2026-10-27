@@ -551,10 +551,10 @@ bool McPATWrapper::deviceDelayRatio(int table_nm, int dev_a, int dev_b, double& 
 bool McPATWrapper::periphFactorsFor(int dram_table_nm, int logic_node_nm,
                                     int baseline_device, int temp_k,
                                     double& fa, double& fd, double& fl,
-                                    int periph_device) {
+                                    int periph_device, int leakage_device) {
     double fg_unused = 0.0;   // 1.11.54: reporting callers do not need it
     return periphFamilyFactors(dram_table_nm, logic_node_nm, baseline_device,
-                               temp_k, fa, fd, fl, fg_unused, 4, periph_device);
+                               temp_k, fa, fd, fl, fg_unused, leakage_device, periph_device);   // (1.12.101): the priced leakage column
 }
 
 /* 1.11.51 (L105/L68): the legacy 3-arg wrapper is GONE. It priced the

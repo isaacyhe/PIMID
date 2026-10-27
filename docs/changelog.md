@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.101 -- the DRAM energy layer prices and reports at the run's temperature everywhere
+
+- **The defect:** energy-layer functions called without a temperature used 358 K, the top of the nominal refresh
+  range, whatever `power.temperature_k` said. The 1.12.86 refresh change made the replayed controller follow the
+  ladder, so above 85 C these callers fell out of step with it.
+  - **VPP standby (priced):** the pump rail's refresh duty stayed at the nominal rate while the counted-refresh
+    substitution removed the doubled duty.
+  - **Background guard line:** printed and computed "refresh at 358 K".
+  - **Derived per-bit read energy:** carried nominal refresh.
+- **Fix** (pimid_energy.h): a function called without a temperature takes the run's (defaultEnergyTemperatureK()),
+  and falls back to 358 K only before the run has set one. The guard line prints the temperature it used.
+- **Report** (src/main.cpp, mcpat_wrapper): the "[tech] periphery factors READ" line printed the comm-dram leakage
+  ratio. It now prints the ratio of the column the run prices (`power.periphery_device`, default lstp) and names
+  that column.
+- **Data impact:** none at or below 85 C. Above 85 C, parts with a VPP standby row (DDR4, DDR5) price the pump
+  rail's refresh at the run's rate. DDR5 BANK at 360 K: memory static 0.769 -> 0.793 W. HBM, LPDDR5 and GDDR6
+  (no IPP row) are unchanged.
+
 ## 1.12.100 -- Serial links: the idle link is priced (SerDes in ASPM L1 between transfers, UCIe clock-gated); the per-class energy re-sourced
 
 - **The idle link (user ruling 2026-10-27: ASPM L1 when idle):** a PCIe / CXL / NVLink / UALink link was priced as

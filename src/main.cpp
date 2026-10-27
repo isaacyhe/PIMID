@@ -11333,7 +11333,8 @@ static void applyCornerAndPeripheryPricing(
             double fa_c = 0, fd_c = 0, fl_c = 0;
             const bool coherent = pimid::McPATWrapper::periphFactorsFor(
                 mcfg.dram_periph_table_nm, mcfg.tech_node_nm, baseline,
-                mcfg.temperature_k, fa_c, fd_c, fl_c, mcfg.dram_periph_device);   // PIMID 1.12.18: DRAM die family
+                mcfg.temperature_k, fa_c, fd_c, fl_c, mcfg.dram_periph_device,   // PIMID 1.12.18: DRAM die family
+                config.periphery_leakage_device);   // (1.12.101): the leakage column the run prices (power.periphery_device)
             if (!coherent) {
                 std::cerr << "[config] FATAL: " << label << "DRAM-periphery components cannot be "
                              "priced at device column " << baseline
@@ -11370,7 +11371,10 @@ static void applyCornerAndPeripheryPricing(
                       << mcfg.dram_periph_table_nm << "nm.dat / baseline from "
                       << mcfg.tech_node_nm << "nm.dat at "
                       << (mcfg.temperature_k - 273) << "C: area " << fa
-                      << "x, dynamic " << fd_c << "x, leakage " << fl_c << "x";
+                      << "x, dynamic " << fd_c << "x, leakage " << fl_c << "x ("
+                      << (config.periphery_leakage_device == 0 ? "hp" : config.periphery_leakage_device == 1 ? "lstp"
+                          : config.periphery_leakage_device == 2 ? "lop" : config.periphery_leakage_device == 3 ? "lp-dram" : "comm-dram")
+                      << " column, power.periphery_device)";
             if (pitch != 1.0) {
                 /* 1.11.54 (audit E001, adjacent): PRINT WHAT IS APPLIED.
                  * Since 1.11.50/1.11.51 the pitch penalty lands on the

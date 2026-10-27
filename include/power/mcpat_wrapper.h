@@ -422,7 +422,7 @@ public:
     static bool periphFactorsFor(int dram_table_nm, int logic_node_nm,
                                  int baseline_device, int temp_k,
                                  double& fa, double& fd, double& fl,
-                                 int periph_device = 4);   // PIMID 1.12.18 (per-die process): DRAM die family column
+                                 int periph_device = 4, int leakage_device = 4);   // PIMID 1.12.18 (per-die process): DRAM die family column
     /* 1.12.18: CV/I gate delay of CACTI device column dev_a over
      * dev_b at table_nm: (C_g_ideal + C_fringe) x Vdd / I_on_n. False when a
      * row or a column is missing/zero. */
