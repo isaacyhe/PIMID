@@ -6,6 +6,15 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.89 -- every run prints the operating temperature it is priced at
+
+- **Report (src/main.cpp):** each run prints one line at configuration time:
+  "[config] operating temperature <K> K (<C> C), power.temperature_k[ default]: one temperature for every leakage,
+  refresh and IDD model".
+  - Before this, the device report printed its "[tech] temperature" line only away from the 350 K default.
+  - A system-scope run printed no temperature at all.
+- **Data impact:** none on any number; one more line per run.
+
 ## 1.12.88 -- DRAM currents follow the operating temperature where the part record publishes how
 
 - **The gap:** `power.temperature_k` reached McPAT, CACTI, NVSim and the DRAM refresh ladder, but not the DRAM IDD

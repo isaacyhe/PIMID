@@ -21464,6 +21464,15 @@ int main(int argc, char** argv) {
                       << std::endl;
             std::exit(2);
         }
+        /* (1.12.89): the operating temperature in every scope. The device report's "[tech] temperature" line is
+         * printed only away from the default and a system-scope run printed none, so a log did not say which
+         * temperature its leakage and refresh were priced at. One temperature serves every model (McPAT, CACTI,
+         * NVSim, the DRAM refresh ladder and the part records' IDD temperature blocks). */
+        std::cout << "[config] operating temperature " << config.temperature_k << " K ("
+                  << (config.temperature_k - 273) << " C), power.temperature_k"
+                  << ((yaml_cfg["power"] && (yaml_cfg["power"]["temperature_k"] || yaml_cfg["power"]["temperature_c"]))
+                          ? "" : " default")
+                  << ": one temperature for every leakage, refresh and IDD model" << std::endl;
 
             // memory (1.11.107: the device-scope parse, shared with a system device node)
             if (parseDeviceMemoryBlocks(yaml_cfg, config, top_sc) != 0) return 1;
