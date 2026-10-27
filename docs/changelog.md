@@ -6,6 +6,55 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.128 -- host speed: the measured data statistics read the guest's memory without a system call
+
+- **User ruling 2026-10-27.** The measured DQ and wire statistics read each DRAM line and each host-fabric data
+  message from the guest's memory (since 1.12.58). They did so with `process_vm_readv`, about 1-2 us per line. The
+  host's lines are read inside the shared L3's lock, and since 1.12.123 one thread runs at a time, so every read is on
+  the run's critical path.
+- **The change (external/zsim/src: dq_data_stats.h, qemu_zsim_plugin.cpp, zsim_trace_driver.cpp).** On a vCPU thread
+  the line is now read through QEMU's own guest page table (`qemu_plugin_read_memory_vaddr`), with no system call.
+  Off a vCPU thread, and in the trace-driven driver, `process_vm_readv` is used as before.
+- **Edge case (documented, ruled).** QEMU reads a page that the guest mapped but made unreadable (PROT_NONE or
+  write-only, e.g. a heap range given back with `mmap(PROT_NONE)`) through `/proc/self/mem`. A line still cached from
+  such a page is therefore counted from its contents. `process_vm_readv` refused that read, and the line was counted
+  as unread (`dq*Unread`, `*Unread`). A page the guest unmapped is unreadable both ways.
+- **Validation (same node, same job, same guest binaries).** Identical in every simulated and priced line to the
+  previous change on the same serial cells. No line was counted differently in them: the unread counts are equal.
+  Host time (qc-pvc, same job as the first entry's figures): 16-core OpenMP baseline 911 s, 4-core MPI 680 s, 1-core
+  OpenMP stream_triad 173 s, 1-core OpenMP gemv 247 s.
+- **Data impact:** none on the cells checked. A run that keeps lines of a page it made unreadable can count more DQ
+  and wire data, and fewer unread lines.
+
+/* (next, user ruling 2026-10-27): set by the QEMU plugin: reads the guest's memory through QEMU's own guest page table
+ * (qemu_plugin_read_memory_vaddr) on a vCPU thread, with no system call. process_vm_readv cost ~1-2 us per line, and
+ * the reads of the host's lines run inside the shared L3's lock (since 1.12.123 one thread runs at a time). Returns 1 read,
+ * 0 not readable, -1 cannot read on this thread (process_vm_readv is used). nullptr: process_vm_readv.
+ * Edge case (documented, ruled): QEMU reads a page the guest mapped but made unreadable (PROT_NONE / write-only, e.g.
+ * a heap region given back with mmap(PROT_NONE)) through /proc/self/mem, so a line still cached from such a page is
+ * counted from its contents; process_vm_readv refused it and the line was counted as unread (dq*Unread). A page the
+ * guest unmapped is unreadable in both. */
+extern int (*pimidGuestReadHook)(uint64_t addr, uint8_t* dst, uint32_t n);
+    if (pimidGuestReadHook) {
+        const int r = pimidGuestReadHook(addr, dst, n);
+        if (r >= 0) return r == 1;
+    }
+/* (next, user ruling 2026-10-27): guest line reads for the measured data statistics through QEMU's guest page table
+ * (dq_data_stats.h), on vCPU threads (QEMU's read needs the calling thread's vCPU); elsewhere process_vm_readv. */
+static thread_local bool t_pimidVcpu = false;
+static int pimidPluginGuestRead(uint64_t addr, uint8_t* dst, uint32_t n) {
+    if (!t_pimidVcpu) return -1;
+    static thread_local GByteArray* buf = nullptr;
+    if (!buf) buf = g_byte_array_sized_new(256);
+    if (!qemu_plugin_read_memory_vaddr(addr, buf, n) || buf->len != n) return 0;
+    memcpy(dst, buf->data, n);
+    return 1;
+}
+int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;
+    t_pimidVcpu = true;   // (1.12.128): this thread runs a vCPU (pimidPluginGuestRead)
+    pimidGuestReadHook = pimidPluginGuestRead;   // (next, user ruling 2026-10-27)
+int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;   // (1.12.128): no QEMU here (dq_data_stats.h)
+
 ## 1.12.127 -- host speed: the replayed DRAM controller schedules without re-scanning its queues
 
 - **The problem.** Since 1.12.18 (ruling 17) a host baseline's memory requests run through the Ramulator2 epoch
