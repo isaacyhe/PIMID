@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.95 -- the in-order device PE's core logic priced from its structure: forwarding, latch register file, fetch front end, missing logic, routed-core flip-flops and repair buffers
+
+- **Scope:** the in-order PE (alu_core, in_order_core) of a device. OOO cores and the host are unchanged.
+- **Operand forwarding (RI5CY / CV32E40P ID stage):** McPAT's result broadcast bus (2.1 pJ per integer transfer) is
+  replaced by the forwarding multiplexers: per integer result 2 x 64 bits through two MUX2 levels plus the result wire
+  over one unit height (Nangate 45 nm OCL MUX2_X1, node-scaled as the published flip-flop); FP results with three
+  operands. The broadcast bus is printed as a reference; its area is kept.
+- **Register files (RI5CY / CV32E40P latch-based register file):** priced from cells instead of a CACTI array: read
+  through MUX2 trees, write through a row clock gate, latches (DLH_X1) and a write-data sample bank, every busy cycle
+  the disabled row gates clocked (Nangate 45 nm OCL cells). CACTI keeps the area and the leakage.
+- **Fetch front end and controller (CV32E40P structure):** prefetch buffer 2 x 32 b, fetch address, aligner half-word
+  and 16 controller state bits = 144 flip-flops, per fetch and per busy cycle; their clock pins join the clock tree.
+- **Logic McPAT has no block for (CV32E40P, open-flow synthesis to Nangate 45 nm, combinational cells):** IF 3.02 kGE,
+  ID 3.94 kGE, LSU 1.02 kGE and the CSR file 3.41 kGE (its logic at 0.025 of the core's activity; its enable
+  registers clock-gated), less what the model already prices (FIFO read multiplexer, decoders, forwarding
+  multiplexers), as NAND2-equivalent static logic per busy cycle.
+- **Wire load and activity of these cell-level structures, from gate-level power runs of the placed-and-routed
+  CV32E40P (OpenROAD-flow-scripts; RV32IM gemv loop):** combinational activity 0.099 toggles per net per cycle in a
+  timing-annotated simulation (glitches 33-37% of the toggles at 45, 15 and 7 nm); wire load on the pin-capacitance
+  terms x1.62 (Nangate45), x1.83 (NanGate 15 nm OCL), x1.61 (ASAP7), applied per node by log-node interpolation:
+  32 nm 1.69, 22 nm 1.76. The 15 nm parasitics are estimated from the routed design with layer R / C derived from the
+  published FreePDK15 stack, not extracted (the library ships no extraction deck). Register-file data activity 0.3
+  (Tseng & Asanovic 2000).
+- **Routed-core flip-flops beyond the model's registers and timing-repair buffers:** the routed CV32E40P has 1,257
+  flip-flops; those beyond the model's pipeline and front-end registers (the CSR file, and the rest of the stages)
+  join the clock tree as sinks -- plain flip-flops every cycle, enable flip-flops at their measured enable duty
+  behind clock gates -- and their data energy is charged per busy cycle; repair and hold buffers are charged as a
+  fraction of the integer logic energy (Nangate45 0.188, ASAP7 0.300 + 0.198 hold; 32 nm 0.245, 22 nm 0.307 by
+  log-node interpolation).
+- **Reporting:** the FPU and the FP register file energy of an embedded core print on their own line ([mcpat fp]).
+- **Data impact (serial gemv cells, 16 PEs at 500 MHz, DDR3 = 32 nm, DDR4 / DDR5 / HBM3 / LPDDR5 / GDDR6 = 22 nm):**
+  - alu PE core-only non-clock energy per instruction (before the DRAM-periphery factor): 32 nm 7.70 -> 8.13 pJ,
+    22 nm 4.69 -> 5.49 pJ; without the FPU, the FP register file and the DMA engine: 7.56 -> 6.78 / 4.62 -> 4.58 pJ.
+  - alu PE clock tree with its register pins per cycle: 1.68 -> 2.29 pJ (32 nm), 0.92 -> 1.27 pJ (22 nm).
+  - alu PE whole core per cycle at one instruction per cycle (non-clock without FPU, FP RF and DMA, plus the core's
+    clock): 8.88 -> 9.91 pJ (32 nm), 5.29 -> 6.43 pJ (22 nm).
+  - in_order PE core-only non-clock: 12.35 -> 10.84 pJ (32 nm), 7.03 -> 6.60 pJ (22 nm).
+  - DRAM and memory-controller metrics unchanged.
+- **Invalidates:** every in-order PE energy figure of earlier releases.
+
 ## 1.12.94 -- the PCM write supply's efficiency from a published charge pump
 
 - **Power (external/nvsim/constant.h, SubArray.cpp; src/util/cache_warehouse.cpp):** NVSim divides the PCM cell's

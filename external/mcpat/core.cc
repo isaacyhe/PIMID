@@ -44,6 +44,80 @@
 #include "core.h"
 //#include "globalvar.h"
 
+/* PIMID (F1-WA, user ruling 2026-10-25 "investigate the common causes"): WIRE LOAD and DATA ACTIVITY
+ * of the F1 standard-cell structures (F1-1 register file, F1-2 fetch front end, F1-3 forwarding multiplexers).
+ * Wire load: every PIN-capacitance term is multiplied by a wire load (first 1.33, re-derived per node below; the Nangate 45 nm OCL liberty's
+ * own default wire-load model (NangateOpenCellLibrary_typical.lib, default_wire_load "5K_hvratio_1_1": 0.1774 fF/um x
+ * fanout_length(1) 1.746 um = 0.31 fF per fanout-1 net, against a ~0.95 fF input pin = +33%; fanout 4: 1.64 fF over
+ * four pins = +43%), at the low end of Magen et al., SLIP 2004 (Intel 0.13 um, extracted: local-net wire share of the
+ * switched signal capacitance 25-40% -> x1.33-1.67). Internal (liberty) energies are not scaled.
+ * Data activity: a data bit toggles with PIMID_F1_ACT_LOGIC = 0.2 per access (Harris, E158 / Weste & Harris: static
+ * logic activity factor 0.1 per cycle on the half-switch convention = 0.2 toggles; Wimer, Discrete Optimization 14
+ * (2014): flip-flop data toggle 0 < p <= 0.2), register-file data PIMID_F1_ACT_RF = 0.3 (Tseng & Asanovic, SBCCI 2000:
+ * 82% of the bits read from the register file are zero -> 2 x 0.18 x 0.82, DERIVED, an upper bound); the register
+ * address / select lines keep 0.5 (NO PUBLISHED SOURCE FOUND). The 0.5 used so far is the random-data (white noise)
+ * value (Landman, UCB/ERL M94/62, Eq. 54). DERIVED, stated. */
+/* PIMID (F1-GL, user rulings 2026-10-26): the two constants RE-DERIVED from gate-level power runs of the open
+ * CV32E40P (openhwgroup b353438f) placed and routed with OpenROAD-flow-scripts (container openroad/orfs:26Q4-205) on
+ * Nangate45 (2.5 ns) and ASAP7 (1.0 ns), clock-tree synthesis with sink clustering and no dummy loads, running an RV32IM gemv loop:
+ *  - wire load: combinational switching power with / without the routed parasitics (OpenSTA, same activity, zero-delay
+ *    activity): Nangate45 x1.62, NanGate 15 nm OCL x1.83, ASAP7 x1.61. Applied per node (pimid_f1_wireload): log-node
+ *    interpolation through 45 nm 1.62 and 15 nm 1.83 (32 nm 1.69, 22 nm 1.76), 15 -> 7 nm towards 1.61, 1.62 above 45 nm
+ *    (DERIVED). The 15 nm parasitics are ESTIMATED from the routed design with per-layer R / C derived from the
+ *    published FreePDK15 layer stack (Bhanushali, Tembe, Davis, arXiv 2009.04600, Table III; Sakurai-Tamaru
+ *    capacitance), not extracted: the library ships no extraction deck (the same estimate on Nangate45 reads 2% below
+ *    its extraction);
+ *  - activity: combinational nets, timing-annotated gate-level simulation (Icarus Verilog, per-instance SDF cell
+ *    delays, inertial) 0.099 toggles per net per cycle at both nodes (zero-delay 0.066: glitches are 33% of the
+ *    combinational toggles); the register-file data activity keeps the published 0.3 (Tseng & Asanovic 2000). */
+static const double PIMID_F1_ACT_LOGIC = 0.099, PIMID_F1_ACT_RF = 0.3;
+static double pimid_f1_wireload()
+{
+	const double nm = g_ip ? g_ip->F_sz_nm : 45.0;
+	if (!(nm > 0) || nm >= 45.0) return 1.62;
+	if (nm >= 15.0) return 1.62 + (1.83 - 1.62) * log(45.0 / nm) / log(45.0 / 15.0);
+	if (nm > 7.0) return 1.83 + (1.61 - 1.83) * log(15.0 / nm) / log(15.0 / 7.0);
+	return 1.61;
+}
+
+/* PIMID (F1-2, user ruling 2026-10-25, "make realistic choices"): THE FETCH FRONT END AND CONTROLLER OF AN IN-ORDER
+ * DEVICE PE, STRUCTURALLY. McPAT's in-order core has the PC / next-PC and IF/ID pipeline registers and the decoders,
+ * but no prefetch buffer, no fetch-address register, no aligner and no controller state. Their structure is RI5CY's
+ * successor CV32E40P (openhwgroup/cv32e40p): rtl/cv32e40p_prefetch_buffer.sv (FIFO_DEPTH = 2 instruction words),
+ * cv32e40p_prefetch_controller.sv (the transaction address register), cv32e40p_aligner.sv (r_instr_h, a 16-bit
+ * half-word register) and cv32e40p_controller.sv (ctrl_fsm_cs, debug_fsm_cs and about ten 1-bit state flags: 16
+ * flip-flops, DERIVED count). Registers: FIFO 2 x instruction_length, the fetch address pc_width, the aligner
+ * instruction_length / 2, the controller 16. Their CLOCK-pin energy is in the core's clock network (they are added to
+ * the tree's sinks, as the DMA registers are); charged here (DERIVED, activities stated): per fetched instruction one
+ * FIFO word written (half its bits toggle), the FIFO read through a 2:1 multiplexer (data p = 0.5, select p = 0.5),
+ * the fetch address incremented (two bits toggle on average), the aligner half-word written (half toggle); per busy
+ * cycle one controller state bit toggles. CSRs: CV32E40P resets mcountinhibit to all ones ("default disable"), so
+ * mcycle / minstret do not count unless software enables them: no per-cycle CSR energy is charged (a CSR access is
+ * rare and not counted). Cells: Nangate 45 nm OCL typical (1.10 V) DFF_X1 (the model's published flip-flop) and
+ * MUX2_X1 (A/B 0.945598 fF, S 1.919942 fF, Z related A/B 2.853287 fJ), node-scaled with the flip-flop's Stillmaker &
+ * Baas pair midpoint. OOO cores and the host are unchanged. */
+static bool pimid_front_energy(double ilen, double pcw, double &e_fetch, double &e_cycle, double &regs, double &ratio)
+{
+	PimidDffPub pub;
+	if (!(g_ip && pimid_dff_published(g_ip->F_sz_nm, g_tp.peri_global.Vdd, pub)) || !(ilen > 0)) return false;
+	const double V = 1.10, V2 = V*V, fJ = 1e-15;
+	const double mux_cab = 0.945598, mux_cs = 1.919942, mux_ezs = 3.638282, mux_ezab = 2.853287;
+	const double dff_clk = 0.949653*V2 + 6.916056;
+	const double dff_sw  = (7.559952 - 6.916056 + 8.334629 + 1.879522) + 0.5*1.140290*V2;
+	(void)mux_ezs; (void)mux_ezab; (void)dff_clk; (void)dff_sw; (void)mux_cs; (void)mux_cab;
+	const double wl = pimid_f1_wireload(), ad = PIMID_F1_ACT_LOGIC;   /* F1-WA */
+	const double sw = (7.559952 - 6.916056 + 8.334629 + 1.879522) + 0.5*1.140290*V2*wl;
+	const double fifo_wr = ilen*ad*sw;
+	const double fifo_rd = ilen*(ad*(mux_ezab + 0.5*mux_cab*V2*wl) + 0.5*0.5*mux_cs*V2*wl);
+	const double addr    = 2.0*sw;
+	const double align   = 0.5*ilen*ad*sw;
+	ratio   = pub.ratio;
+	e_fetch = (fifo_wr + fifo_rd + addr + align)*fJ*ratio;
+	e_cycle = 1.0*sw*fJ*ratio;
+	regs    = 2.0*ilen + pcw + 0.5*ilen + 16.0;
+	return true;
+}
+
 InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_, const CoreDynParam & dyn_p_, bool exist_)
 :XML(XML_interface),
  ithCore(ithCore_),
@@ -59,6 +133,9 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
  decode_fanout(0.0),
  exist(exist_)
 {
+	  pimid_front = false; pimid_front_fetch = pimid_front_cycle = pimid_front_regs = 0.0;   /* PIMID (F1-2) */
+	  pimid_ml_cycle = 0.0;   /* PIMID (F1-ML) */
+	  pimid_struct_cycle = pimid_rep_frac = pimid_struct_en = 0.0;   /* PIMID (F1-STRUCT) */
 	  if (!exist) return;
 	  int  idx, tag, data, size, line, assoc, banks;
 	  bool debug= false, is_default = true;
@@ -369,6 +446,19 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
     		  +ID_operand->area.get_area()
     		  +ID_misc->area.get_area())*coredynp.decodeW);
 
+      if (coredynp.core_ty == Inorder && XML->sys.Embedded)   /* PIMID (F1-2) */
+      {
+	  double r = 0;
+	  pimid_front = pimid_front_energy(coredynp.instruction_length, coredynp.pc_width, pimid_front_fetch,
+	                                   pimid_front_cycle, pimid_front_regs, r);
+	  if (pimid_front)
+		  std::cerr << "[mcpat front] core" << ithCore << " in-order PE: prefetch buffer 2 x " << coredynp.instruction_length
+		            << " b + fetch address " << coredynp.pc_width << " b + aligner " << 0.5*coredynp.instruction_length
+		            << " b + controller 16 = " << pimid_front_regs << " flip-flops (F1-2; CV32E40P structure; clock pins in the "
+		            << "clock network); per fetch " << pimid_front_fetch*1e12 << " pJ, per busy cycle " << pimid_front_cycle*1e12
+		            << " pJ (Nangate 45 nm cells, flip-flop node ratio " << r << "); CSR counters inhibited at reset "
+		            << "(CV32E40P mcountinhibit): none charged" << std::endl;
+      }
 }
 
 
@@ -1210,6 +1300,51 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
 
 }
 
+/* PIMID (F1-1, user ruling 2026-10-25, "make realistic choices"): THE REGISTER FILE OF AN IN-ORDER DEVICE PE IS A
+ * LATCH-BASED STANDARD-CELL MEMORY, as in RI5CY (Gautschi et al., IEEE TVLSI 25(10) 2017, and Gautschi, Diss. ETH 24497:
+ * the latch-based RF) and its successor CV32E40P (openhwgroup/cv32e40p, rtl/cv32e40p_register_file_latch.sv): the write
+ * data is sampled into a W-bit flip-flop bank behind a global clock gate (clocked only on a write), every row has its
+ * own clock gate (one-hot write address), each row is W latches, and a read port is an N:1 multiplexer per bit
+ * (rdata = mem[raddr]). Standard-cell memory architectures: Meinerzhagen, Sherazi, Burg, Rodrigues, IEEE JETCAS 1(2) 2011.
+ * Cells: Nangate 45 nm Open Cell Library, NangateOpenCellLibrary_typical.lib (1.10 V), first table entry (smallest slew
+ * and load), internal energy in fJ, pin capacitance in fF:
+ *   DLH_X1 (latch): G 0.985498 fF, D 0.914139 fF; G internal per clock cycle (rise + fall, mean of the two held states)
+ *     5.284420 fJ; Q (related G) per Q transition 4.832444 fJ;
+ *   MUX2_X1: A/B 0.945598 fF, S 1.919942 fF; Z (related S) per transition 3.638282 fJ, Z (related A/B) 2.853287 fJ;
+ *   CLKGATETST_X1 (row and global clock gates): CK internal per cycle disabled 5.710753 fJ, enabled 15.494020 fJ
+ *     (CK + GCK); E internal per transition 5.422561 fJ;
+ *   DFF_X1 (the write-data sample bank): the model's published flip-flop (logic.cc pimid_dff_published).
+ * Per access (DERIVED, activities stated): a read port: every address bit toggles with p = 0.5 (the select lines drive
+ * W (N-1) S pins: 0.25 W (N-1) C_S V^2) and each multiplexer output toggles with p = 0.25 (0.25 W (N-1) x (E_Z,S + 0.5 C_A
+ * V^2)); a write: the row clock gate enabled (E_en - E_dis, its E pin up and down), W latch G pins and internals, half
+ * the latches change Q (E_Q,G + 0.5 x R read-multiplexer A pins), the data bus to all N rows' D pins toggles with p = 0.5
+ * (0.25 W N C_D V^2), and the W sample flip-flops clocked (plus half of them toggling); every busy cycle: the N row gates
+ * and the global gate clocked while disabled. Node scaling: the flip-flop's (Stillmaker & Baas 2017 Table 5, the pair
+ * midpoint of the library nearest the node), so the latch file and the pipeline registers scale alike. CACTI keeps the
+ * area and the leakage. OOO cores and the host keep CACTI's array (the 1.12.32 store-buffer precedent). */
+static bool pimid_scm_rf_energy(double n, double w, double r, double &e_rd, double &e_wr, double &e_cyc, double &ratio)
+{
+	PimidDffPub pub;
+	if (!(g_ip && pimid_dff_published(g_ip->F_sz_nm, g_tp.peri_global.Vdd, pub)) || !(n > 1) || !(w > 0)) return false;
+	const double V = 1.10, V2 = V*V, fJ = 1e-15;
+	const double mux_cab = 0.945598, mux_cs = 1.919942, mux_ezs = 3.638282, mux_ezab = 2.853287;
+	const double dff_clk = 0.949653*V2 + 6.916056;
+	const double dff_sw  = (7.559952 - 6.916056 + 8.334629 + 1.879522) + 0.5*1.140290*V2;
+	(void)mux_ezs; (void)mux_ezab; (void)dff_clk; (void)dff_sw; (void)mux_cs; (void)mux_cab;
+	const double lat_cg = 0.985498, lat_cd = 0.914139, lat_eg = 5.284420, lat_eqg = 4.832444;
+	const double icg_dis = 5.710753, icg_en = 15.494020, icg_E = 5.422561;
+	const double wl = pimid_f1_wireload(), ad = PIMID_F1_ACT_RF;   /* F1-WA */
+	const double dff_sw_int = 7.559952 - 6.916056 + 8.334629 + 1.879522, dff_cd = 1.140290;
+	const double rd  = 0.25*w*(n - 1)*mux_cs*V2*wl + 0.25*w*(n - 1)*(mux_ezs + 0.5*mux_cab*V2*wl);
+	const double wr  = (icg_en - icg_dis) + 2*icg_E + w*(lat_cg*V2*wl + lat_eg) + ad*w*(lat_eqg + 0.5*r*mux_cab*V2*wl)
+	                 + 0.5*ad*w*n*lat_cd*V2*wl + w*(0.949653*V2*wl + 6.916056) + ad*w*(dff_sw_int + 0.5*dff_cd*V2*wl);
+	(void)dff_clk; (void)dff_sw;
+	const double cyc = (n + 1)*icg_dis;
+	ratio = pub.ratio;
+	e_rd = rd*fJ*ratio; e_wr = wr*fJ*ratio; e_cyc = cyc*fJ*ratio;
+	return true;
+}
+
 RegFU::RegFU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_, const CoreDynParam & dyn_p_,bool exist_)
 :XML(XML_interface),
  ithCore(ithCore_),
@@ -1225,6 +1360,8 @@ RegFU::RegFU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 	 * therefore, the bypass buses need to travel across all the register files.
 	 */
 
+	pimid_scm = false;   /* PIMID (F1-1) */
+	pimid_irf_rd = pimid_irf_wr = pimid_irf_cyc = pimid_frf_rd = pimid_frf_wr = pimid_frf_cyc = 0.0;
 	if (!exist) return;
 	int  data;
 
@@ -1285,6 +1422,27 @@ RegFU::RegFU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 	//output_data_csv(FRF.RF.local_result);
 	int_regfile_height= IRF->local_result.cache_ht*((coredynp.scheu_ty==ReservationStation)?XML->sys.core[ithCore].number_hardware_threads:1)*sqrt(cdb_overhead);
 	fp_regfile_height = FRF->local_result.cache_ht*((coredynp.scheu_ty==ReservationStation)?XML->sys.core[ithCore].number_hardware_threads:1)*sqrt(cdb_overhead);
+	if (coredynp.core_ty == Inorder && XML->sys.Embedded)   /* PIMID (F1-1) */
+	{
+		double ri = 0, rf = 0;
+		pimid_scm = pimid_scm_rf_energy(coredynp.num_IRF_entry, coredynp.int_data_width, 2*coredynp.peak_issueW,
+		                                pimid_irf_rd, pimid_irf_wr, pimid_irf_cyc, ri)
+		         && pimid_scm_rf_energy(coredynp.num_FRF_entry, coredynp.fp_data_width, 2*XML->sys.core[ithCore].issue_width,
+		                                pimid_frf_rd, pimid_frf_wr, pimid_frf_cyc, rf);
+		if (pimid_scm)
+			std::cerr << "[mcpat rf] core" << ithCore << " in-order PE: LATCH-BASED register files (F1-1; RI5CY / CV32E40P "
+			          << "structure, Nangate 45 nm cells, flip-flop node ratio " << ri << "): integer " << coredynp.num_IRF_entry
+			          << " x " << coredynp.int_data_width << " b read " << pimid_irf_rd*1e12 << " pJ per port access, write "
+			          << pimid_irf_wr*1e12 << " pJ, clock gates " << pimid_irf_cyc*1e12 << " pJ per busy cycle; FP "
+			          << coredynp.num_FRF_entry << " x " << coredynp.fp_data_width << " b read " << pimid_frf_rd*1e12
+			          << " / write " << pimid_frf_wr*1e12 << " / gates " << pimid_frf_cyc*1e12 << " pJ (the CACTI array, reference, "
+			          << "not used: integer read " << IRF->local_result.power.readOp.dynamic*1e12 << " / write "
+			          << IRF->local_result.power.writeOp.dynamic*1e12 << " pJ; FP read " << FRF->local_result.power.readOp.dynamic*1e12
+			          << " / write " << FRF->local_result.power.writeOp.dynamic*1e12 << " pJ; CACTI keeps area and leakage)" << std::endl;
+		else
+			std::cerr << "[mcpat rf] core" << ithCore << " in-order PE: latch-based register file NOT priced (no published "
+			          << "flip-flop scaling at this node): the CACTI array kept" << std::endl;
+	}
     //since a EXU is associated with each pipeline, the cdb should not have longer length.
 	if (coredynp.regWindowing)
 	{
@@ -1318,6 +1476,37 @@ RegFU::RegFU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 
  }
 
+/* PIMID (F1-3, user ruling 2026-10-25, "make realistic choices"): FORWARDING IN A SINGLE-ISSUE IN-ORDER CORE IS A SET OF
+ * OPERAND MULTIPLEXERS. RI5CY / CV32E40P (openhwgroup/cv32e40p, rtl/cv32e40p_id_stage.sv) select each source operand
+ * among the register-file read data, the EX-stage result and the WB / load result (a 3:1 multiplexer = two MUX2 levels
+ * per bit); there is no broadcast bus with tri-state drivers across the register files, the functional units and the
+ * load/store queue (McPAT's model, kept for OOO cores and the host, as the 1.12.32 store-buffer precedent keeps McPAT's
+ * queue there). Per result (DERIVED, activities stated): for each of the ops operands (McPAT's own counts: 2 integer,
+ * 3 floating point), W bits through two MUX2 levels, the data toggling with p = 0.5 (0.5 x 2 x (E_Z,A + 0.5 C_A V^2))
+ * and the two select lines toggling with p = 0.5 (2 x 0.5 x 0.5 C_S V^2); plus the result wire from the producing unit
+ * back to the multiplexers, one unit height (the published-area height McPAT already uses) of CACTI's local wire at
+ * this node, W bits toggling with p = 0.5 (0.25 W L C_wire V^2). Cells: Nangate 45 nm OCL typical (1.10 V) MUX2_X1, first
+ * table entry: A/B 0.945598 fF, S 1.919942 fF, Z (related A/B) 2.853287 fJ per transition; node-scaled with the
+ * flip-flop's Stillmaker & Baas pair midpoint. The multiplexers' leakage is not priced (128-192 MUX2 cells). */
+static bool pimid_fwd_energy(double w, double ops, double wire_um, double &e, double &e_mux, double &e_wire)
+{
+	PimidDffPub pub;
+	if (!(g_ip && pimid_dff_published(g_ip->F_sz_nm, g_tp.peri_global.Vdd, pub)) || !(w > 0)) return false;
+	const double V = 1.10, V2 = V*V, fJ = 1e-15;
+	const double mux_cab = 0.945598, mux_cs = 1.919942, mux_ezs = 3.638282, mux_ezab = 2.853287;
+	const double dff_clk = 0.949653*V2 + 6.916056;
+	const double dff_sw  = (7.559952 - 6.916056 + 8.334629 + 1.879522) + 0.5*1.140290*V2;
+	(void)mux_ezs; (void)mux_ezab; (void)dff_clk; (void)dff_sw; (void)mux_cs; (void)mux_cab;
+	const double levels = 2.0;   /* a 3:1 operand multiplexer */
+	const double wl = pimid_f1_wireload(), ad = PIMID_F1_ACT_LOGIC;   /* F1-WA */
+	const double per_bit = ad*levels*(mux_ezab + 0.5*mux_cab*V2*wl) + levels*0.5*0.5*mux_cs*V2*wl;
+	e_mux  = ops*w*per_bit*fJ*pub.ratio;
+	const double vr = g_tp.peri_global.Vdd;
+	e_wire = 0.5*ad*w*(wire_um > 0 ? wire_um : 0.0)*g_tp.wire_local.C_per_um*vr*vr;   /* F1-WA: p = ad toggles x 0.5 C V^2 */
+	e = e_mux + e_wire;
+	return true;
+}
+
 EXECU::EXECU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_, double lsq_height_, const CoreDynParam & dyn_p_, bool exist_)
 :XML(XML_interface),
  ithCore(ithCore_),
@@ -1338,6 +1527,8 @@ EXECU::EXECU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
  exist(exist_)
 {
 	  bool exist_flag = true;
+	  pimid_fwd = false; pimid_fwd_int = pimid_fwd_mul = pimid_fwd_fp = 0.0;   /* PIMID (F1-3) */
+	  pimid_rep_frac = 0.0;   /* PIMID (F1-STRUCT) */
 	  if (!exist) return;
 	  double fu_height = 0.0;
       clockRate = coredynp.clockRate;
@@ -1500,6 +1691,22 @@ EXECU::EXECU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 
 	  }
 	  area.set_area(area.get_area()+ bypass.area.get_area());
+	  if (coredynp.core_ty==Inorder && XML->sys.Embedded)   /* PIMID (F1-3) */
+	  {
+		  double mi = 0, wi = 0, mm = 0, wm = 0, mf = 0, wf = 0;
+		  pimid_fwd = pimid_fwd_energy(coredynp.int_data_width, 2, exeu->FU_height, pimid_fwd_int, mi, wi);
+		  if (pimid_fwd && coredynp.num_muls > 0) pimid_fwd_energy(coredynp.int_data_width, 2, mul->FU_height, pimid_fwd_mul, mm, wm);
+		  if (pimid_fwd && coredynp.num_fpus > 0) pimid_fwd_energy(coredynp.fp_data_width, 3, fp_u->FU_height, pimid_fwd_fp, mf, wf);
+		  if (pimid_fwd)
+			  std::cerr << "[mcpat bypass] core" << ithCore << " in-order PE: OPERAND FORWARDING MULTIPLEXERS (F1-3; RI5CY / CV32E40P "
+			            << "ID stage, Nangate 45 nm MUX2_X1): per integer result " << pimid_fwd_int*1e12 << " pJ (multiplexers "
+			            << mi*1e12 << " + result wire " << exeu->FU_height << " um " << wi*1e12 << "), multiply " << pimid_fwd_mul*1e12
+			            << " pJ, FP " << pimid_fwd_fp*1e12 << " pJ (multiplexers " << mf*1e12 << " + wire "
+			            << ((coredynp.num_fpus > 0) ? fp_u->FU_height : 0.0) << " um " << wf*1e12 << "); McPAT's broadcast bus "
+			            << "(reference, not used): integer data + tag " << (int_bypass->power.readOp.dynamic + intTagBypass->power.readOp.dynamic)*1e12
+			            << " pJ, FP " << ((fp_bypass && fpTagBypass) ? (fp_bypass->power.readOp.dynamic + fpTagBypass->power.readOp.dynamic)*1e12 : 0.0)
+			            << " pJ per transfer; its area is kept, its leakage is not charged" << std::endl;
+	  }
 }
 
 RENAMINGU::RENAMINGU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_, const CoreDynParam & dyn_p_,bool exist_)
@@ -2158,6 +2365,36 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  if (coredynp.core_ty==OOO && rnu && rnu->exist) n_exist += 1;
 	  clk_pipe_regs  = corepipe->num_piperegs * coredynp.num_pipelines * n_exist / nu;
 	  clk_extra_regs = (lsu->exist && lsu->dma_regs) ? 3.0 * lsu->dma_regs->l_ip.out_w : 0.0;
+	  const double clk_front_regs = (ifu->exist && ifu->pimid_front) ? ifu->pimid_front_regs : 0.0;   /* PIMID (F1-2) */
+	  /* PIMID (F1-STRUCT, user ruling 2026-10-26 "add a structural term"): THE ROUTED CORE'S FLIP-FLOPS
+	   * BEYOND THE MODEL'S REGISTERS, as clock-tree sinks. DERIVED from the own place-and-route of CV32E40P (openhwgroup
+	   * b353438f; OpenROAD-flow-scripts, Nangate45 and ASAP7, the same 1,257 flip-flops at both nodes): 1,062 enable
+	   * (gateable) flip-flops -- CSR 366, ID 294, IF 249, EX 112, LSU 40, sleep 1 -- and 195 plain ones -- CSR 98, ID 82,
+	   * EX 8, IF 6, sleep 1 (the register file is latches, priced by F1-1). Scaled to this core (DERIVED, stated): the CSR
+	   * file is taken whole (the model has no CSR registers: 366 enable + 98 plain); the other 793 (696 enable + 97 plain)
+	   * stand for the model's pipeline + F1-2 registers, so the extra is 793 - (pipeline + F1-2), split 696 : 97.
+	   * Enable flip-flops are clock-gated (user ruling 2026-10-26): a gated flip-flop's clock pin counts with its MEASURED
+	   * enable duty (timing-annotated gate-level simulation of the routed netlist, gemv loop; the load-enable multiplexer's
+	   * select): non-CSR 0.349 (IF 0.624, ID 0.267, EX 0.021, LSU 0.167, weighted by the block counts), CSR 0 (counters
+	   * inhibited at reset, no CSR write in the loop); one clock gate per 32 gated flip-flops counts as a sink every cycle
+	   * (DERIVED). Plain flip-flops are clocked every cycle. Their data energy is charged in the fetch unit (non-clock),
+	   * not here: no double count. */
+	  double clk_struct_regs = 0.0, struct_en = 0.0, struct_pl = 0.0;
+	  if (coredynp.core_ty == Inorder && XML->sys.Embedded && clk_front_regs > 0)
+	  {
+		  const double nc_en = 696.0, nc_pl = 97.0, csr_en = 366.0, csr_pl = 98.0, duty_nc = 0.349, duty_csr = 0.0;
+		  const double extra = std::max(0.0, nc_en + nc_pl - (clk_pipe_regs + clk_front_regs));
+		  struct_en = extra*nc_en/(nc_en + nc_pl); struct_pl = extra*nc_pl/(nc_en + nc_pl);
+		  const double icg = (csr_en + struct_en)/32.0;
+		  clk_struct_regs = csr_pl + struct_pl + duty_csr*csr_en + duty_nc*struct_en + icg;
+		  ifu->pimid_struct_en = struct_en;   /* count; its data energy is priced in the F1-ML block below */
+		  std::cerr << "[mcpat struct] core" << ithCore << " in-order PE: FLIP-FLOPS BEYOND THE MODEL (F1-STRUCT; routed CV32E40P): "
+		            << "CSR " << csr_en << " enable (gated, duty " << duty_csr << ") + " << csr_pl << " plain; non-CSR extra " << extra
+		            << " = 793 - model " << clk_pipe_regs + clk_front_regs << " -> " << struct_en << " enable (gated, duty " << duty_nc
+		            << ") + " << struct_pl << " plain; clock gates " << icg << " -> clock-tree sinks " << clk_struct_regs
+		            << " (plain " << csr_pl + struct_pl << " + gated x duty " << duty_csr*csr_en + duty_nc*struct_en << " + gates " << icg << ")" << std::endl;
+	  }
+	  clk_extra_regs += clk_front_regs + clk_struct_regs;
 	  /* PIMID (next, user ruling 2026-10-25, F1): the tree spans the CLOCKED LOGIC only -- DERIVED as the
 	   * pipeline-register area McPAT builds for the units that exist (corepipe area x num_pipelines x
 	   * existing/num_units) plus the logic units: the integer ALU(s), the complex ALU (mul/div) and the
@@ -2175,7 +2412,9 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  std::ostringstream src;
 	  src << "pipeline registers " << clk_pipe_regs << " (corepipe " << corepipe->num_piperegs
 	      << " x " << coredynp.num_pipelines << " pipeline(s) x " << n_exist << "/" << nu << " units)";
-	  if (clk_extra_regs > 0) src << " + DMA registers " << clk_extra_regs;
+	  if (clk_extra_regs - clk_front_regs - clk_struct_regs > 0) src << " + DMA registers " << clk_extra_regs - clk_front_regs - clk_struct_regs;
+	  if (clk_front_regs > 0) src << " + fetch/controller registers " << clk_front_regs << " (F1-2)";
+	  if (clk_struct_regs > 0) src << " + routed-core flip-flops beyond the model " << clk_struct_regs << " (F1-STRUCT, effective sinks)";
 	  pimid::debugStream(std::cerr) << "[mcpat clock] core" << ithCore << ": tree span DERIVED = clocked logic " << a*1e-6 << " mm^2 = pipeline"
 	            << " registers " << a_pipe*1e-6 << " + integer ALU " << a_alu*1e-6 << " + mul/div " << a_mul*1e-6
 	            << " + decoders " << a_dec*1e-6 << " mm^2 (core area " << area.get_area()*1e-6
@@ -2196,11 +2435,99 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 		  ClockNetwork core_only;
 		  core_only.span_is_clocked_logic = true;
 		  std::ostringstream src_core;
-		  src_core << "pipeline registers " << clk_pipe_regs << " (the core's own register sinks; DMA registers "
-		           << clk_extra_regs << " apart)";
+		  src_core << "pipeline registers " << clk_pipe_regs << " + fetch/controller registers " << clk_front_regs
+		           << " (F1-2) + routed-core flip-flops beyond the model " << clk_struct_regs
+		           << " (F1-STRUCT) (the core's own register sinks; DMA registers " << clk_extra_regs - clk_front_regs - clk_struct_regs << " apart)";
 		  core_only.compute(&interface_ip, "core" + std::to_string(ithCore) + " core-only", a,
-		                    clk_pipe_regs, src_core.str(), corepipe->clock_energy_per_reg, clockRate,
+		                    clk_pipe_regs + clk_front_regs + clk_struct_regs, src_core.str(), corepipe->clock_energy_per_reg, clockRate,
 		                    XML->sys.Embedded, Core_device, coredynp.core_ty, true);
+	  }
+  }
+  /* PIMID (F1-ML, user ruling 2026-10-25 "model missing logic"): THE IF-STAGE, ID-STAGE / CONTROLLER AND
+   * LSU / CSR LOGIC McPAT HAS NO BLOCK FOR, STRUCTURALLY, from PUBLISHED SYNTHESIS GATE COUNTS of the same core:
+   *   Schuiki, Zaruba, Hoefler, Benini, "Stream Semantic Registers", IEEE Trans. Computers 70(2) 2021, Fig. 9 (RI5CY with
+   *   FPU, GF 22FDX, kGE): IF 5, ID 11, EX 22, FPU 31, Registers 25, others 8 -- APPLIED (it is also the source of the
+   *   Fig. 10 power breakdown);
+   *   Mach et al., "FPnew", IEEE TVLSI 29(4) 2021, Fig. 4 (RI5CY in PULPissimo, GF 22FDX, kGE): IF stage 7, ID stage 16,
+   *   Rest 10 -- PRINTED as the bracket.
+   * The gates this model already prices in each stage are subtracted (in gate equivalents, GE = one Nangate 45 nm NAND2_X1,
+   * 0.798 um^2, area-scaled (F/45)^2): IF -- the PC / next-PC and IF/ID pipeline registers (McPAT's in-order stage fields)
+   * and the F1-2 prefetch FIFO, fetch address, aligner and FIFO read multiplexer; ID -- the ID/EX pipeline register, the
+   * instruction decoders (McPAT's area), the F1-3 forwarding multiplexers and the F1-2 controller flip-flops; others (LSU
+   * glue, CSR file, debug) -- nothing (the store buffer is an array; the DMA engine is not part of RI5CY). Flip-flop = DFF_X1
+   * 4.522 um^2 = 5.667 GE, MUX2_X1 1.862 um^2 = 2.333 GE. The remainder is priced as NAND2-equivalent static logic per busy
+   * cycle: a gate output toggles with PIMID_F1_ACT_LOGIC (0.2, F1-WA's published logic activity) and each toggle costs the
+   * NAND2_X1 internal energy (Nangate 45 nm OCL typical, first table entry, mean of A1/A2 rise and fall: 1.376 fJ) plus half
+   * C V^2 of a fanout-2 load (2 x 1.6316 fF, the mean NAND2 input pin) times the wire load (pimid_f1_wireload). Node scaling: the
+   * flip-flop's Stillmaker & Baas pair midpoint, as the other cells. The CSR registers' clocks (if not clock-gated) are not
+   * priced (NO PUBLISHED SOURCE FOUND for their gating). DERIVED, stated. Charged in the fetch unit. */
+  if (coredynp.core_ty == Inorder && XML->sys.Embedded && ifu && ifu->exist && ifu->ID_inst)
+  {
+	  PimidDffPub pub;
+	  if (g_ip && pimid_dff_published(g_ip->F_sz_nm, g_tp.peri_global.Vdd, pub))
+	  {
+		  const double ge_um2 = 0.798 * pow(interface_ip.F_sz_nm / 45.0, 2);
+		  const double ff_ge = 4.522 / 0.798, mux_ge = 1.862 / 0.798;
+		  const double opl = coredynp.x86 ? coredynp.micro_opcode_length : coredynp.opcode_length;
+		  const double n_if = coredynp.pc_width*2.0 + coredynp.fetchW*(coredynp.instruction_length + coredynp.pc_width);
+		  const double n_idex = coredynp.decodeW*(opl + coredynp.pc_width + 3.0*coredynp.int_data_width + 3.0*coredynp.arch_ireg_width);
+		  const double dec_ge = (ifu->ID_inst->area.get_area() + (ifu->ID_misc ? ifu->ID_misc->area.get_area() : 0.0))
+		                        * coredynp.decodeW / ge_um2;
+		  const double front_ff = ifu->pimid_front ? (ifu->pimid_front_regs - 16.0) : 0.0;
+		  const double front_mux = ifu->pimid_front ? coredynp.instruction_length : 0.0;
+		  const double ctrl_ff = ifu->pimid_front ? 16.0 : 0.0;
+		  const double fwd_mux = (exu && exu->exist && exu->pimid_fwd)
+		                         ? 2.0*(2.0*coredynp.int_data_width + (coredynp.num_fpus > 0 ? 3.0*coredynp.fp_data_width : 0.0)) : 0.0;
+		  const double m_if = (n_if + front_ff)*ff_ge + front_mux*mux_ge;
+		  const double m_id = n_idex*ff_ge + dec_ge + fwd_mux*mux_ge + ctrl_ff*ff_ge;
+		  /* PIMID (F1-GL): the gate counts are the OWN synthesis of CV32E40P (sv2v + yosys + Nangate45),
+		   * COMBINATIONAL part only (flip-flop and latch area removed): IF 3.02 kGE, ID 3.94 kGE, CSR 3.41 kGE, LSU 1.02 kGE.
+		   * The model already prices: IF the F1-2 FIFO read multiplexer; ID the decoders (McPAT area) and the F1-3 forwarding
+		   * multiplexers. The CSR file's flip-flops are clock-gated (user ruling 2026-10-26, DERIVED) and its logic toggles at
+		   * the measured RTL ratio CSR / core 0.0015 / 0.06 = 0.025 of the logic activity (DERIVED). Schuiki 2021 Fig. 9
+		   * (IF 5 / ID 11 / others 8 kGE, incl. registers) printed beside. */
+		  const double mc_if = front_mux*mux_ge, mc_id = dec_ge + fwd_mux*mux_ge;
+		  const double p_if = 3020.0, p_id = 3940.0, p_csr = 3410.0, p_lsu = 1020.0;
+		  const double x_if = std::max(0.0, p_if - mc_if), x_id = std::max(0.0, p_id - mc_id);
+		  const double x_ot = p_lsu + 0.025*p_csr;   /* activity-weighted GE: LSU at the logic activity, CSR at 0.025 of it */
+		  (void)m_if; (void)m_id;
+		  const double V = 1.10, V2 = V*V;
+		  const double e_ge = (1.376 + 0.5*2.0*1.6316*V2*pimid_f1_wireload()) * 1e-15 * pub.ratio;   /* J per toggle */
+		  const double e_cyc = PIMID_F1_ACT_LOGIC * e_ge;                                           /* J per GE per busy cycle */
+		  ifu->pimid_ml_cycle = (x_if + x_id + x_ot) * e_cyc;
+		  /* PIMID (F1-STRUCT): (a) the DATA energy of the flip-flops beyond the model (their clock pins are clock-tree
+		   * sinks above): Q toggles per cycle MEASURED in the same gate-level simulation -- non-CSR enable 0.0749, non-CSR
+		   * plain 0.0223, CSR 0 -- x the model's own per-toggle flip-flop data energy (pimid_dff_published e_switch).
+		   * (b) TIMING-REPAIR BUFFERS (setup / max-slew / max-cap / placement buffers and hold buffers the router adds;
+		   * no RTL gate): their energy as a fraction of the combinational logic energy of the same routed core, timed
+		   * gate-level simulation with the routed parasitics: Nangate45 (2.5 ns) repair 1.845 / logic 9.793 pJ per cycle =
+		   * 0.188, hold none; ASAP7 (1.0 ns) repair 0.534 / 1.778 = 0.300, hold 0.352 / 1.778 = 0.198. Interpolated at the
+		   * run node in log node between 45 and 7 nm, as the wire load (DERIVED): 32 nm 0.209 + 0.036, 22 nm 0.231 + 0.076.
+		   * Applied to the core's integer LOGIC as the model prices it: the IF / ID / LSU-CSR logic (F1-ML), the F1-2 front
+		   * end, the instruction decoders, the integer ALU and multiplier and the F1-3 forwarding multiplexers (not the
+		   * arrays, the register files or the FPU, whose published energies are whole-unit). */
+		  const double n_en = ifu->pimid_struct_en;   /* extra non-CSR enable flip-flops (set with the clock sinks) */
+		  const double t_extra = n_en*0.0749 + (n_en*97.0/696.0)*0.0223;   /* plain extra = n_en x 97/696 */
+		  ifu->pimid_struct_cycle = t_extra * pub.e_switch;
+		  const double tn = std::min(1.0, std::max(0.0, log(45.0/interface_ip.F_sz_nm)/log(45.0/7.0)));
+		  const double f_rep = 0.188 + (0.300 - 0.188)*tn, f_hold = 0.198*tn;
+		  ifu->pimid_rep_frac = f_rep + f_hold;
+		  if (exu && exu->exist) exu->pimid_rep_frac = f_rep + f_hold;
+		  std::cerr << "[mcpat struct] core" << ithCore << " in-order PE: F1-STRUCT data energy of the extra flip-flops "
+		            << t_extra << " Q toggles per cycle x " << pub.e_switch*1e15 << " fJ = " << ifu->pimid_struct_cycle*1e12
+		            << " pJ per busy cycle; timing-repair buffers " << f_rep << " + hold buffers " << f_hold
+		            << " of the integer logic energy (routed CV32E40P, Nangate45 0.188 + 0, ASAP7 0.300 + 0.198, log-node "
+		            << tn << ")" << std::endl;
+		  std::cerr << "[mcpat logic] core" << ithCore << " in-order PE: MISSING LOGIC (F1-GL; own CV32E40P synthesis, combinational "
+		            << "IF 3.02 / ID 3.94 / CSR 3.41 (x0.025 activity, clock-gated) / LSU 1.02 kGE; Schuiki 2021 Fig. 9 IF 5 / ID 11 / others 8 kGE "
+		            << "beside): model registers and logic in IF "
+		            << m_if/1000 << " kGE (registers " << (n_if + front_ff) << ", multiplexers " << front_mux << "), ID " << m_id/1000
+		            << " kGE (ID/EX registers " << n_idex << ", decoders " << dec_ge/1000 << " kGE, forwarding multiplexers " << fwd_mux
+		            << ", controller registers " << ctrl_ff << "), others 0 -> missing IF " << x_if/1000 << " + ID " << x_id/1000
+		            << " + others " << x_ot/1000 << " kGE x " << PIMID_F1_ACT_LOGIC << " toggles x " << e_ge*1e15
+		            << " fJ = " << ifu->pimid_ml_cycle*1e12 << " pJ per busy cycle (IF " << x_if*e_cyc*1e12 << ", ID " << x_id*e_cyc*1e12
+		            << ", others " << x_ot*e_cyc*1e12 << "); FPnew bracket: "
+		            << (std::max(0.0, 7000.0 - m_if) + std::max(0.0, 16000.0 - m_id) + 10000.0)*e_cyc*1e12 << " pJ per busy cycle" << std::endl;
 	  }
   }
   /* PIMID 1.12.18: (user ruling 2026-10-24) CLOCK FEASIBILITY OF
@@ -2642,6 +2969,54 @@ void InstFetchU::computeEnergy(bool is_tdp)
     	rt_power = rt_power + (ID_inst->rt_power +
 							ID_operand->rt_power +
 							ID_misc->rt_power);
+    }
+    if (pimid_ml_cycle > 0)   /* PIMID (F1-ML): the missing IF / ID / LSU-CSR logic, per busy cycle */
+    {
+	if (is_tdp) power.readOp.dynamic += pimid_ml_cycle;
+	else
+	{
+		const double cyc = coredynp.pipeline_duty_cycle * ((XML->sys.homogeneous_cores==1)
+			? XML->sys.total_cycles * XML->sys.number_of_cores : coredynp.total_cycles);
+		rt_power.readOp.dynamic += cyc*pimid_ml_cycle;
+		std::cerr << "[mcpat logic] core" << ithCore << " runtime: " << cyc << " busy cycles x " << pimid_ml_cycle
+		          << " J = " << cyc*pimid_ml_cycle << " J (F1-ML, in the fetch unit)" << std::endl;
+	}
+    }
+    if (pimid_front)   /* PIMID (F1-2): fetch front end + controller, data toggles and the FIFO read multiplexer */
+    {
+	if (is_tdp)
+		power.readOp.dynamic += coredynp.IFU_duty_cycle*pimid_front_fetch + pimid_front_cycle;
+	else
+	{
+		const double fetches = XML->sys.core[ithCore].total_instructions;
+		const double cyc = coredynp.pipeline_duty_cycle * ((XML->sys.homogeneous_cores==1)
+			? XML->sys.total_cycles * XML->sys.number_of_cores : coredynp.total_cycles);
+		const double e = fetches*pimid_front_fetch + cyc*pimid_front_cycle;
+		rt_power.readOp.dynamic += e;
+		std::cerr << "[mcpat front] core" << ithCore << " runtime: " << fetches << " fetches x " << pimid_front_fetch
+		          << " J + " << cyc << " busy cycles x " << pimid_front_cycle << " J = " << e << " J (F1-2)" << std::endl;
+	}
+    }
+    if (pimid_struct_cycle > 0 || pimid_rep_frac > 0)   /* PIMID (F1-STRUCT): extra flip-flop data + repair buffers */
+    {
+	if (is_tdp)
+	{
+		const double lg = pimid_ml_cycle + (pimid_front ? coredynp.IFU_duty_cycle*pimid_front_fetch + pimid_front_cycle : 0.0)
+		                + ID_inst->power.readOp.dynamic + ID_operand->power.readOp.dynamic + ID_misc->power.readOp.dynamic;
+		power.readOp.dynamic += pimid_struct_cycle + pimid_rep_frac*lg;
+	}
+	else
+	{
+		const double fetches = XML->sys.core[ithCore].total_instructions;
+		const double cyc = coredynp.pipeline_duty_cycle * ((XML->sys.homogeneous_cores==1)
+			? XML->sys.total_cycles * XML->sys.number_of_cores : coredynp.total_cycles);
+		const double lg = cyc*pimid_ml_cycle + (pimid_front ? fetches*pimid_front_fetch + cyc*pimid_front_cycle : 0.0)
+		                + ID_inst->rt_power.readOp.dynamic + ID_operand->rt_power.readOp.dynamic + ID_misc->rt_power.readOp.dynamic;
+		const double e = cyc*pimid_struct_cycle + pimid_rep_frac*lg;
+		rt_power.readOp.dynamic += e;
+		std::cerr << "[mcpat struct] core" << ithCore << " runtime (fetch unit): " << cyc << " busy cycles x " << pimid_struct_cycle
+		          << " J extra flip-flop data + " << pimid_rep_frac << " x logic " << lg << " J repair buffers = " << e << " J (F1-STRUCT)" << std::endl;
+	}
     }
 }
 
@@ -4161,6 +4536,19 @@ void RegFU::computeEnergy(bool is_tdp)
 		RFWIN->power_t.readOp.dynamic   +=  (RFWIN->stats_t.readAc.access*RFWIN->local_result.power.readOp.dynamic +
 				RFWIN->stats_t.writeAc.access*RFWIN->local_result.power.writeOp.dynamic);
 	}
+	if (pimid_scm)   /* PIMID (F1-1): the latch-based files' reads, writes and per-busy-cycle clock gates */
+	{
+		const double cyc = is_tdp ? coredynp.num_pipelines
+			: coredynp.pipeline_duty_cycle * ((XML->sys.homogeneous_cores==1) ? XML->sys.total_cycles * XML->sys.number_of_cores
+			                                                                  : coredynp.total_cycles);
+		IRF->power_t.readOp.dynamic = IRF->stats_t.readAc.access*pimid_irf_rd + IRF->stats_t.writeAc.access*pimid_irf_wr + cyc*pimid_irf_cyc;
+		FRF->power_t.readOp.dynamic = FRF->stats_t.readAc.access*pimid_frf_rd + FRF->stats_t.writeAc.access*pimid_frf_wr + cyc*pimid_frf_cyc;
+		if (!is_tdp)
+			std::cerr << "[mcpat rf] core" << ithCore << " runtime: integer " << IRF->stats_t.readAc.access << " reads + "
+			          << IRF->stats_t.writeAc.access << " writes + " << cyc << " busy cycles = " << IRF->power_t.readOp.dynamic
+			          << " J; FP " << FRF->stats_t.readAc.access << " reads + " << FRF->stats_t.writeAc.access << " writes = "
+			          << FRF->power_t.readOp.dynamic << " J (latch-based, F1-1)" << std::endl;
+	}
 
 	if (is_tdp)
 	{
@@ -4274,43 +4662,69 @@ void EXECU::computeEnergy(bool is_tdp)
 	if (is_tdp)
 	{
 		set_pppm(pppm_t, 2*coredynp.ALU_cdb_duty_cycle, 2, 2, 2*coredynp.ALU_cdb_duty_cycle);//2 means two source operands needs to be passed for each int instruction.
-		bypass.power = bypass.power + intTagBypass->power*pppm_t + int_bypass->power*pppm_t;
+		if (pimid_fwd) bypass.power.readOp.dynamic += coredynp.ALU_cdb_duty_cycle*pimid_fwd_int;   /* PIMID (F1-3) */
+		else bypass.power = bypass.power + intTagBypass->power*pppm_t + int_bypass->power*pppm_t;
 		if (coredynp.num_muls >0)
 		{
 			set_pppm(pppm_t, 2*coredynp.MUL_cdb_duty_cycle, 2, 2, 2*coredynp.MUL_cdb_duty_cycle);//2 means two source operands needs to be passed for each int instruction.
-			bypass.power = bypass.power + intTag_mul_Bypass->power*pppm_t + int_mul_bypass->power*pppm_t;
+			if (pimid_fwd) bypass.power.readOp.dynamic += coredynp.MUL_cdb_duty_cycle*pimid_fwd_mul;
+			else bypass.power = bypass.power + intTag_mul_Bypass->power*pppm_t + int_mul_bypass->power*pppm_t;
 			power      = power + mul->power;
 		}
 		if (coredynp.num_fpus>0)
 		{
 			set_pppm(pppm_t, 3*coredynp.FPU_cdb_duty_cycle, 3, 3, 3*coredynp.FPU_cdb_duty_cycle);//3 means three source operands needs to be passed for each fp instruction.
-			bypass.power = bypass.power + fp_bypass->power*pppm_t  + fpTagBypass->power*pppm_t ;
+			if (pimid_fwd) bypass.power.readOp.dynamic += coredynp.FPU_cdb_duty_cycle*pimid_fwd_fp;
+			else bypass.power = bypass.power + fp_bypass->power*pppm_t  + fpTagBypass->power*pppm_t ;
 			power      = power + fp_u->power;
 		}
 
 		power      = power + rfu->power + exeu->power + bypass.power + scheu->power;
+		if (pimid_rep_frac > 0)   /* PIMID (F1-STRUCT): timing-repair buffers on the integer logic */
+			power.readOp.dynamic += pimid_rep_frac*(exeu->power.readOp.dynamic + (coredynp.num_muls > 0 ? mul->power.readOp.dynamic : 0.0)
+			    + (pimid_fwd ? coredynp.ALU_cdb_duty_cycle*pimid_fwd_int + (coredynp.num_muls > 0 ? coredynp.MUL_cdb_duty_cycle*pimid_fwd_mul : 0.0) : 0.0));
 	}
 	else
 	{
 		set_pppm(pppm_t, XML->sys.core[ithCore].cdb_alu_accesses, 2, 2, XML->sys.core[ithCore].cdb_alu_accesses);
+		if (pimid_fwd) bypass.rt_power.readOp.dynamic += XML->sys.core[ithCore].cdb_alu_accesses*pimid_fwd_int;   /* PIMID (F1-3) */
+		else {
 		bypass.rt_power = bypass.rt_power + intTagBypass->power*pppm_t;
 		bypass.rt_power = bypass.rt_power + int_bypass->power*pppm_t;
+		}
 
 		if (coredynp.num_muls >0)
 		{
 			set_pppm(pppm_t, XML->sys.core[ithCore].cdb_mul_accesses, 2, 2, XML->sys.core[ithCore].cdb_mul_accesses);//2 means two source operands needs to be passed for each int instruction.
-			bypass.rt_power = bypass.rt_power + intTag_mul_Bypass->power*pppm_t + int_mul_bypass->power*pppm_t;
+			if (pimid_fwd) bypass.rt_power.readOp.dynamic += XML->sys.core[ithCore].cdb_mul_accesses*pimid_fwd_mul;
+			else bypass.rt_power = bypass.rt_power + intTag_mul_Bypass->power*pppm_t + int_mul_bypass->power*pppm_t;
 			rt_power      = rt_power + mul->rt_power;
 		}
 
 		if (coredynp.num_fpus>0)
 		{
 			set_pppm(pppm_t, XML->sys.core[ithCore].cdb_fpu_accesses, 3, 3, XML->sys.core[ithCore].cdb_fpu_accesses);
+			if (pimid_fwd) bypass.rt_power.readOp.dynamic += XML->sys.core[ithCore].cdb_fpu_accesses*pimid_fwd_fp;
+			else {
 			bypass.rt_power = bypass.rt_power + fp_bypass->power*pppm_t;
 			bypass.rt_power = bypass.rt_power + fpTagBypass->power*pppm_t;
+			}
 			rt_power      = rt_power + fp_u->rt_power;
 		}
+		if (pimid_fwd)
+			std::cerr << "[mcpat bypass] core" << ithCore << " runtime: " << XML->sys.core[ithCore].cdb_alu_accesses << " integer + "
+			          << XML->sys.core[ithCore].cdb_mul_accesses << " multiply + " << XML->sys.core[ithCore].cdb_fpu_accesses
+			          << " FP results through the forwarding multiplexers = " << bypass.rt_power.readOp.dynamic << " J (F1-3)" << std::endl;
 		rt_power      = rt_power + rfu->rt_power + exeu->rt_power + bypass.rt_power + scheu->rt_power;
+		if (pimid_rep_frac > 0)   /* PIMID (F1-STRUCT): timing-repair buffers on the integer logic */
+		{
+			const double lg = exeu->rt_power.readOp.dynamic + (coredynp.num_muls > 0 ? mul->rt_power.readOp.dynamic : 0.0)
+			    + (pimid_fwd ? XML->sys.core[ithCore].cdb_alu_accesses*pimid_fwd_int
+			                   + (coredynp.num_muls > 0 ? XML->sys.core[ithCore].cdb_mul_accesses*pimid_fwd_mul : 0.0) : 0.0);
+			rt_power.readOp.dynamic += pimid_rep_frac*lg;
+			std::cerr << "[mcpat struct] core" << ithCore << " runtime (execution unit): " << pimid_rep_frac << " x integer logic " << lg
+			          << " J = " << pimid_rep_frac*lg << " J repair buffers (F1-STRUCT)" << std::endl;
+		}
 	}
 }
 
@@ -4539,6 +4953,13 @@ void Core::computeEnergy(bool is_tdp)
 				          << " DRAM-periphery factor): instruction store " << ((ifu && ifu->exist) ? ifu->icache.rt_power.readOp.dynamic : 0.0)
 				          << " J; data store " << ((lsu && lsu->exist) ? lsu->dcache.rt_power.readOp.dynamic : 0.0)
 				          << " J; DMA " << ((lsu && lsu->exist) ? lsu->dma.rt_power.readOp.dynamic : 0.0) << " J" << std::endl;
+			/* PIMID (F1-4, user ruling 2026-10-25): the FPU and the FP register file, printed apart so the core's energy can be read
+			 * without them, as RI5CY Table V (RV32IMC: no FPU, no FP register file). Print only. */
+			if (!is_tdp && XML->sys.Embedded)
+				std::cerr << "[mcpat fp] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
+				          << " DRAM-periphery factor): FPU " << ((exu && exu->exist && exu->fp_u) ? exu->fp_u->rt_power.readOp.dynamic : 0.0)
+				          << " J; FP register file " << ((exu && exu->exist && exu->rfu && exu->rfu->FRF) ? exu->rfu->FRF->rt_power.readOp.dynamic : 0.0)
+				          << " J" << std::endl;
 		}
 
 		if (XML->sys.Private_L2)
@@ -4718,6 +5139,13 @@ void Core::computeEnergy(bool is_tdp)
 				          << " DRAM-periphery factor): instruction store " << ((ifu && ifu->exist) ? ifu->icache.rt_power.readOp.dynamic : 0.0)
 				          << " J; data store " << ((lsu && lsu->exist) ? lsu->dcache.rt_power.readOp.dynamic : 0.0)
 				          << " J; DMA " << ((lsu && lsu->exist) ? lsu->dma.rt_power.readOp.dynamic : 0.0) << " J" << std::endl;
+			/* PIMID (F1-4, user ruling 2026-10-25): the FPU and the FP register file, printed apart so the core's energy can be read
+			 * without them, as RI5CY Table V (RV32IMC: no FPU, no FP register file). Print only. */
+			if (!is_tdp && XML->sys.Embedded)
+				std::cerr << "[mcpat fp] core" << ithCore << " runtime (J over the run, McPAT-priced, before any"
+				          << " DRAM-periphery factor): FPU " << ((exu && exu->exist && exu->fp_u) ? exu->fp_u->rt_power.readOp.dynamic : 0.0)
+				          << " J; FP register file " << ((exu && exu->exist && exu->rfu && exu->rfu->FRF) ? exu->rfu->FRF->rt_power.readOp.dynamic : 0.0)
+				          << " J" << std::endl;
 			/* PIMID (next, user ruling 2026-10-24): DECODE + CLOCK GUARD. The instruction decoders'
 			 * runtime energy per instruction plus this core's clock network per cycle at activity 1
 			 * (ungated, one core: per instruction at IPC 1, the basis of the published figure -- the

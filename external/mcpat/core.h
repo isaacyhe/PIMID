@@ -85,6 +85,14 @@ class InstFetchU :public Component {
 	double id_operand_e_access;   /* PIMID (1.12.28): the removed operand decoder's per-access energy (evidence print) */
 	double decode_fanout;         /* PIMID (1.12.28): DERIVED decoder output load, in minimum-size gates */
 	bool exist;
+	/* PIMID (F1-2, user ruling 2026-10-25): an in-order device PE's prefetch buffer, fetch address register,
+	 * aligner and controller FSM (core.cc pimid_front_energy): per fetch / per busy cycle, J; their flip-flops */
+	bool   pimid_front;
+	double pimid_front_fetch, pimid_front_cycle, pimid_front_regs;
+	double pimid_ml_cycle;   /* PIMID (F1-ML): the published-gate-count logic McPAT has no block for, J per busy cycle (set by Core) */
+	/* PIMID (F1-STRUCT): the routed core's flip-flops beyond the model's registers, their DATA energy, J per busy
+	 * cycle; and the timing-repair buffer fraction of the logic energy (both set by Core) */
+	double pimid_struct_cycle, pimid_rep_frac, pimid_struct_en;
 
 	InstFetchU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, bool exsit=true);
     void computeEnergy(bool is_tdp=true);
@@ -208,6 +216,10 @@ class RegFU :public Component {
 	ArrayST * FRF;
 	ArrayST * RFWIN;
 	bool exist;
+	/* PIMID (F1-1, user ruling 2026-10-25): an in-order device PE's register files are LATCH-BASED standard-cell
+	 * memories (RI5CY / CV32E40P), priced from published cells (core.cc pimid_scm_rf_energy). */
+	bool   pimid_scm;
+	double pimid_irf_rd, pimid_irf_wr, pimid_irf_cyc, pimid_frf_rd, pimid_frf_wr, pimid_frf_cyc;
 
 	RegFU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, bool exist_=true);
     void computeEnergy(bool is_tdp=true);
@@ -239,6 +251,11 @@ class EXECU :public Component {
 
 	Component  bypass;
 	bool exist;
+	/* PIMID (F1-3, user ruling 2026-10-25): an in-order device PE forwards through operand multiplexers, not a
+	 * broadcast bus (core.cc pimid_fwd_energy); per result, J */
+	bool   pimid_fwd;
+	double pimid_fwd_int, pimid_fwd_mul, pimid_fwd_fp;
+	double pimid_rep_frac;   /* PIMID (F1-STRUCT): timing-repair buffer fraction of the integer logic energy (set by Core) */
 
 	EXECU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_, double lsq_height_,const CoreDynParam & dyn_p_, bool exist_=true);
     void computeEnergy(bool is_tdp=true);
