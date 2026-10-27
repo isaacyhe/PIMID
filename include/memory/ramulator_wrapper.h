@@ -272,6 +272,10 @@ public:
     /* 1.12.25: the Ramulator timing override lines the part record asks for ("tRFC: <ns>" when the record
      * carries tRFC bases -- DDR3), each wrapped in before/after; "" when it asks for none. */
     static std::string recordTimingOverrideYaml(const std::string& tech, const std::string& before, const std::string& after);
+    /* (1.12.86): the RefreshManager line that sets the controller's refresh interval at the operating temperature
+     * ("trefi_factor: <f>", the part's refresh-ladder factor, pimid_energy.h refreshTempFactor), wrapped in
+     * before/after; "" in the nominal range (factor 1), so a run at or below 85 C emits the config it always did. */
+    static std::string refreshTemperatureYaml(const std::string& tech, int temperature_k, const std::string& before, const std::string& after);
     /* The key the energy layer selects an IDD row by: the technology, plus a
      * "-<grade>" suffix for DDR5 (pimid_energy.h baseTech() strips it for
      * every family-level decision). */

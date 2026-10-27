@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.86 -- the replayed memory controller refreshes at the operating temperature's rate
+
+- **The defect** (temperature sweep, `power.temperature_k` 350 / 360 / 380 K, gemv, 16 ALU PEs):
+  - Every part record carries the JEDEC refresh ladder (tREFI halved above 85 C; HBM2/HBM3 a quarter above 95 C),
+    and the energy layer applied it to the datasheet refresh duty.
+  - The refresh the run prices is the count the replayed controller issues ("refresh charged as counted"). That
+    controller always refreshed at the timing preset's nominal nREFI, so the count did not move with temperature.
+  - Above 85 C the background's standby share was computed net of the doubled duty while the counted refresh
+    stayed at the nominal rate. DDR4 with 16 ooo_core PEs at BANK: memory static 0.3530 W at 360 K against 0.3908 W at 350 K.
+- **Fix** (external/ramulator/.../all_bank_refresh.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp):
+  - The AllBank refresh manager takes `trefi_factor` (default 1) and shortens its interval to
+    floor(nREFI x factor); tREFI is a maximum, so the interval rounds down.
+  - Both Ramulator config emitters (the energy oracle's and the replay / co-sim one) write the factor from the
+    part's ladder at `power.temperature_k`. They write nothing when the factor is 1.
+- **Data impact:** none at or below 85 C (every legal setting up to 350 K, the default): the emitted config is
+  unchanged. At 360 K and above, the counted refreshes follow the ladder. Refresh power and memory static rise,
+  and the extra tRFC blocking can move cycles.
+
 ## 1.12.85 -- GDDR6 burst energy at the run's own data (transferred from the DDR3 measurement)
 
 - **Model (user ruling 2026-10-27):** the GDDR6 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3

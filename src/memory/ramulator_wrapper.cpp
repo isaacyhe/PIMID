@@ -74,6 +74,23 @@ std::string RamulatorWrapper::recordTimingOverrideYaml(const std::string& tech, 
     return o.str();
 }
 
+std::string RamulatorWrapper::refreshTemperatureYaml(const std::string& tech, int temperature_k,
+                                                     const std::string& before, const std::string& after) {
+    /* (1.12.86): the replayed controller's refresh count is what the run prices (refresh "charged as counted"),
+     * so the controller has to refresh at the rate the temperature requires. Before this, the ladder moved
+     * only the datasheet-duty figure printed beside the count: above 85 C the background's standby share
+     * shrank by the doubled duty while the counted refresh stayed at the nominal rate. Needs the part's
+     * facts registered (initialize() does that before any config is emitted). */
+    std::string t = tech;
+    std::transform(t.begin(), t.end(), t.begin(), ::toupper);
+    if (Ramulator::pimid_energy::partFactsMap().count(Ramulator::pimid_energy::baseTech(t)) == 0) return "";
+    const double f = Ramulator::pimid_energy::refreshTempFactor(t, temperature_k);
+    if (!(f > 0.0) || f >= 1.0) return "";
+    std::ostringstream o;
+    o << before << "trefi_factor: " << f << after;
+    return o.str();
+}
+
 int RamulatorWrapper::runDdr5GradeMTs() {   // 1.12.18
     if (s_run_knobs_set_ && s_run_ddr5_grade_mtps_ > 0) return s_run_ddr5_grade_mtps_;
     return pimid::params::dramRecordGradeMTs("DDR5");
@@ -1624,7 +1641,8 @@ void RamulatorWrapper::parseConfiguration() {
                    "\n  Controller:\n    impl: Generic\n" + writeDrainYaml(wr_high_, wr_low_) +   // 1.12.18 (write drain)
                    "    Scheduler:\n      impl: FRFCFS\n"
                    "    RefreshManager:\n      impl: AllBank\n"
-                   + rowPolicyYaml(dram_impl, row_idle_timeout_, row_closed_mode_) +   // 1.12.18 (row policy ruling): was ClosedRowPolicy cap 4 for every technology
+                   + refreshTemperatureYaml(dram_impl, temperature_k_, "      ", "\n") +   // (1.12.86): refresh at the operating temperature
+                   rowPolicyYaml(dram_impl, row_idle_timeout_, row_closed_mode_) +   // 1.12.18 (row policy ruling): was ClosedRowPolicy cap 4 for every technology
                    "  AddrMapper:\n    impl: RoBaRaCoCh\n";
         };
 

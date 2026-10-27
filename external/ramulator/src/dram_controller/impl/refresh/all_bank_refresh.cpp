@@ -19,6 +19,7 @@ class AllBankRefresh : public IRefreshManager, public Implementation {
     int m_num_ranks = -1;
 
     int m_nrefi = -1;
+    float m_trefi_factor = 1.0f;   // PIMID (1.12.86): the operating temperature's tREFI factor (JEDEC temperature-compensated refresh)
     int m_ref_req_id = -1;
     int m_ref_scope = -1;   // PIMID 1.11.98: level index of the REFab command's scope
     Clk_t m_next_refresh_cycle = -1;
@@ -27,6 +28,14 @@ class AllBankRefresh : public IRefreshManager, public Implementation {
   public:
     void init() override { 
       m_ctrl = cast_parent<IDRAMController>();
+      /* PIMID (1.12.86): the refresh interval at the run's temperature. The part's
+       * refresh ladder (params/dram/<tech>.yaml, JESD79-5D Table 70 et al.)
+       * halves tREFI above 85 C (HBM: a quarter above 95 C); PIMID writes the
+       * factor here so the controller issues the refreshes it prices. 1 = the
+       * nominal range; the timing preset's nREFI is unchanged. */
+      m_trefi_factor = param<float>("trefi_factor").desc("tREFI multiplier at the operating temperature (<= 1)").default_val(1.0f);
+      if (!(m_trefi_factor > 0.0f && m_trefi_factor <= 1.0f))
+        throw ConfigurationError("AllBank refresh: trefi_factor {} is outside (0, 1]", m_trefi_factor);
     };
 
     void setup(IFrontEnd* frontend, IMemorySystem* memory_system) override {
@@ -34,6 +43,10 @@ class AllBankRefresh : public IRefreshManager, public Implementation {
 
       m_dram_org_levels = m_dram->m_levels.size();
       m_nrefi = m_dram->m_timing_vals("nREFI");
+      if (m_trefi_factor < 1.0f) {   // PIMID (1.12.86): tREFI is a maximum -- round the shortened interval DOWN
+        const int n = static_cast<int>(static_cast<double>(m_nrefi) * static_cast<double>(m_trefi_factor));
+        m_nrefi = (n >= 1) ? n : 1;
+      }
       m_ref_req_id = m_dram->m_requests("all-bank-refresh");
       /* PIMID 1.11.98 (gate 1208A): send the all-bank refresh at the scope the
        * DRAM model declares for its command. Upstream looped over

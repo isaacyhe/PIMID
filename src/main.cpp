@@ -9166,7 +9166,8 @@ static void writeRamulatorConfigYaml(std::ostream& ofs, const std::string& tech,
     ofs << "  Controller:\n    impl: Generic\n"
         << pimid::RamulatorWrapper::writeDrainYaml(config.write_high_watermark, config.write_low_watermark)   // 1.12.18 (write drain)
         << "    Scheduler:\n      impl: FRFCFS\n"
-        << "    RefreshManager:\n      impl: AllBank\n";
+        << "    RefreshManager:\n      impl: AllBank\n"
+        << pimid::RamulatorWrapper::refreshTemperatureYaml(tech, config.temperature_k, "      ", "\n");   // (1.12.86): refresh at the operating temperature
     ofs << pimid::RamulatorWrapper::rowPolicyYaml(tech, config.row_policy_host_idle_timeout,
                                                    config.row_policy_host_closed_mode);
     ofs << "  AddrMapper:\n    impl: RoBaRaCoCh\n";
