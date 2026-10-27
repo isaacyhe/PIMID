@@ -5375,8 +5375,14 @@ static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, vo
     }
     if (num == 56 && ret > 0 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // (1.12.76): hand the domain to the child
         {
+            /* (1.12.124): clone returns the guest's ID of the child, the host's plus QEMU's
+             * -tid-base (src/main.cpp kGuestTidBase); the child looks itself up by its
+             * host ID. Host IDs stay below 4194304, so a smaller value is already a
+             * host ID (a QEMU launched without -tid-base). */
+            static const int64_t kGuestTidBase = 10000000;
+            const int hostTid = (int)(ret > kGuestTidBase ? ret - kGuestTidBase : ret);
             std::lock_guard<std::mutex> g(g_cloneMu);
-            g_cloneDom[(int)ret] = g_cloneDomPending[vcpu_index];
+            g_cloneDom[hostTid] = g_cloneDomPending[vcpu_index];
         }
         /* (1.12.123) fixed thread order: the new thread joins before its creator goes
          * on, so new threads take their cores in the order they were created */

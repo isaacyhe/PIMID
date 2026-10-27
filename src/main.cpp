@@ -764,6 +764,16 @@ static void noteGuestBindNow() {
 static const char* const kGuestReservedVa = "0x8000000000";   // 512 GiB < GM_BASE_ADDR 0xABBA000000
 static const char* const kGuestStackSize  = "8M";             // QEMU's TARGET_DEFAULT_STACK_SIZE
 static const char* const kGuestSeed       = "0";
+/* (1.12.124): FIXED-WIDTH GUEST THREAD AND PROCESS IDS (QEMU -tid-base, patch 0003).
+ * QEMU handed the guest the host's Linux IDs, and glibc 2.39's start_thread
+ * formats each new thread's ID in decimal (it names the thread's stack
+ * mapping with "%u" of the ID, whether or not the name is applied): one
+ * _itoa iteration per digit, about 22 cycles of the new thread's core per
+ * digit. The host's PID counter (5, 6 or 7 digits on one cluster) thereby
+ * moved every multi-threaded result. With -tid-base every ID the guest sees
+ * is the host's plus 10000000, eight digits on any Linux host (pid_max is at
+ * most 4194304), and the IDs the guest passes back are translated back. */
+static const char* const kGuestTidBase    = "10000000";
 static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
 static const size_t      kGuestStringBlock = 4096;
 /* (1.12.107): THE GUEST FINDS ITS LIBRARIES WITHOUT THE HOST'S LOADER CACHE.
@@ -829,7 +839,7 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                                                    const std::map<std::string, std::string>& workloadEnv,
                                                    size_t* guestVars) {
     std::vector<std::string> o = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
-                                  "-seed", kGuestSeed};
+                                  "-seed", kGuestSeed, "-tid-base", kGuestTidBase};
     std::map<std::string, std::string> genv;   // name -> NAME=VALUE, sorted by name
     std::vector<std::string> inherited;        // kept values QEMU's -E cannot carry (a comma)
     for (char** e = environ; e && *e; ++e) {
@@ -890,7 +900,7 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
 static void noteGuestLaunch(size_t envVars) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
-              << kGuestSeed << "), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
+              << kGuestSeed << "), guest thread and process IDs the host's plus " << kGuestTidBase << " (-tid-base), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
               << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), libraries"
               << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
               << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]" << std::endl;

@@ -1,0 +1,443 @@
+PIMID: fixed-width guest process and thread IDs (-tid-base N)
+
+QEMU user mode hands the guest the host's Linux process and thread IDs. glibc
+2.39's start_thread formats every new thread's ID in decimal (it names the
+thread's stack mapping "glibc: pthread user stack: %u", whether or not the name
+is applied), one _itoa iteration per digit, so the number of instructions a
+thread runs at its start followed the length of the host's IDs (5 to 7 digits
+on one cluster, set by how many processes the host had started).
+
+With -tid-base N (or QEMU_TID_BASE=N) every process, thread, process-group and
+session ID the guest sees is the host's plus N, and every such ID the guest
+passes back is the guest's minus N:
+ - returned: gettid, getpid, getppid, getpgrp, getpgid, getsid, setsid,
+   set_tid_address, fork/vfork/clone/clone3, wait4/waitpid; the IDs written
+   by CLONE_PARENT_SETTID / CLONE_CHILD_SETTID; si_pid of a delivered
+   siginfo (and of waitid's); the pid and ppid fields of the emulated
+   /proc/self/stat;
+ - taken: kill, tkill, tgkill, rt_sigqueueinfo, rt_tgsigqueueinfo, wait4,
+   waitpid, waitid (P_PID, P_PGID), getpgid, setpgid, getsid, getpriority /
+   setpriority and ioprio_get / ioprio_set (process and group), the sched_*
+   calls, prlimit64, get_robust_list, pidfd_open, process_vm_readv/writev;
+   "/proc/<id>/..." and "/proc/<id>/task/<id>/..." in open, openat and
+   readlink(at).
+With N = 10000000 and pid_max at most 4194304 every guest-visible ID has
+eight digits. Not translated: IDs the kernel writes into priority-inheritance
+or robust futex words, and IDs inside /proc text other than /proc/self/stat.
+N = 0 (the default) leaves QEMU unchanged.
+
+diff --git a/linux-user/main.c b/linux-user/main.c
+index 60a695b..2fad601 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -342,6 +342,18 @@ static void handle_arg_seed(const char *arg)
+     seed_optarg = arg;
+ }
+ 
++static void handle_arg_tid_base(const char *arg)
++{
++    /* PIMID patch 0003: fixed-width guest process and thread IDs */
++    char *end;
++    long long v = strtoll(arg, &end, 10);
++    if (*end || v < 0 || v > 0x10000000) {
++        fprintf(stderr, "qemu: -tid-base expects a number from 0 to 268435456\n");
++        exit(EXIT_FAILURE);
++    }
++    qemu_pid_base = v;
++}
++
+ static void handle_arg_gdb(const char *arg)
+ {
+     gdbstub = g_strdup(arg);
+@@ -518,6 +530,8 @@ static const struct qemu_argument arg_table[] = {
+      "",           "log system calls"},
+     {"seed",       "QEMU_RAND_SEED",   true,  handle_arg_seed,
+      "",           "Seed for pseudo-random number generator"},
++    {"tid-base",   "QEMU_TID_BASE",    true,  handle_arg_tid_base,
++     "number",     "guest process and thread IDs are the host's plus this base"},
+     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
+      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
+ #ifdef CONFIG_PLUGIN
+diff --git a/linux-user/signal.c b/linux-user/signal.c
+index f0a2257..c92c3a3 100644
+--- a/linux-user/signal.c
++++ b/linux-user/signal.c
+@@ -378,7 +378,7 @@ static inline void host_to_target_siginfo_noswap(target_siginfo_t *tinfo,
+         /* Sent via kill(), tkill() or tgkill(), or direct from the kernel.
+          * These are the only unspoofable si_code values.
+          */
+-        tinfo->_sifields._kill._pid = info->si_pid;
++        tinfo->_sifields._kill._pid = pid_h2g(info->si_pid);   /* PIMID 0003 */
+         tinfo->_sifields._kill._uid = info->si_uid;
+         si_type = QEMU_SI_KILL;
+         break;
+@@ -386,7 +386,7 @@ static inline void host_to_target_siginfo_noswap(target_siginfo_t *tinfo,
+         /* Everything else is spoofable. Make best guess based on signal */
+         switch (sig) {
+         case TARGET_SIGCHLD:
+-            tinfo->_sifields._sigchld._pid = info->si_pid;
++            tinfo->_sifields._sigchld._pid = pid_h2g(info->si_pid);   /* PIMID 0003 */
+             tinfo->_sifields._sigchld._uid = info->si_uid;
+             if (si_code == CLD_EXITED)
+                 tinfo->_sifields._sigchld._status = info->si_status;
+@@ -405,7 +405,7 @@ static inline void host_to_target_siginfo_noswap(target_siginfo_t *tinfo,
+             break;
+         default:
+             /* Assume a sigqueue()/mq_notify()/rt_sigqueueinfo() source. */
+-            tinfo->_sifields._rt._pid = info->si_pid;
++            tinfo->_sifields._rt._pid = pid_h2g(info->si_pid);   /* PIMID 0003 */
+             tinfo->_sifields._rt._uid = info->si_uid;
+             /* XXX: potential problem if 64 bit */
+             tinfo->_sifields._rt._sigval.sival_ptr
+@@ -497,6 +497,7 @@ void target_to_host_siginfo(siginfo_t *info, const target_siginfo_t *tinfo)
+     __get_user(info->si_errno, &tinfo->si_errno);
+     __get_user(info->si_code, &tinfo->si_code);
+     __get_user(info->si_pid, &tinfo->_sifields._rt._pid);
++    info->si_pid = pid_g2h(info->si_pid);   /* PIMID 0003 */
+     __get_user(info->si_uid, &tinfo->_sifields._rt._uid);
+     __get_user(sival_ptr, &tinfo->_sifields._rt._sigval.sival_ptr);
+     info->si_value.sival_ptr = (void *)(long)sival_ptr;
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index 9f45450..f494900 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -6928,6 +6928,47 @@ typedef struct {
+     sigset_t sigmask;
+ } new_thread_info;
+ 
++abi_long qemu_pid_base;   /* PIMID patch 0003 (user-internals.h) */
++
++static const char *proc_id_g2h(const char *q, char **out, char *end)
++{
++    /* copies one path component; a component of decimal digits is a guest ID, translated */
++    char comp[64];
++    size_t n = 0;
++    bool digits = true;
++    while (*q && *q != '/' && n < sizeof(comp) - 1) {
++        digits = digits && *q >= '0' && *q <= '9';
++        comp[n++] = *q++;
++    }
++    comp[n] = 0;
++    if (n && digits) {
++        *out += snprintf(*out, end - *out, "%lld", (long long)pid_g2h(strtoll(comp, NULL, 10)));
++    } else {
++        *out += snprintf(*out, end - *out, "%s", comp);
++    }
++    return q;
++}
++
++const char *proc_path_g2h(const char *pathname, char *buf, size_t len)
++{
++    const char *q = pathname;
++    char *o = buf, *end = buf + len;
++    if (!qemu_pid_base || !pathname || strncmp(pathname, "/proc/", 6) != 0 ||
++        strlen(pathname) + 32 >= len) {
++        return pathname;
++    }
++    o += snprintf(o, end - o, "/proc/");
++    q += 6;
++    q = proc_id_g2h(q, &o, end);
++    if (!strncmp(q, "/task/", 6)) {
++        o += snprintf(o, end - o, "/task/");
++        q += 6;
++        q = proc_id_g2h(q, &o, end);
++    }
++    snprintf(o, end - o, "%s", q);
++    return buf;
++}
++
+ static void *clone_func(void *arg)
+ {
+     new_thread_info *info = arg;
+@@ -6944,9 +6985,9 @@ static void *clone_func(void *arg)
+     info->tid = sys_gettid();
+     task_settid(ts);
+     if (info->child_tidptr)
+-        put_user_u32(info->tid, info->child_tidptr);
++        put_user_u32(pid_h2g(info->tid), info->child_tidptr);
+     if (info->parent_tidptr)
+-        put_user_u32(info->tid, info->parent_tidptr);
++        put_user_u32(pid_h2g(info->tid), info->parent_tidptr);
+     qemu_guest_random_seed_thread_part2(cpu->random_seed);
+     /* Enable signals.  */
+     sigprocmask(SIG_SETMASK, &info->sigmask, NULL);
+@@ -7141,7 +7182,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
+                mapping.  We can't repeat the spinlock hack used above because
+                the child process gets its own copy of the lock.  */
+             if (flags & CLONE_CHILD_SETTID)
+-                put_user_u32(sys_gettid(), child_tidptr);
++                put_user_u32(pid_h2g(sys_gettid()), child_tidptr);
+             ts = get_task_state(cpu);
+             if (flags & CLONE_SETTLS)
+                 cpu_set_tls (env, newtls);
+@@ -7150,7 +7191,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
+         } else {
+             cpu_clone_regs_parent(env, flags);
+             if (flags & CLONE_PARENT_SETTID)
+-                put_user_u32(ret, parent_tidptr);
++                put_user_u32(pid_h2g(ret), parent_tidptr);
+             if (flags & CLONE_PIDFD) {
+                 int pid_fd = 0;
+ #if defined(__NR_pidfd_open) && defined(TARGET_NR_pidfd_open)
+@@ -8645,7 +8686,7 @@ static int open_self_stat(CPUArchState *cpu_env, int fd)
+     for (i = 0; i < 44; i++) {
+         if (i == 0) {
+             /* pid */
+-            g_string_printf(buf, FMT_pid " ", getpid());
++            g_string_printf(buf, FMT_pid " ", (pid_t)pid_h2g(getpid()));
+         } else if (i == 1) {
+             /* app name */
+             gchar *bin = g_strrstr(ts->bprm->argv[0], "/");
+@@ -8656,7 +8697,7 @@ static int open_self_stat(CPUArchState *cpu_env, int fd)
+             g_string_assign(buf, "R "); /* we are running right now */
+         } else if (i == 3) {
+             /* ppid */
+-            g_string_printf(buf, FMT_pid " ", getppid());
++            g_string_printf(buf, FMT_pid " ", (pid_t)pid_h2g(getppid()));
+         } else if (i == 4) {
+             /* pgid */
+             g_string_printf(buf, FMT_pid " ", getpgrp());
+@@ -8923,6 +8964,8 @@ static int maybe_do_fake_open(CPUArchState *cpu_env, int dirfd,
+ int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
+                     int flags, mode_t mode, bool safe)
+ {
++    char pidpath[PATH_MAX];
++    pathname = proc_path_g2h(pathname, pidpath, sizeof(pidpath));   /* PIMID 0003 */
+     int fd = maybe_do_fake_open(cpu_env, dirfd, pathname, flags, mode, 0, safe);
+     if (fd > -2) {
+         return fd;
+@@ -8993,6 +9036,8 @@ static int do_openat2(CPUArchState *cpu_env, abi_long dirfd,
+ 
+ ssize_t do_guest_readlink(const char *pathname, char *buf, size_t bufsiz)
+ {
++    char pidpath[PATH_MAX];
++    pathname = proc_path_g2h(pathname, pidpath, sizeof(pidpath));   /* PIMID 0003 */
+     ssize_t ret;
+ 
+     if (!pathname || !buf) {
+@@ -11123,14 +11168,16 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+     case TARGET_NR_readlinkat:
+         {
+             void *p2;
++            char pidpath[PATH_MAX];   /* PIMID 0003 */
+             p  = lock_user_string(arg2);
+             p2 = lock_user(VERIFY_WRITE, arg3, arg4, 0);
++            const char *pp = p ? proc_path_g2h(p, pidpath, sizeof(pidpath)) : NULL;
+             if (!p || !p2) {
+                 ret = -TARGET_EFAULT;
+             } else if (!arg4) {
+                 /* Short circuit this for the magic exe check. */
+                 ret = -TARGET_EINVAL;
+-            } else if (is_proc_myself((const char *)p, "exe")) {
++            } else if (is_proc_myself(pp, "exe")) {
+                 /*
+                  * Don't worry about sign mismatch as earlier mapping
+                  * logic would have thrown a bad address error.
+@@ -11139,7 +11186,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+                 /* We cannot NUL terminate the string. */
+                 memcpy(p2, real_exec_path, ret);
+             } else {
+-                ret = get_errno(readlinkat(arg1, path(p), p2, arg4));
++                ret = get_errno(readlinkat(arg1, path(pp), p2, arg4));
+             }
+             unlock_user(p2, arg3, ret);
+             unlock_user(p, arg2, 0);
+@@ -14699,6 +14746,143 @@ static bool send_through_syscall_filters(CPUState *cpu, int num,
+     return filtered;
+ }
+ 
++/* PIMID patch 0003: the process and thread IDs a syscall takes (guest -> host) */
++static void pid_args_g2h(int num, abi_long *a1, abi_long *a2, abi_long which)
++{
++    switch (num) {
++#ifdef TARGET_NR_kill
++    case TARGET_NR_kill:
++#endif
++    case TARGET_NR_tkill:
++#ifdef TARGET_NR_getpgid
++    case TARGET_NR_getpgid:
++#endif
++#ifdef TARGET_NR_getsid
++    case TARGET_NR_getsid:
++#endif
++    case TARGET_NR_sched_setparam:
++    case TARGET_NR_sched_getparam:
++    case TARGET_NR_sched_setscheduler:
++    case TARGET_NR_sched_getscheduler:
++#ifdef TARGET_NR_sched_getattr
++    case TARGET_NR_sched_getattr:
++    case TARGET_NR_sched_setattr:
++#endif
++#ifdef TARGET_NR_sched_rr_get_interval
++    case TARGET_NR_sched_rr_get_interval:
++#endif
++#ifdef TARGET_NR_sched_rr_get_interval_time64
++    case TARGET_NR_sched_rr_get_interval_time64:
++#endif
++    case TARGET_NR_sched_getaffinity:
++    case TARGET_NR_sched_setaffinity:
++#ifdef TARGET_NR_prlimit64
++    case TARGET_NR_prlimit64:
++#endif
++#ifdef TARGET_NR_get_robust_list
++    case TARGET_NR_get_robust_list:
++#endif
++#ifdef TARGET_NR_pidfd_open
++    case TARGET_NR_pidfd_open:
++#endif
++#ifdef TARGET_NR_process_vm_readv
++    case TARGET_NR_process_vm_readv:
++    case TARGET_NR_process_vm_writev:
++#endif
++#ifdef TARGET_NR_rt_sigqueueinfo
++    case TARGET_NR_rt_sigqueueinfo:
++#endif
++#ifdef TARGET_NR_wait4
++    case TARGET_NR_wait4:
++#endif
++#ifdef TARGET_NR_waitpid
++    case TARGET_NR_waitpid:
++#endif
++        *a1 = pid_g2h(*a1);
++        break;
++    case TARGET_NR_tgkill:
++#ifdef TARGET_NR_rt_tgsigqueueinfo
++    case TARGET_NR_rt_tgsigqueueinfo:
++#endif
++    case TARGET_NR_setpgid:
++        *a1 = pid_g2h(*a1);
++        *a2 = pid_g2h(*a2);
++        break;
++#ifdef TARGET_NR_waitid
++    case TARGET_NR_waitid:            /* (idtype, id, ...): P_PID 1, P_PGID 2 */
++        if (which == 1 || which == 2) {
++            *a2 = pid_g2h(*a2);
++        }
++        break;
++#endif
++    case TARGET_NR_getpriority:
++    case TARGET_NR_setpriority:       /* (which, who): PRIO_PROCESS 0, PRIO_PGRP 1 */
++        if (which == 0 || which == 1) {
++            *a2 = pid_g2h(*a2);
++        }
++        break;
++#ifdef TARGET_NR_ioprio_get
++    case TARGET_NR_ioprio_get:
++    case TARGET_NR_ioprio_set:        /* (which, who): IOPRIO_WHO_PROCESS 1, IOPRIO_WHO_PGRP 2 */
++        if (which == 1 || which == 2) {
++            *a2 = pid_g2h(*a2);
++        }
++        break;
++#endif
++    default:
++        break;
++    }
++}
++
++/* PIMID patch 0003: the process and thread IDs a syscall returns (host -> guest) */
++static abi_long pid_ret_h2g(int num, abi_long ret)
++{
++    switch (num) {
++    case TARGET_NR_gettid:
++#ifdef TARGET_NR_getpid
++    case TARGET_NR_getpid:
++#endif
++#ifdef TARGET_NR_getxpid
++    case TARGET_NR_getxpid:
++#endif
++#ifdef TARGET_NR_getppid
++    case TARGET_NR_getppid:
++#endif
++#ifdef TARGET_NR_getpgrp
++    case TARGET_NR_getpgrp:
++#endif
++#ifdef TARGET_NR_getpgid
++    case TARGET_NR_getpgid:
++#endif
++#ifdef TARGET_NR_getsid
++    case TARGET_NR_getsid:
++#endif
++    case TARGET_NR_setsid:
++#ifdef TARGET_NR_set_tid_address
++    case TARGET_NR_set_tid_address:
++#endif
++#ifdef TARGET_NR_fork
++    case TARGET_NR_fork:
++#endif
++#ifdef TARGET_NR_vfork
++    case TARGET_NR_vfork:
++#endif
++    case TARGET_NR_clone:
++#ifdef TARGET_NR_clone3
++    case TARGET_NR_clone3:
++#endif
++#ifdef TARGET_NR_wait4
++    case TARGET_NR_wait4:
++#endif
++#ifdef TARGET_NR_waitpid
++    case TARGET_NR_waitpid:
++#endif
++        return pid_h2g(ret);
++    default:
++        return ret;
++    }
++}
++
+ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+                     abi_long arg2, abi_long arg3, abi_long arg4,
+                     abi_long arg5, abi_long arg6, abi_long arg7,
+@@ -14747,8 +14931,15 @@ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+ 
+     if (!send_through_syscall_filters(cpu, num, arg1, arg2, arg3, arg4, arg5,
+                                       arg6, arg7, arg8, &ret)) {
+-        ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
++        abi_long h1 = arg1, h2 = arg2;
++        if (qemu_pid_base) {
++            pid_args_g2h(num, &h1, &h2, arg1);
++        }
++        ret = do_syscall1(cpu_env, num, h1, h2, arg3, arg4,
+                           arg5, arg6, arg7, arg8);
++        if (qemu_pid_base) {
++            ret = pid_ret_h2g(num, ret);
++        }
+     }
+ 
+     if (unlikely(qemu_loglevel_mask(LOG_STRACE))) {
+diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
+index e7fbddd..2abf9cc 100644
+--- a/linux-user/user-internals.h
++++ b/linux-user/user-internals.h
+@@ -61,6 +61,33 @@ int info_is_fdpic(struct image_info *info);
+ 
+ void target_set_brk(abi_ulong new_brk);
+ void syscall_init(void);
++/*
++ * PIMID patch 0003: fixed-width guest process and thread IDs (-tid-base N).
++ * With N > 0 every process, thread, process-group and session ID the guest
++ * sees is the host's ID plus N, and every such ID the guest passes back is
++ * the guest's minus N. With N = 10000000 and Linux's pid_max at most 4194304,
++ * every guest-visible ID has eight decimal digits, so guest code that formats
++ * its thread ID (glibc 2.39's start_thread names each thread's stack with
++ * "%u" of its TID) does the same work on every host. N = 0: unchanged.
++ */
++extern abi_long qemu_pid_base;
++static inline abi_long pid_h2g(abi_long h)
++{
++    return (qemu_pid_base && h > 0) ? h + qemu_pid_base : h;
++}
++static inline abi_long pid_g2h(abi_long g)
++{
++    if (qemu_pid_base && g > qemu_pid_base) {
++        return g - qemu_pid_base;
++    }
++    if (qemu_pid_base && g < -qemu_pid_base) {
++        return g + qemu_pid_base;   /* a negated process group */
++    }
++    return g;
++}
++/* "/proc/<id>..." and "/proc/<x>/task/<id>..." with guest IDs, rewritten to host IDs */
++const char *proc_path_g2h(const char *pathname, char *buf, size_t len);
++
+ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+                     abi_long arg2, abi_long arg3, abi_long arg4,
+                     abi_long arg5, abi_long arg6, abi_long arg7,

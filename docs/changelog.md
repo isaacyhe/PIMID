@@ -6,6 +6,38 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.124 -- multi-threaded results no longer depend on the host's process-ID count
+
+- **Defect.** QEMU user mode handed the guest the host's Linux process and thread IDs. glibc 2.39's `start_thread`
+  formats every new thread's ID in decimal (it names the thread's stack mapping, whether or not the name is applied):
+  one more digit is one more `_itoa` iteration, 14 instructions and about 22 cycles of the new thread's core. The
+  number of digits follows how many processes the host has started (5 to 7 digits on one cluster), so every
+  multi-threaded cell moved with it: hostn_16core 15872 / 15842 / 15604 cycles with 5- / 6- / 7-digit host IDs.
+- **Fix (external/qemu-patches/0003; src/main.cpp guestLaunchOptions).** A new QEMU option `-tid-base N`: every
+  process, thread, process-group and session ID the guest sees is the host's plus N, and every such ID the guest
+  passes back is translated back (the ID-taking calls: `kill`, `tkill`, `tgkill`, `wait4`, `waitid`, the `sched_*`
+  calls, `getpriority`/`setpriority`, `prlimit64`, ...; `/proc/<id>/...` and `/proc/<id>/task/<id>/...` paths; the
+  sender of a delivered signal). PIMID launches the guest with `-tid-base 10000000`, so the guest's IDs always have
+  eight digits. The ZSim plugin maps a clone's returned ID back to the host's for its thread bookkeeping.
+- **QEMU:** 11.1.2 with patches 0001, 0002 and 0003; `qemu-x86_64` md5 `6a3d45114415dee2fb51eed1997f757d` (was
+  `10190bfcadbae8fa214f5fab7174a282`). A QEMU without 0003 stops at once: `qemu: unknown option 'tid-base'`.
+- **Not translated:** IDs the kernel writes into priority-inheritance or robust futex words (no shipped workload uses
+  those mutex kinds; glibc's default mutexes, libgomp, libstdc++ and MPICH do not), and IDs inside `/proc/<id>/status`
+  text.
+- No timing, energy or area model changes.
+- **Validation (base 663c9b67, DET3 on):**
+  - hostn_4core / hostn_16core / cosim_DDR5 / cosim_HBM3 / omp_DDR3 on qc-pvc-00 (7-digit host IDs), qc-pvc-01
+    (7), qc-mi210-00 (7) and qc-mi210-01 (6), two runs each, and on qc-pvc-00 again after its ID counter wrapped
+    to 5 digits: one value per cell everywhere (51282 / 15938 / 396283 / 349381 / 179993). Before: hostn_16core
+    15872 / 15842 / 15604 with 5- / 6- / 7-digit IDs.
+  - 59 serial cells on qc-pvc-00 and qc-mi210-01: every cycle count and every simulated and priced figure equals
+    the previous release on both nodes; the only changed log line is the `[guest] launch:` line.
+  - Guest ID check (a test program under the patched QEMU): getpid/gettid/getppid/getpgid/getsid all eight digits;
+    `/proc/<pid>/stat`, `/proc/self/stat`, `/proc/self/task/<tid>/stat`, `raise`, `kill`, `pthread_kill`,
+    `sched_getaffinity(tid)`, `setpriority(tid)`, `fork` + `waitpid`, `waitid` and `system()` behave as without it.
+- **Data impact (one-time):** multi-threaded cells: hostn_4core 51345 -> 51282, hostn_16core 15604..15872 -> 15938,
+  cosim_DDR5 397450 -> 396283; cosim_HBM3 and omp_DDR3 unchanged. Serial cells unchanged.
+
 ## 1.12.123 -- multi-threaded results are now the same in every run
 
 - **Fixed thread order (on by default, every shared-memory run: serial, OpenMP, co-sim OpenMP).** The timing plugin
