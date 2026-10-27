@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.116 -- the DDR4/DDR5 host memory-controller PHY idle from measured PHY idle rails
+
+- **Host PHY idle** (user ruling 2026-10-27): the DDR4/DDR5 memory-controller PHY static (idle) power was the CACTI-IO
+  parameter-set value, 30 mW per 64-bit interface (phase rotator 10 + receivers 10 + PLL 10). No measured DDR4/DDR5
+  host-PHY idle is published. It is now DERIVED from the measured idle of an LPDDR4X x16 PHY's two DRAM-PHY rails (NXP
+  AN13917 Rev. 4.0, i.MX 93: Table 6 p.12 names vdd2_ddr and vddq_ddr "Power supply for DRAM PHY"; system idle with the
+  controller clock-gated, 25.3 / 13.6 / 8.3 mW at 3733 / 1866 / 625 MT/s, Tables 28 / 29 / 31 pp.38-41): the
+  least-squares line through the three points (4.25 + 5.53 mW per Gb/s per 16 DQ), scaled to the channel width at the
+  run's rate, plus the parameter set's PLL static (the measured rails exclude the PLL).
+- DDR4-2400, 64 DQ: 80.1 mW (was 30); DDR5-4800: 133.3 mW (was 30). The log names the source. DDR3, LPDDR5, GDDR6 and
+  HBM are unchanged.
+- Impact (1-core host baselines, 8 kernels): total power +0.05 W (DDR4, +1.6%) and +0.11 W (DDR5, +3.2%); a device
+  memory at a crossing placement +6.5% (DDR4) and +9.1% (DDR5) of the device power. Cycles unchanged.
+
 ## 1.12.115 -- a guest QEMU that fails to start, or an ROI that never opens, fails the run
 
 - **Defect.** When the guest QEMU could not start the workload (a launch error such as "mmap stack: Cannot allocate

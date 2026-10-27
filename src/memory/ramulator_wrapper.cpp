@@ -2642,6 +2642,15 @@ double RamulatorWrapper::getInterfacePhyStaticMW() const {
     return (io.phy_static_power_mw > 0.0) ? io.phy_static_power_mw : 0.0;
 }
 
+std::string RamulatorWrapper::getInterfacePhyStaticSource() const {   // (user ruling 2026-10-27)
+    const double rate = modelledRateMTs();
+    const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
+    if (rate <= 0.0 || ndq <= 0) return "no rate / width";
+    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
+    if (!io.valid || !io.exact_map) return "no exact CACTI-IO map";
+    return io.phy_static_source;
+}
+
 double RamulatorWrapper::getInterfaceAreaMM2() const {
     /* 1.11.40: IO area, wired in at 1.11.58 (see the D011 note above).
      *

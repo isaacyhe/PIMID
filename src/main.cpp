@@ -14168,6 +14168,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 pimid::fmt_scoped(std::cout) << "    controller:       idle " << std::setprecision(1) << (100.0 * (double)zsim_stats.ctrl_idle_ticks / (double)zsim_stats.ctrl_ticks)
                           << "% of " << zsim_stats.ctrl_ticks << " replayed DRAM cycles (nothing in flight; row 28 MEASURED); PHY static "
                           << std::setprecision(3) << phy_static_mw << " mW from the IO model"
+                          << (phy_static_mw > 0.0 ? " [" + ram_oracle.getInterfacePhyStaticSource() + "]" : std::string())   // (user ruling 2026-10-27)
                           << (phy_static_mw > 0.0 ? " (the controller-side background McPAT's 10%-of-peak convention stood in for; McPAT's term is OFF in this run)" : (crosses_dq ? " (no exact IO map for this technology: 0)" : " (on-die placement: no DQ crossing, no PHY: 0; 1.12.18)"))
                           << std::endl;
             std::cout << "    leakage:          " << leakage_mw
@@ -17780,12 +17781,14 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 if (t.empty() || t == "SRAM" || t == "STT_MRAM" || t == "PCM" || t == "RERAM") continue;
                 if (!crossesOffPackageDQ(-1, t)) continue;
                 double mw = 0.0;
+                std::string phy_src;   // (user ruling 2026-10-27)
                 try {
                     pimid::RamulatorWrapper q("", t);
                     q.setTemperatureK(config.temperature_k);
                     q.setDdr5SpeedGrade(coupled ? config.ddr5_speed_grade : hostDdr5Grade(node, config));
                     q.initialize();
                     mw = q.getInterfacePhyStaticMW();
+                    phy_src = q.getInterfacePhyStaticSource();   // (user ruling 2026-10-27)
                 } catch (const std::exception& e) {
                     std::cerr << "[mem] NOTE: " << node.name << " memory-controller PHY static unavailable ("
                               << e.what() << "); not charged, stated here." << std::endl;
@@ -17794,7 +17797,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 if (mw > 0.0) {
                     host_mc_phy_w.push_back({node.name, mw / 1000.0});
                     std::cout << "  [mem] " << node.name << " memory controller PHY static " << mw
-                              << " mW (CACTI-IO " << t << " map: phase rotator + RX + PLL; the host controller drives the DQ pins"
+                              << " mW (" << t << ": " << phy_src << "; the host controller drives the DQ pins"
                                  " -- charged once, ledger " << node.name << ".memory_controllers_phy; the array's"
                                  " memory term carries no PHY; device scope charges the same term at a crossing placement)"
                               << std::endl;

@@ -111,6 +111,7 @@ struct LinkIOResult {
     double io_power_dynamic_mw = 0.0;  // switching on dq/dqs/ca/clk
     double phy_power_mw = 0.0;         // static + dynamic PHY
     double phy_static_power_mw = 0.0;
+    std::string phy_static_source = "CACTI-IO parameter set: phase rotator + RX + PLL";   // (user ruling 2026-10-27)
     double phy_dynamic_power_mw = 0.0;
 
     double timing_margin_ui = 0.0;     // eye margins, reported not consumed
