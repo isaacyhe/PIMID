@@ -1663,7 +1663,7 @@ other keys fill the fields a run without a host node falls back to.
 | `HBM3` | Ramulator2 | High Bandwidth Memory 3 |
 | `SRAM` | CACTI | Static RAM |
 | `STT_MRAM` | NVSim | Spin-Transfer Torque MRAM (aliases: `STT-MRAM`, `STTMRAM`, `MRAM`) |
-| `PCM` | NVSim | Phase-Change Memory (aliases: `PCRAM`, `3DXPOINT`) |
+| `PCM` | NVSim | Phase-Change Memory (alias: `PCRAM`). `3DXPOINT` is refused: no 3D XPoint cell is modelled (it was priced as this 1T PCM cell until the (1.12.113) release) |
 | `RERAM` | NVSim | Resistive RAM (aliases: `RESISTIVE`, `MEMRISTOR`) |
 
 ### PE Types

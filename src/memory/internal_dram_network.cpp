@@ -37,7 +37,7 @@ MemoryTechnology parseMemoryTechnology(const std::string& dram_type) {
      * substituting a value.
      *
      * Kept minimal ON PURPOSE (user): canonicalMemTech() normalises the alias
-     * spellings (STTMRAM/MRAM -> STT_MRAM, PCRAM/3DXPOINT -> PCM,
+     * spellings (STTMRAM/MRAM -> STT_MRAM, PCRAM -> PCM,
      * RESISTIVE/MEMRISTOR -> RERAM) before anything reaches here, so this
      * parser needs the CANONICAL forms only. Duplicating the alias list in a
      * second place is how the two vocabularies drifted apart to begin with. */

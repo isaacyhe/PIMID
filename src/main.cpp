@@ -330,7 +330,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             wrapper.initialize();
             latency_ns = wrapper.getReadLatency() * 1e9;
         }
-        else if (tech == "PCM" || tech == "PCRAM" || tech == "3DXPOINT") {
+        else if (tech == "PCM" || tech == "PCRAM") {
             pimid::NVSimWrapper::NVMConfig cfg;
             cfg.nvm_type = pimid::NVSimWrapper::NVMType::PCRAM;
             cfg.capacity_bytes = nvm_cap;
@@ -4173,7 +4173,18 @@ static std::string canonicalMemTech(std::string t) {
     std::transform(t.begin(), t.end(), t.begin(), ::toupper);
     if (t == "STTMRAM" || t == "STT-MRAM" || t == "MRAM") return "STT_MRAM";
     if (t == "RESISTIVE" || t == "MEMRISTOR") return "RERAM";
-    if (t == "PCRAM" || t == "3DXPOINT") return "PCM";
+    if (t == "PCRAM") return "PCM";
+    /* (1.12.113): 3DXPOINT is not an alias of PCM any more. It was priced as NVSim's 1T
+     * (CMOS-access) PCM cell (Lee et al., ISCA 2009), not a crosspoint cell with an
+     * ovonic threshold selector, and nothing said so. It is refused until a 3D XPoint
+     * cell is modelled. */
+    if (t == "3DXPOINT") {
+        std::cerr << "[config] FATAL: memory technology '3DXPOINT' is not modelled: no 3D XPoint cell "
+                     "(crosspoint array, ovonic threshold selector) is characterised. Use PCM for NVSim's 1T "
+                     "phase-change cell (sample_PCRAM.cell, Lee et al., ISCA 2009), which is what 3DXPOINT "
+                     "was priced as until this release." << std::endl;
+        std::exit(2);
+    }
     /* 1.9.35: an unrecognised technology used to pass straight through here and
      * then be classified by EXCLUSION downstream -- is_dram_tech is written as
      * !(SRAM || STT_MRAM || PCM || RERAM) at three sites -- so any string that
@@ -4222,7 +4233,7 @@ static std::string canonicalMemTech(std::string t) {
                   << "'. Supported: DDR3 DDR4 DDR5 LPDDR5 GDDR6 HBM2 HBM3 "
                      "SRAM STT_MRAM PCM RERAM (aliases: DRAM -> DDR4, "
                      "MRAM/STTMRAM -> STT_MRAM, "
-                     "PCRAM/3DXPOINT -> PCM, MEMRISTOR/RESISTIVE -> RERAM). "
+                     "PCRAM -> PCM, MEMRISTOR/RESISTIVE -> RERAM). "
                      "An unknown value would otherwise be classified as DRAM by "
                      "exclusion and priced with JEDEC DRAM tables." << std::endl;
         std::exit(2);
@@ -4732,7 +4743,7 @@ static void getMemControllerConfig(UnifiedConfig& config) {
     // For each tech, compute the physical bandwidth limit from access time.
     // User-set bandwidth is clamped to this limit.
     else if (tech == "STT_MRAM" || tech == "STTMRAM" || tech == "STT-MRAM" || tech == "MRAM" ||
-             tech == "PCM" || tech == "PCRAM" || tech == "3DXPOINT" ||
+             tech == "PCM" || tech == "PCRAM" ||
              tech == "RERAM" || tech == "RESISTIVE" || tech == "MEMRISTOR" ||
              tech == "SRAM") {
         /* 1.11.56 (audit B004): ASK THE TOOL.
@@ -18317,8 +18328,7 @@ static HostPathSplit getHostPathSplit(const std::string& tech_in) {
              tech == "STT-MRAM" || tech == "MRAM") { s = {0, 0, 0, 0}; } // on-die, same as SRAM
     else if (tech == "RERAM" || tech == "RESISTIVE" ||
              tech == "MEMRISTOR")              { s = {45, 15, 13, 4}; }  // DDR5-class fabric, sum 77
-    else if (tech == "PCM" || tech == "PCRAM" ||
-             tech == "3DXPOINT")               { s = {45, 15, 13, 4}; }  // DDR5-class fabric, sum 77
+    else if (tech == "PCM" || tech == "PCRAM") { s = {45, 15, 13, 4}; }  // DDR5-class fabric, sum 77
     else                                       { s = {45, 15, 13, 4}; }  // unknown DRAM-class default, sum 77
     return s;
 }
@@ -18548,7 +18558,7 @@ static BridgeDefaults bridgeDefaultsForTech(const std::string& tech_in) {
     std::transform(t.begin(), t.end(), t.begin(), ::toupper);
     // canonicalize NVM spellings
     if (t == "STTMRAM" || t == "STT-MRAM" || t == "MRAM") t = "STT_MRAM";
-    if (t == "PCRAM" || t == "3DXPOINT") t = "PCM";
+    if (t == "PCRAM") t = "PCM";
     if (t == "RESISTIVE" || t == "MEMRISTOR") t = "RERAM";
 
     // {protocol, phy, bw/ch GB/s, latency_ns (wire+pipeline), channels,

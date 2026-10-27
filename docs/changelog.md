@@ -6,6 +6,17 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.113 -- memory technology 3DXPOINT is refused
+
+- **Configuration (src/main.cpp canonicalMemTech and the technology lists; src/memory/internal_dram_network.cpp
+  comment; docs/yaml_reference.md):** `memory.technology: 3DXPOINT` was a silent alias of PCM. It was priced as
+  NVSim's 1T (CMOS-access) PCM cell, sample_PCRAM.cell (Lee et al., ISCA 2009, 90 nm), not as a crosspoint cell with
+  an ovonic threshold selector.
+  - A configuration naming 3DXPOINT is now refused at load, with a message pointing to PCM, until a 3D XPoint cell is
+    modelled.
+  - PCRAM stays an alias of PCM.
+- **Data impact:** none for PCM; 3DXPOINT configurations no longer run (none are in the corpus or the examples).
+
 ## 1.12.112 -- SRAM/NVM array timing at the configured device corner
 
 - **Timing (src/main.cpp; include/memory/memory_model.h and the PCM, STT-MRAM, ReRAM and SRAM model files):**
