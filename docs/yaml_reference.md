@@ -923,6 +923,9 @@ free node at all: their periphery class is derived from the memory technology
 and printed. `power.device_corner` (`hp` default, `lstp`, `lop`) selects the
 CACTI device column for LOGIC-family components; it is refused, with a printed
 reason, for DRAM-periphery components (one commodity-DRAM column per table).
+An SRAM or NVM memory array (STT_MRAM, PCM, RERAM) is characterised at the configured corner for its
+power and, from the (1.12.112) release, for its timing too: its access and write times, the devices M/D/1 cap andnthe PE interfaces bank model follow `power.device_corner`, which stays a configuration option (`hp`, `lstp`,
+`lop`; PCM has no `lstp` or `lop` design point and is refused there).
 1.12.18 (user ruling 2026-10-24, final): PEs on a LOGIC die -- a DDR-family
 RANK/CHANNEL placement (a DIMM-buffer-style die), the HBM logic/base die, any
 device whose PEs are priced in the logic family under the per-die process

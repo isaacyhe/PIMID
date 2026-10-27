@@ -124,6 +124,8 @@ private:
     void setAccessWidthBits(uint32_t bits) override;
     void setTechNodeNm(int nm) override;   // 1.11.51 (L70)
     void setTemperatureK(int k) override;  // 1.11.52 (D055)
+    void setDeviceCorner(int c) override { device_corner_ = c; }   // (1.12.112)
+    int device_corner_ = 0;               // (1.12.112): 0 hp, 1 lstp, 2 lop
     uint32_t access_width_bits_ = 0;   // 0 = model default
 };
 

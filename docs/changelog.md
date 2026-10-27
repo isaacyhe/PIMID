@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.112 -- SRAM/NVM array timing at the configured device corner
+
+- **Timing (src/main.cpp; include/memory/memory_model.h and the PCM, STT-MRAM, ReRAM and SRAM model files):**
+  power.device_corner set the SRAM/NVM array's power characterisation (since 1.11.49), but every timing query of the
+  same array ran at the HP corner. One array had two peripheries. The timing queries now use the run's corner too:
+  - the flat array queries, the placement-tier models, the write-time query and the device's M/D/1 cap.
+  power.device_corner stays a configuration option (hp default, lstp, lop); docs/yaml_reference.md says so.
+- **At the 64 KB / 512 b / 22 nm unit, LSTP:**
+  - STT_MRAM read 3.30 to 8.15 ns, write 11.8 to 16.7 ns.
+  - RERAM read 3.49 to 12.8 ns, write 22.1 to 31.1 ns.
+  - SRAM 0.22 to 0.66 ns.
+  - PCM has no LSTP or LOP design point and was already refused at those corners.
+- **Data impact:** only runs that set power.device_corner to lstp or lop. Fig2 MPI stream_triad at LSTP: STT_MRAM
+  +1.6 % and RERAM +3.2 % run time; SRAM unchanged. HP runs (the default) are unchanged.
+
 ## 1.12.111 -- an SRAM/NVM PE memory interface: its array's bandwidth, and one access at a time per bank
 
 - **Timing (src/main.cpp; external/zsim/src/pe_memory_interface.h, init.cpp, zsim.h, alu_core.cpp; docs/memory.md):**

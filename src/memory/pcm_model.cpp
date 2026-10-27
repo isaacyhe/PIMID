@@ -647,6 +647,7 @@ void PCMModel::initializeNVSim() {
         nvsim_config.word_width_bits = (access_width_bits_ > 0) ? access_width_bits_ : 64;
         nvsim_config.nvm_type = NVSimWrapper::NVMType::PCRAM;  // PCM type
         nvsim_config.process_node_nm = pcm_config_.tech_node_nm;
+        nvsim_config.device_corner = device_corner_;   // (1.12.112): power.device_corner
         nvsim_config.temperature_k = temperature_k_;   // 1.11.52 (D055)  // ~77 degC typical operating temp
         nvsim_config.optimize_read_energy = true;
         nvsim_config.optimize_write_energy = false;  // PCM writes are inherently slow

@@ -151,6 +151,9 @@ public:
      * were priced hot while every memory array stayed at 77 C -- one machine,
      * two temperatures, silently. <=0 keeps the model default. */
     virtual void setTemperatureK(int /*k*/) {}
+    /* (1.12.112): the array periphery's device corner (0 hp, 1 lstp, 2 lop), power.device_corner,
+     * so the array's timing is characterised at the corner its power is. */
+    virtual void setDeviceCorner(int /*corner*/) {}
 
     enum class Tier { SUBARRAY, BANK, BANKGROUP, CHIP, RANK, CHANNEL };
     enum class Op   { READ, WRITE, SET, RESET };

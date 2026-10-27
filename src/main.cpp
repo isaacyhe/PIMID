@@ -187,6 +187,10 @@ static void applyDramKnobs(pimid::RamulatorWrapper& w, const UnifiedConfig& conf
  * part parameter, memory.bank_kb (default 64 KB: CACTI's 1-32-bank query limit and
  * a mid-size macro). Set once at config load; capacity = banks x bank size. */
 static uint64_t g_bank_unit_bytes = 64ULL * 1024ULL;
+/* (1.12.112): power.device_corner (0 hp, 1 lstp, 2 lop) for the SRAM/NVM array TIMING queries. The
+ * array's power was characterised at the corner since 1.11.49, its timing always at HP, so one
+ * array had two peripheries. Set once at config load. */
+static int g_array_device_corner = 0;
 
 static int getMemoryLatencyCycles(const std::string& memory_tech, double frequency_mhz,
                                    int array_tech_node_nm,
@@ -260,6 +264,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                 model->setTechNodeNm(validateTechNodeNm(array_tech_node_nm,
                                                         "tier latency query"));
                 model->setTemperatureK(array_temperature_k);   // 1.11.52 (D055)
+                model->setDeviceCorner(g_array_device_corner);   // (1.12.112)
                 if (auto* dm = dynamic_cast<pimid::DRAMModel*>(model.get()))
                     dm->setDramPartKnobs(device_width, ddr5_speed_grade);   // 1.11.66 (B4)
                 model->initialize();
@@ -305,6 +310,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             cfg.capacity_bytes = sram_cap;
             cfg.tech_node_nm = validateTechNodeNm(array_tech_node_nm, "SRAM latency query");
             cfg.temperature = static_cast<uint32_t>(array_temperature_k);   // 1.11.52 (D055)
+            cfg.device_corner = g_array_device_corner;   // (1.12.112)
             cfg.output_width_bits = access_width_bits;   // 1.11.56 (B018)
             cfg.is_cache = false;  // SRAM as memory, not cache
             pimid::CACTIWrapper wrapper(cfg);
@@ -318,6 +324,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             cfg.capacity_bytes = nvm_cap;
             cfg.process_node_nm = validateTechNodeNm(array_tech_node_nm, "NVM latency query");
             cfg.temperature_k = array_temperature_k;   // 1.11.52 (D055)
+            cfg.device_corner = g_array_device_corner;   // (1.12.112)
             cfg.word_width_bits = access_width_bits;   // 1.11.56 (B018): the configured line
             pimid::NVSimWrapper wrapper(cfg);
             wrapper.initialize();
@@ -329,6 +336,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             cfg.capacity_bytes = nvm_cap;
             cfg.process_node_nm = validateTechNodeNm(array_tech_node_nm, "NVM latency query");
             cfg.temperature_k = array_temperature_k;   // 1.11.52 (D055)
+            cfg.device_corner = g_array_device_corner;   // (1.12.112)
             cfg.word_width_bits = access_width_bits;   // 1.11.56 (B018): the configured line
             pimid::NVSimWrapper wrapper(cfg);
             wrapper.initialize();
@@ -340,6 +348,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             cfg.capacity_bytes = nvm_cap;
             cfg.process_node_nm = validateTechNodeNm(array_tech_node_nm, "NVM latency query");
             cfg.temperature_k = array_temperature_k;   // 1.11.52 (D055)
+            cfg.device_corner = g_array_device_corner;   // (1.12.112)
             cfg.word_width_bits = access_width_bits;   // 1.11.56 (B018): the configured line
             pimid::NVSimWrapper wrapper(cfg);
             wrapper.initialize();
@@ -8482,6 +8491,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                     c.word_width_bits = static_cast<uint32_t>(config.cache_line_size) * 8u;
                     c.process_node_nm = validateTechNodeNm(config.tech_node_nm, "NVM write latency query");
                     c.temperature_k = config.temperature_k;
+                    c.device_corner = g_array_device_corner;   // (1.12.112)
                     pimid::NVSimWrapper w(c);
                     w.initialize();
                     rd_ns = w.getReadLatency() * 1e9;
@@ -22405,6 +22415,7 @@ int main(int argc, char** argv) {
                 config.device_corner =
                     yamlString(yaml_cfg["power"]["device_corner"], config.device_corner, "power.device_corner");
                 config.device_corner_given = true;   // 1.12.18: an explicit corner (vs the hp default)
+                g_array_device_corner = (config.device_corner == "lstp") ? 1 : (config.device_corner == "lop") ? 2 : 0;   // (1.12.112)
                 if (config.device_corner != "hp" && config.device_corner != "lstp" &&
                     config.device_corner != "lop") {
                     std::cerr << "ERROR: power.device_corner '" << config.device_corner

@@ -76,6 +76,7 @@ void SRAMModel::initialize() {
         cacti_config.write_ports = sram_config_.write_ports;
         cacti_config.tech_node_nm = sram_config_.tech_node_nm;
         cacti_config.temperature = sram_config_.temperature_k;   // 1.11.52 (D055)
+        cacti_config.device_corner = device_corner_;   // (1.12.112): power.device_corner
         /* 1.11.97 (review H28): the element's scratchpad is a RAM, not a cache --
          * no tag array, no associativity, one bank per unit (the per-bank unit
          * is what this model characterises; the device's bank count scales it).
