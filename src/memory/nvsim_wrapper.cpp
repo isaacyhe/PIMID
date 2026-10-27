@@ -215,7 +215,7 @@ std::string NVSimWrapper::getCellFileName() const {
         case NVMType::PCRAM:
             return "sample_PCRAM.cell";
         case NVMType::RERAM:
-            return "sample_RRAM.cell";
+            return "RRAM_1T1R.cell";   // (1.12.109): 1T1R (NVMExplorer), was the selector-less sample_RRAM.cell
         case NVMType::SLCNAND:
             return "sample_SLCNAND.cell";
         default:

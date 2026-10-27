@@ -1,0 +1,40 @@
+# PIMID (1.12.109): a 1T1R RRAM cell (one CMOS access transistor per cell), the RRAM cell of NVMExplorer
+# (Pentecost, Hankin, Donato, Hempstead, Wei, Brooks, HPCA 2022; repository data/cell_cfgs/RRAM.cell and
+# cell_cfgs.py RRAMCellConfig defaults): 53 F^2 and a 6 F access transistor, its reference cell being
+# derived from TSMC's N40 1T1R macro (Chou et al., ISSCC 2018). The resistances, read and SET/RESET
+# values are NVSim's sample_RRAM.cell values, as that repository states. Every published 22-40 nm RRAM
+# macro (TSMC N40 and N22, Intel 22FFL) is 1T1R.
+-MemCellType: memristor
+
+-CellArea (F^2): 53
+-CellAspectRatio: 1
+
+-ResistanceOnAtSetVoltage (ohm): 100000
+-ResistanceOffAtSetVoltage (ohm): 10000000
+-ResistanceOnAtResetVoltage (ohm): 100000
+-ResistanceOffAtResetVoltage (ohm): 10000000
+-ResistanceOnAtReadVoltage (ohm): 1000000
+-ResistanceOffAtReadVoltage (ohm): 10000000
+-ResistanceOnAtHalfResetVoltage (ohm): 500000
+
+-CapacitanceOn (F): 1e-16
+-CapacitanceOff (F): 1e-16
+
+-ReadMode: current
+-ReadVoltage (V): 0.4
+-ReadPower (uW): 0.16
+
+-ResetMode: voltage
+-ResetVoltage (V): 2.0
+-ResetPulse (ns): 10
+-ResetEnergy (pJ): 0.6
+
+-SetMode: voltage
+-SetVoltage (V): 2.0
+-SetPulse (ns): 10
+-SetEnergy (pJ): 0.6
+
+-AccessType: CMOS
+-AccessCMOSWidth (F): 6
+
+-ReadFloating: false

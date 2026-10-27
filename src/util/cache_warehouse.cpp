@@ -40,7 +40,8 @@ namespace {
  * the PCM cell SET/RESET energies are Lee et al. ISCA 2009 Table 1. */
 /* (1.12.94): the PCM write supply efficiency is the published charge-pump 0.388. */
 /* (1.12.108): a PCM write is priced at the mean of the SET and RESET energies. */
-const char* kToolVersion = "1.12.108";
+/* (1.12.109): RERAM is characterised on the 1T1R cell RRAM_1T1R.cell. */
+const char* kToolVersion = "1.12.109";
 
 struct State {
     Mode mode = Mode::RW;

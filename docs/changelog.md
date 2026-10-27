@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.109 -- RERAM is characterised on a 1T1R cell
+
+- **Power and timing (new external/nvsim/RRAM_1T1R.cell; src/memory/nvsim_wrapper.cpp; src/main.cpp report text;
+  src/util/cache_warehouse.cpp):** RERAM was characterised on NVSim's sample_RRAM.cell, a selector-less crossbar
+  cell (4 F^2, no access device) whose file names no source. Its current-sensing periphery took 97.5 % of the bank
+  area. Every published 22-40 nm RRAM macro (TSMC N40 and N22, Intel 22FFL) is 1T1R. RERAM now uses RRAM_1T1R.cell:
+  - It is the RRAM cell of NVMExplorer (Pentecost et al., HPCA 2022; repository data/cell_cfgs/RRAM.cell): one CMOS
+    access transistor 6 F wide and 53 F^2, the reference cell derived from TSMC's N40 macro (Chou et al., ISSCC 2018).
+  - Its resistances, read and SET/RESET values are NVSim's sample values, as that repository states.
+- **At the 64 KB / 512 b / 22 nm unit:**
+  - Leakage falls from 8.57 to 0.66 mW per bank, and area from 0.0405 to 0.0277 mm^2 per bank.
+  - Read goes from 0.156 to 0.153 pJ/bit and 3.49 to 4.22 ns.
+  - Write goes from 0.836 to 0.754 pJ/bit and 22.1 to 12.7 ns.
+- **Cache:** the cache tool version moves, so cached RERAM entries are characterised again on first use.
+- **Data impact:**
+  - RERAM fig2 cells: array leakage 2.19 W to 0.17 W over 256 banks, total energy about -75 %, array area
+    10.4 to 7.1 mm^2.
+  - Run time -1 to -2 % in MPI cells.
+  - Other technologies are unchanged.
+
 ## 1.12.108 -- a PCM write is priced at the mean of the SET and RESET energies
 
 - **Power (external/nvsim/SubArray.cpp; src/main.cpp report text; src/util/cache_warehouse.cpp):** every bit of a

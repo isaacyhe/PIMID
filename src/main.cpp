@@ -12292,8 +12292,8 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
         const char* cell = (tech == "STT_MRAM") ? "sample_STTRAM.cell (NVSim's sample cell; the file names no source)"
                          : (tech == "PCM")      ? "sample_PCRAM.cell (NVSim's sample cell, from Lee et al., ISCA 2009: read, SET and RESET "
                                                   "energies from its Table 1; its 90 nm currents and resistances as given)"
-                                                : "sample_RRAM.cell (NVSim's sample cell, a selector-less crossbar; the file "
-                                                  "names no source)";
+                                                : "RRAM_1T1R.cell (1T1R, NVMExplorer HPCA 2022 / TSMC N40-derived 53 F^2; resistances and SET/RESET from NVSim's sample; the file "
+                                                  "names its sources)";
         pimid::fmt_scoped(std::cout) << std::setprecision(6)
             << "  [nvm] " << tech << " array, NVSim, cell " << cell << ": one "
             << (nvm_cfg.capacity_bytes / 1024ULL) << " KB bank, " << nvm_cfg.word_width_bits << "-bit access, "
