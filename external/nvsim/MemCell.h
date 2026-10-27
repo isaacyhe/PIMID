@@ -80,6 +80,7 @@ public:
 	double minSenseVoltage; /* Minimum sense voltage */
         double wordlineBoostRatio; /*TO-DO: function not realized: ratio of boost wordline voltage to vdd */
 	double readPower;       /* Read power per bitline (uW)*/
+	double readEnergy;      /* PIMID (1.12.92): published energy of one cell read (pJ in the file, J here); 0 = not given */
 	bool   resetMode;		/* true = voltage-mode, false = current-mode */
 	double resetVoltage;	/* Reset voltage */
 	double resetCurrent;	/* Reset current */

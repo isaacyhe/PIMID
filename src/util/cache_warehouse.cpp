@@ -36,7 +36,8 @@ namespace {
  * Set to the release that last changed characterization semantics. The rule
  * from here: this string moves whenever a release changes what a cached
  * artifact means, whether or not the filename moves with it. */
-const char* kToolVersion = "1.11.57";
+/* (1.12.92): the PCM cell read energy (sample_PCRAM.cell -ReadEnergy) is read and priced. */
+const char* kToolVersion = "1.12.92";
 
 struct State {
     Mode mode = Mode::RW;

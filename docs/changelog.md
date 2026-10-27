@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.92 -- a PCM read costs the cell's published read energy
+
+- **Power (external/nvsim/MemCell.cpp, MemCell.h, SubArray.cpp; src/util/cache_warehouse.cpp):** NVSim did not read
+  the "-ReadEnergy (pJ)" key of a cell file. sample_PCRAM.cell carries it from its source, Lee et al., ISCA 2009,
+  Table 1: a cell read dissipates 40 uW for 48 ns, about 2 pJ. NVSim then priced the cell read current over the
+  sense amplifier's latch time alone (3 ps at the 64 KB / 512 b / 22 nm unit), and a 64 B PCM read came to 3.74 pJ
+  (0.0073 pJ/bit). A cell file that gives "-ReadEnergy" is now priced at that energy per bit sensed; a cell file
+  without it is priced as before.
+  - At the 64 KB / 512 b / 22 nm unit, a PCM read becomes 2.0 pJ/bit (1.03 nJ per 64 B access). Lee et al. give
+    2.47 pJ/bit for the array read, periphery included (Table 2).
+  - STT_MRAM and RERAM cell files give no read energy, so they are unchanged.
+- **Cache:** the NVSim characterisation cache tool version moves, so the cached entries are characterised again on
+  first use.
+- **Data impact:** PCM read energy rises about 270x; it now carries most of a read-heavy PCM cell's memory dynamic
+  energy. Other technologies are unchanged.
+
 ## 1.12.91 -- the SRAM/NVM array's priced figures, per bit and at full precision
 
 - **Report (src/main.cpp, priceNonDramArray and the device ledger):** the array price of a non-DRAM memory is printed

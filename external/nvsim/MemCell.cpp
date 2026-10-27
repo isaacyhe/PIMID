@@ -55,6 +55,7 @@ MemCell::MemCell() {
 	readVoltage         = 0;
 	readCurrent         = 0;
 	readPower           = 0;
+	readEnergy          = 0;
         wordlineBoostRatio  = 1.0;
 	resetMode           = true;
 	resetVoltage        = 0;
@@ -232,6 +233,15 @@ void MemCell::ReadCellFromFile(const string & inputFile)
 		if (!strncmp("-ReadPower", line, strlen("-ReadPower"))) {
 			sscanf(line, "-ReadPower (uW): %lf", &readPower);
 			readPower /= 1e6;
+			continue;
+		}
+		/* PIMID (1.12.92): the cell's published read energy. The key was in
+		 * sample_PCRAM.cell (Lee et al., ISCA 2009: 40 uW for 48 ns, ~2 pJ) and
+		 * no line read it, so a PCM read was priced on the sense-amplifier latch
+		 * time alone (3 ps at the 64 KB / 512 b / 22 nm unit). */
+		if (!strncmp("-ReadEnergy", line, strlen("-ReadEnergy"))) {
+			sscanf(line, "-ReadEnergy (pJ): %lf", &readEnergy);
+			readEnergy /= 1e12;
 			continue;
 		}
 		if (!strncmp("-WordlineBoostRatio", line, strlen("-WordlineBoostRatio"))) {

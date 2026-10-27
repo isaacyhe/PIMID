@@ -713,7 +713,9 @@ void SubArray::CalculatePower() {
 						(voltagePrecharge * voltagePrecharge - voltageMemCellOn * voltageMemCellOn ) * numColumn;
 			}
 
-			if (cell->readPower == 0) 
+			if (cell->readEnergy > 0)	/* PIMID (1.12.92): the cell's published read energy, per bit sensed */
+				cellReadEnergy = cell->readEnergy;
+			else if (cell->readPower == 0)
 				cellReadEnergy = 2 * cell->CalculateReadPower() * senseAmp.readLatency; /* x2 is because of the reference cell */
 			else
 				cellReadEnergy = 2 * cell->readPower * senseAmp.readLatency;
