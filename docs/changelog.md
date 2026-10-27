@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.96 -- the in-order device PE's integer datapath priced from its structure
+
+- **Integer datapath (CV32E40P, open-flow synthesis to Nangate 45 nm, combinational cells; gate-level activity of the
+  placed-and-routed core):**
+  - integer ALU (cv32e40p_alu with popcnt and ff_one, 5,555 GE): its operands change with every instruction, so it
+    is charged per busy cycle at the logic activity 0.099, less the published 32-bit add already charged per ALU
+    access; the iterative divider (1,221 GE) is not charged;
+  - operand multiplexers and the rest of the ID-stage logic (3,601 GE of ID, the decoder apart), less the forwarding
+    multiplexers priced per result and the ID logic already charged: per busy cycle at the logic activity;
+  - integer multiplier (cv32e40p_mult, 18,728 GE): per multiply, 0.170 toggles per gate (gate-level simulation,
+    glitches included); the published per-operation multiply (Horowitz ISSCC 2014) is kept and the structural value
+    beyond it added.
+  Energy per toggle as the other cell-level structures (NAND2_X1 internal + fanout-2 pin load x the node's wire
+  load, node-scaled as the published flip-flop); repair buffers apply to it as to the other integer logic.
+- **Data impact (as the previous entry):**
+  - alu PE core-only non-clock energy per instruction: 32 nm 8.13 -> 10.86 pJ, 22 nm 5.49 -> 7.50 pJ; without the
+    FPU, the FP register file and the DMA engine: 6.78 -> 9.50 / 4.58 -> 6.59 pJ.
+  - alu PE whole core per cycle at one instruction per cycle: 9.91 -> 12.64 pJ (32 nm), 6.43 -> 8.44 pJ (22 nm).
+  - in_order PE core-only non-clock: 10.84 -> 12.20 pJ (32 nm), 6.60 -> 7.61 pJ (22 nm).
+  - clock, DRAM and memory-controller metrics unchanged; OOO cores and the host unchanged.
+- **Invalidates:** every in-order PE energy figure of the previous entry.
+
 ## 1.12.95 -- the in-order device PE's core logic priced from its structure: forwarding, latch register file, fetch front end, missing logic, routed-core flip-flops and repair buffers
 
 - **Scope:** the in-order PE (alu_core, in_order_core) of a device. OOO cores and the host are unchanged.

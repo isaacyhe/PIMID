@@ -1529,6 +1529,7 @@ EXECU::EXECU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 	  bool exist_flag = true;
 	  pimid_fwd = false; pimid_fwd_int = pimid_fwd_mul = pimid_fwd_fp = 0.0;   /* PIMID (F1-3) */
 	  pimid_rep_frac = 0.0;   /* PIMID (F1-STRUCT) */
+	  pimid_dp_cycle = pimid_mul_extra = 0.0;   /* PIMID (F1-DP) */
 	  if (!exist) return;
 	  double fu_height = 0.0;
       clockRate = coredynp.clockRate;
@@ -2518,6 +2519,39 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 		            << " pJ per busy cycle; timing-repair buffers " << f_rep << " + hold buffers " << f_hold
 		            << " of the integer logic energy (routed CV32E40P, Nangate45 0.188 + 0, ASAP7 0.300 + 0.198, log-node "
 		            << tn << ")" << std::endl;
+		  /* PIMID (F1-DP, user ruling 2026-10-27 "add the integer datapath"): THE INTEGER DATAPATH, STRUCTURALLY, from the own
+		   * synthesis of CV32E40P (sv2v + yosys + Nangate45, combinational cells) and its gate-level activity:
+		   *  - integer ALU: cv32e40p_alu + popcnt + ff_one 4,433 um^2 = 5,555 GE (the iterative divider, 1,221 GE, works only
+		   *    on divides: not charged). Its operands change with every instruction (no operand isolation), so it is charged
+		   *    per busy cycle at the logic activity PIMID_F1_ACT_LOGIC, less the published 32-bit add the model already
+		   *    charges per ALU access (one per cycle);
+		   *  - operand / forwarding multiplexers and the rest of the ID-stage logic: cv32e40p_id_stage itself 2,444 um^2 +
+		   *    controller and interrupt controller 435 GE = 3,601 GE of the 3,940 GE F1-GL counts for ID (the other 339 GE are
+		   *    the decoder), less the F1-3 forwarding multiplexers (priced per result) and less what F1-GL already charges
+		   *    for ID; per busy cycle at the logic activity;
+		   *  - integer multiplier: cv32e40p_mult 14,945 um^2 = 18,728 GE, per multiply: 0.113 toggles per gate per multiply
+		   *    (zero-delay gate-level simulation of the gemv loop: 0.793 pJ per cycle at one multiply per 8.96 cycles over
+		   *    18,728 GE x 3.35 fJ) x the glitch ratio 0.099 / 0.066 = 0.170, at the same NAND2-equivalent energy per toggle;
+		   *    the published per-operation multiply (Horowitz) is kept and the structural value beyond it is added.
+		   * All DERIVED; e_ge as F1-GL (wire load per node, node ratio of the published flip-flop). */
+		  if (exu && exu->exist)
+		  {
+			  const double ge_alu = 5555.0, ge_mul = 18728.0, ge_idop = 3601.0, act_mul = 0.170;
+			  const double e_add = (exu->exeu && exu->exeu->pimid_int_pub) ? exu->exeu->pimid_int_e[1] : 0.0;
+			  const double x_op = std::max(0.0, ge_idop - fwd_mux*mux_ge - x_id);
+			  const double e_alu = std::max(0.0, ge_alu*e_cyc - e_add);
+			  exu->pimid_dp_cycle = e_alu + x_op*e_cyc;
+			  const double e_mul = ge_mul*act_mul*e_ge;
+			  const double e_mul_pub = (exu->mul && exu->mul->pimid_int_pub) ? exu->mul->pimid_int_e[1] : 0.0;
+			  exu->pimid_mul_extra = (coredynp.num_muls > 0) ? std::max(0.0, e_mul - e_mul_pub) : 0.0;
+			  std::cerr << "[mcpat dp] core" << ithCore << " in-order PE: INTEGER DATAPATH (F1-DP; own CV32E40P synthesis): ALU "
+			            << ge_alu/1000 << " kGE x " << PIMID_F1_ACT_LOGIC << " x " << e_ge*1e15 << " fJ - published 32-bit add "
+			            << e_add*1e12 << " pJ = " << e_alu*1e12 << " pJ per busy cycle; operand / ID logic " << ge_idop/1000
+			            << " kGE - forwarding multiplexers " << fwd_mux*mux_ge/1000 << " - F1-GL ID " << x_id/1000 << " = " << x_op/1000
+			            << " kGE -> " << x_op*e_cyc*1e12 << " pJ per busy cycle; multiplier " << ge_mul/1000 << " kGE x " << act_mul
+			            << " per multiply = " << e_mul*1e12 << " pJ per multiply (published " << e_mul_pub*1e12 << " pJ, added "
+			            << exu->pimid_mul_extra*1e12 << " pJ)" << std::endl;
+		  }
 		  std::cerr << "[mcpat logic] core" << ithCore << " in-order PE: MISSING LOGIC (F1-GL; own CV32E40P synthesis, combinational "
 		            << "IF 3.02 / ID 3.94 / CSR 3.41 (x0.025 activity, clock-gated) / LSU 1.02 kGE; Schuiki 2021 Fig. 9 IF 5 / ID 11 / others 8 kGE "
 		            << "beside): model registers and logic in IF "
@@ -4680,8 +4714,10 @@ void EXECU::computeEnergy(bool is_tdp)
 		}
 
 		power      = power + rfu->power + exeu->power + bypass.power + scheu->power;
+		const double e_dp_tdp = pimid_dp_cycle + coredynp.MUL_cdb_duty_cycle*pimid_mul_extra;   /* PIMID (F1-DP) */
+		power.readOp.dynamic += e_dp_tdp;
 		if (pimid_rep_frac > 0)   /* PIMID (F1-STRUCT): timing-repair buffers on the integer logic */
-			power.readOp.dynamic += pimid_rep_frac*(exeu->power.readOp.dynamic + (coredynp.num_muls > 0 ? mul->power.readOp.dynamic : 0.0)
+			power.readOp.dynamic += pimid_rep_frac*(e_dp_tdp + exeu->power.readOp.dynamic + (coredynp.num_muls > 0 ? mul->power.readOp.dynamic : 0.0)
 			    + (pimid_fwd ? coredynp.ALU_cdb_duty_cycle*pimid_fwd_int + (coredynp.num_muls > 0 ? coredynp.MUL_cdb_duty_cycle*pimid_fwd_mul : 0.0) : 0.0));
 	}
 	else
@@ -4716,9 +4752,20 @@ void EXECU::computeEnergy(bool is_tdp)
 			          << XML->sys.core[ithCore].cdb_mul_accesses << " multiply + " << XML->sys.core[ithCore].cdb_fpu_accesses
 			          << " FP results through the forwarding multiplexers = " << bypass.rt_power.readOp.dynamic << " J (F1-3)" << std::endl;
 		rt_power      = rt_power + rfu->rt_power + exeu->rt_power + bypass.rt_power + scheu->rt_power;
+		double e_dp = 0.0;   /* PIMID (F1-DP): the integer datapath, per busy cycle and per multiply */
+		if (pimid_dp_cycle > 0 || pimid_mul_extra > 0)
+		{
+			const double cyc = coredynp.pipeline_duty_cycle * ((XML->sys.homogeneous_cores==1)
+				? XML->sys.total_cycles * XML->sys.number_of_cores : coredynp.total_cycles);
+			const double nmul = (coredynp.num_muls > 0) ? XML->sys.core[ithCore].cdb_mul_accesses : 0.0;
+			e_dp = cyc*pimid_dp_cycle + nmul*pimid_mul_extra;
+			rt_power.readOp.dynamic += e_dp;
+			std::cerr << "[mcpat dp] core" << ithCore << " runtime: " << cyc << " busy cycles x " << pimid_dp_cycle << " J + " << nmul
+			          << " multiplies x " << pimid_mul_extra << " J = " << e_dp << " J (F1-DP)" << std::endl;
+		}
 		if (pimid_rep_frac > 0)   /* PIMID (F1-STRUCT): timing-repair buffers on the integer logic */
 		{
-			const double lg = exeu->rt_power.readOp.dynamic + (coredynp.num_muls > 0 ? mul->rt_power.readOp.dynamic : 0.0)
+			const double lg = e_dp + exeu->rt_power.readOp.dynamic + (coredynp.num_muls > 0 ? mul->rt_power.readOp.dynamic : 0.0)
 			    + (pimid_fwd ? XML->sys.core[ithCore].cdb_alu_accesses*pimid_fwd_int
 			                   + (coredynp.num_muls > 0 ? XML->sys.core[ithCore].cdb_mul_accesses*pimid_fwd_mul : 0.0) : 0.0);
 			rt_power.readOp.dynamic += pimid_rep_frac*lg;

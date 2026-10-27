@@ -256,6 +256,9 @@ class EXECU :public Component {
 	bool   pimid_fwd;
 	double pimid_fwd_int, pimid_fwd_mul, pimid_fwd_fp;
 	double pimid_rep_frac;   /* PIMID (F1-STRUCT): timing-repair buffer fraction of the integer logic energy (set by Core) */
+	/* PIMID (F1-DP): the integer datapath priced structurally -- J per busy cycle (ALU beyond its adder, operand
+	 * multiplexers) and J per multiply beyond the published per-operation value (set by Core) */
+	double pimid_dp_cycle, pimid_mul_extra;
 
 	EXECU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_, double lsq_height_,const CoreDynParam & dyn_p_, bool exist_=true);
     void computeEnergy(bool is_tdp=true);
