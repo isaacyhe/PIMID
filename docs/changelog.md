@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.106 -- HBM3 standby temperature slope taken per stack
+
+- **The question:** the HBM3 record's IDD-vs-temperature slope was the measured HBM2 per-channel slope scaled by
+  the ratio of the two records' standby currents (0.938 mA/C per channel, 15.0 mA/C per stack). That standby ratio
+  comes from clock and voltage scaling of the clocked periphery (docs/derivations/hbm_gddr6_idd.md sec. 1.3),
+  not from the temperature-sensitive part.
+  - At 360 K the HBM3 background was 2388 mW per stack, above the XPE 2023.1.2 like-for-like guard (2170 mW,
+    whose range covers 25 C typical to 100 C maximum).
+- **Change:** the measured HBM2 slope is taken per stack: 6.41 mA/C (Olgun et al., MICRO 2026, arXiv:2610.14244,
+  Table 4) over HBM3's 16 channels = 0.401 mA/C per channel; IDD2P 0.7x (DERIVED). NO PUBLISHED SOURCE FOUND for an
+  HBM3 current-vs-temperature measurement.
+- **Data impact:** HBM3 only. Background per stack 1991 / 2388 / 2881 mW -> 1777 / 2088 / 2580 mW at
+  350 / 360 / 380 K. 350 K and 360 K are now inside the guard; 380 K (107 C) is outside the guard's range.
+
 ## 1.12.105 -- any integer operating temperature in 300..400 K
 
 - **Configuration:** `power.temperature_k` (and `power.temperature_c` after conversion) accepts any integer in

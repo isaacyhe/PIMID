@@ -33,9 +33,9 @@ idd_temperature:
   reference_c: 54.2
   lo_c: 48.0
   hi_c: 86.0
-  slope_idd2n: 0.937947
-  slope_idd3n: 0.937947
-  slope_idd2p: 0.656563
+  slope_idd2n: 0.400625
+  slope_idd3n: 0.400625
+  slope_idd2p: 0.280438
   source: "DERIVED from Olgun et al. MICRO 2026 (arXiv:2610.14244) Table 4 HBM2 slopes x this record's standby / HBM2's"
 
 # ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
