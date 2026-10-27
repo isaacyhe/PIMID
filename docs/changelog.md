@@ -6,6 +6,25 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.120 -- a workload.env loader variable reaches only the guest
+
+- **Defect (src/main.cpp, the launch children).** Each launch copied every `workload.env` entry into its own
+  environment before it started QEMU, so an `LD_*` entry also applied to the emulator itself. `LD_LIBRARY_PATH` set
+  in `workload.env` for a guest library (as the documentation advises) replaced the emulator's own search path, and
+  the run stopped with `qemu-x86_64: Could not load plugin ...: libconfig++.so.15: cannot open shared object file`.
+- **Fix.** `LD_*` entries of `workload.env` are no longer set in the launch's own environment; they reach the guest
+  only, through QEMU's `-E`, and the host's own `LD_*` values are never passed to the guest. Every other entry is
+  set as before.
+- **Also fixed (same cause):** trace generation of an MPI workload set the MPI shim's `LD_PRELOAD` in the launch's
+  environment. It preloaded the shim into QEMU, and since 1.12.64 it no longer reached the guest, so the ranks ran
+  without the shim: no checksum, and about 99 million trace events per rank for gemv_mpi 256 (4 ranks). The preload
+  is now passed to the guest only, as in the execution paths.
+- No timing, energy or area model changes.
+- **Validation (qc-pvc and qc-mi210):** DDR3 gemv 256 with `workload.env: {LD_LIBRARY_PATH: /opt/pimid_no_such_dir}`
+  stopped with exit code 3 before; it now runs on both node types with the same result (1059845 cycles), and the
+  guest's dynamic linker searches the given directory first, then the system directories. MPI trace generation
+  (gemv_mpi 256, 4 ranks) prints the checksum on both node types.
+
 ## 1.12.119 -- trace generation: results no longer depend on the host machine's CPU count
 
 - **Processor queries during trace generation (external/zsim/src/qemu_trace_plugin.c; src/main.cpp).** Since 1.12.107

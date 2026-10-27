@@ -798,6 +798,20 @@ static const char* const kGuestPimidVars[] = {   // the PIMID_* variables the sh
     "PIMID_HOST_CORES", "PIMID_DEVICE_PES", "PIMID_SPM_CHECK_BYTES",                            // benchmarks/include
     "PIMID_BARNES_POOL_FAULT", "PIMID_BARNES_COINCIDE_FAULT"};                                 // splash3 barnes
 
+/* (1.12.120): A DYNAMIC-LOADER VARIABLE OF workload.env REACHES ONLY THE GUEST.
+ * The launch child copied every workload.env entry into its own environment
+ * (setenv) before it executed QEMU, so an LD_* entry -- LD_LIBRARY_PATH for a
+ * guest library outside the system directories, as the documentation advises --
+ * also replaced the emulator's own: QEMU then could not load its libraries
+ * ("libconfig++.so.15: cannot open shared object file") or loaded the guest's.
+ * LD_* entries now go to the guest only (guestLaunchOptions adds them from
+ * workload.env with QEMU's -E); every other entry is set as before. */
+static bool loaderVar(const std::string& name) { return name.compare(0, 3, "LD_") == 0; }
+static void setWorkloadEnv(const std::map<std::string, std::string>& workloadEnv) {
+    for (const auto& [key, val] : workloadEnv)
+        if (!loaderVar(key)) setenv(key.c_str(), val.c_str(), 1);
+}
+
 static bool guestEnvKept(const std::string& name, const std::map<std::string, std::string>& workloadEnv) {
     if (workloadEnv.count(name)) return true;
     if (name.compare(0, 4, "OMP_") == 0 || name.compare(0, 5, "GOMP_") == 0) return true;
@@ -823,12 +837,21 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
         const size_t eq = kv.find('=');
         if (eq == std::string::npos || eq == 0) continue;
         const std::string name = kv.substr(0, eq);
+        if (loaderVar(name)) { o.push_back("-U"); o.push_back(name); continue; }   // (1.12.120): the host's, never the guest's
         if (guestEnvKept(name, workloadEnv) && name != kGuestEnvPadName && kv.find(',', eq) != std::string::npos) {
             inherited.push_back(kv);   // stays in QEMU's list, in the host's order
             continue;
         }
         o.push_back("-U"); o.push_back(name);
         if (guestEnvKept(name, workloadEnv) && name != kGuestEnvPadName) genv[name] = kv;
+    }
+    for (const auto& [name, val] : workloadEnv) {   // (1.12.120): workload.env loader variables, from the configuration
+        if (!loaderVar(name)) continue;
+        if (val.find(',') != std::string::npos)
+            std::cerr << "[guest] WARNING: workload.env " << name << " holds a comma, which QEMU's -E cannot carry:"
+                         " it is not passed to the guest" << std::endl;
+        else
+            genv[name] = name + "=" + val;
     }
     for (const auto& kv : guestSet) {
         const size_t eq = kv.find('=');
@@ -25114,17 +25137,18 @@ int main(int argc, char** argv) {
                                                  + ",cpus=" + std::to_string(guestCpuCount(config));   // (1.12.119)
 
                         setenv("OMP_NUM_THREADS", "1", 1);
-                        setenv("LD_PRELOAD", pimid_mpi_lib.c_str(), 1);
+                        /* (1.12.120): LD_PRELOAD is GUEST-scoped (qemu -E below), as in the execution paths: set
+                         * in this process's environment it preloaded the shim into QEMU itself and, removed from
+                         * the guest's set since (1.12.64), never reached the guest. */
                         setenv("PIMID_MPI_RANKS", std::to_string(ranks).c_str(), 1);
                         setenv("PIMID_MPI_RANK", std::to_string(rank).c_str(), 1);
                         setenv("PIMID_MPI_SHM", shm_name.c_str(), 1);
-                        for (const auto& [key, val] : config.workload_env) {
-                            setenv(key.c_str(), val.c_str(), 1);
-                        }
+                        setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
 
                         // argv: qemu <guest-image options> -plugin <plugin>,output=<trace> -- <workload> [args...]
                         // ((1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch, guestQemuArgv)
-                        execGuestQemu(guestQemuArgv(qemu_binary, {kGuestBindNowEnv},   // 1.12.18 (ruling 2026-10-24): bind at load
+                        execGuestQemu(guestQemuArgv(qemu_binary, {kGuestBindNowEnv,   // 1.12.18 (ruling 2026-10-24): bind at load
+                                                                  "LD_PRELOAD=" + pimid_mpi_lib},
                                                     plugin_arg, config.workload_binary, config.workload_args,
                                                     config.workload_env));
                         std::cerr << "Error: execvp(" << qemu_binary << ") failed: "
@@ -25240,9 +25264,7 @@ int main(int argc, char** argv) {
                         setenv("OMP_WAIT_POLICY", "PASSIVE", 0);
                         setenv("GOMP_SPINCOUNT", "0", 0);
                     }
-                    for (const auto& [key, val] : config.workload_env) {
-                        setenv(key.c_str(), val.c_str(), 1);
-                    }
+                    setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
                     // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
                     execGuestQemu(guestQemuArgv(qemu_binary, {kGuestBindNowEnv},   // 1.12.18 (ruling 2026-10-24): bind at load
                                                 plugin_arg, config.workload_binary, config.workload_args,
@@ -25652,9 +25674,7 @@ int main(int argc, char** argv) {
                                std::to_string(config.mpi_ranks).c_str(), 1);
                         setenv("OMP_NUM_THREADS", "1", 0);
                     }
-                    for (const auto& [key, val] : config.workload_env) {
-                        setenv(key.c_str(), val.c_str(), 1);
-                    }
+                    setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
                     std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
                     if (config.workload_type == "mpi" && config.mpi_ranks > 0)
                         guest_set.push_back("LD_PRELOAD=" + mpi_thread_lib);
@@ -26078,9 +26098,7 @@ int main(int argc, char** argv) {
                             setenv("OMP_PROC_BIND", "true", 0);
                             setenv("OMP_PLACES", "cores", 0);
                         }
-                        for (const auto& [key, val] : config.workload_env) {
-                            setenv(key.c_str(), val.c_str(), 1);
-                        }
+                        setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
 
                         std::string parg = plugin_path + ",cfg=" + zsim_cfg_path
                             + ",out=" + output_dir + ",procIdx=" + std::to_string(i);
@@ -26195,9 +26213,7 @@ int main(int argc, char** argv) {
                                std::to_string(config.mpi_ranks).c_str(), 1);
                         setenv("OMP_NUM_THREADS", "1", 0);
                     }
-                    for (const auto& [key, val] : config.workload_env) {
-                        setenv(key.c_str(), val.c_str(), 1);
-                    }
+                    setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
 
                     std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
                     // LD_PRELOAD must be GUEST-scoped (qemu -E): a host-env preload
