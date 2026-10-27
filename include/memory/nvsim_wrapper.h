@@ -50,6 +50,15 @@ public:
          * device_type convention. */
         int device_corner = 0;
         int temperature_k;           // Operating temperature in Kelvin
+        /* (1.12.103): the DESIGN temperature. NVSim's design-space search picks the
+         * array organisation (mats, subarrays, sense-amp and output muxes,
+         * buffer sizing level, wire types) at this temperature; the chosen
+         * organisation is then evaluated at temperature_k. A chip has one
+         * organisation, so a run at another temperature changes that design's
+         * leakage, latency and energy, not the design. 350 K is the
+         * temperature every characterisation used before power.temperature_k
+         * existed (1.11.52), so a 350 K run is unchanged. */
+        int design_temperature_k = 350;
 
         // Optimization target
         bool optimize_read_latency;

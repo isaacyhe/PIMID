@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.103 -- NVM arrays: one organisation, chosen at 350 K and evaluated at the run temperature
+
+- **The defect:** NVSim (Dong et al., "NVSim: A Circuit-Level Performance, Energy, and Area Model for Emerging
+  Nonvolatile Memory", IEEE TCAD 31(7), 2012) ran its design-space search at the run's temperature. A run at
+  another temperature could therefore price a different array organisation, not the same array at a different
+  temperature.
+  - Measured: the PCM BANK array's leakage was 33.3 mW at 300 K against 11.8 mW at 330 K and 18.9 mW at 350 K.
+- **Fix** (src/memory/nvsim_wrapper.cpp):
+  - The search runs at the design temperature, 350 K. This is DERIVED: it is the temperature every
+    characterisation used before 1.11.52.
+  - The organisation it picks (mats, subarrays, active counts, mux degrees, rows per set, buffer level, wire types)
+    is then evaluated at the run's temperature, through the fixed-organisation sequence NVSim's own wire-refinement
+    step uses. On-resistance, driver sizing, leakage and wire resistance follow the temperature.
+  - The same organisation re-evaluated at 350 K must reproduce the search; the run prints that check.
+  - If the 350 K organisation fails NVSim's validity checks at the run temperature, the run says so and searches at
+    the run temperature, as before. This happens for PCM and STT-MRAM at 400 K.
+  - The design temperature is in the NVSim cache key, the record and the file name (`_dt<K>`), so an entry
+    characterised the old way is never served.
+- **Data impact:** none at 350 K, the default. PCM at 300 K: array leakage 33.3 -> 10.7 mW (now monotone:
+  10.7 / 11.8 / 18.9 / 37.4 / 113.9 mW at 300-380 K). ReRAM and STT-MRAM: unchanged at 300-400 K (their search
+  already picked the 350 K organisation). Array dynamic energy: unchanged.
+
 ## 1.12.102 -- 22 and 32 nm high-performance leakage above 350 K follows the published high-temperature factor
 
 - **The gap** (external/cacti/tech_params/22nm.dat and 32nm.dat, hp column of I_off_n; the same values as the

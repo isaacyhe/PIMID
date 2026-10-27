@@ -10,6 +10,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <map>
+#include <memory>       // (1.12.103): std::unique_ptr for the fallback search
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -344,6 +345,12 @@ namespace {
          * caught it: LSTP leakage == HP leakage exactly. */
         int device_corner;
         int temperature_k;
+        /* (1.12.103): the temperature the organisation was SEARCHED at. Before
+         * this, an entry at temperature_k T was a search run at T; now it is
+         * the 350 K design evaluated at T, a different quantity under the same
+         * temperature, so the design temperature is a key axis (and a stem
+         * suffix) and a per-T-searched entry can never be served for it. */
+        int design_temperature_k;
         /* 1.11.57 (latent D027): THE REST OF THE DESIGN INPUTS.
          *
          * createNVSimInput() feeds NVSim five more things that select a
@@ -372,6 +379,7 @@ namespace {
             if (capacity_bytes != o.capacity_bytes) return capacity_bytes < o.capacity_bytes;
             if (process_node_nm != o.process_node_nm) return process_node_nm < o.process_node_nm;
             if (temperature_k != o.temperature_k) return temperature_k < o.temperature_k;
+            if (design_temperature_k != o.design_temperature_k) return design_temperature_k < o.design_temperature_k;
             if (word_width_bits != o.word_width_bits) return word_width_bits < o.word_width_bits;
             if (device_corner != o.device_corner) return device_corner < o.device_corner;
             if (design_target != o.design_target) return design_target < o.design_target;
@@ -406,6 +414,13 @@ namespace {
          * through 1.11.93, a refusal from 1.11.94. -1 = absent (older file). */
         int    subarray_rows  = -1;   // bank->mat.subarray.numRow
         int    subarray_cols  = -1;   // bank->mat.subarray.numColumn
+        /* (1.12.103): how the entry was produced when temperature_k differs from
+         * design_temperature_k. 1 = the design-temperature organisation
+         * evaluated at temperature_k; 0 = that organisation is infeasible at
+         * temperature_k (or none was found at the design temperature) and
+         * the search was run at temperature_k instead. -1 = not applicable
+         * (temperature_k == design_temperature_k) or absent. */
+        int    design_held    = -1;
     };
     static std::map<NVMCacheKey, NVMCacheVal> g_nvsim_cache;
 
@@ -446,6 +461,12 @@ namespace {
          * the pre-existing filenames (no regeneration of the warmed set),
          * any other temperature gets its own entry. */
         if (k.temperature_k != 350) os << "_t" << k.temperature_k;
+        /* (1.12.103): the design temperature joins the name whenever it is not
+         * the plain 350 K-searched-at-350 K entry, so a 350 K entry keeps its
+         * name and an entry searched at its own temperature (written before
+         * this change, e.g. ..._t330.xml) is never read for a held design. */
+        if (k.temperature_k != k.design_temperature_k || k.design_temperature_k != 350)
+            os << "_dt" << k.design_temperature_k;
         /* 1.11.57 (latent D027): the five newly-keyed inputs join the FILENAME
          * under the same rule the corner and the temperature already use --
          * only a NON-DEFAULT value appends a suffix, so every entry in the
@@ -580,6 +601,7 @@ namespace {
         if (!agrees("word_width_bits", static_cast<double>(k.word_width_bits))) return false;
         if (!agrees("device_corner", k.device_corner)) return false;
         if (!agrees("temperature_k", k.temperature_k)) return false;
+        if (!agrees("design_temperature_k", k.design_temperature_k)) return false;
         if (!agrees("design_target", k.design_target)) return false;
         if (!agrees("associativity", k.associativity)) return false;
         if (!agrees("opt_target", k.opt_target)) return false;
@@ -656,6 +678,7 @@ namespace {
         { double t; v.mats_per_bank  = get("mats_per_bank",  t) ? static_cast<int>(t) : -1; }
         { double t; v.subarray_rows  = get("subarray_rows",  t) ? static_cast<int>(t) : -1; }   // 1.11.102
         { double t; v.subarray_cols  = get("subarray_cols",  t) ? static_cast<int>(t) : -1; }
+        { double t; v.design_held    = get("design_held",    t) ? static_cast<int>(t) : -1; }
         if (v.subarray_rows <= 0 || v.subarray_cols <= 0) {
             /* 1.11.102: an entry without the subarray geometry cannot build the
              * array architecture. Under PIMID_NVSIM_CACHE_REQUIRE_FULL it is a
@@ -715,6 +738,7 @@ namespace {
           << "  <word_width_bits>" << k.word_width_bits << "</word_width_bits>\n"
           << "  <device_corner>" << k.device_corner << "</device_corner>\n"
           << "  <temperature_k>" << k.temperature_k << "</temperature_k>\n"
+          << "  <design_temperature_k>" << k.design_temperature_k << "</design_temperature_k>\n"
           << "  <design_target>" << k.design_target << "</design_target>\n"
           << "  <associativity>" << k.associativity << "</associativity>\n"
           << "  <opt_target>" << k.opt_target << "</opt_target>\n"
@@ -732,6 +756,7 @@ namespace {
           << "  <mats_per_bank>" << v.mats_per_bank << "</mats_per_bank>\n"
           << "  <subarray_rows>" << v.subarray_rows << "</subarray_rows>\n"   // 1.11.102
           << "  <subarray_cols>" << v.subarray_cols << "</subarray_cols>\n"
+          << "  <design_held>" << v.design_held << "</design_held>\n"
           << "</nvsim_characterization>\n";
     }
 }
@@ -754,6 +779,7 @@ void NVSimWrapper::runNVSim() {
                      config_.process_node_nm, config_.word_width_bits,
                      config_.device_corner,          // 1.11.49
                      config_.temperature_k,          // 1.11.52 (D055)
+                     config_.design_temperature_k,   // (1.12.103)
                      config_.is_cache ? 1 : 0,       // 1.11.57 (D027)
                      config_.is_cache ? config_.associativity : 1,
                      opt_target,
@@ -782,6 +808,13 @@ void NVSimWrapper::runNVSim() {
             cached_mats_per_bank_  = v.mats_per_bank;
             cached_subarray_rows_  = v.subarray_rows;      // 1.11.102
             cached_subarray_cols_  = v.subarray_cols;
+            if (config_.temperature_k != config_.design_temperature_k)   // (1.12.103)
+                std::cout << "[NVSimWrapper] cached characterization: "
+                          << (v.design_held == 1 ? "array organisation searched at the design temperature "
+                                                 : "array organisation searched at the run temperature (not the design temperature ")
+                          << config_.design_temperature_k << " K"
+                          << (v.design_held == 1 ? "" : ")") << ", evaluated at "
+                          << config_.temperature_k << " K" << std::endl;
             cached_read_energy_nj_  = v.read_energy_nj;
             cached_write_energy_nj_ = v.write_energy_nj;
             cached_leakage_mw_      = v.leakage_mw;
@@ -853,15 +886,6 @@ void NVSimWrapper::runNVSim() {
         nvsim_result_ = new Result();
 
         // --- BIGFOR design-space search (replicating NVSim main.cpp:286-302) ---
-        // Declare loop variables used by BIGFOR macro
-        int numRowMat, numColumnMat, numActiveMatPerRow, numActiveMatPerColumn;
-        int numRowSubarray, numColumnSubarray, numActiveSubarrayPerRow, numActiveSubarrayPerColumn;
-        int muxSenseAmp, muxOutputLev1, muxOutputLev2, numRowPerSet;
-        int areaOptimizationLevel;
-        int localWireType, globalWireType;
-        int localWireRepeaterType, globalWireRepeaterType;
-        int isLocalWireLowSwing, isGlobalWireLowSwing;
-
         long long capacity = (long long)nvsim_input_->capacity * 8;  // bytes -> bits
         long blockSize = nvsim_input_->wordWidth;
         int associativity = nvsim_input_->associativity;
@@ -873,13 +897,130 @@ void NVSimWrapper::runNVSim() {
             associativity = 1;
         }
 
+        /* (1.12.103): ONE ORGANISATION, ITS TEMPERATURE MOVES.
+         *
+         * NVSim's search optimises the organisation for the temperature it is
+         * given: currentOn/currentOff at that temperature size the drivers
+         * and decide feasibility (SubArray.cpp: Ion/Ioff against the bitline
+         * leakage tolerance), so a search per run temperature returned a
+         * different bank at each one -- measured on the PCM BANK gemv cell,
+         * device leakage 33.3 / 11.8 / 18.9 mW at 300 / 330 / 350 K, i.e. not
+         * monotone. A fabricated chip has one organisation. The search now
+         * runs at design_temperature_k (350 K, the temperature every
+         * characterisation used before 1.11.52), and the organisation it
+         * chooses -- mat and subarray partition, active mats/subarrays, sense-
+         * amp and output mux degrees, rows per set, buffer design level, local
+         * and global wire type / repeater / swing -- is evaluated at
+         * temperature_k exactly as NVSim's own wire-refinement pass evaluates a
+         * fixed organisation (TRY_AND_UPDATE in macros.h). That evaluation
+         * recomputes everything NVSim derives from temperature for that
+         * organisation: transistor on-resistance and driver sizing, gate and
+         * subthreshold leakage, wire resistance. A run at the design
+         * temperature takes the unchanged single-search path below. */
+        const int run_t = config_.temperature_k;
+        const int design_t = config_.design_temperature_k;
+        const bool hold_design = (run_t != design_t);
+
+        auto searchAt = [&](int tk, Result* best) -> long long {
+            nvsim_input_->temperature = tk;
+            // Declare loop variables used by BIGFOR macro
+            int numRowMat, numColumnMat, numActiveMatPerRow, numActiveMatPerColumn;
+            int numRowSubarray, numColumnSubarray, numActiveSubarrayPerRow, numActiveSubarrayPerColumn;
+            int muxSenseAmp, muxOutputLev1, muxOutputLev2, numRowPerSet;
+            int areaOptimizationLevel;
+            int localWireType, globalWireType;
+            int localWireRepeaterType, globalWireRepeaterType;
+            int isLocalWireLowSwing, isGlobalWireLowSwing;
+            for (int i = 0; i < (int)full_exploration; i++)
+                best[i].optimizationTarget = (OptimizationTarget)i;
+            Bank *dataBank;
+            long long numSolution = 0;
+            INITIAL_BASIC_WIRE;
+            BIGFOR {
+                if (blockSize / (numActiveMatPerRow * numActiveMatPerColumn *
+                                 numActiveSubarrayPerRow * numActiveSubarrayPerColumn) == 0) {
+                    continue;  // Too aggressive partitioning
+                }
+                CALCULATE(dataBank, data_array);
+                if (!dataBank->invalid) {
+                    Result tempResult;
+                    numSolution++;
+                    *(tempResult.bank) = *dataBank;
+                    *(tempResult.localWire) = *localWire;
+                    *(tempResult.globalWire) = *globalWire;
+                    for (int i = 0; i < (int)full_exploration; i++)
+                        best[i].compareAndUpdate(tempResult);
+                }
+                delete dataBank;
+            }
+
+            // Wire refinement pass (matching NVSim main.cpp:308-319)
+            if (numSolution > 0) {
+                Bank *trialBank;
+                Result tempResult;
+                REFINE_LOCAL_WIRE_FORLOOP {
+                    localWire->Initialize(nvsim_input_->processNode, (WireType)localWireType,
+                            (WireRepeaterType)localWireRepeaterType, nvsim_input_->temperature,
+                            (bool)isLocalWireLowSwing);
+                    for (int i = 0; i < (int)full_exploration; i++) {
+                        LOAD_GLOBAL_WIRE(best[i]);
+                        TRY_AND_UPDATE(best[i], data_array);
+                    }
+                }
+                REFINE_GLOBAL_WIRE_FORLOOP {
+                    globalWire->Initialize(nvsim_input_->processNode, (WireType)globalWireType,
+                            (WireRepeaterType)globalWireRepeaterType, nvsim_input_->temperature,
+                            (bool)isGlobalWireLowSwing);
+                    for (int i = 0; i < (int)full_exploration; i++) {
+                        LOAD_LOCAL_WIRE(best[i]);
+                        TRY_AND_UPDATE(best[i], data_array);
+                    }
+                }
+            }
+            return numSolution;
+        };
+
+        /* (1.12.103): evaluate ONE given organisation at temperature tk, the
+         * TRY_AND_UPDATE sequence with the organisation's own wires. Returns
+         * false when NVSim marks that organisation invalid at tk. */
+        auto evaluateAt = [&](int tk, const Result& design, Result& out) -> bool {
+            nvsim_input_->temperature = tk;
+            localWire->Initialize(nvsim_input_->processNode, design.localWire->wireType,
+                                  design.localWire->wireRepeaterType, tk, design.localWire->isLowSwing);
+            globalWire->Initialize(nvsim_input_->processNode, design.globalWire->wireType,
+                                   design.globalWire->wireRepeaterType, tk, design.globalWire->isLowSwing);
+            const Bank& d = *design.bank;
+            Bank* b = (nvsim_input_->routingMode == h_tree) ? static_cast<Bank*>(new BankWithHtree())
+                                                             : static_cast<Bank*>(new BankWithoutHtree());
+            b->Initialize(d.numRowMat, d.numColumnMat, d.capacity, d.blockSize, d.associativity,
+                          d.numRowPerSet, d.numActiveMatPerRow, d.numActiveMatPerColumn, d.muxSenseAmp,
+                          nvsim_input_->internalSensing, d.muxOutputLev1, d.muxOutputLev2,
+                          d.numRowSubarray, d.numColumnSubarray,
+                          d.numActiveSubarrayPerRow, d.numActiveSubarrayPerColumn,
+                          d.areaOptimizationLevel, data_array);
+            b->CalculateArea();
+            b->CalculateRC();
+            b->CalculateLatencyAndPower();
+            const bool ok = !b->invalid;
+            if (ok) {
+                *(out.bank) = *b;
+                *(out.localWire) = *localWire;
+                *(out.globalWire) = *globalWire;
+            }
+            delete b;
+            return ok;
+        };
+
+        int optIdx = (int)nvsim_input_->optimizationTarget;
+        if (optIdx >= (int)full_exploration) optIdx = (int)read_latency_optimized;
+
         // Best results array (one per optimization target)
         Result bestDataResults[(int)full_exploration];
-        for (int i = 0; i < (int)full_exploration; i++)
-            bestDataResults[i].optimizationTarget = (OptimizationTarget)i;
-
-        Bank *dataBank;
-        long long numSolution = 0;
+        Result heldResult;                       // (1.12.103) the design at run_t
+        std::unique_ptr<Result[]> runSearch;     // (1.12.103) fallback search at run_t
+        const Result* chosen = nullptr;
+        int design_held = -1;                    // see NVMCacheVal::design_held
+        int design_reproduced = -1;              // 1/0: the design re-evaluated at design_t matches the search
 
         // Suppress NVSim output during search
         std::streambuf* orig_cout = std::cout.rdbuf();
@@ -888,60 +1029,69 @@ void NVSimWrapper::runNVSim() {
         std::cout.rdbuf(suppress.rdbuf());
         std::cerr.rdbuf(suppress.rdbuf());
 
-        INITIAL_BASIC_WIRE;
-        BIGFOR {
-            if (blockSize / (numActiveMatPerRow * numActiveMatPerColumn *
-                             numActiveSubarrayPerRow * numActiveSubarrayPerColumn) == 0) {
-                continue;  // Too aggressive partitioning
-            }
-            CALCULATE(dataBank, data_array);
-            if (!dataBank->invalid) {
-                Result tempResult;
-                numSolution++;
-                *(tempResult.bank) = *dataBank;
-                *(tempResult.localWire) = *localWire;
-                *(tempResult.globalWire) = *globalWire;
-                for (int i = 0; i < (int)full_exploration; i++)
-                    bestDataResults[i].compareAndUpdate(tempResult);
-            }
-            delete dataBank;
-        }
-
-        // Wire refinement pass (matching NVSim main.cpp:308-319)
-        if (numSolution > 0) {
-            Bank *trialBank;
-            Result tempResult;
-            REFINE_LOCAL_WIRE_FORLOOP {
-                localWire->Initialize(nvsim_input_->processNode, (WireType)localWireType,
-                        (WireRepeaterType)localWireRepeaterType, nvsim_input_->temperature,
-                        (bool)isLocalWireLowSwing);
-                for (int i = 0; i < (int)full_exploration; i++) {
-                    LOAD_GLOBAL_WIRE(bestDataResults[i]);
-                    TRY_AND_UPDATE(bestDataResults[i], data_array);
+        long long numSolution = searchAt(hold_design ? design_t : run_t, bestDataResults);
+        if (numSolution > 0) chosen = &bestDataResults[optIdx];
+        if (hold_design) {
+            design_held = 0;
+            if (chosen) {
+                /* Self-check: the fixed-organisation evaluation must reproduce
+                 * the searched result at the design temperature, or it is not
+                 * evaluating the same design. Bitwise, every priced field. */
+                Result check;
+                const Bank& s = *chosen->bank;
+                design_reproduced = (evaluateAt(design_t, *chosen, check)
+                    && check.bank->readLatency == s.readLatency
+                    && check.bank->writeLatency == s.writeLatency
+                    && check.bank->readDynamicEnergy == s.readDynamicEnergy
+                    && check.bank->writeDynamicEnergy == s.writeDynamicEnergy
+                    && check.bank->leakage == s.leakage
+                    && check.bank->area == s.area
+                    && check.bank->mat.readLatency == s.mat.readLatency) ? 1 : 0;
+                if (evaluateAt(run_t, *chosen, heldResult)) {
+                    design_held = 1;
+                    chosen = &heldResult;
                 }
             }
-            REFINE_GLOBAL_WIRE_FORLOOP {
-                globalWire->Initialize(nvsim_input_->processNode, (WireType)globalWireType,
-                        (WireRepeaterType)globalWireRepeaterType, nvsim_input_->temperature,
-                        (bool)isGlobalWireLowSwing);
-                for (int i = 0; i < (int)full_exploration; i++) {
-                    LOAD_LOCAL_WIRE(bestDataResults[i]);
-                    TRY_AND_UPDATE(bestDataResults[i], data_array);
-                }
+            if (design_held == 0) {
+                /* The design-temperature organisation is infeasible at run_t
+                 * (or the search at design_t found none): say so and search at
+                 * run_t, the pre-(1.12.103) behaviour, rather than price nothing. */
+                runSearch.reset(new Result[(int)full_exploration]);
+                numSolution = searchAt(run_t, runSearch.get());
+                chosen = (numSolution > 0) ? &runSearch[optIdx] : nullptr;
             }
+            nvsim_input_->temperature = run_t;
         }
 
         // Restore stdout/stderr
         std::cout.rdbuf(orig_cout);
         std::cerr.rdbuf(orig_cerr);
 
+        if (hold_design) {
+            if (design_held == 1)
+                std::cout << "[NVSimWrapper] array organisation searched at the design temperature "
+                          << design_t << " K and evaluated at the run temperature " << run_t << " K"
+                          << " (design re-evaluated at " << design_t << " K reproduces the search: "
+                          << (design_reproduced == 1 ? "yes" : "NO") << ")" << std::endl;
+            else
+                std::cout << "[NVSimWrapper] WARNING: "
+                          << (design_reproduced < 0 ? "NVSim found no array organisation at the design temperature "
+                                                    : "the array organisation searched at the design temperature ")
+                          << design_t << " K"
+                          << (design_reproduced < 0 ? "" : " is infeasible in NVSim at the run temperature")
+                          << "; the organisation is searched at the run temperature " << run_t
+                          << " K instead, so this run prices a different design from the "
+                          << design_t << " K one" << std::endl;
+            if (design_reproduced == 0)
+                std::cerr << "[NVSimWrapper] WARNING: re-evaluating the searched organisation at "
+                          << design_t << " K does not reproduce the search result bitwise" << std::endl;
+        }
+
         // Store the result matching the user's optimization target
-        if (numSolution > 0) {
-            int optIdx = (int)nvsim_input_->optimizationTarget;
-            if (optIdx >= (int)full_exploration) optIdx = (int)read_latency_optimized;
-            *(nvsim_result_->bank) = *(bestDataResults[optIdx].bank);
-            *(nvsim_result_->localWire) = *(bestDataResults[optIdx].localWire);
-            *(nvsim_result_->globalWire) = *(bestDataResults[optIdx].globalWire);
+        if (numSolution > 0 && chosen) {
+            *(nvsim_result_->bank) = *(chosen->bank);
+            *(nvsim_result_->localWire) = *(chosen->localWire);
+            *(nvsim_result_->globalWire) = *(chosen->globalWire);
             valid_ = true;
             std::cout << "[NVSimWrapper] NVSim found " << numSolution << " valid design points" << std::endl;
             // Populate both caches so identical future configs (the power path of
@@ -954,6 +1104,7 @@ void NVSimWrapper::runNVSim() {
             NVMCacheVal v{ getReadLatency(), getWriteLatency(),
                            getReadDynamicEnergy(), getWriteDynamicEnergy(),
                            getLeakagePower(), getArea() };
+            v.design_held = design_held;   // (1.12.103)
             if (nvsim_result_ && nvsim_result_->bank) {
                 const double mat = nvsim_result_->bank->mat.readLatency;
                 v.mat_latency_s      = (mat > 0.0) ? mat : -1.0;
@@ -996,6 +1147,7 @@ void NVSimWrapper::runNVSim() {
                         << ",\"word_width_bits\":" << key.word_width_bits
                         << ",\"device_corner\":" << key.device_corner
                         << ",\"temperature_k\":" << key.temperature_k
+                        << ",\"design_temperature_k\":" << key.design_temperature_k
                         << ",\"design_target\":" << key.design_target
                         << ",\"associativity\":" << key.associativity
                         << ",\"opt_target\":" << key.opt_target
