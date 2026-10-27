@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.104 -- 45 nm low-operating-power gate leakage from the ITRS gate-leakage limits
+
+- **The defect** (external/cacti/tech_params/45nm.dat, lop column of I_g_on_n; the same values in the CACTI 7 and
+  McPAT distributions):
+  - The column is a copy of the 90 nm hp I_off_n column (3.24e-8 .. 1.54e-7 A/um, rising with temperature).
+  - Every other gate-leakage column is flat in temperature. The neighbouring lop nodes read 9.61e-9 (65 nm) and
+    2.93e-9 (32 nm).
+- **Fix:** 4.51e-9 A/um at every temperature (DERIVED). This is the 45 nm hp gate current (3.59e-8) times the ratio
+  of the ITRS 2007 PIDS gate-leakage limits at 2010:
+  - LOP: Jg,limit 114 A/cm2 x Lg 22 nm = 2.51e-8 A/um (Table PIDS3c);
+  - HP: Jg,limit 1.11e3 A/cm2 x Lg 18 nm = 2.00e-7 A/um (Table PIDS2a);
+  - ratio 0.126.
+  The ITRS text states that gate leakage is temperature-insensitive, which is why the column is flat.
+- **Data impact:** 45 nm lop runs only. DDR4 CHANNEL, 16 ALU PEs, gemv: logic leakage 0.158 / 0.410 / 0.632 W ->
+  0.032 / 0.051 / 0.067 W at 300 / 350 / 380 K, and total power 0.993 -> 0.634 W at 350 K.
+
 ## 1.12.103 -- NVM arrays: one organisation, chosen at 350 K and evaluated at the run temperature
 
 - **The defect:** NVSim (Dong et al., "NVSim: A Circuit-Level Performance, Energy, and Area Model for Emerging
