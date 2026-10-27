@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.87 -- four CACTI off-current rows put back on their columns' temperature curves
+
+- **The defect** (external/cacti/tech_params; the same values as the CACTI 7 distribution):
+  - 22 nm, lstp column, row +60 (360 K): 3.55e-10 A/um, below the +50 row (7.73e-10). The column doubles every
+    10 K from +0 to +100 (2.43e-11, 4.85e-11, ..., 7.73e-10, -, 3.09e-9, 6.19e-9, 1.24e-8, 2.48e-8).
+  - 90 nm, lop column, rows +50 / +60 / +70: 8.27e-8, 1.02e-7, 1.2e-7 A/um, ten times both neighbours
+    (+40 6.54e-9, +80 1.36e-8).
+- **Fix:** 22 nm lstp +60 = 1.55e-9 (DERIVED: the geometric mean of +50 and +70, which is also the column's
+  2x-per-10-K step). 90 nm lop +50 / +60 / +70 = 8.27e-9 / 1.02e-8 / 1.2e-8 (DERIVED: the printed mantissas with
+  the neighbours' exponent). Each corrected column is monotone and smooth.
+- **Data impact:**
+  - 22 nm runs at 360 K that read the lstp column. This includes the DRAM-periphery leakage ratio
+    (`power.periphery_device`, default lstp) and `power.device_corner: lstp`.
+  - 90 nm lop runs at 350-370 K.
+  - Every other node, corner and temperature is unchanged.
+
 ## 1.12.86 -- the replayed memory controller refreshes at the operating temperature's rate
 
 - **The defect** (temperature sweep, `power.temperature_k` 350 / 360 / 380 K, gemv, 16 ALU PEs):
