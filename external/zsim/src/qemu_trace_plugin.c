@@ -24,6 +24,13 @@
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U   /* linux/memfd.h; <sys/mman.h> declares it only under _GNU_SOURCE */
+#endif
 
 #include "qemu/qemu-plugin.h"
 
@@ -655,6 +662,112 @@ static void plugin_exit(void *userdata) {
 
 /* ---- Plugin Install ---- */
 
+/* (1.12.119): THE GUEST SEES THE SIMULATED MACHINE'S PROCESSORS, NOT THE HOST'S.
+ * As in the ZSim plugin (qemu_zsim_plugin.cpp, guestCpuSyscallFilter): the
+ * guest's processor queries (sched_getaffinity, sched_setaffinity, and the
+ * files under /sys/devices/system/cpu/ that glibc and the OpenMP runtime read)
+ * are answered with processors 0..N-1, N = cpus=<N> from the launch (the
+ * simulated cores of the configured machine: host cores plus device PEs), so
+ * the recorded instruction stream does not depend on the host's processor
+ * count. Without cpus= (a hand-made launch) the queries reach the host. */
+static uint32_t guest_cpus = 0;
+
+static int guest_cpu_list(uint32_t n, char *buf, size_t len) {
+    return n <= 1 ? snprintf(buf, len, "0\n") : snprintf(buf, len, "0-%u\n", n - 1);
+}
+
+/* 1 = under the processor directory: *out holds the content ("" = ENOENT). */
+static int guest_cpu_file(const char *path, char *out, size_t len) {
+    static const char base[] = "/sys/devices/system/cpu/";
+    const size_t bl = sizeof(base) - 1;
+    const uint32_t n = guest_cpus;
+    char r[512];
+    if (strncmp(path, base, bl) != 0) return 0;
+    snprintf(r, sizeof(r), "%s", path + bl);
+    for (size_t l = strlen(r); l > 0 && r[l - 1] == '/'; l--) r[l - 1] = '\0';
+    out[0] = '\0';
+    if (!strcmp(r, "possible") || !strcmp(r, "online") || !strcmp(r, "present")) { guest_cpu_list(n, out, len); return 1; }
+    if (!strcmp(r, "offline")) { snprintf(out, len, "\n"); return 1; }
+    if (!strncmp(r, "cpu", 3)) {
+        size_t i = 3; uint64_t k = 0;
+        while (r[i] >= '0' && r[i] <= '9' && i < 13) k = k * 10 + (uint64_t)(r[i++] - '0');
+        if (i > 3 && k < n) {
+            const char *f = r + i;
+            if (!strcmp(f, "/online")) snprintf(out, len, "1\n");
+            else if (!strcmp(f, "/topology/thread_siblings_list") || !strcmp(f, "/topology/core_cpus_list") ||
+                     !strcmp(f, "/topology/core_id")) snprintf(out, len, "%lu\n", (unsigned long)k);
+            else if (!strcmp(f, "/topology/core_siblings_list") || !strcmp(f, "/topology/package_cpus_list") ||
+                     !strcmp(f, "/topology/die_cpus_list") || !strcmp(f, "/topology/cluster_cpus_list")) guest_cpu_list(n, out, len);
+            else if (!strcmp(f, "/topology/physical_package_id") || !strcmp(f, "/topology/die_id") ||
+                     !strcmp(f, "/topology/cluster_id")) snprintf(out, len, "0\n");
+        }
+    }
+    return 1;
+}
+
+static bool read_guest_string(uint64_t addr, char *out, size_t len) {
+    GByteArray *b = g_byte_array_new();
+    bool ok = false;
+    size_t i;
+    for (i = 0; addr && i + 1 < len; i++) {   /* byte by byte: an unmapped page ends the read */
+        g_byte_array_set_size(b, 0);
+        if (!qemu_plugin_read_memory_vaddr(addr + i, b, 1) || b->len != 1) break;
+        out[i] = (char)b->data[0];
+        if (!out[i]) { ok = true; break; }
+    }
+    if (!ok) out[0] = '\0';
+    g_byte_array_free(b, TRUE);
+    return ok;
+}
+
+static bool guest_cpu_syscall_filter(unsigned int vcpu_index, int64_t num, uint64_t a1, uint64_t a2,
+                                     uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                                     uint64_t a8, int64_t *sysret, void *userdata) {
+    (void)vcpu_index; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)userdata;
+    const uint32_t n = guest_cpus;
+    if (!n) return false;
+    const uint64_t need = ((uint64_t)n + 63) / 64 * 8;   /* the kernel's cpumask size for n processors */
+    if (num == SYS_sched_getaffinity) {   /* (pid, len, mask) */
+        if (a2 < need || (a2 & 7)) { *sysret = -EINVAL; return true; }
+        unsigned char *m = (unsigned char *)calloc(need, 1);
+        for (uint32_t c = 0; c < n; c++) m[c / 8] |= (unsigned char)(1u << (c % 8));
+        GByteArray *b = g_byte_array_new();
+        g_byte_array_append(b, m, (guint)need);
+        const bool ok = a3 && qemu_plugin_write_memory_vaddr(a3, b);
+        g_byte_array_free(b, TRUE);
+        free(m);
+        *sysret = ok ? (int64_t)need : -EFAULT;
+        return true;
+    }
+    if (num == SYS_sched_setaffinity) {   /* (pid, len, mask): accepted, the host threads are not pinned */
+        const uint64_t rd = a2 < need ? a2 : need;
+        GByteArray *b = g_byte_array_new();
+        const bool ok = a3 && rd && qemu_plugin_read_memory_vaddr(a3, b, rd) && b->len == rd;
+        bool any = false;
+        for (uint32_t c = 0; ok && c < n && c / 8 < rd; c++) if (b->data[c / 8] & (1u << (c % 8))) { any = true; break; }
+        g_byte_array_free(b, TRUE);
+        *sysret = !ok ? -EFAULT : (any ? 0 : -EINVAL);
+        return true;
+    }
+    uint64_t path_addr, flags;
+    if (num == SYS_openat) { path_addr = a2; flags = a3; }
+    else if (num == SYS_open) { path_addr = a1; flags = a2; }
+    else return false;
+    char path[4096], content[256];
+    if (!read_guest_string(path_addr, path, sizeof(path)) || path[0] != '/') return false;
+    if (!guest_cpu_file(path, content, sizeof(content))) return false;
+    if (!content[0]) { *sysret = -ENOENT; return true; }
+    if ((flags & O_ACCMODE) != O_RDONLY) { *sysret = -EACCES; return true; }
+    const int fd = (int)syscall(SYS_memfd_create, "pimid_guest_cpu", (flags & O_CLOEXEC) ? MFD_CLOEXEC : 0u);
+    if (fd < 0) { *sysret = -errno; return true; }
+    const size_t cl = strlen(content);
+    if (write(fd, content, cl) != (ssize_t)cl || lseek(fd, 0, SEEK_SET) != 0) {
+        const int e = errno ? errno : EIO; close(fd); *sysret = -e; return true;
+    }
+    *sysret = fd;
+    return true;
+}
+
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                             const qemu_info_t *info,
                                             int argc, char **argv) {
@@ -663,6 +776,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         char *arg = argv[i];
         if (strncmp(arg, "output=", 7) == 0) {
             output_path = strdup(arg + 7);
+        } else if (strncmp(arg, "cpus=", 5) == 0) {   /* (1.12.119): the guest's processor count */
+            guest_cpus = (uint32_t)strtoul(arg + 5, NULL, 10);
         } else if (strncmp(arg, "batch=", 6) == 0) {
             batch_size = (uint32_t)atoi(arg + 6);
             if (batch_size < 64) batch_size = 64;
@@ -726,6 +841,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     /* Register callbacks */
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb, NULL);
     qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb, NULL);
+    if (guest_cpus) qemu_plugin_register_vcpu_syscall_filter_cb(id, guest_cpu_syscall_filter, NULL);   /* (1.12.119) */
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
     char msg[256];

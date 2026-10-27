@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.119 -- trace generation: results no longer depend on the host machine's CPU count
+
+- **Processor queries during trace generation (external/zsim/src/qemu_trace_plugin.c; src/main.cpp).** Since 1.12.107
+  the execution plugin answers the guest's processor queries with the simulated machine's processors; trace
+  generation (`--method trace-gen`) uses its own plugin and still passed them to the host, so the OpenMP runtime's
+  startup, and the recorded trace, followed the host's CPU count. The launch now passes `cpus=N` to the trace plugin
+  (N = the configured machine's cores: host cores and device PEs in system scope, the PEs in device scope), and the
+  plugin answers `sched_getaffinity`, `sched_setaffinity` and the files under `/sys/devices/system/cpu/` as the
+  execution plugin does. The library lookup (1.12.107) already applied to trace generation.
+- No timing, energy or area model changes; replay is unchanged.
+- **Validation (qc-pvc, 208 CPUs; qc-mi210, 128 CPUs):** a single-threaded OpenMP host baseline (gemv_omp 256, 1 OOO
+  core, system scope) recorded on both node types: before, the two traces differed (84611904 vs 84603264 bytes);
+  after, both are the same file (84607296 bytes, the same events and instruction blocks), and two recordings on one
+  node are the same. A serial trace (gemv 256) is unchanged.
+
 ## 1.12.118 -- the RDIMM register (RCD) power, DDR4 and DDR5
 
 - **RDIMM register** (user ruling 2026-10-27): an `rdimm` DDR4/DDR5 memory now pays its register clock driver. No

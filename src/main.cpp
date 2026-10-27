@@ -4004,6 +4004,20 @@ static uint32_t dramDieBanksForCacti(const std::string& tech, uint32_t banks_per
     if (tech == "HBM3" && banks_per_channel > 32 && banks_per_channel % 32 == 0) return 32;
     return banks_per_channel;
 }
+/* (1.12.119): the processor count the guest sees during trace generation (cpus=<N>
+ * to the trace plugin), the simulated cores of the configured machine as the
+ * execution plugin counts them: the host cores and the device PEs in system
+ * scope, the PEs in device scope. */
+static int guestCpuCount(const UnifiedConfig& c) {
+    int n = 0;
+    if (c.scope == "system")
+        for (const auto& node : c.system_nodes)
+            n += (node.role == UnifiedConfig::SystemNode::HOST) ? node.num_cores : node.num_pes;
+    else
+        n = c.num_pes;
+    return n > 0 ? n : 1;
+}
+
 static int dramPeChipSplit(const UnifiedConfig& c, const std::string& tech) {
     const bool rank_level = (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" || tech == "LPDDR5");
     const int cpr = c.hierarchy_chips_per_rank, nch = c.hierarchy_dram_channels;
@@ -25096,7 +25110,8 @@ int main(int argc, char** argv) {
                         std::string rank_dir = output_base + "/rank" + std::to_string(rank);
                         std::string trace_file = rank_dir + "/" + trace_name
                                                  + "_rank" + std::to_string(rank) + trace_ext;
-                        std::string plugin_arg = plugin_path + ",output=" + trace_file;
+                        std::string plugin_arg = plugin_path + ",output=" + trace_file
+                                                 + ",cpus=" + std::to_string(guestCpuCount(config));   // (1.12.119)
 
                         setenv("OMP_NUM_THREADS", "1", 1);
                         setenv("LD_PRELOAD", pimid_mpi_lib.c_str(), 1);
@@ -25171,7 +25186,8 @@ int main(int argc, char** argv) {
             } else {
                 // -- Single-rank path --
                 // Build plugin argument string
-                std::string plugin_arg = plugin_path + ",output=" + config.trace_file;
+                std::string plugin_arg = plugin_path + ",output=" + config.trace_file
+                                         + ",cpus=" + std::to_string(guestCpuCount(config));   // (1.12.119): the guest's processors
 
                 // fork/exec: qemu-x86_64 -plugin <plugin>,output=<file> -- <workload> [args]
                 std::cout << "Running workload through QEMU trace generation..." << std::endl;

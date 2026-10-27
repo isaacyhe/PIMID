@@ -131,8 +131,9 @@ allocations and startup loops. The ZSim plugin now answers these queries with
 processors `0..N-1`, N = the run's simulated cores (one thread per core, one
 package): `sched_getaffinity` returns that set, `sched_setaffinity` accepts a
 set holding one of them and leaves the host threads unpinned, and other paths
-under `/sys/devices/system/cpu/` are not found. Trace generation (`--method trace`) does not go through this
-plugin and still shows the host's processors.
+under `/sys/devices/system/cpu/` are not found. Trace generation (`--method trace-gen`, since (1.12.119)) answers
+them the same way in its own plugin, with N = the configured machine's cores (host cores and device PEs in
+system scope, the PEs in device scope), so a recorded trace does not depend on the host either.
 
 So a serial workload's addresses depend on its configuration only -- the
 binary, its arguments and the guest variables it is given -- not on the job,
