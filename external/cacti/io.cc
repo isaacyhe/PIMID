@@ -2254,9 +2254,11 @@ bool InputParameter::error_checking()
     num_search_ports = 0;
   nsets            = C/(B*A);
 
-  if (temp < 300 || temp > 400 || temp%10 != 0)
+  /* PIMID (1.12.105): any integer temperature in 300..400 K; off the 10 K grid
+   * the temperature-tabulated rows are interpolated (parameter.cc). */
+  if (temp < 300 || temp > 400)
   {
-    cerr << temp << " Temperature must be between 300 and 400 Kelvin and multiple of 10." << endl;
+    cerr << temp << " Temperature must be between 300 and 400 Kelvin." << endl;
     return false;
   }
 

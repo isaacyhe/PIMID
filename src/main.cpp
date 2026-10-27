@@ -21801,23 +21801,27 @@ int main(int argc, char** argv) {
          * first cut of this knob used [273, 373] with no step rule -- my own
          * numbers, not the tools' -- and accepted 358 K, after which McPAT
          * aborted and the run printed "Power analysis skipped" while still
-         * exiting 0 (gate 1162C C4). */
-        if (config.temperature_k < 300 || config.temperature_k > 400 ||
-            (config.temperature_k % 10) != 0) {
-            int lo = (config.temperature_k / 10) * 10;
-            if (lo < 300) lo = 300;
-            if (lo > 400) lo = 400;
-            int hi = lo + 10; if (hi > 400) hi = 400;
+         * exiting 0 (gate 1162C C4).
+         *
+         * (1.12.105): any integer K in 300..400. CACTI (and McPAT, which links
+         * the same CACTI) and periphFamilyFactors() now interpolate the
+         * temperature-tabulated rows (I_off_n, I_g_on_n) between the two
+         * bracketing 10 K rows -- log-linear for the currents, linear where
+         * an end is zero -- and take the tabulated row exactly on the grid,
+         * so a multiple of 10 prices as before. This makes the JEDEC refresh
+         * points reachable: 358 K (84.85 C) is still nominal refresh, 359 K
+         * (85.85 C) is the first doubled point; 368 K / 369 K bracket the HBM
+         * 95 C rung the same way. NVSim's table is 1 K already. The bounds
+         * stay: below 300 or above 400 K no linked table has a row. */
+        if (config.temperature_k < 300 || config.temperature_k > 400) {
             std::cerr << "[config] FATAL: power.temperature_k="
                       << config.temperature_k
-                      << " is not evaluable by the linked tools: CACTI "
-                         "accepts 300..400 K in steps of 10 "
-                         "(external/cacti/io.cc:2259, checked); NVSim indexes "
-                         "a 300..400 K table with no bounds check at all "
-                         "(external/nvsim/Technology.h:81-84). Nearest legal: "
-                      << lo << " K (" << (lo - 273) << " C) or "
-                      << hi << " K (" << (hi - 273) << " C). Default 350 K "
-                         "(77 C) is what the corpus is priced at."
+                      << " is not evaluable by the linked tools: CACTI and "
+                         "NVSim tabulate 300..400 K (external/cacti/io.cc, "
+                         "checked; external/nvsim/Technology.h:81-84, no bounds "
+                         "check). Any integer in 300..400 K is accepted (off "
+                         "the 10 K grid CACTI's leakage rows are interpolated). "
+                         "Default 350 K (77 C) is what the corpus is priced at."
                       << std::endl;
             std::exit(2);
         }

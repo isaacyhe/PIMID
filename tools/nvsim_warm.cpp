@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
     if (argc < 5 || argc > 7) {
         std::fprintf(stderr,
             "usage: %s <type 0|1|2> <capacity_bytes> <node_nm> <width_bits> "
-            "[corner 0|1|2] [temp_k 300..400 step 10]\n", argv[0]);
+            "[corner 0|1|2] [temp_k 300..400]\n", argv[0]);
         return 2;
     }
     const int type = std::atoi(argv[1]);
@@ -57,10 +57,13 @@ int main(int argc, char** argv) {
      * (main.cpp, power.temperature_k). NVSim indexes a 300..400 K table with no
      * bounds check of its own, so warming an out-of-range entry would be an
      * out-of-bounds read, and warming an off-step one would produce a cache
-     * entry no legal run can ever ask for. */
-    if (temp_k < 300 || temp_k > 400 || (temp_k % 10) != 0) {
+     * entry no legal run can ever ask for.
+     * (1.12.105): the simulator accepts any integer K in 300..400 (the 10 K step
+     * rule is gone), so every integer in the window is a key a run can ask
+     * for and is warmable here. */
+    if (temp_k < 300 || temp_k > 400) {
         std::fprintf(stderr,
-            "[nvsim_warm] temp_k must be 300..400 K in steps of 10 "
+            "[nvsim_warm] temp_k must be 300..400 K "
             "(CACTI's checked range; NVSim's tables are indexed unchecked)\n");
         return 2;
     }

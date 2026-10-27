@@ -397,6 +397,33 @@ static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1
 #endif
 }
 
+/* PIMID (1.12.105): a temperature-indexed row (I_off_n, I_g_on_n) at ANY integer
+ * temperature in 300..400 K, the same rule CACTI applies in
+ * external/cacti/parameter.cc. The rows are labelled by the offset from 300 K
+ * and tabulated every 10 K. On the grid the tabulated row is returned exactly
+ * (one read, no arithmetic). Between two rows each column is interpolated
+ * from the two bracketing rows: log-linear for the currents (positive ends),
+ * linear when either end is zero or negative (an unpopulated column), and
+ * linear for any other temperature-tabulated row. DERIVED values. */
+static bool cactiRowAtK(int table_nm, const char* tag, double col[5], int temp_k) {
+    int off = temp_k - 300;
+    if (off < 0) off = 0;
+    if (off > 100) off = 100;
+    const int lo = (off / 10) * 10;
+    if (off == lo) return cactiRow(table_nm, tag, col, lo);
+    double a[5], b[5];
+    if (!cactiRow(table_nm, tag, a, lo) || !cactiRow(table_nm, tag, b, lo + 10)) return false;
+    const double w = (off - lo) / 10.0;
+    const bool current = (std::strcmp(tag, "-I_off_n") == 0 || std::strcmp(tag, "-I_g_on_n") == 0);
+    for (int i = 0; i < 5; ++i) {
+        if (current && a[i] > 0.0 && b[i] > 0.0)
+            col[i] = std::exp(std::log(a[i]) + (std::log(b[i]) - std::log(a[i])) * w);
+        else
+            col[i] = a[i] + (b[i] - a[i]) * w;
+    }
+    return true;
+}
+
 /* 1.11.21 (user rulings E1+E2): the DRAM-periphery family factors are all
  * THREE derived from the CACTI table the run is already using. None is a
  * constant. Each reproduces the literal it replaces, at the literal's own
@@ -420,7 +447,8 @@ static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1
  * dependent -- at 22nm the derived factor is 1.035e-5 at 50 C and 7.0e-6 at
  * 70 C, a 30% difference -- so the shipped constant was evaluated at a
  * temperature no run uses. fl now reads the row for the CONFIGURED
- * temperature, snapped to the nearest tabulated 10 C step.
+ * temperature (PIMID (1.12.105): interpolated between the two bracketing 10 K
+ * rows off the grid, see cactiRowAtK; it used to snap to the nearest row).
  *
  * BASELINE, and the corner axis (E2): for a DRAM-periphery component the
  * low-power device is lp-dram, NOT logic lstp -- the low-power variant of a
@@ -489,11 +517,11 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
      * the DRAM-periphery leakage ratio was understated by ~34%. With the
      * 1.11.52 temperature knob the error was a fixed +27..+30 K offset at
      * every legal setting, coinciding only at 400 K by clamping accident. */
-    int t_row = ((static_cast<int>(temp_k) - 300 + 5) / 10) * 10;
-    if (t_row < 0) t_row = 0;
-    if (t_row > 100) t_row = 100;
-    if (!cactiRow(dram_table_nm, "-I_off_n", io_d, t_row)) return false;
-    if (!cactiRow(logic_node_nm, "-I_off_n", io_l, t_row)) return false;
+    /* PIMID (1.12.105): any integer temperature; off the 10 K grid the rows are
+     * interpolated as CACTI does (cactiRowAtK). On the grid the row is the
+     * tabulated one, as before. */
+    if (!cactiRowAtK(dram_table_nm, "-I_off_n", io_d, temp_k)) return false;
+    if (!cactiRowAtK(logic_node_nm, "-I_off_n", io_l, temp_k)) return false;
     if (!(io_l[B] > 0.0)) return false;
     if (!(io_d[LD] > 0.0) || !(vd_d[LD] > 0.0)) return false;   // 1.11.94: an unpopulated column refuses
     const double vr_l = vd_d[LD] / vd_l[B];
@@ -509,8 +537,8 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
      * Falls back to fl when a table lacks the rows, so an older .dat cannot
      * turn this into a hard failure. */
     double ig_d[5], ig_l[5];
-    if (cactiRow(dram_table_nm, "-I_g_on_n", ig_d, t_row) &&
-        cactiRow(logic_node_nm, "-I_g_on_n", ig_l, t_row) &&
+    if (cactiRowAtK(dram_table_nm, "-I_g_on_n", ig_d, temp_k) &&
+        cactiRowAtK(logic_node_nm, "-I_g_on_n", ig_l, temp_k) &&
         ig_l[B] > 0.0 && ig_d[LD] > 0.0) {
         fg = (ig_d[LD] / ig_l[B]) * vr_l;
     } else {

@@ -79,7 +79,8 @@ public:
          * CACTI's own window, so a wrong unit is refused by this wrapper with a
          * readable message instead of by CACTI with an exit. */
         uint32_t temperature;        // Operating temperature in KELVIN
-                                     // (300-400, multiple of 10 -- CACTI's rule)
+                                     // (300-400 -- CACTI's rule; (1.12.105): any integer,
+                                     // the 10 K leakage rows interpolated off the grid)
 
         // Access mode and type
         bool is_cache;               // true for cache, false for scratchpad

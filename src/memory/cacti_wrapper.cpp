@@ -152,12 +152,13 @@ void CACTIWrapper::validateConfiguration() {
      * range-validated to 300-400 in steps of 10 upstream. SRAMModel::
      * setTemperatureK() is not -- it accepts any k > 0 and forwards it -- so
      * this guard is reachable from a direct user of the model class. */
-    if (config_.temperature < 300 || config_.temperature > 400 ||
-        (config_.temperature % 10) != 0) {
+    /* (1.12.105): CACTI accepts any integer K in 300..400 and interpolates its
+     * 10 K leakage rows in between (external/cacti/parameter.cc), so the
+     * step rule is gone; the window stays. */
+    if (config_.temperature < 300 || config_.temperature > 400) {
         valid_ = false;
-        error_message_ = "Temperature must be 300-400 KELVIN and a multiple "
-                         "of 10 (CACTI's own window); note this field is "
-                         "Kelvin, not Celsius";
+        error_message_ = "Temperature must be 300-400 KELVIN (CACTI's own "
+                         "window); note this field is Kelvin, not Celsius";
         return;
     }
 }

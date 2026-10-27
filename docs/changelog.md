@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.105 -- any integer operating temperature in 300..400 K
+
+- **Configuration:** `power.temperature_k` (and `power.temperature_c` after conversion) accepts any integer in
+  300..400 K; the 10 K step rule is removed. Outside 300..400 K the loader still refuses the value.
+- **CACTI (and McPAT, which links the same CACTI) and the DRAM-periphery leakage factor:** the temperature-tabulated
+  rows (I_off_n, I_g_on_n, tabulated every 10 K) are interpolated between the two bracketing rows: log-linear for the
+  currents, linear where either row is zero (an unpopulated column). Interpolated values are DERIVED; on a multiple
+  of 10 the tabulated row is used unchanged. NVSim already tabulates every 1 K.
+- **Refresh:** the JEDEC points are now reachable. The ladder compares `K - 273.15` strictly against 85 C / 95 C:
+  358 K (84.85 C) is nominal, 359 K (85.85 C) is the first doubled point; for HBM 368 K is 0.5x and 369 K is 0.25x.
+- **Data impact:** none at 300, 310, ..., 400 K (results identical). Temperatures between two grid points, which were
+  refused, now price leakage between the two bracketing grid results.
+- **Invalidates:** nothing.
+
 ## 1.12.104 -- 45 nm low-operating-power gate leakage from the ITRS gate-leakage limits
 
 - **The defect** (external/cacti/tech_params/45nm.dat, lop column of I_g_on_n; the same values in the CACTI 7 and

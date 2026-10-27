@@ -981,8 +981,8 @@ power:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `power.temperature_k` | int | `350` | Operating temperature in kelvin. Reaches McPAT, CACTI and NVSim (leakage), and since 1.11.65 the DRAM refresh rate. **Legal values: 300..400 in steps of 10** -- CACTI evaluates only those points and the loader refuses anything else (so 373 K = 100 C is rejected; use 370 or 380). Consequently the refresh ladder's 85 C / 95 C thresholds are crossed at exactly 360 K (87 C) and 370 K (97 C). |
-| `power.temperature_c` | int | -- | Same knob in Celsius (`+273`); the 10 K grid applies after conversion. Give one of the two: giving both is refused (1.11.106; `temperature_k` used to win in silence). |
+| `power.temperature_k` | int | `350` | Operating temperature in kelvin. Reaches McPAT, CACTI and NVSim (leakage), and since 1.11.65 the DRAM refresh rate. **Legal values: any integer in 300..400**; the loader refuses anything outside. CACTI tabulates its leakage currents (I_off_n, I_g_on_n) every 10 K: on a multiple of 10 the tabulated row is used, between two rows the value is interpolated from the two bracketing rows (log-linear; linear where a row is zero; DERIVED), in CACTI, McPAT and the DRAM-periphery leakage factor alike. NVSim tabulates every 1 K. The refresh ladder compares the temperature in Celsius (`K - 273.15`) strictly against its 85 C / 95 C thresholds: 358 K (84.85 C) is nominal and 359 K (85.85 C) is the first doubled point; 368 K (94.85 C) and 369 K (95.85 C) bracket the HBM 95 C rung. |
+| `power.temperature_c` | int | -- | Same knob in Celsius (`+273`); the 300..400 K window applies after conversion (so 85 C = 358 K, nominal refresh; 86 C = 359 K, doubled). Give one of the two: giving both is refused (1.11.106; `temperature_k` used to win in silence). |
 
 **Refresh follows temperature (since 1.11.65).** Every DRAM family refreshes
 twice as often above 85 C, and HBM four times as often above 95 C; before

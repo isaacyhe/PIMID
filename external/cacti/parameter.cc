@@ -35,6 +35,7 @@
 #include <string>
 #include <iomanip>
 #include <stdexcept>
+#include <cmath>
 
 #include "parameter.h"
 #include "area.h"
@@ -182,6 +183,40 @@ void scan_five_input_double_temperature(char* line, const char* name, const char
 		
 }
 
+/* PIMID (1.12.105): any integer temperature in 300..400 K. The I_off_n and
+ * I_g_on_n rows are tabulated every 10 K (the row label is the offset from
+ * 300 K). A temperature on the grid takes its row exactly as before (the
+ * scan above, unchanged). Between two rows the value is interpolated from
+ * the two bracketing rows: log-linear (geometric) for these currents, which
+ * are exponential in temperature to first order, and linear when either end
+ * is zero or negative (a column the table leaves unpopulated). DERIVED
+ * values; the endpoints are the table's own rows. */
+static void scan_temperature_bracket(char* line, const char* name, int flavor,
+                                     unsigned int temperature,
+                                     double & lo, bool & got_lo,
+                                     double & hi, bool & got_hi)
+{
+  double temp[5];
+  unsigned int thermal_temp;
+  char unit[300];
+  memset(unit,0,300);
+  if (sscanf(&line[strlen(name)], "%*[ \t]%s%*[ \t]%u%*[ \t]%lf%*[ \t]%lf%*[ \t]%lf%*[ \t]%lf%*[ \t]%lf"
+		,unit,&thermal_temp,&(temp[0]),&(temp[1]),&(temp[2]),&(temp[3]), &(temp[4]) ) < 7)
+    return;
+  const unsigned int off = temperature - 300;
+  const unsigned int lo_off = (off / 10) * 10;
+  if (thermal_temp == lo_off)      { lo = temp[flavor]; got_lo = true; }
+  if (thermal_temp == lo_off + 10) { hi = temp[flavor]; got_hi = true; }
+}
+
+static double interpolate_temperature_current(double lo, double hi, unsigned int temperature)
+{
+  const double w = ((temperature - 300) % 10) / 10.0;
+  if (lo > 0.0 && hi > 0.0)
+    return exp(log(lo) + (log(hi) - log(lo)) * w);
+  return lo + (hi - lo) * w;
+}
+
 void DeviceType::assign(const string & in_file, int tech_flavor,  unsigned int temperature)
 {
 	FILE *fp = fopen(in_file.c_str(), "r");
@@ -192,6 +227,10 @@ void DeviceType::assign(const string & in_file, int tech_flavor,  unsigned int t
 	//unsigned int thermal_temp;
 
 	double nmos_effective_resistance_multiplier;
+
+	/* PIMID (1.12.105): the two bracketing rows for an off-grid temperature. */
+	double ioff_lo = 0, ioff_hi = 0, igon_lo = 0, igon_hi = 0;
+	bool got_ioff_lo = false, got_ioff_hi = false, got_igon_lo = false, got_igon_hi = false;
 
 	if(!fp) {
 	throw std::runtime_error("CACTI: technology parameter file " + in_file + " is missing");
@@ -262,12 +301,18 @@ void DeviceType::assign(const string & in_file, int tech_flavor,  unsigned int t
 		}
 		if (!strncmp("-I_off_n", line, strlen("-I_off_n"))) 
 		{
-		  scan_five_input_double_temperature(line,"-I_off_n","F/um",tech_flavor,temperature,g_ip->print_detail_debug,I_off_n);
+		  if (temperature % 10 == 0)
+		    scan_five_input_double_temperature(line,"-I_off_n","F/um",tech_flavor,temperature,g_ip->print_detail_debug,I_off_n);
+		  else
+		    scan_temperature_bracket(line,"-I_off_n",tech_flavor,temperature,ioff_lo,got_ioff_lo,ioff_hi,got_ioff_hi);
 		  continue;
 		}
 		if (!strncmp("-I_g_on_n", line, strlen("-I_g_on_n"))) 
 		{
-		 scan_five_input_double_temperature(line,"-I_g_on_n","F/um",tech_flavor,temperature,g_ip->print_detail_debug,I_g_on_n);
+		 if (temperature % 10 == 0)
+		   scan_five_input_double_temperature(line,"-I_g_on_n","F/um",tech_flavor,temperature,g_ip->print_detail_debug,I_g_on_n);
+		 else
+		   scan_temperature_bracket(line,"-I_g_on_n",tech_flavor,temperature,igon_lo,got_igon_lo,igon_hi,got_igon_hi);
 		  continue;
 		}
 		if (!strncmp("-C_ox", line, strlen("-C_ox"))) 
@@ -307,6 +352,17 @@ void DeviceType::assign(const string & in_file, int tech_flavor,  unsigned int t
 		}
 		
 	} 
+
+	if (temperature % 10 != 0)
+	{
+		if (got_ioff_lo && got_ioff_hi)
+			I_off_n = interpolate_temperature_current(ioff_lo, ioff_hi, temperature);
+		if (got_igon_lo && got_igon_hi)
+			I_g_on_n = interpolate_temperature_current(igon_lo, igon_hi, temperature);
+		if (g_ip->print_detail_debug)
+			cout << "-I_off_n: " << I_off_n << " -I_g_on_n: " << I_g_on_n
+			     << " (interpolated at " << temperature << " K)" << endl;
+	}
 
 	C_overlap = 0.2*C_g_ideal;
 	if(tech_flavor>=3)
