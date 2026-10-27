@@ -1428,6 +1428,71 @@ void EndOfPhaseActions() {
 
 bool pimidPostRoiFree();   // 1.12.18: defined with g_termStatsDumped below
 
+/* (1.12.123) fixed thread order: a thread that leaves its core for a futex wait
+ * stays pending until the kernel has queued it on the futex word (or the call
+ * has returned), so the next turn cannot touch the word before the kernel
+ * compares it. The thread's state is read from /proc (sleeping, in that call,
+ * on that address). */
+static std::atomic<uint8_t> g_detSleepWatch[MAX_THREADS];
+static int g_detSleepHtid[MAX_THREADS];
+static uint64_t g_detSleepNr[MAX_THREADS], g_detSleepArg[MAX_THREADS];
+static std::atomic<uint32_t> g_detSleepers{0};
+static std::atomic<uint32_t> g_detSleepTop{0};
+static bool detReadProc(int htid, const char* what, char* b, size_t sz) {
+    char p[64];
+    snprintf(p, sizeof p, "/proc/self/task/%d/%s", htid, what);
+    const int fd = open(p, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const ssize_t n = read(fd, b, sz - 1);
+    close(fd);
+    if (n <= 0) return false;
+    b[n] = 0;
+    return true;
+}
+static bool detAsleep(uint32_t t) {
+    char b[512];
+    if (!detReadProc(g_detSleepHtid[t], "stat", b, sizeof b)) return false;
+    const char* r = strrchr(b, ')');
+    if (!r || r[1] != ' ' || r[2] != 'S') return false;
+    if (!detReadProc(g_detSleepHtid[t], "syscall", b, sizeof b)) return false;
+    char* e = nullptr;
+    const unsigned long nr = strtoul(b, &e, 10);
+    if (e == b || nr != g_detSleepNr[t]) return false;
+    return strtoull(e, nullptr, 16) == g_detSleepArg[t];
+}
+static void detSettle(int64_t own = 0) {   // wait until every thread this turn woke, created, moved or put to sleep is settled
+    /* own: the caller's own re-join, counted already (it cannot settle before the caller leaves) */
+    for (int i = 0; g_detPending.load() > own; i++) {
+        if (g_detSleepers.load() > 0) {
+            const uint32_t top = std::min<uint32_t>(g_detSleepTop.load(), MAX_THREADS);
+            for (uint32_t t = 0; t < top; t++)
+                if (g_detSleepWatch[t].load() && detAsleep(t) && g_detSleepWatch[t].exchange(0)) {
+                    g_detSleepers.fetch_sub(1);
+                    if (g_detCredit[t].exchange(0)) g_detPending.fetch_sub(1);
+                }
+            if (g_detPending.load() <= own) break;
+        }
+        if (!in_roi.load()) break;   // the ROI has closed: nothing is ordered any more
+        usleep(5);
+        if (i == 4000000) {
+            warn("[zsim] fixed thread order: %ld joins did not register in 20 s; continuing", (long)g_detPending.load());
+            for (uint32_t t = 0; t < MAX_THREADS; t++) if (g_detSleepWatch[t].exchange(0)) g_detSleepers.fetch_sub(1);
+            g_detPending.store(0);
+        }
+    }
+}
+
+/* (1.12.123) fixed thread order: a turn lasts at most kDetTurnCycles of the core's own
+ * clock (then the core with the earliest clock runs), not the rest of the phase:
+ * a thread no longer runs up to a whole phase ahead of the threads it woke */
+static const uint64_t kDetTurnCycles = 1000;
+static uint64_t g_detQ = 0;   // kDetTurnCycles once the fixed order is on
+static uint64_t g_detTurnEnd[MAX_THREADS];
+static inline void detTurnBegin(uint32_t tid, uint32_t cid) {
+    if (g_detQ && tid < MAX_THREADS && cid < zinfo->numCores && zinfo->cores[cid])
+        g_detTurnEnd[tid] = zinfo->cores[cid]->lockClock() + g_detQ;
+}
+
 uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
     if (pimidPostRoiFree()) {   // 1.12.18: after the ROI, leave and run free
         zinfo->sched->leave(procIdx, tid, cid);
@@ -1435,9 +1500,11 @@ uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
         fPtrs[tid] = nopPtrs;
         return INVALID_CID;
     }
+    if (g_detOrder && in_roi.load()) detSettle();   // (1.12.123): every thread this turn woke, created, moved or put to sleep is settled
     uint32_t newCid = zinfo->sched->sync(procIdx, tid, cid);
     clearCid(tid);
     setCid(tid, newCid);
+    detTurnBegin(tid, newCid);
 
     if (zinfo->terminationConditionMet && pimidPostRoiFree()) {
         zinfo->sched->leave(procIdx, tid, newCid);
@@ -1885,6 +1952,7 @@ static void Join(uint32_t tid) {
     if (tr) COSIMTRACE("tid=%u sched->join done cid=%u", tid, cid);
     setCid(tid, cid);
     wakeSyncApply(tid, cid);   // 1.12.18 (user ruling 2026-10-23, "sync to waker")
+    detTurnBegin(tid, cid);
     if (g_spCut && cid < MAX_THREADS) {   // 1.12.18 (ruling 2026-10-24): awake again -> ACTIVE (after the wake sync)
         uint32_t q = 1;
         g_coreRoiState[cid].compare_exchange_strong(q, 0);
@@ -2620,6 +2688,7 @@ static void migrateThreadToDomain(uint32_t tid, int domain) {
     if (thread_initialized[tid]) {
         uint32_t cid = cids[tid];
         if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+            if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
             zinfo->sched->leave(procIdx, tid, cid);
         }
         zinfo->sched->finish(procIdx, tid);
@@ -2652,6 +2721,7 @@ static void detachThreadForMigration(uint32_t tid, int domain) {
             // event, not by a wall-dependent advancement test.
             if ((g_mpi_thread_mode || g_spCut) && cid < MAX_THREADS)   // 1.12.18: single-process cut too
                 g_coreRoiState[cid].store(3, std::memory_order_release);
+            if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
             zinfo->sched->leave(procIdx, tid, cid);
         }
         zinfo->sched->finish(procIdx, tid);
@@ -2690,6 +2760,9 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                  g_cosim_mode && !g_cosim_no_offload &&
                  g_in_device_region.load(std::memory_order_acquire) &&
                  thread_domain[tid].load() == DOMAIN_HOST)) {
+        /* (1.12.123) fixed thread order: a thread back from a syscall takes its turn
+         * before it moves, so the move happens in turn order */
+        if (g_detOrder && thread_initialized[tid] && fPtrs[tid].bblPtr == JoinBbl) Join(tid);
         {
             std::lock_guard<std::mutex> mig(g_migrateMutex);
             detachThreadForMigration(tid, DOMAIN_DEVICE);
@@ -2802,6 +2875,18 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         }
     }
     fPtrs[tid].bblPtr(tid, tud->tbAddr, tud->bblInfo);
+    if (g_detQ && g_detOrder && in_roi.load() && tid < MAX_THREADS) {   // (1.12.123): the turn ends after kDetTurnCycles
+        const uint32_t cid = cids[tid];
+        if (cid < zinfo->numCores && zinfo->cores[cid] && fPtrs[tid].bblPtr != JoinBbl) {
+            Core* c = zinfo->cores[cid];
+            if (g_detTurnEnd[tid] == 0) g_detTurnEnd[tid] = c->lockClock() + g_detQ;
+            else if (c->lockClock() >= g_detTurnEnd[tid]) {
+                detSettle();   // the threads this turn woke, created or moved join first, so they count below
+                if (zinfo->sched->detOthersToRun()) zinfo->sched->detYield(procIdx, tid, cid);
+                g_detTurnEnd[tid] = c->lockClock() + g_detQ;
+            }
+        }
+    }
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = false;
 }
 
@@ -4226,6 +4311,7 @@ static void cosimRoiBeginOffload(uint32_t tid) {
     if (thread_initialized[tid]) {
         uint32_t cid = cids[tid];
         if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+            if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
             zinfo->sched->leave(procIdx, tid, cid);
         }
         zinfo->sched->finish(procIdx, tid);
@@ -4429,6 +4515,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 if (thread_initialized[tid]) {
                     uint32_t cid = cids[tid];
                     if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+                        if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
                         zinfo->sched->leave(procIdx, tid, cid);
                     }
                     zinfo->sched->finish(procIdx, tid);
@@ -4553,6 +4640,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (thread_initialized[tid]) {
                 uint32_t cid = cids[tid];
                 if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+                    if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
                     zinfo->sched->leave(procIdx, tid, cid);
                 }
                 zinfo->sched->finish(procIdx, tid);
@@ -4582,6 +4670,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (thread_initialized[tid]) {
                 uint32_t cid = cids[tid];
                 if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+                    if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
                     zinfo->sched->leave(procIdx, tid, cid);
                 }
                 zinfo->sched->finish(procIdx, tid);
@@ -4787,6 +4876,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                 if (thread_initialized[tid]) {
                     uint32_t cid = cids[tid];
                     if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+                        if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
                         zinfo->sched->leave(procIdx, tid, cid);
                     }
                     zinfo->sched->finish(procIdx, tid);
@@ -4890,6 +4980,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (thread_initialized[tid]) {
             uint32_t cid = cids[tid];
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+                if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
                 zinfo->sched->leave(procIdx, tid, cid);
             }
             zinfo->sched->finish(procIdx, tid);
@@ -4910,6 +5001,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (thread_initialized[tid]) {
             uint32_t cid = cids[tid];
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
+                if (g_detOrder && in_roi.load() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
                 zinfo->sched->leave(procIdx, tid, cid);
             }
             zinfo->sched->finish(procIdx, tid);
@@ -5259,10 +5351,36 @@ static void stackAtRoiBeginReg() {
              (unsigned long)sp);
 }
 
+static uint32_t g_detFutexOp[MAX_VCPUS];   // (1.12.123): the futex op and nr_wake at entry
+static uint64_t g_detFutexNr[MAX_VCPUS];
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
+    if (g_detOrder && vcpu_index < MAX_VCPUS) {   // (1.12.123): a futex wait that returned is no longer watched
+        const uint32_t t = vcpuToTid[vcpu_index];
+        if (t < MAX_THREADS && g_detSleepWatch[t].exchange(0)) g_detSleepers.fetch_sub(1);
+    }
+    if (g_detOrder && in_roi.load() && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {
+        /* (1.12.123) fixed thread order: a turn may not end before the threads it
+         * woke (FUTEX_WAKE's count) or created (clone) have joined; a woken
+         * waiter's or a new thread's next join settles one of them */
+        if (num == 56 && ret > 0) g_detPending.fetch_add(1);
+        if (num == 202) {
+            const uint32_t c = g_detFutexOp[vcpu_index];
+            if ((c == 1 || c == 10 || c == 5) && ret > 0) g_detPending.fetch_add(ret);
+            else if ((c == 3 || c == 4) && ret > 0) g_detPending.fetch_add((int64_t)std::min<uint64_t>((uint64_t)ret, g_detFutexNr[vcpu_index]));
+            else if ((c == 0 || c == 9 || c == 11) && ret == 0) {
+                const uint32_t t = vcpuToTid[vcpu_index];
+                if (t < MAX_THREADS) g_detCredit[t].store(1);
+            }
+        }
+    }
     if (num == 56 && ret > 0 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // (1.12.76): hand the domain to the child
-        std::lock_guard<std::mutex> g(g_cloneMu);
-        g_cloneDom[(int)ret] = g_cloneDomPending[vcpu_index];
+        {
+            std::lock_guard<std::mutex> g(g_cloneMu);
+            g_cloneDom[(int)ret] = g_cloneDomPending[vcpu_index];
+        }
+        /* (1.12.123) fixed thread order: the new thread joins before its creator goes
+         * on, so new threads take their cores in the order they were created */
+        if (g_detOrder && in_roi.load()) detSettle();
     }
     if (num == 202 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // 1.12.18 (ruling 2026-10-23, "sync to waker")
         const uint32_t t = vcpuToTid[vcpu_index];
@@ -5314,6 +5432,7 @@ static void vcpu_init_cb(unsigned int vcpu_index, void *userdata) {
             if (!found) warn("[ZSim] thread %d: no clone record from its parent; its domain is read now", tid);
         }
         thread_domain[tid].store(dom);
+        if (g_detOrder && vcpu_index > 0) g_detCredit[tid].store(1);   // (1.12.123): a new thread's first join
     }
 }
 
@@ -5467,6 +5586,7 @@ static void syscall_cb(unsigned int vcpu_index,
     /* 1.12.17: guest thread stacks (MAP_STACK = 0x20000, CLONE_THREAD = 0x10000) */
     if (num == 9 && (a4 & 0x20000)) g_stackMapLen[vcpu_index] = a2;
     else if (num == 56 && (a1 & 0x10000) && a2 && zinfo) stackOnClone(a2);
+    if (g_detOrder && num == 202 && vcpu_index < MAX_VCPUS) { g_detFutexOp[vcpu_index] = (uint32_t)(a2 & 0x7f); g_detFutexNr[vcpu_index] = a3; }
     if (num == 56 && (a1 & 0x10000))   // (1.12.76): the child's domain, as its parent sees it at the clone
         g_cloneDomPending[vcpu_index] = g_in_device_region.load() ? DOMAIN_DEVICE : DOMAIN_HOST;
     else if (num == 11 && zinfo && zinfo->stackRanges) stackOnUnmap(a1, a2);
@@ -5572,6 +5692,22 @@ static void syscall_cb(unsigned int vcpu_index,
                          *(volatile uint32_t*)(uintptr_t)a1 == (uint32_t)a3) synth_pc = kFutexWaitSynthPc;
             }
             if (num == 202) wakeSyncOnFutexEntry(tid, cid, a1, a2, a5);   // 1.12.18 (ruling 2026-10-23, "sync to waker")
+            if (g_detOrder) {   // (1.12.123): before a leave, every thread this turn woke, created or moved has joined
+                if (in_roi.load()) {
+                    detSettle();
+                    if (tid < MAX_THREADS && (synth_pc == kFutexWaitSynthPc || num == 449)) {
+                        /* the wait leaves the core: pending until the kernel has queued it */
+                        g_detSleepHtid[tid] = (int)syscall(SYS_gettid);
+                        g_detSleepNr[tid] = (uint64_t)num;
+                        g_detSleepArg[tid] = a1;
+                        if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1);
+                        uint32_t top = g_detSleepTop.load();
+                        while (top < tid + 1 && !g_detSleepTop.compare_exchange_weak(top, tid + 1)) {}
+                        g_detSleepers.fetch_add(1);
+                        g_detSleepWatch[tid].store(1);
+                    }
+                }
+            }
             zinfo->sched->syscallLeave(procIdx, tid, cid, synth_pc,
                                        (int)num, a1, a2);
             /* Whether fake or real leave occurred, set joinPtrs so the
@@ -5925,6 +6061,26 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         zinfo->sched->markBlockingSyscall(procIdx, kFutexWaitSynthPc);   // futex WAIT-class ops
         zinfo->sched->markBlockingSyscall(procIdx, 0x1000 + 449);        // futex_waitv
         info("[ZSim] futex waits leave the core at once (futex WAIT-class ops, futex_waitv) [(1.12.76)]");
+        /* (1.12.123): fixed thread order. One core runs at a time; the cores take
+         * their turns in the order of their clocks (the global phase axis; the
+         * lower id first on a tie), a thread that joins during a turn (woken,
+         * created, moved to the device) takes its place in that order within
+         * the same phase, a turn ends only when each thread it woke, created,
+         * moved or handed a core has joined and each thread it put to sleep is
+         * queued in the kernel, and threads waiting for a core are queued by phase
+         * and id. Only a futex wait that sleeps gives up the turn early. The
+         * simulated time comes from the model as before; the order in which the
+         * threads touch shared state no longer comes from the host. */
+        zinfo->sched->setFixedOrder();
+        g_detTurnStart = []() { if (in_roi.load()) detSettle(); };
+        g_detBeforeLeave = [](uint32_t tid) {
+            if (in_roi.load()) detSettle((tid < MAX_THREADS && g_detCredit[tid].load()) ? 1 : 0);
+        };
+        g_detClockOf = [](uint32_t cid) -> uint64_t {
+            return (cid < zinfo->numCores && zinfo->cores[cid]) ? zinfo->cores[cid]->lockClock() : 0;
+        };
+        info("[ZSim] fixed thread order: one core at a time, turns of at most %lu cycles by clock (shared-memory runs) [(1.12.123)]", (unsigned long)kDetTurnCycles);
+        g_detQ = kDetTurnCycles;
     }
     {   /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): simulation.lock_sync, default on;
          * never under thread-MPI (see lockRmw) */

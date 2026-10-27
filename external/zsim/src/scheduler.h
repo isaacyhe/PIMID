@@ -102,6 +102,8 @@ class Scheduler : public GlobAlloc, public Callee {
             volatile bool needsJoin; //after waiting on the scheduler, should we join the barrier, or is our cid good to go already?
 
             bool markedForSleep; //if true, we will go to sleep on the next leave()
+            uint64_t detEnq = 0;   // (1.12.123): phase at which the thread was queued for a core
+            bool detHanded = false;   // (1.12.123): handed a core while waiting; its barrier join is awaited
             uint64_t wakeupPhase; //if SLEEPING, when do we have to wake up?
 
             g_vector<bool> mask;
@@ -275,6 +277,7 @@ class Scheduler : public GlobAlloc, public Callee {
             //Otherwise, try to grab a free context; if all are taken, queue up
             uint32_t gid = getGid(pid, tid);
             ThreadInfo* th = gidMap[gid];
+            if (g_detOrder && tid < MAX_THREADS && g_detCredit[tid].exchange(0)) g_detPending.fetch_sub(1);   // (1.12.123)
 
             //dsm 25 Oct 2012: Failed this assertion right after a fork when trying to simulate gedit. Very weird, cannot replicate.
             //dsm 10 Apr 2013: I think I got it. We were calling sched->finish() too early when following exec.
@@ -305,19 +308,29 @@ class Scheduler : public GlobAlloc, public Callee {
             if (th->state == OUT) {
                 th->state = RUNNING;
                 outQueue.remove(th);
-                zinfo->cores[th->cid]->join();
-                bar.join(th->cid, &schedLock); //releases lock
+                if (g_detOrder) {   // (1.12.123): the core joins once its thread holds the turn
+                    bar.join(th->cid, &schedLock); //releases lock
+                    zinfo->cores[th->cid]->join();
+                } else {
+                    zinfo->cores[th->cid]->join();
+                    bar.join(th->cid, &schedLock); //releases lock
+                }
             } else {
                 assert(th->state == BLOCKED || th->state == STARTED);
 
                 ContextInfo* ctx = schedThread(th);
                 if (ctx) {
                     schedule(th, ctx);
-                    zinfo->cores[th->cid]->join();
-                    bar.join(th->cid, &schedLock); //releases lock
+                    if (g_detOrder) {   // (1.12.123): the core joins once its thread holds the turn
+                        bar.join(th->cid, &schedLock); //releases lock
+                        zinfo->cores[th->cid]->join();
+                    } else {
+                        zinfo->cores[th->cid]->join();
+                        bar.join(th->cid, &schedLock); //releases lock
+                    }
                 } else {
                     th->state = QUEUED;
-                    runQueue.push_back(th);
+                    enqueueRun(th);
                     waitForContext(th); //releases lock, might join
                 }
             }
@@ -378,6 +391,7 @@ class Scheduler : public GlobAlloc, public Callee {
         }
 
         void leave(uint32_t pid, uint32_t tid, uint32_t cid) {
+            if (g_detOrder && g_detBeforeLeave) g_detBeforeLeave(tid);   // (1.12.123): the turn is settled before it passes on
             futex_lock(&schedLock);
             leaveLocked(pid, tid, cid);
             futex_unlock(&schedLock);
@@ -394,6 +408,15 @@ class Scheduler : public GlobAlloc, public Callee {
             futex_lock(&schedLock);
             bar.releaseAllWaiting();
             futex_unlock(&schedLock);
+        }
+
+        void setFixedOrder() { bar.setFixedOrder(); }   // (1.12.123)
+        bool detOthersToRun() const { return bar.detOthersToRun(); }   // (1.12.123): unlocked, benign
+        void detYield(uint32_t pid, uint32_t tid, uint32_t cid) {   // (1.12.123): see Barrier::yield
+            futex_lock(&schedLock);
+            ThreadInfo* th = contexts[cid].curThread;
+            if (!th || th->state != RUNNING || th->gid != getGid(pid, tid) || th->fakeLeave) { futex_unlock(&schedLock); return; }
+            bar.yield(cid, &schedLock);   // releases the lock
         }
 
         uint32_t sync(uint32_t pid, uint32_t tid, uint32_t cid) {
@@ -421,10 +444,15 @@ class Scheduler : public GlobAlloc, public Callee {
                     warn("Sched: untested code path, check with Daniel if you see this");
                     schedule(th, ctx);
                     //We need to do a join, because dst will not join
-                    zinfo->cores[ctx->cid]->join();
-                    bar.join(ctx->cid, &schedLock); //releases lock
+                    if (g_detOrder) {   // (1.12.123): the core joins once its thread holds the turn
+                        bar.join(ctx->cid, &schedLock); //releases lock
+                        zinfo->cores[ctx->cid]->join();
+                    } else {
+                        zinfo->cores[ctx->cid]->join();
+                        bar.join(ctx->cid, &schedLock); //releases lock
+                    }
                 } else {
-                    runQueue.push_back(th);
+                    enqueueRun(th);
                     waitForContext(th); //releases lock, might join
                 }
             }
@@ -598,6 +626,19 @@ class Scheduler : public GlobAlloc, public Callee {
             //info("Descheduled %d <-> %d", th->gid, ctx->cid);
         }
 
+        /* (1.12.123): with a fixed thread order, threads waiting for a core are queued
+         * first-come by phase and by id within a phase, not in the host's order */
+        void enqueueRun(ThreadInfo* th) {
+            if (!g_detOrder) { runQueue.push_back(th); return; }
+            th->detEnq = curPhase;
+            ThreadInfo* prev = nullptr;
+            for (ThreadInfo* t = runQueue.front(); t; t = t->next) {
+                if (t->detEnq > th->detEnq || (t->detEnq == th->detEnq && t->gid > th->gid)) break;
+                prev = t;
+            }
+            if (!prev) runQueue.push_front(th); else runQueue.insertAfter(prev, th);
+        }
+
         void waitForContext(ThreadInfo* th) {
             th->futexWord = 1;
             waitEvents.inc();
@@ -614,14 +655,25 @@ class Scheduler : public GlobAlloc, public Callee {
             if (th->needsJoin) {
                 futex_lock(&schedLock);
                 assert(th->needsJoin); //re-check after the lock
-                zinfo->cores[th->cid]->join();
-                bar.join(th->cid, &schedLock);
+                if (th->detHanded) { th->detHanded = false; g_detPending.fetch_sub(1); }   // (1.12.123)
+                if (g_detOrder) {   // (1.12.123): the core joins once its thread holds the turn
+                    bar.join(th->cid, &schedLock); //releases lock
+                    zinfo->cores[th->cid]->join();
+                } else {
+                    zinfo->cores[th->cid]->join();
+                    bar.join(th->cid, &schedLock); //releases lock
+                }
                 //info("%d join done", th->gid);
+            } else if (g_detOrder && g_detTurnStart) {
+                g_detTurnStart();   // (1.12.123): handed a running core: the turn is settled first
             }
         }
 
         void wakeup(ThreadInfo* th, bool needsJoin) {
             th->needsJoin = needsJoin;
+            /* (1.12.123) fixed thread order: the thread joins the barrier on its own host
+             * thread; the turn that handed it the core waits for that join */
+            if (g_detOrder && needsJoin) { th->detHanded = true; g_detPending.fetch_add(1); }
             bool succ = __sync_bool_compare_and_swap(&th->futexWord, 1, 0);
             if (!succ) panic("Wakeup race in barrier?");
             syscall(SYS_futex, &th->futexWord, FUTEX_WAKE, 1, nullptr, nullptr, 0);
@@ -660,6 +712,27 @@ class Scheduler : public GlobAlloc, public Callee {
             if (contexts[th->cid].state == IDLE && th->mask[th->cid]) {
                 ctx = &contexts[th->cid];
                 freeList.remove(ctx);
+            }
+
+            /* (1.12.123) fixed thread order: a new thread takes the (tid mod n)-th core of
+             * its mask when that core is free, else the free core of its mask with the
+             * lowest id, so the cores do not follow the order in which threads arrive */
+            if (g_detOrder && !ctx) {
+                uint32_t n = 0;
+                for (uint32_t c = 0; c < numCores; c++) if (th->mask[c]) n++;
+                if (th->state == STARTED && n) {
+                    uint32_t k = getTid(th->gid) % n;
+                    for (uint32_t c = 0; c < numCores; c++) {
+                        if (!th->mask[c]) continue;
+                        if (k-- == 0) {
+                            if (contexts[c].state == IDLE) { ctx = &contexts[c]; freeList.remove(ctx); }
+                            break;
+                        }
+                    }
+                }
+                for (uint32_t c = 0; !ctx && c < numCores; c++) {
+                    if (th->mask[c] && contexts[c].state == IDLE) { ctx = &contexts[c]; freeList.remove(ctx); }
+                }
             }
 
             //Second, check the freeList

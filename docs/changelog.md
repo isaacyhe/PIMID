@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.123 -- multi-threaded results are now the same in every run
+
+- **Fixed thread order (on by default, every shared-memory run: serial, OpenMP, co-sim OpenMP).** The timing plugin
+  runs one core at a time, for a turn of at most 1000 cycles of that core's clock; the core with the earliest clock
+  runs next (lower core id on a tie), a thread that joins mid-phase takes its place in that order, and the next phase
+  starts in that order (no shuffle). A turn passes on only once every thread it woke (FUTEX_WAKE's count), created
+  (clone), moved between host and device, or handed a core has joined the barrier, and every thread it put to sleep (a
+  futex wait that leaves its core) is queued in the kernel on its word, read from /proc/self/task/<tid>/{stat,syscall}.
+  A new thread takes core (tid mod n) of its mask; threads waiting for a core are served by phase and thread id; a
+  co-sim worker back from a syscall takes its turn before it migrates to the device; zsim's scheduler-lock handshake
+  (up to 2 s per hand-off) is skipped. Message-passing runs (thread-MPI, MPI ranks) are unchanged.
+- **Root cause.** The simulated order of the guest threads came from the host: zsim ran up to the core count at
+  once, shuffled the run list each phase, let a woken or new thread join whenever its host thread got there, gave a
+  new thread whichever free core came first, and a thread that left for a futex wait gave up its turn before the
+  kernel compared the futex word, so the next turn could change the word first (the wait then returned EAGAIN and the
+  waker's FUTEX_WAKE count changed). Turns as long as the rest of a phase (up to 10000 cycles) let a thread run far
+  ahead of the threads it had just woken, which ran alone afterwards (no contention between them); turns of 1000
+  cycles keep the threads within a short distance of each other, as they run on the machine.
+- **Data impact (chain head 8080cda2, one node, 6 runs of today's build; ROI run time of the new single value vs
+  today's mean):** serial device, host and register cells (107) and hostn_1core unchanged, bit for bit (power and
+  checksum lines included). omp_DDR3 -0.4%, omp_DDR5 -3.0%, omp_GDDR6 +6.2%, omp_HBM3 -5.5%, omp_LPDDR5 +2.9%,
+  cosim_DDR5 -0.4%, cosim_HBM3 -0.3%, hostn_4core +0.6%, hostn_16core +2.3%; each within 1.5 standard deviations of
+  today's runs. Host time: OpenMP device cells +15 to +25%, co-sim cells about 2.5x faster (the lock handshake),
+  host baselines unchanged.
+
 ## 1.12.122 -- an MPI workload loads the PIMID message-passing library in place of the host's MPI library
 
 - **Defect.** The MPI workloads are linked against the host's MPI library (libmpich.so.12). In a thread-MPI run the

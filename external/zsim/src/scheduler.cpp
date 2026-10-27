@@ -25,6 +25,12 @@
  */
 
 #include "scheduler.h"
+bool g_detOrder = false;
+std::atomic<int64_t> g_detPending{0};
+std::atomic<uint8_t> g_detCredit[MAX_THREADS];
+uint64_t (*g_detClockOf)(uint32_t cid) = nullptr;
+void (*g_detTurnStart)() = nullptr;
+void (*g_detBeforeLeave)(uint32_t tid) = nullptr;
 #include "bithacks.h"
 #include <fstream>
 #include <regex>
@@ -433,6 +439,9 @@ void Scheduler::finishFakeLeave(ThreadInfo* th) {
 }
 
 void Scheduler::waitUntilQueued(ThreadInfo* th) {
+    /* (1.12.123): with a fixed thread order the barrier, not the order in which the
+     * threads take the scheduler lock, decides who runs next */
+    if (g_detOrder) return;
     uint64_t startNs = getNs();
     uint32_t sleepUs = 1;
     while(!IsSleepingInFutex(th->linuxPid, th->linuxTid, (uintptr_t)&schedLock)) {

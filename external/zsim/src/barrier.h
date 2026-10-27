@@ -51,6 +51,19 @@
 #include "mtrand.h"
 
 // Configure futex timeouts (die rather than deadlock)
+#include <atomic>
+/* (1.12.123): fixed order of the guest threads in a shared-memory run (see
+ * Barrier::setFixedOrder and qemu_zsim_plugin.cpp, "fixed thread order"). */
+extern bool g_detOrder;                                  // one core at a time, by clock
+extern std::atomic<int64_t> g_detPending;                // joins a turn caused that are not registered yet
+extern std::atomic<uint8_t> g_detCredit[MAX_THREADS];    // per tid: its next join settles one of them
+extern uint64_t (*g_detClockOf)(uint32_t cid);           // a core's clock (the global phase axis)
+extern void (*g_detTurnStart)();                         // run by a thread as its turn starts
+extern void (*g_detBeforeLeave)(uint32_t tid);           // run before a thread leaves its core
+static inline bool detBefore(uint32_t a, uint32_t b) {   // turn order: earlier clock first, then lower id
+    if (g_detClockOf) { const uint64_t ca = g_detClockOf(a), cb = g_detClockOf(b); if (ca != cb) return ca < cb; }
+    return a < b;
+}
 #define TIMEOUT_LENGTH 20 //seconds
 #define MAX_TIMEOUTS 10
 
@@ -102,6 +115,9 @@ class Barrier : public GlobAlloc {
         Callee* sched; //FIXME: I don't like this organization, but don't have time to refactor the barrier code, this is used for a callback when the phase is done
 
     public:
+        /* (1.12.123): one thread runs at a time, the cores taking their turns by clock */
+        void setFixedOrder() { g_detOrder = true; parallelThreads = 1; }
+
         Barrier(uint32_t _parallelThreads, Callee* _sched) : parallelThreads(_parallelThreads), rnd(0xBA77137), sched(_sched) {
             for (uint32_t t = 0; t < MAX_THREADS; t++) {
                 threadList[t].state = OFFLINE;
@@ -144,6 +160,20 @@ class Barrier : public GlobAlloc {
                     //now we'll be scheduled next :)
                 }
             }
+            if (g_detOrder) {   // (1.12.123): the threads still to run in this phase stay in turn order
+                uint32_t idx = (threadList[tid].state == OFFLINE) ? runListSize - 1 : threadList[tid].lastIdx;
+                threadList[tid].lastIdx = idx;
+                if (idx >= curThreadIdx && idx < runListSize) {
+                    while (idx > curThreadIdx && detBefore(tid, runList[idx - 1])) {
+                        uint32_t o = runList[idx - 1]; runList[idx - 1] = tid; runList[idx] = o;
+                        threadList[o].lastIdx = idx; idx--; threadList[tid].lastIdx = idx;
+                    }
+                    while (idx + 1 < runListSize && detBefore(runList[idx + 1], tid)) {
+                        uint32_t o = runList[idx + 1]; runList[idx + 1] = tid; runList[idx] = o;
+                        threadList[o].lastIdx = idx; idx++; threadList[tid].lastIdx = idx;
+                    }
+                }
+            }
 
 
             threadList[tid].state = WAITING;
@@ -162,6 +192,7 @@ class Barrier : public GlobAlloc {
                 //The thread that wakes us up changes this
                 assert(threadList[tid].state == RUNNING);
             }
+            if (g_detOrder && g_detTurnStart) g_detTurnStart();   // (1.12.123)
         }
 
         //Must be called with schedLock held
@@ -199,6 +230,40 @@ class Barrier : public GlobAlloc {
                 //The thread that wakes us up changes this
                 assert(threadList[tid].state == RUNNING);
             }
+            if (g_detOrder && g_detTurnStart) g_detTurnStart();   // (1.12.123)
+        }
+
+        /* (1.12.123): another thread is still to run in this phase (read without the lock; a stale
+         * answer only delays or wastes one turn hand-off, the order is decided under the lock) */
+        bool detOthersToRun() const { return curThreadIdx < runListSize; }
+
+        /* (1.12.123): a turn ends after kDetTurnCycles of its core; the next core by clock runs, same phase */
+        void yield(uint32_t tid, lock_t* schedLock) {
+            if (threadList[tid].state != RUNNING) { futex_unlock(schedLock); return; }
+            threadList[tid].futexWord = 1;
+            threadList[tid].state = WAITING;
+            runningThreads--;
+            uint32_t idx = threadList[tid].lastIdx;
+            if (idx < curThreadIdx) {
+                curThreadIdx--;
+                uint32_t o = runList[curThreadIdx];
+                runList[curThreadIdx] = tid; runList[idx] = o;
+                threadList[o].lastIdx = idx; idx = curThreadIdx; threadList[tid].lastIdx = idx;
+            }
+            while (idx + 1 < runListSize && detBefore(runList[idx + 1], tid)) {
+                uint32_t o = runList[idx + 1]; runList[idx + 1] = tid; runList[idx] = o;
+                threadList[o].lastIdx = idx; idx++; threadList[tid].lastIdx = idx;
+            }
+            tryWakeNext(tid);
+            futex_unlock(schedLock);
+            if (threadList[tid].state == WAITING) {
+                while (true) {
+                    const struct timespec _fto = {0, 50000000};
+                    int futex_res = syscall(SYS_futex, &threadList[tid].futexWord, FUTEX_WAIT, 1, &_fto, nullptr, 0);
+                    if (futex_res == 0 || threadList[tid].futexWord != 1) break;
+                }
+            }
+            if (g_detOrder && g_detTurnStart) g_detTurnStart();
         }
 
         /* (1.12.121): the ROI is over and the program runs on to its exit unsimulated
@@ -256,7 +321,14 @@ class Barrier : public GlobAlloc {
                 }
 
                 //NOTE: If this is a performance hog, the algorithm can be rewritten to be top-down and threads can be woken up as soon as they are reordered. So far, I've seen this has negligible overheads though.
-                if (parallelThreads < runListSize) {
+                if (g_detOrder) {   // (1.12.123): the next phase starts in turn order (no shuffle)
+                    for (uint32_t i = 1; i < runListSize; i++) {
+                        uint32_t v = runList[i]; int32_t j = (int32_t)i - 1;
+                        while (j >= 0 && detBefore(v, runList[j])) { runList[j + 1] = runList[j]; j--; }
+                        runList[j + 1] = v;
+                    }
+                    for (uint32_t i = 0; i < runListSize; i++) threadList[runList[i]].lastIdx = i;
+                } else if (parallelThreads < runListSize) {
                     //Randomly shuffle thread list to avoid systemic biases and reduce contention on cache hierarchy (Fisher-Yates shuffle)
                     for (uint32_t i = runListSize-1; i > 0; i--) {
                         uint32_t j = rnd.randInt(i); //j is in {0,...,i}

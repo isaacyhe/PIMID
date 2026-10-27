@@ -164,6 +164,21 @@ thread-creation order), its host/device domain is read by its parent at the
 clone, it runs on a fixed home core of its domain (core vcpu mod n, as libgomp
 places thread i under `OMP_PROC_BIND=true`; `PIMID_NO_PE_PIN=1` turns this off),
 and a futex wait that sleeps leaves its core at once.
+Since (1.12.123) the threads of a shared-memory run (serial, OpenMP, co-sim) also
+take their turns in a fixed order, so multi-threaded results are the same in
+every run: one core runs at a time, for a turn of at most 1000 cycles of its own
+clock, the cores in the order of their clocks (the lower core id on a tie), so no
+thread runs far ahead of the threads it has just woken; a thread that joins during a turn (woken, created,
+moved between host and device, handed a core) takes its place in that order
+within the same phase; a turn passes on only when every thread it woke, created
+or moved has joined and every thread it put to sleep is queued in the kernel on
+its futex word (read from /proc, so the next turn cannot change the word before
+the kernel compares it); a new thread takes the core (thread id mod n) of its
+mask; and threads waiting for a core are served by phase and thread id. The
+simulated time still comes from the model; the host decides neither the order
+in which threads touch shared state nor which core a thread gets. The cost is
+host time: OpenMP device cells take about a fifth longer to simulate.
+Message-passing runs keep their own ordering.
 
 **Regressions can be gated exactly.** Run the single-threaded build and
 require bit-identical output; it costs one run. The settings below keep the
