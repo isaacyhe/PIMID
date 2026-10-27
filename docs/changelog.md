@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.81 -- HBM3 burst energy at the run's own data
+
+- **Model (user ruling 2026-10-27):** the HBM3 record gets the `data_pattern` block (form DQ_TOGGLE_RELATIVE) with the
+  coefficients the HBM2 measurement's authors publish for HBM3E (Olgun et al., MICRO 2026; HBM-Power pJ/bit = 2.759 + 1.192 dq + 1.331 tsv + 0.72 bg, relative, applied to writes too: the configuration of
+  case_studies/hbm3e_validation, validated against measured H200 HBM3E power within 2.4-5.3 %). dq = the measured DQ pin transitions between
+  beats; tsv and bg stay 0.5 (not counted); normalised at uniform-random data. Applies to the array burst; the DQ I/O
+  share is priced apart. DERIVED (an HBM2-measured fit transferred by its authors). Record only (params/dram/hbm3.yaml).
+- **Data impact:** HBM3 read/write array burst energy by the run's data, -13.6 % (no DQ transitions) to +13.6 % (every
+  pin every beat).
+
 ## 1.12.80 -- HBM3 refresh on the 16 Gb 8-High organisation: tRFCab 350 ns, two times the rows per REF
 
 - **Published HBM3/HBM3E data searched (user ruling 2026-10-27).** No HBM3 or HBM3E IDD table is public: JESD238B.01

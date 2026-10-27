@@ -66,6 +66,26 @@ idd:
     channel_gbps: 409.6   # 64-bit channel (channel_width_bits) x 6.4 Gb/s/pin (timing_preset HBM3_6.4Gbps)
     anchor_source: "PUBLISHED host-side HBM3 PHY energy, used UNSCALED as the DRAM-side figure: K. Chae et al. (Samsung), 'A 4-nm 1.15 TB/s HBM3 Interface With Resistor-Tuned Offset Calibration and In Situ Margin Detection', IEEE JSSC 59(1), Jan. 2024, Table II 'This work': Energy Efficiency W/R 0.25/0.29 pJ/bit at VDD/VDDQ 0.66/0.3 V, 9 Gb/s/pin; functions TRX, strobe control, per-bit de-skew, read FIFO, VT tracking, DFI logic, address/command interface, DFT logics"
     source: "1.11.91 IDD derivation (docs/derivations/hbm_gddr6_idd.md sec. 1.3) with its judgement factor r_io REPLACED by a published anchor (sec. 1.7, 2026-10-23): burst e3 = e2 x (1 - f_io)(V3/V2)^2 k_proc + e_io. The array part is unchanged (5.16 / 3.47 pJ/b x 0.77 x (1.1/1.2)^2 x 1.0 = 3.34 / 2.25 pJ/b; the record keeps its 1244.1 / 836.3 mA); e_io = the HBM3 PHY energy 0.29 pJ/b read / 0.25 pJ/b write (anchor_source) in place of e2 x f_io x r_io = 0.534 / 0.359 pJ/b; x 409.6 Gb/s / 1.1 V = 108.0 / 93.1 mA (was 198.9 / 133.7). Why a host-side figure for the DRAM side: no DRAM-side HBM3 I/O energy is published, and the host PHY moves the same bits over the same interposer DQ at the same rate (the other end of the same link). NOT voltage-scaled: the DRAM drives its DQ from VDDQL 0.4 V (SK hynix, M.-J. Park et al., JSSC 58(1) 2023 Sec. VIII) against the PHY's VDDQ 0.3 V, but Table II gives no VDD/VDDQ split of the 0.29, so a (0.4/0.3)^2 factor would also scale the 0.66 V digital share; stated, not applied. JEDEC IDD excludes the I/O (JESD238B.01 cl.9.1); the row carries it because the tree prices HBM I/O through this share (A7)"
+# (1.12.81) (user ruling 2026-10-27): the data-dependent burst energy from the run's MEASURED DQ pin transitions between
+# beats (1.12.58 counters), the authors' relative model as they apply it to HBM3E; the TSV and bank-group bus rates are
+# not counted and stay at uniform random (0.5); normalised at uniform random on all three, so the record's array burst is
+# the uniform-random value: E = E_record x pJ(dq, 0.5, 0.5) / pJ(0.5, 0.5, 0.5). Applies to the array burst; the DQ I/O
+# share (io_share) is priced apart, unchanged.
+data_pattern:
+  form: DQ_TOGGLE_RELATIVE
+  floor_pj_bit: 2.759
+  c_dq: 1.192
+  c_tsv: 1.331
+  c_bg: 0.72
+  tsv_rate: 0.5
+  bg_rate: 0.5
+  ref_dq_rate: 0.5
+  ref_tsv_rate: 0.5
+  ref_bg_rate: 0.5
+  apply_to_writes: true
+  provenance: DERIVED
+  source: "Transfer from the HBM2 measurement, as published by its authors for HBM3E: github.com/CMU-SAFARI/HBM-Power case_studies/hbm3e_validation/configs/HBM3_6400_power_datapattern.json, the configuration validated against measured power (Olgun et al., MICRO 2026, arXiv:2610.14244, Sec. 6.2: H200 HBM3E high-throughput read microbenchmark within 2.4-5.3 % across the HBM3E supply range): datapattern floor_pJbit 2.759, coef_T_DQ 1.192, coef_T_2bit 1.331, coef_busflip 0.72, use_coupling false, relative form, apply_to_writes true (the DQ/TSV/BG terms are the with-coupling fit of 32 HBM2 beat patterns, case_studies/hbm2_data_pattern_dependence/README.md Coefficients table; the floor 2.759 is as committed, its derivation is not documented). The authors' HBM3E device configuration (config/HBM3E_6400MTs/power.json) carries the no-coupling HBM2 fit instead (3.1798 / 1.04 / 1.4875 / 1.41): factor range +-10.1 % vs +-13.6 % here. Stated: the coefficients are HBM2-measured; their use for HBM3 is the authors' transfer, not an HBM3 measurement."
+
 component_factors: none   # HBM rows are measured means; no typical/maximum factor applies
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
   scheme: none
