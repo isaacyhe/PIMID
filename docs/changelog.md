@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.93 -- the PCM cell's SET and RESET energies from its source
+
+- **Power (external/nvsim/sample_PCRAM.cell; src/main.cpp report text; src/util/cache_warehouse.cpp):** the PCM cell
+  file names Lee et al., ISCA 2009 as its source but gave only currents and pulse widths. NVSim therefore priced a SET
+  and a RESET as the 22 nm logic supply x the current x the pulse (0.9 V x 150 uA x 150 ns = 20.25 pJ; 0.9 V x 300 uA
+  x 40 ns = 10.8 pJ). The file now carries the source's own cell energies (Lee Table 1, "this work"): SET 13.5 pJ
+  (90 uW for 150 ns), RESET 19.2 pJ (480 uW for 40 ns at 1.6 V). NVSim uses a given energy in place of its estimate.
+  - At the 64 KB / 512 b / 22 nm unit, a PCM write goes from 51.85 nJ (101.3 pJ/bit, SET-limited) to 49.16 nJ
+    (96.0 pJ/bit, RESET-limited). The write path's supply efficiency (NVSim's 0.2) is unchanged by this entry.
+- **Cache:** the NVSim characterisation cache tool version moves again.
+- **Data impact:** PCM write energy falls by 5 %. Other technologies are unchanged.
+
 ## 1.12.92 -- a PCM read costs the cell's published read energy
 
 - **Power (external/nvsim/MemCell.cpp, MemCell.h, SubArray.cpp; src/util/cache_warehouse.cpp):** NVSim did not read

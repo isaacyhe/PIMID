@@ -19,10 +19,14 @@
 -ResetMode: current
 -ResetCurrent (uA): 300
 -ResetPulse (ns): 40
+# PIMID (1.12.93): Lee et al., ISCA 2009, Table 1 ('this work'): RESET 300 uA, 1.6 V, 480 uW for 40 ns = 19.2 pJ
+-ResetEnergy (pJ): 19.2
 
 -SetMode: current
 -SetCurrent (uA): 150
 -SetPulse (ns): 150
+# PIMID (1.12.93): Lee et al., ISCA 2009, Table 1 ('this work'): SET 150 uA, 1.2 V, 90 uW for 150 ns = 13.5 pJ
+-SetEnergy (pJ): 13.5
 
 -AccessType: CMOS
 -VoltageDropAccessDevice (V): 0.3

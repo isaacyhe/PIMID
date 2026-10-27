@@ -12178,8 +12178,8 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
     {
         const double bits = static_cast<double>(nvm_cfg.word_width_bits);
         const char* cell = (tech == "STT_MRAM") ? "sample_STTRAM.cell (NVSim's sample cell; the file names no source)"
-                         : (tech == "PCM")      ? "sample_PCRAM.cell (NVSim's sample cell; the file names Lee et al., ISCA 2009; "
-                                                  "its 90 nm currents and resistances are used as given)"
+                         : (tech == "PCM")      ? "sample_PCRAM.cell (NVSim's sample cell, from Lee et al., ISCA 2009: read, SET and RESET "
+                                                  "energies from its Table 1; its 90 nm currents and resistances as given)"
                                                 : "sample_RRAM.cell (NVSim's sample cell, a selector-less crossbar; the file "
                                                   "names no source)";
         pimid::fmt_scoped(std::cout) << std::setprecision(6)
