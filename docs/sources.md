@@ -222,3 +222,11 @@ core AC timing tables or IDD tables.
 | GDDR6 VPP (user ruling 2026-10-25) | per channel: IPP2N = IPP3N = IPP4R/W 5, IPP5B 38.5 mA at VPP 1.8 V; activation 216 pJ = 1.8 V x (IPP7 31 - IPP3N 10) mA / 175 M ACT/s per device (IDD7 route) | Samsung K4Z80325BC Rev 1.3 Table 82 p.146 (x32, HC14) + note 2; Table 90 pp.152-155 (IDD7 loop, one ACT per channel per 20 nCK); Table 79 p.136 (VPP) | Was not priced; IPP0 14 not used (ill-conditioned IDD0 route) |
 | LPDDR5 tREFI (energy row) | 3906 ns | JESD209-5C 3.906 us; = LPDDR5.cpp tREFI_BASE | Was 3904 |
 | Organization shape check | transcription banks/rows/cols bound field-by-field to the instantiated IDRAM at every wrapper init | -- | Structural; PIMID_ORG_BREAK proves it fires |
+
+## Host core awake idle (reference line, not charged)
+
+| Quantity | Value in use | Source | Consumed at |
+|---|---|---|---|
+| Haswell-EP package C1E / C3 / C6 power per core | 1.91 / 1.17 / 0.13 W/core; C1E - C6 1.78, C3 - C6 1.03 W/core (DERIVED: least-squares slopes over 34 SKUs, 4..18 cores; C1E line 18.5 W + 1.91 W/core, rms 3.7 W) | Intel Xeon E5-1600/2600/4600 v3 Product Families Datasheet Vol. 1, 330783-002 (June 2015), Sec. 2.10, pp.42-44 (C1E and C3 "characterized but not tested"; C6 at Tcase 50 C) | `main.cpp` host awake-idle reference line (printed, in no total) |
+| Skylake-SP core CC1 - CC6 power per core | 1.21 W/core (DERIVED: 12.1 W over 10 cores, RAPL package) | Antoniou et al., "AgilePkgC: An Agile System Idle State Architecture for Energy Proportional Datacenter Servers", HPCA 2023 (arXiv 2204.10466), Sec. 5 (Xeon Silver 4114, 14 nm) | same line |
+| Zen 2 core C1 - C2 power per core | 0.09 W/core (system AC) | Schoene et al., "Energy Efficiency Aspects of the AMD Zen 2 Architecture", IEEE Cluster 2021 (arXiv 2108.00808), Sec. VI-A (2x EPYC 7502, 7 nm) | same line |

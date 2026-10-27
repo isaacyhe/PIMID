@@ -16770,6 +16770,50 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * It reports only what this node was configured with, so the
              * shape follows the system the user defined. */
             mcpat.printComponentBreakdown();
+            if (node.role == UnifiedConfig::SystemNode::HOST) {
+                /* (1.12.98): THE HOST'S AWAKE-IDLE FLOOR PER CORE, a reference line
+                 * (read only; in no total). What this run charges a host core
+                 * whatever it does -- its leakage (subthreshold + gate) and its
+                 * L2's; a halted core's clock is off (power.models.idle_halt) --
+                 * and the same with the L3 and the host NoC leakage shared over
+                 * the cores, printed beside the published package-side power of
+                 * one more awake, halted core:
+                 *  - Intel Xeon E5-1600/2600/4600 v3 Datasheet Vol. 1, 330783-002
+                 *    (June 2015), Sec. 2.10: package C1E / C3 / C6 power of 34
+                 *    Haswell-EP SKUs (4..18 cores, 22 nm; C1E and C3
+                 *    "characterized but not tested", C6 at Tcase 50 C).
+                 *    Least-squares slopes over the core count (DERIVED): C1E
+                 *    1.91, C3 1.17, C6 0.13 W/core; C1E - C6 1.78, C3 - C6
+                 *    1.03 W/core. The slope carries each core's LLC slice and
+                 *    ring stop, and the on-die regulator loss.
+                 *  - Antoniou et al., "AgilePkgC", HPCA 2023 (arXiv 2204.10466),
+                 *    Sec. 5: Xeon Silver 4114 (10 cores, 14 nm), all cores CC1
+                 *    vs CC6, RAPL package, 12.1 W -> 1.21 W/core (DERIVED).
+                 *  - Schoene et al., "Energy Efficiency Aspects of the AMD Zen 2
+                 *    Architecture", IEEE Cluster 2021 (arXiv 2108.00808), Sec.
+                 *    VI-A: 2x EPYC 7502 (7 nm), each further core in C1 instead
+                 *    of C2 +0.09 W (system AC).
+                 * Not charged, not judged here: the published values span 20x
+                 * across vendors and nodes. */
+                using CT = pimid::McPATWrapper::ComponentType;
+                const int nc = std::max(1, mcfg.num_cores);
+                const double core_l = mcpat.getComponentPower(CT::CORE).total_leakage;
+                const double l2_l   = mcpat.getComponentPower(CT::L2_CACHE).total_leakage;
+                const double l3_l   = mcpat.getComponentPower(CT::L3_CACHE).total_leakage;
+                const double noc_l  = mcpat.getComponentPower(CT::NOC).total_leakage;
+                const double own = (core_l + l2_l) / nc;
+                const double shared = (core_l + l2_l + l3_l + noc_l) / nc;
+                std::cout << "  [power] host awake-idle floor (reference, in no total): per core, core leakage "
+                          << core_l / nc << " W + L2 leakage " << l2_l / nc << " W = " << own
+                          << " W; with the L3 and host NoC leakage shared over " << nc << " core(s) "
+                          << shared << " W/core (a halted core's clock is off: power.models.idle_halt)."
+                          << " Published package-side power of one more awake, halted core: Haswell-EP 22 nm"
+                          << " package C1E 1.91 W/core (C1E - C6 1.78, C3 - C6 1.03; DERIVED slopes over 34 SKUs,"
+                          << " Intel 330783-002 Sec. 2.10, characterized but not tested; LLC slice, ring stop and"
+                          << " regulator loss included); Xeon Silver 4114 14 nm CC1 - CC6 1.21 W/core (DERIVED,"
+                          << " AgilePkgC HPCA 2023 Sec. 5, RAPL package); EPYC 7502 7 nm C1 - C2 0.09 W/core"
+                          << " (Schoene et al., IEEE Cluster 2021 Sec. VI-A, system AC)." << std::endl;
+            }
         } catch (const std::exception& e) {
             /* 1.11.88 (cloud review of 1.11.87): POWER WAS ASKED FOR AND
              * NOT PRODUCED, system scope. The device path has refused here

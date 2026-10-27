@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.98 -- the host's awake-idle floor per core, printed beside published package-side figures
+
+- **Report (src/main.cpp):** system scope prints, under each host's component breakdown, what the run charges a host
+  core whatever it does -- its leakage (subthreshold + gate) and its L2's (a halted core's clock is off,
+  `power.models.idle_halt`) -- and the same with the L3 and host NoC leakage shared over the cores, beside the
+  published package-side power of one more awake, halted core: Haswell-EP 22 nm package C1E 1.91 W/core, C1E - C6
+  1.78, C3 - C6 1.03 W/core (DERIVED: least-squares slopes over the 34 SKUs of Intel 330783-002 Sec. 2.10; C1E and C3
+  "characterized but not tested"; each core's LLC slice, ring stop and on-die regulator loss included); Xeon Silver
+  4114 14 nm, all cores CC1 vs CC6, 12.1 W / 10 cores = 1.21 W/core (DERIVED; Antoniou et al., AgilePkgC, HPCA 2023,
+  Sec. 5, RAPL package); EPYC 7502 7 nm, +0.09 W per core in C1 instead of C2 (Schoene et al., IEEE Cluster 2021,
+  Sec. VI-A, system AC). The line is a reference: it is in no total and changes no number.
+- **Data impact:** none (one printed line per host).
+
 ## 1.12.97 -- the host socket's uncore, priced once per socket
 
 - **Model (user ruling 2026-10-27; power.models.host_uncore_static; src/main.cpp):** system scope charges the host
