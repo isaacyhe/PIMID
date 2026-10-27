@@ -191,6 +191,21 @@ static uint64_t g_bank_unit_bytes = 64ULL * 1024ULL;
  * array's power was characterised at the corner since 1.11.49, its timing always at HP, so one
  * array had two peripheries. Set once at config load. */
 static int g_array_device_corner = 0;
+/* (1.12.114): memory.nvm_write_budget. The device's write-power budget in mW and where it comes
+ * from: the user's mw, or for PCM the published 22 nm chip value; -1 = none (STT_MRAM and RERAM
+ * have no published budget). DERIVED for PCM: Jiang, Zhao, Yang, Zhang, "A Low Power and Reliable
+ * Charge Pump Design for Phase Change Memories", ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the
+ * RESET charge pump's 7 mA load at 5 V and 21.6 % efficiency = 35 mW / 0.216 = 162 mW drawn per
+ * chip; the device is taken as one chip. */
+static double nvmWriteBudgetMw(const std::string& tech, double user_mw, std::string* src) {
+    if (user_mw > 0.0) { if (src) *src = "memory.nvm_write_budget.mw (user)"; return user_mw; }
+    if (tech == "PCM") {
+        if (src) *src = "DERIVED, Jiang et al. ISCA 2014 Table 4: 22 nm PCM chip, RESET pump 7 mA x 5 V / 0.216 efficiency";
+        return 7.0 * 5.0 / 0.216;
+    }
+    if (src) *src = "no published budget for " + tech;
+    return -1.0;
+}
 
 static int getMemoryLatencyCycles(const std::string& memory_tech, double frequency_mhz,
                                    int array_tech_node_nm,
@@ -2585,7 +2600,7 @@ static const char* kSchemaPaths[] = {
     "core.in_order.branch_predictor", "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
-    "memory.array_pg", "memory.bank_kb", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
+    "memory.array_pg", "memory.bank_kb", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology", "memory.topology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
@@ -3560,6 +3575,8 @@ struct UnifiedConfig {
      * core dies per die), the base logic die holding the hub. */
     int memory_channels_per_die = 0;
     bool mem_array_pg = false;   // memory.array_pg    NVM retention-free periphery gating
+    bool nvm_wb_enabled = false; // (1.12.114): memory.nvm_write_budget.enabled (default off)
+    double nvm_wb_mw = -1.0;     // (1.12.114): memory.nvm_write_budget.mw (-1 = not given)
     std::string pcie_model = "simple";    // "simple" or "md1" for PCIe timing model
     // Host<->device link technology. Selects preset latency/BW/overhead unless
     // the user overrides them. "interposer" = 2.5D silicon interposer (UCIe-class
@@ -8480,6 +8497,21 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
          * node and temperature as the read; the YAML pair when the memory
          * parameters are given in full; CACTI reports one access time for
          * SRAM, so its writes keep it (0 extra). */
+        if (config.nvm_wb_enabled) {   // (1.12.114): memory.nvm_write_budget applies to NVM arrays only
+            const std::string& t = config.memory_tech;
+            if (!(t == "STT_MRAM" || t == "PCM" || t == "RERAM")) {
+                std::cerr << "[config] FATAL: memory.nvm_write_budget.enabled is set on a " << t << " memory; the "
+                             "write-power budget applies to PCM (published default) and to STT_MRAM / RERAM with a "
+                             "user-given memory.nvm_write_budget.mw." << std::endl;
+                std::exit(2);
+            }
+            if (t != "PCM" && !(config.nvm_wb_mw > 0.0)) {
+                std::cerr << "[config] FATAL: memory.nvm_write_budget.enabled on " << t << ": no published write-power "
+                             "budget is known for " << t << " (only for PCM). Give memory.nvm_write_budget.mw (mW) to "
+                             "apply one, or leave the budget off." << std::endl;
+                std::exit(2);
+            }
+        }
         int local_write_extra = 0;
         {
             const std::string& t = config.memory_tech;
@@ -8551,6 +8583,35 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                     const double svc = acc_ns * pe_clk_mhz / 1000.0;
                     std::ostringstream sv; sv << std::setprecision(9) << svc;
                     out << "        bankServiceCycles = " << sv.str() << ";\n";
+                    if (config.nvm_wb_enabled) {   // (1.12.114): the device write-power budget, on
+                        std::string src;
+                        const double b_mw = nvmWriteBudgetMw(t, config.nvm_wb_mw, &src);
+                        double e_nj = -1.0;
+                        if (t == "STT_MRAM" || t == "PCM" || t == "RERAM") {
+                            pimid::NVSimWrapper::NVMConfig c;
+                            c.nvm_type = (t == "STT_MRAM") ? pimid::NVSimWrapper::NVMType::STTRAM
+                                       : (t == "PCM")      ? pimid::NVSimWrapper::NVMType::PCRAM
+                                                           : pimid::NVSimWrapper::NVMType::RERAM;
+                            c.capacity_bytes = g_bank_unit_bytes;
+                            c.word_width_bits = static_cast<uint32_t>(config.cache_line_size) * 8u;
+                            c.process_node_nm = validateTechNodeNm(config.tech_node_nm, "NVM write budget query");
+                            c.temperature_k = config.temperature_k;
+                            c.device_corner = g_array_device_corner;
+                            pimid::NVSimWrapper w(c);
+                            w.initialize();
+                            e_nj = w.getWriteDynamicEnergy();
+                        }
+                        if (b_mw > 0.0 && e_nj > 0.0) {
+                            const int m = std::max(1, mc_count);
+                            const double slot = m * e_nj * 1e-9 / (b_mw * 1e-3) * pe_clk_mhz * 1e6;
+                            std::ostringstream sl; sl << std::setprecision(9) << slot;
+                            out << "        writeSlotCycles = " << sl.str() << ";\n";
+                            std::cout << "  [nvm] write budget ON: " << b_mw << " mW (" << src << "), shared equally by "
+                                      << m << " PE interface(s): each starts a write at most every " << slot
+                                      << " cycle(s) (" << m << " x " << e_nj << " nJ / " << b_mw << " mW), so the "
+                                         "device's time-averaged write power stays within the budget" << std::endl;
+                        }
+                    }
                     std::cout << "  [pe-mi] bank model: each bank busy " << acc_ns << " ns = " << svc << " cycle(s) at "
                               << pe_clk_mhz << " MHz per access (+ " << local_write_extra << " cycle(s) on a write); "
                               << std::max(1.0, static_cast<double>(config.num_banks) / std::max(1, mc_count))
@@ -14586,7 +14647,24 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             pimid::fmt_scoped(std::cout) << std::setprecision(6) << "  [nvm] write power: " << devmem.nvm_writes
                 << " writes x " << devmem.nvm_wr_nj << " nJ = " << e_j << " J over " << window_s << " s = "
                 << e_j / window_s << " W average; one writing bank draws " << devmem.nvm_wr_nj / devmem.nvm_wr_ns
-                << " W for " << devmem.nvm_wr_ns << " ns; no device write-power budget is applied" << std::endl;
+                << " W for " << devmem.nvm_wr_ns << " ns; "
+                << (config.nvm_wb_enabled ? "the device write-power budget is ON (memory.nvm_write_budget)"
+                                          : "no device write-power budget is applied (memory.nvm_write_budget off)") << std::endl;
+            std::string src;
+            const double b_mw = nvmWriteBudgetMw(config.memory_tech, config.nvm_wb_mw, &src);
+            if (b_mw > 0.0) {
+                const double need_s = e_j / (b_mw * 1e-3);   // the writes alone, at the budget
+                pimid::fmt_scoped(std::cout) << std::setprecision(6) << "  [nvm] write budget " << b_mw << " mW (" << src
+                    << "): the run's writes need at least " << need_s << " s at it, the run took " << window_s << " s: "
+                    << (config.nvm_wb_enabled
+                            ? std::string("the budget is APPLIED")
+                            : std::string(need_s > window_s ? "it WOULD BIND (off, not applied)" : "it would not bind (off)"))
+                    << " (" << need_s / window_s << " x the run time; the average write power is "
+                    << (e_j / window_s) / (b_mw * 1e-3) << " x the budget)" << std::endl;
+            } else {
+                std::cout << "  [nvm] write budget: " << src << " (STT_MRAM and RERAM need memory.nvm_write_budget.mw); "
+                             "not evaluated" << std::endl;
+            }
         }
         const double total_w = lp.total_power + mem_dyn_w + mem_static_w;
         std::cout << "\n--- System Total ---" << std::endl;
@@ -20548,6 +20626,17 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
          * keys, and a power: key is not a device key. */
         if (root["memory"]["array_pg"])
             config.mem_array_pg = yamlBool(root["memory"]["array_pg"], config.mem_array_pg, sc.pfx + "memory.array_pg");
+        if (root["memory"] && root["memory"]["nvm_write_budget"]) {   // (1.12.114): the NVM device write-power budget
+            const YAML::Node wb = root["memory"]["nvm_write_budget"];
+            if (wb["enabled"]) config.nvm_wb_enabled = yamlBool(wb["enabled"], false, sc.pfx + "memory.nvm_write_budget.enabled");
+            if (wb["mw"]) {
+                config.nvm_wb_mw = yamlDouble(wb["mw"], -1.0, sc.pfx + "memory.nvm_write_budget.mw");
+                if (!(config.nvm_wb_mw > 0.0)) {
+                    std::cerr << "ERROR: " << sc.pfx << "memory.nvm_write_budget.mw must be > 0 (mW)" << std::endl;
+                    return 1;
+                }
+            }
+        }
     }
 
     // Load memory configuration
@@ -21362,6 +21451,8 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.power_down_threshold_ns = d.power_down_threshold_ns;
         config.memory_channels_per_die = d.memory_channels_per_die;   // 1.12.18
         config.mem_array_pg = d.mem_array_pg;
+        config.nvm_wb_enabled = d.nvm_wb_enabled;   // (1.12.114)
+        config.nvm_wb_mw = d.nvm_wb_mw;
         config.dq_turnaround_enabled = d.dq_turnaround_enabled;
         config.hierarchy_ranks_per_channel = d.hierarchy_ranks_per_channel;
         config.subarray_height = d.subarray_height;

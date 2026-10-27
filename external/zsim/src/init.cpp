@@ -665,6 +665,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.localLatency = config.get<uint32_t>("sys.hierarchy.localLatency", 10);
         zinfo->hierarchy.localWriteExtra = config.get<uint32_t>("sys.hierarchy.localWriteExtra", 0);   // (1.12.90)
         zinfo->hierarchy.bankServiceCycles = config.get<double>("sys.hierarchy.bankServiceCycles", 0.0);   // (1.12.111)
+        zinfo->hierarchy.writeSlotCycles = config.get<double>("sys.hierarchy.writeSlotCycles", 0.0);   // (1.12.114)
         zinfo->hierarchy.defaultBandwidthMBs = config.get<uint64_t>("sys.hierarchy.defaultBandwidthMBs", 0);
         zinfo->hierarchy.tierBandwidthMBs = config.get<uint64_t>("sys.hierarchy.tierBandwidthMBs", 0);   // 1.11.97 (ruling 26)
 
@@ -1241,6 +1242,8 @@ static void InitSystem(Config& config) {
             static_cast<PEMemoryInterface*>(mems[i])->setWriteExtraCycles(zinfo->hierarchy.localWriteExtra);
         for (uint32_t i = 0; i < mcCount; i++)   // (1.12.111): the SRAM/NVM bank model
             static_cast<PEMemoryInterface*>(mems[i])->setBankServiceCycles(zinfo->hierarchy.bankServiceCycles);
+        for (uint32_t i = 0; i < mcCount; i++)   // (1.12.114): the device write-power budget
+            static_cast<PEMemoryInterface*>(mems[i])->setWriteSlotCycles(zinfo->hierarchy.writeSlotCycles);
         info("[ZSim] Created %u PE-MIs (%u PEs/MI, conn=%s)",
              mcCount, pesPerMC,
              (zinfo->hierarchy.connectionMode == 0) ? "shared_io" : "separate_endpoints");

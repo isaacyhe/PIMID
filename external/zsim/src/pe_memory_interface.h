@@ -77,6 +77,12 @@ protected:
      * bank model, DRAM). Each bank the interface reaches is busy for that time per access
      * (plus localWriteExtra_ on a write); a request to a busy bank waits until it is free. */
     double bankSvcCycles_ = 0.0;
+    /* (1.12.114): memory.nvm_write_budget. With the cap on, this interface may start a write only
+     * every writeSlotCycles_ (its equal share of the device's write-power budget: M interfaces x
+     * one write's energy / the budget); 0 = no cap. */
+    double writeSlotCycles_ = 0.0;
+    double writeSlotFree_ = 0.0;
+    Counter profBudgetWaits_, profBudgetWaitCycles_;
     std::unordered_map<uint32_t, double> bankFree_;   // unit -> cycle its bank is next free
     lock_t bankLock_ = {0};
     Counter profBankWaits_, profBankWaitCycles_;
@@ -209,6 +215,7 @@ public:
     void setWriteExtraCycles(uint32_t c) { localWriteExtra_ = c; }
     uint32_t writeExtraCycles() const { return localWriteExtra_; }
     void setBankServiceCycles(double c) { bankSvcCycles_ = (c > 0.0) ? c : 0.0; }   // (1.12.111)
+    void setWriteSlotCycles(double c) { writeSlotCycles_ = (c > 0.0) ? c : 0.0; }   // (1.12.114)
     uint32_t unitOfLine(Address lineAddr) const { return addrToUnit(lineAddr); }
 
     /* 1.12.18: the registered guest stack holding byteAddr, if this PE owns
@@ -1359,6 +1366,10 @@ public:
         s->append(&profBankWaits_);
         profBankWaitCycles_.init("bankWaitCycles", "Cycles waited for a busy bank (SRAM/NVM bank model)");
         s->append(&profBankWaitCycles_);
+        profBudgetWaits_.init("budgetWaits", "Writes held by the device write-power budget (memory.nvm_write_budget on)");
+        s->append(&profBudgetWaits_);
+        profBudgetWaitCycles_.init("budgetWaitCycles", "Cycles writes were held by the device write-power budget");
+        s->append(&profBudgetWaitCycles_);
         dqStats_.initStats(s);
         parentStat->append(s);
     }
@@ -1625,7 +1636,12 @@ protected:
             const double arrive = (double)req.cycle;
             futex_lock(&bankLock_);
             double& fr = bankFree_[u];
-            const double start = (fr > arrive) ? fr : arrive;
+            double start = (fr > arrive) ? fr : arrive;
+            if (wr && writeSlotCycles_ > 0.0) {   // (1.12.114): the write-power budget's slot
+                const double held = (writeSlotFree_ > start) ? writeSlotFree_ - start : 0.0;
+                if (held > 0.0) { start += held; profBudgetWaits_.atomicInc(); profBudgetWaitCycles_.atomicInc((uint64_t)(held + 0.5)); }
+                writeSlotFree_ = start + writeSlotCycles_;
+            }
             fr = start + occ;
             futex_unlock(&bankLock_);
             const uint32_t bw = (uint32_t)(start - arrive + 0.5);

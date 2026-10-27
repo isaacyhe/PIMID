@@ -6,6 +6,29 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.114 -- an optional NVM device write-power budget, off by default
+
+- **Timing and report (src/main.cpp; external/zsim/src/pe_memory_interface.h, init.cpp, zsim.h; docs/yaml_reference.md):**
+  NVM writes were priced per access, and nothing limited how many banks of a device write at once. Published PCM parts
+  are limited per chip by the current their charge pumps can supply. A new option, `memory.nvm_write_budget`
+  (`enabled`, `mw`), is **off by default**.
+  - *When on:* each of the device's M PE memory interfaces starts a write at most every M x one write's energy /
+    budget, so the device's time-averaged write power stays within the budget. The budget is shared equally; an idle
+    interface's share is not lent. A held write waits in its bank (new interface stats budgetWaits and
+    budgetWaitCycles).
+  - *PCM default 162 mW (DERIVED):* Jiang, Zhao, Yang, Zhang, ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the RESET
+    charge pump's 7 mA load at 5 V and 21.6 % efficiency = 35 mW / 0.216 = 162 mW drawn per chip. The device is taken
+    as one chip.
+  - *STT_MRAM and RERAM:* no published budget was found. `enabled` on them is refused unless `mw` is given, and then
+    the user's value applies. On SRAM or DRAM the option is refused.
+  - *Always printed:* an NVM run prints whether the budget would bind ("[nvm] write budget ... it WOULD BIND (x the
+    run time ...)"). For STT_MRAM / RERAM without `mw` it prints that no budget is evaluated.
+- **Data impact:** none by default (the option is off).
+  - With it on, PCM fig2 MPI cells (smoke) run 4.07x (stream_triad) and 2.37x (gemv) longer.
+  - Shared device-wide, the stream_triad writes would need 413 us at 162 mW against a 148 us run, about 2.8x. The
+    share is per interface and is not lent, and one interface makes 416 of the 3101 writes (the others 179), so
+    that interface sets the run.
+
 ## 1.12.113 -- memory technology 3DXPOINT is refused
 
 - **Configuration (src/main.cpp canonicalMemTech and the technology lists; src/memory/internal_dram_network.cpp
