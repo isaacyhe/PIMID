@@ -1218,6 +1218,38 @@ static std::string findPimidMpiLib() {
     return locatePimidComponent("libpimid_mpi.so", "", "pimid_mpi");
 }
 
+/* (1.12.122): a directory, next to libpimid_mpi.so, that names it as the MPI
+ * library the workloads link (libmpich.so.12, libmpi.so.12: the MPICH ABI the
+ * shim implements). It goes first in the guest's LD_LIBRARY_PATH, so the
+ * guest's dynamic linker resolves that NEEDED entry to the shim, already loaded
+ * through LD_PRELOAD, and the host MPI library and its dependencies (UCX,
+ * hwloc, PMIx) are not loaded. Their initialisers read the host (UCX timed its
+ * clock against gettimeofday in a sched_yield loop, hwloc read the host's
+ * topology), so the guest's startup ran a host-dependent number of
+ * instructions before the ROI. Returns "" when the directory cannot be made. */
+static std::string guestMpiLibDir(const std::string& shimPath) {
+    const size_t slash = shimPath.rfind('/');
+    if (slash == std::string::npos) return "";
+    const std::string dir = shimPath.substr(0, slash) + "/guest_mpi";
+    mkdir(dir.c_str(), 0755);   // EEXIST is fine (concurrent launches)
+    for (const char* name : {"libmpich.so.12", "libmpi.so.12"}) {
+        const std::string link = dir + "/" + name;
+        char buf[4096];
+        const ssize_t n = readlink(link.c_str(), buf, sizeof(buf) - 1);
+        if (n > 0) { buf[n] = 0; if (shimPath == buf) continue; unlink(link.c_str()); }
+        if (symlink(shimPath.c_str(), link.c_str()) != 0 && errno != EEXIST) {
+            std::cerr << "[mpi] WARNING: cannot make " << link << " (" << strerror(errno)
+                      << "); the guest loads the host MPI library" << std::endl;
+            return "";
+        }
+    }
+    return dir;
+}
+static std::string guestUserLibPath(const std::map<std::string, std::string>& workloadEnv) {   // (1.12.122): ":" + a workload.env value
+    auto it = workloadEnv.find("LD_LIBRARY_PATH");
+    return (it != workloadEnv.end() && !it->second.empty()) ? ":" + it->second : std::string();
+}
+
 /* User ruling 2026-10-25 (measured termination duty): the data statistics of
  * the lines that crossed a group of DRAM interfaces, summed over its mem-N /
  * pe-mi-N groups (external/zsim/src/dq_data_stats.h names and defines every
@@ -25676,8 +25708,11 @@ int main(int argc, char** argv) {
                     }
                     setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
                     std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
-                    if (config.workload_type == "mpi" && config.mpi_ranks > 0)
+                    if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
                         guest_set.push_back("LD_PRELOAD=" + mpi_thread_lib);
+                        const std::string mdir = guestMpiLibDir(mpi_thread_lib);   // (1.12.122)
+                        if (!mdir.empty()) guest_set.push_back("LD_LIBRARY_PATH=" + mdir + guestUserLibPath(config.workload_env));
+                    }
                     // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
                     execGuestQemu(guestQemuArgv(qemu_binary, guest_set, plugin_arg, config.workload_binary,
                                                 config.workload_args, config.workload_env));
@@ -26218,8 +26253,11 @@ int main(int argc, char** argv) {
                     std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
                     // LD_PRELOAD must be GUEST-scoped (qemu -E): a host-env preload
                     // would load the interposer into QEMU itself.
-                    if (config.workload_type == "mpi" && config.mpi_ranks > 0)
+                    if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
                         guest_set.push_back("LD_PRELOAD=" + sys_mpi_lib);
+                        const std::string mdir = guestMpiLibDir(sys_mpi_lib);   // (1.12.122)
+                        if (!mdir.empty()) guest_set.push_back("LD_LIBRARY_PATH=" + mdir + guestUserLibPath(config.workload_env));
+                    }
                     // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
                     execGuestQemu(guestQemuArgv(qemu_binary, guest_set, plugin_arg, config.workload_binary,
                                                 config.workload_args, config.workload_env));

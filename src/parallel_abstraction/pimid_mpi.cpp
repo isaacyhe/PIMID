@@ -1074,6 +1074,16 @@ int MPI_Init(int *argc, char ***argv) {
     return MPI_SUCCESS;
 }
 
+/* (1.12.122): the binaries link the host MPI library only for its API; the guest
+ * now loads this library under that library's name (see main.cpp,
+ * guestMpiLibDir), so every MPI symbol the binaries use is defined here. */
+int MPI_Abort(MPI_Comm comm, int errorcode) {
+    (void)comm;
+    fprintf(stderr, "[pimid_mpi] rank %d: MPI_Abort(%d)\n", g_rank, errorcode);
+    fflush(nullptr);
+    _exit(errorcode != 0 ? (errorcode & 0xff) : 1);   /* thread mode: every rank is a thread of this process */
+}
+
 int MPI_Finalize(void) {
     /* 1.6 thread mode: the region belongs to the harness (freed after all
      * rank-threads join); a rank finalizing must not unmap under its peers. */

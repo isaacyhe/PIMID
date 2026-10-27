@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.122 -- an MPI workload loads the PIMID message-passing library in place of the host's MPI library
+
+- **Defect.** The MPI workloads are linked against the host's MPI library (libmpich.so.12). In a thread-MPI run the
+  PIMID library (libpimid_mpi.so, preloaded) implements every MPI call, yet the guest still loaded the host library
+  and its dependencies (UCX, hwloc, PMIx) and ran their initialisers. UCX timed the host's clock in a loop of
+  gettimeofday and sched_yield calls, so the guest executed a host-dependent number of instructions before the ROI;
+  hwloc read the host's topology; UCX's memory hooks and allocator settings stayed active through the ROI.
+- **Fix.** The launcher gives the guest a directory, next to libpimid_mpi.so, that names it libmpich.so.12 and
+  libmpi.so.12 (the MPICH interface it implements), first in the guest's LD_LIBRARY_PATH (a workload.env value
+  follows it), so the guest's dynamic linker resolves the workload's MPI library to the PIMID library already loaded
+  and none of the host's MPI stack is loaded. libpimid_mpi.so adds MPI_Abort, the one MPI call the workloads used from
+  the host library (it reports the rank and the code, then ends the process with that code). Device- and
+  system-scope thread-MPI launches; process-mode trace generation is unchanged.
+- **Data impact (thread-MPI cells, 4 runs each of today's build and this one on the same node, two node types; ROI
+  run time, mean, shift):** mpi_bfs_alu -6.5% / -7.9% (its values now within 0.5-0.7% of each other), mpi_bfs_inorder
+  +1.8% / +0.8%, mpi_bfs_ooo -2.6% / -1.3%, mpi_gemv_alu, mpi_triad_alu, mpi_hist_alu unchanged (now one value each),
+  cosim_DDR5_mpi_gemv -0.3% / -2.6%, cosim_HBM3_mpi_triad -6.7% / -0.2%, cosim_DDR5_mpi_bfs +8.2% / +5.0%,
+  base_mpi_triad_16 -0.6% / +3.6%, base_mpi_gemv_4 +3.5% / +2.8%, base_mpi_bfs_16 -0.9% / -0.8%. Serial and OpenMP
+  cells are unchanged.
+- **Why the cells move.** (a) Before the ROI the host library timed the host clock: 15800 to 56800 pairs of
+  gettimeofday and sched_yield calls per run, a host-dependent count. (b) The host MPI stack mapped about 45 MB of
+  libraries (libmpich, UCX, hwloc, PMIx) into the guest, so every later mapping (thread stacks, the workload's arrays)
+  sat at other addresses, and the simulated caches, banks and channels saw other addresses: mpi_bfs_alu runs the
+  same instructions in its ROI (388982 vs 388960 over its 16 cores) and moves -7.9%. (c) The host stack's memory hooks
+  ran inside the ROI on the co-sim host core: 71212 -> 59305 instructions (cosim_HBM3_mpi_triad), 51987 -> 40108
+  (cosim_DDR5_mpi_bfs). (d) base_mpi_gemv_4 opens its ROI at the first MPI barrier; the work its ranks do before it
+  follows the startup above. None of that host-library work belongs to the simulated program, whose MPI is this
+  library; the new values are the program's own.
+
 ## 1.12.121 -- after the ROI the program runs to its exit without entering the scheduler
 
 - **Defect (gate 1.12.114, baseline_DDR5_omp_gemv_16core).** The run printed its power report but no BENCH_CHECKSUM:
