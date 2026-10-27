@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.90 -- an SRAM/NVM array write takes the array's write time
+
+- **Timing (src/main.cpp; external/zsim/src/pe_memory_interface.h, alu_core.cpp, init.cpp, zsim.h):** a device
+  memory that is not timed by a replayed controller (SRAM, STT_MRAM, PCM, RERAM) charged every access the array's
+  read time, so a write cost what a read did. A write now takes the array model's write time: the PE memory interface
+  adds the write latency minus the read latency (new sys.hierarchy.localWriteExtra, PE cycles) to a write, and the
+  scratchpad DMA engine starts a write to a unit only after the previous write to that unit has finished.
+  - Source: NVSim's bank write latency (the write path plus the longer of the SET and RESET pulses) of the same 64 KB
+    unit, access width, node and temperature as the read; the memory.timing read/write pair when the memory parameters
+    are given in full. CACTI reports one access time for SRAM, so SRAM writes are unchanged.
+  - At the 64 KB / 512 b / 22 nm unit: PCM 152.8 ns write vs 2.8 ns read, STT_MRAM 11.8 vs 3.3 ns, RERAM 22.1 vs
+    3.5 ns. The run prints the write time and the extra cycles ("[pe-mi] array write time").
+- **Data impact:** STT_MRAM, PCM and RERAM cells run longer wherever they write (most for PCM); the memory static
+  energy grows with the run time. DRAM and SRAM cells are unchanged.
+
 ## 1.12.89 -- every run prints the operating temperature it is priced at
 
 - **Report (src/main.cpp):** each run prints one line at configuration time:

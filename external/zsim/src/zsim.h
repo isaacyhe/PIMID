@@ -309,6 +309,7 @@ struct GlobSimInfo {
         uint32_t totalMCs = 0;            // 0 = no PE-MIs (host MC mode)
         uint32_t pesPerMC = 1;            // PEs sharing each MI
         uint32_t localLatency = 10;       // default PE-MI local access latency
+        uint32_t localWriteExtra = 0;     // (1.12.90): SRAM/NVM array write time beyond a read, cycles (0 = none)
         uint64_t defaultBandwidthMBs = 0; // default M/D/1 bandwidth (0 = auto)
         uint64_t tierBandwidthMBs = 0;    // 1.11.97 (ruling 26): the placement tier's rung bandwidth (width x clock); 0 = none
 

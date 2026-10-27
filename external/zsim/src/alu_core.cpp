@@ -28,6 +28,7 @@
 #include "zsim.h"
 #include "constants.h"
 #include <algorithm>
+#include <vector>
 
 // 1.8.7 post-ROI protocol-tail receipt, indexed by global core index (srcId_).
 // Fixed BSS storage (see core.h) -- deliberately NOT a Core member, so Core's
@@ -472,12 +473,29 @@ bool ALUCore::spmDma(uint64_t dst, uint64_t src, uint64_t bytes, bool toDram) {
     const Address first = dramSide >> lineBits, last = (dramSide + bytes - 1) >> lineBits;
     uint64_t done = start;
     uint64_t i = 0;
+    /* (1.12.90): an SRAM/NVM array takes its write time per line, so the engine
+     * starts a line no earlier than the previous write to the same unit has
+     * finished. 0 extra (DRAM, or no write time beyond the read): unchanged. */
+    const uint32_t wExtra = toDram ? mi_->writeExtraCycles() : 0;
+    std::vector<std::pair<uint32_t, uint64_t>> unitFree;   // (unit, cycle its last write ends)
     for (Address l = first; l <= last; l++, i++) {
         MESIState state = I;
         uint64_t issue = start + (uint64_t)std::floor((double)i * gap);
+        uint32_t unit = 0;
+        size_t slot = unitFree.size();
+        if (wExtra) {
+            unit = mi_->unitOfLine(l);
+            for (size_t k = 0; k < unitFree.size(); k++)
+                if (unitFree[k].first == unit) { slot = k; if (unitFree[k].second > issue) issue = unitFree[k].second; break; }
+        }
         MemReq req = {l, toDram ? GETX : GETS, 0, &state, issue, nullptr, state, srcId_, 0};
         uint64_t t = mi_->access(req);
         if (t > done) done = t;
+        if (wExtra) {
+            const uint64_t endW = (t > issue) ? t : issue;   // the write ends when the access returns
+            if (slot < unitFree.size()) unitFree[slot].second = endW;
+            else unitFree.emplace_back(unit, endW);
+        }
     }
     const uint64_t words = (bytes + 7) / 8;   // the RAM side: one access per 8-byte word
     if (toDram) spmReads_ += words; else spmWrites_ += words;

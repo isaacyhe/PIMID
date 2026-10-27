@@ -68,6 +68,11 @@ protected:
     uint32_t numChannels_ = 1;
     uint32_t localLatency_;
     uint32_t curLatency_;
+    /* (1.12.90): the array write's service time beyond a read, in cycles at this
+     * interface's clock (SRAM/NVM arrays: the array model's write latency minus
+     * its read latency; 0 on DRAM, whose writes are timed by the replayed
+     * controller). Charged to a write on the analytical path. */
+    uint32_t localWriteExtra_ = 0;
     uint64_t lastPhase_;
     double smoothedPhaseAccesses_;
     uint32_t curPhaseAccesses_;
@@ -192,6 +197,11 @@ public:
      * bandwidth at the PE clock): the issue interval of a scratchpad DMA
      * transfer. 0 = no bandwidth configured. */
     double lineIssueGapCycles() const { return (maxRequestsPerCycle_ > 0.0) ? 1.0 / maxRequestsPerCycle_ : 0.0; }
+    /* (1.12.90): the array write's extra service time (see localWriteExtra_), and
+     * the unit a line lives in, for the DMA engine's per-unit write spacing. */
+    void setWriteExtraCycles(uint32_t c) { localWriteExtra_ = c; }
+    uint32_t writeExtraCycles() const { return localWriteExtra_; }
+    uint32_t unitOfLine(Address lineAddr) const { return addrToUnit(lineAddr); }
 
     /* 1.12.18: the registered guest stack holding byteAddr, if this PE owns
      * it. addrToUnit makes the first-touch claim (1.12.17) as for any access,
@@ -1590,6 +1600,10 @@ protected:
             curPhaseAccesses_++;
             result = curLatency_;
         }
+        /* (1.12.90): an SRAM/NVM array write takes the array's write time, not its
+         * read time (PCM: the SET pulse). A replay-priced access returned above. */
+        if (localWriteExtra_ && ((req.type == PUTX) || (req.type == GETX && getxIsStore_)))
+            result += localWriteExtra_;
 
         return result;
     }

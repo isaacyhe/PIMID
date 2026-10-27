@@ -663,6 +663,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.totalMCs = config.get<uint32_t>("sys.hierarchy.totalMCs", 0);
         zinfo->hierarchy.pesPerMC = config.get<uint32_t>("sys.hierarchy.pesPerMC", 1);
         zinfo->hierarchy.localLatency = config.get<uint32_t>("sys.hierarchy.localLatency", 10);
+        zinfo->hierarchy.localWriteExtra = config.get<uint32_t>("sys.hierarchy.localWriteExtra", 0);   // (1.12.90)
         zinfo->hierarchy.defaultBandwidthMBs = config.get<uint64_t>("sys.hierarchy.defaultBandwidthMBs", 0);
         zinfo->hierarchy.tierBandwidthMBs = config.get<uint64_t>("sys.hierarchy.tierBandwidthMBs", 0);   // 1.11.97 (ruling 26)
 
@@ -1232,6 +1233,8 @@ static void InitSystem(Config& config) {
                     zinfo->hierarchy.dramChannels);
             }
         }
+        for (uint32_t i = 0; i < mcCount; i++)   // (1.12.90): the array write time beyond a read
+            static_cast<PEMemoryInterface*>(mems[i])->setWriteExtraCycles(zinfo->hierarchy.localWriteExtra);
         info("[ZSim] Created %u PE-MIs (%u PEs/MI, conn=%s)",
              mcCount, pesPerMC,
              (zinfo->hierarchy.connectionMode == 0) ? "shared_io" : "separate_endpoints");

@@ -8390,10 +8390,66 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
             }
         }
 
+        /* (1.12.90): the array WRITE time. An SRAM/NVM array is not timed by a
+         * replayed controller, so the interface charged every access the
+         * array's read time and a write cost what a read did (PCM: a 2.8 ns
+         * read for a 153 ns SET-limited write at the 64 KB / 512 b / 22 nm
+         * unit). The array model's own write latency now times a write: the
+         * interface adds (write - read) to it, and the DMA engine starts a
+         * write to a unit only once the previous write to that unit has
+         * finished. NVSim bank writeLatency (the write path plus the longer of
+         * the SET and RESET pulses) for STT_MRAM/PCM/RERAM, at the same array,
+         * node and temperature as the read; the YAML pair when the memory
+         * parameters are given in full; CACTI reports one access time for
+         * SRAM, so its writes keep it (0 extra). */
+        int local_write_extra = 0;
+        {
+            const std::string& t = config.memory_tech;
+            const bool nvm = (t == "STT_MRAM" || t == "PCM" || t == "RERAM");
+            const double pe_clk_mhz = (device_bw_freq_mhz > 0.0) ? device_bw_freq_mhz : config.frequency_mhz;
+            double rd_ns = -1.0, wr_ns = -1.0;
+            std::string src;
+            if (config.use_yaml_memory_params && config.memory_params.read_latency_ns > 0.0 &&
+                config.memory_params.write_latency_ns > 0.0) {
+                rd_ns = config.memory_params.read_latency_ns;
+                wr_ns = config.memory_params.write_latency_ns;
+                src = "memory.timing read/write_latency_ns (user)";
+            } else if (nvm && config.pe_mc_local_latency < 0) {
+                try {
+                    pimid::NVSimWrapper::NVMConfig c;
+                    c.nvm_type = (t == "STT_MRAM") ? pimid::NVSimWrapper::NVMType::STTRAM
+                               : (t == "PCM")      ? pimid::NVSimWrapper::NVMType::PCRAM
+                                                   : pimid::NVSimWrapper::NVMType::RERAM;
+                    c.capacity_bytes = g_bank_unit_bytes;
+                    c.word_width_bits = static_cast<uint32_t>(config.cache_line_size) * 8u;
+                    c.process_node_nm = validateTechNodeNm(config.tech_node_nm, "NVM write latency query");
+                    c.temperature_k = config.temperature_k;
+                    pimid::NVSimWrapper w(c);
+                    w.initialize();
+                    rd_ns = w.getReadLatency() * 1e9;
+                    wr_ns = w.getWriteLatency() * 1e9;
+                    src = "NVSim bank read/write latency";
+                } catch (const std::exception& e) {
+                    std::cerr << "  [pe-mi] WARNING: no NVSim write latency for " << t << " (" << e.what()
+                              << "); its writes keep the read time" << std::endl;
+                }
+            }
+            if (rd_ns > 0.0 && wr_ns > rd_ns) {
+                local_write_extra = static_cast<int>(std::lround((wr_ns - rd_ns) * pe_clk_mhz / 1000.0));
+                std::cout << "  [pe-mi] array write time " << wr_ns << " ns vs read " << rd_ns << " ns ("
+                          << src << "): a write takes " << local_write_extra << " cycle(s) more at "
+                          << pe_clk_mhz << " MHz" << std::endl;
+            } else if (t == "SRAM") {
+                std::cout << "  [pe-mi] SRAM writes take the CACTI access time (CACTI reports one access time)"
+                          << std::endl;
+            }
+        }
+
         out << "        totalUnits = " << total_units << ";\n";
         out << "        totalMCs = " << mc_count << ";\n";
         out << "        pesPerMC = " << config.pes_per_mc << ";\n";
         out << "        localLatency = " << local_latency << ";\n";
+        out << "        localWriteExtra = " << local_write_extra << ";\n";
         out << "        defaultBandwidthMBs = " << bw_mbs << ";\n";
         /* 1.11.97 (ruling 26): the bandwidth of the PLACEMENT TIER = the sourced
          * ladder's rung at that level (width x clock), MB/s. It replaces the
