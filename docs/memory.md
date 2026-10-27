@@ -10,6 +10,14 @@ PIMID models 11 memory technologies through three production backends:
 | SRAM | CACTI 7.0 | arrays + cache timing/area |
 | STT-MRAM, PCM, ReRAM | NVSim | first run characterizes (~5-7 min), then cached |
 
+**SRAM and NVM timing (no replayed controller).** A PE's memory interface times an SRAM or NVM access with the
+array model of one bank unit (`memory.bank_kb`, default 64 KB): a read takes the array's access time, and a write
+takes the array's write time (NVSim's write latency; 1.12.90). Each bank serves one access at a time: it is busy
+for the access time (a write: the write time), and a request to a busy bank waits until it is free (the bank model,
+(1.12.111) release). The interface's own rate is its banks' aggregate (banks it covers x line / access time), so many
+requests spread over its banks overlap while requests to one bank serialise. The array is characterised at
+`power.device_corner` for both its power and its timing.
+
 Per-technology JEDEC organization (channels, banks, timings) drives both the
 memory timing and the device-internal network shape -- see
 [dram_specs.md](dram_specs.md) and [network.md](network.md).

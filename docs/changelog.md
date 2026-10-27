@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.111 -- an SRAM/NVM PE memory interface: its array's bandwidth, and one access at a time per bank
+
+- **Timing (src/main.cpp; external/zsim/src/pe_memory_interface.h, init.cpp, zsim.h, alu_core.cpp; docs/memory.md):**
+  - *The interface's rate.* With no derived aggregate, an SRAM or NVM device's PE memory interface took a fixed table
+    row: 12800 MB/s (the DDR row) for STT_MRAM, PCM and RERAM, 51200 MB/s for SRAM, whatever the array. Its rate is
+    now its own banks': the banks it covers x the line / one bank's access time (NVSim or CACTI), the same rule the
+    device's M/D/1 cap uses. A user-set pim.mc.bandwidth_mbs is unchanged. An array with no access time refuses.
+  - *The bank model.* An aggregate rate lets requests to ONE bank overlap as if they were spread over all the banks
+    the interface covers. Each SRAM/NVM bank now serves one access at a time:
+    - it is busy for the array's access time (a write: plus the write time beyond it, 1.12.90);
+    - a request to a busy bank waits until the bank is free (new sys.hierarchy.bankServiceCycles, one bank's access
+      time in PE cycles);
+    - the wait replaces the interface's queue wait when it is the larger.
+    - The run prints "[pe-mi] bank model: each bank busy <ns> = <cycles> per access"; each interface counts
+      bankWaits and bankWaitCycles.
+  - *DMA.* The scratchpad DMA engine issues at the interface's rate and its lines wait for their bank there.
+    1.12.90 spaced DMA writes to a unit at the previous write's return time, which also held the network time.
+- **Cases measured (fig2 MPI cells, 22 nm, 500 MHz):** the same-bank waits do not shrink as the interface covers more
+  banks, because a DMA block lives in one bank.
+  - The layouts: 16 PEs over 16, 64, 256 and 1024 banks (1, 4, 16 and 64 banks per interface), and 4 PEs over 256 and
+    1024 banks (64 and 256 per interface).
+  - PCM stream_triad waits about 1.9 M cycles in every layout; PCM gemv waits about 47 K.
+  - Bandwidth per interface, PCM: 22598 MB/s at 1 bank up to 5785001 MB/s at 256 banks.
+- **Data impact:**
+  - SRAM/NVM stream_triad (write-heavy) runs 3-17 % faster, because a write now holds its bank for the write time and
+    not for the network round trip.
+  - gemv (read-heavy) runs 0.1-0.6 % faster.
+  - DRAM cells are unchanged.
+
 ## 1.12.110 -- the NVM array's write power is stated
 
 - **Report (src/main.cpp):** a device-scope NVM run prints its array write power: "[nvm] write power: <writes> writes x

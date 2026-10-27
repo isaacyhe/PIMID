@@ -8408,6 +8408,32 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                 std::cout << "  [pe-mi] bandwidth " << bw_mbs
                           << " MB/s, from the memory model's own aggregate"
                           << std::endl;
+            } else if (config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
+                       config.memory_tech == "PCM"  || config.memory_tech == "RERAM") {
+                /* (1.12.111): an SRAM/NVM interface's bandwidth is its own array's: the banks
+                 * it covers, each delivering one line per array access time (the same
+                 * banks x line / access time the device's M/D/1 cap uses, over this
+                 * interface's share of the banks). It took the DDR row of the fixed
+                 * table (12800 MB/s; SRAM 51200), whatever the array. */
+                double acc_ns = -1.0;
+                try {
+                    (void)getMemoryLatencyCycles(config.memory_tech, config.frequency_mhz, config.tech_node_nm,
+                                                 false, -1.0, -999, config.temperature_k, config.cache_line_size,
+                                                 "", 0, &acc_ns);
+                } catch (const std::exception& e) {
+                    std::cerr << "  [pe-mi] " << config.memory_tech << " array access time unavailable ("
+                              << e.what() << ")" << std::endl;
+                }
+                const double banks_per_mi = std::max(1.0, static_cast<double>(config.num_banks) / std::max(1, mc_count));
+                if (acc_ns > 0.0) {
+                    bw_mbs = static_cast<int>(std::min(2.0e9, banks_per_mi * config.cache_line_size * 1000.0 / acc_ns));
+                    std::cout << "  [pe-mi] bandwidth " << bw_mbs << " MB/s = " << banks_per_mi << " bank(s) per interface x "
+                              << config.cache_line_size << " B / " << acc_ns << " ns array access time ("
+                              << (config.memory_tech == "SRAM" ? "CACTI" : "NVSim") << ", one bank)" << std::endl;
+                } else {
+                    refuseWithoutArrayBandwidth(config.memory_tech, "PE memory interface: the array model reported no access time",
+                                                "pim.mc.bandwidth_mbs");
+                }
             } else {
                 std::string tech = config.memory_tech;
                 if (tech == "HBM2")             bw_mbs = 25600;
@@ -8482,6 +8508,35 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         out << "        pesPerMC = " << config.pes_per_mc << ";\n";
         out << "        localLatency = " << local_latency << ";\n";
         out << "        localWriteExtra = " << local_write_extra << ";\n";
+        /* (1.12.111): one SRAM/NVM bank's access time at the PE clock, for the interface's bank
+         * model (a request to a busy bank waits for it). The array model's access time of one
+         * bank unit (NVSim / CACTI), or the YAML read latency when the memory is given in full. */
+        {
+            const std::string& t = config.memory_tech;
+            if (t == "SRAM" || t == "STT_MRAM" || t == "PCM" || t == "RERAM") {
+                const double pe_clk_mhz = (device_bw_freq_mhz > 0.0) ? device_bw_freq_mhz : config.frequency_mhz;
+                double acc_ns = -1.0;
+                if (config.use_yaml_memory_params && config.memory_params.read_latency_ns > 0.0) {
+                    acc_ns = config.memory_params.read_latency_ns;
+                } else {
+                    try {
+                        (void)getMemoryLatencyCycles(t, config.frequency_mhz, config.tech_node_nm, false, -1.0, -999,
+                                                     config.temperature_k, config.cache_line_size, "", 0, &acc_ns);
+                    } catch (const std::exception& e) {
+                        std::cerr << "  [pe-mi] " << t << " bank access time unavailable (" << e.what() << ")" << std::endl;
+                    }
+                }
+                if (acc_ns > 0.0) {
+                    const double svc = acc_ns * pe_clk_mhz / 1000.0;
+                    std::ostringstream sv; sv << std::setprecision(9) << svc;
+                    out << "        bankServiceCycles = " << sv.str() << ";\n";
+                    std::cout << "  [pe-mi] bank model: each bank busy " << acc_ns << " ns = " << svc << " cycle(s) at "
+                              << pe_clk_mhz << " MHz per access (+ " << local_write_extra << " cycle(s) on a write); "
+                              << std::max(1.0, static_cast<double>(config.num_banks) / std::max(1, mc_count))
+                              << " bank(s) per interface" << std::endl;
+                }
+            }
+        }
         out << "        defaultBandwidthMBs = " << bw_mbs << ";\n";
         /* 1.11.97 (ruling 26): the bandwidth of the PLACEMENT TIER = the sourced
          * ladder's rung at that level (width x clock), MB/s. It replaces the

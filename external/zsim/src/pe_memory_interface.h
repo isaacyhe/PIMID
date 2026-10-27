@@ -73,6 +73,13 @@ protected:
      * its read latency; 0 on DRAM, whose writes are timed by the replayed
      * controller). Charged to a write on the analytical path. */
     uint32_t localWriteExtra_ = 0;
+    /* (1.12.111): one bank's access time in cycles at this interface's clock (SRAM/NVM; 0 = no
+     * bank model, DRAM). Each bank the interface reaches is busy for that time per access
+     * (plus localWriteExtra_ on a write); a request to a busy bank waits until it is free. */
+    double bankSvcCycles_ = 0.0;
+    std::unordered_map<uint32_t, double> bankFree_;   // unit -> cycle its bank is next free
+    lock_t bankLock_ = {0};
+    Counter profBankWaits_, profBankWaitCycles_;
     uint64_t lastPhase_;
     double smoothedPhaseAccesses_;
     uint32_t curPhaseAccesses_;
@@ -201,6 +208,7 @@ public:
      * the unit a line lives in, for the DMA engine's per-unit write spacing. */
     void setWriteExtraCycles(uint32_t c) { localWriteExtra_ = c; }
     uint32_t writeExtraCycles() const { return localWriteExtra_; }
+    void setBankServiceCycles(double c) { bankSvcCycles_ = (c > 0.0) ? c : 0.0; }   // (1.12.111)
     uint32_t unitOfLine(Address lineAddr) const { return addrToUnit(lineAddr); }
 
     /* 1.12.18: the registered guest stack holding byteAddr, if this PE owns
@@ -1347,6 +1355,10 @@ public:
         s->append(&profReads_);
         profWrites_.init("wr", "Write requests");
         s->append(&profWrites_);
+        profBankWaits_.init("bankWaits", "Accesses that found their bank busy (SRAM/NVM bank model, next release)");
+        s->append(&profBankWaits_);
+        profBankWaitCycles_.init("bankWaitCycles", "Cycles waited for a busy bank (SRAM/NVM bank model)");
+        s->append(&profBankWaitCycles_);
         dqStats_.initStats(s);
         parentStat->append(s);
     }
@@ -1599,6 +1611,26 @@ protected:
 
             curPhaseAccesses_++;
             result = curLatency_;
+        }
+        /* (1.12.111): the bank. An SRAM/NVM bank serves one access at a time: it is busy for
+         * one array access time (a write: plus the write time beyond it), and a request
+         * to a busy bank waits until it is free. The interface's queue above runs at the
+         * banks' aggregate rate, so it cannot see several requests at ONE bank; the bank
+         * wait replaces the queue wait when it is the larger. Exact for one requester per
+         * interface (its own back-to-back requests and DMA bursts to one bank). */
+        if (bankSvcCycles_ > 0.0) {
+            const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+            const double occ = bankSvcCycles_ + (wr ? (double)localWriteExtra_ : 0.0);
+            const uint32_t u = addrToUnit(req.lineAddr);
+            const double arrive = (double)req.cycle;
+            futex_lock(&bankLock_);
+            double& fr = bankFree_[u];
+            const double start = (fr > arrive) ? fr : arrive;
+            fr = start + occ;
+            futex_unlock(&bankLock_);
+            const uint32_t bw = (uint32_t)(start - arrive + 0.5);
+            if (bw > 0) { profBankWaits_.atomicInc(); profBankWaitCycles_.atomicInc(bw); }
+            if (localLatency_ + bw > result) result = localLatency_ + bw;
         }
         /* (1.12.90): an SRAM/NVM array write takes the array's write time, not its
          * read time (PCM: the SET pulse). A replay-priced access returned above. */
