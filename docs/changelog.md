@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.108 -- a PCM write is priced at the mean of the SET and RESET energies
+
+- **Power (external/nvsim/SubArray.cpp; src/main.cpp report text; src/util/cache_warehouse.cpp):** every bit of a
+  PCM write was priced at the longer of its SET and RESET energies. A written bit is one or the other, and the cell's
+  source prices the array write at their average, each as likely as the other (Lee et al., ISCA 2009, Sec. 3). The
+  write is now priced at the mean; every bit of the access is still programmed.
+  - At the 64 KB / 512 b / 22 nm unit, a PCM write goes from 49.50 to 42.15 pJ/bit (25.34 to 21.58 nJ per 64 B).
+  - The "[nvm]" line says "the mean of SET and RESET" for PCM. STT_MRAM and RERAM cells have equal SET and RESET
+    energies and are unchanged.
+- **Cache:** the NVSim characterisation cache tool version moves.
+- **Data impact:** PCM memory dynamic energy falls 11-13 % in the fig2 cells; run times are unchanged.
+
 ## 1.12.107 -- results no longer depend on the host machine's library cache or CPU count
 
 - **Library lookup (src/main.cpp, guestLaunchOptions).** The guest's dynamic linker found its libraries through the

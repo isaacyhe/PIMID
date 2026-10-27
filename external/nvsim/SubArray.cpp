@@ -744,7 +744,10 @@ void SubArray::CalculatePower() {
 					cellSetEnergy = setEnergyPerBit * numColumn / muxSenseAmp / muxOutputLev1 / muxOutputLev2;
 					cellResetEnergy /= PCM_WRITE_SUPPLY_EFFICIENCY;   /* PIMID (1.12.94): was SHAPER_EFFICIENCY_CONSERVATIVE (0.2, uncited) */
 					cellSetEnergy /= PCM_WRITE_SUPPLY_EFFICIENCY;  /* the write charge pump's efficiency */
-					writeDynamicEnergy = MAX(cellResetEnergy, cellSetEnergy);
+					/* PIMID (1.12.108): a written bit is a SET or a RESET, each as likely as the other
+					 * (Lee et al., ISCA 2009, Sec. 3: the array write energy is the average of the
+					 * SET and RESET energies). It was the longer of the two for every bit. */
+					writeDynamicEnergy = (cellResetEnergy + cellSetEnergy) / 2;
 				}
 			} else if (cell->memCellType == FBRAM){ //FBRAM write energy
 				cellResetEnergy = resetEnergyPerBit * numColumn / muxSenseAmp / muxOutputLev1 / muxOutputLev2;

@@ -12300,7 +12300,7 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
             << nvm_cfg.process_node_nm << " nm, " << nvm_cfg.temperature_k << " K: read "
             << rd_energy * 1e3 << " pJ/access (" << rd_energy * 1e3 / bits << " pJ/bit), write "
             << wr_energy * 1e3 << " pJ/access (" << wr_energy * 1e3 / bits << " pJ/bit, every bit of the access "
-            << "programmed, the longer of SET and RESET), leakage " << nvsim.getLeakagePower()
+            << "programmed, " << (tech == "PCM" ? "the mean of SET and RESET" : "the longer of SET and RESET") << "), leakage " << nvsim.getLeakagePower()
             << " mW per bank (CMOS periphery), read " << nvsim.getReadLatency() * 1e9 << " ns, write "
             << nvsim.getWriteLatency() * 1e9 << " ns" << std::endl;
     }
