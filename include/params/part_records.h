@@ -58,6 +58,19 @@ struct IddRow {
     bool io_share_anchored = false; double io_anchor_rd_pj_bit = -1.0, io_anchor_wr_pj_bit = -1.0, io_channel_gbps = -1.0;
     std::string io_anchor_source;
 };
+/* (1.12.88): the part's IDD currents vs temperature (optional idd_temperature block). form LINEAR_STANDBY: the
+ * standby currents move by a published slope in mA per degree C from the temperature they were measured at,
+ * held at the ends of the measured range; IDD0 and IDD5 move with IDD2N, IDD4R and IDD4W with IDD3N (the
+ * activate, burst and refresh excesses stay as measured). form STEP_ABOVE: above above_c each listed current
+ * takes its published derating factor; IDD5 moves with IDD2N. No block: the currents are temperature-flat. */
+struct IddTemperatureRec {
+    bool valid = false;
+    std::string form, provenance, source;
+    double reference_c = 0.0, lo_c = 0.0, hi_c = 0.0;          // LINEAR_STANDBY
+    double slope_idd2n = 0.0, slope_idd3n = 0.0, slope_idd2p = 0.0;   // mA per C, per the record's basis
+    double above_c = 0.0;                                       // STEP_ABOVE
+    double f_idd0 = 1.0, f_idd2n = 1.0, f_idd3n = 1.0, f_idd4r = 1.0, f_idd4w = 1.0, f_idd2p = 1.0;
+};
 struct IddBlock {
     std::string basis;                 // "per device" | "per channel"
     int channels_basis = 1;            // the row's channel aggregation (HBM: the stack's channels)
@@ -145,6 +158,7 @@ struct DramPartRecord {
     double die_capacity_gb = 0.0;  // HBM core die capacity (0 for non-stacked)
     std::vector<RefreshRung> refresh_ladder;
     IddBlock idd;                        // 1.11.104
+    IddTemperatureRec idd_temperature;   // (1.12.88): optional
     ComponentFactorsRec component_factors;
     TerminationRec termination;
     IddqBandRec iddq_band;

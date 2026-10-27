@@ -24,6 +24,23 @@ refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-
   - { above_c: 85.0, factor: 0.5 }
   - { above_c: 95.0, factor: 0.25 }
 
+# (1.12.88): IDD vs temperature. Olgun et al., MICRO 2026 (arXiv:2610.14244) Table 4 (36 HBM2 chips, all-chip mean
+# slopes of a linear fit of current vs temperature over each loop's warm-up, 48-86 C, Takeaway 3): IDD2N 6.41,
+# IDD3N1 6.08 mA/C per chip; mean idle temperature during the IDD2N loop 54.2 C (the temperature this record's
+# standby was measured at). Per channel: / 8 (DERIVED). ONE standby slope, IDD2N's, for IDD2N and IDD3N (IDD3N1's
+# 6.08 is within 5% of it): every loop then shifts by the same current and the activate, burst and refresh excesses
+# stay as measured (the loops' own temperatures are not published). IDD2P: x 28/40, the record's IDD2P/IDD2N rule.
+idd_temperature:
+  form: LINEAR_STANDBY
+  provenance: MEASURED
+  reference_c: 54.2
+  lo_c: 48.0
+  hi_c: 86.0
+  slope_idd2n: 0.80125
+  slope_idd3n: 0.80125
+  slope_idd2p: 0.560875
+  source: "Olgun et al. MICRO 2026 (arXiv:2610.14244) Table 4: IDD2N 6.41 mA/C per chip (IDD3N1 6.08), 48-86 C; idle 54.2 C; / 8 channels; one standby slope"
+
 # ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
 idd:
   basis: "per channel"

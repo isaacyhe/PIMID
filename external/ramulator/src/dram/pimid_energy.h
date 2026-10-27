@@ -245,6 +245,13 @@ struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
     struct ActGuardFacts { bool valid = false; double lo = 0.0, ceiling = 0.0, hi = 0.0; } act_guard;
     /* 1.12.18 (user ruling 2026-10-24, floor option 2): XPE like-for-like background guard, mW per stack */
     struct BgGuardFacts { bool valid = false; double lo_mw = 0.0, hi_mw = 0.0; } bg_guard;
+    /* (1.12.88): the record's IDD-vs-temperature block (params/part_records.h IddTemperatureRec) */
+    struct IddTempFacts {
+        int form = 0;   // 0 none, 1 LINEAR_STANDBY, 2 STEP_ABOVE
+        double reference_c = 0.0, lo_c = 0.0, hi_c = 0.0, s2n = 0.0, s3n = 0.0, s2p = 0.0;
+        double above_c = 0.0, f0 = 1.0, f2n = 1.0, f3n = 1.0, f4r = 1.0, f4w = 1.0, f2p = 1.0;
+        std::string source;
+    } idd_temp;
     bool set = false;
 };
 inline std::map<std::string, PartIddFacts>& partIddFactsMap() { static std::map<std::string, PartIddFacts> m; return m; }
@@ -462,6 +469,37 @@ inline bool hasWidthRow(const std::string& tech, const std::string& width) {
     const PartIddFacts* f = partIddFactsIfAny(tech);
     return f && !width.empty() && f->width_rows.count(width) > 0;
 }
+/* (1.12.88): THE RUN'S TEMPERATURE for the IDD currents. Set once per run (RamulatorWrapper::setRunWideKnobs,
+ * from power.temperature_k); 0 = unset, the record's currents as stored. One run-wide value so every consumer
+ * of the row (background, refresh, activate, burst, guards) prices the same currents. */
+inline int& runIddTemperatureK() { static int k = 0; return k; }
+/* The row at the run's temperature, from the record's idd_temperature block (none: unchanged). */
+inline IDDSpec iddAtRunTemperature(IDDSpec s, const PartIddFacts& f, const std::string& tech) {
+    const int tk = runIddTemperatureK();
+    const PartIddFacts::IddTempFacts& q = f.idd_temp;
+    if (tk <= 0 || q.form == 0) return s;
+    const double t_c = tk - 273.15;
+    if (q.form == 1) {   // LINEAR_STANDBY: held at the measured range's ends
+        const double tc = (t_c < q.lo_c) ? q.lo_c : (t_c > q.hi_c) ? q.hi_c : t_c;
+        const double d2n = q.s2n * (tc - q.reference_c), d3n = q.s3n * (tc - q.reference_c), d2p = q.s2p * (tc - q.reference_c);
+        s.idd2n += d2n; s.idd3n += d3n; s.idd2p += d2p;
+        s.idd0 += d2n;  s.idd5 += d2n;       // the activate and refresh loops ride on the precharged standby
+        s.idd4r += d3n; s.idd4w += d3n;      // the burst loops on the active standby
+    } else if (q.form == 2 && t_c > q.above_c) {   // STEP_ABOVE: the datasheet's derating above its range
+        const double i2n = s.idd2n;
+        s.idd0 *= q.f0; s.idd2n *= q.f2n; s.idd3n *= q.f3n; s.idd4r *= q.f4r; s.idd4w *= q.f4w; s.idd2p *= q.f2p;
+        s.idd5 += s.idd2n - i2n;             // IDD5B is not in the derating list: it moves with its IDD2N baseline
+    }
+    static std::map<std::string, bool> said;
+    if (!said[baseTech(tech)]) {
+        said[baseTech(tech)] = true;
+        std::cout << "  [mem] " << baseTech(tech) << " IDD at " << tk << " K: "
+                  << (q.form == 1 ? "standby currents linear in temperature from the measured point"
+                      : (t_c > q.above_c ? "the datasheet derating above its stated range" : "inside the datasheet range, currents as stored"))
+                  << " (" << q.source << "): IDD2N " << s.idd2n << ", IDD3N " << s.idd3n << ", IDD2P " << s.idd2p << " mA" << std::endl;
+    }
+    return s;
+}
 inline IDDSpec iddTableFor(const std::string& tech) {
     const PartIddFacts* f = partIddFactsIfAny(tech);
     {   /* (1.12.48) (user ruling 2026-10-25): a "<TECH>-x16" key takes the record's own width row; none: REFUSE */
@@ -473,7 +511,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
                           << " row (idd.by_width); nothing is substituted." << std::endl;
                 std::exit(2);
             }
-            return wt->second;
+            return iddAtRunTemperature(wt->second, *f, tech);   // (1.12.88)
         }
     }
     if (!f || f->rows.empty()) {
@@ -493,7 +531,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
         std::cerr << "); add the grade's row to the record or run the recorded grade." << std::endl;
         std::exit(2);
     }
-    return it->second;
+    return iddAtRunTemperature(it->second, *f, tech);   // (1.12.88)
 }
 
 /* ---- PROVENANCE OF THE IDD ROWS (formerly iddTableFor) ----

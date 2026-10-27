@@ -122,6 +122,7 @@ void RamulatorWrapper::setRunWideKnobs(const std::string& device_width, int ddr5
     s_run_device_width_ = device_width;
     s_run_ddr5_grade_mtps_ = ddr5_grade_mtps;
     s_run_temperature_k_ = temperature_k;
+    Ramulator::pimid_energy::runIddTemperatureK() = temperature_k;   // (1.12.88): the IDD currents at the run's temperature
     s_run_termination_pj_per_bit_ = termination_pj_per_bit;
     s_run_knobs_set_ = true;
 }
@@ -1014,6 +1015,16 @@ void RamulatorWrapper::initialize() {
                                     pf.bg_guard.hi_mw = rec.idd.bg_guard_hi_mw; }
         if (rec.idd.has_act_guard) { pf.act_guard.valid = true; pf.act_guard.lo = rec.idd.act_guard_lo;
                                      pf.act_guard.ceiling = rec.idd.act_guard_ceiling; pf.act_guard.hi = rec.idd.act_guard_hi; }
+        if (rec.idd_temperature.valid) {   // (1.12.88): IDD vs temperature
+            const pimid::params::IddTemperatureRec& q = rec.idd_temperature;
+            auto& t = pf.idd_temp;
+            t.form = (q.form == "LINEAR_STANDBY") ? 1 : 2;
+            t.reference_c = q.reference_c; t.lo_c = q.lo_c; t.hi_c = q.hi_c;
+            t.s2n = q.slope_idd2n; t.s3n = q.slope_idd3n; t.s2p = q.slope_idd2p;
+            t.above_c = q.above_c; t.f0 = q.f_idd0; t.f2n = q.f_idd2n; t.f3n = q.f_idd3n;
+            t.f4r = q.f_idd4r; t.f4w = q.f_idd4w; t.f2p = q.f_idd2p;
+            t.source = q.provenance;
+        }
         pf.default_grade = gradeOfTimingName(rec.timing_preset);   // 1.11.105: the row a bare key takes (DDR5)
         pf.set = true;
         Ramulator::pimid_energy::setPartIddFacts(dt, pf);   // 1.11.105 (IDD-RECORDS step 2): the record is the source

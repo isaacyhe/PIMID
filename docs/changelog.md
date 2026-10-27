@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.88 -- DRAM currents follow the operating temperature where the part record publishes how
+
+- **The gap:** `power.temperature_k` reached McPAT, CACTI, NVSim and the DRAM refresh ladder, but not the DRAM IDD
+  currents. Every current was priced at the condition its source states, whatever the run's temperature.
+- **Model (params/part_records, pimid_energy.h):** a part record may carry an `idd_temperature` block. The IDD row
+  is then taken at the run's temperature, once per run, for every consumer (background, refresh, activate, burst,
+  guards). A record without the block is unchanged.
+  - **HBM2** (`LINEAR_STANDBY`, MEASURED):
+    - Source: Olgun et al., MICRO 2026 (arXiv:2610.14244), Table 4. Across 36 chips, current is linear in
+      temperature over 48-86 C. The IDD2N slope is 6.41 mA/C per chip; the record's standby was measured at the
+      54.2 C mean idle temperature.
+    - Per channel: +0.801 mA/C on IDD2N and IDD3N (one standby slope; IDD3N's measured 6.08 is within 5%), and
+      +0.561 mA/C on IDD2P (the record's 28/40 rule). Held at the ends of 48-86 C.
+    - The IDD0, IDD4R, IDD4W and IDD5 loops move with their standby baseline, so the activate, burst and refresh
+      excesses stay as measured.
+  - **HBM3** (DERIVED): the HBM2 slopes, scaled by this record's standby over HBM2's (77.875 / 66.525), the same
+    scaling the standby itself took.
+  - **DDR4** (`STEP_ABOVE`, PUBLISHED): Micron MT40A 8 Gb DDR4 datasheet IDD note 24. Above TC 85 C, IDD0, IDD2N,
+    IDD3N, IDD4R and IDD4W are derated by +3% and IDD2P by +40%; IDD5 moves with IDD2N.
+  - DDR3, DDR5, LPDDR5 and GDDR6: no block. NO PUBLISHED SOURCE FOUND for those parts' currents vs temperature;
+    Ghose et al., SIGMETRICS 2018 measured no change in DDR3L currents between 20 C and 70 C.
+- **Report:** "[mem] <TECH> IDD at <K> K: ..." with the currents used. The "[tech] temperature" line no longer says
+  that the IDD columns never move.
+- **Data impact:**
+  - HBM2 and HBM3 background rise at every temperature, the 350 K default included (77 C against the measured
+    54.2 C): gemv with 16 ALU PEs at BANK, 350 K: HBM2 memory static 0.641 -> 0.815 W, HBM3 1.616 -> 1.990 W (stack background 1617 -> 1991 mW). The activate, read and write energies are unchanged.
+  - DDR4 changes above 85 C only: the same cell at 360 K: background 554.5 -> 601.0 mW.
+  - Every other technology is unchanged.
+
 ## 1.12.87 -- four CACTI off-current rows put back on their columns' temperature curves
 
 - **The defect** (external/cacti/tech_params; the same values as the CACTI 7 distribution):

@@ -106,6 +106,35 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         }
         r.refresh_ladder.push_back(g);
     }
+    /* (1.12.88): optional IDD-vs-temperature block (see IddTemperatureRec). */
+    if (n["idd_temperature"]) {
+        const YAML::Node t = n["idd_temperature"];
+        IddTemperatureRec& q = r.idd_temperature;
+        if (!need(t, "form", q.form, error) || !need(t, "provenance", q.provenance, error) || !need(t, "source", q.source, error)) {
+            error = "part record " + path + ": idd_temperature: " + error; return false;
+        }
+        if (q.form == "LINEAR_STANDBY") {
+            if (!need(t, "reference_c", q.reference_c, error) || !need(t, "lo_c", q.lo_c, error) || !need(t, "hi_c", q.hi_c, error) ||
+                !need(t, "slope_idd2n", q.slope_idd2n, error) || !need(t, "slope_idd3n", q.slope_idd3n, error) ||
+                !need(t, "slope_idd2p", q.slope_idd2p, error)) {
+                error = "part record " + path + ": idd_temperature: " + error; return false;
+            }
+            if (!(q.lo_c <= q.reference_c && q.reference_c <= q.hi_c) || q.slope_idd2n < 0.0 || q.slope_idd3n < 0.0 || q.slope_idd2p < 0.0) {
+                error = "part record " + path + ": idd_temperature (LINEAR_STANDBY) needs lo_c <= reference_c <= hi_c and slopes >= 0"; return false;
+            }
+        } else if (q.form == "STEP_ABOVE") {
+            if (!need(t, "above_c", q.above_c, error) || !need(t, "idd0", q.f_idd0, error) || !need(t, "idd2n", q.f_idd2n, error) ||
+                !need(t, "idd3n", q.f_idd3n, error) || !need(t, "idd4r", q.f_idd4r, error) || !need(t, "idd4w", q.f_idd4w, error) ||
+                !need(t, "idd2p", q.f_idd2p, error)) {
+                error = "part record " + path + ": idd_temperature: " + error; return false;
+            }
+            for (double f : {q.f_idd0, q.f_idd2n, q.f_idd3n, q.f_idd4r, q.f_idd4w, q.f_idd2p})
+                if (!(f >= 1.0)) { error = "part record " + path + ": idd_temperature (STEP_ABOVE) factors must be >= 1 (a derating)"; return false; }
+        } else {
+            error = "part record " + path + ": idd_temperature.form '" + q.form + "' is not LINEAR_STANDBY or STEP_ABOVE"; return false;
+        }
+        q.valid = true;
+    }
     /* 1.11.104 (IDD-RECORDS step 1): the part's measured data. */
     if (!n["idd"] || !n["idd"].IsMap()) {
         error = "part record " + path + ": required field 'idd' is missing (the part's measured IDD data; step 1 of the IDD migration, 1.11.104)";

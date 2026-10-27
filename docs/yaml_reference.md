@@ -998,9 +998,21 @@ refresh-power discount on a threshold no standard fixes. Above 105 C no source
 specifies a rate (HBM CATTRIP is 120 C); the last rung is held. The default
 350 K sits inside the nominal range, so results at the default are unchanged
 from earlier releases -- the ladder engages only when a config states a
-temperature above 85 C. The refresh rate is the ONLY temperature-dependent
-term in the DRAM energy model: datasheets specify IDD at a fixed case
-temperature and publish no derating curve for the active currents.
+temperature above 85 C.
+
+**IDD currents vs temperature (1.12.88).** A part record may carry an
+`idd_temperature` block; the run prints `[mem] <TECH> IDD at <T> K` when it
+applies. Records without one keep their stated-condition currents at every
+temperature.
+
+| Record | Form | Rule | Source |
+|---|---|---|---|
+| HBM2 | `LINEAR_STANDBY` | IDD2N and IDD3N +0.801, IDD2P +0.561 mA/C per channel from 54.2 C (one standby slope, IDD2N's). Held outside 48-86 C. IDD0, IDD4R, IDD4W and IDD5 move with their standby baseline, so the activate, burst and refresh excesses stay as measured. | Olgun et al., MICRO 2026 (arXiv:2610.14244) Table 4 |
+| HBM3 | `LINEAR_STANDBY` | The HBM2 slopes, scaled by this record's standby over HBM2's (DERIVED). | same |
+| DDR4 | `STEP_ABOVE` | Above 85 C: x1.03 on IDD0, IDD2N, IDD3N, IDD4R and IDD4W; x1.40 on IDD2P. IDD5 moves with IDD2N. | Micron MT40A 8 Gb DDR4 datasheet, IDD note 24 |
+
+The HBM rule applies at every temperature, the 350 K default included: the
+measured standby is a 54.2 C value.
 
 ### DQ termination override (`power.termination_pj_per_bit`)
 

@@ -22,6 +22,20 @@ refresh_ladder:                    # JEDEC JESD79-4 extended temperature range: 
   - { above_c: 85.0, factor: 0.5 }
 
 # ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
+# (1.12.88): IDD vs temperature. Micron MT40A 8 Gb DDR4 datasheet, IDD specification note 24: "The IDD values must be
+# derated (increased) when operated outside of the range 0 C <= TC <= 85 C ... When TC > 85 C: IDD0, IDD1, IDD2N,
+# IDD2NT, IDD2Q, IDD3N, IDD3P, IDD4R, IDD4W, and IDD5R must be derated by 3%; IDD2Px must be derated by 40%."
+idd_temperature:
+  form: STEP_ABOVE
+  provenance: PUBLISHED
+  above_c: 85.0
+  idd0: 1.03
+  idd2n: 1.03
+  idd3n: 1.03
+  idd4r: 1.03
+  idd4w: 1.03
+  idd2p: 1.40
+  source: "Micron MT40A 8 Gb DDR4 datasheet IDD note 24: +3% IDD0/IDD2N/IDD3N/IDD4R/IDD4W, +40% IDD2P above TC 85 C"
 idd:
   basis: "per device"
   channels_basis: 1

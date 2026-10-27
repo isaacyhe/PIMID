@@ -12314,10 +12314,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         std::cout << "  [tech] temperature " << config.temperature_k
                   << " K: CACTI leakage rows snap to the nearest 10 C step;"
                      " DRAM tREFI follows temperature (JESD halves it above"
-                     " 85 C, so refresh power doubles); the IDD columns"
-                     " themselves are the datasheet's stated-condition values"
-                     " and do NOT move with this knob, so per-access array"
-                     " energy is temperature-independent by construction"
+                     " 85 C, so refresh power doubles); the IDD currents follow"
+                     " the part record's idd_temperature block where it has one"
+                     " ([mem] IDD at ... line), and are the datasheet's"
+                     " stated-condition values where it has none"
                   << std::endl;
 
     /* 1.11.2: placement x technology -> PE process family. Every row is
