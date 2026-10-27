@@ -102,6 +102,17 @@ component_factors:   # typical / maximum per component; applied by typicalFromSp
   refresh: 0.83
   pd: 0.57
   source: "the DDR5/LPDDR5/GDDR6 class set (1.11.91): standby 0.57, premium 0.36/0.57, act 0.5, burst 0.6 rd / 0.5 wr, refresh 0.83, pd 0.57"
+# (1.12.83) (user ruling 2026-10-27): the data-dependent column-burst energy, TRANSFERRED from the DDR3 measurement on the
+# planar-core argument. NO PUBLISHED SOURCE FOUND for a DDR5 measurement of the dependence, and NO author statement
+# extends the DDR3 result to DDR5. Relative form, normalised at uniform-random data:
+# E_burst = E_record x (1 + k x (f_ones - 0.5)), f_ones = the 1 bits of the 1.12.58 counters (DDR5 has no data bus inversion).
+data_pattern:
+  form: ONES_LINEAR
+  read_ones: 0.1733
+  write_ones: -0.0835
+  provenance: DERIVED
+  source: "Transfer from DDR3 (params/dram/ddr3.yaml data_pattern): Ghose et al., SIGMETRICS 2018 (arXiv:1807.05102) Table 5 bank+column interleaving, vendor means, I/O-driver corrected. ASSUMPTION, stated: DDR5 is a planar DRAM whose column datapath (bitline sense amplifiers, local/global data lines, bank select) shares the DDR3 structure, so its core burst current is taken to have the same relative sensitivity to the 1s fraction. NO author statement supports this for DDR5 (Ghose et al. name DDR4 only), and DDR5 differs from DDR3 in prefetch, bank grouping, voltage and I/O. DDR5 measurement of the dependence: NO PUBLISHED SOURCE FOUND."
+
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
   scheme: POD
   vddq: 1.1

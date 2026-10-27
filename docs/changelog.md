@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.83 -- DDR5 burst energy at the run's own data (transferred from the DDR3 measurement)
+
+- **Model (user ruling 2026-10-27):** the DDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
+  coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
+  I/O-corrected), on the 1.12.58 counters (DDR5 has no data bus inversion). DERIVED transfer on a stated assumption: DDR5 is a
+  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. No published DDR5
+  measurement of the dependence exists, and no author statement extends the DDR3 result to DDR5. Normalised at
+  uniform-random data. Record only (params/dram/ddr5.yaml).
+- **Data impact:** DDR5 read burst energy -8.7 % (all 0s) to +8.7 % (all 1s), write +4.2 % to -4.2 %.
+
 ## 1.12.82 -- DDR4 burst energy at the run's own data (transferred from the DDR3 measurement)
 
 - **Model (user ruling 2026-10-27):** the DDR4 record gets a `data_pattern` block (form ONES_LINEAR) with the
