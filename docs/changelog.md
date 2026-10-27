@@ -6,6 +6,17 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.125 -- the program path is documented as part of the program's input
+
+- **Documented (docs/architecture.md, Reproducibility; user ruling 2026-10-27).** PIMID passes the program path
+  exactly as it was given, as the guest's `argv[0]` and as the file name QEMU records. The guest's startup reads it,
+  so two spellings of one file (`/a/b/prog`, `/a/./b/prog`, `/a/x/../b/prog`) or two installations at paths of
+  different length start the guest with slightly different work before the ROI. Measured: single-core host baselines
+  of OpenMP programs up to about 0.01% (at most 37 of about 199 000 cycles), multi-core host cells by a similar
+  fraction, no device or PE-type cell. Results compare exactly when the same path string is used.
+- **Printed (src/main.cpp):** the `[guest] launch:` line ends with the program path and its length.
+- No timing, energy or area model changes; every result is unchanged.
+
 ## 1.12.124 -- multi-threaded results no longer depend on the host's process-ID count
 
 - **Defect.** QEMU user mode handed the guest the host's Linux process and thread IDs. glibc 2.39's `start_thread`

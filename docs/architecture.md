@@ -147,6 +147,18 @@ directories. A variable a workload needs from the shell beyond those passed
 goes in `workload.env`. Every run prints the launch it used (`[guest]
 launch: ...`).
 
+**The program path is part of the program's input (since (1.12.125)).** PIMID
+passes the program path exactly as it was given -- as the guest's `argv[0]`
+and as the file name QEMU records for it -- and the guest's startup reads it
+(glibc keeps the program's short name). Two spellings of the same file
+(`/a/b/prog`, `/a/./b/prog`, `/a/x/../b/prog`) or two installations at paths of
+different length therefore start the guest with slightly different work before
+the ROI: measured up to about 0.01% (at most 37 of about 199 000 cycles) on
+single-core host baselines of OpenMP programs, a similar fraction on
+multi-core host cells, and no change on any device or PE-type cell. Results
+compare exactly when the same path string is used; the `[guest] launch:` line
+prints the program path and its length.
+
 **A parallel workload is timed by the model.** Its threads are real threads
 inside the emulator, but their simulated time does not come from the host's
 interleaving. Each core and PE keeps its own clock from its ROI baseline;

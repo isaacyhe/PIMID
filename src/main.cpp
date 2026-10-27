@@ -897,13 +897,23 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
     return o;
 }
 
-static void noteGuestLaunch(size_t envVars) {
+/* (1.12.125): the program path is part of the program's input. QEMU places the
+ * path the user gave (argv[0] and AT_EXECFN) on the guest's stack and glibc's
+ * startup reads it (the program's short name), so a longer or shorter
+ * spelling of the same file changes the guest's work before the ROI a little:
+ * up to about 0.01% on the cells that run the OpenMP runtime on host cores,
+ * nothing measured on device cells. The path is passed exactly as given
+ * (user ruling 2026-10-27); the launch line prints its length so that two runs
+ * can be checked for the same program path. */
+static void noteGuestLaunch(size_t envVars, const std::string& binary) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
               << kGuestSeed << "), guest thread and process IDs the host's plus " << kGuestTidBase << " (-tid-base), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
               << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), libraries"
               << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
-              << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]" << std::endl;
+              << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]; program path " << binary
+              << " (" << binary.size() << " characters, passed as given: runs compare exactly with the same path string)"
+              << std::endl;
 }
 
 /* (1.12.115): the guest binary carries the ROI markers (zsim_hooks.h prints
@@ -939,7 +949,7 @@ static std::vector<std::string> guestQemuArgv(const std::string& qemu,
     std::vector<std::string> v = {qemu};
     size_t guestVars = 0;
     const std::vector<std::string> g = guestLaunchOptions(binary, args, guestSet, workloadEnv, &guestVars);
-    noteGuestLaunch(guestVars);
+    noteGuestLaunch(guestVars, binary);
     std::cout << std::flush;
     v.insert(v.end(), g.begin(), g.end());
     v.push_back("-plugin"); v.push_back(pluginArg);
