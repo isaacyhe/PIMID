@@ -84,6 +84,12 @@
 #define DRAM_REFRESH_PERIOD	64e-3
 
 #define SHAPER_EFFICIENCY_CONSERVATIVE	0.2
+/* PIMID (1.12.94): the PCM write supply's efficiency. The cell's SET/RESET voltages (1.2 / 1.6 V,
+ * Lee et al. ISCA 2009) exceed the 22 nm logic supply, so the write current comes from a charge
+ * pump: 38.8 % average pumping efficiency (Luo, Hu, Shi, Xue, Zhuge, 'Peak-to-average pumping
+ * efficiency improvement for charge pump in phase change memories', ASP-DAC 2016). It replaces
+ * NVSim's uncited 0.2 'shaper' efficiency on the PCM write path. */
+#define PCM_WRITE_SUPPLY_EFFICIENCY	0.388
 #define SHAPER_EFFICIENCY_AGGRESSIVE	1.0
 
 #define COPPER_RESISTIVITY	2.2e-8			/* Unit: ohm*m at 20 celcius degree */

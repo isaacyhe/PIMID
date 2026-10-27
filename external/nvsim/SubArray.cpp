@@ -742,8 +742,8 @@ void SubArray::CalculatePower() {
 				} else {
 					cellResetEnergy = resetEnergyPerBit * numColumn / muxSenseAmp / muxOutputLev1 / muxOutputLev2;
 					cellSetEnergy = setEnergyPerBit * numColumn / muxSenseAmp / muxOutputLev1 / muxOutputLev2;
-					cellResetEnergy /= SHAPER_EFFICIENCY_CONSERVATIVE;
-					cellSetEnergy /= SHAPER_EFFICIENCY_CONSERVATIVE;  /* Due to the shaper inefficiency */
+					cellResetEnergy /= PCM_WRITE_SUPPLY_EFFICIENCY;   /* PIMID (1.12.94): was SHAPER_EFFICIENCY_CONSERVATIVE (0.2, uncited) */
+					cellSetEnergy /= PCM_WRITE_SUPPLY_EFFICIENCY;  /* the write charge pump's efficiency */
 					writeDynamicEnergy = MAX(cellResetEnergy, cellSetEnergy);
 				}
 			} else if (cell->memCellType == FBRAM){ //FBRAM write energy

@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.94 -- the PCM write supply's efficiency from a published charge pump
+
+- **Power (external/nvsim/constant.h, SubArray.cpp; src/util/cache_warehouse.cpp):** NVSim divides the PCM cell's
+  SET and RESET energies by a "shaper" efficiency of 0.2, which cites no source (STT_MRAM and RERAM use 1.0). The
+  cell's write voltages (1.2 / 1.6 V, Lee et al., ISCA 2009) are above the 22 nm logic supply, so the write current
+  comes from a charge pump. The divisor is now the published average pumping efficiency of a PCM charge pump, 0.388
+  (Luo, Hu, Shi, Xue, Zhuge, ASP-DAC 2016).
+  - At the 64 KB / 512 b / 22 nm unit, a PCM write goes from 49.16 nJ to 25.34 nJ (49.5 pJ/bit). Lee et al. give
+    16.82 pJ/bit for the array write without a supply loss (Table 2).
+- **Cache:** the NVSim characterisation cache tool version moves again.
+- **Data impact:** PCM write energy falls to 0.52x. Other technologies are unchanged.
+
 ## 1.12.93 -- the PCM cell's SET and RESET energies from its source
 
 - **Power (external/nvsim/sample_PCRAM.cell; src/main.cpp report text; src/util/cache_warehouse.cpp):** the PCM cell

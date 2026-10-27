@@ -38,7 +38,8 @@ namespace {
  * artifact means, whether or not the filename moves with it. */
 /* (1.12.93): the PCM cell read energy (sample_PCRAM.cell -ReadEnergy) is read and priced;
  * the PCM cell SET/RESET energies are Lee et al. ISCA 2009 Table 1. */
-const char* kToolVersion = "1.12.93";
+/* (1.12.94): the PCM write supply efficiency is the published charge-pump 0.388. */
+const char* kToolVersion = "1.12.94";
 
 struct State {
     Mode mode = Mode::RW;
