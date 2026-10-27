@@ -522,6 +522,12 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   prints the McPAT literal (reference) beside the value used.
 - **Interface energy** per access is an inherited constant, not a measurement.
 - **Power gating** has no temporal weighting of its own.
+- **Host uncore (1.12.97).** The host socket's I/O and system agent is one term per
+  socket, `<host>.uncore_static`, from the Haswell-EP package C1E power (Intel
+  330783-002, Sec. 2.10; the intercept of a fit over 34 SKUs), not a
+  block-by-block model: no published source gives the root complex, interrupt
+  controller, power-management unit or PLLs separately. It is an awake-idle
+  floor and includes regulator loss in its source.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
   conversion loss, the board and cooling are not modelled; no total includes
   them.

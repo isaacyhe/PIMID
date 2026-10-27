@@ -6,6 +6,25 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.97 -- the host socket's uncore, priced once per socket
+
+- **Model (user ruling 2026-10-27; power.models.host_uncore_static; src/main.cpp):** system scope charges the host
+  socket's uncore that does not scale with the core count -- the I/O and system agent (PCIe root complex,
+  inter-socket links, interrupt and power management, clock generation) -- once per host, ledger
+  `<host>.uncore_static`. No published source gives these blocks one by one; the published package-side quantity is
+  the package C1E power (all cores in C1E, the package awake): Intel Xeon E5-1600/2600/4600 v3 Datasheet Vol. 1,
+  330783-002 (June 2015), Sec. 2.10, 34 Haswell-EP SKUs with 4 to 18 cores at 22 nm, the host's node. A least-squares
+  line over the core count gives C1E = 18.5 W + 1.91 W/core (DERIVED, rms 3.7 W). The intercept, 18.5 W, is the
+  socket term (`power.host_uncore.w_per_socket`); the per-core slope belongs to the cores, their L3 slices and ring
+  stops. The memory controller's leakage, its PHY static and the die clock trunk, which the run already prices, are
+  subtracted (never below 0). The run prints the PLL count as a reference inside the term (one per core, one for the
+  CLM and memory controllers, one for power management, one per link controller, about 7 mW each: Antoniou et al.,
+  AgilePkgC, HPCA 2023), not added. Caveats, printed: package C1E is an awake-idle floor (the uncore clock rises under
+  load); the datasheet figure includes on-die regulator loss, which PIMID leaves out. The host is awake for the whole
+  window. `power.models.host_uncore_static: false` leaves the term out.
+- **Data impact:** every system-scope run with a host gains about 18.4 W (its MC leakage, MC PHY static and die
+  clock trunk subtracted), the same for 1-, 4- and 16-core hosts.
+
 ## 1.12.96 -- the in-order device PE's integer datapath priced from its structure
 
 - **Integer datapath (CV32E40P, open-flow synthesis to Nangate 45 nm, combinational cells; gate-level activity of the

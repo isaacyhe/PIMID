@@ -2590,6 +2590,7 @@ static const char* kSchemaPaths[] = {
     "power.models.host_mc_phy_static",   // 1.12.18: (user ruling: system-scope host MC PHY static)
     "power.models.idle_halt", "power.models.per_die_process", "power.models.clock_die_trunk",   // PIMID 1.12.18 (rulings 2026-10-23)
     "power.models.host_noc",   // 1.12.23: host on-chip network power
+    "power.models.host_uncore_static", "power.host_uncore.w_per_socket",   // (1.12.97): host socket uncore, awake
     "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
     "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
@@ -3011,6 +3012,9 @@ struct UnifiedConfig {
      * priced by McPAT from the measured L2/L3/MC data traffic. false = the
      * pre-1.12.23 leakage-only placeholder. */
     bool pm_host_noc = true;                // power.models.host_noc
+    bool pm_host_uncore_static = true;      // (1.12.97): power.models.host_uncore_static
+    double host_uncore_w_per_socket = 18.5; // (1.12.97): power.host_uncore.w_per_socket (DERIVED, Intel 330783-002 Sec. 2.10)
+    bool host_uncore_w_per_socket_user_set = false;
     /* PIMID 1.12.18 (per-die process): system.devices[].process, as given.
      * 0 / -1 / empty = not given (the die keeps today's pricing). */
     bool proc_given = false;
@@ -15360,6 +15364,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
          * on the ledger as the link's own entry, user ruling 2026-10-23). */
         std::vector<std::pair<std::string, double>> comps;
         double link_phy_w = 0.0;
+        double uncore_priced_mc_leak_w = 0.0;   // (1.12.97): host MC leakage (McPAT)
+        double uncore_priced_trunk_w = 0.0;     // (1.12.97): host die clock trunk (McPAT)
+        int cores = 0;                          // (1.12.97)
+        int link_ctrls = 0;                     // (1.12.97): link controllers on this host (PLL count)
     };
     std::vector<NodePowerResult> results;
 
@@ -16734,6 +16742,15 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         result.comps.push_back({dn + (n > 1 ? std::to_string(k) : std::string()) + ".clock_trunk",
                                                 (t.rt_w + t.leak_w + t.gate_w) / n});
                 }
+                /* (1.12.97): the parts of the socket's core-count-independent uncore this node
+                 * already prices (subtracted by the host uncore term below). */
+                if (node.role == UnifiedConfig::SystemNode::HOST) {
+                    result.uncore_priced_mc_leak_w = mcpat.getComponentPower(CT::MEMORY_CONTROLLER).total_leakage;
+                    for (const auto& t : mcpat.getClockTrunks())
+                        result.uncore_priced_trunk_w += t.rt_w + t.leak_w + t.gate_w;
+                    result.cores = node.num_cores;
+                    result.link_ctrls = (mcpat.getComponentPower(CT::PCIE).total_power != 0.0) ? 1 : 0;
+                }
             }
 
             pimid::fmt_scoped(std::cout) << "  " << node.name << " (" << result.core_desc
@@ -17444,6 +17461,56 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
     double host_phy_total_w = 0.0;   // 1.12.18
     for (const auto& p : host_mc_phy_w) host_phy_total_w += p.second;
     sys_power += host_phy_total_w;
+    /* (1.12.97) (power.models.host_uncore_static, user ruling 2026-10-27: per socket): the
+     * host socket's uncore that does not scale with the core count and is powered while
+     * the package is awake -- the I/O and system agent (PCIe root complex, inter-socket
+     * links, interrupt and power management, clock generation) besides what the run
+     * prices itself. No published source gives these blocks one by one. The published
+     * package-side quantity is the package C1E power (all cores in C1E, the package
+     * awake): Intel Xeon E5-1600/2600/4600 v3 Datasheet Vol. 1, 330783-002 (June 2015),
+     * Sec. 2.10, 34 Haswell-EP SKUs with 4..18 cores (22 nm, the host node): a
+     * least-squares line over cores gives C1E = 18.5 W + 1.91 W/core (DERIVED; rms 3.7
+     * W). The 18.5 W intercept is the socket's core-count-independent part; the per-core
+     * slope is the cores, their L3 slices and ring stops, priced elsewhere. Of the
+     * intercept the run already prices the memory controller's leakage, its PHY static
+     * and the die clock trunk; those are subtracted, never below 0. Caveats, printed:
+     * C1E is an awake-idle floor (the uncore runs faster under load); the datasheet
+     * figure includes on-die regulator loss, which PIMID leaves out (user ruling
+     * 2026-10-23). The host is awake for the whole window (no package sleep state). */
+    std::vector<std::pair<std::string, double>> host_uncore_w;
+    double host_uncore_total_w = 0.0;
+    if (config.pm_host_uncore_static) {
+        for (const auto& r : results) {
+            if (!r.valid || r.cores <= 0) continue;
+            double phy = 0.0;
+            for (const auto& p : host_mc_phy_w) if (p.first == r.name) phy += p.second;
+            const double priced = r.uncore_priced_mc_leak_w + phy + r.uncore_priced_trunk_w;
+            const double ref = config.host_uncore_w_per_socket;
+            const double w = std::max(0.0, ref - priced);
+            host_uncore_w.push_back({r.name, w});
+            host_uncore_total_w += w;
+            /* PLL count, an itemised reference (inside the measured intercept, NOT added):
+             * Antoniou et al., "AgilePkgC", HPCA 2023 (arXiv 2204.10466) Sec. 3: one PLL per
+             * core, one for the CLM and memory controllers, one for the power management
+             * unit, one per PCIe/DMI/UPI controller; all-digital PLLs of about 7 mW each
+             * (their Sec. 5.4, cited from the literature). */
+            const int plls = r.cores + 2 + r.link_ctrls;
+            pimid::fmt_scoped(std::cout) << "  [power] " << r.name << " uncore (power.models.host_uncore_static): per socket "
+                      << ref << " W"
+                      << (config.host_uncore_w_per_socket_user_set ? " (power.host_uncore.w_per_socket)"
+                                                                   : " (DERIVED: Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)")
+                      << " minus what this run prices of it (MC leakage " << r.uncore_priced_mc_leak_w
+                      << " W + MC PHY static " << phy << " W + die clock trunk " << r.uncore_priced_trunk_w
+                      << " W) = " << w << " W (ledger " << r.name << ".uncore_static; " << r.cores << " core(s) priced apart)"
+                      << std::endl;
+            pimid::fmt_scoped(std::cout) << "    of which clock generation (reference, inside the term, not added): " << plls
+                      << " PLLs (" << r.cores << " core + CLM/MC + PMU" << (r.link_ctrls ? " + link controller" : "")
+                      << "; AgilePkgC, HPCA 2023, Sec. 3) x 7 mW = " << plls * 0.007 << " W" << std::endl;
+            std::cout << "    caveats: package C1E is an awake-idle floor (the uncore clock rises under load); the datasheet"
+                         " figure includes on-die regulator loss, which PIMID leaves out (user ruling 2026-10-23)" << std::endl;
+        }
+    }
+    sys_power += host_uncore_total_w;
     pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(2)
               << sys_power << " W (" << sys_dyn << " dyn + " << sys_leak << " leak";
     if (mem_power_total > 0.0) {
@@ -17456,6 +17523,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
     }
     if (host_phy_total_w > 0.0)   // 1.12.18
         pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_phy_total_w << " host-MC PHY static";
+    if (host_uncore_total_w > 0.0)   // (1.12.97)
+        pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_uncore_total_w << " host uncore";
     std::cout << ")" << std::endl;
     /* 1.11.9 (#86, audit): the memory die is silicon too. (1.11.51, L243:
      * the original justification here -- that device scope already counted
@@ -17539,6 +17608,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         if (link_w != 0.0) add("link", link_w);
         if (mem_power_total != 0.0) add("memory.array", mem_power_total);
         for (const auto& p : host_mc_phy_w) add(p.first + ".memory_controllers_phy", p.second);   // 1.12.18
+        for (const auto& p : host_uncore_w) if (p.second != 0.0) add(p.first + ".uncore_static", p.second);   // (1.12.97)
         double lsum = 0.0;
         for (const auto& t : ledger) lsum += t.w;
         if (std::fabs(lsum - sys_power) > 1e-9 * std::max(1.0, std::fabs(sys_power))) {
@@ -21750,6 +21820,15 @@ int main(int argc, char** argv) {
                 config.pm_per_die_process = yamlBool(pmn["per_die_process"], true, "power.models.per_die_process");
                 config.pm_clock_die_trunk = yamlBool(pmn["clock_die_trunk"], true, "power.models.clock_die_trunk");
                 config.pm_host_noc = yamlBool(pmn["host_noc"], true, "power.models.host_noc");   // 1.12.19
+                config.pm_host_uncore_static = yamlBool(pmn["host_uncore_static"], true, "power.models.host_uncore_static");   // (1.12.97)
+            }
+            if (yaml_cfg["power"] && yaml_cfg["power"]["host_uncore"] && yaml_cfg["power"]["host_uncore"]["w_per_socket"]) {   // (1.12.97)
+                config.host_uncore_w_per_socket = yaml_cfg["power"]["host_uncore"]["w_per_socket"].as<double>();
+                config.host_uncore_w_per_socket_user_set = true;
+                if (!(config.host_uncore_w_per_socket >= 0.0)) {
+                    std::cerr << "[config] FATAL: power.host_uncore.w_per_socket must be >= 0 W" << std::endl;
+                    std::exit(2);
+                }
             }
             /* 1.12.18: the backends read these switches (the McPAT wrapper and the
              * DRAM energy model); set once, before any model is built. */
