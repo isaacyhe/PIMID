@@ -116,6 +116,10 @@ class IDRAM : public Clocked<IDRAM> {
      */
     virtual bool check_ready(int command, const AddrVec_t& addr_vec) = 0;
 
+    /* PIMID (1.12.127): the earliest clock at which check_ready(command, addr_vec) can pass while no further command is
+     * issued (-1: no timing constraint); -2: the standard does not provide it. */
+    virtual Clk_t pimid_ready_at(int command, const AddrVec_t& addr_vec) { return -2; }
+
     /**
      * @brief     Checks whether the command will result in a rowbuffer hit
      * @details

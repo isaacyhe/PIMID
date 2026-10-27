@@ -206,6 +206,21 @@ struct DRAMNodeBase {
       return m_child_nodes[child_id]->get_preq_command(command, addr_vec, m_clk);
     };
 
+    /* PIMID (1.12.127): the largest ready clock (-1 = none) on the nodes check_ready(command, addr_vec, clk) visits, so
+     * check_ready passes exactly when clk >= ready_at(...). Ready clocks only grow (update_timing takes the max). */
+    Clk_t ready_at(int command, const AddrVec_t& addr_vec) {
+      Clk_t r = m_cmd_ready_clk[command];
+      int child_id = addr_vec[m_level+1];
+      if (m_level == m_spec->m_command_scopes[command] || !m_child_nodes.size()) {
+        return r;
+      }
+      if (child_id == -1) {
+        for (auto child : m_child_nodes) r = std::max(r, child->ready_at(command, addr_vec));
+        return r;
+      }
+      return std::max(r, m_child_nodes[child_id]->ready_at(command, addr_vec));
+    };
+
     bool check_ready(int command, const AddrVec_t& addr_vec, Clk_t clk) {
       if (m_cmd_ready_clk[command] != -1 && clk < m_cmd_ready_clk[command]) {
         // stop recursion: the check failed at this level

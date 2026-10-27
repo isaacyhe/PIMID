@@ -109,8 +109,8 @@ class NocWireData {
                     for (uint32_t j = 0; j < wb; j++) {
                         const uint32_t o = k * wb + j;
                         cur[j] = (o < n) ? pkt[o] : 0;
-                        r[i] += __builtin_popcount((uint8_t)(~prev[j] & cur[j]));
-                        t[i] += __builtin_popcount((uint8_t)(prev[j] ^ cur[j]));
+                        r[i] += pimidPop8((uint8_t)(~prev[j] & cur[j]));   // (1.12.127): table, as dq_data_stats.h
+                        t[i] += pimidPop8((uint8_t)(prev[j] ^ cur[j]));
                     }
                     memcpy(prev, cur, wb);
                 }

@@ -1,4 +1,9 @@
 #include <cmath>
+#include <unordered_map>
+#include <queue>
+#include <iterator>
+#include <tuple>
+#include <algorithm>
 #include "dram_controller/controller.h"
 #include "memory_system/memory_system.h"
 
@@ -81,8 +86,17 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     void pd_tick() {
       if (!m_pimid_pd) return;
       std::fill(m_pd_busy.begin(), m_pd_busy.end(), 0);
-      for (ReqBuffer* b : {&m_read_buffer, &m_write_buffer, &m_active_buffer, &m_priority_buffer})
-        for (auto it = b->begin(); it != b->end(); ++it) pd_mark(it->addr_vec, m_pd_busy);
+      /* PIMID (1.12.127): a mark only ever sets a unit busy, so the scan stops once every unit is (host speed; same marks) */
+      size_t nbusy = 0;
+      const size_t nu = m_pd_busy.size();
+      for (ReqBuffer* b : {&m_read_buffer, &m_write_buffer, &m_active_buffer, &m_priority_buffer}) {
+        for (auto it = b->begin(); it != b->end() && nbusy < nu; ++it) {
+          const int u = pd_unit(it->addr_vec);
+          if (u >= 0) { if (!m_pd_busy[u]) { m_pd_busy[u] = 1; nbusy++; } }
+          else { std::fill(m_pd_busy.begin(), m_pd_busy.end(), 1); nbusy = nu; }
+        }
+        if (nbusy >= nu) break;
+      }
       for (size_t u = 0; u < m_pd_in.size(); u++) {
         if (m_pd_busy[u]) {
           if (m_pd_in[u]) { m_pd_in[u] = 0; s_pimid_pd_cycles += (uint64_t)(m_clk - m_pd_since[u]); s_pimid_pd_exits++; m_pd_wake[u] = m_clk + m_pimid_pd_txp; }
@@ -250,7 +264,8 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         auto compare_addr = [req](const Request& wreq) {
           return wreq.addr == req.addr;
         };
-        if (std::find_if(m_write_buffer.begin(), m_write_buffer.end(), compare_addr) != m_write_buffer.end()) {
+        (void)compare_addr;
+        if (pl_write_has(req.addr)) {   // PIMID (1.12.127): = std::find_if(m_write_buffer, compare_addr) != end, by index
           // The request will depart at the next cycle
           req.depart = m_clk + 1;
           pending.push_back(req);
@@ -273,6 +288,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         req.arrive = -1;
         return false;
       }
+      pl_on_add(req.type_id == Request::Type::Read ? &m_read_buffer : &m_write_buffer);   // PIMID (1.12.127)
 
       return true;
     };
@@ -344,10 +360,13 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
               req_it->callback(*req_it);
             }
           }
+          pl_on_remove(buffer, req_it);   // PIMID (1.12.127)
           buffer->remove(req_it);
         } else {
           if (m_dram->m_command_meta(req_it->command).is_opening) {
             if (m_active_buffer.enqueue(*req_it)) {
+              pl_on_add(&m_active_buffer);   // PIMID (1.12.127)
+              pl_on_remove(buffer, req_it);
               buffer->remove(req_it);
             }
           }
@@ -397,6 +416,253 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       return true;
     }
 
+    /* PIMID (1.12.127): host speed of the bank-parallel controller. With the host's requests replayed through it (1.12.18)
+     * a 16-core host baseline kept ~470 writes and ~30 reads queued, and every pick re-evaluated each queued request
+     * (pimid_best: prerequisite command + readiness), several picks per DRAM cycle; the auto-precharge choice and the
+     * read-after-write forwarding scanned the queues once per command and per read. Those scans were ~85% of the
+     * run's host time. The rules are unchanged; three indexes find the same answers without the scans:
+     *  1. Read/write scheduling (pl_best). A request's prerequisite command depends only on its bank's state, which
+     *     changes only when a command is issued to that bank (or to its rank or channel: then every bank), or when
+     *     a refresh ends (a DRAM future action). Ready clocks only grow, so a request whose command is not ready
+     *     cannot become ready before the largest ready clock on its path (DRAM::pimid_ready_at) unless its bank's
+     *     state changes. Such a request is set aside ("dormant") until that clock or until its bank changes; the
+     *     scan of pimid_best would have passed over it with no effect (no pick, no counter). Every other request is
+     *     evaluated exactly as pimid_best does; the pick is the same (row hit first, then the oldest arrival, then
+     *     queue order) and so is the CA-bus wait counter. A DRAM standard without pimid_ready_at keeps pimid_best.
+     *     Of the read and write queues only the one that can win is evaluated (see the call).
+     *  2. pimid_pending_hit over the read, write and active queues = a count of queued requests per row.
+     *  3. Read-after-write forwarding = a count of queued writes per address. */
+    struct PlSlot { ReqBuffer::iterator it; uint64_t seq = 0; int cmd = -1; Clk_t nb = 0; int bank = -1; uint32_t ver = 0;
+                    uint32_t ep = 0; Clk_t inHeap = -1; bool cached = false, dead = false, active = false; };
+    struct PlBuf {
+      std::vector<PlSlot> S;
+      std::vector<int> act;
+      std::vector<std::vector<int>> wheel;   // dormant requests by their clock, one bucket per clock mod kPlWheel
+      std::priority_queue<std::pair<Clk_t, int>, std::vector<std::pair<Clk_t, int>>, std::greater<std::pair<Clk_t, int>>> far;   // kPlWheel or more ahead
+      std::vector<std::vector<int>> byBank;
+      size_t live = 0, dead = 0;
+      size_t waiting = 0;   // entries in the wheel
+      uint64_t seq = 0;
+      int lastPick = -1;
+    };
+    PlBuf m_pb[2];
+    static const int kPlWheel = 1024;
+    void pl_wait(PlBuf& P, Clk_t nb, int id) {   // id is dormant until nb (> m_clk)
+      if (P.wheel.empty()) P.wheel.resize(kPlWheel);
+      if (nb - m_clk < kPlWheel) { P.wheel[(size_t)(nb & (kPlWheel - 1))].push_back(id); P.waiting++; } else P.far.push({nb, id});
+    }
+    void pl_due(PlBuf& P, Clk_t t, int id) {   // a wait for clock t is due
+      if (id >= (int)P.S.size()) return;
+      PlSlot& s = P.S[id];
+      if (s.inHeap == t) s.inHeap = -1;
+      if (!s.dead && !s.active && s.nb == t) pl_activate(P, id);
+    }
+    std::vector<uint32_t> m_pl_bank_ver;
+    std::vector<int> m_pl_bank_radix, m_pl_row_radix;
+    int m_pl_row_lv = -1;
+    uint32_t m_pl_ep = 1;
+    int m_pl_mode = -1;   // -1 not set up, 0 = pimid_best (no pimid_ready_at or not bank-parallel), 1 = pl_best
+    std::vector<FutureAction> m_pl_fa;   // the DRAM's future actions as seen last cycle
+    std::unordered_map<uint64_t, int> m_pl_rowcnt;          // queued requests per row (read + write + active queues)
+    std::unordered_map<Addr_t, int> m_pl_wraddr;            // queued writes per address
+    void pl_setup() {
+      if (m_pl_mode >= 0) return;
+      m_pl_row_lv = m_dram->m_levels.contains("row") ? m_dram->m_levels("row") : -1;
+      m_pl_row_radix.clear();
+      for (int l = 0; l <= m_pl_row_lv; l++) m_pl_row_radix.push_back(std::max(1, m_dram->m_organization.count[l]));
+      m_pl_bank_radix.clear();
+      size_t n = 1;
+      for (int l = 0; l <= m_bank_addr_idx; l++) { m_pl_bank_radix.push_back(std::max(1, m_dram->m_organization.count[l])); n *= (size_t)m_pl_bank_radix.back(); }
+      m_pl_bank_ver.assign(n, 0);
+      AddrVec_t probe(m_dram->m_levels.size(), 0);
+      m_pl_mode = (m_pimid_bank_parallel && m_bank_addr_idx >= 0 && m_dram->m_commands.contains("ACT") &&
+                   m_dram->pimid_ready_at(m_dram->m_commands("ACT"), probe) != -2) ? 1 : 0;
+      for (int bi = 0; bi < 2; bi++) m_pb[bi].byBank.assign(m_pl_mode == 1 ? n : 0, {});
+    }
+    int pl_bank_flat(const AddrVec_t& a) const {
+      int f = 0;
+      for (int l = 0; l <= m_bank_addr_idx; l++) { if (a[l] < 0) return -1; f = f * m_pl_bank_radix[l] + a[l]; }
+      return f;
+    }
+    bool pl_row_key(const AddrVec_t& a, uint64_t& k) const {
+      if (m_pl_row_lv < 0) return false;
+      k = 0;
+      for (int l = 0; l <= m_pl_row_lv; l++) { if (a[l] < 0) return false; k = k * (uint64_t)m_pl_row_radix[l] + (uint64_t)a[l]; }
+      return true;
+    }
+    int pl_row_count(const AddrVec_t& a) {   // queued requests on a's row; falls back to the scans if a has no row key
+      uint64_t k;
+      if (!pl_row_key(a, k)) {
+        int n = 0;
+        const int row_lv = m_dram->m_levels("row");
+        for (ReqBuffer* b : {&m_read_buffer, &m_write_buffer, &m_active_buffer})
+          for (auto it = b->begin(); it != b->end(); ++it) {
+            bool same = true;
+            for (int l = 0; l <= row_lv && same; l++) if (it->addr_vec[l] != a[l]) same = false;
+            if (same) n++;
+          }
+        return n;
+      }
+      auto f = m_pl_rowcnt.find(k);
+      return f == m_pl_rowcnt.end() ? 0 : f->second;
+    }
+    bool pl_write_has(Addr_t a) const { auto f = m_pl_wraddr.find(a); return f != m_pl_wraddr.end() && f->second > 0; }
+    /* the request just enqueued at the back of b */
+    void pl_on_add(ReqBuffer* b) {
+      pl_setup();
+      const Request& r = b->buffer.back();
+      uint64_t k;
+      if (pl_row_key(r.addr_vec, k)) m_pl_rowcnt[k]++;
+      if (b == &m_write_buffer) m_pl_wraddr[r.addr]++;
+      const int bi = (b == &m_read_buffer) ? 0 : (b == &m_write_buffer) ? 1 : -1;
+      if (bi < 0 || m_pl_mode != 1) return;
+      PlBuf& P = m_pb[bi];
+      PlSlot s; s.it = std::prev(b->end()); s.seq = P.seq++; s.bank = pl_bank_flat(r.addr_vec); s.active = true;
+      const int id = (int)P.S.size();
+      P.S.push_back(s); P.act.push_back(id); P.live++;
+      if (s.bank >= 0) P.byBank[s.bank].push_back(id);
+    }
+    /* it is about to leave b */
+    void pl_on_remove(ReqBuffer* b, ReqBuffer::iterator it) {
+      uint64_t k;
+      if (b == &m_read_buffer || b == &m_write_buffer || b == &m_active_buffer) {
+        if (pl_row_key(it->addr_vec, k)) { auto f = m_pl_rowcnt.find(k); if (f != m_pl_rowcnt.end() && --f->second == 0) m_pl_rowcnt.erase(f); }
+      }
+      if (b == &m_write_buffer) { auto f = m_pl_wraddr.find(it->addr); if (f != m_pl_wraddr.end() && --f->second == 0) m_pl_wraddr.erase(f); }
+      const int bi = (b == &m_read_buffer) ? 0 : (b == &m_write_buffer) ? 1 : -1;
+      if (bi < 0 || m_pl_mode != 1) return;
+      PlBuf& P = m_pb[bi];
+      int id = (P.lastPick >= 0 && P.lastPick < (int)P.S.size() && !P.S[P.lastPick].dead && P.S[P.lastPick].it == it) ? P.lastPick : -1;
+      if (id < 0) for (int i = 0; i < (int)P.S.size(); i++) if (!P.S[i].dead && P.S[i].it == it) { id = i; break; }
+      if (id < 0) return;
+      P.S[id].dead = true; P.live--; P.dead++;
+    }
+    void pl_activate(PlBuf& P, int id) { PlSlot& s = P.S[id]; if (!s.dead && !s.active) { s.active = true; P.act.push_back(id); } }
+    void pl_bump_bank(int f) {
+      m_pl_bank_ver[f]++;
+      for (int bi = 0; bi < 2; bi++) for (int id : m_pb[bi].byBank[f]) pl_activate(m_pb[bi], id);
+    }
+    void pl_bump(const AddrVec_t& a) {   // a command is issued at a (or a refresh at a ends): every bank in its scope
+      if (m_pl_mode != 1) return;
+      const int f = pl_bank_flat(a);
+      if (f >= 0 && (size_t)f < m_pl_bank_ver.size()) { pl_bump_bank(f); return; }
+      if ((int)a.size() <= m_bank_addr_idx) { pl_bump_all(); return; }
+      const int n = (int)m_pl_bank_ver.size();
+      for (int g = 0; g < n; g++) {   // the banks whose address matches a at every level a names (-1: any)
+        int r = g; bool in = true;
+        for (int l = m_bank_addr_idx; l >= 0; l--) { const int v = r % m_pl_bank_radix[l]; r /= m_pl_bank_radix[l]; if (a[l] >= 0 && a[l] != v) { in = false; break; } }
+        if (in) pl_bump_bank(g);
+      }
+    }
+    void pl_bump_all() {
+      m_pl_ep++;
+      for (int bi = 0; bi < 2; bi++) for (int id = 0; id < (int)m_pb[bi].S.size(); id++) pl_activate(m_pb[bi], id);
+    }
+    void pl_compact(PlBuf& P) {
+      std::vector<PlSlot> S2; S2.reserve(P.live);
+      for (auto& s : P.S) if (!s.dead) S2.push_back(s);
+      P.S.swap(S2);
+      P.act.clear();
+      for (auto& v : P.byBank) v.clear();
+      for (auto& b : P.wheel) b.clear();
+      P.waiting = 0;
+      decltype(P.far) w; P.far.swap(w);
+      for (int id = 0; id < (int)P.S.size(); id++) {
+        PlSlot& s = P.S[id];
+        if (s.bank >= 0) P.byBank[s.bank].push_back(id);
+        if (s.active) { s.inHeap = -1; P.act.push_back(id); } else { s.inHeap = s.nb; pl_wait(P, s.nb, id); }
+      }
+      P.dead = 0; P.lastPick = -1;
+    }
+    /* once per cycle, before the picks */
+    void pl_cycle() {
+      pl_setup();
+      if (m_pl_mode != 1) return;
+      /* a refresh that ended changes the states in its scope: the DRAM removes a future action when it runs and
+       * appends new ones, so last cycle's list, walked in order against this cycle's, names the ones that ran */
+      const auto& F = m_dram->m_future_actions;
+      if (!m_pl_fa.empty() || !F.empty()) {
+        size_t i = 0;
+        bool ran = false;
+        for (const auto& old : m_pl_fa) {
+          if (i < F.size() && F[i].clk == old.clk && F[i].cmd == old.cmd && F[i].addr_vec == old.addr_vec) { i++; continue; }
+          pl_bump(old.addr_vec);   // it ran
+          ran = true;
+        }
+        if (ran || i != F.size()) m_pl_fa.assign(F.begin(), F.end());   // copied only when the list changed
+      }
+      for (int bi = 0; bi < 2; bi++) {
+        PlBuf& P = m_pb[bi];
+        if (P.dead > 256 && P.dead > P.live) pl_compact(P);
+        if (P.waiting > 0) {   // this clock's bucket (the tick runs every clock, so each bucket comes due in turn)
+          std::vector<int>& B = P.wheel[(size_t)(m_clk & (kPlWheel - 1))];
+          if (!B.empty()) {
+            P.waiting -= B.size();
+            for (size_t j = 0; j < B.size(); j++) pl_due(P, m_clk, B[j]);
+            B.clear();
+          }
+        }
+        while (!P.far.empty() && P.far.top().first <= m_clk) {
+          const int id = P.far.top().second; const Clk_t t = P.far.top().first; P.far.pop();
+          pl_due(P, t, id);
+        }
+      }
+    }
+    /* pimid_best over the read (bi 0) or write (bi 1) queue */
+    bool pl_best(int bi, ReqBuffer& buf, const std::vector<AddrVec_t>& used, ReqBuffer::iterator& out) {
+      if (m_pl_mode != 1) return pimid_best(buf, used, out);
+      if (m_pb[bi].act.empty()) return false;   // nothing that can be ready (as pimid_best over it: no pick, no counter)
+      PlBuf& P = m_pb[bi];
+      int cand = -1;
+      bool cand_hit = false;
+      size_t k = 0;
+      for (size_t i = 0; i < P.act.size(); i++) {
+        const int id = P.act[i];
+        PlSlot& s = P.S[id];
+        if (s.dead) { s.active = false; continue; }
+        const bool known = s.cached && s.ep == m_pl_ep && s.bank >= 0 && s.ver == m_pl_bank_ver[s.bank];
+        if (known && m_clk < s.nb) { s.active = false; if (s.inHeap != s.nb) { s.inHeap = s.nb; pl_wait(P, s.nb, id); } continue; }   // dormant (see above)
+        P.act[k++] = id;
+        auto it = s.it;
+        bool taken = false;
+        for (const auto& u : used) if (pimid_same_bank(u, it->addr_vec)) { taken = true; break; }
+        if (taken) continue;
+        if (!known) {
+          s.cmd = m_dram->get_preq_command(it->final_command, it->addr_vec);
+          s.cached = s.bank >= 0; s.ep = m_pl_ep; s.ver = s.bank >= 0 ? m_pl_bank_ver[s.bank] : 0;
+        }
+        it->command = s.cmd;
+        const Clk_t ra = m_dram->pimid_ready_at(it->command, it->addr_vec);
+        if (ra >= 0 && m_clk < ra) {   // not ready (= !check_ready): dormant until ra
+          s.nb = ra;
+          if (s.cached) { s.active = false; if (s.inHeap != s.nb) { s.inHeap = s.nb; pl_wait(P, s.nb, id); } k--; }
+          continue;
+        }
+        s.nb = 0;
+        if (!pd_ok(it->addr_vec)) continue;   // = !pimid_ready
+        if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
+        if (m_dram->m_command_meta(it->command).is_closing) {
+          bool blocks = false;
+          for (auto a = m_active_buffer.begin(); a != m_active_buffer.end(); ++a)
+            if (pimid_same_bank(a->addr_vec, it->addr_vec)) { blocks = true; break; }
+          if (blocks) continue;
+        }
+        const bool hit = (it->command == it->final_command);
+        if (cand < 0) { cand = id; cand_hit = hit; continue; }
+        const PlSlot& c = P.S[cand];
+        if ((hit && !cand_hit) ||
+            (hit == cand_hit && (it->arrive < c.it->arrive || (it->arrive == c.it->arrive && s.seq < c.seq)))) {
+          cand = id;
+          cand_hit = hit;
+        }
+      }
+      P.act.resize(k);
+      if (cand < 0) return false;
+      P.lastPick = cand;
+      out = P.S[cand].it;
+      return true;
+    }
+
     /* PIMID 1.12.18 (user ruling 2026-10-24 host closed page): the auto-precharge is chosen AT ISSUE.
      * A host (source 1/3, lock-step shadows 4/6) column command becomes RDA/WRA only when no other queued request
      * hits the same row of the same bank -- the close-when-no-pending-hit behaviour of a closed-page controller
@@ -422,8 +688,8 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
             m_dram->m_commands.contains("WRA"))) return;   // 1.12.18 (AA10): the plugin never sets the flag then; belt and braces
       const int rd = m_dram->m_commands("RD"), wr = m_dram->m_commands("WR");
       if (req_it->command != rd && req_it->command != wr) return;
-      if (pimid_pending_hit(m_read_buffer, req_it) || pimid_pending_hit(m_write_buffer, req_it) ||
-          pimid_pending_hit(m_active_buffer, req_it)) return;   // a queued hit keeps the row open
+      if (pl_row_count(req_it->addr_vec) > 1) return;   // a queued hit keeps the row open (PIMID (1.12.127): = pimid_pending_hit
+                                                        // over the read, write and active queues, by index; the request itself is one of the count)
       const int ap = m_dram->m_commands(req_it->command == rd ? "RDA" : "WRA");
       if (!pimid_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
       req_it->command = ap;
@@ -436,6 +702,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       }
       pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
       pd_issued(req_it->addr_vec);   // PIMID 1.12.19
+      pl_bump(req_it->addr_vec);   // PIMID (1.12.127): its bank's state may change
       m_dram->issue_command(req_it->command, req_it->addr_vec);
       if (pimid_ca_host(*req_it) && req_it->command >= 0 && req_it->command < (int)m_pimid_ca_occ.size())   // PIMID 1.12.18
         m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
@@ -450,10 +717,13 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
             req_it->callback(*req_it);
           }
         }
+        pl_on_remove(buffer, req_it);   // PIMID (1.12.127)
         buffer->remove(req_it);
       } else {
         if (m_dram->m_command_meta(req_it->command).is_opening) {
           if (m_active_buffer.enqueue(*req_it)) {
+            pl_on_add(&m_active_buffer);   // PIMID (1.12.127)
+            pl_on_remove(buffer, req_it);
             buffer->remove(req_it);
           }
         }
@@ -474,6 +744,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
        * Every source counts (device, host, lock-step shadows 4/6; outside-ROI
        * 2/3): they all occupy the queue. Bank-parallel mode bypassed this. */
       set_write_mode();
+      pl_cycle();   // PIMID (1.12.127)
       std::vector<AddrVec_t> used;
       int issued = 0;
       /* PIMID 1.12.18: a BANK-scoped priority request -- the row
@@ -521,8 +792,19 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         // 3. reads and writes: no shared data bus, so both are candidates
         if (!found) {
           ReqBuffer::iterator r, w;
-          const bool fr = pimid_best(m_read_buffer, blocked, r);
-          const bool fw = pimid_best(m_write_buffer, blocked, w);
+          /* PIMID (1.12.127): = pimid_best over both queues (see pl_best). The queue that cannot win is not evaluated:
+           * outside write mode a read candidate wins over any write, inside it a write wins over any read, and with
+           * the CA bus free an evaluation that does not pick has no other effect (the CA-bus wait counter counts
+           * only while the bus is busy, and then both queues are evaluated as before). */
+          const bool ca_busy = m_pimid_host_ca && m_clk < m_pimid_ca_free;
+          bool fr = false, fw = false;
+          if (!m_is_write_mode) {
+            fr = pl_best(0, m_read_buffer, blocked, r);
+            if (!fr || ca_busy) fw = pl_best(1, m_write_buffer, blocked, w);
+          } else {
+            fw = pl_best(1, m_write_buffer, blocked, w);
+            if (!fw || ca_busy) fr = pl_best(0, m_read_buffer, blocked, r);
+          }
           if (fr && fw) {
             /* PIMID 1.12.18 (write drain): reads beat writes outside write
              * mode, writes win inside it; each is row-hit first, then oldest

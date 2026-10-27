@@ -6,6 +6,43 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.127 -- host speed: the replayed DRAM controller schedules without re-scanning its queues
+
+- **The problem.** Since 1.12.18 (ruling 17) a host baseline's memory requests run through the Ramulator2 epoch
+  replay. Each host request is four chip copies, and the replay runs single-threaded at the phase barrier. The
+  bank-parallel scheduler evaluated every queued request (prerequisite command and readiness) at every pick of every
+  DRAM cycle; a 16-core OpenMP host baseline keeps ~500 writes queued over ~300 M controller cycles. The power-down
+  tracker, the auto-precharge choice and the read-after-write forwarding also scanned the queues every cycle or every
+  command. Host time of the 16-core DDR5 stream_triad host baseline (full size, one node): 1.12.17 85 s, 1.12.18
+  1375 s, 1.12.113 / 1.12.125 more than 3000 s. In the replayed controller the scans took 97% of the time (pimid_best 82%, the power-down scan 15%).
+- **The fix (external/ramulator: dram/node.h, dram/dram.h, dram/impl/DDR5.cpp,
+  dram_controller/impl/generic_dram_controller.cpp; external/zsim/src: dq_data_stats.h, noc_wire_data.h).** The
+  scheduling rules are unchanged. The answers come from indexes instead of scans:
+  - A queued request's prerequisite command depends only on its bank's state, which changes only when a command is
+    issued to that bank (or to its rank or channel) or a refresh ends. Ready clocks only grow, so a request that is
+    not ready cannot become ready before the largest ready clock on its path (`DRAM::pimid_ready_at`, DDR5) unless its
+    bank's state changes. Such a request waits until that clock (a timing wheel) or until its bank changes; the old
+    scan passed over it with no effect. Every other request is evaluated exactly as before. The pick is the same
+    (row hit first, then the oldest arrival, then queue order), and so is the CA-bus wait counter. A standard without
+    `pimid_ready_at` keeps the old scan.
+  - Of the read and write queues, the one that cannot win this pick is not evaluated. Outside write mode a read
+    candidate wins over any write, inside it a write wins over any read. While the CA bus is busy both are evaluated,
+    as before, because the CA-bus wait counter counts there.
+  - The auto-precharge choice (a queued hit to the same row) reads a per-row count. Read-after-write forwarding reads
+    a per-address count of queued writes. The power-down tracker stops scanning once every unit is marked busy.
+  - The measured DQ and wire statistics count bits per byte from a table instead of `__builtin_popcount`, which
+    compiled to a library call per byte. The counts are the same.
+- **Validation (same node, same job, both trees running the same guest binaries).**
+  - Identical in every simulated and priced line to 1.12.125: 8 serial PIM kernels on HBM3 BANK pe16 `alu_core`, DDR5
+    BANK and CHANNEL serial gemv, and the 1-core DDR5 OpenMP gemv and stream_triad host baselines (full size).
+  - The only differing lines are host-side: the start order of the simulator's own threads, and the DQ write-data bit
+    counts of the 1-core host baselines. Those counts also differ between two runs of 1.12.125.
+  - Host time (qc-pvc, same job; 1.12.125 in brackets): 16-core OpenMP DDR5 stream_triad baseline 1058 s (more than
+    3600 s); 4-core MPI DDR5 stream_triad 790 s (2104 s); 1-core OpenMP stream_triad 179 s (202 s); 1-core OpenMP gemv
+    257 s (221 s). With nearly empty queues the indexes cost more than the scans they replace, about 30 cycles per
+    controller cycle.
+- **Data impact:** none.
+
 ## 1.12.126 -- thread-MPI results are now the same in every run
 
 - **Fixed rank order (on by default, thread-MPI: ranks as threads of one process, device scope, co-sim and host

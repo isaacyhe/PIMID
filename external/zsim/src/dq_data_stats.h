@@ -64,6 +64,11 @@ static inline bool pimidReadGuestBytes(uint64_t addr, uint8_t* dst, uint32_t n) 
     return process_vm_readv(self, &l, 1, &r, 1, 0) == (ssize_t)n;
 }
 
+/* (1.12.127): the bits set in a byte, by table: the same counts as __builtin_popcount, which compiles to a libgcc call
+ * per byte here (the target flags carry no POPCNT); every DRAM line and fabric data message counts 64-256 bytes */
+struct PimidPop8 { uint8_t v[256]; PimidPop8() { for (int i = 0; i < 256; i++) { int c = 0; for (int k = 0; k < 8; k++) c += (i >> k) & 1; v[i] = (uint8_t)c; } } };
+static inline uint32_t pimidPop8(uint8_t x) { static const PimidPop8 t; return t.v[x]; }
+
 class DqDataStats {
     public:
         Counter lines[2], unread[2], ones[2], lowPodDbi[2], highLvstlDbi[2];
@@ -113,7 +118,7 @@ class DqDataStats {
             uint64_t o = 0, lp = 0, hl = 0, ip = 0, il = 0, t = 0, tp = 0, tl = 0;
             uint8_t ep[256], el[256]; bool fp[256], fl[256];
             for (uint32_t i = 0; i < n; i++) {
-                const uint32_t c = __builtin_popcount(b[i]);
+                const uint32_t c = pimidPop8(b[i]);
                 o += c;
                 fp[i] = (8 - c) > 4;   // POD: more than four 0 bits -> invert, DBI_n LOW
                 fl[i] = c > 4;         // LVSTL DBI-DC: more than four 1 bits -> invert, DMI HIGH
@@ -125,9 +130,9 @@ class DqDataStats {
             }
             const uint32_t w = (beatBytes_ > 0 && beatBytes_ <= n && (n % beatBytes_) == 0) ? beatBytes_ : 8;
             for (uint32_t i = 0; i + w < n; i++) {
-                t  += __builtin_popcount((uint8_t)(b[i] ^ b[i + w]));
-                tp += __builtin_popcount((uint8_t)(ep[i] ^ ep[i + w])) + (fp[i] != fp[i + w]);
-                tl += __builtin_popcount((uint8_t)(el[i] ^ el[i + w])) + (fl[i] != fl[i + w]);
+                t  += pimidPop8((uint8_t)(b[i] ^ b[i + w]));
+                tp += pimidPop8((uint8_t)(ep[i] ^ ep[i + w])) + (fp[i] != fp[i + w]);
+                tl += pimidPop8((uint8_t)(el[i] ^ el[i + w])) + (fl[i] != fl[i + w]);
             }
             lines[d].atomicInc(); ones[d].atomicInc(o); lowPodDbi[d].atomicInc(lp); highLvstlDbi[d].atomicInc(hl);
             invPod[d].atomicInc(ip); invLvstl[d].atomicInc(il);
