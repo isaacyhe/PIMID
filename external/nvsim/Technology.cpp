@@ -1141,11 +1141,11 @@ void Technology::Initialize(int _featureSizeInNano, DeviceRoadmap _deviceRoadmap
 			currentOffNmos[30] = 1.68e-7 * 3.93e6;
 			currentOffNmos[40] = 1.90e-7 * 3.93e6;
 			currentOffNmos[50] = 2.69e-7 * 3.93e6;
-			currentOffNmos[60] = 5.32e-7 * 3.93e6;
-			currentOffNmos[70] = 1.02e-6 * 3.93e6;
-			currentOffNmos[80] = 1.62e-6 * 3.93e6;
-			currentOffNmos[90] = 2.73e-6 * 3.93e6;
-			currentOffNmos[100] = 6.1e-6 * 3.93e6;
+			currentOffNmos[60] = 3.657e-07 * 3.93e6;
+			currentOffNmos[70] = 4.971e-07 * 3.93e6;
+			currentOffNmos[80] = 6.757e-07 * 3.93e6;
+			currentOffNmos[90] = 9.185e-07 * 3.93e6;
+			currentOffNmos[100] = 1.249e-06 * 3.93e6;
 			currentOffPmos[0] = currentOffNmos[0];	/* TO-DO: set PMOS = NMOS because MASTAR value is obviously wrong */
 			currentOffPmos[10] = currentOffNmos[10];
 			currentOffPmos[20] = currentOffNmos[20];

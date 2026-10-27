@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.102 -- 22 and 32 nm high-performance leakage above 350 K follows the published high-temperature factor
+
+- **The gap** (external/cacti/tech_params/22nm.dat and 32nm.dat, hp column of I_off_n; the same values as the
+  CACTI 7 distribution; NVSim's 22 nm HP table copies the 32 nm column):
+  - The curve rises 1.77x from 300 to 350 K, then 22.7x from 350 to 400 K, one doubling every ~11 K above 350 K.
+  - The 16-core 22 nm host's leakage is 13.3 / 40.3 / 151.6 W at 360 / 380 / 400 K, against a core peak dynamic
+    of 32.4 W.
+- **Change:** rows +60..+100 (360-400 K) continue from the 350 K row at the ITRS 2007 PIDS high-performance
+  "Hi T Factor" (leakage x10 from 25 to 100 C, i.e. x10^(dT/75 K), one doubling per 22.6 K; DERIVED).
+  - The 22 nm rows are 2.925e-7, 3.977e-7, 5.406e-7, 7.348e-7, 9.989e-7 A/um.
+  - The 32 nm rows are 3.657e-7, 4.971e-7, 6.757e-7, 9.185e-7, 1.249e-6 A/um; NVSim's 22 nm HP rows take them.
+  - The 300-350 K rows, every other column and every other node are unchanged.
+  - The new step is in line with He, Liao and Stan, DAC 2004 (leakage x2 from 85 to 110 C).
+- **Data impact:** none at or below 350 K, the default included. Above it, 22/32 nm hp leakage falls:
+  - 16-core DDR5 host: 9.2 / 16.9 / 31.1 W at 360 / 380 / 400 K;
+  - PCM BANK (NVSim periphery): 1.90 -> 0.81 W at 380 K;
+  - HBM3 BANK PEs: 0.090 -> 0.052 W at 380 K.
+
 ## 1.12.101 -- the DRAM energy layer prices and reports at the run's temperature everywhere
 
 - **The defect:** energy-layer functions called without a temperature used 358 K, the top of the nominal refresh
