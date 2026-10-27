@@ -2260,6 +2260,19 @@ void RamulatorWrapper::setTopology(const std::string& requested) {
     topology_req_ = requested;
 }
 
+std::string RamulatorWrapper::rdimmCaNote() const {   // (user ruling 2026-10-27)
+    if (topology().name != "rdimm") return "";
+    const double rate = modelledRateMTs();
+    const int ndq = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
+    if (!(rate > 0.0 && ndq > 0)) return "";
+    PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
+    if (!(io.valid && io.exact_map) || io.energy_pj_per_bit_term_ca_rdimm < 0.0) return "";
+    std::ostringstream o;
+    o << "RDIMM command/address into the RCD: " << io.energy_pj_per_bit_term_ca_rdimm << " pJ/bit per access ("
+      << io.ca_rdimm_source << ") in place of the DIMM-side CA network " << io.energy_pj_per_bit_term_ca_rd << " pJ/bit";
+    return o.str();
+}
+
 PIMID::CactiIOWrapper::DramTopology RamulatorWrapper::topology() const {
     PIMID::CactiIOWrapper::DramTopology t; std::string err;
     if (!PIMID::CactiIOWrapper::resolveDramTopology(dram_type_, topology_req_, t, err)) {
@@ -2398,6 +2411,8 @@ std::string RamulatorWrapper::getTerminationPartsNJ(bool is_write, double data_d
             dq  = dq05 * (data_duty >= 0.0 ? data_duty / 0.5 : 1.0) * k;
             dqs = (is_write ? io.energy_pj_per_bit_term_dqs : io.energy_pj_per_bit_term_dqs_rd) * k;
             ca  = (is_write ? io.energy_pj_per_bit_term_ca : io.energy_pj_per_bit_term_ca_rd) * k;
+            if (topology().name == "rdimm" && io.energy_pj_per_bit_term_ca_rdimm >= 0.0)   // (user ruling 2026-10-27)
+                ca = io.energy_pj_per_bit_term_ca_rdimm * k;
             rest = total - dq - dqs - ca;
             return "CACTI-IO parameter set";
         }
@@ -2514,6 +2529,8 @@ double RamulatorWrapper::getTerminationEnergyNJ(bool is_write, double data_duty)
                 const double dq = is_write ? io.energy_pj_per_bit_term_dq : io.energy_pj_per_bit_term_dq_rd;
                 t = term_pj + (data_duty / 0.5 - 1.0) * dq;
             }
+            if (topology().name == "rdimm" && io.energy_pj_per_bit_term_ca_rdimm >= 0.0)   // (user ruling 2026-10-27): the CA path ends at the RCD
+                t += io.energy_pj_per_bit_term_ca_rdimm - (is_write ? io.energy_pj_per_bit_term_ca : io.energy_pj_per_bit_term_ca_rd);
             return t * 512.0 / 1000.0;   // per 64 B
         }
     }

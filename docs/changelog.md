@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.117 -- an RDIMM's command/address path ends at its register
+
+- **RDIMM command/address** (user ruling 2026-10-27): on an `rdimm` memory the host drives the register (RCD) inputs,
+  not the DRAMs. The command/address share of the DQ-interface termination (the CACTI-IO DIMM network, 25 lines to VTT)
+  is replaced by the RCD-input network:
+  - DDR5: 10 inputs per sub-channel (7 DCA, parity, 2 CS; Renesas RRG5004x short-form datasheet Rev.1.01 p.1), POD
+    1.1 V, loop host driver 40 ohm (DERIVED: the midpoint of Intel 743844-015 Table 87, 30-50) + 15 ohm series resistor
+    (JESD305B.01 PDF p.32; X. Li, ISQED 2025, Sec. II.B p.4) + 60 ohm RCD input termination (the default, ISQED 2025
+    p.4).
+  - DDR4: 25 lines terminated to VDD/2 in the register (Micron DDR4 RDIMM Core Rev. B 12/2021, p.14 note 5), loop
+    35 ohm (DERIVED: the midpoint of Table 86, 25-45) + 15 ohm (DERIVED) + 60 ohm (DERIVED: no DDR4 register input
+    termination value is published).
+  The log prints the path and the network it replaces.
+- Impact: DDR4-2400 read termination -1.3% (2.035 -> 2.008 nJ per access), DDR5-4800 -3.1% (1.226 -> 1.188 nJ).
+  `udimm`, `sodimm`, `soldered` and LPDDR5/GDDR6/HBM are unchanged. Cycles unchanged.
+- The channel-I/O price of NoC links that leave a non-stacked DRAM package now takes the memory node's topology; it
+  took the technology's default (a `soldered` or `udimm` DDR5 device memory was priced with the RDIMM stub there).
+
 ## 1.12.116 -- the DDR4/DDR5 host memory-controller PHY idle from measured PHY idle rails
 
 - **Host PHY idle** (user ruling 2026-10-27): the DDR4/DDR5 memory-controller PHY static (idle) power was the CACTI-IO

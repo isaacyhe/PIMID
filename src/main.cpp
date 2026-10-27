@@ -1297,6 +1297,8 @@ static void topologyLine(const pimid::RamulatorWrapper& ram, const std::string& 
     if (t.name == "n/a") return;
     std::cout << indent << "[mem] memory topology: " << t.name << (t.defaulted ? " (default)" : " (memory.topology)")
               << "; DQ/DQS series stub " << t.stub_ohm << " ohm -- " << t.source << std::endl;
+    const std::string ca = ram.rdimmCaNote();   // (user ruling 2026-10-27)
+    if (!ca.empty()) std::cout << indent << "[mem] " << ca << std::endl;
 }
 /* The parts of the charged DQ termination, for the internal power checks only:
  * printed when PIMID_DEBUG_CHECKS=1 (user ruling 2026-10-26: checkers are
@@ -10461,6 +10463,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         if (!stacked_part && die_mm2 > 0.0) {
             try {
                 pimid::RamulatorWrapper ro("", config.memory_tech);
+                ro.setTopology(config.memory_topology);   // (user ruling 2026-10-27): the memory node's topology, not the default
                 ro.initialize();
                 chan_term_nj = ro.getTerminationEnergyNJ(false);
                 chan_iddq_nj = ro.getIddqEnergyNJ(false);

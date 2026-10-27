@@ -914,6 +914,39 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             r.energy_pj_per_bit_term_dqs_rd = (term_rd_mw - term_rd_nodqs) / payload_gbps;
             r.energy_pj_per_bit_term_ca     = (r.io_power_term_mw - term_wr_noca) / payload_gbps;
             r.energy_pj_per_bit_term_ca_rd  = (term_rd_mw - term_rd_noca) / payload_gbps;
+            /* (user ruling 2026-10-27) the RDIMM command/address path: the host
+             * drives one RCD input per line through the RDIMM's pre-RCD series
+             * resistor into the RCD's input termination; the RCD re-drives the
+             * DRAMs (that output network is the RCD's own power).
+             *   DDR5: 10 inputs per sub-channel command bus -- "a 7-bit double
+             *     data rate CA bus input, a single parity input, two chip select
+             *     inputs" (Renesas RRG5004x short-form datasheet R10DO0013EU0101
+             *     Rev.1.01 p.1); POD to VDDQ 1.1 V, current while LOW (duty 0.5);
+             *     loop = host RON_CMD 40 ohm (DERIVED: midpoint of Intel 743844-015
+             *     Table 87 p.208, 30-50) + 15 ohm (JESD305B.01 PDF p.32; X. Li,
+             *     ISQED 2025, Sec. II.B p.4) + RCD input bus termination 60 ohm
+             *     (default, X. Li, ISQED 2025, Sec. II.B p.4).
+             *   DDR4: the parameter set's 25 command/address lines; "Command and
+             *     address inputs are terminated to VDD/2 in the registering clock
+             *     driver" (Micron DDR4 RDIMM Core Rev. B 12/2021, p.14 note 5), so
+             *     (VDD/2)^2 / R in both states; loop = host RON_CMD 35 ohm
+             *     (DERIVED: midpoint of Intel 743844-015 Table 86 p.207, 25-45) +
+             *     15 ohm (DERIVED: the DDR5 RDIMM value; DDR4 not published) +
+             *     60 ohm (DERIVED: no DDR4 RCD input termination value is
+             *     published; the DDR5 default). */
+            if (tech == "DDR5" || tech == "DDR4") {
+                const bool d5 = (tech == "DDR5");
+                const double v = d5 ? 1.1 : 1.2;
+                const int lines = d5 ? 10 : 25;
+                const double rloop = (d5 ? 40.0 : 35.0) + 15.0 + 60.0;
+                const double p_line_mw = 1000.0 * (d5 ? 0.5 * v * v / rloop : (v / 2.0) * (v / 2.0) / rloop);
+                r.energy_pj_per_bit_term_ca_rdimm = lines * p_line_mw / payload_gbps;
+                std::ostringstream o;
+                o << lines << " RCD inputs x " << p_line_mw << " mW (" << (d5 ? "POD 1.1 V, LOW half the time" : "to VDD/2, 1.2 V")
+                  << ", loop " << rloop << " ohm = host RON_CMD " << (d5 ? 40 : 35) << " DERIVED + 15 pre-RCD"
+                  << (d5 ? "" : " DERIVED") << " + RCD input termination 60" << (d5 ? " (ISQED 2025)" : " DERIVED") << ")";
+                r.ca_rdimm_source = o.str();
+            }
         }
         r.valid  = true;
         /* SUBSTITUTION GATE. An injected technology is no longer merely

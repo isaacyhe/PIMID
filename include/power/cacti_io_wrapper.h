@@ -144,6 +144,13 @@ struct LinkIOResult {
     /* The strobes' and the command/address pins' shares (each: the figure minus a pass without those pins). */
     double energy_pj_per_bit_term_dqs = 0.0, energy_pj_per_bit_term_dqs_rd = 0.0;
     double energy_pj_per_bit_term_ca = 0.0, energy_pj_per_bit_term_ca_rd = 0.0;
+    /* (user ruling 2026-10-27) On an RDIMM the host drives the RCD inputs, not the
+     * DRAMs: this is the command/address energy per data bit of that
+     * network (host driver + pre-RCD series resistor + RCD input
+     * termination), on the same basis as the CA share above. < 0 = no
+     * RDIMM CA model for this technology. */
+    double energy_pj_per_bit_term_ca_rdimm = -1.0;
+    std::string ca_rdimm_source;
     /* The DQ loop the termination figures used: rail, driver, far-end termination (read / write) and series stub, ohm. */
     double loop_vddq = 0.0, loop_ron = 0.0, loop_rtt_rd = 0.0, loop_rtt_wr = 0.0, loop_stub = -1.0;
 

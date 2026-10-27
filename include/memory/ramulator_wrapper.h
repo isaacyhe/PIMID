@@ -334,6 +334,10 @@ public:
      * technology's default). Refused requests stop the run with the reason. */
     void setTopology(const std::string& requested);
     PIMID::CactiIOWrapper::DramTopology topology() const;
+    /* (user ruling 2026-10-27) RDIMM: the command/address path into the RCD, as
+     * charged (pJ/bit) and the DIMM-side CA network it replaces; "" when
+     * not an RDIMM or no model. */
+    std::string rdimmCaNote() const;
     /* User ruling 2026-10-25 (measured termination duty): the same energy
      * with the data pins' termination duty MEASURED (data_duty, from
      * measuredDataDuty) in place of the formula's 0.5. data_duty < 0 is
