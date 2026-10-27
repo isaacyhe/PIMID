@@ -25,6 +25,9 @@
 #include <unistd.h>
 #include <algorithm>
 #include <sys/syscall.h>
+#include <sys/mman.h>   // (1.12.107): MFD_CLOEXEC
+#include <fcntl.h>      // (1.12.107): O_ACCMODE, O_CLOEXEC
+#include <errno.h>
 #include <atomic>
 #include <unordered_map>
 #include <map>   // 1.11.97: barrier-generation table
@@ -5307,6 +5310,117 @@ static void vcpu_exit_cb(unsigned int vcpu_index, void *userdata) {
  * For thread-creating syscalls (clone/fork), we don't need special
  * handling since QEMU fires vcpu_init for new threads.
  */
+/* (1.12.107): THE GUEST SEES THE SIMULATED MACHINE'S PROCESSORS, NOT THE HOST'S.
+ * Under qemu-user the guest's processor queries reach the host: its OpenMP
+ * runtime (libgomp) and glibc read /sys/devices/system/cpu/possible and
+ * online and call sched_getaffinity, and with OMP_PLACES=cores libgomp reads
+ * every listed processor's topology files. The host's processor count (88 to
+ * 256 on one cluster) therefore sized the runtime's allocations and its
+ * startup loops, and a single-core host baseline's results followed the
+ * machine it ran on (DDR3 gemv_omp, 1 OOO core: 198950 / 199024 / 198985
+ * cycles on three node types). The guest now sees the simulated machine:
+ * processors 0..N-1, N = this run's simulated cores (zinfo->numCores):
+ *  - sched_getaffinity returns that set (the kernel's rules for the buffer
+ *    size: EINVAL when it cannot hold N bits or is not a multiple of 8 bytes);
+ *  - sched_setaffinity accepts a set holding one of them and changes nothing
+ *    on the host (a guest thread's core is the simulator's: see the fixed home
+ *    core of (1.12.76));
+ *  - an open of /sys/devices/system/cpu/{possible,online,present,offline},
+ *    cpuK/online and cpuK/topology/... (K < N) reads that machine's values
+ *    (one thread per core, one package); any other path under
+ *    /sys/devices/system/cpu/ is ENOENT, so no host value reaches the guest.
+ * Only these queries change; the guest's instructions are still timed by the
+ * same models. */
+static uint32_t g_guestCpus = 0;   // N, set once in qemu_plugin_install after SimInit
+static std::string guestCpuList(uint32_t n) { return n <= 1 ? std::string("0\n") : "0-" + std::to_string(n - 1) + "\n"; }
+static bool guestCpuFile(const std::string& path, std::string* content) {
+    static const std::string base = "/sys/devices/system/cpu/";
+    if (path.compare(0, base.size(), base) != 0) return false;
+    const uint32_t n = g_guestCpus;
+    std::string r = path.substr(base.size());
+    while (!r.empty() && r.back() == '/') r.pop_back();
+    if (r == "possible" || r == "online" || r == "present") { *content = guestCpuList(n); return true; }
+    if (r == "offline") { *content = "\n"; return true; }
+    if (r.compare(0, 3, "cpu") == 0) {
+        size_t i = 3; uint64_t k = 0;
+        while (i < r.size() && r[i] >= '0' && r[i] <= '9' && i < 13) k = k * 10 + (uint64_t)(r[i++] - '0');
+        if (i > 3 && k < n) {
+            const std::string f = r.substr(i);
+            const std::string ks = std::to_string(k) + "\n";
+            if (f == "/online") { *content = "1\n"; return true; }
+            if (f == "/topology/thread_siblings_list" || f == "/topology/core_cpus_list") { *content = ks; return true; }
+            if (f == "/topology/core_id") { *content = ks; return true; }
+            if (f == "/topology/core_siblings_list" || f == "/topology/package_cpus_list" ||
+                f == "/topology/die_cpus_list" || f == "/topology/cluster_cpus_list") { *content = guestCpuList(n); return true; }
+            if (f == "/topology/physical_package_id" || f == "/topology/die_id" || f == "/topology/cluster_id") { *content = "0\n"; return true; }
+        }
+    }
+    content->clear();
+    return true;   // under the processor directory but not one of the above: ENOENT
+}
+static bool readGuestString(uint64_t addr, std::string* out) {
+    out->clear();
+    if (!addr) return false;
+    GByteArray* b = g_byte_array_new();
+    bool ok = false;
+    for (size_t i = 0; i < 4096; i++) {   /* byte by byte: an unmapped page ends the read, not the process */
+        g_byte_array_set_size(b, 0);
+        if (!qemu_plugin_read_memory_vaddr(addr + i, b, 1) || b->len != 1) break;
+        const char c = (char)b->data[0];
+        if (!c) { ok = true; break; }
+        out->push_back(c);
+    }
+    g_byte_array_free(b, TRUE);
+    return ok;
+}
+static bool guestCpuSyscallFilter(unsigned int vcpu_index, int64_t num, uint64_t a1, uint64_t a2,
+                                  uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+                                  uint64_t a8, int64_t* sysret, void* userdata) {
+    (void)vcpu_index; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)userdata;
+    const uint32_t n = g_guestCpus;
+    if (!n) return false;
+    const uint64_t need = ((uint64_t)n + 63) / 64 * 8;   // the kernel's cpumask size for n processors
+    if (num == SYS_sched_getaffinity) {   // (pid, len, mask)
+        const uint64_t len = a2;
+        if (len < need || (len & 7)) { *sysret = -EINVAL; return true; }
+        std::vector<unsigned char> m(need, 0);
+        for (uint32_t c = 0; c < n; c++) m[c / 8] |= (unsigned char)(1u << (c % 8));
+        GByteArray* b = g_byte_array_new();
+        g_byte_array_append(b, m.data(), (guint)need);
+        const bool ok = a3 && qemu_plugin_write_memory_vaddr(a3, b);
+        g_byte_array_free(b, TRUE);
+        *sysret = ok ? (int64_t)need : -EFAULT;
+        return true;
+    }
+    if (num == SYS_sched_setaffinity) {   // (pid, len, mask)
+        const uint64_t len = a2;
+        const uint64_t rd = len < need ? len : need;
+        GByteArray* b = g_byte_array_new();
+        const bool ok = a3 && rd && qemu_plugin_read_memory_vaddr(a3, b, rd) && b->len == rd;
+        bool any = false;
+        for (uint32_t c = 0; ok && c < n && c / 8 < rd; c++) if (b->data[c / 8] & (1u << (c % 8))) { any = true; break; }
+        g_byte_array_free(b, TRUE);
+        *sysret = !ok ? -EFAULT : (any ? 0 : -EINVAL);
+        return true;
+    }
+    uint64_t pathAddr = 0, flags = 0;
+    if (num == SYS_openat) { pathAddr = a2; flags = a3; }
+    else if (num == SYS_open) { pathAddr = a1; flags = a2; }
+    else return false;
+    std::string path, content;
+    if (!readGuestString(pathAddr, &path) || path.empty() || path[0] != '/') return false;
+    if (!guestCpuFile(path, &content)) return false;
+    if (content.empty()) { *sysret = -ENOENT; return true; }
+    if ((flags & O_ACCMODE) != O_RDONLY) { *sysret = -EACCES; return true; }
+    const int fd = (int)syscall(SYS_memfd_create, "pimid_guest_cpu", (flags & O_CLOEXEC) ? MFD_CLOEXEC : 0u);
+    if (fd < 0) { *sysret = -errno; return true; }
+    if (write(fd, content.data(), content.size()) != (ssize_t)content.size() || lseek(fd, 0, SEEK_SET) != 0) {
+        const int e = errno ? errno : EIO; close(fd); *sysret = -e; return true;
+    }
+    *sysret = fd;
+    return true;
+}
+
 static void syscall_cb(unsigned int vcpu_index,
                        int64_t num,
                        uint64_t a1, uint64_t a2,
@@ -5803,6 +5917,14 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans_cb, NULL);
     qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb, NULL);
     qemu_plugin_register_vcpu_syscall_ret_cb(id, syscall_ret_cb, NULL);   /* 1.12.17: MAP_STACK mappings */
+    g_guestCpus = zinfo->numCores;   /* (1.12.107): the guest's processor queries (guestCpuSyscallFilter) */
+    qemu_plugin_register_vcpu_syscall_filter_cb(id, guestCpuSyscallFilter, NULL);
+    {
+        char gm[256];
+        snprintf(gm, sizeof(gm), "[guest] processors: the guest sees %u (0-%u, the simulated cores) in sched_getaffinity and"
+                 " /sys/devices/system/cpu, not the host's [(1.12.107)]\n", g_guestCpus, g_guestCpus ? g_guestCpus - 1 : 0);
+        qemu_plugin_outs(gm);
+    }
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
 
     return 0;

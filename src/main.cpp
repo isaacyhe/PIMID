@@ -742,6 +742,20 @@ static const char* const kGuestStackSize  = "8M";             // QEMU's TARGET_D
 static const char* const kGuestSeed       = "0";
 static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
 static const size_t      kGuestStringBlock = 4096;
+/* (1.12.107): THE GUEST FINDS ITS LIBRARIES WITHOUT THE HOST'S LOADER CACHE.
+ * The guest's dynamic linker looked each library up in the host's
+ * /etc/ld.so.cache, a file that lists every library installed on that machine.
+ * Its size and order differ between machines (52519 to 72839 bytes on five
+ * node types of one cluster), and the lookup's binary search over it changed
+ * the number of loads the guest's startup made, so the state at the ROI begin,
+ * and the results, followed the machine (DDR3 gemv 256, 16 alu_core at RANK:
+ * 1061392 to 1064200 cycles; one node given another node's cache file gave
+ * that node's figure). The guest is now given LD_LIBRARY_PATH = the dynamic
+ * linker's own default directories, which it searches before the cache: a
+ * library found there (every library of the shipped workloads) is opened by
+ * path and the cache is not read. A workload.env LD_LIBRARY_PATH stays in
+ * front of them. */
+static const char* const kGuestLibraryPath = "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib";
 
 /* (1.12.64): the guest's environment holds configuration values only, in a fixed
  * order. QEMU writes the strings in its list order (each variable is inserted at
@@ -796,6 +810,15 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
         const size_t eq = kv.find('=');
         if (eq != std::string::npos) genv[kv.substr(0, eq)] = kv;
     }
+    {   /* (1.12.107): the library search path (kGuestLibraryPath), after a workload.env value */
+        bool viaHost = false;   // a value with a comma stays in the host's order (see above)
+        for (const auto& kv : inherited) if (kv.compare(0, 16, "LD_LIBRARY_PATH=") == 0) viaHost = true;
+        if (!viaHost) {
+            auto it = genv.find("LD_LIBRARY_PATH");
+            const std::string user = (it != genv.end()) ? it->second.substr(16) : std::string();
+            genv["LD_LIBRARY_PATH"] = "LD_LIBRARY_PATH=" + (user.empty() ? std::string() : user + ":") + kGuestLibraryPath;
+        }
+    }
     for (const auto& kv : inherited) {
         std::cerr << "[guest] WARNING: " << kv.substr(0, kv.find('='))
                   << " holds a comma, which QEMU's -E cannot carry: it is passed in the host's order, so the"
@@ -821,7 +844,8 @@ static void noteGuestLaunch(size_t envVars) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
               << kGuestSeed << "), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
-              << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), strings padded"
+              << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), libraries"
+              << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
               << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]" << std::endl;
 }
 

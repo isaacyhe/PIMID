@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.107 -- results no longer depend on the host machine's library cache or CPU count
+
+- **Library lookup (src/main.cpp, guestLaunchOptions).** The guest's dynamic linker found its libraries through the
+  host's `/etc/ld.so.cache`, which lists every library installed on that machine. Its size and order differ between
+  machines, and the lookup over it changed the number of loads the guest's startup made and therefore the state at
+  the ROI begin. The guest is now given `LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib`
+  (the dynamic linker's own default directories, which it searches before the cache): a library found there is
+  opened by path and the cache is not read. A `workload.env` `LD_LIBRARY_PATH` stays in front of these directories.
+- **Processor queries (external/zsim/src/qemu_zsim_plugin.cpp).** glibc and the OpenMP runtime read
+  `/sys/devices/system/cpu/possible`, `online` and the per-processor topology files and call `sched_getaffinity`;
+  under QEMU user mode these reached the host, so the host's CPU count sized the OpenMP runtime's allocations and
+  startup loops. The ZSim plugin now answers them itself (QEMU's plugin syscall filter) with processors 0..N-1,
+  N = the run's simulated cores, one thread per core in one package. `sched_setaffinity` is accepted and no longer
+  pins the emulator's host threads. Other paths under `/sys/devices/system/cpu/` are not found.
+- No timing, energy or area model changes. Trace generation (`--method trace`) uses its own plugin and still sees
+  the host's processors.
+- **Validation:** 59 serial cells (24 device cells: 8 kernels x DDR3/DDR5/HBM3, 16 alu_core at RANK; 17 single-core
+  host baselines: DDR3/DDR5 x 8 kernels and the 1-core DDR5 baseline; 18 PE-type cells: 6 memories x 3 PE types at
+  BANK) give the same cycles and the same simulated and priced figures on five node types: qc-mi210 (128 CPUs),
+  qc-pvc (208), qc-pro6000 (88), fs-mi300a (192) and fs-mi300x (128), four different library caches among them.
+  Before the change, 6 of the 59 agreed. fs-mi300a and fs-mi300x share one library cache and differ in CPU count:
+  before the change all 42 device and PE-type cells already agreed between them and 16 of the 17 host baselines did
+  not. On one node, giving the guest another node's library cache, or restricting the CPU set to 88-208 CPUs, no
+  longer changes the result of the cells tried (DDR3 gemv device and PE-type cells; DDR3 gemv and vector_add host baselines).
+- **Data impact (one-time, serial cells, against 1.12.80 on each node):** device cells max 5.96% (mean 0.53-0.67%),
+  host baselines max 1.45% (mean 0.40-0.57%), PE-type cells max 0.12% (ooo_core unchanged); checksums unchanged.
+  DDR3 gemv 256 (16 alu_core, RANK) is now 1064074 cycles on every node (genoa 1061624, mi100 1061392, qc-mi210
+  1064200, qc-pvc 1062573, qc-pro6000 1063881, fs-mi300a/x 1059374 before).
+
 ## 1.12.106 -- HBM3 standby temperature slope taken per stack
 
 - **The question:** the HBM3 record's IDD-vs-temperature slope was the measured HBM2 per-channel slope scaled by

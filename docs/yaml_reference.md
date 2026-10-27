@@ -181,7 +181,10 @@ in sorted order, `workload.env`, the OpenMP settings PIMID adds, and from pimid'
 own environment only `OMP_*`, `GOMP_*` and the `PIMID_*` variables the shipped
 guest code reads. `PATH`, `LD_LIBRARY_PATH`, `HOME`, `LANG` and the other
 installation and user values are not passed: a workload that needs one (a guest
-library outside the system paths, say) sets it in `workload.env`. The strings on
+library outside the system paths, say) sets it in `workload.env`. The guest's
+`LD_LIBRARY_PATH` always ends with the system library directories
+(`/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib`, since (1.12.107)), so
+its libraries are not looked up in the host's loader cache. The strings on
 the guest's stack are padded to a fixed size, its `AT_RANDOM` bytes are seeded,
 and its address space is reserved by the launch, so a serial result does not
 depend on the job, the node, the working directory, the installation's paths or

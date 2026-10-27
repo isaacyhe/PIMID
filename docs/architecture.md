@@ -120,10 +120,23 @@ user-mode options):
 | `-s 8M` | The main stack is 8 MiB (QEMU's default), whatever the host's stack rlimit. |
 | `-seed 0` | `AT_RANDOM` and the guest's `getrandom()` are one fixed sequence. |
 | `-U` / `-E` | Every variable of pimid's environment is removed and the guest's set is added back in sorted order (since (1.12.64); QEMU writes the strings in its list order, so a string's address follows the strings around it, and the guest's startup scans them). The set is `workload.env`, the variables PIMID sets for the guest (the OpenMP settings below, `LD_BIND_NOW=1`, the MPI shim's), and, from pimid's own environment, `OMP_*`, `GOMP_*` and the `PIMID_*` variables the shipped guest code reads. Installation and user values (`PATH`, `LD_LIBRARY_PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TZ`, path-valued `PIMID_*` such as `PIMID_QEMU`) are not passed; a workload that needs one sets it in `workload.env`. `PIMID_GUEST_ENV_PAD` then pads the strings QEMU copies to the stack (the program's name, the environment, the arguments) to a multiple of 4096 bytes. A value holding a comma, which QEMU's `-E` cannot carry, is passed in the host's order, with a warning. |
+| `-E LD_LIBRARY_PATH=...` | The guest's dynamic linker searches `/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib` (its own default directories) before the host's `/etc/ld.so.cache` (since (1.12.107)). The cache lists every library installed on the machine, so its size and order differ between machines, and the lookup over it changed the number of loads the guest's startup made. A library found in these directories is opened by path and the cache is not read. A `workload.env` `LD_LIBRARY_PATH` stays in front of them; a library found in neither is still looked up in the cache. |
+
+**The guest sees the simulated machine's processors (since (1.12.107)).** The
+guest's processor queries used to reach the host: glibc and the OpenMP
+runtime read `/sys/devices/system/cpu/possible` and `online` and call
+`sched_getaffinity`, and with `OMP_PLACES=cores` the runtime reads each
+processor's topology files, so the host's processor count sized the runtime's
+allocations and startup loops. The ZSim plugin now answers these queries with
+processors `0..N-1`, N = the run's simulated cores (one thread per core, one
+package): `sched_getaffinity` returns that set, `sched_setaffinity` accepts a
+set holding one of them and leaves the host threads unpinned, and other paths
+under `/sys/devices/system/cpu/` are not found. Trace generation (`--method trace`) does not go through this
+plugin and still shows the host's processors.
 
 So a serial workload's addresses depend on its configuration only -- the
 binary, its arguments and the guest variables it is given -- not on the job,
-the node, the working directory, the installation's paths, the order in which a
+the node or its type (its core count, its installed libraries), the working directory, the installation's paths, the order in which a
 script sets its variables, or host address-space randomization. Measured over six jobs on five nodes, each in its
 own directory: all 107 serial cells (48 device, 40 single-core host
 baselines, 18 PE-type cells, the 1-core DDR5 baseline) repeated bit for bit in
