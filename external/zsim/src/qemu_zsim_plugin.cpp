@@ -1671,6 +1671,18 @@ static void dumpTerminationStats() {
  * assertion came back to the simulator as a completed run, which then parsed
  * and priced the whole run as a measurement. */
 static int g_guest_exit_status = 0;
+/* (1.12.115): the guest reached exit/exit_group. QEMU also leaves through the
+ * plugin's exit when it fails to start the guest (a launch error: "mmap stack",
+ * "Cannot allocate vsyscall page", a reserved range too small, a bad image);
+ * SimEnd's exit code then said 0 and the launcher read an all-zero run. */
+static bool g_guest_exit_seen = false;
+/* (1.12.115): the guest executed a block. A run that ends without the guest's own
+ * exit (the termination condition: simulation.max_instructions, the end of a
+ * message-passing ROI) did run; only a QEMU that never started the guest did not */
+static std::atomic<bool> g_guest_ran{false};
+static std::atomic<bool> g_roi_begin_seen{false};   // (1.12.115): a ROI_BEGIN marker executed (any mode)
+static const int kExitGuestNotStarted = 125;   // the guest QEMU failed before the workload exited
+static const int kExitRoiNeverOpened = 124;    // the workload has ROI markers, the ROI never opened
 
 void SimEnd() {
     dumpApproxProfile();
@@ -1714,6 +1726,17 @@ void SimEnd() {
     }
 
     if (zinfo->sched) zinfo->sched->notifyTermination();
+
+    /* (1.12.115): a run that did not happen is not reported as one */
+    if (!g_guest_exit_seen && !g_guest_ran.load()) {   // (1.12.115): and it never ran
+        fprintf(stderr, "[guest] FATAL: the guest QEMU exited before the workload ran (a launch error is printed above); "
+                        "nothing was simulated (exit %d)\n", kExitGuestNotStarted);
+        g_guest_exit_status = kExitGuestNotStarted;
+    } else if (g_guest_exit_status == 0 && getenv("PIMID_ROI_EXPECTED") && !g_roi_begin_seen.load()) {
+        fprintf(stderr, "[guest] FATAL: the workload carries ROI markers but its ROI never opened; "
+                        "nothing was measured (exit %d)\n", kExitRoiNeverOpened);
+        g_guest_exit_status = kExitRoiNeverOpened;
+    }
 
     /* Terminate the process.  Background threads (contention sim, scheduler
      * watchdog) won't exit on their own, same as the original ZSim behaviour.
@@ -2642,6 +2665,7 @@ static void detachThreadForMigration(uint32_t tid, int domain) {
  * Drives the BBL function pointer which triggers phase counting.
  */
 static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
+    if (unlikely(!g_guest_ran.load(std::memory_order_relaxed))) g_guest_ran.store(true);   // (1.12.115)
     if (vcpu_index < MAX_VCPUS) rep_mem_since_bbl[vcpu_index] = 0;
     if (!in_roi) return;
     if (vcpu_index < MAX_VCPUS && vcpu_is_internal[vcpu_index]) return;
@@ -4258,6 +4282,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t opcode = static_cast<uint32_t>(op & 0xFFFFFFFF);
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) g_roi_begin_seen = true;   // (1.12.115): see SimEnd
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin(tid);   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
@@ -4634,6 +4659,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t opcode = static_cast<uint32_t>(op & 0xFFFFFFFF);
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) g_roi_begin_seen = true;   // (1.12.115): see SimEnd
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin(tid);   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
@@ -5438,6 +5464,7 @@ static void syscall_cb(unsigned int vcpu_index,
     if (num == 56 && (a1 & 0x10000))   // (1.12.76): the child's domain, as its parent sees it at the clone
         g_cloneDomPending[vcpu_index] = g_in_device_region.load() ? DOMAIN_DEVICE : DOMAIN_HOST;
     else if (num == 11 && zinfo && zinfo->stackRanges) stackOnUnmap(a1, a2);
+    if (num == 231) { g_guest_exit_seen = true; g_guest_exit_status = (int)(a1 & 0xff); }   // (1.12.115): the guest's own exit, whatever its thread's state
     uint32_t tid = vcpuToTid[vcpu_index];
     if (tid == UNINITIALIZED_CID || tid >= MAX_THREADS) return;
     if (!thread_initialized[tid]) return;  // not yet started
@@ -5448,6 +5475,7 @@ static void syscall_cb(unsigned int vcpu_index,
      * guest's own status. The return below skipped the exit hook, so QEMU's
      * exit path reached plugin_exit and the guest status was lost. */
     if (num == 231 && pimidPostRoiFree()) {
+        g_guest_exit_seen = true;   // (1.12.115)
         g_guest_exit_status = (int)(a1 & 0xff);
         info("Caught exit syscall (231) after the ROI (program ran to its exit unsimulated), terminating simulation, guest status %d", g_guest_exit_status);
         if (g_guest_exit_status != 0)
@@ -5475,6 +5503,7 @@ static void syscall_cb(unsigned int vcpu_index,
             /* main thread: fall through to terminate the whole simulation */
         case 231: /* exit_group -- whole process */
             info("Caught exit syscall (%ld), terminating simulation", (long)num);
+            g_guest_exit_seen = true;   // (1.12.115)
             g_guest_exit_status = (int)(a1 & 0xff);   /* 1.11.94: carried to the host by SimEnd() */
             if (g_guest_exit_status != 0)
                 info("Guest exit status %d: the workload did not complete normally", g_guest_exit_status);

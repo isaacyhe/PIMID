@@ -95,6 +95,7 @@ static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 /* ROI state -- set by mov $op, %rcx + xchg %rcx, %rcx (zsim_hooks.h magic ops) */
 static _Atomic bool in_roi = true;            /* true = record; default on for non-ROI workloads */
 static _Atomic uint64_t roi_transition_count; /* number of ROI begin/end transitions */
+static _Atomic bool guest_ran;                /* (1.12.115): the guest executed a block (see plugin_exit) */
 
 /* ZSim magic op codes (must match zsim_hooks.h) */
 #define ZSIM_MAGIC_OP_ROI_BEGIN   1025
@@ -175,6 +176,7 @@ static bool isRepString(const uint8_t* b, size_t n) {
 }
 
 static void tb_exec_cb(unsigned int vcpu_index, void *userdata) {
+    if (!atomic_load_explicit(&guest_ran, memory_order_relaxed)) atomic_store(&guest_ran, true);   /* (1.12.115) */
     if (vcpu_index < MAX_VCPUS) rep_mem_since_bbl[vcpu_index] = 0;
     if (!in_roi) return;
     const TbRec *rec = (const TbRec *)userdata;
@@ -285,12 +287,17 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
  * Syscall callback -- emit BARRIER events for thread-creating syscalls.
  * clone/fork/vfork (syscall numbers 56, 57, 58 on x86_64).
  */
+/* (1.12.115): the guest reached exit_group (see plugin_exit) */
+static _Atomic bool guest_exit_seen;
+static _Atomic int guest_exit_status;
+
 static void syscall_cb(unsigned int vcpu_index,
                        int64_t num,
                        uint64_t a1, uint64_t a2,
                        uint64_t a3, uint64_t a4,
                        uint64_t a5, uint64_t a6,
                        uint64_t a7, uint64_t a8, void *userdata) {
+    if (num == 231) { atomic_store(&guest_exit_seen, true); atomic_store(&guest_exit_status, (int)(a1 & 0xff)); }   /* (1.12.115) */
     /* clone=56, fork=57, vfork=58 on x86_64 */
     if (num == 56 || num == 57 || num == 58) {
         TraceEvent evt;
@@ -633,6 +640,17 @@ static void plugin_exit(void *userdata) {
     }
 
     free(output_path);
+
+    /* (1.12.115): a run that did not happen is not reported as one. A launch error
+     * keeps QEMU's own non-zero exit code (this callback returns); a workload
+     * with ROI markers whose ROI never opened ends with 124. */
+    if (!atomic_load(&guest_exit_seen) && !atomic_load(&guest_ran)) {   /* (1.12.115): and it never ran */
+        fprintf(stderr, "[guest] FATAL: the guest QEMU exited before the workload ran (a launch error is printed above); "
+                        "nothing was traced\n");
+    } else if (atomic_load(&guest_exit_status) == 0 && getenv("PIMID_ROI_EXPECTED") && roi_transition_count == 0) {
+        fprintf(stderr, "[guest] FATAL: the workload carries ROI markers but its ROI never opened; nothing was traced (exit 124)\n");
+        _exit(124);
+    }
 }
 
 /* ---- Plugin Install ---- */

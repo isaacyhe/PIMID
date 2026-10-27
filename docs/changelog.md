@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.115 -- a guest QEMU that fails to start, or an ROI that never opens, fails the run
+
+- **Defect.** When the guest QEMU could not start the workload (a launch error such as "mmap stack: Cannot allocate
+  memory" or "Cannot allocate vsyscall page"), QEMU left through the timing plugin's exit, whose `_exit` carried the
+  guest's exit status (still 0: the guest never ran), so pimid exited 0 with 0 cycles and an all-zero report.
+- **Fix.** The timing plugin records whether the guest executed any code and whether it reached its own exit
+  (exit_group). If QEMU exits with neither, the plugin prints `[guest] FATAL: the guest QEMU exited before the workload
+  ran` and exits 125; a run the simulator ends itself (`simulation.max_instructions`, the end of a message-passing
+  ROI) did run and keeps its status. If the workload binary carries the ROI markers (`[HOOKS] ROI begin`, read by the
+  launcher, `PIMID_ROI_EXPECTED` in QEMU's host environment only, never the guest's) and no ROI_BEGIN executed, it
+  prints `[guest] FATAL: ... its ROI never opened` and exits 124. The trace plugin does the same (a launch error keeps
+  QEMU's own non-zero code). The launcher names the cause (`[guest] FATAL` for 125/124, `[workload] FATAL` otherwise)
+  and exits 3, from every launch site: device and system scope, multi-QEMU (which now keeps the failing process's own
+  code instead of 1), thread-MPI ranks, trace generation and process-mode MPI ranks.
+- **Data impact:** none. Every cell that completes is unchanged, bit for bit; only runs that did not happen now fail.
+
 ## 1.12.114 -- an optional NVM device write-power budget, off by default
 
 - **Timing and report (src/main.cpp; external/zsim/src/pe_memory_interface.h, init.cpp, zsim.h; docs/yaml_reference.md):**

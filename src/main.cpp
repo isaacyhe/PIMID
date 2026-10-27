@@ -873,6 +873,23 @@ static void noteGuestLaunch(size_t envVars) {
               << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]" << std::endl;
 }
 
+/* (1.12.115): the guest binary carries the ROI markers (zsim_hooks.h prints
+ * "[HOOKS] ROI begin"); the timing and trace plugins then refuse a run whose
+ * ROI never opened (PIMID_ROI_EXPECTED, host environment only). */
+static bool binaryHasRoiMarkers(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    static const std::string kMark = "[HOOKS] ROI begin";   // the NOP build prints [NOP-HOOKS]
+    std::string buf(1 << 20, '\0'), carry;
+    while (f) {
+        f.read(&buf[0], (std::streamsize)buf.size());
+        const std::string chunk = carry + buf.substr(0, (size_t)f.gcount());
+        if (chunk.find(kMark) != std::string::npos) return true;
+        carry = chunk.size() >= kMark.size() ? chunk.substr(chunk.size() - kMark.size()) : chunk;
+    }
+    return false;
+}
+
 /* Builds the full QEMU command line of a launch child: qemu, the guest-image
  * options (with the caller's -E entries), -plugin <plugin>, --, the guest's
  * argv. */
@@ -882,6 +899,10 @@ static std::vector<std::string> guestQemuArgv(const std::string& qemu,
                                               const std::string& binary,
                                               const std::vector<std::string>& args,
                                               const std::map<std::string, std::string>& workloadEnv) {
+    /* (1.12.115): set before the guest's environment is fixed below, so the
+     * guest never sees it (QEMU's -U list covers every host variable) */
+    if (binaryHasRoiMarkers(binary)) setenv("PIMID_ROI_EXPECTED", "1", 1);
+    else unsetenv("PIMID_ROI_EXPECTED");
     std::vector<std::string> v = {qemu};
     size_t guestVars = 0;
     const std::vector<std::string> g = guestLaunchOptions(binary, args, guestSet, workloadEnv, &guestVars);
@@ -892,6 +913,23 @@ static std::vector<std::string> guestQemuArgv(const std::string& qemu,
     v.push_back("--"); v.push_back(binary);
     v.insert(v.end(), args.begin(), args.end());
     return v;
+}
+
+/* (1.12.115): QEMU exit codes the plugins use for a run that did not happen */
+static const int kQemuExitGuestNotStarted = 125;
+static const int kQemuExitRoiNeverOpened = 124;
+static void reportGuestExit(int code, const char* scope) {
+    if (code == kQemuExitGuestNotStarted)
+        std::cerr << "\n[guest] FATAL: the guest QEMU failed before the workload ran (" << scope
+                  << "; its launch error is above); nothing is parsed or priced." << std::endl;
+    else if (code == kQemuExitRoiNeverOpened)
+        std::cerr << "\n[guest] FATAL: the workload carries ROI markers but its ROI never opened (" << scope
+                  << "); nothing is parsed or priced." << std::endl;
+    else
+        std::cerr << "\n[workload] FATAL: the guest QEMU or the workload exited with status " << code
+                  << " (" << scope << "); nothing is parsed or priced (1.11.94). See the message above "
+                     "(a QEMU launch error, or the workload's own: a refused data preparation names the largest size that fits)."
+                  << std::endl;
 }
 
 static void execGuestQemu(const std::vector<std::string>& argvOwned) {
@@ -25582,10 +25620,7 @@ int main(int argc, char** argv) {
                      * instead of parsing and pricing whatever the guest did
                      * before it gave up. The workload's own message is above. */
                     if (exit_code != 0) {
-                        std::cerr << "\n[workload] FATAL: the workload exited with status " << exit_code
-                                  << " inside the guest; nothing is parsed or priced (1.11.94). "
-                                     "See the workload's own message above (a refused data preparation names the largest size that fits)."
-                                  << std::endl;
+                        reportGuestExit(exit_code, "device scope");   // (1.12.115)
                         return 3;
                     }
                     std::string stats_path = output_dir + "/zsim.out";
@@ -25999,13 +26034,14 @@ int main(int argc, char** argv) {
                 }
 
                 // Wait for all QEMU processes
-                bool all_ok = true;
+                int worst = 0;   // (1.12.115): the first failing process's own code, not 1
                 for (pid_t p : pids) {
                     int s;
                     waitpid(p, &s, 0);
-                    if (!WIFEXITED(s) || WEXITSTATUS(s) != 0) all_ok = false;
+                    const int rc = WIFEXITED(s) ? WEXITSTATUS(s) : 128 + (WIFSIGNALED(s) ? WTERMSIG(s) : 0);
+                    if (rc != 0 && worst == 0) worst = rc;
                 }
-                status = all_ok ? 0 : 1;
+                status = worst;
 
                 // Clean up sentinel
                 unlink(sentinel.c_str());
@@ -26114,15 +26150,13 @@ int main(int argc, char** argv) {
                 }
 
                 waitpid(pid, &status, 0);
-                status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+                status = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);   // (1.12.115)
             }
 
             std::cout << "----------------------------------------" << std::endl;
             std::cout << "QEMU+ZSim (system) completed with exit code: " << status << std::endl;
             if (status != 0) {   /* 1.11.94: see the device-scope site -- a non-zero guest exit is a refusal, not a measurement */
-                std::cerr << "\n[workload] FATAL: the workload exited with status " << status
-                          << " inside the guest; nothing is parsed or priced (1.11.94). See the workload's own message above."
-                          << std::endl;
+                reportGuestExit(status, "system scope");   // (1.12.115)
                 return 3;
             }
 
