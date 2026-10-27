@@ -12001,6 +12001,15 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
         double wr_energy = cacti.getDynamicWriteEnergy();
         double leakage = cacti.getLeakagePower() * banks;  // x banks (device scope passes num_banks)
         double area = cacti.getArea() * banks;
+        {   // (1.12.91): the per-bit figures at full precision, as for the NVM arrays
+            const double bits = static_cast<double>(config.cache_line_size) * 8.0;
+            pimid::fmt_scoped(std::cout) << std::setprecision(6)
+                << "  [sram] SRAM array, CACTI 7: one " << (sram_cfg.capacity_bytes / 1024ULL) << " KB bank, "
+                << bits << "-bit access, " << sram_cfg.tech_node_nm << " nm: read " << rd_energy * 1e3
+                << " pJ/access (" << rd_energy * 1e3 / bits << " pJ/bit), write " << wr_energy * 1e3
+                << " pJ/access (" << wr_energy * 1e3 / bits << " pJ/bit), leakage "
+                << cacti.getLeakagePower() << " mW per bank" << std::endl;
+        }
 
         /* 1.11.18 (audit go-through): pim.mc.pg reached the DRAM branch
          * (IDD2P descent) and the NVM branch (retention floor) and did
@@ -12162,6 +12171,27 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
     double rd_energy = nvsim.getReadDynamicEnergy();  // per-access (one bank)
     double wr_energy = nvsim.getWriteDynamicEnergy();
     double leakage = nvsim.getLeakagePower() * banks;  // x banks (device scope passes num_banks)
+    /* (1.12.91): what the array is priced on, at full precision and per bit. The
+     * Per-access line rounds to 0.001 nJ, which hid a PCM read (0.004 nJ printed
+     * for 3.74 pJ); the cell file and the source it names are stated, since
+     * they ARE the technology. */
+    {
+        const double bits = static_cast<double>(nvm_cfg.word_width_bits);
+        const char* cell = (tech == "STT_MRAM") ? "sample_STTRAM.cell (NVSim's sample cell; the file names no source)"
+                         : (tech == "PCM")      ? "sample_PCRAM.cell (NVSim's sample cell; the file names Lee et al., ISCA 2009; "
+                                                  "its 90 nm currents and resistances are used as given)"
+                                                : "sample_RRAM.cell (NVSim's sample cell, a selector-less crossbar; the file "
+                                                  "names no source)";
+        pimid::fmt_scoped(std::cout) << std::setprecision(6)
+            << "  [nvm] " << tech << " array, NVSim, cell " << cell << ": one "
+            << (nvm_cfg.capacity_bytes / 1024ULL) << " KB bank, " << nvm_cfg.word_width_bits << "-bit access, "
+            << nvm_cfg.process_node_nm << " nm, " << nvm_cfg.temperature_k << " K: read "
+            << rd_energy * 1e3 << " pJ/access (" << rd_energy * 1e3 / bits << " pJ/bit), write "
+            << wr_energy * 1e3 << " pJ/access (" << wr_energy * 1e3 / bits << " pJ/bit, every bit of the access "
+            << "programmed, the longer of SET and RESET), leakage " << nvsim.getLeakagePower()
+            << " mW per bank (CMOS periphery), read " << nvsim.getReadLatency() * 1e9 << " ns, write "
+            << nvsim.getWriteLatency() * 1e9 << " ns" << std::endl;
+    }
     /* 1.11.8: NVM periphery gates RETENTION-FREE -- non-volatile
      * cells hold state unpowered, so with memory.array_pg the array
      * periphery leakage descends during measured no-traffic
@@ -14424,7 +14454,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             }
             if (devmem.have) {
                 add("memory.array.dynamic", mem_dyn_w, devmem.note.substr(0, devmem.note.find(':')));
-                add("memory.array.static", mem_static_w, "background + VPP + refresh (counted when replayed) + PHY static");
+                const bool nondram_led = (config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
+                                          config.memory_tech == "PCM"  || config.memory_tech == "RERAM");
+                add("memory.array.static", mem_static_w,
+                    nondram_led ? (config.memory_tech == "SRAM" ? "array leakage (CACTI 7), x banks"
+                                                                : "array leakage (NVSim CMOS periphery), x banks")
+                                : "background + VPP + refresh (counted when replayed) + PHY static");   // (1.12.91)
             }
             double led_sum = 0.0;
             for (const auto& t : ledger) led_sum += t.w;

@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.91 -- the SRAM/NVM array's priced figures, per bit and at full precision
+
+- **Report (src/main.cpp, priceNonDramArray and the device ledger):** the array price of a non-DRAM memory is printed
+  once more, at full precision and per bit, with what it rests on:
+  - "[nvm]" (STT_MRAM, PCM, RERAM): the NVSim cell file and the source it names, the characterised unit (bank size,
+    access width, node, temperature), read and write energy per access and per bit, leakage per bank and the read
+    and write latency. The "Per-access" line keeps its 0.001 nJ rounding, which printed a 3.74 pJ PCM read as
+    0.004 nJ.
+  - "[sram]" (SRAM): the same figures from CACTI 7.
+- **Ledger:** the static entry of a non-DRAM array names what it is ("array leakage (NVSim CMOS periphery)" or
+  "(CACTI 7)", x banks). It carried the DRAM label (background + VPP + refresh + PHY static).
+- **Data impact:** none on any priced number.
+
 ## 1.12.90 -- an SRAM/NVM array write takes the array's write time
 
 - **Timing (src/main.cpp; external/zsim/src/pe_memory_interface.h, alu_core.cpp, init.cpp, zsim.h):** a device
