@@ -984,6 +984,7 @@ void RamulatorWrapper::initialize() {
             s.e_actpre_vpp_pJ_override = rec.idd.vpp_actpre_pj_override;   // user ruling 2026-10-25 (second supply rails)
             s.stack_floor_mw = rec.idd.stack_floor_mw;
             if (rec.idd.has_vpp_act) s.vpp_act_ratio = rec.idd.vpp_act_ratio;   // 1.12.18 (user ruling 2026-10-24)
+            if (rec.idd.has_vpp_standby && !r.has_ipp) s.vpp_standby_ratio = rec.idd.vpp_standby_ratio;   // (1.12.142) (user ruling 2026-10-28)
             return s;
         };
         for (const auto& kv : rec.idd.by_grade) pf.rows[kv.first] = toSpec(kv.second);
@@ -1045,9 +1046,19 @@ void RamulatorWrapper::initialize() {
                     std::cout << "[params] " << dt << " VPP activate: " << (vpp_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false)")
                               << " as " << rec.idd.vpp_act_ratio << " x the VDD activate+precharge energy (" << rec.idd.vpp_act_provenance
                               << ", record idd.vpp_act: " << rec.idd.vpp_act_device << "; the other stack column, " << rec.idd.vpp_act_alt_device
-                              << ", would give " << rec.idd.vpp_act_alt_ratio << "). No other VPP term is priced for this record (no ipp rows)."
+                              << ", would give " << rec.idd.vpp_act_alt_ratio << ")."
+                              << (rec.idd.has_vpp_standby ? " The standby VPP is the record's idd.vpp_standby ratio (below); no burst or refresh VPP term (no ipp rows)."
+                                                          : " No other VPP term is priced for this record (no ipp rows).")
                               << " idd0 is a " << rec.idd.idd0_loop << " current (record idd.idd0_loop: one 1 KB pseudo-channel page per tRC,"
                               << " NOT the JEDEC two-PC IDD0 loop)" << std::endl;
+                if (rec.idd.has_vpp_standby) {   // (1.12.142) (user ruling 2026-10-28)
+                    const bool sb_on = Ramulator::pimid_energy::vppStandbyRatioEnabled();
+                    std::cout << "[params] " << dt << " VPP standby: " << (sb_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_standby_ratio: false)")
+                              << " as " << rec.idd.vpp_standby_ratio << " x the VDD standby power of each unit, on the same state split"
+                              << " (" << rec.idd.vpp_standby_provenance << ", record idd.vpp_standby: " << rec.idd.vpp_standby_device
+                              << "; the other stack column, " << rec.idd.vpp_standby_alt_device << ", would give " << rec.idd.vpp_standby_alt_ratio
+                              << "); an energy ratio, no voltage conversion; the report's +ipp term" << std::endl;
+                }
                 for (const auto& kv : rec.idd.by_grade) {
                     const pimid::params::IddRow& r = kv.second;
                     const std::string row = kv.first ? dt + " (" + std::to_string(kv.first) + " MT/s row)" : dt;
@@ -2820,6 +2831,9 @@ void RamulatorWrapper::setEnergyModelSwitches(bool io_share_split, bool vpp_dyna
 }
 void RamulatorWrapper::setIddqWriteTerminationOnce(bool on) {   // 1.12.18
     Ramulator::pimid_energy::iddqWriteTerminationOnceEnabled() = on;
+}
+void RamulatorWrapper::setVppStandbyRatio(bool on) {   // (1.12.142) (user ruling 2026-10-28)
+    Ramulator::pimid_energy::vppStandbyRatioEnabled() = on;
 }
 bool RamulatorWrapper::getIddqWriteIncludesTermination() const {   // 1.12.18
     return Ramulator::pimid_energy::iddqWriteIncludesTermination(energyKey());

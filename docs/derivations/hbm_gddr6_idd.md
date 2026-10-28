@@ -607,6 +607,26 @@ array part.
   inside). The measured idle chip means (217.5-364.8 mA x 1.2 V at 1.2 Gb/s, x2 for 2.4 Gb/s, + refresh) give
   556-922 mW per HBM2 stack.
 
+### 1.12 Standby VPP as a ratio of the VDD standby (PIMID (1.12.142), user ruling 2026-10-28)
+
+- The measured base is VDDC + VDDQ only (sec. 1.8: the artifact's "ipp" column is a card residual, not a VPP
+  sensor), and no JEDEC or vendor HBM IPP2N/IPP3N exists (NO PUBLISHED SOURCE FOUND). The standby VPP is therefore
+  priced as the activation VPP is (sec. 1.8): a vendor-estimator RATIO, DERIVED.
+- Xilinx XPE 2023.1.2 HBM_Data row 43 'Idle VPP Dynamic' (rail VCCAUX_HBM 2.5 V) / row 37 'idle VDD dynamic'
+  (rail VCC_HBM 1.2 V), both mW per stack per Gb/s/pin, always on while the stack is clocked: 4G column (VU37P)
+  8.2875/96.8 = 0.085615; 8G column (VU47P) 16.575/164.56 = 0.100723. Both rows scale with the rate the same way,
+  so the ratio is rate-independent. Device match by stack height, as sec. 1.8: HBM3 (8-high) -> 0.100723; HBM2
+  (4-high) -> 0.085615; the other column is printed in every run.
+- Applied to the record's VDD standby power of each unit (per channel), on the VDD background's state split
+  (IDD3N while a bank is open, IDD2N otherwise), at the run's temperature. No voltage conversion (energy ratio);
+  XPE's own (V/Vnom)^2 rail scaling would change it by (1.8/2.5)^2/(1.1/1.2)^2 = 0.62 for HBM3 -- stated, not
+  applied. XPE's VCCAUX_HBM leakage rows (Static_Data row 722) are not applied.
+- No refresh, burst or activation VPP comes from this ratio (no IPP5B/IPP4R/IPP4W/IPP0 in the records), so
+  nothing is counted twice. Records: idd.vpp_standby; code: pimid_energy.h ippUnitMW; switch
+  power.models.dram_vpp_standby_ratio.
+- Effect at 350 K: +67.2 mW per HBM2 stack, +154.1 mW per HBM3 stack. Background guard per stack (printed, never
+  priced): HBM2 814.9 -> 884.5 mW (now inside XPE [860, 1900]); HBM3 1776.7 -> 1930.8 mW (inside [1060, 2170]).
+
 ---------------------------------------------------------------------------
 
 ## 2. Derivation 2 -- GDDR6

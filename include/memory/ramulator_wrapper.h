@@ -471,6 +471,8 @@ public:
      * power.models.iddq_write_termination_once. */
     bool getIddqWriteIncludesTermination() const;
     static void setIddqWriteTerminationOnce(bool on);
+    /* (1.12.142): power.models.dram_vpp_standby_ratio (record idd.vpp_standby, HBM). */
+    static void setVppStandbyRatio(bool on);
     /* 1.11.91 (audit R8-2): the IDD3N basis word of this technology's row:
      * ALL_BANKS, ONE_BANK or UNVERIFIED (pimid_energy::Idd3nBasis). */
     const char* getIdd3nBasisName() const;

@@ -6,6 +6,33 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.142 -- HBM2/HBM3 standby VPP is priced
+
+- **Gap closed (params/dram/hbm2.yaml, hbm3.yaml `idd.vpp_standby`; external/ramulator pimid_energy.h ippUnitMW;
+  src/params/part_records.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp).** The HBM records publish no IPP row
+  (no JEDEC or vendor HBM IPP2N/IPP3N exists), and the measured HBM2 base the records derive from carries the VDDC and
+  VDDQ rails only, so every HBM run printed `+ipp=n/a`: the wordline-pump rail's standby was not priced. User ruling
+  2026-10-28: price it DERIVED, with the method and source of the activation VPP share (1.12.18, `idd.vpp_act`).
+- **Method.** Standby VPP = ratio x the record's VDD standby power of the same unit, on the VDD background's state
+  split (IDD3N while a bank is open, IDD2N otherwise) and at the run's temperature. Ratio = Xilinx Power Estimator
+  (XPE) 2023.1.2, UltraScale+, HBM_Data row 43 'Idle VPP Dynamic' / row 37 'idle VDD dynamic', both per stack per
+  Gb/s/pin and always on while clocked (so the ratio does not depend on the data rate): 8G column (VU47P)
+  16.575/164.56 = 0.100723 for the 8-high HBM3 record, 4G column (VU37P) 8.2875/96.8 = 0.085615 for the 4-high HBM2
+  record; the other column is printed beside it. An energy ratio, so no voltage conversion (as `vpp_act`). XPE's
+  VCCAUX_HBM leakage rows are not applied (the VDD standby it multiplies is a measured current, leakage included).
+- **No double count.** The records still carry no IPP5B, IPP4R/W or IPP0: refresh, burst and activation VPP are
+  unchanged (activation stays `vpp_act`); the refresh duty keeps the standby VPP. The loader refuses
+  `idd.vpp_standby` together with an `ipp` row.
+- **Report.** The Background line prints `+ipp=<mW>` in place of `+ipp=n/a`, and memory static includes it. The HBM
+  background guard (XPE like-for-like VDD + VDDQ + VPP rails) now adds the standby VPP it compares.
+- **Switch.** `power.models.dram_vpp_standby_ratio` (default `true`); `false` restores `+ipp=n/a`.
+- **Data impact.** HBM2 and HBM3 cells only (device and co-sim): +67.2 mW per HBM2 stack (4-high,
+  2.4 Gb/s preset) and +154.1 mW per HBM3 stack (8-high) at 350 K (160.6 mW at 368 K), the same in precharge
+  power-down. A 16-PE BANK gemv cell: HBM2 1.203 -> 1.270 W, HBM3 2.124 -> 2.278 W; the HBM3 co-sim cell 23.27 ->
+  23.42 W. The HBM2 background guard per stack moves from 814.9 mW (below the XPE band [860, 1900]) to 884.5 mW
+  (inside).
+  Timing is unchanged; every other technology is unchanged.
+
 ## 1.12.141 -- DDR5-3200 runs the 16 Gb die, with a current row derived from the published DDR5-4800 column
 
 - **Gap closed (params/dram/ddr5.yaml; user rulings 2026-10-28).** No vendor publishes a DDR5-3200 current column.

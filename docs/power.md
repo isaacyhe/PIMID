@@ -152,6 +152,12 @@ their activates and row state are the replayed controller's. These energies are 
 (`pimid_energy.h`, through `RamulatorWrapper`); the report passes the counts.
 `system.hosts[].memory.dram_replay: false` restores the unmeasured host path.
 
+**HBM standby VPP ((1.12.142), user ruling 2026-10-28).** No HBM IPP row is published, so the HBM records price the
+pump rail's standby as a ratio of the VDD standby power of the same unit and state, from the same vendor
+estimator as the activation share (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynamic' / 'idle VDD dynamic': 0.1007
+for the 8-high HBM3 record, 0.0856 for the 4-high HBM2 record; DERIVED, `power.models.dram_vpp_standby_ratio`).
+It is the `+ipp` term of the Background line. Refresh, burst and activation VPP are not affected.
+
 Non-DRAM technologies (SRAM, STT_MRAM, PCM, RERAM) are charged in system scope
 by the same function device scope uses (1.12.18): CACTI 7 for SRAM, NVSim for
 the NVMs, per-access energy on the measured accesses of every class plus the

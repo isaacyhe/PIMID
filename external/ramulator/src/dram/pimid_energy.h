@@ -186,6 +186,12 @@ struct IDDSpec {
      * VPP Activate / VDD activate (read)). < 0 = none. Never set together with
      * ipp0 (the loader refuses both), so the VPP activation is priced once. */
     double vpp_act_ratio = -1.0;
+    /* (1.12.142) (user ruling 2026-10-28): HBM STANDBY VPP as a RATIO of the VDD
+     * standby power (record idd.vpp_standby; Xilinx XPE 2023.1.2 HBM_Data
+     * 'Idle VPP Dynamic' / 'idle VDD dynamic'), DERIVED, on the same state split
+     * as the VDD background. < 0 = none. Never set together with an ipp row (the
+     * loader refuses both), so the standby VPP is priced once. */
+    double vpp_standby_ratio = -1.0;
 };
 /* 1.12.18: power.models.iddq_write_termination_once (default on). */
 inline bool& iddqWriteTerminationOnceEnabled() { static bool v = true; return v; }
@@ -194,6 +200,8 @@ inline bool& iddqWriteTerminationOnceEnabled() { static bool v = true; return v;
  * (RamulatorWrapper::setEnergyModelSwitches); both default on. */
 inline bool& ioShareSplitEnabled() { static bool v = true; return v; }
 inline bool& vppDynamicEnabled() { static bool v = true; return v; }
+/* (1.12.142): power.models.dram_vpp_standby_ratio (default on): the HBM standby VPP ratio. */
+inline bool& vppStandbyRatioEnabled() { static bool v = true; return v; }
 
 /* ---- 1.11.105: the registry types, declared before the first reader ---- */
 inline std::string baseTech(const std::string& key) {
@@ -2168,9 +2176,23 @@ inline bool dqIoFromAnchoredShare(const std::string& tech) {
  * rail). The DDR5-3200 row carries the 4800 column's IPP rows ((1.12.141), DERIVED). */
 inline double ippUnitMW(const std::string& tech, double active_frac) {
     const IDDSpec s = iddFor(tech);
-    if (s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) return -1.0;
     if (active_frac < 0.0) active_frac = 0.0;
     if (active_frac > 1.0) active_frac = 1.0;
+    if ((s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) && s.vpp_standby_ratio >= 0.0) {
+        /* (1.12.142) (user ruling 2026-10-28): an HBM record publishes no IPP row
+         * (no JEDEC or vendor HBM IPP2N/IPP3N exists), so the pump rail's
+         * standby is priced as the record's ratio x the VDD standby power of
+         * the same unit, on the same state split (IDD3N while a bank is open,
+         * IDD2N otherwise; at the run's temperature, as iddFor gives it). An
+         * energy ratio: no voltage conversion, as the activation ratio. No
+         * refresh VPP term (no IPP5B): the refresh duty keeps the standby VPP,
+         * so nothing is counted twice. power.models.dram_vpp_standby_ratio:
+         * false leaves it unpriced (n/a). */
+        if (!vppStandbyRatioEnabled()) return -1.0;
+        const double k_clk = (s.standby_clock_scale > 0.0) ? s.standby_clock_scale : 1.0;
+        return s.vpp_standby_ratio * s.vdd * (s.idd3n * active_frac + s.idd2n * (1.0 - active_frac)) * k_clk;
+    }
+    if (s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) return -1.0;
     const double k_clk = (s.standby_clock_scale > 0.0) ? s.standby_clock_scale : 1.0;   // (1.12.79) standby clock scaling
     double mw = s.vpp * (s.ipp3n * active_frac + s.ipp2n * (1.0 - active_frac)) * k_clk;
     /* 1.12.18: (bug 3b) the pump rail's refresh: for the tRFC/tREFI duty the
@@ -2609,7 +2631,9 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
     if (pf->bg_guard.valid) {
         const IDDSpec rs = iddFor(tech);
         const int ch = (rs.channels > 0) ? rs.channels : 1;
-        const double bg = backgroundSystemMW(tech, 0.0, false, device_width, 1, ch, defaultEnergyTemperatureK());   // (1.12.101): the run's temperature
+        double bg = backgroundSystemMW(tech, 0.0, false, device_width, 1, ch, defaultEnergyTemperatureK());   // (1.12.101): the run's temperature
+        const double ipp_unit = ippUnitMW(tech, 0.0);   // (1.12.142): the standby VPP the run prices (HBM: per channel)
+        if (ipp_unit > 0.0) bg += ipp_unit * static_cast<double>(ch);
         const double fl = stackFloorSystemMW(tech, ch);
         const double st = std::max(1, hbmStacks(tech, ch));
         const double per_stack = bg / st;
@@ -2617,7 +2641,7 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
         const bool in = (per_stack >= g.lo_mw - 1e-9 && per_stack <= g.hi_mw + 1e-9);
         std::ostringstream o; o.setf(std::ios::fixed); o.precision(1);
         o << "[guard] " << (in ? "" : "WARNING: ") << bt << " background per stack " << per_stack << " mW (datasheet: active standby + refresh at " << defaultEnergyTemperatureK() << " K over "
-          << ch << " channels + stack floor " << (fl > 0.0 ? fl / st : 0.0) << " mW) vs XPE 2023.1.2 like-for-like [" << g.lo_mw << ", " << g.hi_mw
+          << ch << " channels" << (ipp_unit > 0.0 ? " + standby VPP" : "") << " + stack floor " << (fl > 0.0 ? fl / st : 0.0) << " mW) vs XPE 2023.1.2 like-for-like [" << g.lo_mw << ", " << g.hi_mw
           << "] mW (DRAM VDD + VDDQ + VPP rails, record idd.background_guard_mw_stack) -> "
           << (in ? "inside" : (per_stack < g.lo_mw ? "BELOW (reported, not tuned)" : "ABOVE (reported, not tuned)"));
         out.push_back(o.str());

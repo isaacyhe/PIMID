@@ -99,6 +99,13 @@ struct IddBlock {
     bool has_vpp_act = false;
     double vpp_act_ratio = -1.0, vpp_act_alt_ratio = -1.0;
     std::string vpp_act_device, vpp_act_alt_device, vpp_act_provenance, vpp_act_source;
+    /* (1.12.142) (user ruling 2026-10-28): HBM standby VPP priced as a RATIO of the VDD standby
+     * power (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynamic' / 'idle VDD dynamic'), DERIVED;
+     * alt_* is the other XPE stack column, printed beside it. Refused together with an ipp
+     * row (that would price the standby VPP twice). */
+    bool has_vpp_standby = false;
+    double vpp_standby_ratio = -1.0, vpp_standby_alt_ratio = -1.0;
+    std::string vpp_standby_device, vpp_standby_alt_device, vpp_standby_provenance, vpp_standby_source;
     /* 1.12.18 (user ruling 2026-10-24): activate+precharge guard per 1 KB row, nJ (printed, never priced) */
     bool has_act_guard = false;
     double act_guard_lo = -1.0, act_guard_ceiling = -1.0, act_guard_hi = -1.0;

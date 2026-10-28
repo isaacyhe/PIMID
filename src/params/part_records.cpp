@@ -269,6 +269,23 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                     error = "part record " + path + ": idd.vpp_act and an ipp.ipp0 row both price the VPP activation; give one"; return false;
                 }
         }
+        /* (1.12.142) (user ruling 2026-10-28): HBM standby VPP as a ratio of the VDD standby power */
+        if (b["vpp_standby"]) {
+            const YAML::Node v = b["vpp_standby"]; r.idd.has_vpp_standby = true;
+            if (!need(v, "ratio", r.idd.vpp_standby_ratio, error) || !need(v, "device", r.idd.vpp_standby_device, error) ||
+                !need(v, "alt_ratio", r.idd.vpp_standby_alt_ratio, error) || !need(v, "alt_device", r.idd.vpp_standby_alt_device, error) ||
+                !need(v, "provenance", r.idd.vpp_standby_provenance, error) || !need(v, "source", r.idd.vpp_standby_source, error)) {
+                error = "part record " + path + ": idd.vpp_standby: " + error; return false;
+            }
+            if (!(r.idd.vpp_standby_ratio >= 0.0 && r.idd.vpp_standby_ratio < 1.0) ||
+                !(r.idd.vpp_standby_alt_ratio >= 0.0 && r.idd.vpp_standby_alt_ratio < 1.0)) {
+                error = "part record " + path + ": idd.vpp_standby.ratio / alt_ratio must be in [0, 1)"; return false;
+            }
+            for (const auto& kv : r.idd.by_grade)
+                if (kv.second.has_ipp) {
+                    error = "part record " + path + ": idd.vpp_standby and an ipp row both price the standby VPP; give one"; return false;
+                }
+        }
         if (b["background_guard_mw_stack"]) {   // 1.12.18 (user ruling 2026-10-24, floor option 2): guard only
             const YAML::Node g = b["background_guard_mw_stack"]; r.idd.has_bg_guard = true;
             if (!need(g, "lo", r.idd.bg_guard_lo_mw, error) || !need(g, "hi", r.idd.bg_guard_hi_mw, error) ||

@@ -2840,6 +2840,7 @@ static const char* kSchemaPaths[] = {
     "power.models.fu_area_published",   // 1.12.19
     "power.models.mcpat_layout_energy_overhead",   // 1.12.18 (ruling 2026-10-24)
     "power.models.tlb_published_geometry", "power.models.iddq_write_termination_once",   // 1.12.18
+    "power.models.dram_vpp_standby_ratio",   // (1.12.142)
     "power.models.host_mc_phy_static",   // 1.12.18: (user ruling: system-scope host MC PHY static)
     "power.models.idle_halt", "power.models.per_die_process", "power.models.clock_die_trunk",   // PIMID 1.12.18 (rulings 2026-10-23)
     "power.models.host_noc",   // 1.12.23: host on-chip network power
@@ -3250,6 +3251,7 @@ struct UnifiedConfig {
     bool pm_mcpat_layout_energy_overhead = false;   // 1.12.18 (ruling 2026-10-24) power.models.mcpat_layout_energy_overhead
     bool pm_tlb_published_geometry = true;  // 1.12.18: power.models.tlb_published_geometry
     bool pm_iddq_write_termination_once = true;   // 1.12.18: power.models.iddq_write_termination_once
+    bool pm_dram_vpp_standby_ratio = true;        // (1.12.142): power.models.dram_vpp_standby_ratio
     bool pm_host_mc_phy_static = true;      // 1.12.18: power.models.host_mc_phy_static
     /* PIMID 1.12.18 (user rulings 2026-10-23), all default true:
      *   idle_halt        a core/PE with nothing to run is halted, its whole
@@ -22515,6 +22517,7 @@ int main(int argc, char** argv) {
                 config.pm_mcpat_layout_energy_overhead = yamlBool(pmn["mcpat_layout_energy_overhead"], false, "power.models.mcpat_layout_energy_overhead");   // 1.12.18 (ruling 2026-10-24)
                 config.pm_tlb_published_geometry = yamlBool(pmn["tlb_published_geometry"], true, "power.models.tlb_published_geometry");
                 config.pm_iddq_write_termination_once = yamlBool(pmn["iddq_write_termination_once"], true, "power.models.iddq_write_termination_once");
+                config.pm_dram_vpp_standby_ratio = yamlBool(pmn["dram_vpp_standby_ratio"], true, "power.models.dram_vpp_standby_ratio");   // (1.12.142)
                 config.pm_host_mc_phy_static = yamlBool(pmn["host_mc_phy_static"], true, "power.models.host_mc_phy_static");   // 1.12.18
                 /* PIMID 1.12.18 (user rulings 2026-10-23) */
                 config.pm_idle_halt = yamlBool(pmn["idle_halt"], true, "power.models.idle_halt");
@@ -22687,6 +22690,7 @@ int main(int argc, char** argv) {
                              " (power.models.frontend_from_timing: false)" << std::endl;
             pimid::RamulatorWrapper::setEnergyModelSwitches(config.pm_dram_io_share_split, config.pm_dram_vpp_dynamic);
             pimid::RamulatorWrapper::setIddqWriteTerminationOnce(config.pm_iddq_write_termination_once);   // 1.12.18
+            pimid::RamulatorWrapper::setVppStandbyRatio(config.pm_dram_vpp_standby_ratio);   // (1.12.142)
             if (yaml_cfg["power"] && yaml_cfg["power"]["tech_node_nm"]) {
                 int n = yamlInt(yaml_cfg["power"]["tech_node_nm"], config.tech_node_nm, "power.tech_node_nm");
                 config.tech_node_nm = n;
