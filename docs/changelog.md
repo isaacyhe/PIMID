@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.171 -- the NoC links: a link serves one flit of its width per cycle, and only the priced window's traffic is counted
+
+- **Defect (external/zsim/src: garnet_network.h, qemu_zsim_plugin.cpp; src/main.cpp).** The report's link duty (flit
+  traversals over the links' capacity in the window) could exceed 1: DDR5 co-simulation stream_triad (16 ranks, chip
+  tier up-links of 8 bits) printed 1.14 and 1.65. Two causes. (1) A thread-MPI co-simulation keeps counting NoC
+  traffic after the kernel window has closed (the message-passing tail runs on the device PEs): the counters held the
+  kernel and about ten times its traffic on the busiest link, the window only the kernel. (2) Nothing limited a link to
+  its capacity: a tree up-link carries one flit of its width per network cycle (both directions together), but the
+  run time did not depend on how many flits the busiest link had to carry.
+- **Fix.** The records stamped after a message-passing ROI window closed are not replayed and not counted (the run
+  prices the window). The network counts, per tree up-link, the cycles of service the ROI's packets put on it
+  (ceil(message bits / link width) each), with the link width the power model prices the level's links at (one
+  function, `treeLevelLinkWidthBits`; the topology file carries it as `rlinkw`). The run time closes at the busiest
+  link's service time when the PEs' own ends lie below it (the link was the bottleneck; records of the phase not yet
+  drained are included), and the link duty is taken over a window of at least that service time, so it stays within
+  1. The run prints the busiest link's service, and a line when the run time is raised. PE cycles are unchanged.
+- **Validation (smoke sizes, 22 co-simulation cells, HBM3 / DDR5 / DDR5-3200 x 5 kernels, OpenMP and 16-rank MPI).**
+  The two DDR5 stream_triad MPI cells are at duty <= 1 with no power-sanity failure, as are all 22. Cycles, run times
+  and power of the other cells, the NO_OFFLOAD baselines (20 cells) and the standalone device cells (20 cells) are
+  identical; two runs are identical.
+- **Data impact.** Co-simulation message-passing cells: the power and energy fall by 0.1% to 1.1% (the tail traffic
+  is no longer priced); cycles and run times are unchanged. OpenMP co-simulation cells whose busiest tree link is
+  the bottleneck: DDR5 stencil_2d (DDR5-3200) run time 377026 to 489600 cycles (+30%), energy +29%; DDR5 stream_triad
+  101646 to 138080 cycles (+36%), energy +33%. Device runs and host baselines are unchanged where no link is the
+  bottleneck.
+
 ## 1.12.170 -- co-simulation: every thread-MPI rank's kernel runs on the device, inside the priced window
 
 - **Defect (external/zsim/src/qemu_zsim_plugin.cpp).** In an offloading co-simulation of a thread-MPI program, rank 0's

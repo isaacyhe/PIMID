@@ -5589,6 +5589,29 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
     }
 }
 
+/* (1.12.171): the width of a tree level's up-links, in one place. The power model prices the links at this width and
+ * the network's link queues (external/zsim/src/garnet_network.h, "rlinkw" lines) serve one flit of this width per
+ * network cycle, so the duty the report prints is the occupancy the queues enforce. `fallback` is used when the
+ * level has no width of its own (the power model passes the Garnet flit width). */
+static int treeLevelLinkWidthBits(const UnifiedConfig& config, int lvl, int fallback, const char** src_out = nullptr) {
+    int W = fallback;
+    const char* wsrc = "Garnet flit width: no sourced ladder width for this level";
+    if (lvl >= 0 && lvl < 7 && config.network_level_overrides[lvl].link_width_bits > 0) {
+        W = config.network_level_overrides[lvl].link_width_bits;
+        wsrc = "noc.levels override";
+    } else if (lvl >= 0 && lvl < 7 && config.htree_tier_width_bits[lvl] > 0) {
+        W = config.htree_tier_width_bits[lvl];
+        wsrc = "the built tree's link width at this tier";
+    } else if (lvl >= 0 && lvl < 7 && config.sourced_ladder_valid &&
+               !(config.sourced_ladder_placeholder_mask & (1 << lvl)) &&
+               config.sourced_ladder_w[lvl] > 0) {
+        W = config.sourced_ladder_w[lvl];
+        wsrc = "sourced ladder";
+    }
+    if (src_out) *src_out = wsrc;
+    return W;
+}
+
 static double deviceCycleClockMHz(const UnifiedConfig& config);   // 1.11.97 (7c): the device clock the Garnet link latencies are quoted in
 
 static bool dramHTreeBuilder(const std::string& tech,
@@ -5990,6 +6013,15 @@ static bool dramHTreeBuilder(const std::string& tech,
             f << "rlevel " << r << " " << lv << " "
               << ((kids.count(r) && kids[r] >= 2) ? 1 : 0) << " "
               << (wire ? 1 : 0) << "\n";
+        }
+        /* (1.12.171): "rlinkw <router> <bits>", the width of the router's up-link to its parent (the level's tree
+         * link width, the one the power model prices). The network serves one flit of this width per cycle on
+         * the link and queues the packets behind it. */
+        for (int r = 1; r < tree.numRouters; ++r) {
+            int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+            if (lv < 0 || lv > 6) continue;
+            const int w = treeLevelLinkWidthBits(config, lv, 0);
+            if (w > 0) f << "rlinkw " << r << " " << w << "\n";
         }
         /* 1.12.18 (TSV layout): "rdie <router> <core die>" for the chip-slot
          * routers the stated layout placed; the network counts the die
@@ -10120,6 +10152,7 @@ struct GarnetParsedStats {
     uint64_t arbiter_events = 0;
     uint64_t link_traversals = 0;
     uint64_t total_cycles = 0;
+    uint64_t link_busy_max_cycles = 0;   // (1.12.171): the busiest tree up-link's cycles of service in the ROI
     uint64_t total_latency = 0;
     uint32_t num_routers = 0;
     uint32_t num_rows = 0;
@@ -10288,6 +10321,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
             else if (key == "num_cols") stats.num_cols = std::stoul(val);
             else if (key == "flit_size_bits") stats.flit_size_bits = std::stoul(val);
             else if (key == "clock_mhz") stats.clock_mhz = std::stod(val);
+            else if (key == "link_busy_max_cycles") stats.link_busy_max_cycles = std::stoull(val);   // (1.12.171)
         } catch (...) {
             // Skip unparseable lines
         }
@@ -10810,25 +10844,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
          * its routers (and a pass-through level, which has no router line,
          * gets one). */
         auto levelWidth = [&](int lvl, const char** wsrc_out) -> int {
-            int W = garnet_flit;
-            const char* wsrc = "Garnet flit width: no sourced ladder width for this level";
-            if (lvl < 7 && config.network_level_overrides[lvl].link_width_bits > 0) {
-                W = config.network_level_overrides[lvl].link_width_bits;
-                wsrc = "noc.levels override";
-            } else if (lvl < 7 && config.htree_tier_width_bits[lvl] > 0) {
-                /* 1.11.97 (review H20): the width the built tree carries at this
-                 * tier -- the per-node link Garnet runs on -- not the ladder's
-                 * aggregate rung (an HBM chip tier at 1024 b vs 64 b per node). */
-                W = config.htree_tier_width_bits[lvl];
-                wsrc = "the built tree's link width at this tier";
-            } else if (config.sourced_ladder_valid &&
-                       !(config.sourced_ladder_placeholder_mask & (1 << lvl)) &&
-                       config.sourced_ladder_w[lvl] > 0) {
-                W = config.sourced_ladder_w[lvl];
-                wsrc = "sourced ladder";
-            }
-            if (wsrc_out) *wsrc_out = wsrc;
-            return W;
+            return treeLevelLinkWidthBits(config, lvl, garnet_flit, wsrc_out);
         };
 
         /* 1.12.18 (user rulings "make the power model complete" and "mcpat
@@ -11230,6 +11246,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                 const double cyc_mhz = deviceCycleClockMHz(config);
                 if (lk.clock_mhz > 0.0 && cyc_mhz > 0.0) net_cycles *= (lk.clock_mhz / cyc_mhz);
             }
+            /* (1.12.171): the run time is held at the busiest up-link's service time (the plugin), so a link is never
+             * priced as busy for longer than the window it is spread over; the later tail traffic can add to it. */
+            net_cycles = std::max(net_cycles, static_cast<double>(garnet.link_busy_max_cycles));
             lk.duty_cycle = (net_cycles > 0.0)
                 ? static_cast<double>(acc) / (net_cycles * n_links) : 0.0;
             pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " links ("

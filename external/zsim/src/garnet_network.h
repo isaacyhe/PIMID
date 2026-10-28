@@ -296,6 +296,13 @@ private:
     std::vector<uint8_t> routerBranch_;
     std::vector<uint8_t> routerWire_;   // 1.12.18: "rlevel" 4th field (single in/out path)
     std::vector<int> routerParent_;
+    /* (1.12.171): "rlinkw <router> <bits>": the width of the router's up-link to its parent (0 / absent = unbounded).
+     * The link serves one flit of this width per network cycle, both directions together: the capacity the
+     * reported link duty is measured against. edgeBusy_[r] is the cycles of service the packets counted so far
+     * have put on the up-link of router r (rebased at roi_begin with the other counters). */
+    std::vector<uint32_t> routerUpBits_;
+    std::atomic<uint64_t> roiEndCycle_{UINT64_MAX};   // (1.12.171): UINT64_MAX = no window end yet
+    std::vector<uint64_t> edgeBusy_;
     std::vector<int> routerStackDie_;   // 1.12.18: core die of a chip-slot router ("rdie" lines); -1 / empty = none
     std::vector<int> routerDepth_;
     bool customIsTree_ = false;
@@ -1237,6 +1244,17 @@ private:
      * Callable from any thread (uses thread_local gem5 tick/EventQueue).
      */
     void runBatchDrain_(std::vector<BatchAccess> batch, uint64_t phaseNum) {
+        /* (1.12.171): a record stamped after the ROI window closed (the message-passing tail that runs on the device
+         * PEs once the kernel window is over) is outside what the run prices: it is neither replayed nor counted,
+         * so the counters of the link duty and the router duty cover the window they are spread over. */
+        {
+            const uint64_t endC = roiEndCycle_.load(std::memory_order_acquire);
+            if (endC != UINT64_MAX) {
+                batch.erase(std::remove_if(batch.begin(), batch.end(),
+                                           [endC](const BatchAccess& a) { return a.cycle > endC; }), batch.end());
+                if (batch.empty()) return;
+            }
+        }
         futex_lock(&garnetLock_);
 
         if (!garnetInitialized_) {
@@ -1503,6 +1521,34 @@ public:
 
     const GarnetStats& getGarnetStats() const { return stats_; }
 
+    /* (1.12.171): the service the busiest tree up-link has had in the ROI, in network cycles (the counted packets). */
+    /* (1.12.171): the ROI window closed at `cycle` (ROI-relative, the records' axis): later records are not priced. */
+    void setRoiEnd(uint64_t cycle) { roiEndCycle_.store(cycle, std::memory_order_release); }
+    uint64_t linkBusyMaxCycles() const {
+        uint64_t m = 0;
+        for (uint64_t v : edgeBusy_) m = std::max(m, v);
+        return m;
+    }
+    /* (1.12.171): the same, with the records still waiting for their drain (read only, nothing is counted): the
+     * floor the run time takes when it closes, before the last phase is drained. */
+    uint64_t linkBusyMaxCyclesProjected() {
+        if (routerUpBits_.empty()) return 0;
+        std::vector<uint64_t> busy = edgeBusy_;
+#ifdef HAVE_GARNET
+        futex_lock(&batchLock_);
+        const uint64_t endC = roiEndCycle_.load(std::memory_order_acquire);
+        for (const auto& a : phaseBatch_)
+            if (a.src != a.dst && a.src < numNodes_ && a.dst < numNodes_ && a.cycle <= endC) addPathService_(a.src, a.dst, a.ctrl != 0, busy);
+        for (const auto& kv : pendingByPhase_)
+            for (const auto& a : kv.second)
+                if (a.src != a.dst && a.src < numNodes_ && a.dst < numNodes_ && a.cycle <= endC) addPathService_(a.src, a.dst, a.ctrl != 0, busy);
+        futex_unlock(&batchLock_);
+#endif
+        uint64_t m = 0;
+        for (uint64_t v : busy) m = std::max(m, v);
+        return m;
+    }
+
     /* 1.11.90: drop the pre-ROI traffic. The network is driven by the memory
      * hierarchy from process start (the plugin records by default), so the
      * serial array-init traffic reached these counters and was then priced
@@ -1546,6 +1592,8 @@ public:
         stats_.indie_grid_link_flit_traversals = 0;  // (1.12.143)
         for (int l = 0; l < 7; l++) stats_.level_tsv_die_crossings[l] = 0;   // 1.12.18
         for (int b = 0; b < 65; b++) stats_.tsv_dies_hist[b] = 0;
+        std::fill(edgeBusy_.begin(), edgeBusy_.end(), 0);   // (1.12.171)
+        roiEndCycle_.store(UINT64_MAX, std::memory_order_release);   // (1.12.171)
         stats_.measured_crossbar_flits = 0;
         stats_.measured_buffer_reads = 0;
         stats_.measured_buffer_writes = 0;
@@ -1759,6 +1807,9 @@ public:
              stats_.data_msg_bits, stats_.control_msg_bits);
         info("  Total hops: %lu (router-to-router links per packet; the latency input)",
              stats_.total_hops);
+        if (!routerUpBits_.empty())
+            info("  Busiest tree link: %lu cycle(s) of service in the ROI (each link serves one flit of its width per cycle, both directions together)",
+                 (unsigned long)linkBusyMaxCycles());
         info("  Router traversals: %lu (flits x routers crossed, routers = links + 1)",
              stats_.total_router_traversals);
         info("  Link traversals: %lu (flits x router-to-router links)",
@@ -1858,6 +1909,7 @@ public:
         fprintf(f, "garnet.data_msg_bits = %u\n", stats_.data_msg_bits);
         fprintf(f, "garnet.control_msg_bits = %u\n", stats_.control_msg_bits);
         fprintf(f, "garnet.clock_mhz = %.1f\n", stats_.clock_mhz);
+        fprintf(f, "garnet.link_busy_max_cycles = %lu\n", (unsigned long)linkBusyMaxCycles());   // (1.12.171)
         fprintf(f, "garnet.level_source = %s\n",
                 stats_.level_source.empty() ? "none" : stats_.level_source.c_str());
         fprintf(f, "garnet.measured_crossbar_flits = %lu\n", stats_.measured_crossbar_flits);
@@ -2334,6 +2386,27 @@ private:
         return true;
     }
 
+    /* (1.12.171): cycles a packet occupies the up-link of router `child`: ceil(message bits / link width). */
+    uint64_t linkServiceCycles_(uint32_t child, bool ctrl) const {
+        const uint32_t w = child < routerUpBits_.size() ? routerUpBits_[child] : 0;
+        if (w == 0) return 0;
+        const uint32_t b = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
+        return std::max<uint64_t>(1, (b + w - 1) / w);
+    }
+    void addPathService_(uint32_t src, uint32_t dst, bool ctrl, std::vector<uint64_t>& busy) const {
+        if (routerUpBits_.empty() || topology_ != NoCTopology::CUSTOM) return;
+        thread_local std::vector<uint32_t> path;
+        if (!pathRouters_(src, dst, path)) return;
+        for (size_t i = 0; i + 1 < path.size(); i++) {
+            const uint32_t a = path[i], b = path[i + 1];
+            const uint32_t child = (routerDepth_[a] > routerDepth_[b]) ? a : b;
+            const uint64_t sv = linkServiceCycles_(child, ctrl);
+            if (!sv) continue;
+            if (busy.size() <= child) busy.resize(routerUpBits_.size(), 0);
+            busy[child] += sv;
+        }
+    }
+
     /* 1.11.92 (F2): ONE place that counts a packet. Replaces five copies of
      * "total_flits += 1; buffer_reads += hops; ...", which counted a packet
      * as one flit and a router traversal as a link hop. */
@@ -2359,6 +2432,10 @@ private:
                 if (lv < 0 || lv > 6) continue;
                 stats_.level_link_flit_traversals[lv] += flits;
                 linkAttributed++;
+                if (child < routerUpBits_.size() && routerUpBits_[child] > 0) {   // (1.12.171): service on this up-link
+                    if (edgeBusy_.size() < routerUpBits_.size()) edgeBusy_.resize(routerUpBits_.size(), 0);
+                    edgeBusy_[child] += linkServiceCycles_(child, ctrl);
+                }
                 /* an L3 router's up-link to the hub crosses its die index */
                 const int plv = (other < routerLevel_.size()) ? routerLevel_[other] : -1;
                 if (lv == 3 && plv >= 4 && child < routerStackDie_.size() && routerStackDie_[child] > 0) {
@@ -2624,6 +2701,11 @@ private:
                 if (iss >> lat) { if (!(iss >> w)) w = 0; }
                 if (epWidth_.size() <= ep) epWidth_.resize(ep + 1, 0);
                 epWidth_[ep] = w;
+            } else if (token == "rlinkw") {
+                uint32_t r = 0, bits = 0;
+                iss >> r >> bits;
+                if (routerUpBits_.size() <= r) routerUpBits_.resize(r + 1, 0);
+                routerUpBits_[r] = bits;
             } else if (token == "rdie") {
                 /* 1.12.18 (TSV layout): "rdie <router> <core die>", the stack
                  * die main.cpp placed a chip-slot router on. */

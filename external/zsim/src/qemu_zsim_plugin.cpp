@@ -966,6 +966,23 @@ static void lockStore(uint32_t tid, uint64_t addr, qemu_plugin_meminfo_t info) {
 static uint32_t g_roiTlCid = ~0u;
 static uint64_t g_roiTlBegin = 0;
 
+/* (1.12.171): a link serves one flit of its width per cycle, so the ROI cannot be shorter than the service the
+ * busiest tree link has had to give the traffic it carried (the network counts it per up-link, at the width the
+ * power model prices the link at). The run time closes at that service time when the PEs' own ends lie below it:
+ * the link was the bottleneck, and the link duty the report prints stays within 1. The records of the phase not
+ * yet drained are included (read only). Network cycles are device cycles. */
+static uint64_t roiWallLinkFloor(uint64_t cur, const char* what) {
+    uint64_t fl = 0;
+    if (zinfo->garnetNetwork) fl = std::max(fl, zinfo->garnetNetwork->linkBusyMaxCyclesProjected());
+    if (zinfo->systemGarnetNetwork) fl = std::max(fl, zinfo->systemGarnetNetwork->linkBusyMaxCyclesProjected());
+    if (fl > cur) {
+        info("[roi] run time raised from %lu to %lu cycles: the busiest tree link needs that long to carry the ROI's traffic (%s)",
+             (unsigned long)cur, (unsigned long)fl, what);
+        return fl;
+    }
+    return cur;
+}
+
 static void roiWallBegin(uint32_t tid) {   // non-thread-MPI roi_begin (re-opens on a repeat)
     if (tid < MAX_THREADS && thread_initialized[tid] && cids[tid] < zinfo->numCores && zinfo->cores[cids[tid]]) {
         g_roiTlCid = cids[tid]; g_roiTlBegin = zinfo->cores[cids[tid]]->getCycles();
@@ -984,6 +1001,7 @@ static void roiWallEnd(uint32_t tid, const char* how) {
     const uint64_t e = (tid < MAX_THREADS) ? roiWallStamp(tid)
                      : (uint64_t)zinfo->numPhases * (zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000);
     zinfo->roiWall.endStamp = (e > zinfo->roiWall.beginStamp) ? e : zinfo->roiWall.beginStamp;
+    if (!g_spCut) zinfo->roiWall.endStamp = zinfo->roiWall.beginStamp + roiWallLinkFloor(zinfo->roiWall.endStamp - zinfo->roiWall.beginStamp, how);   // (1.12.171)
     zinfo->roiWall.ended = true;
     info("[roi] run time: ROI elapsed %lu cycles on the global phase clock (stamps %lu -> %lu, %s) [1.12.18, ruling 2026-10-23]",
          (unsigned long)zinfo->roiWall.cycles(), (unsigned long)zinfo->roiWall.beginStamp,
@@ -1037,6 +1055,7 @@ static void roiWallEnd(uint32_t tid, const char* how) {
             for (uint32_t nd = 0; nd < zinfo->nodeMap.numNodes && nd < 16; nd++)
                 if (endCore >= zinfo->nodeMap.nodes[nd].coreStart && endCore < zinfo->nodeMap.nodes[nd].coreEnd) f = zinfo->nodeMap.nodes[nd].freqMHz;
         zinfo->roiWall.mpiEndFreqMHz = f;   // 0 = the device PEs' (the replay's own) clock
+        if (f == 0) mx = roiWallLinkFloor(mx, how);   // (1.12.171)
         zinfo->roiWall.mpiEnd = mx;
         zinfo->roiWall.source = 3;
         info("[roi] run time: ROI elapsed %lu cycles = the latest %s ROI end on its own clock (%lu core(s), core %d; single-process cut, %s) [1.12.18, ruling 2026-10-24 (a)]",
@@ -1094,6 +1113,11 @@ static void roiWallCloseMpi(const char* how) {
             if (probe >= zinfo->nodeMap.nodes[nd].coreStart && probe < zinfo->nodeMap.nodes[nd].coreEnd) f = zinfo->nodeMap.nodes[nd].freqMHz;
         zinfo->roiWall.mpiEndFreqMHz = hostRanks ? f : 0;   // device PEs: the replay's own clock
     }
+    if (!hostRanks && fromMarkers) {   // (1.12.171): traffic after the kernel window is outside what is priced
+        if (zinfo->garnetNetwork) zinfo->garnetNetwork->setRoiEnd(mx);
+        if (zinfo->systemGarnetNetwork) zinfo->systemGarnetNetwork->setRoiEnd(mx);
+    }
+    if (!hostRanks) mx = roiWallLinkFloor(mx, how);   // (1.12.171)
     zinfo->roiWall.mpiEnd = mx;
     zinfo->roiWall.source = 2;
     zinfo->roiWall.ended = true;
