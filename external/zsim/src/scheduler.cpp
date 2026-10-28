@@ -104,7 +104,6 @@ bool IsSleepingInFutex(uint32_t linuxPid, uint32_t linuxTid, uintptr_t futexAddr
 
 
 void Scheduler::watchdogThreadFunc() {
-    info("Started scheduler watchdog thread");
     uint64_t lastPhase = 0;
     int multiplier = 1;
     uint64_t lastMs = 0;
@@ -303,6 +302,9 @@ void Scheduler::threadTrampoline(void* arg) {
 }
 
 void Scheduler::startWatchdogThread() {
+    /* (1.12.174): announced here, by the starting thread, so the line keeps its place in the run log (printed by the new
+     * thread it landed before or after the next line of the starting thread, as the host scheduled them) */
+    info("Started scheduler watchdog thread");
     pthread_t watchdog_thread;
     pthread_attr_t attr;
     pthread_attr_init(&attr);

@@ -96,6 +96,7 @@ ContentionSim::ContentionSim(uint32_t _numDomains, uint32_t _numSimThreads) {
     threadTicket = 0;
     __sync_synchronize();
     for (uint32_t i = 0; i < numSimThreads; i++) {
+        info("Started contention simulation thread %u", i);   // (1.12.174): announced by the starting thread (see Scheduler::startWatchdogThread)
         pthread_t csim_thread;
         pthread_attr_t attr;
         pthread_attr_init(&attr);
@@ -270,7 +271,6 @@ void ContentionSim::enqueueCrossing(CrossingEvent* ev, uint64_t cycle, uint32_t 
 }
 
 void ContentionSim::simThreadLoop(uint32_t thid) {
-    info("Started contention simulation thread %d", thid);
 #if 0
     //Pin
     uint32_t nprocs = sysconf(_SC_NPROCESSORS_ONLN);

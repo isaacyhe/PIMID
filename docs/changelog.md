@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.174 -- the run log's thread-start lines keep their place
+
+- **Problem.** The standard output of two runs of one cell differed in line order: "Started scheduler watchdog
+  thread" came before or after "SIMD width: 128 bits" (3 of 8 runs of a co-sim MPI cell, stdout captured alone).
+- **Root cause.** The scheduler's watchdog thread and the contention-simulation threads announced themselves from
+  the new thread, so the line landed wherever the host scheduled that thread against the starting thread's output.
+- **Fix (external/zsim/src/scheduler.cpp, contention_sim.cpp).** The starting thread prints both announcements
+  before it creates the thread; the text is unchanged.
+- **Data impact.** None: two lines keep one place in the log; no value changes.
+
 ## 1.12.173 -- DDR5 bank-parallel placements: host read/write turnaround, same-bank-group spacing, and a host write drain sized to the channel queue
 
 - **The gap.** 1.12.169 gave the host's column commands the data-bus burst (BL/2 clocks) and nothing else of the standard's
