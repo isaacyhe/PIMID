@@ -501,6 +501,15 @@ the plugin counts both) at lanes x line rate x pJ/bit, the active bits at bytes 
 8 x pJ/bit. The whole-run L0 figure is printed as information. A UCIe link that carries nothing is
 clock-gated, at 0.05/0.33 of its full-rate per-bit power (Shivnaraine et al.,
 ISSCC 2026 8.3; the UCIe 1.1 KPI: savings >= 85%, 0.5-1 ns entry/exit).
+The SerDes-class link controller's LOGIC (transaction, data link and PHY-layer
+logic; (1.12.156), user ruling 2026-10-28) is priced per end for the whole run from
+the published FPGA hard block: the UltraScale+ PCI Express integrated block's
+VCCINT current per link speed and width (Xilinx Power Estimator 2023.1.2, 16 nm,
+at 0.85 V), the table row for a PCIe gen1-gen4 x1-x16 link, the least-squares line
+over the 20 rows in lanes x GT/s for any other (Gen5, CXL, NVLink, UALink: an
+extrapolation, DERIVED), scaled to the run's node by the published-silicon logic
+ratio (DeepScaleTool). It replaces McPAT's controller dynamic; McPAT keeps the
+controller's area and leakage.
 NVLink and UALink need `power.link.controller_clock_mhz`: they have no published
 controller clock, and the run is refused without one. `power.models.ucie_link:
 false` restores the pre-1.12.18 interposer pricing.

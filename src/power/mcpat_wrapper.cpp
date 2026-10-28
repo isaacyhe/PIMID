@@ -4582,6 +4582,7 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <stat name=\"link_pj_per_bit\" value=\"" << pcie_stats_.link_pj_per_bit << "\"/>\n";
         /* (user ruling 2026-10-27: serial links calibrated): the idle link is priced (L0 SerDes; UCIe clock-gated). */
         xml << "      <param name=\"link_idle_l0\" value=\"1\"/>\n";
+        xml << "      <param name=\"link_ctrl_published\" value=\"1\"/>\n";   // (user ruling 2026-10-28: link controller logic priced)
         xml << "      <param name=\"link_l0_idle_s\" value=\"" << pcie_stats_.link_l0_idle_s << "\"/>\n";
         xml << "      <param name=\"link_l1_exits\" value=\"" << pcie_stats_.link_l1_exits << "\"/>\n";
         xml << "      <param name=\"link_l1_exit_s\" value=\"" << pcie_stats_.link_l1_exit_s << "\"/>\n";

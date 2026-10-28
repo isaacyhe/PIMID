@@ -85,6 +85,10 @@ class PCIeController : public Component {
     double ucie_phy_joules = 0.0;
     double ucie_phy_w = 0.0;
     double ctrl_dyn_per_cycle = 0.0;
+    /* PIMID (user ruling 2026-10-28: link controller logic priced): the published node ratio for logic
+     * energy from 16 nm to this McPAT run's node (pimid_logic_op_scale), set at construction */
+    double pimid_ctrl_scale = 1.0;
+    bool   pimid_ctrl_scale_silicon = false;
     double ctrl_dyn_excluded_w = 0.0;
     double clock_mhz = 0.0;
     bool   clock_derived = false;

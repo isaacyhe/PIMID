@@ -701,6 +701,9 @@ typedef struct{
 	double link_l0_idle_s;
 	double link_l1_exits;
 	double link_l1_exit_s;
+	/* PIMID (user ruling 2026-10-28: link controller logic priced): 1 = price the SerDes-class link controller's
+	 * logic from the published FPGA hard-block figures (iocontrollers.cc); 0 = McPAT's model */
+	int link_ctrl_published;
 } system_pcie;
 
 typedef struct{

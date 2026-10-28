@@ -257,6 +257,8 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 	   */
 	  set_pcie_param();
 	  local_result = init_interface(&interface_ip);
+	  /* PIMID (user ruling 2026-10-28: link controller logic priced): 16 nm (the FPGA hard block's node) -> this run's node */
+	  pimid_ctrl_scale = pimid_logic_op_scale(16.0, 0.85, &pimid_ctrl_scale_silicon);
 
 	  if (pciep.type == 0) //high performance NIU
 	  {
@@ -533,6 +535,53 @@ void PCIeController::computeEnergy(bool is_tdp)
     		const double e_end = p_l0 * l0_s + p_l1 * l1_s;
     		const double e_bits = bytes_all * 8.0 * XML->sys.pcie.link_pj_per_bit * 1e-12;   // 0 at the far end
     		const double clk = (pciep.clockRate > 0) ? pciep.clockRate : 1.0;
+    		/* PIMID (user ruling 2026-10-28: link controller logic priced): THE CONTROLLER'S LOGIC, PUBLISHED.
+    		 * McPAT's controller dynamic (Cadence ChipEstimate 65 nm per lane x the MEASURED duty,
+    		 * a few microwatts on an offload run) gave way to the only public per-configuration
+    		 * figure found: the PCI Express integrated block of the AMD/Xilinx UltraScale+ family
+    		 * (16 nm FinFET), Xilinx Power Estimator 2023.1.2 (UltraScalePlus_XPE_2023_1_2.xlsm,
+    		 * public download, Production release; sheet PCIE_Data, the VCCINT current of the
+    		 * block per link speed and width, read by the GTY/GTH sheets' "PCIe" column with
+    		 * VCCINT_N = VCCINT / 0.85, i.e. the currents are at the 0.85 V nominal VCCINT). The
+    		 * block holds the transaction, data link and the PHY layer's logic; the transceivers
+    		 * are priced apart (the SerDes terms above). Its estimate has no traffic input: the
+    		 * block draws it while it is configured, so it is charged for the whole run, per end.
+    		 * Currents (mA), x1 / x2 / x4 / x8 / x16:
+    		 *   2.5 GT/s 129.33 129.65 137.55 157.38 193.08     5 GT/s 129.37 139.55 153.75 177.28 238.23
+    		 *   8 GT/s   136.30 148.36 184.43 217.32 459.93     16 GT/s 153.77 183.37 228.26 414.80, x16 588.23
+    		 *   (16 GT/s x16: the PCIE4C block's 500 MHz core, the configuration that carries it)
+    		 * A link whose lane rate and width are a row of this table takes the row; any other
+    		 * (Gen5, CXL, NVLink, UALink) takes the least-squares line over the 20 rows,
+    		 * I = 117.95 + 1.98762 x (lanes x GT/s) mA (R^2 0.953), an EXTRAPOLATION in
+    		 * bandwidth (DERIVED). Power at 16 nm = I x 0.85 V, scaled to this node by the
+    		 * published-silicon logic-energy ratio (DeepScaleTool, ISCAS 2021, via
+    		 * pimid_logic_op_scale; DERIVED). */
+    		double ctrl_w = 0.0;
+    		if (XML->sys.pcie.link_ctrl_published == 1) {
+    			static const double kRate[4] = {2.5, 5.0, 8.0, 16.0};
+    			static const double kLanes[5] = {1, 2, 4, 8, 16};
+    			static const double kmA[4][5] = {{129.333, 129.647, 137.554, 157.377, 193.082},
+    			                                 {129.367, 139.552, 153.747, 177.278, 238.232},
+    			                                 {136.299, 148.364, 184.430, 217.318, 459.928},
+    			                                 {153.767, 183.368, 228.264, 414.799, 588.233}};
+    			double ma = -1.0;
+    			for (int r = 0; r < 4; r++) for (int l = 0; l < 5; l++)
+    				if (fabs(pciep.serdes_lane_gbps - kRate[r]) < 1e-9 && fabs(lanes - kLanes[l]) < 1e-9) ma = kmA[r][l];
+    			const bool row = (ma >= 0.0);
+    			if (!row) ma = 117.95 + 1.98762 * lanes * pciep.serdes_lane_gbps;
+    			const double w16 = ma * 1e-3 * 0.85;
+    			ctrl_w = w16 * pimid_ctrl_scale;
+    			const double mcpat_ctrl_w = ctrl_dyn_per_cycle * pciep.perc_load * clk;
+    			rt_power.readOp.dynamic = 0.0;   // McPAT's controller dynamic is replaced (the same silicon)
+    			rt_power.readOp.dynamic += ctrl_w / clk;
+    			pimid::debugStream(std::cerr) << "[link] controller logic (McPAT PIMID): " << lanes << " lanes x "
+    			          << pciep.serdes_lane_gbps << " GT/s = " << lanes * pciep.serdes_lane_gbps << " Gb/s; "
+    			          << (row ? "XPE row " : "XPE least-squares line (DERIVED) ") << ma << " mA x 0.85 V = " << w16
+    			          << " W at 16 nm x node ratio " << pimid_ctrl_scale
+    			          << (pimid_ctrl_scale_silicon ? " (DeepScaleTool)" : " (CACTI, no published-silicon row)")
+    			          << " = " << ctrl_w << " W per end, whole run; replaces McPAT's controller dynamic "
+    			          << mcpat_ctrl_w << " W" << std::endl;
+    		}
     		rt_power.readOp.dynamic += (e_end / T) / clk + (e_bits / T) / (units * clk);
     		pimid::debugStream(std::cerr) << "[link] SerDes idle (McPAT PIMID, ASPM L1): " << lanes << " lanes; L0 "
     		          << l0_s << " s x " << p_l0 << " W (" << pciep.serdes_lane_gbps << " Gb/s x "

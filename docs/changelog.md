@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.156 -- Serial links: the link controller's logic priced from a published hard block, per class and bandwidth
+
+- **Controller logic (user ruling 2026-10-28):** the PCIe / CXL / NVLink / UALink link controller's dynamic power was
+  McPAT's model (Cadence ChipEstimate 65 nm per lane) times the measured link duty, a few microwatts on an offload
+  run, and was information only for want of a published figure. The one public per-configuration figure found is the
+  UltraScale+ (16 nm) PCI Express integrated block in the Xilinx Power Estimator 2023.1.2 (public, Production): its
+  VCCINT current per link speed (2.5 / 5 / 8 / 16 GT/s) and width (x1-x16), at the 0.85 V nominal VCCINT (the
+  estimator scales it by VCCINT / 0.85). The block holds the transaction, data link and PHY-layer logic (the
+  transceivers are priced apart), and the estimator has no traffic input, so each end is charged for the whole run:
+  the table row for a PCIe gen1-gen4 link of a listed width, else the least-squares line over the 20 rows, I = 117.95
+  + 1.98762 x (lanes x GT/s) mA (R^2 0.953; Gen5, CXL, NVLink and UALink are an extrapolation in bandwidth, DERIVED),
+  x 0.85 V, scaled from 16 nm to the run's node by DeepScaleTool's published-silicon logic ratio (DERIVED). It
+  replaces McPAT's controller dynamic (the same silicon); McPAT keeps the area and leakage. Searched without a usable
+  number: vendor controller IP briefs (Synopsys, Cadence, Rambus, PLDA, Renesas: features only), ISSCC / VLSI / Hot
+  Chips controller papers (PHY figures only).
+- **Impact:** co-sim runs with a SerDes-class host-device link: each end's link controller rises from milliwatts to
+  0.49-8.5 W at 22 nm (node ratio 1.380): PCIe Gen3 x16 0.54 W, Gen4 x8 0.49 W, Gen4 x16 0.69 W, Gen5 x8 0.74 W,
+  Gen5 x16 and CXL 2.0 1.33 W, CXL 3.0 2.53 W, UALink x4 2.00 W, NVLink 3.0 5.73 W, NVLink-C2C 8.53 W (the last five
+  from the extrapolation). Interposer (UCIe) and DRAM-channel links, device-scope and host-only runs: unchanged.
+
 ## 1.12.155 -- docs: code comments name their releases; the figure scripts write the current configuration shape
 
 - **Code comments (no code change).** 117 release placeholders "(next, ...)" left in source comments (src/,
