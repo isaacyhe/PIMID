@@ -231,7 +231,10 @@ that includes a thread that rejoins after a wait while its core runs another
 thread: it waits in that queue, and the queue is served once every join the turn
 caused has arrived. Before, the threads one turn woke took the free and parked
 cores in the order their host threads arrived, so with more threads than cores
-(the 4-core co-sim cells run 16) the runs differed from program start. The
+(the 4-core co-sim cells run 16) the runs differed from program start. Since (1.12.161)
+the order also holds after the ROI's end, until the statistics are written: a
+co-sim MPI cell's post-ROI collective (its protocol tail) and the DRAM replay's
+last records ran in the host's order. The
 simulated time still comes from the model; the host decides neither the order
 in which threads touch shared state nor which core a thread gets. The cost is
 host time: OpenMP device cells take about a fifth longer to simulate.

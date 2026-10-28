@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.161 -- co-sim MPI cells repeat after the ROI too; the runtime's removed-instruction count repeats
+
+- **Problem.** Two runs of a co-sim MPI cell (1 host core, 8 PEs, 8 ranks) gave the same kernel window but a
+  different post-ROI collective tail and DRAM-replay statistics (cosim_DDR4_histogram_mpi: rank 0's tail 544259 vs
+  552025 cycles, rank 7's 164001 vs 150135; "read(s) took an epoch" 13869 vs 14513), so a figure that adds the tail
+  differed between duplicate jobs. OpenMP co-sim cells printed a different "[pim-runtime] ... runtime code not
+  executed on the PE: N instrs" in each run (2-16 instructions apart; timing and the removed memory accesses equal).
+- **Root cause.** The fixed thread order (1.12.123, 1.12.158) stopped at the ROI's end, but a co-sim MPI cell keeps
+  simulating its ranks' closing collective and replaying DRAM records until the statistics are written. The removed
+  instructions were counted on every executed runtime block, also after the ROI's end, while the statistics were
+  being printed; the removed memory accesses were counted inside the ROI only.
+- **Fix (external/zsim/src/qemu_zsim_plugin.cpp).** The fixed order holds from the program's start until the
+  statistics are written (`detActive`), not only while the ROI is open; the removed instructions are counted inside
+  the ROI, as the memory accesses are.
+- **Data impact.** Cycles, power and every CSV column unchanged on the 116-cell validation set and the 40-cell
+  exact-repeat sample (10 rehearsal cells and the 30 4-core co-sim cells). The removed-instruction count of co-sim
+  OpenMP cells drops by the instructions run after the ROI's end (cosim_DDR5_omp_stream_triad_g3200_4core 3676 ->
+  3674; most cells unchanged). The protocol tail and the replay statistics of co-sim MPI cells now repeat; the tail
+  value is one of those seen before. Host time unchanged (40 cells: 4071 s -> 4073 s).
+
 ## 1.12.160 -- docs: the documentation and the run's report give each number with its method and published sources
 
 - **Documentation.** README.md, docs/*.md (every changelog entry included, in wording only) and the part records
