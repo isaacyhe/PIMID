@@ -6,6 +6,15 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.148 -- statistics: the replayed DRAM latency charged at each device memory interface
+
+- **New counters (external/zsim pe_memory_interface.h, `pe-mi-*` groups).** `replayPriced` counts the accesses an
+  interface priced at the DRAM epoch replay's measured service latency, and `replayLat` sums the latency charged to
+  them (core cycles). `replayLat / replayPriced` is the device's charged mean, comparable with the replay's own
+  `dramReplay` `latencySum / ctrlRequests`; the host side already had both views (`mem-0` `rdlat`, `wrlat`, which
+  include the host-path adder, and `hostLatencySum / hostRequests`).
+- **Data impact.** None: two counters added to the statistics dump; no timing, power or existing counter changes.
+
 ## 1.12.147 -- a memory of type Ramulator (HOST_MC placement) is a replayed controller; the weave-timed Ramulator controller is removed
 
 - **Problem (user ruling 2026-10-28: "move HOST_MC placement and system devices of type Ramulator onto the epoch

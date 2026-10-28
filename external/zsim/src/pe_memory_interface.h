@@ -114,6 +114,7 @@ protected:
     Counter profRemoteAccesses_;
     Counter profLocalLatency_;
     Counter profRemoteLatency_;
+    Counter profReplayPriced_, profReplayLat_;   // (1.12.148): accesses priced by the DRAM epoch replay and the replayed service latency they were charged (charged vs measured check)
     NocWireData::Stream wireStream_;   // this source port's last flit per width (user ruling 2026-10-25: measured wire activity)
     /* The access's line, read ONCE per access and shared by the measured DQ statistics and the
      * measured wire activity (user ruling 2026-10-25: measured wire activity): the DQ count reads it (localAccessLatency, which every
@@ -1362,6 +1363,10 @@ public:
         s->append(&profLocalLatency_);
         profRemoteLatency_.init("remoteLat", "Total remote access latency cycles");
         s->append(&profRemoteLatency_);
+        profReplayPriced_.init("replayPriced", "Accesses priced at the DRAM epoch replay's measured service latency (the dramReplay priced count, per interface)");
+        s->append(&profReplayPriced_);
+        profReplayLat_.init("replayLat", "Replayed DRAM service latency charged to those accesses (core cycles; compare with dramReplay latencySum / ctrlRequests)");
+        s->append(&profReplayLat_);
         profReads_.init("rd", "Read requests");
         s->append(&profReads_);
         profWrites_.init("wr", "Write requests");
@@ -1555,7 +1560,12 @@ protected:
             uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, DramEpochReplay::kDramReadLagEpochs)
                                    : zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
             zinfo->dramReplay->notePriced(v > 0);
-            if (v > 0) { if (byReplay) *byReplay = true; return v; }
+            if (v > 0) {
+                profReplayPriced_.atomicInc();   // (1.12.148): the charged side of the charged vs measured latency check
+                profReplayLat_.atomicInc(v);
+                if (byReplay) *byReplay = true;
+                return v;
+            }
         }
         if (cutPricing() && maxRequestsPerCycle_ > 0.0 &&   // 1.12.18: single-process cut too
             zinfo->hierarchy.mpiNocBaselined) {
