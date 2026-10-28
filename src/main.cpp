@@ -9951,7 +9951,13 @@ static bool linkClassTimingPreset(const std::string& t, int lanes, LinkClassTimi
     return o.bw_GBs > 0.0;
 }
 
-static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config) {
+/* (1.12.150): ONE place that sizes the flat fabric's node grid -- the grid zsim
+ * builds (emitZSimNetworkBlock) and the grid the run summary prints. The
+ * summary printed ceil(sqrt(PEs)) per side ("MESH_2D (4x4)" for 16 PEs) while
+ * the fabric is sized by the network's endpoints (one per PE or memory
+ * organisation, 1.11 M:N mapping): a 256-bank fig2 device builds and runs a
+ * 16 x 16 mesh, one router per bank. */
+static void flatNocGrid(const UnifiedConfig& config, int& rows, int& cols, int& nodes) {
     // Compute mesh dimensions from total network endpoints (not just num_pes)
     int num_nodes = config.total_network_endpoints > 0
                     ? config.total_network_endpoints : config.num_pes;
@@ -9965,6 +9971,22 @@ static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config)
     if (config.num_pes > num_nodes) num_nodes = config.num_pes;
     int mesh_size = static_cast<int>(std::sqrt(num_nodes));
     if (mesh_size * mesh_size < num_nodes) mesh_size++;
+    // Node-grid sizing. MESH/TORUS need a 2D grid, so pad to a square
+    // (ceil(sqrt(endpoints))^2); spare nodes carry no traffic and registration is
+    // range-checked. Non-grid topologies (H_TREE, RING, BUS, FAT_TREE, CROSSBAR)
+    // are sized to the EXACT endpoint count -- otherwise an over-padded H-tree
+    // builds too many leaves and inflates hop counts.
+    rows = mesh_size; cols = mesh_size;
+    if (config.noc_topology != "MESH_2D" && config.noc_topology != "TORUS_2D") {
+        rows = 1;
+        cols = num_nodes;
+    }
+    nodes = num_nodes;
+}
+
+static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config) {
+    int noc_rows = 0, noc_cols = 0, num_nodes = 0;
+    flatNocGrid(config, noc_rows, noc_cols, num_nodes);
 
     // Derive effective routing: if user didn't specify, use topology default
     std::string effective_routing = config.noc_routing;
@@ -9979,17 +10001,6 @@ static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config)
         else if (config.noc_topology == "H_TREE")    effective_routing = "NCA";
         else if (config.noc_topology == "CUSTOM")    effective_routing = "TABLE";
         else                                         effective_routing = "XY";
-    }
-
-    // Node-grid sizing. MESH/TORUS need a 2D grid, so pad to a square
-    // (ceil(sqrt(endpoints))^2); spare nodes carry no traffic and registration is
-    // range-checked. Non-grid topologies (H_TREE, RING, BUS, FAT_TREE, CROSSBAR)
-    // are sized to the EXACT endpoint count -- otherwise an over-padded H-tree
-    // builds too many leaves and inflates hop counts.
-    int noc_rows = mesh_size, noc_cols = mesh_size;
-    if (config.noc_topology != "MESH_2D" && config.noc_topology != "TORUS_2D") {
-        noc_rows = 1;
-        noc_cols = num_nodes;
     }
 
     out << "    networkType = \"garnet\";\n";
@@ -10075,6 +10086,13 @@ struct GarnetParsedStats {
     uint32_t control_msg_bits = 0;
     uint32_t buffers_per_vc = 0;             // configured
     uint32_t effective_buffers_per_vc = 0;   // what Garnet built
+    /* (1.12.150): the topology Garnet built ("CUSTOM" for the device tree and the
+     * in-die fabric, "MESH_2D", "RING", ... for a flat fabric; "" = an older
+     * file) and the flits its routers' own crossbar counters switched
+     * (detailed path; 0 = not measured). A flat fabric has no tree levels,
+     * so these are what its routers are priced from. */
+    std::string topology;
+    uint64_t measured_crossbar_flits = 0;
     /* 1.11.92 (F4/F1): per-hierarchy-level traversals (index = tree level).
      * level_source: "measured_crossbar" (the Garnet routers' own counters),
      * "tier_walk" (the analytical path's count) or "" (an older file, or a
@@ -10198,7 +10216,9 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
         }
 
         try {
-            if (key == "total_packets") stats.total_packets = std::stoull(val);
+            if (key == "topology") stats.topology = val;   // (1.12.150)
+            else if (key == "measured_crossbar_flits") stats.measured_crossbar_flits = std::stoull(val);   // (1.12.150)
+            else if (key == "total_packets") stats.total_packets = std::stoull(val);
             else if (key == "data_packets") stats.data_packets = std::stoull(val);
             else if (key == "control_packets") stats.control_packets = std::stoull(val);
             else if (key == "total_router_traversals") stats.total_router_traversals = std::stoull(val);
@@ -10231,6 +10251,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
     if (noc_fault == "nocounts") {
         stats.level_source.clear();
         stats.total_router_traversals = 0;
+        stats.measured_crossbar_flits = 0;   // (1.12.150)
         stats.total_hops = 0;
         for (int l = 0; l < 7; l++) {
             stats.level_router_traversals[l] = 0;
@@ -10495,6 +10516,10 @@ static double mcClockMHzForMcPAT(const std::string& tech, const UnifiedConfig& c
 /* 1.12.18: the link pricing below spans the DRAM die; defined further down. */
 static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
                                     int effective_banks);
+/* (1.12.150): a flat SRAM / NVM fabric's links span the array's die; defined further down. */
+static double computeNonDramMemAreaMM2(const std::string& tech, int banks,
+                                       int tech_node_nm, int line_size,
+                                       const UnifiedConfig& config);
 
 static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
     const UnifiedConfig& config,
@@ -10631,7 +10656,35 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         return t.str();
     };
 
-    if (config.hierarchy_enabled && config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level < 7) {
+    /* (1.12.150): A FLAT GARNET FABRIC IS PRICED AS THE FABRIC IT IS.
+     *
+     * An SRAM or NVM device whose noc.topology names a flat fabric (MESH_2D
+     * in the fig2 cells: one router per bank, 16 x 16 for 256 banks) builds
+     * no tree: Garnet runs the flat topology, and its stats file carries no
+     * per-level counts (level_source none) and no per-level link counts. The
+     * hierarchy branch below still priced it as a seven-level tree: router
+     * accesses split over the levels by the PRESET weight 1/(1+level), five
+     * "levels" of 2 routers each that the fabric does not have, and its
+     * links NOT priced (the per-level link warning blamed an old stats
+     * file). A fabric that Garnet built flat -- no tree was built, the file
+     * names a non-CUSTOM topology with routers, and no level counts -- now
+     * takes the flat branch: every router Garnet built, its measured
+     * crossbar flits, and its links from the measured link traversals on the
+     * same wire model the tree's links use. The device tree (CUSTOM, levels
+     * present) and the analytical tier walk are unchanged. */
+    const bool garnet_flat_fabric =
+        !has_levels && config.htree_level_branch[0] < 0 &&
+        !garnet.topology.empty() && garnet.topology != "CUSTOM" &&
+        garnet.num_routers > 0;
+    if (garnet_flat_fabric)
+        std::cout << "  [NoC] " << lbl << "the fabric Garnet built is a flat " << garnet.topology
+                  << " (" << garnet.num_routers << " routers, " << garnet.num_rows << " x "
+                  << garnet.num_cols << "; no tree was built, the stats carry no per-level counts):"
+                     " priced as one flat fabric -- its routers and its links -- not as tree levels"
+                  << std::endl;
+
+    if (config.hierarchy_enabled && config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level < 7 &&
+        !garnet_flat_fabric) {
         // Names for hierarchy levels
         static const char* level_names[] = {
             "L0_subarray", "L1_bank", "L2_bankgroup",
@@ -10838,8 +10891,8 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                               << garnet.link_traversals << "." << std::endl;
             } else if (garnet.link_traversals > 0) {
                 std::cerr << "[NoC] WARNING: " << lbl << "the stats file " << stats_path
-                          << " carries no per-level link traversals (written before"
-                             " 1.12.18): the " << garnet.link_traversals
+                          << " carries no per-level link traversals (a file written before"
+                             " 1.12.18, or a fabric Garnet built without tree levels): the " << garnet.link_traversals
                           << " link flit traversals cannot be given to levels and the"
                              " tree's links are NOT priced in this run." << std::endl;
             }
@@ -11412,8 +11465,20 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                 if (nc.clock_mhz > 0.0 && cyc_mhz > 0.0)
                     net_cycles *= (nc.clock_mhz / cyc_mhz);
             }
+            /* (1.12.150): THE PEAK OF A ROUTER IS ITS PORTS, NOT ONE FLIT. A router
+             * switches up to min(input, output) flits per cycle -- one per output
+             * port -- and that is the peak McPAT's router model and its duty
+             * scale (CACTI router.cc: peak = per-flit energy x MIN(I, O); the
+             * clock gate reads the duty as a port-usage fraction, Wattch cc2).
+             * The denominator was cycles x nodes, one flit per router per
+             * cycle: a 17-port HBM3 rank hub (one router, 16 channels below
+             * it) switching ~1.9 measured flits per cycle priced at duty
+             * 3.10 -- past saturation -- although no port was overloaded. A
+             * BUS level keeps cycles x nodes (McPAT builds it with one port). */
+            const int duty_ports = (nc.type == 0) ? 1
+                : std::max(1, std::min(nc.input_ports, nc.output_ports));
             double duty = (net_cycles > 0.0 && nodes > 0)
-                ? static_cast<double>(level_accesses) / (net_cycles * nodes) : 0.0;
+                ? static_cast<double>(level_accesses) / (net_cycles * nodes * duty_ports) : 0.0;
 
             // Apply overrides
             auto it_dc = overrides.find(prefix + ".duty_cycle");
@@ -11507,7 +11572,9 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                       << " (" << nc.name << "): " << how.str()
                       << "; duty " << duty << " = accesses/(" << net_cycles
-                      << " net cycles x " << nodes << " nodes, priced as "
+                      << " net cycles x " << nodes << " nodes x " << duty_ports
+                      << (nc.type == 0 ? " port (bus)" : " ports switching one flit each per cycle")
+                      << ", priced as "
                       << nc.vertical_nodes << "x" << nc.horizontal_nodes << ")"
                       << "; chip_coverage " << chip_cov << " = 1/"
                       << surviving_levels << " surviving levels (preset)"
@@ -11530,7 +11597,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                              " -- an access share, a cycle window or a node"
                              " count -- can be found. Level accesses "
                           << level_accesses << ", net cycles " << net_cycles
-                          << ", nodes " << nodes << "." << std::endl;
+                          << ", nodes " << nodes << ", ports " << duty_ports << "." << std::endl;
             }
 
             /* 1.12.18: the level's up-links, priced on their own instance so
@@ -11590,6 +11657,14 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                                 : (uint64_t)((double)acc_total * (double)count / (double)class_nodes_total + 0.5);
                         acc_given += c.total_accesses;
                         c.chip_coverage = nc.chip_coverage * (double)count / (double)class_nodes_total;
+                        /* (1.12.150): each class is its own McPAT instance at its own
+                         * port count, so its duty is its own: its accesses over
+                         * cycles x its routers x its ports (the level's duty was
+                         * taken at the widest router). A yaml duty override for
+                         * the level still applies to every class. */
+                        if (it_dc == overrides.end())
+                            c.duty_cycle = (net_cycles > 0.0 && count > 0 && ports > 0)
+                                ? static_cast<double>(c.total_accesses) / (net_cycles * count * ports) : 0.0;
                         levels.push_back(c);
                         pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " class " << c.name << ": " << count
                                   << " node(s) x " << ports << " ports, " << c.total_accesses << " traversals (H19)";
@@ -11597,7 +11672,14 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                             pimid::debugStream(std::cout) << ", of which " << c.passthrough_accesses << " pass-through (priced as"
                                          " wire), " << (c.total_accesses - c.passthrough_accesses)
                                       << " router accesses to McPAT";
+                        pimid::debugStream(std::cout) << "; duty " << c.duty_cycle << " = traversals/(" << net_cycles
+                                  << " net cycles x " << count << " nodes x " << ports << " ports)";
                         pimid::debugStream(std::cout) << std::endl;
+                        if (!(c.duty_cycle >= 0.0 && c.duty_cycle <= 1.0))
+                            std::cerr << "[NoC] WARNING: level " << (lvl - pe_level) << " class " << c.name
+                                      << " duty_cycle " << c.duty_cycle << " is outside [0,1] (traversals "
+                                      << c.total_accesses << ", net cycles " << net_cycles << ", nodes " << count
+                                      << ", ports " << ports << "). NOT clamped." << std::endl;
                         emitted++;
                     };
                     int classes_left = (eps_here > 0 ? 1 : 0);
@@ -11622,8 +11704,36 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         int flat_nodes = (config.total_network_endpoints > 0)
                           ? config.total_network_endpoints : config.num_pes;
         exactRect(flat_nodes, nc.vertical_nodes, nc.horizontal_nodes);   // 1.11.92 (F8)
-        nc.input_ports = 5;
-        nc.output_ports = 5;
+        /* (1.12.150): a fabric Garnet built flat (garnet_flat_fabric) is priced
+         * as Garnet built it: every router it built (num_routers, laid out
+         * rows x cols), the router's real port count (a mesh or torus router:
+         * four neighbours + the local port; a ring stop: two + local), the
+         * Garnet flit it ran, the VCs per port it built, and the die the
+         * array sits on (an SRAM / NVM device: not the DRAM die). */
+        const std::string flat_topo = garnet_flat_fabric ? garnet.topology : config.noc_topology;
+        int flat_ports = 5;
+        const char* flat_ports_src = "literal: a flat fabric has no tree";
+        if (garnet_flat_fabric) {
+            flat_nodes = static_cast<int>(garnet.num_routers);
+            if (garnet.num_rows > 0 && garnet.num_cols > 0 &&
+                garnet.num_rows * garnet.num_cols == garnet.num_routers) {
+                nc.vertical_nodes = static_cast<int>(garnet.num_rows);
+                nc.horizontal_nodes = static_cast<int>(garnet.num_cols);
+            } else {
+                exactRect(flat_nodes, nc.vertical_nodes, nc.horizontal_nodes);
+            }
+            if (flat_topo == "MESH_2D" || flat_topo == "TORUS_2D") {
+                flat_ports = 5; flat_ports_src = "a mesh router: 4 neighbour ports + the local port";
+            } else if (flat_topo == "RING") {
+                flat_ports = 3; flat_ports_src = "a ring stop: 2 neighbour ports + the local port";
+            }
+            nc.vcs_per_port = std::max(1, config.noc_vnets) * std::max(1, config.noc_vcs_per_vnet);
+            const bool dram_fam = !(config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
+                                    config.memory_tech == "PCM"  || config.memory_tech == "RERAM");
+            nc.on_dram_die = dram_fam ? 1 : 0;
+        }
+        nc.input_ports = flat_ports;
+        nc.output_ports = flat_ports;
         /* 1.11.52 (audit A032): the flat branch takes the same MEASURED
          * inputs 1.9.22 gave the hierarchical one. A hardcoded 128-bit flit
          * ignored a reconfigured width; the PE clock is not the network's;
@@ -11639,12 +11749,17 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         nc.chip_coverage = 1.0;
 
         /* 1.11.92 (F2): flits x routers crossed, the unit McPAT charges; an
-         * older stats file without it falls back to hops, and says so. */
+         * older stats file without it falls back to hops, and says so.
+         * (1.12.150): on the detailed path the routers' own crossbar counters
+         * are the measurement (as on the tree's levels), and are used. */
         const bool have_rt = garnet.total_router_traversals > 0;
-        uint64_t accesses = have_rt ? garnet.total_router_traversals
+        const bool have_xbar = garnet_flat_fabric && garnet.measured_crossbar_flits > 0;
+        uint64_t accesses = have_xbar ? garnet.measured_crossbar_flits
+                          : have_rt ? garnet.total_router_traversals
                           : (garnet.total_hops > 0) ? garnet.total_hops
                                                     : garnet.total_packets;
-        const char* unit = have_rt ? "router flit traversals"
+        const char* unit = have_xbar ? "router flit traversals MEASURED by the Garnet routers' crossbar counters"
+                         : have_rt ? "router flit traversals"
                          : (garnet.total_hops > 0) ? "link hops (pre-1.11.92 unit)"
                                                    : "packets";
         // duty_cycle: fraction of peak bandwidth [0,1], in NETWORK cycles (A016)
@@ -11654,8 +11769,11 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             if (nc.clock_mhz > 0.0 && cyc_mhz > 0.0)
                 flat_net_cycles *= (nc.clock_mhz / cyc_mhz);
         }
+        /* (1.12.150): the peak is every router switching one flit per port per
+         * cycle (min(input, output) ports; a bus: one), as on the tree. */
+        const int flat_duty_ports = (nc.type == 0) ? 1 : std::max(1, flat_ports);
         double duty = (flat_net_cycles > 0.0 && flat_nodes > 0)
-            ? static_cast<double>(accesses) / (flat_net_cycles * flat_nodes) : 0.0;
+            ? static_cast<double>(accesses) / (flat_net_cycles * flat_nodes * flat_duty_ports) : 0.0;
 
         auto it_dc = overrides.find("noc.0.duty_cycle");
         if (it_dc != overrides.end()) duty = it_dc->second;
@@ -11667,18 +11785,84 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         nc.total_accesses = accesses;
         nc.duty_cycle = duty;
         nc.vc_buffer_entries = built_bufs;   // 1.11.93
-        /* 1.12.18: a flat fabric is a mesh, which is what McPAT's own link
-         * model describes (length sqrt(area x coverage) / nodes per side /
-         * 2, global_linked_ports per router): its links are built, and
-         * their activity is the MEASURED link flit traversals (Garnet's flit
-         * is this instance's flit), not the router accesses McPAT would
-         * otherwise charge them with. A BUS has no links beyond the bus. */
+        /* the measured wire activity, as on every other link and bus (user
+         * ruling 2026-10-25); a router instance's own links use it */
+        const double flat_wact = wireActivity(g_dev_wire, static_cast<uint32_t>(garnet_flit), nullptr);
+        /* (1.12.150): a 2-D MESH's links are a links-only instance, priced
+         * exactly as the tree's up-links are (emitLinks): McPAT interconnect
+         * on the CACTI wire model, type Global_ho, at the die's process
+         * node, charged C V^2 x the measured wire activity per bit per
+         * MEASURED link flit traversal (Garnet's hop count x flits, its own
+         * flit width). Count: the mesh's neighbour links, R(C-1) + C(R-1),
+         * each a pair of directed links (2 ports). Length: one TILE PITCH,
+         * sqrt(span / tiles) -- the DSENT convention (Sun et al., NOCS 2012,
+         * Table III: chip area divided equally amongst the tiles; the earlier
+         * wire-length audit's mesh reference). The span is the memory array
+         * the routers sit over (one router per bank), the area the memory
+         * report prints -- the same rule as the tree's links, which span the
+         * memory die, not McPAT's logic (McPAT derives the length,
+         * link_span_processor 3; its own area only if no array area is
+         * known). NO PUBLISHED SOURCE FOUND for an SRAM / NVM PIM
+         * floorplan: the tile pitch is DERIVED.
+         * Other flat topologies keep McPAT's own link model on the router
+         * instance (upstream mesh derivation), now with the measured
+         * activity. A BUS has no links beyond the bus. */
+        const int R = nc.vertical_nodes, C = nc.horizontal_nodes;
+        const int mesh_links = (garnet_flat_fabric && flat_topo == "MESH_2D")
+                             ? R * (C - 1) + C * (R - 1) : -1;
         if (nc.type != 0 && !config.power_model_noc_links) {
             std::cout << "  [NoC] " << lbl << "flat links: NOT priced BY USER OPTION"
                          " (power.models.noc_links: false)" << std::endl;
+        } else if (nc.type != 0 && mesh_links > 0) {
+            double span_mm2 = 0.0;
+            if (nc.on_dram_die == 0)
+                span_mm2 = computeNonDramMemAreaMM2(config.memory_tech, config.num_banks,
+                                                    config.tech_node_nm, config.cache_line_size, config);
+            NoCLevel lk;
+            lk.name = nc.name + "_links";
+            lk.type = 1;
+            lk.routers_present = 0;
+            lk.has_global_link = 1;
+            lk.link_kind = 0;
+            lk.link_span_processor = 3;              // (1.12.150): tile pitch over McPAT's area + this span
+            lk.link_span_area_mm2 = span_mm2;
+            lk.link_parent_regions = flat_nodes;     // the tiles
+            lk.tech_node_nm = nc.on_dram_die ? dieProcessDramNode(config, config.memory_tech)
+                                             : dieProcessLogicNode(config);
+            exactRect(mesh_links, lk.vertical_nodes, lk.horizontal_nodes);
+            lk.input_ports = 2;
+            lk.output_ports = 2;
+            lk.vcs_per_port = 1;
+            lk.vc_buffer_entries = 1;
+            lk.flit_bits = garnet_flit;
+            lk.link_activity = flat_wact;
+            lk.clock_mhz = nc.clock_mhz;
+            lk.chip_coverage = 1.0;
+            lk.on_dram_die = nc.on_dram_die;
+            lk.total_accesses = garnet.link_traversals;
+            lk.link_traversals = static_cast<int64_t>(garnet.link_traversals);
+            lk.duty_cycle = (flat_net_cycles > 0.0)
+                ? static_cast<double>(garnet.link_traversals) / (flat_net_cycles * mesh_links) : 0.0;
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "flat links (" << lk.name << "): " << mesh_links
+                      << " mesh links (" << R << " x " << C << " routers: R(C-1) + C(R-1)), traversals "
+                      << garnet.link_traversals << " link flit traversals of " << garnet_flit
+                      << " b (MEASURED: Garnet's hop count x flits per packet, " << garnet.total_hops
+                      << " hops); structure to McPAT: one tile pitch, sqrt(" << span_mm2 << " mm^2 "
+                      << config.memory_tech << " array / " << flat_nodes
+                      << " tiles)" << (span_mm2 > 0.0 ? "" : " -- no array area: McPAT's own area stands in")
+                      << " (DSENT tile-pitch convention; DERIVED, NO PUBLISHED SOURCE FOUND for the floorplan)"
+                      << "; node " << lk.tech_node_nm << " nm (" << (nc.on_dram_die ? "DRAM array process" : "the run's logic node")
+                      << "); duty " << lk.duty_cycle << " = traversals/(" << flat_net_cycles << " net cycles x "
+                      << mesh_links << " links)" << std::endl;
+            if (!(lk.duty_cycle >= 0.0 && lk.duty_cycle <= 1.0))
+                std::cerr << "[NoC] WARNING: flat links duty_cycle " << lk.duty_cycle << " is outside [0,1]"
+                             " (traversals " << garnet.link_traversals << ", net cycles " << flat_net_cycles
+                          << ", links " << mesh_links << "). NOT clamped." << std::endl;
+            levels.push_back(lk);
         } else if (nc.type != 0) {
             nc.has_global_link = 1;
             nc.link_traversals = static_cast<int64_t>(garnet.link_traversals);
+            nc.link_activity = flat_wact;   // (1.12.150): the measured activity, as on every other link
             pimid::debugStream(std::cout) << "  [NoC] " << lbl << "flat links: " << garnet.link_traversals
                       << " link flit traversals (MEASURED), McPAT's mesh link model"
                          " (length from the die area and the node count)" << std::endl;
@@ -11692,10 +11876,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         pimid::debugStream(std::cout) << "  [NoC] " << lbl << "flat (" << nc.name << "): accesses " << accesses
                   << " " << unit
                   << "; duty " << duty << " = accesses/(" << flat_net_cycles
-                  << " net cycles x " << flat_nodes << " nodes, priced as "
+                  << " net cycles x " << flat_nodes << " nodes x " << flat_duty_ports
+                  << " ports, priced as "
                   << nc.vertical_nodes << "x" << nc.horizontal_nodes << ")"
                   << "; chip_coverage " << nc.chip_coverage
-                  << "; ports 5 (literal: a flat fabric has no tree)"
+                  << "; ports " << flat_ports << " (" << flat_ports_src << ")"
+                  << "; width " << garnet_flit << " b (the Garnet flit the fabric ran)"
                   << vcText()
                   << (it_dc != overrides.end() || it_cc != overrides.end() ||
                       it_acc != overrides.end() ? "  [OVERRIDDEN by yaml]" : "")
@@ -11709,7 +11895,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                          " clamped: the value is reported as computed so the"
                          " cause can be found. Accesses " << accesses
                       << ", net cycles " << flat_net_cycles << ", nodes "
-                      << flat_nodes << "." << std::endl;
+                      << flat_nodes << ", ports " << flat_duty_ports << "." << std::endl;
         }
 
         levels.push_back(nc);
@@ -25292,9 +25478,10 @@ int main(int argc, char** argv) {
             // Display NoC configuration
             std::cout << "  NoC:       " << config.noc_topology;
             if (config.noc_topology == "MESH_2D" || config.noc_topology == "TORUS_2D") {
-                int mesh_size = static_cast<int>(std::sqrt(config.num_pes));
-                if (mesh_size * mesh_size < config.num_pes) mesh_size++;
-                std::cout << " (" << mesh_size << "x" << mesh_size << ")";
+                int g_rows = 0, g_cols = 0, g_nodes = 0;   // (1.12.150): the grid zsim builds
+                flatNocGrid(config, g_rows, g_cols, g_nodes);
+                std::cout << " (" << g_rows << "x" << g_cols << ", one router per network endpoint: "
+                          << g_nodes << " endpoint(s))";
             } else if (config.noc_topology == "RING") {
                 std::cout << " (" << (config.noc_ring_unidirectional ? "unidirectional" : "bidirectional") << ")";
             }
@@ -25869,9 +26056,10 @@ int main(int argc, char** argv) {
             // Display NoC configuration
             std::cout << "  NoC:       " << config.noc_topology;
             if (config.noc_topology == "MESH_2D" || config.noc_topology == "TORUS_2D") {
-                int mesh_size = static_cast<int>(std::sqrt(config.num_pes));
-                if (mesh_size * mesh_size < config.num_pes) mesh_size++;
-                std::cout << " (" << mesh_size << "x" << mesh_size << ")";
+                int g_rows = 0, g_cols = 0, g_nodes = 0;   // (1.12.150): the grid zsim builds
+                flatNocGrid(config, g_rows, g_cols, g_nodes);
+                std::cout << " (" << g_rows << "x" << g_cols << ", one router per network endpoint: "
+                          << g_nodes << " endpoint(s))";
             } else if (config.noc_topology == "RING") {
                 std::cout << " (" << (config.noc_ring_unidirectional ? "unidirectional" : "bidirectional") << ")";
             } else if (config.noc_topology == "CUSTOM" && !config.noc_topology_file.empty()) {

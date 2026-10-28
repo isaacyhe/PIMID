@@ -474,6 +474,27 @@ Processor::Processor(ParseXML *XML_interface)
 				   * gave half of this for a 1 x N ring. */
 				  nocs[i]->init_link_bus(2.0 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage)
 				                         / std::max(1, XML->sys.NoC[i].horizontal_nodes * XML->sys.NoC[i].vertical_nodes));
+			  else if (XML->sys.NoC[i].link_span_processor == 3)
+			  {
+				  /* PIMID (1.12.150): a flat 2-D MESH's neighbour link is ONE TILE PITCH: the span is
+				   * divided equally amongst the tiles (DSENT, Sun et al., NOCS 2012, Table III), so
+				   *   len = sqrt(span / tiles)   (DERIVED; square tiles)
+				   * The span is the memory array the routers sit over (link_span_area_mm2, the area
+				   * the memory report prints), the same rule as a tree level's links, which span the
+				   * memory die; the processor's own area (x chip_coverage) only when PIMID gives none.
+				   * link_parent_regions = the tiles (one router each). McPAT's upstream derivation
+				   * (side / ((H+V)/2) / 2) is half a pitch. */
+				  const bool has_span = XML->sys.NoC[i].link_span_area_mm2 > 0;
+				  const double span = has_span ? XML->sys.NoC[i].link_span_area_mm2 * 1e6
+				                               : area.get_area() * XML->sys.NoC[i].chip_coverage;   /* um^2 */
+				  const int tiles = std::max(1, XML->sys.NoC[i].link_parent_regions);
+				  const double pitch = sqrt(span / tiles);
+				  pimid::debugStream(std::cerr) << "  [link] noc" << i << " mesh tile pitch: "
+				          << (has_span ? "memory array " : "processor area (no array area given) ")
+				          << span * 1e-6 << " mm^2 / " << tiles << " tiles -> sqrt = " << pitch
+				          << " um (DSENT tile-pitch convention, DERIVED)" << std::endl;
+				  nocs[i]->init_link_bus(pitch);
+			  }
 			  else if (XML->sys.NoC[i].link_span_processor)   /* 1.12.23: the processor's own area, um^2 */
 				  nocs[i]->init_link_bus(0.5 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage
 				                                    / std::max(1, XML->sys.NoC[i].link_parent_regions)));

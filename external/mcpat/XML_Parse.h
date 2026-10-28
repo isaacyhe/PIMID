@@ -539,7 +539,10 @@ typedef struct{
 	 * McPAT has built the chip): len = 0.5 x sqrt(area x chip_coverage /
 	 * link_parent_regions), the same H-tree rule as link_span_area_mm2, used
 	 * as is. A host's uncore crossbar: one port wire from each agent to the
-	 * crossbar at the die centre. 0 (default) = upstream / explicit span. */
+	 * crossbar at the die centre. 0 (default) = upstream / explicit span.
+	 * 2 = a ring loop, 2 x sqrt(area) / stops. (1.12.150) 3 = a flat 2-D mesh's
+	 * tile pitch, sqrt(link_span_area_mm2 / link_parent_regions), the regions
+	 * being the tiles (the processor's area x chip_coverage when no span). */
 	int link_span_processor;
 	/* PIMID (user ruling 2026-10-25): link_kind 2 = an off-package link
 	 * riding the DRAM channel, priced per bit crossed at this energy (pJ/bit,

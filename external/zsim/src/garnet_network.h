@@ -1680,6 +1680,12 @@ public:
      * arrays (detailed) and name the source. Called before the stats are
      * written; takes garnetLock_. */
     void finalizeStats() {
+        /* (1.12.150): the stack layout is a property of the TOPOLOGY ("rdie" lines),
+         * not of the traffic. It was flagged only when a packet was counted, so a
+         * run whose fabric carried nothing (one PE reading its own bank) exported
+         * stack_layout 0, and the power model left the stack's TSV segments
+         * unpriced (their leakage, area and clock) as if no layout were known. */
+        if (!routerStackDie_.empty()) stats_.stack_layout = true;
 #ifdef HAVE_GARNET
         /* A detailed tree whose Garnet was never built (every access went to
          * the PE's own unit, which does not enter the network) measured zero

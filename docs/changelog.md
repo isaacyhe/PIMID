@@ -6,6 +6,92 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.150 -- every device NoC link, router and TSV is priced from measured activity; NoC duty cycles lie in [0, 1]; the router model is calibrated per shape on published routers
+
+- **Defect 1: a flat device fabric was priced as a tree it does not have, and its links were not priced.** An SRAM or
+  NVM device whose `noc.topology` names a flat fabric (`MESH_2D` in the fig2 cells) builds no tree. Garnet runs the
+  flat mesh, and its statistics carry no per-level counts. The power model still:
+  - split the routers' traversals over six "levels" by the preset weight 1/(1 + level);
+  - priced five of those levels as two-router fabrics;
+  - left the mesh links unpriced, while the run blamed an old statistics file (not the cause).
+  Affected: all 40 fig2 cells.
+- **Fix (src/main.cpp buildNoCLevelsForMcPAT and the Garnet statistics parser; external/mcpat processor.cc, noc.cc).**
+  A fabric that Garnet built flat is now priced as one flat fabric. Garnet built it flat when no tree was built, the
+  statistics name a non-CUSTOM topology with routers, and there are no per-level counts.
+  - **Routers:** every router Garnet built (rows x cols), at its port count, at the Garnet flit, from the flits the
+    routers' crossbar counters measured (`garnet.measured_crossbar_flits`, now read).
+  - **Links (MESH_2D):** a links-only instance priced as the tree's up-links are:
+    - McPAT interconnect on the CACTI wire model, Global_ho, at the die's node;
+    - C V^2 x the measured wire activity per bit per measured link flit traversal;
+    - R(C-1) + C(R-1) links;
+    - length one tile pitch, sqrt(array area / tiles), the DSENT tile-pitch convention (Sun et al., NOCS 2012,
+      Table III), spanning the memory array as the tree's links span the memory die. DERIVED; no published SRAM / NVM
+      PIM floorplan.
+  - **Other flat topologies** keep McPAT's own link model, with the measured activity.
+- **The mesh size (user ruling 2026-10-28).**
+  - The fabric is sized by the network's endpoints, one per PE or memory organisation. This is the M:N mapping of
+    1.11, and it matches the in-die fabric rule of 1.11.103, one router per organisation.
+  - A 256-bank fig2 device therefore builds and runs a 16 x 16 mesh, and is priced as that mesh.
+  - The run summary printed ceil(sqrt(PEs)) per side ("MESH_2D (4x4)"). It now prints the grid zsim builds, from the
+    same function (flatNocGrid).
+- **Defect 2: a stacked part's TSVs went unpriced when the fabric carried no traffic.** The HBM stack layout was
+  flagged only when a packet was counted (pecount_HBM3 OpenMP pe1).
+  **Fix (external/zsim/src/garnet_network.h finalizeStats):** the layout is taken from the topology.
+- **Defect 3: a router's duty cycle could exceed 1.** The duty was accesses / (cycles x nodes), so the 17-port HBM3
+  rank hub was priced at duty 1.04 to 2.07 on 17 HBM3 cells.
+  **Fix:** router duty = accesses / (cycles x routers x min(input, output) ports), per McPAT instance; each router
+  class (H19) gets its own. A router switches up to one flit per output port per cycle, the peak CACTI's router
+  model scales. Bus levels, links and TSVs are unchanged.
+- **Defect 4: the router input buffer held VCs x the buffered bits, with one write port per VC** (McPAT passed VCs x
+  entries as the depth, and CACTI multiplied the width by the VCs again). A 5-port, 128-bit router with 8 x 5 entries
+  came out at 1.81 mm^2 at 22 nm.
+  **Fix (external/cacti/router.cc):** one queue array per port, (VCs x entries) x flit bits, one write and one read
+  port. This is the published organisation: the Intel 80-tile router's per-port "Input Queue Array (Register File)",
+  shared by its lanes.
+- **The router model, calibrated per shape on published routers (user rulings 2026-10-28; external/mcpat noc.cc).**
+  CACTI's router builds the buffers, the crossbar and the arbiters only. Its area is compared, at each source's own
+  shape and node and in the instance's context, with every published router whose shape and router area are both
+  given.
+  - **Low radix (<= 8 ports), buffered:**
+    - Celerity: 16 nm, 1.4 GHz, 5 ports, 80 b, 2-entry FIFO, 1881 um^2 (VLSI 2019);
+    - Piton: 32 nm, 500 MHz, 5 ports, 64 b, 4-entry FIFO, 0.0115 mm^2 (DERIVED from 0.98% of the tile; HPCA 2018);
+    - MIT SWIFT: 90 nm, 400 MHz, 5 ports, 64 b, 2 VCs x 8, 0.150 mm^2 (ICCD 2010);
+    - MIT 16-node chip: 45 nm, 1 GHz, 5 ports, 64 b, 6 VCs / 10 buffers, 0.227 mm^2 (DAC 2012);
+    - DSENT validation router: 45 nm, 1 GHz, 6 ports, 64 b, 8 VCs / 16 buffers, 0.070 mm^2 (NOCS 2012);
+    - Kumar et al.: 65 nm, 3.6 GHz, 5 ports, 128 b, 15 VCs / 32 buffers, 1.19 mm^2 (ICCD 2007);
+    - Intel 80-tile: 65 nm, 4 GHz, 5 ports, 39 b, 2 x 16, 0.34 mm^2 (ISSCC 2007).
+    The published / model ratio spans 0.46 to 8.4 and rises with the clock the router was built for relative to its
+    node. The router area and leakage are scaled by k: the geometric mean of the five ~1 GHz routers' ratios at
+    f x L <= 30 GHz nm, the two 3.6 to 4 GHz routers' at >= 247, and log-log interpolated between (DERIVED), at the
+    instance's own clock and node. This gives k = 1.55 for a 500 MHz device fabric at 22 nm, and 0.34 for the 2 GHz
+    host fabric, whose wire context inflates the model itself.
+  - **High radix (>= 16 ports):** the crossbar is scaled by kW, the geometric mean over four published crossbars:
+    - Swizzle-Switch 64x64 x 128 b, 45 nm, 4.06 mm^2 (ISSCC 2012);
+    - 32x32 x 64 b, 65 nm, 0.35 mm^2 (VLSI 2011);
+    - Swizzle-Switch 64x64 x 128 b, 32 nm, 1.1 mm^2 (Sewell thesis 2012);
+    - 16x16 x 72 b, 40 nm, 0.32 mm^2 (Cakir thesis 2016).
+    The input buffers are added at k. The model's radix-squared bounding box is not used.
+  - **No published point:** 9..15 ports, and 2-port datapaths wider than 128 b, are priced by the low-radix rule and
+    say NO PUBLISHED SOURCE FOUND.
+  - **Leakage** is taken proportional to area, per part (DERIVED). **Dynamic energy** per flit is not scaled; the
+    power checker judges it per bit-hop.
+- **What moves** (smoke size, 1.12.144 vs 1.12.144 + this change; the device corpus and 102 system cells;
+  PIMID_DEBUG_CHECKS=1; NoC W, min..max per family):
+
+  | Cells | NoC before (W) | NoC after (W) | Other changes |
+  |---|---|---|---|
+  | fig2 | 0.23..0.40 | 0.48..0.57 | 256 calibrated routers + links; logic area about 50 -> 42 mm^2 |
+  | HBM3 device trees | 0.011..0.105 | 0.007..0.035 | |
+  | HBM2 | 0.015..0.069 | 0.012..0.028 | |
+  | DDR3 / DDR4 / DDR5 / GDDR6 / LPDDR5 | | | -2% to -7% on average |
+  | Host ring, 4 cores | 0.11..0.26 | 0.07..0.12 | |
+  | Host ring, 16 cores | 0.29..0.46 | 0.17..0.27 | |
+  | Co-simulated cells | | | -34% to -59% |
+  | 1-core host-only baselines | unchanged | unchanged | |
+
+  Every NoC duty is now in [0, 1], and no NoC traversal is reported as not priced. Every router passes the new
+  per-shape area bands of the power checker, apart from the unsourced shapes, which are INFO.
+
 ## 1.12.149 -- benchmarks: a pointer-chase kernel (load-to-use latency)
 
 - **New PIM kernel (benchmarks/pim_kernels/pointer_chase, serial + OpenMP + MPI).** A random cyclic permutation

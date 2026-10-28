@@ -42,6 +42,7 @@
 #include <assert.h>
 #include "noc.h"
 #include <set>
+#include <map>
 #include <sstream>
 
 /* Clamp NaN/infinity/negative power values to 0.
@@ -183,6 +184,112 @@ void NoC::build_link_clock()
 	                 Uncore_device, Inorder, XML->sys.pimid_clock_network != 0);
 }
 
+void init_tech_params(double tech, bool is_tag);   /* PIMID (1.12.150): cacti/technology.cc */
+
+/* PIMID (1.12.150): THE ROUTER MODEL, CALIBRATED ON PUBLISHED ROUTERS, PER SHAPE.
+ *
+ * CACTI's router (cacti/router.cc) builds an input buffer, a matrix crossbar
+ * and the arbiters, and nothing else. Its area is compared with every
+ * published router whose shape (node, ports, flit width, buffering) and
+ * router area are both given, computed with the same model at that shape and
+ * node in this instance's own context (wire type, temperature, device type).
+ * Low radix (<= 8 ports), buffered, router area (clock f, f x L in GHz nm):
+ *   [C] Celerity, 16 nm, 1.4 GHz, 5 p, 80 b, one 2-entry FIFO: 1881 um^2
+ *       (Rovinski et al., VLSI 2019); no 16 nm CACTI solution at 2 entries:
+ *       the model at 22 nm x (16/22)^2 (DERIVED);
+ *   [O] Piton, 32 nm, 500 MHz, 5 p, 64 b, 4-entry FIFO: 0.98% of a
+ *       1.17459 mm^2 tile = 0.0115 mm^2 (DERIVED; McKeown et al., HPCA 2018;
+ *       OpenPiton microarchitecture specification);
+ *   [S] MIT SWIFT, 90 nm, 400 MHz, 5 p, 64 b, 2 VCs, 8 buffers per port:
+ *       0.150 mm^2 (Krishna et al., ICCD 2010; Krishna, PhD thesis, 2014);
+ *   [F] MIT 16-node chip, 45 nm SOI, 1 GHz, 5 p, 64 b, 6 VCs, 10 buffers per
+ *       port, full-swing crossbar: 0.2272 mm^2 (Park et al., DAC 2012);
+ *   [D] DSENT validation router, 45 nm SOI, 1 GHz, 6 p, 64 b, 8 VCs, 16
+ *       buffers per port: 0.070 mm^2 post-P&R (Sun et al., NOCS 2012);
+ *   [K] single-cycle router, 65 nm, 3.6 GHz, 5 p, 128 b, 15 VCs, 32 buffers
+ *       per port: 1.19 mm^2 layout estimate (Kumar et al., ICCD 2007);
+ *   [P] Intel 80-tile, 65 nm, 4 GHz, 5 p, 39 b, 2 lanes x 16 flits: 0.34 mm^2
+ *       (Vangal et al., ISSCC 2007 5.2), full-custom.
+ * The published / model ratio spans 0.5 .. 9 and rises with the clock the
+ * router was built for relative to its node: the synthesized ~1 GHz routers
+ * ([C][O][S][F][D], f x L 16..45) against the 3.6..4 GHz ones ([K][P],
+ * 234..260). k(fL) = the geometric mean of the first group's ratios at
+ * f x L <= its geometric-mean f x L, the second group's at >= theirs,
+ * log-log interpolated between (DERIVED), at this instance's clock and node.
+ * High radix (>= 16 ports): the crossbar scaled by kW, the geometric mean of
+ * four published crossbars' published / model ratios, plus the input buffers
+ * scaled by k(fL); the model's bounding box (ports x buffer height x
+ * (buffer + crossbar width)) is not used there:
+ *   [W1] Swizzle-Switch 64x64 x 128 b, 45 nm, 559 MHz: 4.06 mm^2 (Satpathy
+ *        et al., ISSCC 2012); [W2] 32x32 x 64 b, 65 nm, 1026 MHz: 0.35 mm^2
+ *        (Satpathy et al., VLSI 2011); [W3] Swizzle-Switch 64x64 x 128 b,
+ *        32 nm layout: 1.1 mm^2 (K. Sewell, PhD thesis, U. Michigan 2012);
+ *        [W4] mux crossbar 16x16 x 72 b, 40 nm, 2.5 GHz post-layout:
+ *        0.32 mm^2 (C. Cakir, PhD thesis, CMU 2016), the model at 45 nm x
+ *        (40/45)^2 (DERIVED).
+ * 9..15 ports and 2-port datapaths wider than 128 b have no published point:
+ * priced by the low-radix rule; the run says NO PUBLISHED SOURCE FOUND.
+ * Leakage is taken proportional to area, per part (DERIVED). Cross-check:
+ * [P]'s estimated router leakage, 82 mW at 1.2 V and 110 C (Hot Chips 19).
+ * Dynamic energy per flit is not scaled (judged per bit-hop by the power
+ * checker against [P] and the Intel SCC router). */
+struct PimidRouterCal { double k_lo, k_hi, fl_lo, fl_hi, kW; double r[7]; };
+static PimidRouterCal pimid_router_cal(double M)
+{
+	static std::map<std::string, PimidRouterCal> cache;
+	const std::string key = std::to_string((int)g_ip->wt) + ":" + std::to_string(g_ip->temp) + ":"
+	                      + std::to_string(g_ip->data_arr_peri_global_tech_type) + ":" + std::to_string(M);
+	auto it = cache.find(key);
+	if (it != cache.end()) return it->second;
+	const TechnologyParameter tp_saved = g_tp;
+	const double f_um = g_ip->F_sz_um, f_nm = g_ip->F_sz_nm;
+	auto at = [&](double nm) { g_ip->F_sz_um = nm / 1000.0; g_ip->F_sz_nm = nm; init_tech_params(nm / 1000.0, false); };
+	/* low radix: node for the model, node scaling, flit, rows (VCs x depth), VCs, ports, published mm^2, f GHz, published node */
+	struct Pt { double nm, flit, rows, vcs, ports, mm2, ghz, pub_nm; };
+	const Pt pts[7] = {
+		{22, 80, 2, 1, 5, 0.001881, 1.4, 16},   /* [C] */
+		{32, 64, 4, 1, 5, 0.0115, 0.5, 32},     /* [O] */
+		{90, 64, 8, 2, 5, 0.150431, 0.4, 90},   /* [S] */
+		{45, 64, 10, 6, 5, 0.2272, 1.0, 45},    /* [F] */
+		{45, 64, 16, 8, 6, 0.070, 1.0, 45},     /* [D] */
+		{65, 128, 32, 15, 5, 1.19, 3.6, 65},    /* [K] */
+		{65, 39, 32, 2, 5, 0.34, 4.0, 65}};     /* [P] */
+	PimidRouterCal c;
+	double lk_lo = 0, lf_lo = 0, lk_hi = 0, lf_hi = 0; int n_lo = 0, n_hi = 0;
+	for (int i = 0; i < 7; i++) {
+		at(pts[i].nm);
+		Router rr(pts[i].flit, pts[i].rows, pts[i].vcs, &(g_tp.peri_global), pts[i].ports, pts[i].ports, M);
+		const double am = rr.area.get_area() * 1e-6 * (pts[i].pub_nm / pts[i].nm) * (pts[i].pub_nm / pts[i].nm);
+		c.r[i] = (am > 0) ? pts[i].mm2 / am : 1.0;
+		const double fl = pts[i].ghz * pts[i].pub_nm;
+		if (fl < 100) { lk_lo += log(c.r[i]); lf_lo += log(fl); n_lo++; }
+		else          { lk_hi += log(c.r[i]); lf_hi += log(fl); n_hi++; }
+	}
+	c.k_lo = exp(lk_lo / n_lo); c.fl_lo = exp(lf_lo / n_lo);
+	c.k_hi = exp(lk_hi / n_hi); c.fl_hi = exp(lf_hi / n_hi);
+	at(45); Router rw(128, 1, 1, &(g_tp.peri_global), 64, 64, M);
+	const double aW1 = rw.crossbar.area.get_area() * 1e-6;
+	Router rw4(72, 1, 1, &(g_tp.peri_global), 16, 16, M);
+	const double aW4 = rw4.crossbar.area.get_area() * 1e-6 * (40.0 / 45.0) * (40.0 / 45.0);
+	at(65); Router rw2(64, 1, 1, &(g_tp.peri_global), 32, 32, M);
+	const double aW2 = rw2.crossbar.area.get_area() * 1e-6;
+	at(32); Router rw3(128, 1, 1, &(g_tp.peri_global), 64, 64, M);
+	const double aW3 = rw3.crossbar.area.get_area() * 1e-6;
+	g_ip->F_sz_um = f_um; g_ip->F_sz_nm = f_nm;
+	g_tp = tp_saved;
+	c.kW = (aW1 > 0 && aW2 > 0 && aW3 > 0 && aW4 > 0)
+	     ? pow((4.06 / aW1) * (0.35 / aW2) * (1.1 / aW3) * (0.32 / aW4), 0.25) : 1.0;
+	cache[key] = c;
+	return c;
+}
+static double pimid_router_k(const PimidRouterCal& c, double fl)
+{
+	if (fl <= c.fl_lo) return c.k_lo;
+	if (fl >= c.fl_hi) return c.k_hi;
+	const double t = log(fl / c.fl_lo) / log(c.fl_hi / c.fl_lo);
+	return exp(log(c.k_lo) + t * (log(c.k_hi) - log(c.k_lo)));
+}
+
 void NoC::init_router()
 {
 	router  = new Router(nocdynp.flit_size,
@@ -238,6 +345,48 @@ void NoC::init_router()
 		}
 	}
 
+	{   /* PIMID (1.12.150): the published-router calibration, per shape (pimid_router_cal) */
+		const PimidRouterCal c = pimid_router_cal(M_traffic_pattern);
+		const double I = nocdynp.input_ports;
+		const double fl = (nocdynp.clockRate / 1e9) * g_ip->F_sz_nm;   /* GHz x nm */
+		const double k = pimid_router_k(c, fl);
+		const bool high = (nocdynp.input_ports >= 16);
+		const bool unsourced = (nocdynp.input_ports > 8 && nocdynp.input_ports < 16) ||
+		                       (nocdynp.input_ports <= 2 && nocdynp.flit_size > 128);
+		const double kx = high ? c.kW : k;
+		const double a0 = router->area.get_area() * 1e-6, l0 = router->power.readOp.leakage;
+		const double a_buf = router->buffer.area.get_area() * 1e-6 * I, a_x = router->crossbar.area.get_area() * 1e-6;
+		const double a1 = high ? (kx * a_x + k * a_buf) : (k * a0);
+		const double lb = router->buffer.power.readOp.leakage * I, lx = router->crossbar.power.readOp.leakage,
+		             la = router->arbiter.power.readOp.leakage;
+		const double lsum = lb + lx + la;
+		const double r = (lsum > 0) ? (k * lb + kx * lx + k * la) / lsum : k;
+		router->area.h = sqrt(a1 * 1e6);
+		router->area.w = sqrt(a1 * 1e6);
+		router->power.readOp.leakage          *= r;
+		router->power.readOp.gate_leakage     *= r;
+		router->buffer.power.readOp.leakage   *= k;
+		router->buffer.power.readOp.gate_leakage   *= k;
+		router->crossbar.power.readOp.leakage *= kx;
+		router->crossbar.power.readOp.gate_leakage *= kx;
+		router->arbiter.power.readOp.leakage  *= k;
+		router->arbiter.power.readOp.gate_leakage  *= k;
+		const double bits = I * nocdynp.virtual_channel_per_port * nocdynp.input_buffer_entries_per_vc * nocdynp.flit_size;
+		pimid::debugStream(std::cerr) << "  [noc] noc" << ithNoC << " router (" << nocdynp.input_ports << " ports, "
+		          << nocdynp.flit_size << " b, " << nocdynp.virtual_channel_per_port << " VCs x "
+		          << nocdynp.input_buffer_entries_per_vc << " entries, " << g_ip->F_sz_nm << " nm, "
+		          << nocdynp.clockRate / 1e6 << " MHz): model " << a0 << " mm^2, leakage " << l0 << " W; "
+		          << (high ? "high radix: crossbar x kW + buffers x k" : "x k") << "; k " << k << " kW " << c.kW
+		          << " = " << a1 << " mm^2, leakage " << router->power.readOp.leakage << " W; buffered bits " << bits
+		          << ", " << (bits > 0 ? a1 * 1e6 / bits : 0.0) << " um^2/bit; crossbar " << a_x * kx << " mm^2 for "
+		          << nocdynp.input_ports << "x" << nocdynp.output_ports << "x" << nocdynp.flit_size << " b. f x L "
+		          << fl << " GHz nm; published/model: Celerity " << c.r[0] << ", Piton " << c.r[1] << ", SWIFT " << c.r[2]
+		          << ", MIT 16-node " << c.r[3] << ", DSENT router " << c.r[4] << ", Kumar 2007 " << c.r[5] << ", Intel 80-tile "
+		          << c.r[6] << " (k = " << c.k_lo << " at f x L <= " << c.fl_lo << ", " << c.k_hi << " at >= " << c.fl_hi
+		          << ", log-log between; DERIVED), high-radix crossbar kW (geomean of 4 published crossbars) " << c.kW
+		          << (unsourced ? "; NO PUBLISHED SOURCE FOUND for a router of this shape (priced by the low-radix rule)" : "")
+		          << ". Per-flit dynamic not scaled." << std::endl;
+	}
 	area.set_area(area.get_area()+ router->area.get_area()*nocdynp.total_nodes);
 
 	double long_channel_device_reduction = longer_channel_device_reduction(Uncore_device);
@@ -465,6 +614,8 @@ void NoC ::init_link_bus(double link_len_)
 			          << "length " << link_len << " um ("
 			          << ((XML->sys.NoC[ithNoC].link_span_processor == 2)
 			                  ? "2 x sqrt(die area) / stops, ring loop"   /* PIMID (user ruling 2026-10-25) */
+			                  : (XML->sys.NoC[ithNoC].link_span_processor == 3)
+			                  ? "sqrt(die area / tiles), mesh tile pitch"   /* PIMID (1.12.150) */
 			                  : explicit_len ? "0.5 x sqrt(span / parent regions), H-tree"
 			                                 : "upstream mesh derivation")
 			          << "), " << bits << " b; per flit: dynamic "
@@ -669,12 +820,13 @@ void NoC::computeEnergy(bool is_tdp)
 		const double cycles = nocdynp.executionTime * nocdynp.clockRate;
 		/* Gated by the fabric's measured utilisation (user ruling
 		 * 2026-10-23; Wattch cc2): the duty_cycle stat PIMID emits for this
-		 * NoC (measured flit traversals / (cycles x nodes)). */
+		 * NoC (measured flit traversals / its peak: cycles x nodes, x ports
+		 * for a device router since (1.12.150)). */
 		double a = 1.0;
 		if (!is_tdp)
 		{
-			a = clk_router.gate(nocdynp.duty_cycle, "duty_cycle = measured traversals / (cycles x nodes)");
-			clk_link.gate(nocdynp.duty_cycle, "duty_cycle = measured traversals / (cycles x nodes)");
+			a = clk_router.gate(nocdynp.duty_cycle, "duty_cycle = measured traversals / the instance peak PIMID passes");
+			clk_link.gate(nocdynp.duty_cycle, "duty_cycle = measured traversals / the instance peak PIMID passes");
 			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered cycle. */
 			clk_router.set_powered(XML->sys.pimid_clock_pg_noc, "1 - measured NoC power-gated residency (pimid_clock_pg_noc)");
 			clk_link.set_powered(XML->sys.pimid_clock_pg_noc, "1 - measured NoC power-gated residency (pimid_clock_pg_noc)");

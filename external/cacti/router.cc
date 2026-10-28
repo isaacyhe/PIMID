@@ -208,8 +208,26 @@ void Router::buffer_stats()
   dyn_p.V_b_sense = (0.05 * g_tp.sram_cell.Vdd > VBITSENSEMIN)
                     ? 0.05 * g_tp.sram_cell.Vdd : VBITSENSEMIN;
   dyn_p.ram_cell_tech_type = 0;
+  /* PIMID (1.12.150): THE INPUT BUFFER IS ONE QUEUE ARRAY PER PORT, ONE FLIT IN
+   * AND ONE FLIT OUT PER CYCLE.
+   *
+   * Upstream built it as vc_buffer_size rows x (flit x vc_count) columns
+   * with vc_count WRITE ports. McPAT's NoC passes vc_buffer_size = VCs x
+   * entries per VC (noc.cc), so the array held VCs x the buffered bits, and
+   * every cell carried VCs write ports, each adding two wire pitches to its
+   * height and width. A 5-port, 128-bit router with 8 VCs x 5 entries came
+   * out at 1.81 mm^2 and 31.8 mW leakage at 22 nm, of which the buffers are
+   * 97%. A port receives one flit per cycle from its one input link, so its
+   * queue needs one write port; the lanes (VCs) share it and one read port
+   * feeds the crossbar. That is the published organisation: the Intel
+   * 80-tile router's per-port "Input Queue Array (Register File)" shared by
+   * its two lanes, with a crossbar shared across both lanes per flit
+   * (Hoskote, Vangal et al., Hot Chips 19, 2007; Vangal et al., ISSCC 2007
+   * 5.2). The buffer is now vc_buffer_size (= VCs x entries) rows x flit
+   * columns, one write and one read port. The VC count still sizes the VC
+   * arbiter. */
   dyn_p.num_r_subarray = (int) vc_buffer_size;
-  dyn_p.num_c_subarray = (int) flit_size * (int) vc_count;
+  dyn_p.num_c_subarray = (int) flit_size;
   dyn_p.num_mats_h_dir = 1;
   dyn_p.num_mats_v_dir = 1;
   dyn_p.num_do_b_subbank = (int)flit_size;
@@ -223,7 +241,7 @@ void Router::buffer_stats()
   dyn_p.out_w = (int) flit_size;
 
   dyn_p.use_inp_params = 1;
-  dyn_p.num_wr_ports = (unsigned int) vc_count;
+  dyn_p.num_wr_ports = 1;   /* PIMID (1.12.150): one input link per port (see above); was vc_count */
   dyn_p.num_rd_ports = 1;//(unsigned int) vc_count;//based on Bill Dally's book
   dyn_p.num_rw_ports = 0;
   dyn_p.num_se_rd_ports =0;

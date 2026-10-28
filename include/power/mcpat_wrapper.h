@@ -175,7 +175,10 @@ public:
         double link_span_area_mm2 = 0.0;
         int link_parent_regions = 0;
         /* 1.12.23: 1 = the links span the processor's own area, derived in
-         * the McPAT fork once the chip is built (a host crossbar's port wires). */
+         * the McPAT fork once the chip is built (a host crossbar's port wires);
+         * 2 = a ring loop; (1.12.150) 3 = a flat 2-D mesh's tile pitch,
+         * sqrt(link_span_area_mm2 / link_parent_regions) (the array the routers
+         * sit over; the processor's area when 0), the regions being the tiles. */
         int link_span_processor = 0;
         /* (user ruling 2026-10-25): link_kind 2 = an off-package device-tree link that rides the
          * DRAM channel; priced at this energy per bit crossed (pJ/bit; < 0 = not set). */
