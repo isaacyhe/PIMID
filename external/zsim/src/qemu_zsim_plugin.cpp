@@ -1238,6 +1238,22 @@ static inline void clearCid(uint32_t tid) {
     cores[tid] = nullptr;
 }
 
+/* (1.12.164) co-simulation: a device kernel's scratchpad opened before the offload.
+ * A kernel opens its scratchpad (benchmarks/include/pimid_spm.h) once per thread BEFORE its ROI, and in a
+ * co-simulation everything before the ROI runs on the HOST core: the host has no scratchpad, so the query
+ * answered 0 and the kernel ran its DRAM path on the device, while a standalone device run of the same
+ * program binds the PE's scratchpad (HBM3 histogram, 8 PEs: 206612 vs 37255 PE cycles). The query of a
+ * host-side thread in an offloading co-simulation is now answered by the device's PE (the PE the thread
+ * will run on has the same scratchpad), the bind is kept, and it is applied to the device PE the thread
+ * joins after its migrate-in, so the offloaded kernel runs the code path the standalone run runs. */
+struct SpmPending { uint64_t lo, bytes, cmd; };
+static SpmPending g_spmPend[MAX_THREADS];
+static bool g_spmPendSet[MAX_THREADS];
+static Core* g_spmPendOn[MAX_THREADS];
+static std::atomic<bool> g_spmPendAny{false};
+static Core* spmDeviceTemplate();
+static void spmApplyPending(uint32_t tid);
+
 static inline void setCid(uint32_t tid, uint32_t cid) {
     cids[tid] = cid;
     cores[tid] = zinfo->cores[cid];
@@ -1970,6 +1986,7 @@ static void Join(uint32_t tid) {
     uint32_t cid = zinfo->sched->join(procIdx, tid);
     if (tr) COSIMTRACE("tid=%u sched->join done cid=%u", tid, cid);
     setCid(tid, cid);
+    if (unlikely(g_spmPendAny.load(std::memory_order_relaxed))) spmApplyPending(tid);   // (1.12.164)
     wakeSyncApply(tid, cid);   // 1.12.18 (user ruling 2026-10-23, "sync to waker")
     detTurnBegin(tid, cid);
     if (g_spCut && cid < MAX_THREADS) {   // 1.12.18 (ruling 2026-10-24): awake again -> ACTIVE (after the wake sync)
@@ -3716,10 +3733,34 @@ static void handleSpmMagicOp(uint64_t op, uint32_t tid) {
     if (!zinfo || tid >= MAX_THREADS || !readRdx(&addr) || addr == 0) return;
     volatile uint64_t* m = (volatile uint64_t*)addr;
     Core* c = cores[tid];
+    /* (1.12.164): a host-side thread of an offloading co-simulation opens the device kernel's scratchpad */
+    const bool hostSide = g_cosim_mode && !g_cosim_no_offload && thread_domain[tid].load() == DOMAIN_HOST;
     if (op == ZSIM_MAGIC_OP_SPM_QUERY) {
         uint64_t cap = 0, mode = 0;
-        if (c) c->spmQuery(&cap, &mode);
+        if (hostSide) { Core* d = spmDeviceTemplate(); if (d) d->spmQuery(&cap, &mode); }
+        else if (c) c->spmQuery(&cap, &mode);
         m[4] = cap; m[5] = mode;
+        return;
+    }
+    if (op == ZSIM_MAGIC_OP_SPM_BIND && hostSide) {
+        if (m[1] == 0) {   // close: release the PE it was applied to
+            if (g_spmPendOn[tid]) g_spmPendOn[tid]->spmBind(0, 0, 0);
+            g_spmPendSet[tid] = false; g_spmPendOn[tid] = nullptr;
+            m[4] = 1;
+            return;
+        }
+        uint64_t cap = 0, mode = 0;
+        Core* d = spmDeviceTemplate();
+        if (d) d->spmQuery(&cap, &mode);
+        const bool ok = cap > 0 && m[1] <= cap;
+        if (ok) {
+            g_spmPend[tid] = SpmPending{m[0], m[1], m[2]};
+            g_spmPendSet[tid] = true; g_spmPendOn[tid] = nullptr;
+            g_spmPendAny.store(true, std::memory_order_relaxed);
+            info("Thread %u: scratchpad [0x%lx, 0x%lx) opened on the host before the offload; bound to the "
+                 "device PE the thread joins (co-sim)", tid, (unsigned long)m[0], (unsigned long)(m[0] + m[1]));
+        }
+        m[4] = ok ? 1 : 0;
         return;
     }
     if (op == ZSIM_MAGIC_OP_SPM_BIND) {
@@ -3733,8 +3774,37 @@ static void handleSpmMagicOp(uint64_t op, uint32_t tid) {
     if (c && c->spmDma(dst, src, bytes, dir == 1)) {
         memmove((void*)dst, (const void*)src, bytes);
         m[4] = 1;
+    } else if (hostSide && g_spmPendSet[tid]) {
+        /* (1.12.164): a thread-MPI rank that reaches its kernel while still on the host (it passed the entry
+         * barrier after the ROI window began closing, so it is never migrated in) holds a scratchpad opened
+         * for the device: the host has no DMA engine, so the block is moved here and is not priced on a
+         * device PE. Answering 0 would abort the guest, which stalls the other ranks in their barriers. */
+        memmove((void*)dst, (const void*)src, bytes);
+        m[4] = 1;
     } else {
         m[4] = 0;
+    }
+}
+
+/* (1.12.164): the device's PE answers a host-side scratchpad query (every PE of the device has the same one). */
+static Core* spmDeviceTemplate() {
+    if (!zinfo || device_core_list.empty()) return nullptr;
+    return zinfo->cores[device_core_list[0]];
+}
+/* (1.12.164): a thread that joins a device PE with a scratchpad opened before the offload binds it there. */
+static void spmApplyPending(uint32_t tid) {
+    if (tid >= MAX_THREADS || !g_spmPendSet[tid]) return;
+    Core* c = cores[tid];
+    if (!c || c == g_spmPendOn[tid] || thread_domain[tid].load() != DOMAIN_DEVICE) return;
+    const SpmPending& p = g_spmPend[tid];
+    if (g_spmPendOn[tid]) g_spmPendOn[tid]->spmBind(0, 0, 0);
+    if (c->spmBind(p.lo, p.bytes, p.cmd)) {
+        g_spmPendOn[tid] = c;
+        info("Thread %u: scratchpad bound [0x%lx, 0x%lx) on core %u (co-sim: opened before the offload)", tid,
+             (unsigned long)p.lo, (unsigned long)(p.lo + p.bytes), c->getSrcId());
+    } else {
+        panic("Thread %u: the scratchpad opened before the offload [0x%lx, +%lu) cannot be bound on core %u",
+              tid, (unsigned long)p.lo, (unsigned long)p.bytes, c->getSrcId());
     }
 }
 

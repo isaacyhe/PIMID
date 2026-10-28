@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.164 -- co-simulation: a device kernel's scratchpad opened before the offload is the device PE's
+
+- **Defect (external/zsim/src/qemu_zsim_plugin.cpp).** A PIM kernel opens its scratchpad
+  (benchmarks/include/pimid_spm.h: query, then bind) once per thread BEFORE its ROI. In an offloading
+  co-simulation everything before the ROI runs on the host core, which has no scratchpad: the query answered 0 and
+  every co-sim kernel ran its no-scratchpad DRAM path on the device PEs, while the standalone device run of the same
+  program and configuration binds each PE's scratchpad (spmReads 0 in every co-sim cell). The co-sim device side
+  was therefore not the device a standalone run models: HBM3 histogram (8 alu_core PEs, BANK, 2 GHz) 206612 PE
+  cycles in co-sim against 37255 standalone, checksums equal.
+- **Fix.** In an offloading co-simulation (not under PIMID_COSIM_NO_OFFLOAD) a host-side thread's scratchpad query
+  is answered by the device's PE (every PE of the device has the same scratchpad), its bind is kept, and it is
+  applied to the device PE the thread joins after its migrate-in (OpenMP workers and the opener alike, and each
+  thread-MPI rank); its close releases it. The run prints one line per bind. A thread-MPI rank that reaches its
+  kernel while still on the host (it passed the entry barrier after the ROI window began closing, so it is never
+  migrated in) holds such a bind but has no DMA engine: its block transfers are performed without a device PE
+  price. Refusing them aborted that rank and left the other ranks waiting in their barriers (the run hung with no
+  power report). Device runs, host baselines (PIMID_COSIM_NO_OFFLOAD) and threads born on the device are unchanged.
+- **Data impact.** Every co-simulation cell whose kernel opens a scratchpad on alu_core PEs (the corpus's co-sim
+  cells): the device side runs the scratchpad path, as its standalone counterpart does; device cycles, ROI time and
+  energy fall. Device runs and host baselines are unchanged.
+
 ## 1.12.163 -- RERAM and STT_MRAM write supplies from a charge pump
 
 - **Power (external/nvsim/MemCell.cpp, MemCell.h, SubArray.cpp, RRAM_1T1R.cell, sample_STTRAM.cell;
