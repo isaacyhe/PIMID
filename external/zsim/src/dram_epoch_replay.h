@@ -162,6 +162,11 @@ class DramEpochReplay {
         }();
         return w;
     }
+    /* Each epoch of the price window weighs its mean latency by its request count raised to kDramPriceBurstPower
+     * (1 = by its request count). A window weighted by request count alone still prices a burst at the quiet epochs
+     * around it; weighing the busy epochs more brings the price toward what the burst's requests are measured at,
+     * while a steady load (equal counts) is priced as before. */
+    static constexpr double kDramPriceBurstPower = 2.0;
     static uint32_t epochPhases() {
         static const uint32_t e = [] {
             const char* v = getenv("PIMID_DRAM_EPOCH_PHASES");

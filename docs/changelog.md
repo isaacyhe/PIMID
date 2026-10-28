@@ -6,6 +6,38 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.175 -- the replayed DRAM price weighs busy epochs more, and the second epoch reads the first
+
+- **The problem.** After 1.12.153 three loaded cells still charged less latency than the replayed Ramulator2
+  controller measures (charged / measured, below the 0.85 band): device bfs_omp on ALU PEs 0.777 and device
+  spmv_csr_omp 0.794 (both bursty: busy epochs of a few thousand requests between quiet ones).
+- **Causes.** (1) The price window weighted each epoch of the window by its request count, so a burst was still
+  priced largely at the quiet epochs around it (a quiet epoch of 100 requests and a busy one of 2000 contribute in
+  proportion 1 : 20, while the burst's requests are the ones the cores then issue). (2) An access in the second
+  epoch of the ROI (epoch 1) found no epoch two back and was charged the analytical bootstrap although epoch 0 had
+  been fed.
+- **The fix (external/zsim/src/dram_epoch_replay.{h,cpp}).**
+  - Each epoch of the price window weighs its mean latency by its request count squared (count^2; the window keeps
+    8 epochs and `simulation.dram_price_window` is unchanged). A steady load, with equal counts in the window, is
+    priced as before.
+  - An access of epoch 1 reads epoch 0 once it has been fed (as an access of epoch k reads k-2); an access of
+    epoch 0 keeps the bootstrap.
+- **Validation (73-cell list, 1.12.173 vs this build, one job on one node; charged / measured, run-time shift).**
+  - Device bfs_omp, ALU PEs 0.777 -> 0.894 (run time +12.9%); device spmv_csr_omp 0.794 -> 0.853 (+22%); device
+    bfs_omp, OOO PEs 1.028 -> 1.051; co-sim HBM3 OpenMP bfs 0.963 -> 1.003 (+1.5%).
+  - Host cells that were in band stay in band (0.92-1.00; 16-core DDR5 OpenMP stream_triad is not one of them, see
+    below); run-time shifts under 2.2% except as listed. Every checksum equal.
+  - Cells below the band on 1.12.173 before this change and not moved into it by the price window (the weight
+    exponent 1.0 / 1.5 / 2.0 gives 0.10 / 0.20 / 0.05 on 16-rank DDR5 bfs and 0.52 / 0.61 / 0.64 on 4-rank DDR5 bfs):
+    16-rank and 4-rank thread-MPI DDR5 bfs (0.096 -> 0.048, 0.520 -> 0.636), 16-core DDR5 OpenMP stream_triad
+    (0.726 -> 0.681, run time +13%), co-sim DDR5 MPI stream_triad (device view, 0.597 -> 0.599) and the
+    stencil_2d OOO device cell (0.003 before and after).
+  - Weighing by count^1.5 reads 0.879 on device bfs_omp ALU and 0.857 on spmv; count^2 reads 0.894 and 0.853, all
+    above the band, and gives the larger margin on the ALU cell.
+- **Data impact.** Device cells with bursty traffic (bfs_omp ALU +12.9% run time, spmv_csr_omp +22%); thread-MPI bfs
+  host baselines (under 2%); 16-core DDR5 OpenMP stream_triad (+13%, a cell already below the band); other cells move
+  by under 2.2%.
+
 ## 1.12.174 -- the run log's thread-start lines keep their place
 
 - **Problem.** The standard output of two runs of one cell differed in line order: "Started scheduler watchdog

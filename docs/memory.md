@@ -54,6 +54,11 @@ instead of each issuing at the clock at one tick. An access a device interface p
 then found outside the ROI leaves `replayPriced` / `replayLat`, as it leaves rd / wr, so the charged view counts the
 ROI's requests only.
 
+**Busy epochs weigh more in the window.** Each epoch of the price window weighs its mean latency by its request
+count squared, so a burst is priced at the busy epochs of the window rather than at the quiet epochs around it;
+a steady load (equal counts) is priced as before. An access of the second ROI epoch reads the first once it has
+been fed instead of the analytical bootstrap.
+
 **So is a memory of type Ramulator ((1.12.147), user ruling 2026-10-28).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,
 which is built as one controller per channel of the memory (HBM3 16, DDR5 2).

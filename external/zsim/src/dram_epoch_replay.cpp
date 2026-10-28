@@ -13,6 +13,7 @@
 #include "core.h"
 #include "pe_memory_interface.h"   // 1.12.18 (R0605): the interfaces' stamp, epoch and cut helpers, reused for the host
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iterator>
 #include <thread>
@@ -533,8 +534,10 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
     if (!cutMode_ || mi >= numMIs_) return 0;
     /* (1.12.153, user ruling 2026-10-28): a thread-MPI host interface reads the newest epoch fed (see mpiHost_) */
     const bool newest = mpiHost_ && isHostMi(mi);
-    if (!newest && epoch < lag) return 0;
-    const uint64_t r = newest ? ~0ull - 1 : epoch - lag;
+    /* an access of epoch 1 (before the first epoch the lag can name exists) reads epoch 0 once it has been fed, as
+     * an access of epoch k reads k-2; an access of epoch 0 keeps the bootstrap */
+    if (!newest && epoch == 0) return 0;
+    const uint64_t r = newest ? ~0ull - 1 : (epoch < lag ? epoch - 1 : epoch - lag);
     futex_lock(&lock_);
     uint32_t v = 0;
     /* the latest folded epoch at or before r: r itself once the cut has
@@ -573,12 +576,18 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
      * once) */
     const uint32_t W = priceWindow();
     if (W > 1 && v > 0 && e0 != ~0ull) {
-        double s = (double)v * (double)(n0 ? n0 : 1), c = (double)(n0 ? n0 : 1);
+        /* each epoch weighs its mean by its request count to the power kDramPriceBurstPower (see the header) */
+        auto wf = [](double n) { return n > 0.0 ? std::pow(n, kDramPriceBurstPower - 1.0) : 1.0; };
+        const double f0 = wf((double)n0);
+        double s = (double)v * (double)(n0 ? n0 : 1) * f0, c = (double)(n0 ? n0 : 1) * f0;
         uint32_t k = 1;
         for (auto w = winSum_.lower_bound(e0); w != winSum_.begin() && k < W; k++) {
             --w;
             auto wc = winCnt_.find(w->first);
-            if (mi < w->second.size() && wc != winCnt_.end()) { s += (double)w->second[mi]; c += (double)wc->second[mi]; }
+            if (mi < w->second.size() && wc != winCnt_.end()) {
+                const double f = wf((double)wc->second[mi]);
+                s += (double)w->second[mi] * f; c += (double)wc->second[mi] * f;
+            }
         }
         v = (uint32_t)(s / c + 0.5);
     }
@@ -1510,7 +1519,7 @@ void DramEpochReplay::finalize() {
         info("[mem] %s: (1.12.145) epoch %u phase(s), read %lu epochs back; %lu partial mean(s) counted unfinished requests at their age",
              name_.c_str(), epochPhases(), (unsigned long)kDramReadLagEpochs, (unsigned long)partialAged_);
     }
-    info("[mem] %s: (1.12.153) price window %u epoch(s) (request-weighted)%s", name_.c_str(), priceWindow(),
+    info("[mem] %s: (1.12.153) price window %u epoch(s), each epoch weighted by its requests^%.1f%s", name_.c_str(), priceWindow(), kDramPriceBurstPower,
          mpiHost_ && hostMis_ ? "; thread-MPI host interfaces read the newest epoch fed" : "");
     if (mpiHost_ && hostMis_)
         info("[mem] %s: (1.12.153) thread-MPI host records behind the replay clock: %lu shifted with their source (largest shift %lu cycles, %lu source(s))",
