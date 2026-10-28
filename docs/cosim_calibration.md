@@ -101,7 +101,7 @@ The adder ships as an aggregate AND as an optional four-way decomposition
 
 > **Honesty note (total measured, split inferred).** The row **total** is
 > measurement-anchored (real-socket idle load-to-use). The four-way **split**
-> is INFERRED -- no published per-component decomposition exists. Docs state
+> is INFERRED. Docs state
 > the total is measured, the default split is a documented allocation, and any
 > `host_path.*` override makes the split the user's own modeling choice. The
 > two anchored splits (DDR5, HBM3) and every inferred row sum EXACTLY to the

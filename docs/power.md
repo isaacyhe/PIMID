@@ -47,7 +47,7 @@ technology matrix selects a DRAM-periphery process family for elements that
 live on DRAM silicon (subarray..chip on DRAM technologies, and the channel
 tier on channel-centric LPDDR/GDDR/HBM), and McPAT itself applies the family
 factors -- area x2.44 (22nm class; x2.46 at the 32nm DDR3 class), dynamic
-x0.82/x0.66 and the comm-dram leakage rebase -- derived from CACTI's own
+x0.82/x0.66 and the comm-dram leakage rebase -- computed from CACTI's own
 hp vs comm-dram device columns at 350K. Rank/channel placements on DDR-class
 parts and the HBM base die keep the logic family (their logic sits on a
 buffer or base die), as do all SRAM/NVM technologies (BEOL over logic CMOS).
@@ -92,7 +92,7 @@ revisited") -- more switched capacitance per instruction than a whole small
 RISC core (RI5CY, Gautschi et al., IEEE TVLSI 2017, Table V: 26.28 uW/MHz at
 65 nm and 1.08 V for the entire core).
 
-- **Decoder output load: DERIVED.** A decoded line drives the core's own
+- **Decoder output load.** A decoded line drives the core's own
   control structure: the pipeline-register sink count McPAT builds the core's
   clock tree over (`num_piperegs x num_pipelines`, the "pipeline registers" of
   the `[mcpat clock]` line), each a minimum-size gate.
@@ -141,7 +141,7 @@ row hits / misses / conflicts, and their activates are COUNTED (each ACT once
 at the energy model's activate + precharge energy; the per-access terms then
 carry the column burst only). Since 1.12.20 the replayed controller also models DRAM precharge power-down (memory.power_down; default ON for DDR3/DDR4/DDR5, where a published controller default exists, OFF elsewhere): a rank (a channel on a standard without a rank level) with no queued request and no command for memory.power_down_idle_clocks memory clocks (default 64, AMD BKDG 42301 p.366) enters power-down, and the first command after it waits tXP. The energy model credits the measured unit-cycle residency at IDD2P instead of the standby current; the Background line is the reduced figure and a separate 'power-down credit' line states the saving (never a negative ledger entry). Refresh still interrupts power-down (the counted refresh energy is unchanged). The array's refresh is charged as counted in
 place of the datasheet duty, and the IDD3N share uses the controller's
-measured bank-open time. Since 1.12.18 (user ruling 2026-10-23, "IDD2N, state interrupted") one refresh command on one IDD unit costs VDD x (IDD5 - IDD2N) x tRFC, plus VPP x (IPP5B - IPP2N) x tRFC where the record has an IPP row (DDR4, DDR5, GDDR6; on LPDDR5 the 1.8 V VDD1 rail in the IPP slot; user ruling 2026-10-25, second supply rails: DDR4 IPP5B is DERIVED from the distributed-refresh IPP5R as its IDD5B is from IDD5R): JEDEC measures IDD5 with every bank precharged and a REFab needs them precharged, so the refresh interrupts whatever state the unit held and its excess is over precharged standby (it was IDD5 - IDD3N). The datasheet duty it replaces is the same IDD2N-relative excess, so after the substitution every background state stands at IDD2N for the refresh duty and nothing is counted twice. HBM records: HBM2's IDD5 is IDD2N plus the measured SAFARI refresh excess (now priced exactly); HBM3's IDD2N = IDD3N, so its refresh is unchanged. On a shared array there is one controller, so these
+measured bank-open time. Since 1.12.18 (user ruling 2026-10-23, "IDD2N, state interrupted") one refresh command on one IDD unit costs VDD x (IDD5 - IDD2N) x tRFC, plus VPP x (IPP5B - IPP2N) x tRFC where the record has an IPP row (DDR4, DDR5, GDDR6; on LPDDR5 the 1.8 V VDD1 rail in the IPP slot; user ruling 2026-10-25, second supply rails: DDR4 IPP5B is computed from the distributed-refresh IPP5R as its IDD5B is from IDD5R): JEDEC measures IDD5 with every bank precharged and a REFab needs them precharged, so the refresh interrupts whatever state the unit held and its excess is over precharged standby (it was IDD5 - IDD3N). The datasheet duty it replaces is the same IDD2N-relative excess, so after the substitution every background state stands at IDD2N for the refresh duty and nothing is counted twice. HBM records: HBM2's IDD5 is IDD2N plus the measured SAFARI refresh excess (now priced exactly); HBM3's IDD2N = IDD3N, so its refresh is unchanged. On a shared array there is one controller, so these
 array-wide terms are measured once over all traffic and charged once; the
 refresh commands are charged to the HOST memory controller in McPAT (refresh
 is the host controller's job, as on UPMEM, HBM-PIM and AiM; the PEs' memory
@@ -153,10 +153,10 @@ their activates and row state are the replayed controller's. These energies are 
 (`pimid_energy.h`, through `RamulatorWrapper`); the report passes the counts.
 `system.hosts[].memory.dram_replay: false` restores the unmeasured host path.
 
-**HBM standby VPP ((1.12.142), user ruling 2026-10-28).** No HBM IPP row is published, so the HBM records price the
+**HBM standby VPP ((1.12.142), user ruling 2026-10-28).** The HBM records price the
 pump rail's standby as a ratio of the VDD standby power of the same unit and state, from the same vendor
 estimator as the activation share (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynamic' / 'idle VDD dynamic': 0.1007
-for the 8-high HBM3 record, 0.0856 for the 4-high HBM2 record; DERIVED, `power.models.dram_vpp_standby_ratio`).
+for the 8-high HBM3 record, 0.0856 for the 4-high HBM2 record; `power.models.dram_vpp_standby_ratio`).
 It is the `+ipp` term of the Background line. Refresh, burst and activation VPP are not affected.
 
 Non-DRAM technologies (SRAM, STT_MRAM, PCM, RERAM) are charged in system scope
@@ -181,15 +181,15 @@ CACTI's, Vdd-aware.
 print level 5 on the kept XML.) Integer add/logic energy is linear in
 width from Horowitz ISSCC 2014 Fig. 1.1.9's published 8- and 32-bit add
 (0.03 / 0.1 pJ at 45 nm, node-scaled): 16 bit on the line between the
-points, 64 bit = 2 x 32 bit (DERIVED); an ALU access the decoder does not
+points, 64 bit = 2 x 32 bit; an ALU access the decoder does not
 classify by width is one 64-bit add, and McPAT's Wattch-derived "1.15 nJ"
 per-op literal is no longer used for the ALU or the DMA adder (multiply
 keeps the published 8/32-bit points and McPAT's value elsewhere). The
 bypass buses' length uses each unit's height = sqrt of its published area
-(DERIVED; units without a published area keep McPAT's literal), and the
+(units without a published area keep McPAT's literal), and the
 in-order FP bypass bus is one FP datum wide. An in-order device PE's
 load/store structure is a store buffer: one write and one read per store,
-none per load (DERIVED); OOO cores keep McPAT's queue. A device PE's
+none per load; OOO cores keep McPAT's queue. A device PE's
 instruction store, data store and DMA energy are printed
 (`[mcpat stores]`) so the PE is judged on its core alone, as RI5CY's
 Table V is.
@@ -217,17 +217,17 @@ registers. Pin energy McPAT already charges inside the pipeline is not
 charged again.
 
 (1.12.30, user rulings 2026-10-25) A CORE's tree spans its CLOCKED LOGIC only,
-DERIVED as the pipeline-register area McPAT builds for the units that exist
+taken as the pipeline-register area McPAT builds for the units that exist
 plus the integer ALU(s), the multiplier/divider and the instruction decoders
 (the `[mcpat clock] coreN: tree span` line prints the parts). The FPU and the
 arrays (instruction and data stores, register files, queues, TLBs,
 predictors) are not spanned: they time their own accesses inside CACTI, and
 until this release their area put a 22 nm alu_core PE's flops about 18 um of
 repeated global wire apart (core area 0.431 mm^2, 68% of it the FPU). The
-pipeline-register count no longer carries upstream McPAT's unsourced x1.5
+pipeline-register count no longer carries upstream McPAT's x1.5
 "control and interrupt registers" rule of thumb, and each stage latches the
 opcode as an encoded micro-op field (its bit width) instead of one line per
-opcode value. An in-order core's later stage registers are DERIVED from
+opcode value. An in-order core's later stage registers are sized from
 what they carry, the field set of the textbook pipelined datapath (Patterson
 & Hennessy, Computer Organization and Design, the five-stage
 pipeline-register figure): ID/EX = control + PC + two source operands +
@@ -236,7 +236,7 @@ zero flag + ALU result + store data + destination register; MEM/WB =
 control + load data + ALU result + destination register, with the data
 fields the core's integer width and the control field the encoded micro-op.
 Upstream McPAT latched the whole instruction into ID/EX and 8*2*int_data_width
-extra bits (sixteen data words, unsourced) into each of EX/MEM and MEM/WB.
+extra bits (sixteen data words) into each of EX/MEM and MEM/WB.
 The OOO branch has no such term (its stage registers already follow the
 renamed operands and tags).
 
@@ -275,7 +275,7 @@ network's own (arXiv 1401.0015): printed, not judged.
 (1.12.67, user ruling 2026-10-26, CLK1) In a core tree the local clock nets
 are priced at MEASURED SILICON wire capacitance instead of CACTI's local
 wire: 0.200 fF/um at 32 nm (Natarajan et al., IEDM 2008: the measured
-median at M2, 112.5 nm pitch) and 0.169 fF/um at 22 nm (DERIVED: Auth et
+median at M2, 112.5 nm pitch) and 0.169 fF/um at 22 nm (Auth et
 al., VLSI 2012, "13-18% lower capacitance than 32nm", midpoint), log-log
 between them. Silicon comb structures are measured with the neighbours
 grounded, the expected coupling of a clock net among signal wires that
@@ -283,8 +283,7 @@ switch independently or stay quiet; CACTI's local wire carries a
 worst-case Miller factor of 1.5 on both sidewalls (0.246 / 0.239 fF/um at
 32 / 22 nm). Leaf clock nets are routed with default rules, unshielded
 (OpenROAD clock_tree_synthesis applies its non-default rule to every level
-except the leaf nets). At other nodes no published silicon value is
-carried and the CACTI local wire is kept; the tree prints which it used.
+except the leaf nets). At other nodes the CACTI local wire is kept; the tree prints which it used.
 
 (1.12.77, user ruling 2026-10-26) With the internal diagnostic switch on
 (PIMID_DEBUG_CHECKS=1), a core with DMA registers also prints its tree
@@ -317,8 +316,7 @@ activity (Wattch's conditional-clocking style cc2: clock power scales with
 measured port usage), and the ungated value is printed beside it as a
 reference; peak power is ungated. Not priced: the memory-controller
 backend/PHY and router pipeline
-registers (no register count exists for them; the run prints NO PUBLISHED
-SOURCE FOUND), the link controller. `power.models.clock_network: false`
+registers (the run says so), the link controller. `power.models.clock_network: false`
 turns the model off.
 
 PIMID 1.12.18, idle halt (user ruling 2026-10-23,
@@ -352,16 +350,16 @@ messages are not priced on the ring and the crossbar (a lower bound); a
 1-core host has no fabric. Ring link length (user ruling 2026-10-25):
 2 x sqrt(host die area) / stops, the loop of the Nehalem-EX floorplan (two
 columns of core/LLC-slice rows, the rings through the slice columns; Rusu,
-ISSCC 2009 / JSSC 2010) on a square die -- DERIVED, no published stop spacing
-in mm; McPAT's upstream 2-D mesh formula gave half of it.
+ISSCC 2009 / JSSC 2010) on a square die (the stop spacing in mm
+computed from it); McPAT's upstream 2-D mesh formula gave half of it.
 
 PIMID 1.12.150, device NoC routers and flat fabrics (user rulings
 2026-10-28): a device fabric Garnet built flat (an SRAM or NVM device's
 `MESH_2D`, say) is priced as that fabric -- every router Garnet built, at its
 port count and the Garnet flit, from the flits its crossbar counters
 measured, and on a `MESH_2D` its R(C-1) + C(R-1) links, one tile pitch
-sqrt(array area / tiles) long (DERIVED, the DSENT tile-pitch convention; no
-published SRAM/NVM PIM floorplan). A router's duty is accesses / (cycles x
+sqrt(array area / tiles) long (the DSENT tile-pitch convention, applied to
+SRAM/NVM PIM fabrics). A router's duty is accesses / (cycles x
 routers x min(input, output) ports), so every NoC duty lies in [0, 1]. A
 router's input buffer is one queue array per port, (VCs x entries) x flit
 bits. CACTI's router (buffers, crossbar, arbiters) is calibrated per shape on
@@ -369,11 +367,10 @@ published routers: up to 8 ports its area and leakage are scaled by k, the
 published / model ratio of the ~1 GHz routers (Celerity, Piton, MIT SWIFT, the
 MIT 16-node chip, the DSENT validation router) and of the 3.6-4 GHz ones
 (Kumar et al., the Intel 80-tile router), log-log interpolated in clock x node
-between the two groups (DERIVED); at 16 ports and more the crossbar is scaled
+between the two groups; at 16 ports and more the crossbar is scaled
 by the geometric mean over four published crossbars. 9 to 15 ports, and
-2-port datapaths wider than 128 b, have no published point: they take the
-low-radix rule and the run says NO PUBLISHED SOURCE FOUND. Leakage follows
-area (DERIVED); the dynamic energy per flit is not scaled. The anchors are in
+2-port datapaths wider than 128 b, take the low-radix rule (the run says
+so). Leakage follows area; the dynamic energy per flit is not scaled. The anchors are in
 [sources.md](sources.md).
 
 (user ruling 2026-10-25, "Measured"), wire activity: every NoC link, bus
@@ -437,13 +434,13 @@ PHY + DIGITAL INTERFACE, from the row of the die's node (pJ/bit):
 |---|---|---|---|---|
 | 3 nm | advanced | 0.29 [CDN26] | 0.10 [MS26] | 0.39 |
 | 3 nm | standard | 0.52 [CDN26] | 0.10 [MS26] | 0.62 |
-| 22 nm | standard | 1.2 [INT26] | 0.192 DERIVED (lower bound) | 1.392 |
-| 22 nm | advanced | 0.669 DERIVED | 0.192 DERIVED (lower bound) | 0.862 |
+| 22 nm | standard | 1.2 [INT26] | 0.192 (lower bound) | 1.392 |
+| 22 nm | advanced | 0.669 | 0.192 (lower bound) | 0.862 |
 
 - digital, 3 nm = 0.33 - 0.23 = 0.10 [MS26]. It is a UCIe-LIKE digital
   interface (flow control, calibration, error correction, repair), not the
   UCIe D2D adapter itself.
-- digital, 22 nm DERIVED = 0.10 x E22/E7 = 0.10 x 1.923 = 0.192, the
+- digital, 22 nm = 0.10 x E22/E7 = 0.10 x 1.923 = 0.192, the
   published DIGITAL chain (user ruling: "use the most accurate one, the other
   two as internal reference, calibrations, and guards"): CACTI C_inv x Vdd^2
   22 nm (0.172 fF, 0.8 V) / 32 nm (0.325 fF, 0.9 V) = 0.418 (each node's minimum
@@ -456,11 +453,11 @@ PHY + DIGITAL INTERFACE, from the row of the die's node (pJ/bit):
   the analog node ratio, 0.10 x 1.2 / 0.52 = 0.231; (b) [SB17] Table 2's own
   20 nm row (Multi-Gate, 0.9 V, FO4 inverter 0.198 fJ), the nearest published
   node to 22 nm, in place of the CACTI step: 0.10 x 0.198 / 0.111 = 0.178. The
-  former reference (b), a TSMC press chain, was derived from the applied value
+  former reference (b), a TSMC press chain, was computed from the applied value
   itself (circular) and is removed. Guard: the run prints a WARNING (not fatal)
   when the applied value falls outside [min, max] of the references
   (0.178 .. 0.231).
-- analog, 22 nm advanced DERIVED = 1.2 x (0.29 / 0.52): Cadence's same-node
+- analog, 22 nm advanced = 1.2 x (0.29 / 0.52): Cadence's same-node
   advanced/standard package ratio applied to Intel's 22 nm standard package.
   Caveats, printed at runtime: 48 vs 16 Gb/s, PLL not integrated (Intel) vs
   included (Cadence), 30 vs 25 mm standard-package reach, two vendors.
@@ -488,9 +485,9 @@ What McPAT computes for the interposer class (UCIe advanced package, 64 lanes,
 - **link.controller**: McPAT's controller area and leakage. Its DYNAMIC term
   is not charged: McPAT's figure (Cadence ChipEstimate, "the PHY, the data link
   and transaction layer", modelled per lane) covers the same PHY and
-  adapter-level logic the analog + digital pJ/bit prices, and no published
-  figure splits it. The run prints the amount left out. NO PUBLISHED SOURCE
-  FOUND: transaction-layer dynamic energy above the FDI; it is not priced.
+  adapter-level logic the analog + digital pJ/bit prices, and the model does
+  not split it. The run prints the amount left out. The transaction-layer dynamic energy
+  above the FDI is not priced.
 
 PCIe, CXL, NVLink and UALink keep their per-bit band (the pJ/bit selected from
 the cited band, McPAT's SerDes dynamic removed), priced over the run in its
@@ -507,10 +504,10 @@ the published FPGA hard block: the UltraScale+ PCI Express integrated block's
 VCCINT current per link speed and width (Xilinx Power Estimator 2023.1.2, 16 nm,
 at 0.85 V), the table row for a PCIe gen1-gen4 x1-x16 link, the least-squares line
 over the 20 rows in lanes x GT/s for any other (Gen5, CXL, NVLink, UALink: an
-extrapolation, DERIVED), scaled to the run's node by the published-silicon logic
+extrapolation), scaled to the run's node by the published-silicon logic
 ratio (DeepScaleTool). It replaces McPAT's controller dynamic; McPAT keeps the
 controller's area and leakage.
-NVLink and UALink need `power.link.controller_clock_mhz`: they have no published
+NVLink and UALink need `power.link.controller_clock_mhz`: they have no default
 controller clock, and the run is refused without one. `power.models.ucie_link:
 false` restores the pre-1.12.18 interposer pricing.
 
@@ -546,9 +543,8 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   by class (since 1.11.10), and since 1.12.18 FP add/multiply/FMA and 8/32-bit
   integer add/logic/multiply are priced per operation from published energies
   (`power.models.fpu_published`, `power.models.int_alu_published`). FP
-  divide/sqrt, x87, 16/64-bit integer operations and integer divide have no
-  published value (the run prints NO PUBLISHED SOURCE FOUND) and keep McPAT's
-  per-operation energy.
+  divide/sqrt, x87, 16/64-bit integer operations and integer divide keep
+  McPAT's per-operation energy (the run says so).
 - **Functional-unit area (1.12.19, `power.models.fu_area_published`).**
   McPAT's FPU/ALU/MUL areas are literals (an ARM VFP+NEON block of 4.47 mm^2
   at 90 nm for an embedded FPU: 0.29 mm^2 at 22 nm with layout overhead,
@@ -560,8 +556,7 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   scaled x (F / 22 nm)^2 (the feature-size rule McPAT uses for its own
   literal). Leakage follows the area. The divider is counted once (in the
   RI5CY ALU). 64-bit integer units and the host x86 FPU (FP/SIMD datapath >=
-  128 bit) have no matching published area (NO PUBLISHED SOURCE FOUND) and
-  keep McPAT's literal. The RI5CY FPU carries FP16 lanes and no divide/sqrt;
+  128 bit) keep McPAT's literal (the run says so). The RI5CY FPU carries FP16 lanes and no divide/sqrt;
   the multiplier includes RI5CY's dot-product units: both printed. Every run
   prints the McPAT literal (reference) beside the value used.
 - **Interface energy** per access is computed from the part record (DQ termination per JEDEC ODT class,
@@ -571,11 +566,11 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
 - **Host uncore (1.12.97).** The host socket's I/O and system agent is one term per
   socket, `<host>.uncore_static`, from the Haswell-EP package C1E power (Intel
   330783-002, Sec. 2.10; the intercept of a fit over 34 SKUs), not a
-  block-by-block model: no published source gives the root complex, interrupt
-  controller, power-management unit or PLLs separately. It is an awake-idle
+  block-by-block model of the root complex, interrupt controller,
+  power-management unit and PLLs. It is an awake-idle
   floor and includes regulator loss in its source. Under load the uncore
   clock rises (1.12.154): `<host>.uncore_load`, 0.31 W per MB of host L3 at the
-  raised clock (Gholkar et al., SC19, DERIVED) x the busiest host core's running
+  raised clock (Gholkar et al., SC19) x the busiest host core's running
   fraction, less the uncore clock networks McPAT already prices.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
   conversion loss, the board and cooling are not modelled; no total includes

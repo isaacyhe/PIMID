@@ -44,7 +44,7 @@ impossible row timings: they implied tRCD ~ 7 ns, tRAS ~ 17 ns, tRC ~ 19 ns --
 roughly **2x faster than any real HBM part** -- and HBM3 used the wrong data
 rate (2.0 Gb/s instead of the JESD238 launch rate of 6.4 Gb/s).
 
-PIMID replaces them with presets derived from JEDEC spec-minimum physical
+PIMID replaces them with presets built from JEDEC spec-minimum physical
 timings (JESD235C / JESD238): **tRCD = tRP = 16 ns, tRAS = 33 ns, tRC = 49 ns,
 tCL = 16 ns, tWR = 16 ns, tFAW = 16 ns, tRFC = 220 ns (4 Gb), tREFI = 3.9 us**.
 Cycle counts are computed at the correct clock period:

@@ -35,6 +35,7 @@
 
 // Use common VerificationStatus enum from sram_architecture.h
 #include "sram_architecture.h"
+#include "common/debug_checks.h"
 
 namespace pimid {
 namespace memory {
@@ -456,8 +457,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
      * derivation (8 bits / 8 x 1.2 GHz = 1.2 GB/s), which is why the drift at
      * the other three went unnoticed for as long as it did. */
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
-        "bank group = bank x 2 (the bank-group port multiplier, UNSOURCED). "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        "bank group = bank x 2 (the bank-group port multiplier" + pimid::provLabel(", UNSOURCED") + "). "
         "CONSERVATIVE: assumes the serialization path is the bottleneck.";
     arch->bandwidth_limits.confidence_level = "Medium - based on estimated internal port widths";
 
@@ -651,7 +652,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
     };
 
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
         "bank group = bank (DDR3 HAS NO BANK GROUPS, so the rung is a "
         "pass-through and carries no multiplier). CONSERVATIVE: assumes the "
         "serialization path is the bottleneck.";
@@ -801,7 +802,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
         "NOT DOCUMENTED by JEDEC for any LPDDR generation; carried at the DDR estimate",
         "CRITICAL BOTTLENECK and an admitted unknown. Held equal to DDR3/DDR4's "
         "so a cross-technology comparison does not turn on an invented "
-        "difference between two unsourced numbers."
+        + std::string(pimid::debugChecks() ? "difference between two unsourced numbers." : "difference between two estimates.")
     };
     arch->datapath.chip_io_bits = {
         16,  // x16 device
@@ -824,8 +825,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
     };
 
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
-        "bank group = bank x 2 (the bank-group port multiplier, UNSOURCED). "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        "bank group = bank x 2 (the bank-group port multiplier" + pimid::provLabel(", UNSOURCED") + "). "
         "CONSERVATIVE: assumes the serialization path is the bottleneck.";
     arch->bandwidth_limits.confidence_level =
         "Medium-high - page, prefetch, widths and organisation are all JEDEC-verified; "
@@ -977,8 +978,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
     };
 
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
-        "bank group = bank x 2 (the bank-group port multiplier, UNSOURCED). "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz; "
+        "bank group = bank x 2 (the bank-group port multiplier" + pimid::provLabel(", UNSOURCED") + "). "
         "CONSERVATIVE: assumes the serialization path is the bottleneck.";
     arch->bandwidth_limits.confidence_level =
         "Medium-high - page, prefetch, widths, channel count and organisation are "
@@ -1128,9 +1129,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
      * written and the object has been re-binned since. Derived now, from the
      * serialization width and clock the object itself carries. */
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz, on an "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz, on an "
         "estimated 64-bit TSV bank path; bank group = bank x 2 (the bank-group "
-        "port multiplier, UNSOURCED). TSV enables wider internal paths than "
+        "port multiplier" + pimid::provLabel(", UNSOURCED") + "). TSV enables wider internal paths than "
         "DDR4 wire routing, which is why HBM's bank tier is the faster one.";
     arch->bandwidth_limits.confidence_level = "Medium - TSV width not publicly specified";
 
@@ -1354,9 +1355,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * to the DDR5_3200AN preset) and a clock this object does not carry
      * (clock_freq_mhz is 1600). Derived now. */
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz, on an "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz, on an "
         "8-bit bank path estimated to be DDR4's; bank group = bank x 2 (the "
-        "bank-group port multiplier, UNSOURCED).";
+        "bank-group port multiplier" + pimid::provLabel(", UNSOURCED") + ").";
     arch->bandwidth_limits.confidence_level = "Medium - based on DDR4 scaling";
 
     // ===== ORGANIZATION (VERIFIED) =====
@@ -1553,9 +1554,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
      * the reference cell accordingly. Derived now: 128 / 8 x 3.2 = 51.2 GB/s,
      * which is the same statement as "one 128-bit beat per core clock". */
     arch->bandwidth_limits.inference_method =
-        "DERIVED: bank = (bank_serialization_bits / 8) x clock_freq_GHz, on an "
+        std::string(pimid::provLabel("DERIVED: ")) + "bank = (bank_serialization_bits / 8) x clock_freq_GHz, on an "
         "estimated 128-bit improved-TSV bank path; bank group = bank x 2 (the "
-        "bank-group port multiplier, UNSOURCED).";
+        "bank-group port multiplier" + pimid::provLabel(", UNSOURCED") + ").";
     arch->bandwidth_limits.confidence_level = "Medium - TSV improvements not fully specified";
 
     // ===== ORGANIZATION (VERIFIED) =====

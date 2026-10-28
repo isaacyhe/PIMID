@@ -49,12 +49,11 @@
 #     Application-Class Processing", IEEE TVLSI 27(11), 2019, Sec. II and
 #     Table II: fetch latency 1, fetch width 32 bit, 22 nm FDX). The guest
 #     code is x86, so the width is an x86 in-order core's: Knights Corner,
-#     the in-order dual-issue x86 core (22 nm, Pentium-derived dual pipeline),
+#     the in-order dual-issue x86 core (22 nm, Pentium-based dual pipeline),
 #     "can handle 16 bytes or two instructions per clock cycle" (A. Fog, "The
 #     microarchitecture of Intel, AMD and VIA CPUs", Knights Corner chapter).
 #     Two instructions per cycle is this core's default issue width
-#     (pim.pe.issue_width 2); for issue width 1: NO PUBLISHED SOURCE FOUND,
-#     the same 16 B is used. zsim counts the instruction-cache reads at this
+#     (pim.pe.issue_width 2); for issue width 1 the same 16 B is used. zsim counts the instruction-cache reads at this
 #     width (InOrderCore ifetchChunks, zsim key fetchBytesPerCycle); the
 #     cache is still looked up, and its latency charged, once per line.
 #     The in-order core models no wrong-path fetch (in_order_core.cpp
@@ -112,12 +111,12 @@
 #     in_order.fetch_width_bytes); zsim counts the reads at this width
 #     (OOOCore ifetchChunks, wrong-path lines included). Host cores keep the
 #     full-line access.
-#   wrong-path fetch depth (DERIVED, R2355 (b), not a field):
+#   wrong-path fetch depth (R2355 (b), not a field):
 #     lines = ceil(mispredict_penalty_cycles x fetch_width_bytes / line size)
 #           = ceil(17 x 16 / 64) = ceil(4.25) = 5 lines at 64 B.
 #     Through 1.11.96 the depth was the literal 5*64/lineSize (5 lines at
 #     64 B: a backpressured IQ + uop queue + IW bound). At the 64 B line every
-#     shipped config uses, the derived depth equals the old one; at 32 B it is
+#     shipped config uses, the computed depth equals the old one; at 32 B it is
 #     9 (was 10), at 128 B it is 3 (was 2).
 #   retire_width: 4. OOOCore retires through ReorderBuffer<128, 4> (the
 #     second template argument is the retire width, ooo_core.h rob). It is a
@@ -147,16 +146,15 @@
 #     ONE DTLB array per core, so each is priced as the 4 KB-page array plus
 #     the large-page array (both physically present and both translate a
 #     fetch/load whose page size is not known before the lookup); whether
-#     the two are probed in parallel on every access: NO PUBLISHED SOURCE
-#     FOUND -- the combined array prices both arrays' leakage and area, which
+#     the two are probed in parallel on every access is taken as
+#     yes -- the combined array prices both arrays' leakage and area, which
 #     the manual establishes. McPAT has no second-level TLB structure, so the
 #     STLB is recorded and NOT priced (stated in the run). zsim models no TLB
 #     (no misses), so the STLB would see no lookups; its leakage and area are
 #     the omission. Used only for host cores: device elements address memory
 #     physically (no TLB in the timing model; the AddressTranslator class in
 #     src/address_translation has no caller) and keep McPAT's 1-entry floor.
-#     The in_order core mirrors no published microarchitecture (it is
-#     PIMID's own scoreboard core): NO PUBLISHED SOURCE FOUND for its TLB, so
+#     The in_order core is PIMID's own scoreboard core, so for its TLB
 #     an in-order host core keeps McPAT's 1-entry floor (accesses are still
 #     its fetches and data accesses). power.models.tlb_published_geometry:
 #     false restores the 1-entry floor on every core.

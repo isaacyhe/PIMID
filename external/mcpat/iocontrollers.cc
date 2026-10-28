@@ -775,14 +775,15 @@ void PCIeController::set_pcie_param()
 			            / (8.0 * XML->sys.pcie.fdi_width_bytes);
 			  clock_derived = true;
 			  pciep.clockRate = clock_mhz * 1e6;
-			  std::cerr << "[link] controller clock " << clock_mhz << " MHz DERIVED in McPAT = "
+			  std::cerr << "[link] controller clock " << clock_mhz << " MHz" << pimid::provLabel(" DERIVED") << " in McPAT = "
 			            << XML->sys.pcie.lanes << " lanes x " << XML->sys.pcie.lane_rate_gts
 			            << " GT/s / (8 bits x " << XML->sys.pcie.fdi_width_bytes
 			            << " B FDI) [UCIe 1.1 white paper (Das Sharma 2023) rates/widths;"
 			               " Hot Chips 2023 UCIe Tutorial: 64B on FDI]" << std::endl;
 		  } else {
-			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): NO PUBLISHED SOURCE FOUND:"
-			               " controller clock for this link (no clockrate given, and no"
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): "
+			            << (pimid::debugChecks() ? "NO PUBLISHED SOURCE FOUND: controller clock" : "no controller clock")
+			            << " for this link (no clockrate given, and no"
 			               " lanes/lane_rate_gts/fdi_width_bytes to derive a D2D clock from)."
 			               " Supply the clock (PIMID: power.link.controller_clock_mhz)." << std::endl;
 			  exit(2);
@@ -801,8 +802,9 @@ void PCIeController::set_pcie_param()
 		  }
 		  const int pkg = XML->sys.pcie.ucie_package;
 		  if (pkg != 1 && pkg != 2) {
-			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): NO PUBLISHED SOURCE FOUND:"
-			               " UCIe package for this link (ucie_package must be 1 = advanced or"
+			  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): "
+			            << (pimid::debugChecks() ? "NO PUBLISHED SOURCE FOUND: UCIe package" : "no UCIe package")
+			            << " for this link (ucie_package must be 1 = advanced or"
 			               " 2 = standard; the [UCIe11] targets differ by package)." << std::endl;
 			  exit(2);
 		  }

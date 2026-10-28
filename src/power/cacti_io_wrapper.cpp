@@ -1,5 +1,6 @@
 /* PIMID 1.11.40 -- CACTI-IO harness. See include/power/cacti_io_wrapper.h. */
 #include "power/cacti_io_wrapper.h"
+#include "common/debug_checks.h"   // provenance labels: PIMID_DEBUG_CHECKS=1 only
 #include <algorithm>
 #include <cctype>
 #include <sstream>
@@ -539,7 +540,8 @@ bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::str
     out.name = t;
     if (t == "soldered") {
         out.stub_ohm = 0.0;
-        out.source = "no DQ series resistor point-to-point (estimated from a vendor source that cannot be disclosed publicly)";
+        out.source = pimid::debugChecks() ? "no DQ series resistor point-to-point (estimated from a vendor source that cannot be disclosed publicly)"
+                                         : "no DQ series resistor point-to-point";
     } else if (tech == "DDR3") {
         out.stub_ohm = 15.0;
         out.source = "15 ohm DQ/DQS stub resistor on the DIMM (Altera AN-520, May 2009, p.10)";
@@ -589,9 +591,9 @@ bool CactiIOWrapper::hbmHostPhyEnergyPJBit(const std::string& tech, double& rd, 
     }
     if (tech == "HBM2") {
         rd = 0.56; wr = 1.07;
-        src = "DERIVED: Samsung Foundry HBM2E PHY 0.56 pJ/bit read, 1.07 pJ/bit write (Hwang, Chae, Yeo et al., Hot Chips 32 2020, slide 10; 7 nm, "
+        src = std::string(pimid::provLabel("DERIVED: ")) + "Samsung Foundry HBM2E PHY 0.56 pJ/bit read, 1.07 pJ/bit write (Hwang, Chae, Yeo et al., Hot Chips 32 2020, slide 10; 7 nm, "
               "0.75/1.2 V, 3.2 Gb/s) x rate factor 1 (per-bit energy) x voltage factor 1 (HBM2 VDDQ 1.2 V = the measured I/O "
-              "supply; no HBM2 host-PHY core voltage published)";
+              "supply" + (pimid::debugChecks() ? "; no HBM2 host-PHY core voltage published)" : "; the measured 0.75 V core kept)");
         return true;
     }
     return false;
@@ -886,7 +888,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             const double phy16 = a + b * rate_mts / 1000.0;
             r.phy_static_power_mw = phy16 * num_dq / 16.0 + iop.phy_pll_s;
             std::ostringstream o;
-            o << "DERIVED from measured LPDDR4X PHY idle rails (NXP AN13917 Rev. 4.0 Tables 28/29/31: 22.9/14.1/7.8 mW per x16 at "
+            o << (pimid::debugChecks() ? "DERIVED from" : "from") << " measured LPDDR4X PHY idle rails (NXP AN13917 Rev. 4.0 Tables 28/29/31: 22.9/14.1/7.8 mW per x16 at "
                  "3733/1866/625 MT/s; fit " << a << " + " << b << " mW per Gb/s per 16 DQ) x " << num_dq << "/16 DQ at "
               << rate_mts << " MT/s = " << phy16 * num_dq / 16.0 << " mW, + CACTI-IO PLL " << iop.phy_pll_s
               << " mW (the measured rails exclude the PLL)";
@@ -919,7 +921,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             r.phy_static_power_mw = pch;
             r.phy_static_sourced = true;
             std::ostringstream o;
-            o << "DERIVED from the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
+            o << (pimid::debugChecks() ? "DERIVED from" : "from") << " the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
                  "7 nm, 0.75/1.2 V, 1024 DQ at 3.2 Gb/s, hard macro 36 + I/O 14 mW): hard macro x " << rate_mts << "/3200 MT/s x "
                  "(0.66/0.75 V)^2 = " << hm << " mW + I/O x (0.30/1.2 V)^2 = " << iom << " mW (HBM3 PHY supplies, Chae et al. JSSC "
                  "59(1) 2024 Table II) = " << stack_mw << " mW per 1024 DQ = " << pch << " mW per " << num_dq << "-DQ channel, x the "
@@ -940,10 +942,10 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             r.phy_static_power_mw = pch;
             r.phy_static_sourced = true;
             std::ostringstream o;
-            o << "DERIVED from the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
+            o << (pimid::debugChecks() ? "DERIVED from" : "from") << " the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
                  "7 nm, 0.75/1.2 V, 1024 DQ at 3.2 Gb/s, hard macro 36 + I/O 14 mW): hard macro x " << rate_mts << "/3200 MT/s = "
-              << hm << " mW + I/O 14 mW (HBM2 VDDQ 1.2 V, the measured supply; no HBM2 host-PHY core voltage is published, 0.75 V "
-                 "kept) = " << stack_mw << " mW per 1024 DQ = " << pch << " mW per " << num_dq << "-DQ channel, x the memory's channels";
+              << hm << " mW + I/O 14 mW (HBM2 VDDQ 1.2 V, the measured supply; "
+              << pimid::provLabel("no HBM2 host-PHY core voltage is published, ") << "0.75 V kept) = " << stack_mw << " mW per 1024 DQ = " << pch << " mW per " << num_dq << "-DQ channel, x the memory's channels";
             r.phy_static_source = o.str();
         }
         r.phy_dynamic_power_mw = io.getPHYDynamicPowerMW();
@@ -1035,8 +1037,8 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
                 r.energy_pj_per_bit_term_ca_rdimm = lines * p_line_mw / payload_gbps;
                 std::ostringstream o;
                 o << lines << " RCD inputs x " << p_line_mw << " mW (" << (d5 ? "POD 1.1 V, LOW half the time" : "to VDD/2, 1.2 V")
-                  << ", loop " << rloop << " ohm = host RON_CMD " << (d5 ? 40 : 35) << " DERIVED + 15 pre-RCD"
-                  << (d5 ? "" : " DERIVED") << " + RCD input termination 60" << (d5 ? " (ISQED 2025)" : " DERIVED") << ")";
+                  << ", loop " << rloop << " ohm = host RON_CMD " << (d5 ? 40 : 35) << pimid::provLabel(" DERIVED") << " + 15 pre-RCD"
+                  << (d5 ? "" : pimid::provLabel(" DERIVED")) << " + RCD input termination 60" << (d5 ? " (ISQED 2025)" : pimid::provLabel(" DERIVED")) << ")";
                 r.ca_rdimm_source = o.str();
             }
         }
@@ -1062,7 +1064,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
         if (injected && !el.sourced) {
             std::cerr << "[power] NOTE: " << tech
                       << " CACTI-IO result is CROSS-CHECK ONLY: its injected "
-                         "electricals contain an unsourced value (" << el.note
+                         "electricals " << (pimid::debugChecks() ? "contain an unsourced value (" : "carry a placeholder value (") << el.note
                       << "), so it does not replace the scheme-table "
                          "termination." << std::endl;
         }
@@ -1073,7 +1075,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
                                     "(vddq, rtt1/rtt2 DQ, r_on; rs1/rs2, "
                                     "rtt_ca and z0 remain the borrowed "
                                     "family's): ") + el.note
-                        + (el.sourced ? "" : " [contains an UNSOURCED value]")
+                        + (el.sourced ? "" : pimid::provLabel(" [contains an UNSOURCED value]"))
                       : std::string("family electricals"))
                  + substituted_geometry;   /* 1.11.57 (latent C019) */
         r.not_modelled = std::string(

@@ -1033,7 +1033,7 @@ void RamulatorWrapper::initialize() {
         {
             static std::set<std::string> said;
             if (said.insert(dt).second)
-                std::cout << "[params] " << dt << " idd: " << pf.provenance << " row (" << pf.basis << ", " << pf.idd3n_bank_state
+                std::cout << "[params] " << dt << ((pimid::debugChecks() && !pf.provenance.empty()) ? " idd: " + pf.provenance + " row (" : std::string(" idd row (")) << pf.basis << ", " << pf.idd3n_bank_state
                           << ", " << pf.rows.size() << " grade row(s)): the record is the source (IDD-RECORDS step 2, 1.11.105)"
                           << std::endl;
         }
@@ -1044,8 +1044,9 @@ void RamulatorWrapper::initialize() {
                 const bool vpp_on = Ramulator::pimid_energy::vppDynamicEnabled();
                 if (rec.idd.has_vpp_act)   // 1.12.18 (user ruling 2026-10-24)
                     std::cout << "[params] " << dt << " VPP activate: " << (vpp_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_dynamic: false)")
-                              << " as " << rec.idd.vpp_act_ratio << " x the VDD activate+precharge energy (" << rec.idd.vpp_act_provenance
-                              << ", record idd.vpp_act: " << rec.idd.vpp_act_device << "; the other stack column, " << rec.idd.vpp_act_alt_device
+                              << " as " << rec.idd.vpp_act_ratio << " x the VDD activate+precharge energy ("
+                              << ((pimid::debugChecks() && !rec.idd.vpp_act_provenance.empty()) ? rec.idd.vpp_act_provenance + ", " : std::string())
+                              << "record idd.vpp_act: " << rec.idd.vpp_act_device << "; the other stack column, " << rec.idd.vpp_act_alt_device
                               << ", would give " << rec.idd.vpp_act_alt_ratio << ")."
                               << (rec.idd.has_vpp_standby ? " The standby VPP is the record's idd.vpp_standby ratio (below); no burst or refresh VPP term (no ipp rows)."
                                                           : " No other VPP term is priced for this record (no ipp rows).")
@@ -1055,7 +1056,8 @@ void RamulatorWrapper::initialize() {
                     const bool sb_on = Ramulator::pimid_energy::vppStandbyRatioEnabled();
                     std::cout << "[params] " << dt << " VPP standby: " << (sb_on ? "priced" : "NOT priced BY USER OPTION (power.models.dram_vpp_standby_ratio: false)")
                               << " as " << rec.idd.vpp_standby_ratio << " x the VDD standby power of each unit, on the same state split"
-                              << " (" << rec.idd.vpp_standby_provenance << ", record idd.vpp_standby: " << rec.idd.vpp_standby_device
+                              << " (" << ((pimid::debugChecks() && !rec.idd.vpp_standby_provenance.empty()) ? rec.idd.vpp_standby_provenance + ", " : std::string())
+                              << "record idd.vpp_standby: " << rec.idd.vpp_standby_device
                               << "; the other stack column, " << rec.idd.vpp_standby_alt_device << ", would give " << rec.idd.vpp_standby_alt_ratio
                               << "); an energy ratio, no voltage conversion; the report's +ipp term" << std::endl;
                 }
@@ -1064,7 +1066,8 @@ void RamulatorWrapper::initialize() {
                     const std::string row = kv.first ? dt + " (" + std::to_string(kv.first) + " MT/s row)" : dt;
                     if (r.has_io_share)
                         std::cout << "[params] " << row << ": idd4r/idd4w carry an I/O-equivalent share of " << r.idd4r_io << "/"
-                                  << r.idd4w_io << " mA (" << r.io_share_provenance << ", record idd.io_share). "
+                                  << r.idd4w_io << " mA (" << ((pimid::debugChecks() && !r.io_share_provenance.empty()) ? r.io_share_provenance + ", " : std::string())
+                                  << "record idd.io_share). "
                                   << (io_on ? (r.io_share_anchored
                                               ? "The array burst is charged without it; the DQ I/O of an access that crosses the pins is priced"
                                                 " once, AT THIS SHARE (anchored on a published I/O energy, record idd.io_share.anchor_*;"
@@ -1484,7 +1487,8 @@ void RamulatorWrapper::setDdr5SpeedGrade(int mtps) {
                   << " is not one of 3200 / 4800 / 5600 -- the three grades for "
                      "which this tree holds a timing bin (JESD79-5D Tables 283 / 287 "
                      "/ 289) AND a matching IDD row (Micron MT60B Rev A = 4800B, "
-                     "Rev D = 5600B; the 3200 row DERIVED from the 4800 column by data rate)."
+                     "Rev D = 5600B; the 3200 row "
+                  << (pimid::debugChecks() ? "DERIVED" : "scaled") << " from the 4800 column by data rate)."
                   << std::endl;
         std::exit(2);
     }
@@ -2303,7 +2307,7 @@ double RamulatorWrapper::getRcdStaticMW(std::string* src) const {
     const double mw = 1000.0 * w15 * (v / 1.5) * (v / 1.5);
     if (src) {
         std::ostringstream o;
-        o << "DERIVED: register PLL + output clocks, David et al. ICAC 2011 Table 3 (DDR3 RDIMM: 0.36 / 0.21 W at 1333 / 800), "
+        o << pimid::provLabel("DERIVED: ") << "register PLL + output clocks, David et al. ICAC 2011 Table 3 (DDR3 RDIMM: 0.36 / 0.21 W at 1333 / 800), "
              "EXTRAPOLATED linearly in rate from the measured 800-1333 MT/s to " << rate << " MT/s (" << rate / 1333.0
           << "x the highest measured rate) = " << w15 << " W at 1.5 V, x (" << v << " V / 1.5 V)^2";
         *src = o.str();
@@ -2322,7 +2326,7 @@ double RamulatorWrapper::getRcdDriveEnergyNJ(std::string* src) const {
         const double nj = 15.0 * 0.5 * p_low_mw * t_burst_ns / 1000.0;
         if (src) {
             std::ostringstream o;
-            o << "DERIVED: 15 RCD outputs x " << p_low_mw << " mW while LOW (US 10,401,899 B2, Ron 27 + Rterm 40 ohm, 1.1 V) x 0.5 x "
+            o << pimid::provLabel("DERIVED: ") << "15 RCD outputs x " << p_low_mw << " mW while LOW (US 10,401,899 B2, Ron 27 + Rterm 40 ohm, 1.1 V) x 0.5 x "
               << t_burst_ns << " ns (64 B on a 32-bit sub-channel)";
             *src = o.str();
         }
@@ -2332,7 +2336,7 @@ double RamulatorWrapper::getRcdDriveEnergyNJ(std::string* src) const {
     if (!(io.valid && io.exact_map)) return 0.0;
     if (src) {
         std::ostringstream o;
-        o << "DERIVED: the DIMM's command/address network to VTT (the parameter set's CA network, " << io.energy_pj_per_bit_term_ca_rd
+        o << pimid::provLabel("DERIVED: ") << "the DIMM's command/address network to VTT (the parameter set's CA network, " << io.energy_pj_per_bit_term_ca_rd
           << " pJ/bit), driven by the RCD";
         *src = o.str();
     }
@@ -2417,11 +2421,12 @@ double RamulatorWrapper::dataPatternFactor(bool is_write, double f_ones, double 
     std::ostringstream o;
     double f = 1.0;
     if (!p.valid) {
-        o << "NO PUBLISHED SOURCE FOUND for a data-dependent burst energy of this part (its record carries no data_pattern block)";
+        o << (pimid::debugChecks() ? "NO PUBLISHED SOURCE FOUND for a data-dependent burst energy of this part"
+                                  : "no data-dependent burst energy for this part") << " (its record carries no data_pattern block)";
     } else if (p.form == "ONES_LINEAR") {
         const double k = is_write ? p.write_ones : p.read_ones;
         if (f_ones < 0.0) o << "the 1s fraction was not measured";
-        else { f = 1.0 + k * (f_ones - 0.5); o << "1 + " << k << " x (1s " << f_ones << " - 0.5), " << p.provenance; }
+        else { f = 1.0 + k * (f_ones - 0.5); o << "1 + " << k << " x (1s " << f_ones << " - 0.5)" << ((pimid::debugChecks() && !p.provenance.empty()) ? ", " + p.provenance : std::string()); }
     } else {   // DQ_TOGGLE_RELATIVE
         if (is_write && !p.apply_to_writes) o << "the record applies the form to reads only";
         else if (f_dq_toggle < 0.0) o << "the DQ transition rate was not measured";
@@ -2430,7 +2435,7 @@ double RamulatorWrapper::dataPatternFactor(bool is_write, double f_ones, double 
             const double den = p.floor_pj_bit + p.c_dq * p.ref_dq_rate + p.c_tsv * p.ref_tsv_rate + p.c_bg * p.ref_bg_rate;
             f = num / den;
             o << "pJ(dq " << f_dq_toggle << ", tsv " << p.tsv_rate << ", bg " << p.bg_rate << ") " << num << " / pJ(reference) " << den
-              << " pJ/b, " << p.provenance;
+              << " pJ/b" << ((pimid::debugChecks() && !p.provenance.empty()) ? ", " + p.provenance : std::string());
         }
     }
     if (how) *how = o.str();
@@ -2928,7 +2933,8 @@ double RamulatorWrapper::getBackgroundSystemStatesMW(double active_frac, double 
                          "measured power-down residency, so the Background line for '"
                       << dram_type_ << "' rests on the IDD2P column of "
                          "pimid_energy.h, which is a datasheet read only for "
-                         "DDR3/DDR4/DDR5-4800/5600 (DDR5-3200: the 4800 column's, DERIVED; see its comment)." << std::endl;
+                         "DDR3/DDR4/DDR5-4800/5600 (DDR5-3200: the 4800 column's" << pimid::provLabel(", DERIVED")
+                      << "; see its comment)." << std::endl;
         }
     }
     return Ramulator::pimid_energy::backgroundSystemStatesMW(
@@ -3647,8 +3653,9 @@ std::string RamulatorWrapper::getLadderRungProvenance(int rung) const {
         case 3: return fmt(dram_arch_->datapath.chip_io_bits);
         case 4: return fmt(dram_arch_->datapath.rank_databus_bits);
         case 5: return fmt(dram_arch_->datapath.channel_databus_bits);
-        case 6: return "DERIVED: channel_databus_bits x the technology's "
-                       "channel count (arithmetic, not a sourced field)";
+        case 6: return pimid::debugChecks() ? "DERIVED: channel_databus_bits x the technology's "
+                                              "channel count (arithmetic, not a sourced field)"
+                                            : "channel_databus_bits x the technology's channel count (arithmetic)";
     }
     return "unknown rung";
 }
@@ -3691,12 +3698,19 @@ int RamulatorWrapper::getBankGroupPortBits() const {
     static bool announced = false;
     if (!announced) {
         announced = true;
-        std::cerr << "[mem] NOTE: the bank-group port width is bank "
-                     "serialization width x 2 -- an UNSOURCED multiplier, not "
-                     "a JEDEC value; a bank group is not an interface boundary "
-                     "and no specification fixes its port width. It sets "
-                     "hierarchy level 2's link width and bandwidth."
-                  << std::endl;
+        if (pimid::debugChecks())
+            std::cerr << "[mem] NOTE: the bank-group port width is bank "
+                         "serialization width x 2 -- an UNSOURCED multiplier, not "
+                         "a JEDEC value; a bank group is not an interface boundary "
+                         "and no specification fixes its port width. It sets "
+                         "hierarchy level 2's link width and bandwidth."
+                      << std::endl;
+        else
+            std::cerr << "[mem] NOTE: the bank-group port width is bank "
+                         "serialization width x 2 (a bank group is not an interface "
+                         "boundary, and no specification fixes its port width). It sets "
+                         "hierarchy level 2's link width and bandwidth."
+                      << std::endl;
     }
     if (dram_arch_) {
         /* 1.11.68: A TECHNOLOGY WITH NO BANK GROUPS GETS NO BANK-GROUP

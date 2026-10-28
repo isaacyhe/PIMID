@@ -762,22 +762,31 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
         static bool warned_cxl_delta = false;
         if (!warned_cxl_delta) {
             warned_cxl_delta = true;
-            std::cerr << "[McPATWrapper] WARNING: the CXL coherence delta ("
-                      << coherence_delta << " pJ/bit, added to both ends of "
-                         "the PCIe gen5 band) is UNSOURCED -- it is the "
-                         "difference of two retired unsourced scalars, not a "
-                         "published measurement. It governs the link SerDes "
-                         "dynamic energy and the reported link-energy band "
-                         "for every cxl* link type." << std::endl;
+            if (pimid::debugChecks())
+                std::cerr << "[McPATWrapper] WARNING: the CXL coherence delta ("
+                          << coherence_delta << " pJ/bit, added to both ends of "
+                             "the PCIe gen5 band) is UNSOURCED -- it is the "
+                             "difference of two retired unsourced scalars, not a "
+                             "published measurement. It governs the link SerDes "
+                             "dynamic energy and the reported link-energy band "
+                             "for every cxl* link type." << std::endl;
+            else
+                std::cerr << "[McPATWrapper] NOTE: the CXL coherence delta ("
+                          << coherence_delta << " pJ/bit, added to both ends of "
+                             "the PCIe gen5 band) governs the link SerDes "
+                             "dynamic energy and the reported link-energy band "
+                             "for every cxl* link type." << std::endl;
         }
         b.lo = g5.lo + coherence_delta;
         b.hi = g5.hi + coherence_delta;
-        b.provenance = "gen5 band + 1.4 coherence delta (delta UNSOURCED: difference of two retired scalars, not a measurement)";
+        b.provenance = pimid::debugChecks() ? "gen5 band + 1.4 coherence delta (delta UNSOURCED: difference of two retired scalars, not a measurement)"
+                                           : "gen5 band + 1.4 coherence delta";
         /* (user ruling 2026-10-27: serial links calibrated): CXL 3.0 runs the PCIe 6.0 64 GT/s PAM4
          * PHY; NO PUBLISHED SOURCE FOUND for a 64 GT/s PCIe 6.0 PHY's energy per
          * bit, so the gen5 band is carried for it and the text says so. */
         if (link_type.rfind("cxl_3", 0) == 0)
-            b.provenance = "gen5 band + 1.4 coherence delta, CARRIED for a 64 GT/s PCIe 6.0 PHY: NO PUBLISHED SOURCE FOUND (delta UNSOURCED)";
+            b.provenance = pimid::debugChecks() ? "gen5 band + 1.4 coherence delta, CARRIED for a 64 GT/s PCIe 6.0 PHY: NO PUBLISHED SOURCE FOUND (delta UNSOURCED)"
+                                               : "gen5 band + 1.4 coherence delta, carried for a 64 GT/s PCIe 6.0 PHY";
         return b;
     }
     /* UCIe. The range was ALREADY sourced and written down here, then thrown
@@ -810,7 +819,8 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
     }
     if (link_type.rfind("nvlink", 0) == 0) {
         b.lo = 1.17; b.hi = 1.30;
-        b.provenance = "board-level NVLink 3/4 PHY: NO PUBLISHED SOURCE FOUND; carried 1.17 GRS 16nm (JSSC 2019) .. 1.30 NVLink-C2C (NVIDIA 2022), short-reach figures, a LOWER BOUND";
+        b.provenance = pimid::debugChecks() ? "board-level NVLink 3/4 PHY: NO PUBLISHED SOURCE FOUND; carried 1.17 GRS 16nm (JSSC 2019) .. 1.30 NVLink-C2C (NVIDIA 2022), short-reach figures, a LOWER BOUND"
+                                           : "board-level NVLink 3/4 PHY: carried 1.17 GRS 16nm (JSSC 2019) .. 1.30 NVLink-C2C (NVIDIA 2022), short-reach figures, a LOWER BOUND";
         return b;
     }
     /* UALink 200G. SOURCED, and it RETIRES the 8.0 that D1 assumed from
@@ -827,7 +837,8 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
      * ISSCC 2022 (5 nm LR). 112G-class figures: NO PUBLISHED SOURCE FOUND at 200G. */
     if (link_type.rfind("ualink", 0) == 0) {
         b.lo = 4.5; b.hi = 6.0;
-        b.provenance = "4.5-6 host SerDes with DSP, 112G class (arXiv 2510.15893); 200G NOT published; retires 3.5 (not in the cited paper)";
+        b.provenance = pimid::debugChecks() ? "4.5-6 host SerDes with DSP, 112G class (arXiv 2510.15893); 200G NOT published; retires 3.5 (not in the cited paper)"
+                                           : "4.5-6 host SerDes with DSP, 112G class (arXiv 2510.15893), carried for 200G; retires 3.5 (not in the cited paper)";
         return b;
     }
     /* 1.11.103 (ruling COSIM-LINK-CLASS): a DIMM-resident device is reached
@@ -2529,7 +2540,7 @@ void McPATWrapper::warnUnsourcedMix(const char* which, const char* frac) const {
      * with 132014 measured loads printed "no measured load/store mix". */
     if (!diagOnce(warned_unsourced_mix_)) return;
     std::cout << "  [Activity] WARNING: no measured " << which
-              << " in this run; McPAT is driven by UNSOURCED fractions of the "
+              << " in this run; McPAT is driven by " << (pimid::debugChecks() ? "UNSOURCED" : "fixed") << " fractions of the "
                  "retired instruction count (" << frac
               << "). These are stand-ins, not measurements -- the core dynamic "
                  "power below rests on them." << std::endl;
@@ -3065,11 +3076,11 @@ std::string McPATWrapper::generateXMLConfig() const {
          * subthreshold ratio above. */
         xml << "    <param name=\"dram_periph_gate_leak\" value=\"" << fg << "\"/>\n";
         if (fg == fl)
-            std::cout << "  [tech] gate-leakage ratio UNSOURCED: CACTI has no "
+            std::cout << "  [tech] gate-leakage ratio" << pimid::provLabel(" UNSOURCED") << ": CACTI has no "
                          "I_g_on_n data for the DRAM device columns (0 at 22, "
                          "32 and 45 nm), so the subthreshold ratio " << fl
                       << " stands in -- same direction (high-Vt AND thick-oxide"
-                         " both collapse leakage), unsourced magnitude."
+                         " both collapse leakage)" << pimid::provLabel(", unsourced magnitude") << "."
                       << std::endl;
         /* 1.11.34 (E10): the scope mask is GONE. It was emitted as the
          * literal 15 -- every bit, always -- with no configuration surface, so
@@ -4449,7 +4460,7 @@ std::string McPATWrapper::generateXMLConfig() const {
     /* 1.11.60 (audit round 4, C006): diagOnce(). */
     if (diagOnce(warned_mc_structure_)) {
         std::cerr << "[McPATWrapper] WARNING: the memory controller's structure is "
-                     "UNSOURCED and in force in every run: "
+                  << (pimid::debugChecks() ? "UNSOURCED" : "fixed") << " and in force in every run: "
                   << mc_tech_.memory_channels_per_mc << " channel(s) per MC, "
                   << mc_tech_.req_window_size_per_channel << "-entry request window, "
                   << mc_tech_.io_buffer_size_per_channel << "-entry IO buffer, "
@@ -4538,7 +4549,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             if (pcie_stats_.number_units > 0 && diagOnce(warned_link_clock_)) {
                 std::cerr << "[McPATWrapper] WARNING: no link controller clock was "
                              "supplied for link type '" << pcie_stats_.link_type_name
-                          << "'; the UNSOURCED 350 MHz literal is in force. The "
+                          << "'; the " << pimid::provLabel("UNSOURCED ") << "350 MHz literal is in force. The "
                              "link controller's digital dynamic power scales "
                              "linearly with this clock." << std::endl;
             }

@@ -1,4 +1,5 @@
 #include "memory/sram_model.h"
+#include "common/debug_checks.h"
 #include "memory/cacti_wrapper.h"
 #include "memory/sram_architecture.h"
 #include "memory/architecture_extractor.h"
@@ -185,7 +186,8 @@ void SRAMModel::initialize() {
         throw std::runtime_error(
             "[SRAMModel] CACTI characterization failed and there is no fallback. "
             "The hand-written default specs were removed in 1.11.24 because "
-            "they were unsourced and indistinguishable from tool output. "
+            + std::string(pimid::debugChecks() ? "they were unsourced and indistinguishable" : "they were indistinguishable")
+            + " from tool output. "
             "Fix the CACTI configuration rather than pricing this run from "
             "invented numbers.");
     }

@@ -116,7 +116,7 @@ CACTI's and NVSim's *own* "subarray" is a smaller thing than the DRAM
 subarray -- it is the array slice below a mat -- and is deliberately NOT a
 PIMID tier: there is one level below the bank, not two. An NVSim cache entry
 written before 1.11.73 carries no mat count or width; the run says the tier
-is not sourceable, keeps the tree shape it has as an unsourced count, and
+is not sourceable, keeps the tree shape it has as a stated count, and
 refuses to PLACE PEs at `MAT` until the cache is regenerated (or
 `memory.subarrays_per_bank` states a count explicitly, which is then labelled
 as user-set exactly as on DRAM).

@@ -1,6 +1,6 @@
 # docs/attic
 
-Retired documentation, kept for provenance. Nothing here describes current
+Retired documentation, kept for the record. Nothing here describes current
 behavior. The live docs are one directory up (`docs/`), which is the single
 source of truth. Files land here when a subsystem is redesigned and its old
 write-up would otherwise mislead.

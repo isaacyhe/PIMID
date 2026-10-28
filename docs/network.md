@@ -258,7 +258,7 @@ Each rung is physically different silicon: a subarray's local wiring, the
 bank I/O, the shared channel DQ bus. Real DRAM datapaths are asymmetric --
 wide and parallel near the arrays, narrow and shared toward the channel.
 PIMID exposes that structure through two override mechanisms. If you never
-touch them, the per-technology JEDEC-derived defaults apply; they exist for
+touch them, the per-technology JEDEC-based defaults apply; they exist for
 expert tuning and design-space exploration.
 
 ### Level overrides (`noc.levels.<level>`)

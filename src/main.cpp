@@ -200,10 +200,10 @@ static int g_array_device_corner = 0;
 static double nvmWriteBudgetMw(const std::string& tech, double user_mw, std::string* src) {
     if (user_mw > 0.0) { if (src) *src = "memory.nvm_write_budget.mw (user)"; return user_mw; }
     if (tech == "PCM") {
-        if (src) *src = "DERIVED, Jiang et al. ISCA 2014 Table 4: 22 nm PCM chip, RESET pump 7 mA x 5 V / 0.216 efficiency";
+        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Jiang et al. ISCA 2014 Table 4: 22 nm PCM chip, RESET pump 7 mA x 5 V / 0.216 efficiency";
         return 7.0 * 5.0 / 0.216;
     }
-    if (src) *src = "no published budget for " + tech;
+    if (src) *src = (pimid::debugChecks() ? "no published budget for " : "no default budget for ") + tech;
     return -1.0;
 }
 
@@ -4308,7 +4308,8 @@ static bool dramPdTxp(const UnifiedConfig& c, const std::string& t, double& ns, 
     else if (t == "LPDDR5") { ns = 7.0; nck = 3;  src = "tXP max(3nCK,7ns), JESD209-5C Table 245"; }   // 1.12.39
     else if (t == "GDDR6")  { nck = 12;           src = "tXP 12 tCK, Samsung K4Z80325BC Rev. 1.3 Table 92 p.158"; }
     else if (t == "HBM3")   { ns = 7.5; nck = 10; src = "tXP max(10nCK,7.5ns), JESD238B.01 p.178"; }
-    else { src = "NO PUBLISHED SOURCE FOUND (JESD235D lists HBM2 tXP without a value)"; return false; }
+    else { src = pimid::debugChecks() ? "NO PUBLISHED SOURCE FOUND (JESD235D lists HBM2 tXP without a value)"
+                                         : "JESD235D lists HBM2 tXP without a value"; return false; }
     return true;
 }
 /* The default (ruling: ON only where a published vendor document shows controllers enable power-down by default):
@@ -4330,7 +4331,8 @@ static void resolveDramPowerDown(UnifiedConfig& config) {
     } else if (t == "DDR3") { config.mem_power_down = true; why = "default ON: AMD BKDG 42301 Table 81 p.162-163, PowerDownEn = 1 in normal operation"; }
     else if (t == "DDR4")   { config.mem_power_down = true; why = "default ON: Lenovo Press LP1267 p.34, Memory Power Down Enable (default)"; }
     else if (t == "DDR5")   { config.mem_power_down = true; why = "default ON: Lenovo Press LP1977 p.27, Memory Power Down Enable (default)"; }
-    else { config.mem_power_down = false; why = "default OFF: no published controller default found for this technology (set memory.power_down: true to enable)"; }
+    else { config.mem_power_down = false; why = pimid::debugChecks() ? "default OFF: no published controller default found for this technology (set memory.power_down: true to enable)"
+                                                                : "default OFF for this technology (set memory.power_down: true to enable)"; }
     double ns = 0.0; int nck = 0; std::string src;
     const bool have_txp = dramPdTxp(config, t, ns, nck, src);
     if (config.mem_power_down && !have_txp) {
@@ -5353,7 +5355,8 @@ static int stackChannelsPerDie(const UnifiedConfig& config, bool print) {
                   << " per die (channel c on core die c/" << per_die << " + 1, " << used
                   << " die(s) used; base logic die 0 = the hub)"
                   << (user ? " [memory.channels_per_die, user]" : " [default: even spread from the bottom]")
-                  << " -- stated layout, no published channel-to-die map (JESD238 leaves it to the vendor)"
+                  << (pimid::debugChecks() ? " -- stated layout, no published channel-to-die map (JESD238 leaves it to the vendor)"
+                                            : " -- stated layout (JESD238 leaves the channel-to-die map to the vendor)")
                   << std::endl;
     }
     return per_die;
@@ -6304,7 +6307,7 @@ static void reportStatedConstants(const UnifiedConfig& config) {
                 which += "L" + std::to_string(li) + " " + kRungNameReg[li];
             }
         }
-        rows.push_back({"unsourced hierarchy ladder rungs",
+        rows.push_back({pimid::debugChecks() ? "unsourced hierarchy ladder rungs" : "placeholder hierarchy ladder rungs",
                         std::to_string(n_ph) + " of 7 (" + which +
                             ") on the per-technology placeholder table",
                         "network.levels[].link.width_bits / bandwidth",
@@ -6389,7 +6392,7 @@ static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
              * project removes. */
             std::cerr << "[hierarchy] " << tech << " has no plugin memory model, so the "
                          "tree keeps " << config.subarrays_per_bank << " "
-                      << config.l0_name << "s/bank as an UNSOURCED shape" << std::endl;
+                      << config.l0_name << "s/bank" << pimid::provLabel(" as an UNSOURCED shape") << std::endl;
             return;
         }
         model->setArrayCapacityBytes(g_bank_unit_bytes);   // the per-bank unit (memory.bank_kb, 1.11.94)
@@ -6404,7 +6407,7 @@ static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
     } catch (const std::exception& e) {
         std::cerr << "[hierarchy] " << tech << " L0 organisation query failed ("
                   << e.what() << "); the tree keeps " << config.subarrays_per_bank
-                  << " " << config.l0_name << "s/bank as an UNSOURCED shape" << std::endl;
+                  << " " << config.l0_name << "s/bank" << pimid::provLabel(" as an UNSOURCED shape") << std::endl;
         return;
     }
     config.l0_width_bits = (width > 0) ? width : 0;
@@ -6433,7 +6436,7 @@ static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
               << " count is NOT sourceable"
               << (is_sram ? "" : " (the NVSim cache entry predates 1.11.73; regenerate it)")
               << "; the tree keeps " << config.subarrays_per_bank
-              << " per bank as an UNSOURCED shape" << std::endl;
+              << " per bank" << pimid::provLabel(" as an UNSOURCED shape") << std::endl;
     if (pe_level == 0) {
         std::cerr << "FATAL: PEs are placed at the " << config.l0_name << " tier of "
                   << tech << " but the model cannot source the " << config.l0_name
@@ -7038,7 +7041,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         } else {
             std::cout << "  [hierarchy] NOTE: L0 " << config.l0_name
                       << " link width/bandwidth NOT sourceable from the " << tech
-                      << " model; the per-technology table row stands (UNSOURCED)"
+                      << " model; the per-technology table row stands" << pimid::provLabel(" (UNSOURCED)")
                       << std::endl;
         }
     }
@@ -8837,8 +8840,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                 std::exit(2);
             }
             if (t != "PCM" && !(config.nvm_wb_mw > 0.0)) {
-                std::cerr << "[config] FATAL: memory.nvm_write_budget.enabled on " << t << ": no published write-power "
-                             "budget is known for " << t << " (only for PCM). Give memory.nvm_write_budget.mw (mW) to "
+                std::cerr << "[config] FATAL: memory.nvm_write_budget.enabled on " << t << (pimid::debugChecks() ? ": no published write-power budget is known for " : ": no default write-power budget exists for ")
+                          << t << " (only for PCM). Give memory.nvm_write_budget.mw (mW) to "
                              "apply one, or leave the budget off." << std::endl;
                 std::exit(2);
             }
@@ -12787,7 +12790,8 @@ static std::string linkClockRefusal(const UnifiedConfig& config, const std::stri
     if (config.pcie_controller_clock_mhz > 0) return "";
     if (PIMID::CactiIOWrapper::linkControllerClockMHz(t) > 0.0) return "";
     if (t.rfind("interposer", 0) == 0 && PIMID::CactiIOWrapper::linkRateGTs(t) > 0.0) return "";
-    return "NO PUBLISHED SOURCE FOUND: link controller clock for link type '" + t +
+    return std::string(pimid::debugChecks() ? "NO PUBLISHED SOURCE FOUND: link controller clock for link type '"
+                                             : "no link controller clock is known for link type '") + t +
            "' (no PIPE convention, no UCIe D2D derivation). Set power.link.controller_clock_mhz"
            " (legacy alias power.pcie.controller_clock_mhz) to the controller clock in MHz (1.12.18).";
 }
@@ -13066,7 +13070,7 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
                     std::cout << "  [pg] SRAM gating: idle residency " << r_idle
                               << " -> leakage " << before << " -> " << leakage
                               << " mW (periphery share " << periph_share
-                              << " DERIVED from an array-only CACTI query; "
+                              << pimid::provLabel(" DERIVED") << " from an array-only CACTI query; "
                                  "periphery gates to Vcc_min/Vdd=" << kPeriphResidual
                               << ", cells hold DATA at retention Vcc_min/Vdd="
                               << kCellRetention << " -- both CACTI per-node values)"
@@ -13424,7 +13428,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     DRAMGenClass g3 = getDRAMGenClass(config.memory_tech);
                     double F3 = dramGenFeatureNm(config.memory_tech);
                     mcfg.subarray_pitch_factor = 1.25;
-                    std::cout << "  [tech] SUBARRAY pitch: derived default "
+                    std::cout << "  [tech] SUBARRAY pitch: " << pimid::provLabel("derived ") << "default "
                                  "1.25 = the FIMDRAM silicon bound (ISSCC "
                                  "2021 25.4, lean SIMD end) of the published "
                                  "band [1.25, ~4] (upper end UPMEM-implied, "
@@ -13450,10 +13454,14 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     }
                     std::cout << ". Settable: power.subarray_pitch_factor." << std::endl;
                 } else {
-                    std::cout << "  [tech] SUBARRAY pitch: no derived default "
-                                 "for a non-DRAM array (no published PIM "
-                                 "pitch datum); priced at 1.0 unless "
-                                 "power.subarray_pitch_factor is set."
+                    std::cout << (pimid::debugChecks()
+                                  ? "  [tech] SUBARRAY pitch: no derived default "
+                                    "for a non-DRAM array (no published PIM "
+                                    "pitch datum); priced at 1.0 unless "
+                                    "power.subarray_pitch_factor is set."
+                                  : "  [tech] SUBARRAY pitch: no default for a "
+                                    "non-DRAM array; priced at 1.0 unless "
+                                    "power.subarray_pitch_factor is set.")
                               << std::endl;
                 }
             }
@@ -14699,7 +14707,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 if (phy_static_mw > 0.0) n << ", PHY static " << phy_static_mw << " mW";
                 if (rcd_static_mw > 0.0) n << ", RDIMM register static " << rcd_static_mw << " mW";   // (user ruling 2026-10-27)
                 if (config.memory_tech.rfind("HBM", 0) == 0)
-                    n << "; background DERIVED (user ruling 2026-10-23): no published HBM standby current, scaled from measured HBM2 by voltage and data rate (power.md)";
+                    n << (pimid::debugChecks()
+                          ? "; background DERIVED (user ruling 2026-10-23): no published HBM standby current, scaled from measured HBM2 by voltage and data rate (power.md)"
+                          : "; background scaled from the measured HBM2 standby by voltage and data rate (power.md)");
                 devmem.note = n.str();
             }
 
@@ -14962,7 +14972,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                               << std::setprecision(3) << ca_ref.k
                               << " JEDEC-calibrated, FULL-DIE basis"
                               << (pimid::CACTIWrapper::vendorDieDensitySourced(
-                                      config.memory_tech) ? "" : ", density DERIVED not measured")
+                                      config.memory_tech) ? "" : pimid::provLabel(", density DERIVED not measured"))
                               << "; raw CACTI "
                               << std::setprecision(2) << cacti_eff.getArea()
                               << ")" << std::endl;
@@ -15742,7 +15752,7 @@ static double computeDramDieAreaMM2(const std::string& memory_tech, bool print,
                       << ", k=" << std::setprecision(3) << ca.k
                       << " FULL-DIE basis"
                       << (pimid::CACTIWrapper::vendorDieDensitySourced(memory_tech)
-                              ? "" : ", density DERIVED not measured")
+                              ? "" : pimid::provLabel(", density DERIVED not measured"))
                       << "; raw CACTI " << std::setprecision(2)
                       << ca.raw_mm2 << " -- the gap between the tool and the "
                          "vendor anchor)" << std::defaultfloat << std::endl;
@@ -15992,7 +16002,7 @@ static double reportSharedMemoryArrayEnergy(const std::string& memory_tech,
             if (dq_unpriced)
                 std::cout << "  [mem] interface/termination energy of an access "
                              "crossing to a " << memory_tech << " main-memory "
-                             "array: NO PUBLISHED SOURCE FOUND; not charged "
+                             "array: " << pimid::provLabel("NO PUBLISHED SOURCE FOUND; ") << "not charged "
                              "(device scope charges none for this technology "
                              "either)" << std::endl;
             if (wall_seconds > 0.0) {
@@ -16526,7 +16536,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     DRAMGenClass g3 = getDRAMGenClass(node.memory_tech);
                     mcfg.subarray_pitch_factor = 1.25;
                     std::cout << "  [tech] " << node.name
-                              << ": SUBARRAY pitch derived default 1.25 "
+                              << ": SUBARRAY pitch " << pimid::provLabel("derived ") << "default 1.25 "
                                  "(band [1.25, ~4]; FIMDRAM low end), gen "
                               << g3.cls << " 2F ~= "
                               << (2.0 * dramGenFeatureNm(node.memory_tech)) << " nm."
@@ -17403,7 +17413,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         lv.push_back(rs); lv.push_back(rl);
                         what << "ring: " << stops << " stops (" << node.num_cores << " core/L3-slice stops + " << mcs
                              << " memory-controller stops), 3-port stops, 2 links per stop of 2 x sqrt(host die)"
-                                " / stops each (ring loop, DERIVED from the Nehalem-EX floorplan); mean "
+                                " / stops each (ring loop, " << pimid::provLabel("DERIVED ") << "from the Nehalem-EX floorplan); mean "
                              << (msgs ? static_cast<double>(hops) / static_cast<double>(msgs) : 0.0)
                              << " hops per data message (measured); " << rs.total_accesses << " stop traversals, "
                              << rl.link_traversals << " link traversals";
@@ -17841,10 +17851,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                           << " W; with the L3 and host NoC leakage shared over " << nc << " core(s) "
                           << shared << " W/core (a halted core's clock is off: power.models.idle_halt)."
                           << " Published package-side power of one more awake, halted core: Haswell-EP 22 nm"
-                          << " package C1E 1.91 W/core (C1E - C6 1.78, C3 - C6 1.03; DERIVED slopes over 34 SKUs,"
+                          << " package C1E 1.91 W/core (C1E - C6 1.78, C3 - C6 1.03; " << pimid::provLabel("DERIVED ") << "slopes over 34 SKUs,"
                           << " Intel 330783-002 Sec. 2.10, characterized but not tested; LLC slice, ring stop and"
-                          << " regulator loss included); Xeon Silver 4114 14 nm CC1 - CC6 1.21 W/core (DERIVED,"
-                          << " AgilePkgC HPCA 2023 Sec. 5, RAPL package); EPYC 7502 7 nm C1 - C2 0.09 W/core"
+                          << " regulator loss included); Xeon Silver 4114 14 nm CC1 - CC6 1.21 W/core (" << pimid::provLabel("DERIVED, ")
+                          << "AgilePkgC HPCA 2023 Sec. 5, RAPL package); EPYC 7502 7 nm C1 - C2 0.09 W/core"
                           << " (Schoene et al., IEEE Cluster 2021 Sec. VI-A, system AC)." << std::endl;
             }
         } catch (const std::exception& e) {
@@ -18588,7 +18598,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             pimid::fmt_scoped(std::cout) << "  [power] " << r.name << " uncore (power.models.host_uncore_static): per socket "
                       << ref << " W"
                       << (config.host_uncore_w_per_socket_user_set ? " (power.host_uncore.w_per_socket)"
-                                                                   : " (DERIVED: Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)")
+                                                                   : (pimid::debugChecks()
+                                                                      ? " (DERIVED: Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)"
+                                                                      : " (Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)"))
                       << " minus what this run prices of it (MC leakage " << r.uncore_priced_mc_leak_w
                       << " W + MC PHY static " << phy << " W + die clock trunk " << r.uncore_priced_trunk_w
                       << " W) = " << w << " W (ledger " << r.name << ".uncore_static; " << r.cores << " core(s) priced apart)"
@@ -18633,7 +18645,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             pimid::fmt_scoped(std::cout) << "  [power] " << r.name << " uncore load (power.models.host_uncore_load): "
                       << config.host_uncore_load_w_per_mb << " W/MB"
                       << (config.host_uncore_load_user_set ? " (power.host_uncore.load_w_per_mb_llc)"
-                                                           : " (DERIVED: Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)")
+                                                           : (pimid::debugChecks()
+                                                              ? " (DERIVED: Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)"
+                                                              : " (Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)"))
                       << " x L3 " << r.l3_mb << " MB = " << full << " W at the raised uncore clock x running fraction "
                       << a << (r.run_frac_max >= 0.0 ? " (busiest host core, measured)" : " (not measured: 1)")
                       << " minus the uncore clock networks McPAT prices (L3 + NoC + MC) " << r.uncore_clock_priced_w
@@ -24927,7 +24941,7 @@ int main(int argc, char** argv) {
                 t << "; IDD3N basis " << bw_query.getIdd3nBasisName();
                 /* 1.11.91 (item 11): one provenance word for the IDD row,
                  * nothing more; the chain is in pimid_energy.h's comment. */
-                if (const char* prov = bw_query.getIddRowProvenance())
+                if (const char* prov = pimid::debugChecks() ? bw_query.getIddRowProvenance() : nullptr)
                     t << "; IDD row " << prov;
                 timing_line = t.str();
             } catch (const std::exception& e) { bw_why = e.what(); }

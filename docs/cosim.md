@@ -7,7 +7,7 @@ inside memory. An offloaded kernel migrates from the host onto the device
 PEs and back; the boundary costs -- launch, coherence, and the host<->device
 bridge -- are priced explicitly. The device-side execution is the *identical*
 code path a standalone device run (no hosts) uses (same PE memory interfaces,
-same Garnet/analytical NoC, same JEDEC-derived memory timing), so device-only
+same Garnet/analytical NoC, same JEDEC-based memory timing), so device-only
 cycles are unchanged by co-sim.
 
 A co-sim system is declared under `system.hosts[]` / `system.devices[]`. The
@@ -51,7 +51,7 @@ added around that same region.
   [Limitations](#limitations)).
 - **Device = PIM.** PEs (default `alu_core`) placed at a memory level (BANK,
   SUBARRAY, ...) behind the device's own memory technology and NoC.
-- **Two fabrics, one bridge.** The device-internal H-tree (JEDEC-derived) and
+- **Two fabrics, one bridge.** The device-internal H-tree (JEDEC-based) and
   the host crossbar are separate; the host<->device **bridge** joins them and
   carries only boundary traffic (launch cmd/ack, coherence flush, Case-2 DMA).
   See [architecture.md](architecture.md) and [network.md](network.md).
@@ -251,7 +251,7 @@ refused); the class list, with `pcie_gen3` added in 1.11.106, is in
 **The interposer link is a UCIe link (1.12.18).** Its energy is computed inside
 the McPAT fork: measured crossing bytes x 8 x (analog PHY + digital interface)
 pJ/bit from the row of the die's process node -- 22 nm (default: 0.669 + 0.192,
-both DERIVED -- from Intel ISSCC 2026 8.1 and Cadence JSSC 2026, and from
+both computed -- from Intel ISSCC 2026 8.1 and Cadence JSSC 2026, and from
 Microsoft ISSCC 2026 8.3 scaled by CACTI and Stillmaker & Baas 2017) or 3 nm (`power.link.process_node_nm: 3`: 0.29 + 0.10, measured);
 any other node is refused. Sources and derivations in
 [power.md](power.md#the-host-device-link-ucie). Its controller clock defaults to the D2D adapter clock, 64 lanes x
@@ -339,7 +339,7 @@ controller's counter only.
 **IDD3N share, IDDQ and IPP (1.11.91).** The share of background priced at
 active standby (IDD3N) is the MEASURED bank-open fraction -- Ramulator2's
 `bankOpenCycles / bankOpenWindow` (memory cycles with >= 1 bank open, the
-active state of a vendor method that cannot be disclosed publicly) -- when the controller that saw ALL of the array's
+active state of the IDD method) -- when the controller that saw ALL of the array's
 accesses exported it; the idle residency above is then the power-down input
 only. The PE memory interface keeps no bank state, so a shared array with
 PE-originated traffic, every decoupled device array and every device-scope
@@ -398,7 +398,7 @@ link are **not priced** -- nothing ran on the device and nothing crossed the
 link -- so System Total power and area are the host plus the memory array,
 which stays priced because the host uses it. The report says so in one line
 (`[power] NO_OFFLOAD baseline: device node ... NOT priced`). The mode is read
-from the environment at power time, so a re-derivation of a baseline's power
+from the environment at power time, so a recomputation of a baseline's power
 must run with the variable set too.
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs

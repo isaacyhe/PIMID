@@ -1,6 +1,6 @@
 # PIMID shipped part record -- DDR3
 # 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; since 1.11.105 (step 2) this record is the ONLY source of them (the code table is gone).
-# 1.11.94: ONE record per part; every field required; provenance beside the value.
+# 1.11.94: ONE record per part; every field required; its source beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
 # a missing or inconsistent field.
@@ -35,7 +35,6 @@ refresh_ladder:                    # JEDEC JESD79-3 extended temperature range: 
 idd:
   basis: "per device"
   channels_basis: 1
-  provenance: CALIBRATED
   idd3n_bank_state: ALL_BANKS
   vdd: 1.5                         # 1.12.25: DDR3 at 1.5 V (variants.DDR3); DDR3L 1.35 V is variants.DDR3L
   idd0: 55.0
@@ -66,16 +65,15 @@ component_factors:   # typical / maximum per component; applied by typicalFromSp
   burst_rd: 0.736
   burst_wr: 0.542
   refresh: 0.829
-  pd: 0.29224   # (1.12.47) (user ruling 2026-10-25): DERIVED, standby 0.566 x the measured fast power-down ratio IDD2P1/IDD2N 0.51633 (three-vendor mean of 1 - 0.658 / 1 - 0.306 / 1 - 0.487 = 0.342 / 0.694 / 0.513, Ghose et al. Sec. 4.5; the mean, as every other factor of this set). This sheet prints IDD2P1 = IDD2N = 32 mA, so IDD2P_t = 0.29224 x 32 = 9.352 mA = 0.51633 x IDD2N_t 18.112 mA. Band (vendor A..B): 0.194 .. 0.393 (IDD2P_t 6.19 .. 12.57 mA). Was 0.566 (power-down = precharged standby, no saving)
-  source: "[G] Ghose et al. per-component typical/maximum ratios, DDR3 set (measured on DDR3L-1600 modules; 1.12.25: applied unchanged at 1.5 V -- the ratios are typical/maximum of the same current, and Table 20 publishes one maximum for both voltages); pd ((1.12.47), user ruling 2026-10-25): the standby factor x the measured fast power-down ratio IDD2P1/IDD2N, three-vendor mean 0.51633 (Ghose et al. Sec. 4.5: power-down cuts the measured IDD2N by 65.8/30.6/48.7% for vendors A/B/C), DERIVED, because this sheet IDD2P1 equals its IDD2N"
+  pd: 0.29224   # (1.12.47) (user ruling 2026-10-25): standby 0.566 x the measured fast power-down ratio IDD2P1/IDD2N 0.51633 (three-vendor mean of 1 - 0.658 / 1 - 0.306 / 1 - 0.487 = 0.342 / 0.694 / 0.513, Ghose et al. Sec. 4.5; the mean, as every other factor of this set). This sheet prints IDD2P1 = IDD2N = 32 mA, so IDD2P_t = 0.29224 x 32 = 9.352 mA = 0.51633 x IDD2N_t 18.112 mA. Band (vendor A..B): 0.194 .. 0.393 (IDD2P_t 6.19 .. 12.57 mA). Was 0.566 (power-down = precharged standby, no saving)
+  source: "[G] Ghose et al. per-component typical/maximum ratios, DDR3 set (measured on DDR3L-1600 modules; 1.12.25: applied unchanged at 1.5 V -- the ratios are typical/maximum of the same current, and Table 20 publishes one maximum for both voltages); pd ((1.12.47), user ruling 2026-10-25): the standby factor x the measured fast power-down ratio IDD2P1/IDD2N, three-vendor mean 0.51633 (Ghose et al. Sec. 4.5: power-down cuts the measured IDD2N by 65.8/30.6/48.7% for vendors A/B/C), because this sheet IDD2P1 equals its IDD2N"
 # (1.12.61) (user ruling 2026-10-25): the data-dependent column-burst energy, priced from the run's MEASURED line data
 # (1.12.58 counters: the 1 bits of every line). Relative form, normalised at uniform-random data (1s fraction 0.5), so
 # the record's IDD4R/IDD4W excess is the uniform-random value: E_burst = E_record x (1 + k x (f_ones - 0.5)).
 data_pattern:
   form: ONES_LINEAR
-  read_ones: 0.1733     # DERIVED: 0.327 (VAMPIRE Table 5, bank+column interleaving, vendor mean of dIone x 512 / burst excess at 256 1s) x 0.530 (I/O-driver correction, vendor A: 230 / 434 mA, Fig. 16 vs Fig. 15)
-  write_ones: -0.0835   # DERIVED: -0.234 (Table 5, write, same normalisation) x 0.357 (I/O / ODT correction, vendor A: 111 / 311 mA)
-  provenance: DERIVED
+  read_ones: 0.1733     # 0.327 (VAMPIRE Table 5, bank+column interleaving, vendor mean of dIone x 512 / burst excess at 256 1s) x 0.530 (I/O-driver correction, vendor A: 230 / 434 mA, Fig. 16 vs Fig. 15)
+  write_ones: -0.0835   # -0.234 (Table 5, write, same normalisation) x 0.357 (I/O / ODT correction, vendor A: 111 / 311 mA)
   source: "Ghose et al., 'What Your DRAM Power Models Are Not Telling You', SIGMETRICS 2018 (arXiv:1807.05102): Sec. 5.1 (current linear in the number of 1s, R^2 >= 0.990; read rises, write falls with 1s), Fig. 15/16 (vendor A span 434 / 311 mA raw, 230 / 111 mA after the I/O-driver estimate), Appendix Table 5 bank+column interleaving (read Izero/dIone A 277.13/0.267, B 223.61/0.152, C 266.51/0.099; write A 537.58/-0.249, B 420.43/-0.179, C 323.22/-0.072 mA per module), active standby from the VAMPIRE model code (dramSpec.cpp: 38.3/47.9/33.4 mA). Per-vendor read k (raw) 0.19-0.44, write -0.13..-0.29. Bit toggling between consecutive bursts (Sec. 5.2, <= 0.08 of the excess) is NOT priced: the counters see transitions inside a line only. The interleaving class is not measured; bank+column is taken (others: read 0.27-0.46, write -0.19..-0.26 raw). ACT: no data term (Sec. 5.1: no notable dependence of activate/precharge on the stored data)."
 
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool

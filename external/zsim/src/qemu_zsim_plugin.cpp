@@ -2604,8 +2604,8 @@ static void rtInit() {
     for (auto& x : g_rt.redTab) { char b[48]; snprintf(b, sizeof b, " %u:%g", x.first, x.second); rt += b; }
     info("[pim-runtime] enabled (apply_to=%s): runtime code is not executed on the PE; each runtime event is charged its PIM primitive. "
          "Assumes DPU-style atomics across the device's PEs (UPMEM measured primitives, one sync domain).", g_rt.allCores ? "all" : "pe");
-    info("[pim-runtime] costs (cycles):%s; barrier_table{%s } (DERIVED from PrIM Fig. 21), reduction_table{%s } (PrIM Fig. 21 HANDS); "
-         "cycle_basis=%s (%s)", s.c_str(), bt.c_str(), rt.c_str(), g_rt.timeBasis ? "time" : "pe_cycles",
+    info("[pim-runtime] costs (cycles):%s; barrier_table{%s } (%sfrom PrIM Fig. 21), reduction_table{%s } (PrIM Fig. 21 HANDS); "
+         "cycle_basis=%s (%s)", s.c_str(), bt.c_str(), pimid::provLabel("DERIVED "), rt.c_str(), g_rt.timeBasis ? "time" : "pe_cycles",
          g_rt.timeBasis ? "published DPU cycles at source_clock_mhz converted through time to the PE clock"
                         : "published UPMEM DPU pipeline cycles used as PE cycles");
     info("[pim-runtime] workload binary for the runtime/kernel split: %s", g_rtExe.empty() ? "<not found>" : g_rtExe.c_str());

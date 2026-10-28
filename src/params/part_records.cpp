@@ -6,6 +6,7 @@
 // former table site. The gate FIRES the registry by editing one value in a
 // copied record (the priced area moves) and by deleting one field (refusal).
 #include "params/part_records.h"
+#include "common/debug_checks.h"   // provenance words: PIMID_DEBUG_CHECKS=1 only
 #include "memory/cacti_wrapper.h"
 #include "memory/ramulator_wrapper.h"
 
@@ -47,6 +48,14 @@ bool close(double a, double b, double rel = 1e-9) {
 }
 
 std::string fmt(double v) { std::ostringstream o; o.precision(10); o << v; return o.str(); }
+
+/* An optional key: absent leaves `out` as it was (empty for a string). The
+ * records' `provenance` words are internal (the shipped records carry none);
+ * a record that does carry one is read and validated as before. */
+template <typename T>
+bool opt(const YAML::Node& n, const char* key, T& out, std::string& error) {
+    return !n[key] || need(n, key, out, error);
+}
 
 } // namespace
 
@@ -110,7 +119,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     if (n["idd_temperature"]) {
         const YAML::Node t = n["idd_temperature"];
         IddTemperatureRec& q = r.idd_temperature;
-        if (!need(t, "form", q.form, error) || !need(t, "provenance", q.provenance, error) || !need(t, "source", q.source, error)) {
+        if (!need(t, "form", q.form, error) || !opt(t, "provenance", q.provenance, error) || !need(t, "source", q.source, error)) {
             error = "part record " + path + ": idd_temperature: " + error; return false;
         }
         if (q.form == "LINEAR_STANDBY") {
@@ -143,7 +152,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     {
         const YAML::Node b = n["idd"];
         if (!need(b, "basis", r.idd.basis, error) || !need(b, "channels_basis", r.idd.channels_basis, error) ||
-            !need(b, "provenance", r.idd.provenance, error) || !need(b, "idd3n_bank_state", r.idd.idd3n_bank_state, error)) {
+            !opt(b, "provenance", r.idd.provenance, error) || !need(b, "idd3n_bank_state", r.idd.idd3n_bank_state, error)) {
             error = "part record " + path + ": idd: " + error; return false;
         }
         auto readRow = [&](const YAML::Node& m, IddRow& row, std::string& err) -> bool {
@@ -178,7 +187,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
             if (m["io_share"]) {   // 1.12.18 (bug 2b/8a)
                 const YAML::Node q = m["io_share"]; row.has_io_share = true;
                 if (!need(q, "idd4r_ma", row.idd4r_io, err) || !need(q, "idd4w_ma", row.idd4w_io, err) ||
-                    !need(q, "provenance", row.io_share_provenance, err) || !need(q, "source", row.io_share_source, err)) { err = "io_share: " + err; return false; }
+                    !opt(q, "provenance", row.io_share_provenance, err) || !need(q, "source", row.io_share_source, err)) { err = "io_share: " + err; return false; }
                 /* 1.12.18 (user ruling 2026-10-23): the optional anchor, all four keys or none */
                 const int na = (q["anchor_read_pj_bit"] ? 1 : 0) + (q["anchor_write_pj_bit"] ? 1 : 0) + (q["channel_gbps"] ? 1 : 0) + (q["anchor_source"] ? 1 : 0);
                 if (na != 0 && na != 4) { err = "io_share: anchor_read_pj_bit, anchor_write_pj_bit, channel_gbps and anchor_source go together (all four or none)"; return false; }
@@ -258,7 +267,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
             const YAML::Node v = b["vpp_act"]; r.idd.has_vpp_act = true;
             if (!need(v, "ratio", r.idd.vpp_act_ratio, error) || !need(v, "device", r.idd.vpp_act_device, error) ||
                 !need(v, "alt_ratio", r.idd.vpp_act_alt_ratio, error) || !need(v, "alt_device", r.idd.vpp_act_alt_device, error) ||
-                !need(v, "provenance", r.idd.vpp_act_provenance, error) || !need(v, "source", r.idd.vpp_act_source, error)) {
+                !opt(v, "provenance", r.idd.vpp_act_provenance, error) || !need(v, "source", r.idd.vpp_act_source, error)) {
                 error = "part record " + path + ": idd.vpp_act: " + error; return false;
             }
             if (!(r.idd.vpp_act_ratio >= 0.0 && r.idd.vpp_act_ratio < 1.0) || !(r.idd.vpp_act_alt_ratio >= 0.0 && r.idd.vpp_act_alt_ratio < 1.0)) {
@@ -274,7 +283,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
             const YAML::Node v = b["vpp_standby"]; r.idd.has_vpp_standby = true;
             if (!need(v, "ratio", r.idd.vpp_standby_ratio, error) || !need(v, "device", r.idd.vpp_standby_device, error) ||
                 !need(v, "alt_ratio", r.idd.vpp_standby_alt_ratio, error) || !need(v, "alt_device", r.idd.vpp_standby_alt_device, error) ||
-                !need(v, "provenance", r.idd.vpp_standby_provenance, error) || !need(v, "source", r.idd.vpp_standby_source, error)) {
+                !opt(v, "provenance", r.idd.vpp_standby_provenance, error) || !need(v, "source", r.idd.vpp_standby_source, error)) {
                 error = "part record " + path + ": idd.vpp_standby: " + error; return false;
             }
             if (!(r.idd.vpp_standby_ratio >= 0.0 && r.idd.vpp_standby_ratio < 1.0) ||
@@ -364,7 +373,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     if (n["data_pattern"]) {
         const YAML::Node p = n["data_pattern"];
         auto& d = r.data_pattern; d.valid = true;
-        if (!need(p, "form", d.form, error) || !need(p, "provenance", d.provenance, error) || !need(p, "source", d.source, error)) {
+        if (!need(p, "form", d.form, error) || !opt(p, "provenance", d.provenance, error) || !need(p, "source", d.source, error)) {
             error = "part record " + path + ": data_pattern: " + error; return false;
         }
         if (d.form == "ONES_LINEAR") {
@@ -541,7 +550,7 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
         static const std::set<std::string> bank = {"ALL_BANKS", "ONE_BANK", "UNVERIFIED"};
         static const std::set<std::string> basis = {"per device", "per channel"};
         static const std::set<std::string> schemes = {"POD", "SSTL", "LVSTL", "none"};
-        if (!prov.count(rec.idd.provenance)) errors.push_back("idd.provenance '" + rec.idd.provenance + "' is not MEASURED, CALIBRATED or DERIVED");
+        if (!rec.idd.provenance.empty() && !prov.count(rec.idd.provenance)) errors.push_back("idd.provenance '" + rec.idd.provenance + "' is not MEASURED, CALIBRATED or DERIVED");
         if (!bank.count(rec.idd.idd3n_bank_state)) errors.push_back("idd.idd3n_bank_state '" + rec.idd.idd3n_bank_state + "' is not ALL_BANKS, ONE_BANK or UNVERIFIED");
         if (!basis.count(rec.idd.basis)) errors.push_back("idd.basis '" + rec.idd.basis + "' is not 'per device' or 'per channel'");
         if (rec.idd.channels_basis < 1) errors.push_back("idd.channels_basis must be at least 1");
@@ -573,7 +582,7 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
                 errors.push_back(k + ": ipp.ipp0 / ipp4r / ipp4w / ipp5b must be non-negative when given");   // 1.12.18
             if (r.has_io_share && (!(r.idd4r_io >= 0.0) || !(r.idd4w_io >= 0.0) || r.idd4r_io > r.idd4r - r.idd3n || r.idd4w_io > r.idd4w - r.idd3n))
                 errors.push_back(k + ": io_share must be non-negative and inside the burst excess (idd4r - idd3n, idd4w - idd3n)");   // 1.12.18
-            if (r.has_io_share && r.io_share_provenance != "DERIVED" && r.io_share_provenance != "MEASURED")
+            if (r.has_io_share && !r.io_share_provenance.empty() && r.io_share_provenance != "DERIVED" && r.io_share_provenance != "MEASURED")
                 errors.push_back(k + ": io_share.provenance must be DERIVED or MEASURED");   // 1.12.18
             if (r.io_share_anchored) {   // 1.12.18 (user ruling 2026-10-23): the share IS its anchor at the channel rate
                 if (!(r.io_anchor_rd_pj_bit > 0.0) || !(r.io_anchor_wr_pj_bit > 0.0) || !(r.io_channel_gbps > 0.0))
@@ -641,7 +650,8 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
     o << ", " << rec.channel_width_bits << "-bit channel";
     if (rec.stack_dies > 0) o << ", " << rec.stack_dies << " dies x " << rec.die_capacity_gb << " Gb";
     o << ") -- the only source (step 2 of the parameter-file migration, 1.11.101)";
-    o << "; idd: " << rec.idd.provenance << " row (" << rec.idd.basis << ", " << rec.idd.idd3n_bank_state << ", "
+    o << ((pimid::debugChecks() && !rec.idd.provenance.empty()) ? "; idd: " + rec.idd.provenance + " row (" : std::string("; idd row ("))
+      << rec.idd.basis << ", " << rec.idd.idd3n_bank_state << ", "
       << rec.idd.by_grade.size() << " grade row(s)) the source (IDD-RECORDS step 2, 1.11.105)";
     if (!rec.variant.empty() && rec.variants.count(rec.variant)) {   // 1.12.19
         const VariantRec& v = rec.variants.at(rec.variant);

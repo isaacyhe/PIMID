@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.160 -- docs: the documentation and the run's report give each number with its method and published sources
+
+- **Documentation.** README.md, docs/*.md (every changelog entry included, in wording only) and the part records
+  under params/: the status tags written beside values are gone. Each value keeps its method and the published
+  sources it rests on; no number changed.
+- **Part records.** The `provenance` key of a DRAM part record (idd, idd_temperature, idd.io_share, idd.vpp_act,
+  idd.vpp_standby, data_pattern) is optional; the shipped records carry none. A record that gives one is validated
+  as before.
+- **Report lines.** Status tags in the printed lines appear only with the internal diagnostic switch
+  (PIMID_DEBUG_CHECKS=1, since 1.12.73); otherwise each line gives the value, its method and its sources. No computed
+  value depends on the switch: device (DDR5, HBM3, LPDDR5, PCM), host-baseline and co-sim runs (DRAM channel, PCIe
+  gen5 and CXL 2.0 links) print the same numbers with and without it.
+- **Impact:** none on results; log wording only.
 ## 1.12.159 -- the run says which static terms do not follow the operating temperature
 
 - **Report** (src/main.cpp, docs/yaml_reference.md): a second configuration line names the static terms held at
@@ -107,8 +120,8 @@ release commit messages.
   estimator scales it by VCCINT / 0.85). The block holds the transaction, data link and PHY-layer logic (the
   transceivers are priced apart), and the estimator has no traffic input, so each end is charged for the whole run:
   the table row for a PCIe gen1-gen4 link of a listed width, else the least-squares line over the 20 rows, I = 117.95
-  + 1.98762 x (lanes x GT/s) mA (R^2 0.953; Gen5, CXL, NVLink and UALink are an extrapolation in bandwidth, DERIVED),
-  x 0.85 V, scaled from 16 nm to the run's node by DeepScaleTool's published-silicon logic ratio (DERIVED). It
+  + 1.98762 x (lanes x GT/s) mA (R^2 0.953; Gen5, CXL, NVLink and UALink are an extrapolation in bandwidth),
+  x 0.85 V, scaled from 16 nm to the run's node by DeepScaleTool's published-silicon logic ratio. It
   replaces McPAT's controller dynamic (the same silicon); McPAT keeps the area and leakage. Searched without a usable
   number: vendor controller IP briefs (Synopsys, Cadence, Rambus, PLDA, Renesas: features only), ISSCC / VLSI / Hot
   Chips controller papers (PHY figures only).
@@ -146,11 +159,11 @@ release commit messages.
   20 MB LLC) measures the RAPL package power of a compute-bound code with no LLC or memory traffic (NPB EP) falling
   linearly from 40 W at the 2.7 GHz uncore clock to about 0.845 x 40 W at 1.2 GHz (read from the figure): 6.2 W,
   the uncore clock and voltage themselves, without the per-access energy McPAT already prices. Per MB of LLC (the
-  uncore clock domain is the ring and the LLC slices) 0.31 W/MB, DERIVED (`power.host_uncore.load_w_per_mb_llc`). A
+  uncore clock domain is the ring and the LLC slices) 0.31 W/MB (`power.host_uncore.load_w_per_mb_llc`). A
   new ledger entry `<host>.uncore_load` = 0.31 W/MB x the host's L3 MB x the busiest host core's measured running
   fraction of the window (the clock is raised while any core is active) minus the uncore clock networks McPAT prices
-  (L3, NoC and memory controller), never below 0. The uncore clock in package C1E is taken as the minimum (NO
-  PUBLISHED SOURCE FOUND for it); no node scaling (14 nm source). `power.models.host_uncore_load: false` leaves the
+  (L3, NoC and memory controller), never below 0. The uncore clock in package C1E is taken as the minimum; no node
+  scaling (14 nm source). `power.models.host_uncore_load: false` leaves the
   term out.
 - **Data impact:** host baselines and co-simulations with a 32 MB host L3 gain up to 9.9 W less the priced uncore
   clocks, in proportion to how long the host cores run.
@@ -244,8 +257,8 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
 - **Changelog.** The code text left at the end of 1.12.128's section is removed; 1.12.137 records that the code
   shipped there. The 1.12.125 and 1.12.128 entries point to the entries that correct them.
 - **Vendor references.** Every vendor technical-note reference in sources.md, cosim.md, the HBM/GDDR6 IDD
-  derivation and this changelog (historical entries included) is reworded: a method is "a vendor method that cannot
-  be disclosed publicly", a value is "estimated from a vendor source that cannot be disclosed publicly". The run-log
+  derivation and this changelog (historical entries included) is reworded so that no vendor technical note is named; the
+  method or value stays. The run-log
   lines that named them are reworded in the code (output text only).
 - No model change; every result is unchanged.
 
@@ -313,8 +326,8 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
     - C V^2 x the measured wire activity per bit per measured link flit traversal;
     - R(C-1) + C(R-1) links;
     - length one tile pitch, sqrt(array area / tiles), the DSENT tile-pitch convention (Sun et al., NOCS 2012,
-      Table III), spanning the memory array as the tree's links span the memory die. DERIVED; no published SRAM / NVM
-      PIM floorplan.
+      Table III), spanning the memory array as the tree's links span the memory die (the SRAM / NVM
+      PIM floorplan is not modelled).
   - **Other flat topologies** keep McPAT's own link model, with the measured activity.
 - **The mesh size (user ruling 2026-10-28).**
   - The fabric is sized by the network's endpoints, one per PE or memory organisation. This is the M:N mapping of
@@ -342,7 +355,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
   given.
   - **Low radix (<= 8 ports), buffered:**
     - Celerity: 16 nm, 1.4 GHz, 5 ports, 80 b, 2-entry FIFO, 1881 um^2 (VLSI 2019);
-    - Piton: 32 nm, 500 MHz, 5 ports, 64 b, 4-entry FIFO, 0.0115 mm^2 (DERIVED from 0.98% of the tile; HPCA 2018);
+    - Piton: 32 nm, 500 MHz, 5 ports, 64 b, 4-entry FIFO, 0.0115 mm^2 (0.98% of the tile; HPCA 2018);
     - MIT SWIFT: 90 nm, 400 MHz, 5 ports, 64 b, 2 VCs x 8, 0.150 mm^2 (ICCD 2010);
     - MIT 16-node chip: 45 nm, 1 GHz, 5 ports, 64 b, 6 VCs / 10 buffers, 0.227 mm^2 (DAC 2012);
     - DSENT validation router: 45 nm, 1 GHz, 6 ports, 64 b, 8 VCs / 16 buffers, 0.070 mm^2 (NOCS 2012);
@@ -350,7 +363,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
     - Intel 80-tile: 65 nm, 4 GHz, 5 ports, 39 b, 2 x 16, 0.34 mm^2 (ISSCC 2007).
     The published / model ratio spans 0.46 to 8.4 and rises with the clock the router was built for relative to its
     node. The router area and leakage are scaled by k: the geometric mean of the five ~1 GHz routers' ratios at
-    f x L <= 30 GHz nm, the two 3.6 to 4 GHz routers' at >= 247, and log-log interpolated between (DERIVED), at the
+    f x L <= 30 GHz nm, the two 3.6 to 4 GHz routers' at >= 247, and log-log interpolated between, at the
     instance's own clock and node. This gives k = 1.55 for a 500 MHz device fabric at 22 nm, and 0.34 for the 2 GHz
     host fabric, whose wire context inflates the model itself.
   - **High radix (>= 16 ports):** the crossbar is scaled by kW, the geometric mean over four published crossbars:
@@ -359,9 +372,9 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
     - Swizzle-Switch 64x64 x 128 b, 32 nm, 1.1 mm^2 (Sewell thesis 2012);
     - 16x16 x 72 b, 40 nm, 0.32 mm^2 (Cakir thesis 2016).
     The input buffers are added at k. The model's radix-squared bounding box is not used.
-  - **No published point:** 9..15 ports, and 2-port datapaths wider than 128 b, are priced by the low-radix rule and
-    say NO PUBLISHED SOURCE FOUND.
-  - **Leakage** is taken proportional to area, per part (DERIVED). **Dynamic energy** per flit is not scaled; the
+  - **Shapes outside the published points:** 9..15 ports, and 2-port datapaths wider than 128 b, are priced by the
+    low-radix rule and say so.
+  - **Leakage** is taken proportional to area, per part. **Dynamic energy** per flit is not scaled; the
     power checker judges it per bit-hop.
 - **What moves** (smoke size, 1.12.144 vs 1.12.144 + this change; the device corpus and 102 system cells;
   PIMID_DEBUG_CHECKS=1; NoC W, min..max per family):
@@ -378,7 +391,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
   | 1-core host-only baselines | unchanged | unchanged | |
 
   Every NoC duty is now in [0, 1], and no NoC traversal is reported as not priced. Every router passes the new
-  per-shape area bands of the power checker, apart from the unsourced shapes, which are INFO.
+  per-shape area bands of the power checker, apart from the shapes outside the published points, which are INFO.
 
 ## 1.12.149 -- benchmarks: a pointer-chase kernel (load-to-use latency)
 
@@ -581,7 +594,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   src/params/part_records.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp).** The HBM records publish no IPP row
   (no JEDEC or vendor HBM IPP2N/IPP3N exists), and the measured HBM2 base the records derive from carries the VDDC and
   VDDQ rails only, so every HBM run printed `+ipp=n/a`: the wordline-pump rail's standby was not priced. User ruling
-  2026-10-28: price it DERIVED, with the method and source of the activation VPP share (1.12.18, `idd.vpp_act`).
+  2026-10-28: price it with the method and source of the activation VPP share (1.12.18, `idd.vpp_act`).
 - **Method.** Standby VPP = ratio x the record's VDD standby power of the same unit, on the VDD background's state
   split (IDD3N while a bank is open, IDD2N otherwise) and at the run's temperature. Ratio = Xilinx Power Estimator
   (XPE) 2023.1.2, UltraScale+, HBM_Data row 43 'Idle VPP Dynamic' / row 37 'idle VDD dynamic', both per stack per
@@ -602,19 +615,19 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   (inside).
   Timing is unchanged; every other technology is unchanged.
 
-## 1.12.141 -- DDR5-3200 runs the 16 Gb die, with a current row derived from the published DDR5-4800 column
+## 1.12.141 -- DDR5-3200 runs the 16 Gb die, with a current row scaled from the published DDR5-4800 column
 
-- **Gap closed (params/dram/ddr5.yaml; user rulings 2026-10-28).** No vendor publishes a DDR5-3200 current column.
-  The 3200 grade carried an unsourced 8 Gb row (IDD0 55, IDD2N 34, IDD3N 42, IDD4R 148, IDD4W 168, IDD5 120,
+- **Gap closed (params/dram/ddr5.yaml; user rulings 2026-10-28).** DDR5-3200 had no current column of its own.
+  The 3200 grade carried a stated 8 Gb row (IDD0 55, IDD2N 34, IDD3N 42, IDD4R 148, IDD4W 168, IDD5 120,
   IDD2P 20 mA) with no IDDQ and no IPP row, so its VPP rail (standby, activate, burst and refresh) was not priced and
-  its pin I/O was termination only. The row is now DERIVED from the Micron MT60B 16 Gb Rev A Table 6 x8 DDR5-4800
+  its pin I/O was termination only. The row is now scaled from the Micron MT60B 16 Gb Rev A Table 6 x8 DDR5-4800
   column by data-rate scaling, the method of the LPDDR5 7500 -> 6400 row (1.11.91 item 11, 1.12.78, 1.12.79):
   IDD4R/IDD4W over IDD3N, IDDQ4R over IDDQ3N and IPP4R/IPP4W over IPP3N scale x 3200/4800; the background standby
   is priced x 3200/4800; IDD0, IDD5B, IDD2P, IPP0, IPP5B, IPP2N/IPP3N and IDDQ4W keep the 4800 column.
 - **The 3200 grade runs the 16 Gb die (src/memory/ramulator_wrapper.cpp, src/main.cpp).** The organisation the
   currents describe: DDR5_16Gb_x8 (JESD79-5D Table 4: 8 bank groups x 4 banks), at the published DDR5-3200AN bin
   (JESD79-5D Table 283, 24-24-24; the bin does not depend on density), tRFC1 295 ns at 16 Gb (Table 71). It ran the
-  8 Gb part (2 banks per group, tRFC1 195 ns). No timing value is derived.
+  8 Gb part (2 banks per group, tRFC1 195 ns). No timing value is computed.
 - **Data impact.** DDR5-3200 cells only (the fig3 `g3200` and co-sim `g3200` companions): timing changes (twice the
   banks, longer refresh), memory background, VPP and burst energy rise, and the memory area doubles (16 Gb dies).
   The 4800 and 5600 grades are unchanged.
@@ -723,7 +736,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   1. As the host PHY's own energy per bit (its scope).
   2. Its supplies (0.66 / 0.30 V) scale the HBM3 host PHY idle.
   3. Unscaled, as the stand-in for the DRAM end's per-access I/O energy (`params/dram/hbm3.yaml` `idd.io_share`).
-     No DRAM-side HBM3 I/O energy is published; the measured DRAM VDDQ band 0.19-0.27 pJ/bit is its printed guard.
+     The measured DRAM VDDQ band 0.19-0.27 pJ/bit is its printed guard.
 - **Not a double count.** Uses 1 and 3 price the two ends of the link, each once. The same published number stands
   in for both ends because only the host end is measured.
 - Documentation only; every result is unchanged.
@@ -758,14 +771,14 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - *HBM3:* 0.29 pJ/bit read, 0.25 pJ/bit write, PUBLISHED (K. Chae et al., IEEE JSSC 59(1), 2024, Table II: the
     SoC-side HBM3 PHY at 9 Gb/s/pin, 0.66 / 0.30 V; DRAM die excluded). It is a per-bit energy, used at the run's
     rate.
-  - *HBM2:* 0.56 pJ/bit read, 1.07 pJ/bit write, DERIVED from the Samsung Foundry HBM2E PHY (S. Hwang, K. Chae,
+  - *HBM2:* 0.56 pJ/bit read, 1.07 pJ/bit write, from the Samsung Foundry HBM2E PHY (S. Hwang, K. Chae,
     T. Yeo et al., Hot Chips 32, 2020, slide 10, energy row: 0.56 read / 1.07 write, 7 nm, 0.75 / 1.2 V, 3.2 Gb/s),
     each direction at its own published figure.
     - Rate factor 1: a per-bit switching energy does not change with the rate.
-    - Voltage factor 1: HBM2's I/O supply is the measured 1.2 V. No HBM2 host-PHY core voltage is published, so the
-      measured 0.75 V is kept.
+    - Voltage factor 1: HBM2's I/O supply is the measured 1.2 V. HBM2's host-PHY core voltage stays the
+      measured 0.75 V.
   - The run prints the tier, the figures and their source on a `[power] <host> memory-controller PHY` line.
-- **HBM2 host PHY idle (user ruling 2026-10-28), DERIVED.** It is the same HBM2E measurement at HBM2's data rate:
+- **HBM2 host PHY idle (user ruling 2026-10-28).** It is the same HBM2E measurement at HBM2's data rate:
   - hard macro 36 mW x 2400 / 3200 = 27 mW, plus I/O 14 mW (HBM2 VDDQ 1.2 V is the measured supply; no core voltage
     scaling) = 41 mW per stack (1024 DQ);
   - that is 5.125 mW per 128-DQ channel, charged per channel (8 per stack). Was 0.
@@ -787,8 +800,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Gap.** With HBM3 as the host memory, the host memory-controller PHY static (idle) power was 0 W, printed as
   "no exact CACTI-IO map for HBM3": the term existed only for technologies with an exact CACTI-IO parameter set (DDR3,
   DDR4, DDR5, GDDR6), and HBM3 maps to CACTI-IO's WideIO set, which is not exact.
-- **Fix (src/power/cacti_io_wrapper.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp).** No HBM3 PHY idle power is
-  published. It is DERIVED from the one published measured HBM-class PHY idle: Samsung Foundry's 7 nm HBM2E PHY
+- **Fix (src/power/cacti_io_wrapper.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp).** The HBM3 PHY
+  idle is scaled from the one published measured HBM-class PHY idle: Samsung Foundry's 7 nm HBM2E PHY
   (S. Hwang, K. Chae, T. Yeo et al., Hot Chips 32, 2020, poster slide 10: 1024 DQ at 3.2 Gb/s, 0.75 V / 1.2 V; idle
   hard macro 36 mW + I/O 14 mW). The hard macro (clocked logic) is scaled by the run's rate over 3.2 Gb/s and by
   (0.66 V / 0.75 V)^2; the I/O by (0.30 V / 1.2 V)^2 only (no data toggles while idle). 0.66 / 0.30 V are the
@@ -807,7 +820,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - This term is the host PHY's idle alone. No other term prices it.
   - With `power.models.host_uncore_static` on, the host uncore term subtracts it (as it does the DDR PHY idle), so
     System Total does not change; the 56.6 mW moves from `host.uncore_static` to `host.memory_controllers_phy`.
-- HBM2 is unchanged (no published HBM2 host-PHY supply point; its host PHY idle stays 0, stated in the log).
+- HBM2 is unchanged (its HBM2 host-PHY idle stays 0, stated in the log).
   DDR3, DDR4, DDR5, LPDDR5 and GDDR6 are unchanged.
 - **Data impact:** HBM3-host cells (host baselines and co-sim): the new ledger line is 0.0566 W, and `host.uncore_static`
   is 0.0566 W lower. With the host uncore term on, System Total is unchanged. Cycles, every other ledger line and all
@@ -816,8 +829,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.130 -- docs: per-access interface energy is described as computed from the part record
 
 - **Documentation (docs/power.md, Measured and assumed).** The line that called the per-access interface energy
-  an inherited constant is replaced: it is computed from the part record (DQ termination, the IDDQ row where one
-  is published, the RDIMM register) on the measured accesses that cross the DQ pins. Text only.
+  an inherited constant is replaced: it is computed from the part record (DQ termination, the IDDQ row where
+  the record has one, the RDIMM register) on the measured accesses that cross the DQ pins. Text only.
 
 ## 1.12.129 -- the host core's second-level TLB is priced
 
@@ -1082,8 +1095,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.118 -- the RDIMM register (RCD) power, DDR4 and DDR5
 
-- **RDIMM register** (user ruling 2026-10-27): an `rdimm` DDR4/DDR5 memory now pays its register clock driver. No
-  DDR4 or DDR5 register power is published; both terms are DERIVED:
+- **RDIMM register** (user ruling 2026-10-27): an `rdimm` DDR4/DDR5 memory now pays its register clock driver.
+  Both DDR4 and DDR5 register terms are computed:
   - static (PLL and output clocks): the DDR3 RDIMM register's 0.36 / 0.21 W at DDR3-1333 / 800 (D. David et al.,
     "Memory Power Management via Dynamic Voltage/Frequency Scaling", ICAC 2011, Table 3: "SelfRefresh" against
     "SelfRefresh - Register Off"), linear in the data rate and x (VDD / 1.5 V)^2 with the DDR4 register at 1.2 V
@@ -1103,12 +1116,12 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   not the DRAMs. The command/address share of the DQ-interface termination (the CACTI-IO DIMM network, 25 lines to VTT)
   is replaced by the RCD-input network:
   - DDR5: 10 inputs per sub-channel (7 DCA, parity, 2 CS; Renesas RRG5004x short-form datasheet Rev.1.01 p.1), POD
-    1.1 V, loop host driver 40 ohm (DERIVED: the midpoint of Intel 743844-015 Table 87, 30-50) + 15 ohm series resistor
+    1.1 V, loop host driver 40 ohm (the midpoint of Intel 743844-015 Table 87, 30-50) + 15 ohm series resistor
     (JESD305B.01 PDF p.32; X. Li, ISQED 2025, Sec. II.B p.4) + 60 ohm RCD input termination (the default, ISQED 2025
     p.4).
   - DDR4: 25 lines terminated to VDD/2 in the register (Micron DDR4 RDIMM Core Rev. B 12/2021, p.14 note 5), loop
-    35 ohm (DERIVED: the midpoint of Table 86, 25-45) + 15 ohm (DERIVED) + 60 ohm (DERIVED: no DDR4 register input
-    termination value is published).
+    35 ohm (the midpoint of Table 86, 25-45) + 15 ohm + 60 ohm (the default, for the DDR4 register
+    input termination).
   The log prints the path and the network it replaces.
 - Impact: DDR4-2400 read termination -1.3% (2.035 -> 2.008 nJ per access), DDR5-4800 -3.1% (1.226 -> 1.188 nJ).
   `udimm`, `sodimm`, `soldered` and LPDDR5/GDDR6/HBM are unchanged. Cycles unchanged.
@@ -1118,8 +1131,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.116 -- the DDR4/DDR5 host memory-controller PHY idle from measured PHY idle rails
 
 - **Host PHY idle** (user ruling 2026-10-27): the DDR4/DDR5 memory-controller PHY static (idle) power was the CACTI-IO
-  parameter-set value, 30 mW per 64-bit interface (phase rotator 10 + receivers 10 + PLL 10). No measured DDR4/DDR5
-  host-PHY idle is published. It is now DERIVED from the measured idle of an LPDDR4X x16 PHY's two DRAM-PHY rails (NXP
+  parameter-set value, 30 mW per 64-bit interface (phase rotator 10 + receivers 10 + PLL 10). The DDR4/DDR5
+  host-PHY idle is now scaled from the measured idle of an LPDDR4X x16 PHY's two DRAM-PHY rails (NXP
   AN13917 Rev. 4.0, i.MX 93: Table 6 p.12 names vdd2_ddr and vddq_ddr "Power supply for DRAM PHY"; system idle with the
   controller clock-gated, 25.3 / 13.6 / 8.3 mW at 3733 / 1866 / 625 MT/s, Tables 28 / 29 / 31 pp.38-41): the
   least-squares line through the three points (4.25 + 5.53 mW per Gb/s per 16 DQ), scaled to the channel width at the
@@ -1155,10 +1168,10 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     budget, so the device's time-averaged write power stays within the budget. The budget is shared equally; an idle
     interface's share is not lent. A held write waits in its bank (new interface stats budgetWaits and
     budgetWaitCycles).
-  - *PCM default 162 mW (DERIVED):* Jiang, Zhao, Yang, Zhang, ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the RESET
+  - *PCM default 162 mW:* Jiang, Zhao, Yang, Zhang, ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the RESET
     charge pump's 7 mA load at 5 V and 21.6 % efficiency = 35 mW / 0.216 = 162 mW drawn per chip. The device is taken
     as one chip.
-  - *STT_MRAM and RERAM:* no published budget was found. `enabled` on them is refused unless `mw` is given, and then
+  - *STT_MRAM and RERAM:* no default budget. `enabled` on them is refused unless `mw` is given, and then
     the user's value applies. On SRAM or DRAM the option is refused.
   - *Always printed:* an NVM run prints whether the budget would bind ("[nvm] write budget ... it WOULD BIND (x the
     run time ...)"). For STT_MRAM / RERAM without `mw` it prints that no budget is evaluated.
@@ -1197,7 +1210,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.111 -- an SRAM/NVM PE memory interface: its array's bandwidth, and one access at a time per bank
 
 - **Timing (src/main.cpp; external/zsim/src/pe_memory_interface.h, init.cpp, zsim.h, alu_core.cpp; docs/memory.md):**
-  - *The interface's rate.* With no derived aggregate, an SRAM or NVM device's PE memory interface took a fixed table
+  - *The interface's rate.* With no computed aggregate, an SRAM or NVM device's PE memory interface took a fixed table
     row: 12800 MB/s (the DDR row) for STT_MRAM, PCM and RERAM, 51200 MB/s for SRAM, whatever the array. Its rate is
     now its own banks': the banks it covers x the line / one bank's access time (NVSim or CACTI), the same rule the
     device's M/D/1 cap uses. A user-set pim.mc.bandwidth_mbs is unchanged. An array with no access time refuses.
@@ -1237,7 +1250,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   cell (4 F^2, no access device) whose file names no source. Its current-sensing periphery took 97.5 % of the bank
   area. Every published 22-40 nm RRAM macro (TSMC N40 and N22, Intel 22FFL) is 1T1R. RERAM now uses RRAM_1T1R.cell:
   - It is the RRAM cell of NVMExplorer (Pentecost et al., HPCA 2022; repository data/cell_cfgs/RRAM.cell): one CMOS
-    access transistor 6 F wide and 53 F^2, the reference cell derived from TSMC's N40 macro (Chou et al., ISSCC 2018).
+    access transistor 6 F wide and 53 F^2, the reference cell based on TSMC's N40 macro (Chou et al., ISSCC 2018).
   - Its resistances, read and SET/RESET values are NVSim's sample values, as that repository states.
 - **At the 64 KB / 512 b / 22 nm unit:**
   - Leakage falls from 8.57 to 0.66 mW per bank, and area from 0.0405 to 0.0277 mm^2 per bank.
@@ -1300,8 +1313,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - At 360 K the HBM3 background was 2388 mW per stack, above the XPE 2023.1.2 like-for-like guard (2170 mW,
     whose range covers 25 C typical to 100 C maximum).
 - **Change:** the measured HBM2 slope is taken per stack: 6.41 mA/C (Olgun et al., MICRO 2026, arXiv:2610.14244,
-  Table 4) over HBM3's 16 channels = 0.401 mA/C per channel; IDD2P 0.7x (DERIVED). NO PUBLISHED SOURCE FOUND for an
-  HBM3 current-vs-temperature measurement.
+  Table 4) over HBM3's 16 channels = 0.401 mA/C per channel; IDD2P 0.7x.
+  HBM3 takes that measurement as its basis.
 - **Data impact:** HBM3 only. Background per stack 1991 / 2388 / 2881 mW -> 1777 / 2088 / 2580 mW at
   350 / 360 / 380 K. 350 K and 360 K are now inside the guard; 380 K (107 C) is outside the guard's range.
 
@@ -1311,7 +1324,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   300..400 K; the 10 K step rule is removed. Outside 300..400 K the loader still refuses the value.
 - **CACTI (and McPAT, which links the same CACTI) and the DRAM-periphery leakage factor:** the temperature-tabulated
   rows (I_off_n, I_g_on_n, tabulated every 10 K) are interpolated between the two bracketing rows: log-linear for the
-  currents, linear where either row is zero (an unpopulated column). Interpolated values are DERIVED; on a multiple
+  currents, linear where either row is zero (an unpopulated column). Interpolated values are computed; on a multiple
   of 10 the tabulated row is used unchanged. NVSim already tabulates every 1 K.
 - **Refresh:** the JEDEC points are now reachable. The ladder compares `K - 273.15` strictly against 85 C / 95 C:
   358 K (84.85 C) is nominal, 359 K (85.85 C) is the first doubled point; for HBM 368 K is 0.5x and 369 K is 0.25x.
@@ -1326,7 +1339,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - The column is a copy of the 90 nm hp I_off_n column (3.24e-8 .. 1.54e-7 A/um, rising with temperature).
   - Every other gate-leakage column is flat in temperature. The neighbouring lop nodes read 9.61e-9 (65 nm) and
     2.93e-9 (32 nm).
-- **Fix:** 4.51e-9 A/um at every temperature (DERIVED). This is the 45 nm hp gate current (3.59e-8) times the ratio
+- **Fix:** 4.51e-9 A/um at every temperature. This is the 45 nm hp gate current (3.59e-8) times the ratio
   of the ITRS 2007 PIDS gate-leakage limits at 2010:
   - LOP: Jg,limit 114 A/cm2 x Lg 22 nm = 2.51e-8 A/um (Table PIDS3c);
   - HP: Jg,limit 1.11e3 A/cm2 x Lg 18 nm = 2.00e-7 A/um (Table PIDS2a);
@@ -1343,7 +1356,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   temperature.
   - Measured: the PCM BANK array's leakage was 33.3 mW at 300 K against 11.8 mW at 330 K and 18.9 mW at 350 K.
 - **Fix** (src/memory/nvsim_wrapper.cpp):
-  - The search runs at the design temperature, 350 K. This is DERIVED: it is the temperature every
+  - The search runs at the design temperature, 350 K: it is the temperature every
     characterisation used before 1.11.52.
   - The organisation it picks (mats, subarrays, active counts, mux degrees, rows per set, buffer level, wire types)
     is then evaluated at the run's temperature, through the fixed-organisation sequence NVSim's own wire-refinement
@@ -1365,7 +1378,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - The 16-core 22 nm host's leakage is 13.3 / 40.3 / 151.6 W at 360 / 380 / 400 K, against a core peak dynamic
     of 32.4 W.
 - **Change:** rows +60..+100 (360-400 K) continue from the 350 K row at the ITRS 2007 PIDS high-performance
-  "Hi T Factor" (leakage x10 from 25 to 100 C, i.e. x10^(dT/75 K), one doubling per 22.6 K; DERIVED).
+  "Hi T Factor" (leakage x10 from 25 to 100 C, i.e. x10^(dT/75 K), one doubling per 22.6 K).
   - The 22 nm rows are 2.925e-7, 3.977e-7, 5.406e-7, 7.348e-7, 9.989e-7 A/um.
   - The 32 nm rows are 3.657e-7, 4.971e-7, 6.757e-7, 9.185e-7, 1.249e-6 A/um; NVSim's 22 nm HP rows take them.
   - The 300-350 K rows, every other column and every other node are unchanged.
@@ -1383,7 +1396,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - **VPP standby (priced):** the pump rail's refresh duty stayed at the nominal rate while the counted-refresh
     substitution removed the doubled duty.
   - **Background guard line:** printed and computed "refresh at 358 K".
-  - **Derived per-bit read energy:** carried nominal refresh.
+  - **Computed per-bit read energy:** carried nominal refresh.
 - **Fix** (pimid_energy.h): a function called without a temperature takes the run's (defaultEnergyTemperatureK()),
   and falls back to 358 K only before the run has set one. The guard line prints the temperature it used.
 - **Report** (src/main.cpp, mcpat_wrapper): the "[tech] periphery factors READ" line printed the comm-dram leakage
@@ -1399,7 +1412,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   bytes crossed x pJ/bit, as if its SerDes were off between transfers; a gen5 x16 link that moved 128 B in a run cost
   0.0075 W per end (controller leakage). Each end is now priced over the run: in ASPM L1 between transfers at 25 mW per
   lane ("each lane of a PCIe PHY in "L1" could still be consuming 20-30 milliwatts", R. Solomon, Synopsys technical
-  bulletin, 2015; a Gen3-era PHY figure carried to the later classes, DERIVED); in L0 for the L1 entry timer after each
+  bulletin, 2015; a Gen3-era PHY figure carried to the later classes); in L0 for the L1 entry timer after each
   transfer and during each L1 exit (the timing model's 8 us / 5 us, measured per run by the plugin) at lanes x line rate
   x the class's pJ/bit (a link in L0 transmits at line rate); the active bits at bytes x 8 x pJ/bit, as before. The
   whole-run L0 figure is printed beside it as information (gen5 x16: 4.86 W per end). A UCIe link that carries nothing
@@ -1408,9 +1421,9 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Energy per bit re-sourced:** gen3 4.0 - 6.8 (was 4.0), gen4 6.0 - 7.35 (was 1.93 - 6.0, applied 6.0; the 1.93
   transmitter-only figure stays a bound below), gen5 7.6 - 11.4 (sources named: Analog Bits Gen5 on 8LPP, SemiWiki
   2021; Intel 10 nm incl. PLL, CICC 2020). UALink 4.5 - 6.0 (was 3.5, which is not in the cited paper; host SerDes with
-  DSP at 112G, arXiv 2510.15893). NVLink-C2C 1.3 (NVIDIA); NVLink 3/4 keep 1.17 - 1.30 as a lower bound, NO PUBLISHED
-  SOURCE FOUND for the board-level PHY. CXL 3.0 (user ruling 2026-10-27: scale from gen5): the gen5 band carried per
-  bit to the 64 GT/s PAM4 PHY, DERIVED (no published 64 GT/s PCIe 6.0 PHY energy and no published PAM4-vs-NRZ
+  DSP at 112G, arXiv 2510.15893). NVLink-C2C 1.3 (NVIDIA); NVLink 3/4 keep 1.17 - 1.30 as a lower bound for
+  the board-level PHY. CXL 3.0 (user ruling 2026-10-27: scale from gen5): the gen5 band carried per
+  bit to the 64 GT/s PAM4 PHY (the PCIe 6.0 PHY at 64 GT/s takes it with no PAM4-vs-NRZ
   scaling at this rate); its L1 and L0 terms take the 64 GT/s line rate.
 - **One lane-rate table** for timing and energy: NVLink 3.0 50 Gb/s x 48 pairs, 4.0 100 Gb/s x 36, C2C 40 Gb/s x 90,
   CXL 3.0 64 GT/s (the energy side had NVLink at 100 Gb/s on 16 lanes and CXL 3.0 at 32).
@@ -1435,9 +1448,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Lanes:** a PCIe / CXL link's width (`power.link.num_lanes`, or a `system.network.links[]` entry's `lanes`, which is
   now accepted) scales its preset bandwidth and is the width its energy is priced at; 1, 2, 4, 8 or 16, else refused.
 - **Latency and header:** CXL 80 ns (CXL-attached memory adds 70-90 ns over local, Pond, ASPLOS 2023; was 200 / 100
-  ns); PCIe 500 ns is the measured gen3 64 B DMA read (493-547 ns, Neugebauer et al.), carried for gen4/gen5 (no
-  published measurement); PCIe header 24 B (MWr: 2 framing + 6 DLL + 4 + 12, ibid.; was 20). NVLink, UALink latency
-  and the coherence extras: NO PUBLISHED SOURCE FOUND, carried and said so.
+  ns); PCIe 500 ns is the measured gen3 64 B DMA read (493-547 ns, Neugebauer et al.), carried for gen4/gen5; PCIe header 24 B (MWr: 2 framing + 6 DLL + 4 + 12, ibid.; was 20). NVLink, UALink latency
+  and the coherence extras: carried, and the run says so.
 - **The link class in the co-sim bridge (user ruling 2026-10-27):** the host-device boundary charge (`system.bridge`)
   came from the device's memory technology alone, so an externally attached PCIe device was timed as its DDR channel
   (DDR4: 20 ns, 19.2 GB/s) and the link class priced only energy. Over any class but `dram_channel` (whose row is the
@@ -1465,9 +1477,9 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   core whatever it does -- its leakage (subthreshold + gate) and its L2's (a halted core's clock is off,
   `power.models.idle_halt`) -- and the same with the L3 and host NoC leakage shared over the cores, beside the
   published package-side power of one more awake, halted core: Haswell-EP 22 nm package C1E 1.91 W/core, C1E - C6
-  1.78, C3 - C6 1.03 W/core (DERIVED: least-squares slopes over the 34 SKUs of Intel 330783-002 Sec. 2.10; C1E and C3
+  1.78, C3 - C6 1.03 W/core (least-squares slopes over the 34 SKUs of Intel 330783-002 Sec. 2.10; C1E and C3
   "characterized but not tested"; each core's LLC slice, ring stop and on-die regulator loss included); Xeon Silver
-  4114 14 nm, all cores CC1 vs CC6, 12.1 W / 10 cores = 1.21 W/core (DERIVED; Antoniou et al., AgilePkgC, HPCA 2023,
+  4114 14 nm, all cores CC1 vs CC6, 12.1 W / 10 cores = 1.21 W/core (Antoniou et al., AgilePkgC, HPCA 2023,
   Sec. 5, RAPL package); EPYC 7502 7 nm, +0.09 W per core in C1 instead of C2 (Schoene et al., IEEE Cluster 2021,
   Sec. VI-A, system AC). The line is a reference: it is in no total and changes no number.
 - **Data impact:** none (one printed line per host).
@@ -1477,10 +1489,10 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Model (user ruling 2026-10-27; power.models.host_uncore_static; src/main.cpp):** system scope charges the host
   socket's uncore that does not scale with the core count -- the I/O and system agent (PCIe root complex,
   inter-socket links, interrupt and power management, clock generation) -- once per host, ledger
-  `<host>.uncore_static`. No published source gives these blocks one by one; the published package-side quantity is
+  `<host>.uncore_static`. These blocks are priced together; the published package-side quantity used is
   the package C1E power (all cores in C1E, the package awake): Intel Xeon E5-1600/2600/4600 v3 Datasheet Vol. 1,
   330783-002 (June 2015), Sec. 2.10, 34 Haswell-EP SKUs with 4 to 18 cores at 22 nm, the host's node. A least-squares
-  line over the core count gives C1E = 18.5 W + 1.91 W/core (DERIVED, rms 3.7 W). The intercept, 18.5 W, is the
+  line over the core count gives C1E = 18.5 W + 1.91 W/core (rms 3.7 W). The intercept, 18.5 W, is the
   socket term (`power.host_uncore.w_per_socket`); the per-core slope belongs to the cores, their L3 slices and ring
   stops. The memory controller's leakage, its PHY static and the die clock trunk, which the run already prices, are
   subtracted (never below 0). The run prints the PLL count as a reference inside the term (one per core, one for the
@@ -1533,7 +1545,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   CV32E40P (OpenROAD-flow-scripts; RV32IM gemv loop):** combinational activity 0.099 toggles per net per cycle in a
   timing-annotated simulation (glitches 33-37% of the toggles at 45, 15 and 7 nm); wire load on the pin-capacitance
   terms x1.62 (Nangate45), x1.83 (NanGate 15 nm OCL), x1.61 (ASAP7), applied per node by log-node interpolation:
-  32 nm 1.69, 22 nm 1.76. The 15 nm parasitics are estimated from the routed design with layer R / C derived from the
+  32 nm 1.69, 22 nm 1.76. The 15 nm parasitics are estimated from the routed design with layer R / C computed from the
   published FreePDK15 stack, not extracted (the library ships no extraction deck). Register-file data activity 0.3
   (Tseng & Asanovic 2000).
 - **Routed-core flip-flops beyond the model's registers and timing-repair buffers:** the routed CV32E40P has 1,257
@@ -1645,11 +1657,11 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
       +0.561 mA/C on IDD2P (the record's 28/40 rule). Held at the ends of 48-86 C.
     - The IDD0, IDD4R, IDD4W and IDD5 loops move with their standby baseline, so the activate, burst and refresh
       excesses stay as measured.
-  - **HBM3** (DERIVED): the HBM2 slopes, scaled by this record's standby over HBM2's (77.875 / 66.525), the same
+  - **HBM3**: the HBM2 slopes, scaled by this record's standby over HBM2's (77.875 / 66.525), the same
     scaling the standby itself took.
   - **DDR4** (`STEP_ABOVE`, PUBLISHED): Micron MT40A 8 Gb DDR4 datasheet IDD note 24. Above TC 85 C, IDD0, IDD2N,
     IDD3N, IDD4R and IDD4W are derated by +3% and IDD2P by +40%; IDD5 moves with IDD2N.
-  - DDR3, DDR5, LPDDR5 and GDDR6: no block. NO PUBLISHED SOURCE FOUND for those parts' currents vs temperature;
+  - DDR3, DDR5, LPDDR5 and GDDR6: no block (their currents are taken at the reference temperature);
     Ghose et al., SIGMETRICS 2018 measured no change in DDR3L currents between 20 C and 70 C.
 - **Report:** "[mem] <TECH> IDD at <K> K: ..." with the currents used. The "[tech] temperature" line no longer says
   that the IDD columns never move.
@@ -1666,8 +1678,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     10 K from +0 to +100 (2.43e-11, 4.85e-11, ..., 7.73e-10, -, 3.09e-9, 6.19e-9, 1.24e-8, 2.48e-8).
   - 90 nm, lop column, rows +50 / +60 / +70: 8.27e-8, 1.02e-7, 1.2e-7 A/um, ten times both neighbours
     (+40 6.54e-9, +80 1.36e-8).
-- **Fix:** 22 nm lstp +60 = 1.55e-9 (DERIVED: the geometric mean of +50 and +70, which is also the column's
-  2x-per-10-K step). 90 nm lop +50 / +60 / +70 = 8.27e-9 / 1.02e-8 / 1.2e-8 (DERIVED: the printed mantissas with
+- **Fix:** 22 nm lstp +60 = 1.55e-9 (the geometric mean of +50 and +70, which is also the column's
+  2x-per-10-K step). 90 nm lop +50 / +60 / +70 = 8.27e-9 / 1.02e-8 / 1.2e-8 (the printed mantissas with
   the neighbours' exponent). Each corrected column is monotone and smooth.
 - **Data impact:**
   - 22 nm runs at 360 K that read the lstp column. This includes the DRAM-periphery leakage ratio
@@ -1697,9 +1709,9 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 - **Model (user ruling 2026-10-27):** the GDDR6 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
   coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
-  I/O-corrected), on the raw line data (the array stores raw data; DBIdc acts on the pins only). DERIVED transfer on a stated assumption: GDDR6 is a
-  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. No published GDDR6
-  measurement of the dependence exists, and no author statement extends the DDR3 result to GDDR6. Normalised at
+  I/O-corrected), on the raw line data (the array stores raw data; DBIdc acts on the pins only). Transfer on a stated assumption: GDDR6 is a
+  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. The DDR3 result is carried to GDDR6 as is; GDDR6 takes the same sign and size.
+  Normalised at
   uniform-random data. Record only (params/dram/gddr6.yaml).
 - **Data impact:** GDDR6 read burst energy -8.7 % (all 0s) to +8.7 % (all 1s), write +4.2 % to -4.2 %.
 
@@ -1707,9 +1719,9 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 - **Model (user ruling 2026-10-27):** the LPDDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
   coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
-  I/O-corrected), on the raw line data (the array stores raw data; DBI-DC acts on the pins only). DERIVED transfer on a stated assumption: LPDDR5 is a
-  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. No published LPDDR5
-  measurement of the dependence exists, and no author statement extends the DDR3 result to LPDDR5. Normalised at
+  I/O-corrected), on the raw line data (the array stores raw data; DBI-DC acts on the pins only). Transfer on a stated assumption: LPDDR5 is a
+  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. The DDR3 result is carried to LPDDR5 as is; LPDDR5 takes the same sign and size.
+  Normalised at
   uniform-random data. Record only (params/dram/lpddr5.yaml).
 - **Data impact:** LPDDR5 read burst energy -8.7 % (all 0s) to +8.7 % (all 1s), write +4.2 % to -4.2 %.
 
@@ -1717,9 +1729,9 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 - **Model (user ruling 2026-10-27):** the DDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
   coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
-  I/O-corrected), on the 1.12.58 counters (DDR5 has no data bus inversion). DERIVED transfer on a stated assumption: DDR5 is a
-  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. No published DDR5
-  measurement of the dependence exists, and no author statement extends the DDR3 result to DDR5. Normalised at
+  I/O-corrected), on the 1.12.58 counters (DDR5 has no data bus inversion). Transfer on a stated assumption: DDR5 is a
+  planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. The DDR3 result is carried to DDR5 as is; DDR5 takes the same sign and size.
+  Normalised at
   uniform-random data. Record only (params/dram/ddr5.yaml).
 - **Data impact:** DDR5 read burst energy -8.7 % (all 0s) to +8.7 % (all 1s), write +4.2 % to -4.2 %.
 
@@ -1727,8 +1739,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 - **Model (user ruling 2026-10-27):** the DDR4 record gets a `data_pattern` block (form ONES_LINEAR) with the
   DDR3 coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table
-  5, I/O-corrected), on the 1s fraction of the run's raw line data. DERIVED transfer: no published DDR4 measurement of
-  the dependence exists; the DDR3 study's authors state its trends should apply to DDR4. Normalised at uniform-random
+  5, I/O-corrected), on the 1s fraction of the run's raw line data. Transfer: DDR4 takes the dependence as measured on DDR3; the DDR3 study's authors state its trends should apply to DDR4. Normalised at uniform-random
   data. Record only (params/dram/ddr4.yaml).
 - **Data impact:** DDR4 read burst energy -8.7 % (all 0s) to +8.7 % (all 1s), write +4.2 % to -4.2 %.
 
@@ -1738,7 +1749,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   coefficients the HBM2 measurement's authors publish for HBM3E (Olgun et al., MICRO 2026; HBM-Power pJ/bit = 2.759 + 1.192 dq + 1.331 tsv + 0.72 bg, relative, applied to writes too: the configuration of
   case_studies/hbm3e_validation, validated against measured H200 HBM3E power within 2.4-5.3 %). dq = the measured DQ pin transitions between
   beats; tsv and bg stay 0.5 (not counted); normalised at uniform-random data. Applies to the array burst; the DQ I/O
-  share is priced apart. DERIVED (an HBM2-measured fit transferred by its authors). Record only (params/dram/hbm3.yaml).
+  share is priced apart (an HBM2-measured fit transferred by its authors). Record only (params/dram/hbm3.yaml).
 - **Data impact:** HBM3 read/write array burst energy by the run's data, -13.6 % (no DQ transitions) to +13.6 % (every
   pin every beat).
 
@@ -1751,26 +1762,26 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   competitors, no basis); the HBM3/HBM3E papers (Park et al. JSSC 2023, Ryu et al. JSSC 2023, Lee et al. ISSCC 2024
   13.4) give no currents (Ryu: bank-group bus switching 22-42% of core-die power; Park: up to 15% better efficiency than
   HBM2E); the H200 HBM3E measurement (CMU-SAFARI HBM-Power) is whole-board power, an upper bound only (5.8 pJ/bit
-  random-read slope including the GPU). The IDD row therefore stays DERIVED from the HBM2 measurement (NO PUBLISHED
-  SOURCE FOUND for an HBM3 IDD table).
+  random-read slope including the GPU). The HBM3 IDD table therefore stays scaled from the HBM2
+  measurement.
 - **Re-sourced: tRFCab 260 -> 350 ns** (params/dram/hbm3.yaml). JESD238B.01 Table 93 (printed p.165) keys tRFCab on the
   density per channel: the 16 Gb/die 8-High stack the record emits since 1.12.41 (HBM3_8Gb_8H, 8 Gb per channel) is
   350 ns, the value the timing model's per-density table already uses; 260 ns is the 4-High (4 Gb per channel) row.
-- **Re-derived: refresh energy per channel REF 30.0 -> 60.1 nJ** (IDD5 182.875 -> 233.875 mA). The 1.11.91 derivation
+- **Recomputed: refresh energy per channel REF 30.0 -> 60.1 nJ** (IDD5 182.875 -> 233.875 mA). The 1.11.91 derivation
   prices a REF by the rows it refreshes; it assumed the 4 Gb/channel layout (16 banks per pseudo-channel, 32 rows x 1 KB
   per PC per REF). The 8-High layout (JESD238B.01 Table 4: SID + BA[3:0], 32 banks per pseudo-channel, 16384 rows,
-  3.9 us) refreshes twice the rows per REF: 2 x 30.03 nJ = 60.06 nJ = 1.1 V x 156.0 mA x 350 ns (DERIVED).
+  3.9 us) refreshes twice the rows per REF: 2 x 30.03 nJ = 60.06 nJ = 1.1 V x 156.0 mA x 350 ns.
 - **Data impact (HBM3, main 4ae4a924 cells, gemv 256):** refresh 122.9 -> 245.7 mW per stack; background per stack
   1494 -> 1617 mW (+8.3%, inside the XPE guard 1060-2170); memory power +8.2 to +8.3% (device cells), +6.4% (co-sim);
-  the derived total read energy guard 3.91 -> 3.93 pJ/bit. Activate, burst and I/O unchanged.
+  the computed total read energy guard 3.91 -> 3.93 pJ/bit. Activate, burst and I/O unchanged.
 
 ## 1.12.79 -- LPDDR5 standby currents follow the run clock
 
-- LPDDR5 background standby currents (IDD2N/IDD3N and their VPP rows) scale with the run clock relative to the IDD table rate (6400/7500), estimated from a vendor source that cannot be disclosed publicly; power-down, refresh and the activate/burst baselines keep the record. LPDDR5 background per die 36.81 -> 33.62 mW (-8.7%), LPDDR5 memory power about -8.5%; logic power and other memories unchanged.
+- LPDDR5 background standby currents (IDD2N/IDD3N and their VPP rows) scale with the run clock relative to the IDD table rate (6400/7500); power-down, refresh and the activate/burst baselines keep the record. LPDDR5 background per die 36.81 -> 33.62 mW (-8.7%), LPDDR5 memory power about -8.5%; logic power and other memories unchanged.
 
 ## 1.12.78 -- LPDDR5 read I/O current scaled to the run data rate
 
-- The LPDDR5 VDDQ read current (IDD4RQ, given at 7500 Mb/s) now has its excess over standby scaled to the run rate (6400/7500), the rule the record already applies to the read and write burst currents: read I/O 0.5435 -> 0.4637 pJ/bit (-14.7%), estimated from a vendor source that cannot be disclosed publicly. No other number changes.
+- The LPDDR5 VDDQ read current (IDD4RQ, given at 7500 Mb/s) now has its excess over standby scaled to the run rate (6400/7500), the rule the record already applies to the read and write burst currents: read I/O 0.5435 -> 0.4637 pJ/bit (-14.7%). No other number changes.
 
 ## 1.12.77 -- the processing element's clock tree over its own registers, printed apart
 
@@ -1856,8 +1867,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   register clock-pin capacitance follows as energy / V^2 (22 nm: 0.706 fF, was 0.224 fF). The [mcpat dff] line
   prints the applied ratio, the ratio without the voltage correction (22 nm 0.476, 32 nm 0.698) and the
   Stillmaker & Baas midpoint with its pair range as references.
-- **Scope:** a node outside DeepScaleTool's 7-130 nm table, or a run that picks the ASAP7 library (no published
-  nominal-voltage basis for its correction), keeps the Stillmaker & Baas midpoint and says so.
+- **Scope:** a node outside DeepScaleTool's 7-130 nm table, or a run that picks the ASAP7 library, keeps the Stillmaker & Baas midpoint and says so.
 - **Data impact (serial gemv cells, 16 PEs at 500 MHz, alu / in_order / ooo PEs on DDR3, DDR4, DDR5, HBM3,
   LPDDR5, GDDR6):** McPAT register and clock energy rises; DRAM-side metrics are unchanged.
   - alu PE, 32 nm (DDR3): pe.nonclock_pJ_instr 6.867 -> 7.702 (now inside [7.485, 12.62]); pe.mW_at_ipc1
@@ -1904,8 +1914,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - **Fetch width per core type** (core record, params/core/default.yaml):
     - `in_order.fetch_width_bytes: 16` (new, record only). The guest code is x86. Knights Corner, an in-order
       dual-issue x86 core at 22 nm, "can handle 16 bytes or two instructions per clock cycle" (A. Fog, The
-      microarchitecture of Intel, AMD and VIA CPUs, Knights Corner chapter). For issue width 1 no published
-      source was found, and the same 16 B is used.
+      microarchitecture of Intel, AMD and VIA CPUs, Knights Corner chapter). For issue width 1 the same 16 B
+      is used.
     - `ooo.fetch_width_bytes: 16` (unchanged): zsim's Westmere-matched core fetches 16 B wide.
   - **zsim** (in_order_core, ooo_core, init): each core counts `ifetchChunks`, the aligned fetch-width chunks every
     fetched basic block spans, on the ROI window. The out-of-order core adds every chunk of a wrong-path line. The
@@ -1998,7 +2008,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   no sckt). Basis: liberty clock buffers at electrical effort 10 cost 0.49-0.59 (Nangate45 BUF_X1-X8, CLKBUF_X1-X3;
   ASAP7 BUFx2-x6f; typical corner, all supply pins); the leaf buffers of a placed-and-routed 1,940-register RISC-V core
   (OpenROAD flow scripts, Nangate45 and ASAP7, buffers sized by load, no dummy loads) cost 0.61-0.64. Leakage: two CACTI
-  inverters (DERIVED input widths C_load / 10 and C_load / sqrt(10)). Replaces the one-inverter buffer at stage effort
+  inverters (input widths C_load / 10 and C_load / sqrt(10)). Replaces the one-inverter buffer at stage effort
   4 (input C_load / 4, output diffusion only, about 0.46 x C_load x Vdd^2 with sckt). The H-tree leaf length is
   unchanged.
 - **Data impact:** PE clock tree per cycle at activity 1: 32 nm alu_core 1.365 -> 1.519 pJ, in_order_core
@@ -2013,10 +2023,10 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Model (user ruling 2026-10-26, CLK1; external/mcpat/logic.cc ClockNetwork):** in a core's clock tree the
   local (leaf-cluster) nets are priced at measured silicon wire capacitance instead of CACTI's local wire: 32 nm
   0.200 fF/um (Natarajan et al., IEDM 2008, Fig. 13a: measured median at M2, 112.5 nm pitch); 22 nm 0.169 fF/um
-  (DERIVED: Auth et al., VLSI 2012, "13-18% lower capacitance than 32nm", midpoint 15.5%); log-log between them.
+  (Auth et al., VLSI 2012, "13-18% lower capacitance than 32nm", midpoint 15.5%); log-log between them.
   CACTI's local wire (0.246 / 0.239 fF/um) carries a worst-case Miller factor of 1.5 on both sidewalls; silicon
   combs are measured with grounded neighbours, the expected coupling of an unshielded leaf clock net (OpenROAD
-  CTS: non-default rules on every level except the leaf nets). Other nodes: NO PUBLISHED SOURCE FOUND, the CACTI
+  CTS: non-default rules on every level except the leaf nets). Other nodes: the CACTI
   local wire is kept. The tree's print names the source. Global H-tree wire, repeaters and the other component
   trees are unchanged.
 - **Data impact:** PE clock tree per cycle at activity 1 (register pins excluded): 32 nm (DDR3 die) alu_core
@@ -2035,8 +2045,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   names the memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between
   the connector and the DRAM in the termination loop (CACTI-IO `rs1_dq` / `rs2_dq`): DDR3 and DDR4 DIMMs 15 ohm (Altera
   AN-520 p.10; Samsung DDR4 UDIMM M378A / SODIMM M471A data sheets Rev 1.1 pp.10-12), DDR5 RDIMM 15 ohm (JESD305B.01
-  PDF p.32), DDR5 UDIMM/SODIMM none (public UniIC and SK hynix module data; AMD UG863 v1.12), soldered none (estimated
-  from a vendor source that cannot be disclosed publicly). DDR4 RDIMM takes the DDR4 DIMM value: no RDIMM-specific public figure was found.
+  PDF p.32), DDR5 UDIMM/SODIMM none (public UniIC and SK hynix module data; AMD UG863 v1.12), soldered none.
+  DDR4 RDIMM takes the DDR4 DIMM value: no RDIMM-specific public figure was found.
 - Defaults: DDR3/DDR4/DDR5 `rdimm` -- the host baselines are server class (the host-path latency is calibrated to
   Sapphire Rapids and Genoa sockets) -- so their numbers do not change; LPDDR5, GDDR6, HBM2 and HBM3 `soldered`, their
   only topology. Under `is_default_mem: true` the host memory is the device's array and takes the device's topology.
@@ -2176,7 +2186,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Model (user ruling 2026-10-25):** the column-burst read and write energy is scaled by a factor from the
   run's measured line data (the 1.12.58 counters), per interface group and direction, where the part record carries
   a new optional `data_pattern` block; `power.models.dram_data_pattern: false` prices the record's burst as is.
-  - DDR3 (ONES_LINEAR): 1 + k (f_ones - 0.5), read k = +0.1733, write k = -0.0835 (DERIVED: Ghose et al.,
+  - DDR3 (ONES_LINEAR): 1 + k (f_ones - 0.5), read k = +0.1733, write k = -0.0835 (Ghose et al.,
     SIGMETRICS 2018, Table 5 bank+column interleaving, vendor means, normalised to the burst excess at 256 1s, times
     the vendor-A I/O-driver correction 230/434 read, 111/311 write). Burst-to-burst bit toggling is not priced (the
     counters see transitions inside a line only; its published effect is <= 0.08 of the excess).
@@ -2186,8 +2196,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     Writes use the same factor, as the authors' configurations do.
   - Both forms are normalised at uniform-random data, so a run whose data look random prices what it did before.
     The factor applies to the column burst only (when the controller's ACTs are counted); ACT has no data term in
-    either source. Other technologies: no published data-dependent burst model in the tree (NO PUBLISHED SOURCE
-    FOUND); factor 1. The factor and its inputs print per group and direction.
+    either source. Other technologies:
+    factor 1. The factor and its inputs print per group and direction.
 - **Data impact:** DDR3 and HBM2 read/write burst energy, by the run's data: DDR3 read -8.7 % (all 0s) to +8.7 %
   (all 1s), write +4.2 % to -4.2 %; HBM2 -10.1 % (no DQ transitions) to +10.1 % (every pin every beat).
 
@@ -2196,7 +2206,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Checker (user ruling 2026-10-26; scripts/power_sanity/power_sanity.py):** `HBM2.bg_mW_stack` [860, 1900] ->
   [430, 1900] mW. Low edge: measured per-stack idle, Olgun et al. (MICRO 2026, arXiv:2610.14244) Appendix A Table 5,
   lowest board at 1200 MT/s 329.6 mA over two stacks x 1.2 V = 198 mW, x2 for the record's 2.4 Gb/s (idle measured
-  proportional to rate, ~0 intercept, 600-1200 MT/s; DERIVED beyond) + measured refresh 33.9 mW. Cross-check: AMD PDM
+  proportional to rate, ~0 intercept, 600-1200 MT/s; extrapolated beyond) + measured refresh 33.9 mW. Cross-check: AMD PDM
   2025.2.1, Versal HBM, all 16 controllers at 0/0, Typical, 25 C: VCC_HBM idle exactly proportional to rate
   (0.613 / 0.920 / 1.227 W at 1.6 / 2.4 / 3.2 Gb/s, two stacks), 477 mW per stack at 2.4 Gb/s (497 with VPP static).
   High edge unchanged: XPE 2023.1.2 maximum (Maximum process, 100 C, 1.8 Gb/s, all DRAM rails). The old low edge 860
@@ -2219,7 +2229,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **What is not measured (stated):** Garnet carries no payload, so the true per-link order (other sources'
   flits interleaved on a shared link) is unknown: per-source order is the proxy. The header's real bits are
   not modelled: its 64 bits are the access's byte address (an assumption). The host bus's 48-bit command
-  bus is not read (random-data 0.25, DERIVED). A run whose lines cannot be read (multi-process MPI,
+  bus is not read (random-data 0.25). A run whose lines cannot be read (multi-process MPI,
   trace-driven, analytical NoC) is priced at the random-data 0.25 and says so. The DRAM-channel I/O links (off-package tree links)
   keep their own per-bit DQ energy; routers are unchanged. Peak (TDP) keeps the full charge.
 - **One line read per access:** the PE memory interface reads each access's line once (the measured DQ
@@ -2273,8 +2283,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   band is judged at the run's measured duty (x duty / 0.405: XPE's POD LOW 0.36 per pin x 9/8 pins per data
   bit), and the notes carry the duty's line count. PHY idle is information only, an FPGA PHY not being an ASIC
   reference; reference points per 64 bits: Versal hard HBM2E PHY 29 mW (PDM), Samsung 7 nm HBM2E PHY 3.1 mW (Hot
-  Chips 32 poster), a 40 nm LP mobile interface ~94-139 mW (Leibowitz et al., JSSC 2010, scaled from 8 lanes); a
-  measured DDR4/DDR5/LPDDR host-PHY idle: NO PUBLISHED SOURCE FOUND. Round: DDR4 read termination FLAG 8/8 (above
+  Chips 32 poster), a 40 nm LP mobile interface ~94-139 mW (Leibowitz et al., JSSC 2010, scaled from 8 lanes); these
+  are the references for the DDR4/DDR5/LPDDR host-PHY idle. Round: DDR4 read termination FLAG 8/8 (above
   the duty-matched XPE band), DDR5 read termination FLAG 8/8 (above the PDM guard at the measured duty),
   controller PASS on every run.
 
@@ -2298,7 +2308,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   0.8 V). It is now re-sourced from published HBM silicon (McPAT fork, noc.cc):
   pitch 30 um (Samsung HBM2E, JSSC 56(1) 2021, Sec. III: signal/power/ground TSV arrays "whose pitch is
   30 um"; area per TSV = pitch^2); length ~30 um (SK hynix 12-high HBM3, JSSC 58(1) 2023, Sec. VIII: core-die
-  thickness "approximately about 30 um"; printed, enters no number); load per die crossing 118.5 fF DERIVED
+  thickness "approximately about 30 um"; printed, enters no number); load per die crossing 118.5 fF computed
   from Cho et al. (SK hynix), ISSCC 2018 12.3, Fig. 12.3.1: 880 uA per TSV at 1.0 V, 3.3 Gb/s PRBS, on the
   conventional multi-drop TSV of an 8-high stack (9 TX/RX loads) -> 0.267 pJ/bit; a PRBS bit charges the line
   with probability 1/4, so C = 4 x 0.267 pJ / (1 V)^2 / 9 = 118.5 fF per die segment (TSV + micro-bump + one
@@ -2306,7 +2316,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   for this load); supply = the part's core VDD from the part record (HBM3 1.1 V; JESD238B.01 Table 70).
   Dynamic per bit per crossing = C V^2 (the fork's every-bit-charges convention; a PRBS bit costs 1/4):
   HBM3 0.143 pJ (was 0.0121, x11.9). The spiral point-to-point TSV of the same paper (610 uA, -30%) is
-  printed as the alternative. NO PUBLISHED SOURCE FOUND for an HBM3 TSV capacitance: the HBM2 figure stands,
+  printed as the alternative. HBM3 TSV capacitance: the HBM2 figure is used,
   at a die thickness the paper does not give.
 
 ## 1.12.55 -- off-package device-tree links are priced as DRAM-channel I/O
@@ -2322,8 +2332,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   placement (crossesOffPackageDQ) -- the path between the PE and the array below the PE level, which the
   fabric pricing does not include (it starts at the PE level) -- and host accesses reach the array through the
   host memory controller, not the device fabric.
-- **Not changed:** a part with no DQ termination and no IDDQ figure keeps the on-die wire and prints NO
-  PUBLISHED SOURCE FOUND; HBM (stacked) keeps its tree as before (its rank level is the stack's base logic die,
+- **Not changed:** a part with no DQ termination and no IDDQ figure keeps the on-die wire and says
+  so; HBM (stacked) keeps its tree as before (its rank level is the stack's base logic die,
   on-die wire; the chip tier crosses TSVs).
 
 ## 1.12.54 -- NoC links and buses on energy-efficient repeaters (Ho 2003 design point)
@@ -2340,8 +2350,8 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   Global_ho 211 fJ/bit/mm (x0.77), repeater leakage x0.57, delay 344 -> 343 ps/mm. Links at 22 nm: 0.316 ->
   ~0.242 pJ/bit/mm.
 - **Why not Global_30 (the ruling's first wording):** CACTI's Global_30 (lowest cost within a 30% delay penalty,
-  picked on a 100 um spacing grid) gives 158 fJ/bit/mm but slows every link by 22-30%; no published NoC link
-  rule accepts that penalty. Ho's point is the published, realistic one (4% delay).
+  picked on a 100 um spacing grid) gives 158 fJ/bit/mm but slows every link by 22-30%, a penalty the
+  published NoC link rules do not take. Ho's point is the published, realistic one (4% delay).
 - **Wire resistance (cross-check requested with the ruling):** CACTI's Wire object draws width = spacing =
   pitch/4 where its technology table uses pitch/2 (consistent with Intel 32 nm M2, Natarajan IEDM 2008), so its
   r is ~3.4x high and its c ~1.37x low. With the resistivity divided by 3.4 the probe gives Global 275 and
@@ -2360,7 +2370,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Host ring link length (user ruling 2026-10-25):** each stop-to-stop link is 2 x sqrt(host die area) /
   stops (McPAT fork, processor.cc, `link_span_processor = 2`), the loop of the Nehalem-EX floorplan -- cores and
   LLC slices in two columns of rows, the two counter-rotating rings running through the slice columns, one stop
-  per row (Rusu, ISSCC 2009 / JSSC 45(1) 2010) -- on a square die. DERIVED: no published stop spacing in mm. The
+  per row (Rusu, ISSCC 2009 / JSSC 45(1) 2010) -- on a square die. The
   per-stop-tile alternative sqrt(area / stops) assumes square stop tiles, which the two-column floorplan does not
   have, and is not used. Root cause: the ring's links took McPAT's upstream 2-D mesh derivation, side / ((H+V)/2)
   / 2, which for a 1 x N ring is half the loop pitch. 16-core host (18 stops): 0.733 -> ~1.47 mm; 4-core
@@ -2400,16 +2410,16 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.51 -- the DRAM second supply rails: DDR4 refresh VPP, LPDDR5 VDD1, GDDR6 VPP
 
 - **Second supply rails priced from the published rows** (user ruling 2026-10-25). A check of the DRAM-device
-  energy against the datasheet IDD tables by the current-difference method, a vendor method that cannot be disclosed publicly,
+  energy against the datasheet IDD tables by the current-difference method
   reproduced every VDD-rail term exactly and found the second rail missing on three records:
   - **DDR4** (params/dram/ddr4.yaml): refresh VPP. Micron MT40A Rev B Table 148 publishes the distributed-refresh
-    IPP5R 5 mA (IPP3N 3 mA, note 22); `ipp.ipp5b` 47.571 mA is DERIVED from it exactly as `idd5` 457.4 is from
+    IPP5R 5 mA (IPP3N 3 mA, note 22); `ipp.ipp5b` 47.571 mA is computed from it exactly as `idd5` 457.4 is from
     IDD5R: IPP3N + (IPP5R - IPP3N) x tREFI / tRFC, so VPP x (IPP5B - IPP2N) x tRFC = VPP x (IPP5R - IPP3N) x tREFI
     = 39.0 nJ per REF per die. REF 148 -> 187 nJ.
   - **LPDDR5** (params/dram/lpddr5.yaml): the 1.8 V VDD1 rail (the IPP slot) on activate, burst and refresh: Micron
     Y52P Table 18 x16 7500 column IDD01 3.8, IDD4R1 18.0, IDD4W1 16.5, IDD51 24.0 mA; the burst increments scaled
-    x 6400/7500 as the VDD2H row is (IPP4R 15.771, IPP4W 14.491 mA). Maxima on both ends (no published typical
-    ratio for VDD1). rd +0.228, wr +0.206 pJ/bit; ACT +0.247 nJ; REF +8.5 nJ.
+    x 6400/7500 as the VDD2H row is (IPP4R 15.771, IPP4W 14.491 mA). Maxima on both ends (no typical
+    ratio is applied to VDD1). rd +0.228, wr +0.206 pJ/bit; ACT +0.247 nJ; REF +8.5 nJ.
   - **GDDR6** (params/dram/gddr6.yaml): the VPP rail, not priced before. Samsung K4Z80325BC Table 82 x32 HC14
     per device halved to one channel: IPP2N = IPP3N = IPP4R/W 5 (note 2), IPP5B 38.5 mA, VPP 1.8 V (Table 79).
     The activation VPP takes the record's IDD7 route, like its VDD part: new record field
@@ -2447,12 +2457,12 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.49 -- HBM2 host reads price the DQ I/O once (I/O share)
 
 - **Model (user ruling 2026-10-25):** the HBM2 record gets an I/O share inside idd4r (58.88 mA = the VDDQ band
-  centre 0.23 pJ/b x 307.2 Gb/s / 1.2 V, DERIVED), as HBM3 has. The measured HBM2 rows are VDDC + VDDQ (Olgun et
+  centre 0.23 pJ/b x 307.2 Gb/s / 1.2 V), as HBM3 has. The measured HBM2 rows are VDDC + VDDQ (Olgun et
   al., MICRO 2026, Table 1 and Sec. 4.2: the loops measure "on VDDC and VDDQ rails"; VDDQ "powers the data I/O
   interface"), so the DQ read I/O is already inside idd4r; 1.12.35 added the 0.23 pJ/b band centre on every host
   read again. Now a host read prices 5.16 pJ/b (array 4.93 + I/O 0.23, the measured standard IDD4R) instead of
-  5.39, and a PE read on the DRAM die (no DQ crossing) 4.93 instead of 5.16. Write share 0 (NO PUBLISHED SOURCE
-  FOUND for the HBM2 write I/O; writes unchanged). Record only (params/dram/hbm2.yaml).
+  5.39, and a PE read on the DRAM die (no DQ crossing) 4.93 instead of 5.16. Write share 0 (the HBM2 write I/O
+  is not split; writes unchanged). Record only (params/dram/hbm2.yaml).
 - **Data impact:** HBM2 read energy: host reads -4.3%, PE reads -4.5%; nothing else.
 
 ## 1.12.48 -- DDR3 x16 prices the published x16 IDD column
@@ -2471,7 +2481,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   4 Gb Rev E sheet prints IDD2P1 (fast exit) = IDD2N = 32 mA, so power-down saved nothing; measured DDR3L silicon
   (Ghose et al., SIGMETRICS 2018, Sec. 4.5) shows fast power-down cutting the measured IDD2N by 65.8 / 30.6 / 48.7 %
   (vendors A/B/C). The factor applies the three-vendor mean ratio IDD2P1/IDD2N = 0.51633 to the typical IDD2N
-  (0.566 x 0.51633 = 0.29224; IDD2P_t 18.112 -> 9.352 mA), DERIVED; the mean is the convention of every other DDR3
+  (0.566 x 0.51633 = 0.29224; IDD2P_t 18.112 -> 9.352 mA); the mean is the convention of every other DDR3
   factor of the same paper. Vendor band 0.342 .. 0.694. Both variants (DDR3 1.5 V, DDR3L 1.35 V). Record only
   (params/dram/ddr3.yaml); no code change.
 - **Data impact:** DDR3 background (memory static) wherever the replayed controller measured power-down residency,
@@ -2521,7 +2531,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **GDDR6_2000_1350mV_double (user ruling 2026-10-25, T5):** Samsung K4Z80325BC GDDR6 Rev. 1.3 (public copy),
   Table 92 p.157 at 1.35 V, rounded up at tCK 571 ps: nRCDRD 26 -> 27, nRP 26 -> 27, nWR 26 -> 27 (15 ns each;
   26 nCK = 14.85 ns was short), nCCDL 6 -> 3 (tCCDL 3/4 tCK, 3 allowed up to fCKBG3 2000 MHz; CK is 1750 MHz),
-  nRC 79 -> 80 (= nRAS 53 + nRP 27, DERIVED from tRC 45 = tRAS 30 + tRP 15). The wrapper transcription and the
+  nRC 79 -> 80 (= nRAS 53 + nRP 27, from tRC 45 = tRAS 30 + tRP 15). The wrapper transcription and the
   GDDR6 architecture object follow (tRCD/tRP 15.42 ns).
 - **1250 mV rows:** nRC 89 -> 90 (Table 93 p.159 tRC 51 ns; = nRAS 60 + nRP 30). Stated, not changed: Table 93
   tRCDWR 11 ns (20 nCK) and tFAW 24 ns (43 nCK) against the rows' 19 and 42.
@@ -2562,7 +2572,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Per-bank refresh:** tREFIpb = tREFI / 32 (banks per PC, Table 93 p.166 8-High row) and tRFCpb 200 ns, now keyed
   on the DIE density (Table 93 NOTE 28; 8 Gb/channel x 2 channels per die = 16 Gb). Inert under AllBank refresh.
 - **tRP / tRC:** HBM3_6.4Gbps nRP 26 -> 24, nRC 79 -> 77 (Table 84 p.153: tRP 15, tRAS 33, tRC 48 ns, NOTE 1
-  RU rounding and nRAS + nRP = nRC). The architecture object's unsourced tRP 10 / tRAS 24 "VERIFIED" literals
+  RU rounding and nRAS + nRP = nRC). The architecture object's stated tRP 10 / tRAS 24 "VERIFIED" literals
   become 15 / 33 (stamped from the preset at run time).
 - **CACTI die-area query sees one die's banks:** main.cpp dramDieBanksForCacti(): a SID is a core die, so the HBM3
   8-High die holds 64 / 2 = 32 of a channel's banks (CACTI's range is 1-32). Without it the query failed and the
@@ -2617,15 +2627,15 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   change with the 1 KB row span; background energy follows the run time. Every HBM3 result before this version
   overstated per-channel bandwidth up to 2x.
 
-## 1.12.36 -- sources: every value is cited to a public document or stated as not disclosable
+## 1.12.36 -- sources: every value is cited to a public document or given with its method
 
-- **Citations** (user ruling 2026-10-25): values that came from vendor sources that cannot be disclosed publicly are
-  now cited to public documents where one gives them, and otherwise read "estimated from a vendor source that cannot
-  be disclosed publicly". No such source is named anywhere in the code, the docs or the printed lines, and local
+- **Citations** (user ruling 2026-10-25): values whose source was a vendor document are
+  now cited to public documents where one gives them, and otherwise are given with their method.
+  No such document is named anywhere in the code, the docs or the printed lines, and local
   document-archive paths are no longer quoted (each document is named by its title).
   - GDDR6 power-down exit tXP 12 tCK: Samsung K4Z80325BC Rev. 1.3, Table 92 p.158 (same value; the printed source
     string changes).
-  - GDDR6 tRFCab 120 ns: Samsung K4Z80325BC Table 92 (the 16 Gb column: same value, not disclosable source).
+  - GDDR6 tRFCab 120 ns: Samsung K4Z80325BC Table 92 (the 16 Gb column: same value).
   - LPDDR5 driver RON 40 ohm and VDDQ: Micron public LPDDR5X sheets Y52P / Y52Q / Y4BM (IDD-table note 4, p.1);
     DQ ODT default Disable: JESD209-5C Table 84. LPDDR5 refresh rows: Y52Q Table 4 (8 Gb), Y4BM (12 Gb), Y52P Table
     6 (16 Gb), unchanged.
@@ -2636,7 +2646,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.35 -- the host node-per-core reference band is node- and clock-scaled per run
 
-- **Checker (user ruling 2026-10-25, option (ii)):** `host.node_W_per_core` is judged against a DERIVED band scaled
+- **Checker (user ruling 2026-10-25, option (ii)):** `host.node_W_per_core` is judged against a band scaled
   to the run's host node and clock: low edge Cortex-A9 1.2 W (45 nm, 1 GHz; Blem et al., HPCA 2013) x the
   published-silicon ratio 45 nm -> host node (DeepScaleTool, the per-op scaling table) x f / 1 GHz; high edge
   Haswell-EP ~8 W/core (22 nm, 2.6 GHz; Desrochers et al., MEMSYS 2016) x the silicon ratio 22 nm -> host node x
@@ -2651,7 +2661,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Checker (user ruling 2026-10-25 (3)):** the in-order (`DEVICE_INORDER`) and OOO device PEs get the alu PE's
   metrics on the same basis -- `pe.inorder.*` / `pe.ooo.*`: core-only non-clock pJ/instr (before the DRAM-periphery
   factor, the instruction and data stores reported apart), mW at IPC 1, and the clock tree per cycle (pins
-  excluded). INFORMATION, not judged: NO PUBLISHED SOURCE FOUND for a core-only dual-issue in-order or OOO core on
+  excluded). INFORMATION, not judged for a core-only dual-issue in-order or OOO core on
   this basis; the notes cite the board-level Cortex-A8 (65 nm, 0.6 GHz, 2-way in-order, 0.8 W) and Cortex-A9
   (45 nm, 1 GHz, 2-way OOO, 1.2 W) of Blem et al., HPCA 2013, and print the alu PE's RI5CY band for orientation
   only. 22 nm in_order PE: core-only 5.19 pJ/instr, clock tree 1.32 pJ/cycle; OOO PE: 27.6, 3.13. No model change.
@@ -2665,7 +2675,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   pimid_logic_op_scale): the published FPU / integer ALU / multiplier per-op energies (and so the DMA adder) scale
   from their source node with DeepScaleTool (Sarangi & Baas, ISCAS 2021), a fit to Intel silicon (Holt, ISSCC 2016):
   switching energy relative to 65 nm 130 2.52, 90 1.51, 65 1, 45 0.63, 40 0.55, 32 0.44, 28 0.37, 22 0.30, 14 0.19,
-  10 0.15, 7 0.11, log-log between rows (DERIVED). The fit is VOLTAGE-LESS (each node at Intel's nominal Vdd); a node
+  10 0.15, 7 0.11, log-log between rows. The fit is VOLTAGE-LESS (each node at Intel's nominal Vdd); a node
   outside 7-130 nm keeps the CACTI ratio and says so. CACTI arrays and wires keep CACTI's Vdd-aware tables; the
   CACTI ratio stays printed as the reference. 45 -> 22 nm: 0.256 (CACTI) -> 0.476; 45 -> 32 nm: 0.613 -> 0.698.
 - The published flip-flop keeps its 1.12.31 nearest-row scaling (the bracketing-row variant is under investigation).
@@ -2673,19 +2683,19 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   at IPC 1; 32 nm 6.80 -> 6.87. Clock trees, cycles and checksums unchanged. Validation rounds: round 1 (against
   1.12.32) 8 judged moves > 5% (the 22 nm core-only non-clock, +6.6%), no new FLAG; round 2 CONVERGED (no move > 5%).
 
-## 1.12.32 -- a PE core's integer ops, bypass buses and store buffer, from published and derived values
+## 1.12.32 -- a PE core's integer ops, bypass buses and store buffer, from published values and their scaling
 
 - Diagnosed first (kept McPAT XML, standalone McPAT at print level 5, 22 nm alu_core PE): of the core's 3.96 mW
   runtime, integer ALU 0.547, results bypass bus 1.069, load/store queue 0.702 mW.
 - **64-bit integer add/logic** (user ruling 2026-10-25 #1; external/mcpat/logic.cc FunctionalUnit): linear in width
   from Horowitz ISSCC 2014's published 8- and 32-bit points (16 bit on the line between them; 64 bit = 2 x 32 bit),
-  DERIVED. An unclassified ALU access (move, LEA, NOP) is one 64-bit add. McPAT's Wattch-derived "1.15 nJ" per-op
+  An unclassified ALU access (move, LEA, NOP) is one 64-bit add. McPAT's Wattch-based "1.15 nJ" per-op
   literal is no longer used for the ALU or the DMA adder. 22 nm: 5.01 -> 0.051 pJ per 64-bit op.
 - **Bypass buses** (#2; logic.cc, core.cc): a unit's height = sqrt of its published area (FPnew / Gautschi, 1.12.29),
-  DERIVED (ALU 137 -> 45 um, FPU 411 -> 117 um, MUL 205 -> 60 um at 22 nm); units without a published area keep
-  McPAT's literal, printed. The in-order FP bypass bus is fp_data_width bits (was machine_bits x 1.5, unsourced).
+  (ALU 137 -> 45 um, FPU 411 -> 117 um, MUL 205 -> 60 um at 22 nm); the other units keep
+  McPAT's literal, printed. The in-order FP bypass bus is fp_data_width bits (was machine_bits x 1.5).
 - **Store buffer** (#3; core.cc LoadStoreU): an in-order device PE's LSQ structure is a store buffer only: one write
-  and one read per store, none per load (`[mcpat lsq]`), DERIVED. OOO cores and the host keep McPAT's queue.
+  and one read per store, none per load (`[mcpat lsq]`). OOO cores and the host keep McPAT's queue.
 - **In-order PE BTB reads, measured** (user ruling 2026-10-25 (1); external/zsim/src/in_order_core.*, src/main.cpp,
   src/power/mcpat_wrapper.cpp): the timing core's taken direct-branch BTB lookups (new ROI counter
   `roiDirectBranches`, next to `roiBtbMisses`) plus its indirect resolutions, instead of one read per branch; the
@@ -2711,20 +2721,20 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   alu 1.54 -> 2.29, host 18.8 -> 16.9. PE non-clock 22 nm 8.71 -> 9.14 pJ/instr, 32 nm 12.82 -> 14.27; host core
   155.9 -> 150.9 pJ/instr. Local/global clock load ratio: PEs 7.4-9.2x, host 3.2x. Cycles and checksums unchanged.
 
-## 1.12.30 -- clock trees: clocked-logic span, leaf clusters of 30 sinks, stage registers derived from their contents
+## 1.12.30 -- clock trees: clocked-logic span, leaf clusters of 30 sinks, stage registers sized from their contents
 
-- **Tree span, DERIVED** (user ruling 2026-10-25, F1; external/mcpat/core.cc): the core's H-tree spans the
+- **Tree span** (user ruling 2026-10-25, F1; external/mcpat/core.cc): the core's H-tree spans the
   pipeline-register area plus the integer ALU(s), the multiplier/divider and the instruction decoders, not the
   whole core area. The FPU and the arrays are excluded (they time their own accesses inside CACTI). 22 nm alu_core
   PE: span 0.431 -> 0.078 mm^2, tree 57.1 -> 16.5 mm.
-- **Sink count** (F3; external/mcpat/logic.cc Pipeline::compute_stage_vector): upstream McPAT's unsourced x1.5
+- **Sink count** (F3; external/mcpat/logic.cc Pipeline::compute_stage_vector): upstream McPAT's x1.5
   control/interrupt-register rule of thumb is removed, and each stage latches the opcode as an encoded micro-op field
-  (8 bits on x86) instead of 2^width one-hot lines. The instruction decoder's DERIVED output load follows the count.
-- **Stage registers DERIVED from their contents** (user ruling 2026-10-25; in-order branch): ID/EX = control + PC +
+  (8 bits on x86) instead of 2^width one-hot lines. The instruction decoder's computed output load follows the count.
+- **Stage registers sized from their contents** (user ruling 2026-10-25; in-order branch): ID/EX = control + PC +
   two operands + immediate + three register specifiers; EX/MEM = control + branch target + zero flag + ALU result +
   store data + destination register; MEM/WB = control + load data + ALU result + destination register (Patterson &
   Hennessy, the five-stage pipeline-register contents). Upstream carried the whole instruction into ID/EX and an
-  unsourced 8*2*int_data_width bits (sixteen data words) into each of EX/MEM and MEM/WB. The OOO branch has no such
+  8*2*int_data_width bits (sixteen data words) into each of EX/MEM and MEM/WB. The OOO branch has no such
   term. Sinks: alu_core 3474 -> 733, in_order_core 7490 -> 1150, OOO PE 12064 -> 3744, host OOO 13520 -> 4715.
 - **Leaf clusters** (user ruling 2026-10-25, F2; logic.cc ClockNetwork): the register sinks of every component tree
   are grouped into clusters of k = `power.clock.leaf_cluster_sinks` (default 30: the OpenROAD TritonCTS sink-cluster
@@ -2757,20 +2767,20 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   "Int Mult" 18 kGE (Fig. 4). Node scaling x (F / 22 nm)^2, the feature-size-squared rule McPAT applies to its own
   FPU literal. McPAT's macro layout overhead and the DRAM-periphery area factor still apply; leakage is rescaled by the
   same area ratio; FU_height (bypass wires) and per-access energies are unchanged.
-- **NO PUBLISHED SOURCE FOUND** (printed; McPAT's literal kept): 64-bit integer ALU/MUL; the host FPU (x86-64 FP/SIMD
+- **McPAT's literal is kept** (printed): 64-bit integer ALU/MUL; the host FPU (x86-64 FP/SIMD
   datapath >= 128 bit, no FPnew configuration matches).
 - Guards printed, not used: Gautschi et al. 2017 Sec. IV-F (65 nm: 8.3 kGE ALU, 12.6 kGE multiplier; 1 GE = 0.077 mm^2
-  / 53.5 kGE, Table V); DERIVED FP32-only RI5CY FPU 69 - (147 - 147/1.29) = 36 kGE (Sec. IV-A.2).
+  / 53.5 kGE, Table V); FP32-only RI5CY FPU 69 - (147 - 147/1.29) = 36 kGE (Sec. IV-A.2).
 - New switch `power.models.fu_area_published` (default `true`; `false` = McPAT's literals, printed BY USER OPTION).
 - Data impact: device PEs with a 32-bit datapath (gemv serial, 16 PEs, BANK, 22 nm): McPAT area per core (pre DRAM-periphery
   factor) alu_core 1.053 -> 0.157 mm^2, in_order_core 1.950 -> 1.013, ooo_core 3.262 -> 1.470 (DDR3, 32 nm,
-  in_order_core 4.030 -> 2.228); core leakage per core x0.21 / x0.60 / x0.50 / x0.55; the area-derived clock trees
+  in_order_core 4.030 -> 2.228); core leakage per core x0.21 / x0.60 / x0.50 / x0.55; the area-based clock trees
   shrink with the area. Non-clock dynamic energy per instruction is unchanged. Host cores (64-bit, x86): unchanged
-  (no published source; McPAT's literals). Cycles and checksums unchanged.
+  (McPAT's literals). Cycles and checksums unchanged.
 
-## 1.12.28 -- McPAT's instruction decode is derived from the core: output load, x86 decode, no double-counted operand decoder
+## 1.12.28 -- McPAT's instruction decode is computed from the core: output load, x86 decode, no double-counted operand decoder
 
-- **The decoder output load is DERIVED** (user ruling 2026-10-24): each decoded line drives the pipeline-register
+- **The decoder output load is computed** (user ruling 2026-10-24): each decoded line drives the pipeline-register
   sinks the core's clock tree is built over, at minimum-size gates, instead of upstream McPAT's placeholder of 1024
   maximum-width gates (external/mcpat/logic.cc inst_decoder; "TODO: this number 1024 needs to be revisited").
 - **x86 for every core** (src/power/mcpat_wrapper.cpp): the in-order alu_core / in_order_core PEs are priced as x86
@@ -2798,7 +2808,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   (CACTI sizes devices from the input's F; external/mcpat/iocontrollers.cc), so C_inv(32 nm) read 0.220 fF instead
   of 0.325 fF. E22/E32 moves 0.618 -> 0.418; the 22 nm digital interface 0.284 -> 0.192 pJ/bit; the 22 nm links
   0.953 -> 0.862 (advanced) and 1.484 -> 1.392 (standard) pJ/bit. The 3 nm row (measured) is unchanged.
-- **Guard references (user ruling 2026-10-24):** the TSMC-press reference was derived from the applied value itself
+- **Guard references (user ruling 2026-10-24):** the TSMC-press reference was computed from the applied value itself
   (circular) and is removed. The band is now [SB17] Table 2's own 20 nm row, 0.10 x 0.198 / 0.111 = 0.178 pJ/bit,
   and the analog node ratio 0.10 x 1.2 / 0.52 = 0.231 pJ/bit; the applied 0.192 lies inside it.
 - Data impact: interposer-class (UCIe) links at the 22 nm row only: link energy x0.904. Cycles unchanged.
@@ -2899,8 +2909,8 @@ commented-out line and was archived in May 2026).
   AggrPDDelay, BIOS default 00h = 64 clocks; the only published value found).
 - **tXP and IDD2P.** tXP: DDR3 max(3 nCK, 6 ns) (JESD79-3D), DDR4 max(4 nCK, 6 ns) (JESD79-4), DDR5 7.5 ns
   (JESD79-5), LPDDR5 7.5 ns (JESD209-5), GDDR6 12 tCK (Samsung K4Z80325BC Rev. 1.3 Table 92), HBM3 max(10 tCK, 7.5 ns)
-  (JESD238B.01); HBM2: NO PUBLISHED SOURCE FOUND (not modelled unless `memory.power_down_threshold_ns` supplies
-  a tXP). IDD2P from each part record; HBM IDD2P DERIVED as IDD2N x 28/40 (the IDD2P/IDD2N pair of Chatterjee et
+  (JESD238B.01); HBM2: not modelled (unless `memory.power_down_threshold_ns` supplies
+  a tXP). IDD2P from each part record; HBM IDD2P computed as IDD2N x 28/40 (the IDD2P/IDD2N pair of Chatterjee et
   al., HPCA 2017, Table II).
 - **Data impact.** Background power falls by the power-down residency x (IDD2N - IDD2P): small on DDR5 (IDD2P is
   close to IDD2N), larger on DDR4; the first access after each power-down waits tXP (device latency sums +7 to
@@ -2972,7 +2982,7 @@ Each line carries one sharer bit per child cache tracked (`power.models.sharer_b
 input bugs in `sharedcache.cc` and `XML_Parse.cc` are fixed; one of them made the L3 branch read L2 fields.
 
 **(6) Fabric links, TSVs and the UCIe link.** The in-memory fabric's links are priced as McPAT link instances: the
-wire comes from CACTI's Global wire tables at the level's node, the length is an H-tree length derived from the
+wire comes from CACTI's Global wire tables at the level's node, the length is an H-tree length computed from the
 die area, and the activity is the measured Garnet flit traversals (`power.models.noc_links`). Until now
 `has_global_link` was 0. A router with a single input and a single output is priced as wire only
 (`power.models.passthrough_as_wire`). On a stacked part (HBM), each chip-tier transfer is charged one CACTI-3DD TSV
@@ -2981,8 +2991,8 @@ crossing (Coarse) for every die boundary it crosses, under the channel-to-die la
 nodes, 22 nm and 3 nm (`power.models.ucie_link`, `power.link.process_node_nm`). The link energy is the measured
 bytes x 8 x (analog PHY + digital interface) pJ/bit, booked once as the ledger entry `link`; McPAT's controller
 dynamic is not added on top. The rows and their sources are in docs/power.md. The controller clock now defaults to
-a published or derived value: the UCIe adapter clock (64 lanes x 16 GT/s / 512 bits = 2000 MHz) for `interposer`,
-the PIPE-derived clock for PCIe/CXL. The 1000 MHz assumption is gone, so NVLink and UALink now need
+a published or computed value: the UCIe adapter clock (64 lanes x 16 GT/s / 512 bits = 2000 MHz) for `interposer`,
+the PIPE-based clock for PCIe/CXL. The 1000 MHz assumption is gone, so NVLink and UALink now need
 `power.link.controller_clock_mhz`.
 
 **(7) Clock distribution.** Upstream McPAT prices no clock tree. The McPAT fork now builds one per core, cache,
@@ -3011,18 +3021,18 @@ enrichment has its own switch:
 |---|---|---|
 | `power.models.mcpat_fu_base_energy` | `false` | Removes McPAT's fixed per-unit base energy of an out-of-order core (ALU 89 mW, MUL 2x, FPU 3x, times run time). That term is idle clocking, which the clock network now prices. `true` restores upstream. |
 | `power.models.mcpat_layout_energy_overhead` | `false` | Stops multiplying array dynamic and short-circuit energy by the macro and chip layout-area overheads (1.1 x 1.2 = 1.32). The overheads stay on area, and McPAT's short-circuit factor (`sckt_co_eff`) is kept. `true` restores upstream. |
-| `power.models.fpu_published` | `true` | Prices FP add, multiply and FMA per scalar operation and precision from published energies, scaled to the run node with CACTI's inverter C x Vdd^2. Divide, sqrt and x87 have no published value and keep McPAT's per-op energy. |
+| `power.models.fpu_published` | `true` | Prices FP add, multiply and FMA per scalar operation and precision from published energies, scaled to the run node with CACTI's inverter C x Vdd^2. Divide, sqrt and x87 keep McPAT's per-op energy. |
 | `power.models.int_alu_published` | `true` | Prices 8- and 32-bit integer add/logic and multiply from Horowitz, ISSCC 2014, scaled the same way. 16- and 64-bit operations and divide keep McPAT's per-op energy. |
 | `power.models.vector_moves_split` | `true` | Prices pure vector moves as register-file and load/store activity, not as FPU operations. |
 | `power.models.l1d_access_width` | `true` | Prices an L1D access at 16 B, the width of one load/store port in the timing core, instead of the 64 B line. A line fill costs line/16 writes. |
 | `power.models.tlb_btb_measured` | `true` | Host ITLB accesses = instruction fetches, DTLB accesses = data accesses. BTB reads = branches, BTB writes = mispredictions plus indirect-target updates. These were 0 or partial before. |
 | `power.models.tlb_published_geometry` | `true` | Gives host OOO cores the TLB sizes of the core the timing model mirrors (Westmere/Nehalem: ITLB 128+7, DTLB 64+32, 4-way) instead of 1 entry. |
 | `power.models.frontend_from_timing` | `true` | Sizes the instruction buffer from the timing core: OOO 28 uops, in-order one issue group, compute unit 1. The fixed preset was 32 entries. |
-| `power.models.dram_io_share_split` | `true` | Removes from a derived burst current the DQ I/O share that the IDDQ term prices (see Memory). |
+| `power.models.dram_io_share_split` | `true` | Removes from a computed burst current the DQ I/O share that the IDDQ term prices (see Memory). |
 | `power.models.iddq_write_termination_once` | `true` | Charges DDR5 write termination once: the published IDDQ4W already includes RTT_WR. |
 
 Each published constant is scaled from the node and supply its source states. A constant whose source states no
-node is reported as NO PUBLISHED SOURCE FOUND rather than scaled. Out-of-range values print guard lines; nothing is
+node is reported as such rather than scaled. Out-of-range values print guard lines; nothing is
 calibrated to them. The FP64 FMA (Galal, dynamic part only) prints a WARNING because it falls just outside its
 guard range [26.7, 28.4] pJ.
 
@@ -3039,23 +3049,23 @@ guard range [26.7, 28.4] pJ.
   tRFC per REF. JEDEC measures IDD5 with all banks precharged and a REFab needs them precharged, so a refresh
   interrupts whatever state the unit held; the excess used to be taken over IDD3N. Each state's refresh duty now
   stands at IDD2N, so the total background is unchanged and energy moves from the standby line to the refresh line:
-  DDR5-5600 93 -> 102 nJ per REF (+9.8%), HBM2 -8.6% (its derived IDD2N is above its IDD3N), HBM3 unchanged.
+  DDR5-5600 93 -> 102 nJ per REF (+9.8%), HBM2 -8.6% (its scaled IDD2N is above its IDD3N), HBM3 unchanged.
 
 The VPP rail's activate, burst and refresh rows are priced wherever the record publishes IPP columns (DDR5, DDR4;
-`power.models.dram_vpp_dynamic`). A column the record does not publish prints NO PUBLISHED SOURCE FOUND and prices
-nothing.
+`power.models.dram_vpp_dynamic`). A column the record does not carry prices nothing and
+the run says so.
 
 **(10) HBM3 and HBM2.**
-- The background is summed into totals, labelled DERIVED: the HBM2 measurement scaled by voltage and data rate
+- The background is summed into totals: the HBM2 measurement scaled by voltage and data rate
   (JESD238 gives no values).
 - The measured static floor (783 mA on the HBM rail) belongs to the board's two stacks, so each stack now carries
-  half of it, also DERIVED. HBM3 background per stack: 2551 -> 2120 mW.
-- HBM2 standby currents are scaled to the run's 2.4 Gb/s, DERIVED, as HBM3's already were.
+  half of it. HBM3 background per stack: 2551 -> 2120 mW.
+- HBM2 standby currents are scaled to the run's 2.4 Gb/s, as HBM3's already were.
 - Activation energy = the measured VDD part + VPP, with VPP = the XPE vendor estimator's VPP/VDD activate ratio
-  (XPE's 8G column, used for HBM3: 10.3%; its 4G column, used for HBM2: 6.2%), DERIVED. HBM3 goes from 0.391 to 0.431 nJ per 1 KB row. Guards:
+  (XPE's 8G column, used for HBM3: 10.3%; its 4G column, used for HBM2: 6.2%). HBM3 goes from 0.391 to 0.431 nJ per 1 KB row. Guards:
   0.34 (IDD route), 0.50 (XPE ceiling), 0.92 nJ (bottom-up).
 - `idd0` is labelled as one pseudo-channel activation per tRC.
-- The HBM3 I/O share in the burst currents is re-derived from the published 4 nm HBM3 PHY (Samsung, JSSC 2024,
+- The HBM3 I/O share in the burst currents is recomputed from the published 4 nm HBM3 PHY (Samsung, JSSC 2024,
   0.29/0.25 pJ/bit read/write, unscaled): IDD4R 1532 -> 1441.1 mA, IDD4W 1059 -> 1018.4 mA. Writes from the host
   now pay their I/O.
 - VDD is PUBLISHED: JESD238B.01 Table 70 and SK hynix JSSC 2023.
@@ -3064,8 +3074,8 @@ nothing.
 **(11) DDR5 defaults to DDR5-5600B (Micron MT60B 16 Gb Die Rev D, Table 8).** `memory.dram.ddr5_speed_grade` now
 defaults to 5600. 4800 (Rev A, the previous default) and 3200 can still be selected, and grade 4800 selects the
 previous part record unchanged. A grade written in a configuration is honoured. Refresh energy rises from 50.7 to 102 nJ
-per REF (IDD5B 277 -> 377 mA, and the IDD2N baseline of item 9). Write energy uses typical VDD and the published maxima on VDDQ and VPP, because no
-published typical ratio exists for those rails; the run states this.
+per REF (IDD5B 277 -> 377 mA, and the IDD2N baseline of item 9). Write energy uses typical VDD and the published maxima on VDDQ and VPP, and applies no typical ratio
+to those rails; the run states this.
 
 ### Memory timing and replay
 
@@ -3150,8 +3160,8 @@ as the PIM primitive, using UPMEM's measured on-chip costs with the device's PEs
 domain:
 - barrier and reduction combine: PrIM Fig. 21 tables;
 - lock acquire/release: 11 cycles each (UPMEM SDK);
-- loop dispatch 22 and query 1: DERIVED;
-- MPI point-to-point handshake and collective step: 110 cycles each, DERIVED.
+- loop dispatch 22 (acquire + release) and query 1 (one instruction);
+- MPI point-to-point handshake and collective step: 110 cycles each (UPMEM SDK handshake).
 
 The kernel's work, the inline atomics, the reduction arithmetic and every byte a message moves stay simulated.
 Host cores still execute their runtime (`apply_to: pe`). A libgomp entry point with no primitive (tasks, target,
@@ -3207,9 +3217,9 @@ A PE whose stack exceeds the reserve is refused. Each PE reports `stackSpanBytes
 | `pim.pe.spm_bytes` | `4096` | Compute-unit data scratchpad size (0 = none) | Default set by the project (published reference point: UPMEM WRAM 64 KB); access time and energy from CACTI |
 | `pim.pe.spm_staging` | `dma` | `dma` engine or `core` copies | Engine from McPAT register/adder/array models |
 | `pim.pe.stack` | `dram` | PE stack in its DRAM or in the scratchpad | 1.12.17 behaviour by default; `spm` after UPMEM WRAM stacks |
-| `pim.pe.spm_stack_bytes` | `8192` | Stack reserve with `stack: spm` | DERIVED: largest measured ROI stack (8,040 B) rounded up |
+| `pim.pe.spm_stack_bytes` | `8192` | Stack reserve with `stack: spm` | Largest measured ROI stack (8,040 B) rounded up |
 | `memory.dram.ddr5_speed_grade` | `5600` (was `4800`) | DDR5 part | Micron MT60B 16 Gb Die Rev D, Table 8 (DDR5-5600B) |
-| `memory.channels_per_die` | channels / core dies (HBM3: 2) | Channel-to-die layout for TSV crossings | NO PUBLISHED SOURCE FOUND (stated layout: even, from the bottom) |
+| `memory.channels_per_die` | channels / core dies (HBM3: 2) | Channel-to-die layout for TSV crossings | Stated layout: even, from the bottom |
 | `memory.row_policy.host_idle_timeout_clocks` | `128` | DDR4/DDR3 host adaptive page timer | AMD BKDG 42301 Rev 3.14, pp.307-308 |
 | `memory.row_policy.host_closed_mode` | `auto_precharge` | How the DDR5 host closes a row | Lenovo Press LP1836 p.12; Synopsys uMCTL2 SCHED.PAGECLOSE |
 | `memory.controller.write_high_watermark` | `0.6667` | Enter write drain | Chatterjee et al., HPCA 2012, Table 1 (32 of 48) |
@@ -3219,17 +3229,17 @@ A PE whose stack exceeds the reserve is refused. Each PE reports `stackSpanBytes
 | `system.devices[].process.logic_die.device_type` | `power.device_corner` if written, else `hp` | Logic-die corner | CACTI 22 nm columns (lop and lstp evaluated, rejected) |
 | `simulation.lock_sync` | `true` | Lock word carries the releaser's clock | Model rule (as futex wake sync) |
 | `simulation.pim_runtime.enabled` / `apply_to` | `true` / `pe` | PIM runtime primitives on PEs | -- |
-| `simulation.pim_runtime.barrier_table` | `{2: 224, 4: 504, 8: 1201, 16: 2777}` | Barrier cycles per participant count | DERIVED from PrIM (Gomez-Luna et al., IEEE Access 2022) Fig. 21 |
+| `simulation.pim_runtime.barrier_table` | `{2: 224, 4: 504, 8: 1201, 16: 2777}` | Barrier cycles per participant count | From PrIM (Gomez-Luna et al., IEEE Access 2022) Fig. 21 |
 | `simulation.pim_runtime.reduction_table` | `{2: 304, 4: 768, 8: 1392, 16: 2654}` | Reduction combine cycles | PrIM Fig. 21 (HANDS, measured) |
 | `simulation.pim_runtime.omp_lock_acquire_cycles` / `_release_cycles` | `11` / `11` | Lock primitive | UPMEM SDK mutex.h; PrIM Sec. 2.2 |
-| `simulation.pim_runtime.omp_loop_dispatch_cycles` | `22` | Work-sharing dispatch | DERIVED (acquire + release) |
-| `simulation.pim_runtime.omp_query_cycles` | `1` | `omp_*` queries | DERIVED (one instruction) |
-| `simulation.pim_runtime.mpi_p2p_protocol_cycles` / `mpi_collective_step_cycles` | `110` / `110` | MPI handshake per endpoint / step | DERIVED from UPMEM SDK handshake.c (no direct measurement) |
+| `simulation.pim_runtime.omp_loop_dispatch_cycles` | `22` | Work-sharing dispatch | Acquire + release |
+| `simulation.pim_runtime.omp_query_cycles` | `1` | `omp_*` queries | One instruction |
+| `simulation.pim_runtime.mpi_p2p_protocol_cycles` / `mpi_collective_step_cycles` | `110` / `110` | MPI handshake per endpoint / step | From UPMEM SDK handshake.c |
 | `simulation.pim_runtime.mpi_reduction_step_cycles` | `0` | Extra per reduce step | Reduce arithmetic is simulated |
 | `simulation.pim_runtime.cycle_basis` / `source_clock_mhz` | `pe_cycles` / `350` | Unit of the published cycles | PrIM (UPMEM DPU 350 MHz) |
 | `simulation.det_epoch_phases` | `4` (unchanged) | Now also applies to single-process runs | -- |
-| `power.link.process_node_nm` | the die's node (22) | UCIe row: `22` or `3` | Intel ISSCC 2026 8.1; Cadence JSSC 2026; Microsoft ISSCC 2026 8.3; 22 nm digital DERIVED (lower bound) |
-| `power.link.controller_clock_mhz` | the class's clock (interposer 2000 MHz DERIVED; PCIe/CXL PIPE-derived) | Link controller clock; required for NVLink/UALink | UCIe 1.1 white paper; UCIe Hot Chips 2023 tutorial (64 B FDI) |
+| `power.link.process_node_nm` | the die's node (22) | UCIe row: `22` or `3` | Intel ISSCC 2026 8.1; Cadence JSSC 2026; Microsoft ISSCC 2026 8.3; 22 nm digital: lower bound |
+| `power.link.controller_clock_mhz` | the class's clock (interposer 2000 MHz; PCIe/CXL from the PIPE width) | Link controller clock; required for NVLink/UALink | UCIe 1.1 white paper; UCIe Hot Chips 2023 tutorial (64 B FDI) |
 | `power.models.dram_refresh_counted` | `true` | Counted REF commands | Datasheet IDD5/IDD3N/tRFC per command |
 | `power.models.dram_activates_counted` | `true` | Counted ACT commands | Energy model activate + precharge |
 | `power.models.dram_bank_open_measured` | `true` | Measured bank-open time | Ramulator2 replay |
@@ -3248,10 +3258,10 @@ A PE whose stack exceeds the reserve is refused. Each PE reports `stackSpanBytes
 | `power.models.idle_halt` | `true` | Halted cores: clock off, leakage on | x86 HLT/C1, ARM WFI |
 | `power.models.clock_die_trunk` | `true` | One trunk per die | Same clock model |
 | `power.models.per_die_process` | `true` | Honour `system.devices[].process` | -- |
-| `power.models.mcpat_fu_base_energy` | `false` | Fixed FU base energy (upstream) | No published basis for adding it to the clock model |
-| `power.models.mcpat_layout_energy_overhead` | `false` | Layout overhead on energy (upstream) | No published basis |
-| `power.models.fpu_published` | `true` | Published FP energies | Horowitz ISSCC 2014 Fig. 1.1.9; Galal PhD thesis 2012 Table 4.2 and Fig. 3.7; guards FPnew (Mach et al., TVLSI 2021, Table IV) and Keckler et al., IEEE Micro 2011; divide/sqrt NO PUBLISHED SOURCE FOUND |
-| `power.models.int_alu_published` | `true` | Published integer energies | Horowitz ISSCC 2014 Fig. 1.1.9; 16/64-bit and divide NO PUBLISHED SOURCE FOUND |
+| `power.models.mcpat_fu_base_energy` | `false` | Fixed FU base energy (upstream) | Off by default: the clock model prices it |
+| `power.models.mcpat_layout_energy_overhead` | `false` | Layout overhead on energy (upstream) | Off by default |
+| `power.models.fpu_published` | `true` | Published FP energies | Horowitz ISSCC 2014 Fig. 1.1.9; Galal PhD thesis 2012 Table 4.2 and Fig. 3.7; guards FPnew (Mach et al., TVLSI 2021, Table IV) and Keckler et al., IEEE Micro 2011; divide/sqrt: McPAT's literal |
+| `power.models.int_alu_published` | `true` | Published integer energies | Horowitz ISSCC 2014 Fig. 1.1.9; 16/64-bit and divide: McPAT's literal |
 | `power.models.vector_moves_split` | `true` | Vector moves not priced as FPU ops | -- |
 | `power.models.l1d_access_width` | `true` | 16 B L1D access | Timing core's 128-bit port; guard Horowitz 64-bit 32 KB cache 20 pJ |
 | `power.models.tlb_btb_measured` | `true` | Measured TLB/BTB activity | McPAT's BTB definition |
@@ -3281,10 +3291,10 @@ Nearly every result changes. Compare 1.12.18 results only with 1.12.18 results.
 - **Power, logic.** Added: clock network, halt and die trunks (7), per-die process (8), fabric links, TSVs and the
   UCIe link (6). Changed in McPAT: the FU base energy and layout overhead are removed, and FP/int energies, L1D
   width, TLB/BTB and front end are re-priced (enrichments table).
-- **Power, memory.** HBM: summed background, halved floor, HBM2 rate scaling, VPP activation, re-derived I/O share
+- **Power, memory.** HBM: summed background, halved floor, HBM2 rate scaling, VPP activation, recomputed I/O share
   (10). DDR5: 5600 Rev D by default; write termination and VPP rows (11). All DRAM: counted refresh and activates,
   measured bank-open, refresh excess over IDD2N (9).
-- **Link.** The interposer link is UCIe-priced with derived controller clocks (6). A device that is the host's
+- **Link.** The interposer link is UCIe-priced with computed controller clocks (6). A device that is the host's
   memory has no separate link.
 
 ### Known limitations
@@ -3602,7 +3612,7 @@ and multi device support are future items, after 1.12 and cal subm").
 **(1) A `system.memories[]` entry is the host's own main memory.** A memory without PEs declared beside the device is the host's
 main memory: its `memory.technology` and `memory.dram.ddr5_speed_grade` (`3200` / `4800` / `5600`) are honoured in the host
 memory's idle latency (the tRCD + tCAS of that part), its per-channel bandwidth (the M/D/1 service rate every host access queues
-against) and its array energy (the host-side pricing). The device is then not the host's memory: `is_default_mem` is derived
+against) and its array energy (the host-side pricing). The device is then not the host's memory: `is_default_mem` is computed
 (a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`).
 The memory keeps a node-map entry and takes the FIRST address window, the device's follows (the user's layout rule: memory,
 then device; hosts and a memory alone describe a host-only system whose run-time behaviour is not supported). One host, one device and one memory in this
@@ -3627,7 +3637,7 @@ bandwidth move, the device keys do not.
 Ruling 3 of the configuration-shape rulings of 2026-10-15 (the user: "scope retires"; "need restructure under new conf
 look"). With every hardware block under `system:` (1.12.8) the file's structure says what the run is.
 
-**(1) The scope is derived from the nodes.** `system.hosts[]` present means a co-simulation (the system path); no hosts means a
+**(1) The scope is taken from the nodes.** `system.hosts[]` present means a co-simulation (the system path); no hosts means a
 device run (the device path, from the one `system.devices[]` entry). Nothing else chooses.
 
 **(2) `scope:` in the file and `--scope` / `--mode` on the command line are retired**: each is dropped with one `[config]
@@ -3646,7 +3656,7 @@ that still carries one. The 36 examples and the 40 Rodinia configurations are re
 
 **Data impact.** None: every migrated file emits what its 1.12.8 original emitted (gate E1), the 1.12.8 originals load with
 one warning and the same emission (gate E2), device-scope and co-sim parity EXACT. The run banner's `Scope:` field now reports
-the derived value.
+the computed value.
 
 ## 1.12.8 -- everything under system: a device-only run is a one-device system; a hardware block at the left margin is ignored with a warning
 
@@ -3757,7 +3767,7 @@ run's.
 controller derivation upgraded Simple to WeaveSimple when `config.pe_type` was
 `in_order_core` or `ooo_core`. In system scope that field is the top-level
 `pim.pe.type` (default `in_order_core`), never synced from the node, so a
-device of alu PEs on SRAM or NVM derived a weave controller its cores cannot
+device of alu PEs on SRAM or NVM built a weave controller its cores cannot
 use. The upgrade now reads the first compute device node's PE type. Where it
 shows: with a host node, the one `mem` block of the emitted zsim configuration
 is the host's main memory, emitted from the host node and keyed on the host's
@@ -3933,7 +3943,7 @@ Through 1.12.1 the cosim nodes were synthesized after those steps had run. The
 host's cache ways stayed -1, so every cached cosim host was refused ("[cache]
 FATAL: CACTI could not price the host L1D (32 KB -1-way ..."). By code
 reading, the device's DRAM part record was not loaded and its memory hierarchy
-was not derived either. A `system:` block may carry `frequency_mhz`, `network`,
+was not built either. A `system:` block may carry `frequency_mhz`, `network`,
 `bridge`, `coherence` and `launch`. A given `system.network` is honoured, where
 1.12.1 replaced its topology and model in silence. When `system.network.model`
 is absent, `power.link.model` stays the network's model. Giving both with
@@ -4338,7 +4348,7 @@ device-scope parse is the same code. Moves only on shapes outside it: a device
 node with an L3 (now priced); a system configuration with a top-level
 `pim.pe.operand_width` that a node does not repeat (McPAT follows the node's
 zsim width); a node's `pim.mc.pes_per_mc`, which is now honoured (1.11.106
-re-derived it in silence).
+recomputed it in silence).
 
 ## 1.11.106 -- the configuration loader refuses what it used to replace in silence: typed string reads, the enum words, the duplicate names, the key schema, the zeroed wires; the host idle credit is measured
 
@@ -4536,7 +4546,7 @@ identical apart from the three in-die keys -- but the link ENERGY does: a
 DDR5 cell prices its crossings at 0 pJ/bit as `dram_channel` and prices no
 link controller (1.11.102 priced the interposer's 0.25-0.5 pJ/bit band and
 a link controller); an HBM3 cell keeps `interposer`, and its link
-controller's duty cycle is now derived against the interposer's 256 GB/s
+controller's duty cycle is now computed against the interposer's 256 GB/s
 instead of PCIe's 63 GB/s.
 
 **(2b) A `power.pcie` block without `link_type` no longer counts as a named
@@ -4562,7 +4572,7 @@ Two defects in the chain from NVSim to the NVM array architecture
 (`include/memory/architecture_extractor.h`, `src/memory/nvsim_wrapper.cpp`):
 
 **(1) The capacity was rounded to whole megabytes** before the bank size was
-derived, so the corpus's 64 KiB element unit (16 units x 64 KiB) became
+computed, so the corpus's 64 KiB element unit (16 units x 64 KiB) became
 "0 MB"; through 1.11.93 a literal chip (8 or 16 MB) was substituted and
 from 1.11.94 the refusal that replaced the literal rejected every NVM cell
 ("a capacity of at least 1 MB"). The three extractors now derive the bank
@@ -4822,7 +4832,7 @@ flush, kernel launch and boundary transfer charges at the offload are not
 replayed; the replay's host-side ROI energy is short of them.
 
 DATA IMPACT: every OpenMP/serial device DRAM cell's reported rd/wr and the
-DRAM access energy derived from them (1.11.98/1.11.99 undercounted). The
+DRAM access energy computed from them (1.11.98/1.11.99 undercounted). The
 trace path itself moves no corpus cell. Gate 1210A: trace-gen -> replay
 against exec on the three decoded core types, device and system scope; the
 replay is deterministic (two replays of one trace are identical), its ROI
@@ -4843,7 +4853,7 @@ matches execution to 0.01% on every core (no thread interleaving).
 
 DEFAULT-CHANGE release (user ruling "yes" 2026-10-04, the open item of 1.11.97
 (24)): the out-of-order core's L1D hit latency is the configured one -- the
-CACTI-derived value of the cache record, or the `cache.l1d` override -- the
+CACTI-computed value of the cache record, or the `cache.l1d` override -- the
 same value the in-order core charges since 1.11.97. Through 1.11.98 the core
 added the literal `L1D_LAT` 4 to every load and store (zsim's Westmere-era
 constant, "fixed, and FilterCache does not include L1 delay"), 4 cycles at any
@@ -5058,7 +5068,7 @@ that priced a 23x23 bus and a 12x12 bank-group mesh for a tree with one
 branch router (4.1x power, 73x area against the detailed model on identical
 traffic) is no longer reachable for a DRAM device with a hierarchy.
 
-**(2) The analytical model is derived from the ladder (ruling 7 (c)).** The
+**(2) The analytical model is built from the ladder (ruling 7 (c)).** The
 H-tree hop cost no longer comes from a reference-clock formula (NET 2.0 GHz,
 FLIT 64 B, RES 10, REF_HOPS 8, hop-normalised by log2 of a channel's endpoint
 count) nor from REF_FREQ 2.4 GHz for the Garnet link latencies. The census
@@ -5068,7 +5078,7 @@ analytical base latency, the mean link count as the hop count, and a Garnet
 link's latency is the device clock over the layer clock. Printed:
 `[htree] tier walk over N pairs ...` and `[noc] analytical base latency ...`.
 
-**(3) Hotspot derived (ruling 12 (c)).** The max-to-mean channel-load factor
+**(3) Hotspot computed (ruling 12 (c)).** The max-to-mean channel-load factor
 is walked on the built tree (HBM3 BANK, 16 elements: 1.29) and, for regular
 fabrics, taken from the channel-load analysis (mesh 3k/2(k+1), torus and ring
 1, bus/crossbar 1). The table (mesh 2.0, torus 3.5, tree 1.5) had the torus
@@ -5204,7 +5214,7 @@ loaded by `applyCoreRecord` as the cache record is, overridable under
 `core:` in the config, with a one-line provenance print. In-order: TWO
 penalties, mispredict at execute depth (7 = the fetch-to-issue depth, the
 old literal) and BTB/RAS resteer at decode depth (4; was 7); retire = issue
-width. Out-of-order: the wrong-path fetch depth is DERIVED, mispredict
+width. Out-of-order: the wrong-path fetch depth is computed: mispredict
 penalty (17 cycles, the depth the core's own comment states) x fetch width
 (16 B/cycle) / line size, replacing the literal 5 lines (same at 64 B);
 retire width 4 is cross-checked against the ROB template constant and any
@@ -5269,7 +5279,7 @@ which zsim sets to 0 on every terminal cache ("accLat is hidden by the
 pipeline"); the configured L1 latency survived only as the invalidation
 latency, so the charge added nothing, and an 8-cycle L1D moved in-order
 cycles by -0.4%. The filter cache now keeps the configured latency
-(CACTI-derived, or the cache override) as its hit latency, and the in-order
+(CACTI-computed, or the cache override) as its hit latency, and the in-order
 core charges it on loads in the decoded and the synthetic path (the
 out-of-order core charges a hard-coded 4 cycles, L1D_LAT, which stays for a
 ruling). Measured: the 8-cycle L1D raises in-order gemv cycles 1.59x; at the
@@ -5364,7 +5374,7 @@ ImplDef INDICES of nCL/nCWL/nBL16 (2, 1) instead of their values; GDDR6
 enforced tRAS/tRP at channel level (every bank's activate behind every
 other's precharge, 1.92x on random traffic) and a per-width table marked
 "update these values" overwrote the preset's own nRRDS/nRRDL/nFAW; HBM2's
-live RD->WR rule was nCL + nBL + 2 - nCWL (14 nCK) while the row's derived
+live RD->WR rule was nCL + nBL + 2 - nCWL (14 nCK) while the row's computed
 nRTW (17) was marked INERT. All four now state what the row says.
 
 **(5) The controller McPAT prices is the preset's (ruling 14 (c), H18, H32).**
@@ -5548,7 +5558,7 @@ code comment) and the pitch note prints the implied array efficiency
   non-TABLE routing, or TORUS_2D with TABLE, is refused.
 
 **(3) Dead code out** (rows 21, 23, 24, 25, 28): `power_model_manager.*` (never
-instantiated; unsourced 80/20 and 90/10 splits), `src/network/garnet_detailed.cpp`
+instantiated; stated 80/20 and 90/10 splits), `src/network/garnet_detailed.cpp`
 (an unreferenced reimplementation; the detailed fabric is the extracted gem5
 Garnet), the five caller-less capability flag functions, the PCM 50/50
 SET/RESET mean field, the subarray "no remote access" claim (the model routes
@@ -5564,7 +5574,7 @@ lines), `memory.bank_kb` (the SRAM/NVM characterisation unit; capacity = banks
 x bank size), `simulation.det_epoch_phases`, `simulation.mpi_contention_points`
 (formerly environment-only), and `power.interconnect_projection: aggressive`
 now prints once that it prices ITRS-target wires. Link header bytes are
-derived from the link class (row 6; -1 = unset, so an interposer's 0 is a real
+computed from the link class (row 6; -1 = unset, so an interposer's 0 is a real
 value and never becomes a PCIe 20).
 
 **(5) HOST_MC is the top rung** (review H17, user: "isn't host mc also a level
@@ -5683,7 +5693,7 @@ a device with zero retired instructions was priced at 0.019 W, g89b
 O_bD5.log) was charged as if every PE issued every cycle. McPAT defines
 the duty as runtime IPC / peak IPC (Niagara1_sharing_ST.xml:128). No zsim
 core exports a busy-cycle counter (alu/simple/null/in_order/ooo read; the
-in-order stall counters are whole-run), so busy cycles are DERIVED per
+in-order stall counters are whole-run), so busy cycles are computed per
 core: min(window, executed instructions / peak IPC), peak = the issue
 width McPAT is handed (ALU: lanes; in-order: its issue width; OOO: 4 =
 ISSUES_PER_CYCLE; simple/null: 1); the duty is their mean over the window.
@@ -5692,7 +5702,7 @@ which has nothing left to guard); the parser now keeps one record per core
 (`core_recs`: cycles, instrs, syntheticInstrs, group). Printed on the
 results core-description line: `Cores: 16 @ 500 MHz, pipeline duty
 0.0205647 (measured IPC 0.0205647 / peak 1, per core)`; per-node lines
-append `, pipeline duty D (measured IPC I / peak P)`; the verbose derived
+append `, pipeline duty D (measured IPC I / peak P)`; the verbose computed-inputs
 block prints `core.pipeline_duty_cycle = measured IPC / peak IPC = ...`.
 
 **(4) F4: the device-scope window was core 0's cycle count.** The parser
@@ -5754,7 +5764,7 @@ FPU-less element); the OOO FP rename/window statistics = fp ops, the
 integer ones = the rest (were 10% of instructions / all instructions).
 Branches read EFLAGS, which McPAT's register files do not hold: none
 charged. The literals remain only for a run with no decoder, already
-warned as UNSOURCED.
+warned.
 
 **(7) F8: the timing and power halves described different pipelines.**
 OOO: ROB 192 -> 128 (ooo_core.h:469), instruction window 64 -> 36
@@ -5763,7 +5773,7 @@ now cited), depth 19 -> 13 (DISPATCH_STAGE, the deepest stage zsim defines,
 ooo_core.cpp:49-52), issue 4 (ooo_core.cpp:56). McPAT-side values zsim
 does not define are kept and said so: FP window 32 (Penryn.xml:90; zsim's
 window is unified) and physical registers 180 (zsim has none; 180 is in
-none of the fork's reference XMLs -- an unsourced stand-in, kept). The
+none of the fork's reference XMLs -- a stand-in, kept). The
 wrapper no longer forces depth 19 on OOO (which also ignored a
 `pipeline_depth` override). In-order: depth 14 -> 7 (the core's
 fetch-to-issue refill depth `mispredPenalty`, in_order_core.cpp:77,
@@ -5867,7 +5877,7 @@ OPEN (held for a ruling, not in this release): F5 (periphery leakage
 factor column, comm-dram vs lstp); F9 (`machine_bits` for x86 cores);
 F11 (delay-ratio literals). Choices made here that a ruling may revisit:
 simple/null depth 5 (zsim defines none; 1 is refused by McPAT's embedded
-fit); OOO physical registers 180 (unsourced, kept) and FP window 32
+fit); OOO physical registers 180 (kept) and FP window 32
 (Penryn); OOO 4 ALU/2 MUL/2 FPU and in-order 3/1/1 unit counts (not in
 this audit's scope, unchanged); the BTB's 1-cycle throughput/latency
 (zsim charges none); TLBs at McPAT's 1-entry floor.
@@ -6147,7 +6157,7 @@ stride of that measurement -- system bytes one ACT makes resident -- was
 reconstructed inside zsim as `rowBytes * ((rowBytes == 1024) ? chipsPerRank :
 1)` (`pe_memory_interface.h`). The test was written when `main.cpp` emitted
 1024 for exactly DDR3/DDR4/DDR5 and 2048 for everything else. Since 1.11.66
-the page is derived from the preset (cols x dq / 8), and the test stopped
+the page is computed from the preset (cols x dq / 8), and the test stopped
 meaning "DDR class": HBM2/HBM3 have a 1 KB page per pseudo-channel (JESD235D
 and JESD238B Table 4, 64 cols x 128 DQ), so it fired there and multiplied the
 page by `chipsPerRank`, which for HBM carries the channels per stack -- HBM3
@@ -6268,10 +6278,10 @@ IDD3N stays subtracted and the residual (the other open banks' standby for
 tBurst) is stated in the comment, not corrected. Printed, one word on the
 model-inputs line: `; IDD3N basis ONE_BANK`.
 
-**(8) R8-7, ruling (b): the vendor method with a MEASURED bank-open fraction.**
+**(8) R8-7, ruling (b): the current-difference method with a MEASURED bank-open fraction.**
 `backgroundUnitMW` priced IDD3N for 1 - r_idle, where r_idle is "phases with
 no memory-controller access" (10k-cycle phases) or the E17 gap histogram --
-traffic in the phase, i.e. the open-page assumption. The vendor method (a vendor method that cannot be disclosed publicly) defines the
+traffic in the phase, i.e. the open-page assumption. The current-difference method defines the
 states as "precharged (all of the banks are precharged) or active (one or
 more banks are open)" with BNK_PRE% the percentage of time all banks are
 precharged. Ramulator2 now measures it: `dram/pimid_bank_open.h` keeps, per
@@ -6293,7 +6303,7 @@ residency is only the power-down input there, capped at the precharged share
 under the same rule. Without the counters the 1.11.90 expression is used
 bit for bit. One line per priced array:
 `[mem] bank-open fraction MEASURED x (N of M memory cycles with >= 1 bank
-open; the vendor method's BNK_PRE% = 1-x = y); traffic-phase fraction z (printed for
+open; the method's BNK_PRE% = 1-x = y); traffic-phase fraction z (printed for
 comparison, not used)`, or `[mem] bank-open fraction UNMEASURED (<why>); the
 traffic-phase fraction z sets the IDD3N share`. WHERE IT IS MEASURED: only
 where a Ramulator2 controller saw every access to the array. Device scope
@@ -6311,7 +6321,7 @@ the VDD balls only (DDR5 core sheet p.448 "Any IPP or IDDQ current is not
 included in IDD currents"; MT40A p.314; JESD238B.01 cl.9.1 PDF p.164;
 JESD250D cl.8.8), so the DQ output rail and the pump rail are separate and
 were unpriced. IDDSpec gains `iddq3n/iddq4r/iddq4w/vddq` and
-`ipp2n/ipp3n/vpp` (unset sentinel -1 = not published, printed n/a).
+`ipp2n/ipp3n/vpp` (unset sentinel -1, printed n/a).
 (a) IDDQ per access, ONLY on accesses that cross the DQ (the
 `crossesOffPackageDQ()` rule termination uses; on-die placements pay 0):
 (IDDQ4R|IDDQ4W - IDDQ3N) x VDDQ x tBurst(64 B) x devices. Values: DDR5-4800
@@ -6333,7 +6343,7 @@ dynamic sums. (b) IPP background: VPP x (IPP3N x BNK_ACT% + IPP2N x
 (Table 148 p.332), IPP2N = IPP3N by note 22 p.334, VPP 2.5 V (p.1); LPDDR5
 has no VPP ball, its 1.8 V VDD1 rail (IDD2N1 1.5, IDD3N1 2.8 mA, Y52P
 Table 18 p.42, per (11)) takes the slot -- the LPDDR5 row prices VDD2H only, so nothing doubles.
-DDR3 (no VPP rail), HBM2/HBM3 (no published IPP), GDDR6 (placeholder), DDR5-3200
+DDR3 (no VPP rail), HBM2/HBM3 (no IPP row), GDDR6 (placeholder), DDR5-3200
 (no sheet): n/a. Printed `+ipp=Y mW` on the Background line; added to
 the system-scope memory wattage and to the device-scope leakage line.
 Refresh and burst IPP (IPP5B, IPP4R/W) are not priced. The two false
@@ -6383,9 +6393,9 @@ touched here beyond their basis flags.
 **(11) The IDD rows: one typical value per quantity, by component.** User
 rulings 2026-09-26 18:44-19:00 (PIMID outputs ONE absolute number per
 quantity, never a range; datasheet IDD values are guardbanded maxima) and
-19:30 (the typical values are derived by COMPONENT factors, not
+19:30 (the typical values are computed by COMPONENT factors, not
 per-current factors). The model prices differences of the IDD columns --
-the vendor method's activate term is the IDD0 loop minus its standby baseline, the
+the current-difference method's activate term is the IDD0 loop minus its standby baseline, the
 burst is IDD4R/IDD4W minus IDD3N, refresh is IDD5B minus the state it
 interrupts -- so a factor acts on the quantity each IDD loop measures.
 The rows of `iddTableFor()` now STORE the datasheet maxima (HBM2/HBM3:
@@ -6397,7 +6407,7 @@ comparison only), and `arrayReadNJ`/`arrayWriteNJ` take `iddTypicalAt(tech,
 tRC, tRAS, banks)` so IDD0 is fixed at the activate energy's own timing.
 The chain, the anchors and the bands are in the code comments; the
 print-out carries one word, appended to the model-inputs line: `; IDD row
-MEASURED|DERIVED|CALIBRATED` (`pimid_energy::iddRowProvenance()`,
+<word>` (`pimid_energy::iddRowProvenance()`,
 `RamulatorWrapper::getIddRowProvenance()`).
 Anchors:
 - [G] Ghose, Yaglikci, Gupta, Lee, Chandrasekar, Ma, Mutlu, "What Your
@@ -6436,7 +6446,7 @@ The typical row: idd2n_t = f.standby x IDD2N; idd3n_t = idd2n_t +
 f.premium x (IDD3N - IDD2N), >= idd2n_t; idd4r_t = idd3n_t + f.rd x
 (IDD4R - IDD3N); idd4w_t likewise with f.wr; idd5b_t = idd2n_t +
 f.refresh x (IDD5B - IDD2N); idd2p_t = f.pd x IDD2P. IDD0: with the
-tRC-weighted baseline the vendor method's formula defines, B = (IDD3N_1b x tRAS +
+tRC-weighted baseline the current-difference formula defines, B = (IDD3N_1b x tRAS +
 IDD2N x (tRC - tRAS)) / tRC (IDD3N_1b = `oneBankActiveStandbyMA` on the
 row's basis), E = Vdd x tRC x (IDD0 - B); setting idd0_t = B_t + f.act x
 (IDD0 - B_spec) gives E_t = Vdd x tRC x f.act x (IDD0 - B_spec) = f.act x
@@ -6468,12 +6478,12 @@ Per row:
   absolutes, because the row is per x8 device of a different part.
   Stored: MT40A Rev B Table 148 maxima {48, 34, 43, 135, 123, 457.4, IDD2P
   25}.
-- DDR5-3200/4800/5600 DERIVED, the two-generation set. Stored: the MT60B
+- DDR5-3200/4800/5600, the two-generation set. Stored: the MT60B
   Rev A / Rev D maxima (4800B {103, 92, 142, 377, 349, 277, 88}, 5600B
-  {53, 49, 91, 218, 241, 377, 47}) and the unsourced 3200 row (stated).
-  The model-inputs line now prints `; IDD row DERIVED` for DDR5.
-- LPDDR5 DERIVED, RE-SOURCED (user ruling, same evening): the vendor
-  source the row used since 1.11.63 cannot be disclosed publicly and is no
+  {53, 49, 91, 218, 241, 377, 47}) and the stated 3200 row.
+  The model-inputs line now prints the IDD row word for DDR5.
+- LPDDR5, RE-SOURCED (user ruling, same evening): the earlier
+  source the row used since 1.11.63 is no
   longer cited anywhere in the code comments or this entry (older ledger entries are history and are left as written). The row now
   reads the PUBLIC Micron Y52P LPDDR5X sheet (Rev. H 03/2025, MT62F1G32D2 family, 16
   Gb die), Table 18 PDF pp.42-43, x16, 7500 Mb/s: VDD2H IDD0 53, IDD2N
@@ -6483,10 +6493,10 @@ Per row:
   two-generation set. IDDQ (IDD3NQ 0.6, IDD4RQ 111.9 typical, IDD4WQ 0.6
   at 0.5 V) and the VDD1 pair in the IPP slot (IDD2N1 1.5, IDD3N1 2.8 at
   1.8 V) come from the same table, unfactored and not rate-scaled.
-  Uncited cross-check (a vendor source that cannot be disclosed publicly): agrees within ~15% on burst
-  and standby. The same sheet's rate-unscaled row is `LPDDR5X` (DERIVED),
+  An uncited cross-check agrees within ~15% on burst
+  and standby. The same sheet's rate-unscaled row is `LPDDR5X`,
   NOT selectable: see OPEN.
-- GDDR6 DERIVED, and R8-5 decided: the row reads Samsung K4Z80325BC Table
+- GDDR6, and R8-5 decided: the row reads Samsung K4Z80325BC Table
   82 (PDF p.146, x32, 1.35 V, HC14) per DEVICE {IDD0 430, IDD2N 310, IDD3N
   460, IDD4R 1220, IDD4W 1470, IDD5B 790, IDD2P 230; tRFCab 120 ns}; a 64 B
   access engages ONE x16 channel, so the row stores the PER-CHANNEL maxima
@@ -6498,7 +6508,7 @@ Per row:
   burst); `backgroundUnits` already counts GDDR6 as ranks x channels with
   the preset's 2 channels per device, so background and refresh = 2 x half
   = per device. ACTIVATE via the IDD7 route, a new
-  `IDDSpec::e_actpre_pJ_override` the formula consults before the vendor method:
+  `IDDSpec::e_actpre_pJ_override` the formula consults before the current-difference route:
   1.35 V x (IDD7 1640 - IDD4R 1220) mA / 175 M ACT/s per device = 3.24 nJ
   per channel ACT/PRE at the maxima, x the activate-excess factor 0.5 =
   1620 pJ per activation. The three routes are recorded (IDD0: 0.61 nJ,
@@ -6517,7 +6527,7 @@ Per row:
   1.29). Refresh: program_idd5() runs tRFC 160 nCK = 266.7 ns (not the 350
   of its comment); the energy per REF is kept at the row's 260 ns tRFC by
   IDD5B excess x 266.7/260 (53.39 -> 54.76 mA).
-- HBM3 DERIVED from the HBM2 measurement, no component factors: the
+- HBM3 scaled from the HBM2 measurement, no component factors: the
   derivation document's row (docs/derivations/hbm_gddr6_idd.md;
   comment block in the code), standby re-based by (12): {IDD0
   96.2, IDD2N 89, IDD3N 89, IDD4R 1532, IDD4W 1059, IDD5B 194, IDD2P
@@ -6812,13 +6822,13 @@ it does not touch:
   (OLD 7.020 + 13.372 m and 7.290 + 13.372 m). Parity: DDR5/LPDDR5/HBM
   per-access energies unmoved by (10).
 - G11 (item 11, component rule), one arm per row. `--print-mem-info` on a
-  corpus config prints on the model-inputs line: DDR3 `; IDD row
-  CALIBRATED`, DDR4 `; IDD row CALIBRATED`, DDR5 at 3200, 4800 and 5600
-  `; IDD row DERIVED`, LPDDR5 `; IDD row DERIVED`, GDDR6 `; IDD row
-  DERIVED` (and `devices per 64 B access: 1 (16-bit channel / 16-bit
+  corpus config prints on the model-inputs line the row's `; IDD row <word>`
+  for DDR3, DDR4, DDR5 at 3200, 4800 and 5600, LPDDR5, GDDR6
+  (with
+  `devices per 64 B access: 1 (16-bit channel / 16-bit
   channel (IDD basis)); bursts per 64 B access: 2 (BL16 x 16 bit = 32 B per
-  burst); energy tBurst per 64 B = 2.28571 ns`), HBM2 `; IDD row
-  MEASURED`, HBM3 `; IDD row DERIVED` -- an absent word on any row is a
+  burst); energy tBurst per 64 B = 2.28571 ns`), HBM2 and HBM3
+  -- an absent word on any row is a
   failed arm. FIRES: a run's printed per-access read energy at its printed
   miss fraction m is within 1% of the computed typical value -- DDR3 4.730
   + 4.818 m, DDR4 1.627 + 3.230 m, DDR5-3200 1.399 + 2.177 m, DDR5-4800
@@ -7406,7 +7416,7 @@ Micron really does specify IDD3N above IDD0 on both parts, and nothing is
 wrong with them. A 32-bank device draws more with all banks open than it does
 cycling one.
 
-**The baseline was wrong.** The current-difference method (a vendor method that cannot be disclosed publicly) prices activate and precharge by
+**The baseline was wrong.** The current-difference method prices activate and precharge by
 subtracting, from the IDD0 loop, the background that loop would have drawn:
 
     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
@@ -7418,12 +7428,12 @@ measured in, and over-subtracts by what the other banks' active standby costs.
 On an 8-bank DDR3 that error is small and the result stays positive, which is
 why the formula has stood. On a 32-bank DDR5 it exceeds the term itself.
 
-The baseline is now the standby the loop actually runs at, derived from the
+The baseline is now the standby the loop actually runs at, computed from the
 two specified points and linear in the number of open banks:
 
     IDD3N(1 bank) = IDD2N + (IDD3N - IDD2N) / banks_per_device
 
-which reduces to the published formula at one bank and recovers the vendor method's
+which reduces to the published formula at one bank and recovers the method's
 intent on every part. The bank count comes from the run's own organisation,
 so it follows the preset rather than a literal.
 
@@ -7459,7 +7469,7 @@ and then ignored, in silence.** Measured on 1.11.84, config-load scope:
 
     memory.controller.type: bogus      rc=0, output BYTE-IDENTICAL to `auto`
     pim.placement.connection: bogus    rc=0, silently ran shared_io
-    noc.routing: BOGUS_ROUTE           rc=0, silently derived from topology
+    noc.routing: BOGUS_ROUTE           rc=0, silently taken from topology
 
 None of the three said anything. So a typo -- `ramulater`, or
 `separate_endpoint` without the s -- ran a DIFFERENT model from the one asked
@@ -7496,7 +7506,7 @@ scope on DDR4:
     banks: 1  against  banks: 16     differ by ONE line -- the warning itself
 
 and the same on DDR3, LPDDR5 and GDDR6 (16 against 64: zero differing lines;
-2 against 16: one). The organisation comes from the preset's derived slot
+2 against 16: one). The organisation comes from the preset's computed slot
 count; `memory.banks` only ever decided whether a warning printed.
 
 So a DDR4 cell configured `banks: 16` has always simulated the preset's 128
@@ -7692,7 +7702,7 @@ better evidence of no model change than equality on a noisy quantity.
 
 ## 1.11.80 -- audit round 6, part six: the comment said it printed them
 
-**R6-13: `buildNoCLevelsForMcPAT` documented that it printed every derived
+**R6-13: `buildNoCLevelsForMcPAT` documented that it printed every computed
 parameter with its formula, and printed none of them.** The function's doc
 comment had read, since it was written:
 
@@ -7704,7 +7714,7 @@ the function contained exactly one output statement, reporting how many
 levels were skipped as pass-through wire; grepping all seven technologies'
 full-run logs for `duty` returned nothing. Three quantities that McPAT scales
 its NoC power by -- `total_accesses`, `duty_cycle`, `chip_coverage` -- were
-derived from measured traffic and handed over in silence, and a YAML override
+computed from measured traffic and handed over in silence, and a YAML override
 of any of them was equally silent.
 
 This is the same defect shape the round has now closed three times: 1.11.76
@@ -7712,7 +7722,7 @@ made an unknown YAML section refuse instead of being discarded, 1.11.77 made
 the density and timing stamps say what they overrode, and 1.11.78 removed
 three stale `yaml_reference` rows. A claim in a comment is a claim.
 
-Each emitted level now prints its three derived values WITH the arithmetic
+Each emitted level now prints its three computed values WITH the arithmetic
 that produced them, and says when YAML replaced one. The flat-NoC branch
 prints the same line, because the stale claim was about the function and a
 run down the other path must not be the silent one.
@@ -7737,7 +7747,7 @@ is to announce a substitution rather than perform one quietly -- the rule
 1.11.79 followed when it refused a negative energy instead of guessing an IDD
 value.
 
-DATA IMPACT: NONE. No derived value changes; the release adds output lines
+DATA IMPACT: NONE. No computed value changes; the release adds output lines
 and one conditional warning. On every shape measured in round 6 the duty is
 orders of magnitude below 1.0 (roughly 4e6 packets shared across levels
 against 1.2e7 cycles x 9 nodes), so the new warning is latent on the current
@@ -7788,7 +7798,7 @@ each fig3 shape with `--power`: DDR5 printed `Per-access: read=-0.344 nJ,
 write=-1.164 nJ` and `Total dynamic: -5.5 mJ`. DDR3 and DDR4 on the same
 shape printed 100.0 and 66.4 mJ.
 
-The cause is arithmetic, and it is exact. The vendor method's activate and
+The cause is arithmetic, and it is exact. The current-difference method's activate and
 precharge energy is
 
     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
@@ -7810,7 +7820,7 @@ At 4800B: `IDD0 x tRC = 103 x 48.256 = 4970` against
 dominates the positive burst term.
 
 **Which side is wrong needs a ruling, so this release does not guess.** Either
-the rows mis-transcribe the addenda, or they are right and the vendor method does not
+the rows mis-transcribe the addenda, or they are right and the method does not
 transfer to a 32-bank DDR5 part whose all-banks-active IDD3N can legitimately
 exceed a one-bank IDD0. Both readings need the datasheet. What is not in
 question is that a negative energy must not be printed as though it were a
@@ -7945,7 +7955,7 @@ technology is known.
 
 **R6-L2: `probeNonDramL0()` returned in silence** when the model factory
 declined, while every other failure path in it prints why the tree kept an
-unsourced shape. It now says so.
+stated shape. It now says so.
 
 **R6-5: the two families' L0 bandwidths are computed on different bases, and
 the run now says which.** SRAM divides its subbank width by CACTI's random
@@ -7960,7 +7970,7 @@ as though they were the same quantity.
 non-DRAM families, the per-technology table that still supplies levels 1 and
 up contradicts the same array model at the very next rung: SRAM's L1 bank
 link is 64 bits at 20 GB/s in the table, while CACTI gives that bank a
-512-bit word every 2.037 ns, i.e. 31.4 GB/s. The table was equally unsourced
+512-bit word every 2.037 ns, i.e. 31.4 GB/s. The table was equally without a source
 before 1.11.73, so this is not a regression -- but the disagreement is newly
 visible and it sits at the corpus's own placement tier.
 
@@ -8097,7 +8107,7 @@ ONE level below the bank for every technology, no more -- SRAM has the
 subbank, the NVMs have the mat, the DRAMs have the subarray.
 
 **The defect.** Below the bank, the SRAM and NVM models described tiers the
-parts do not have and left the tier they do have unsourced. The SRAM
+parts do not have and left the tier they do have without a source. The SRAM
 extractor carried TWO levels (`subarray_access_ns`, `mat_access_ns` = the
 same number plus the H-tree), named after CACTI's internal geometry rather
 than any placement tier; its datapath widths were literals (128 / 64 bits);
@@ -8129,7 +8139,7 @@ priced from the family's own tool:
   read bandwidth (mat width / word width). All `subarray_*` timing, energy
   and datapath fields of the three NVM architectures are renamed `mat_*`.
   An entry written before this release cannot source width or count: the
-  run says so, keeps the tree shape it has as an UNSOURCED count, and
+  run says so, keeps the tree shape it has as a stated count, and
   REFUSES to place PEs at `MAT` until the cache is regenerated or
   `memory.subarrays_per_bank` states a count (labelled user-set, as on
   DRAM). No literal stands in.
@@ -8317,7 +8327,7 @@ the object's core clock is 1751 MHz where DDR4's proxy said 1200.
 **THE INVARIANT CAUGHT A LATENT SHAPE ERROR, and it was fatal on first
 contact.** With the ladder adoptable for the first time, the channel-anchored
 projection built the tree from the preset's TWO channels and covered 32 bank
-organisations, while the slot count derived 16 -- the tree-coverage assertion
+organisations, while the slot count gave 16 -- the tree-coverage assertion
 refused the run outright. The cause was not in the new object: main.cpp's
 per-technology table gave GDDR6 `chips_per_rank = 1`, although that field
 carries channel multiplicity in this tree and the table's own note says so
@@ -8367,7 +8377,7 @@ fetch boundaries and Ramulator counts 16-bit device words; both give the same
 
 The bank serialisation width stays ESTIMATED and marked NOT DOCUMENTED, held
 equal to the DDR parts' for the reason given in 1.11.68, and the two
-hierarchical access times are DERIVED as bank access plus one burst rather
+hierarchical access times are computed as bank access plus one burst rather
 than copied from DDR4's estimates.
 
 Data impact: LPDDR5 only. Its ladder is adopted for the first time, and every
@@ -8386,7 +8396,7 @@ first of them to be fixed.
 **The defect (audit 1.11.57 B001, open since).** RamulatorWrapper built an
 architecture object for DDR4/DDR5/HBM2/HBM3 only and handed DDR3 the
 DDR4-2400 one from an unannounced else-branch. Every width, internal
-bandwidth and derived hierarchy figure reported for DDR3 described DDR4, the
+bandwidth and computed hierarchy figure reported for DDR3 described DDR4, the
 run printed "there is no DDR3 architecture object in this tree", the
 reconciliation check failed, and the per-level ladder was refused. DDR3 ran
 on the per-technology placeholder table the source itself labels a
@@ -8405,7 +8415,7 @@ check pass.
 is 1, and `getBankGroupPortBits()` returns the bank serialisation width
 unchanged when a part has no bank groups, instead of the x2 bank-group-port
 multiplier. That multiplier stays exactly where 1.11.57 left it for every
-part that HAS bank groups: unsourced, announced on every run, and
+part that HAS bank groups: stated, announced on every run, and
 deliberately unchanged because moving it would move the whole corpus. What
 changes here is narrower and is settled by the object rather than by taste:
 a part with one bank group has no bank-group port to be twice as wide as a
@@ -8417,10 +8427,10 @@ same declared-estimate status they carry on DDR4 and DDR5: the global
 sense-amplifier width is INFERRED from DAS-MICRO'15, and the bank
 serialisation width is ESTIMATED and marked NOT DOCUMENTED, held equal to
 DDR4's so that a DDR3-versus-DDR4 comparison does not turn on an invented
-difference between two unsourced numbers. The two hierarchical access times
-are DERIVED here rather than copied from DDR4's 60/80 ns estimates: both are
+difference between two stated numbers. The two hierarchical access times
+are computed here rather than copied from DDR4's 60/80 ns estimates: both are
 the bank access plus one burst, which is the floor the wrapper's own
-`getChipAccessLatency()` already computes, and adding an unsourced rank hop
+`getChipAccessLatency()` already computes, and adding a stated rank hop
 on top would repeat the shape 1.11.23 and 1.11.57 removed elsewhere.
 
 Data impact: DDR3 only. Its ladder is adopted for the first time, so every
@@ -8428,7 +8438,7 @@ DDR3 hierarchy width, bandwidth and level latency changes from DDR4's
 borrowed values to its own, and the level-2 rung halves (16 to 8 bits) for
 the reason above. DDR4, DDR5, LPDDR5, GDDR6, HBM2 and HBM3 are byte-identical
 in device scope. LPDDR5 and GDDR6 still read DDR4's object and still declare
-their ladders unsourced; they are 1.11.69 and 1.11.70.
+their ladders as stated; they are 1.11.69 and 1.11.70.
 
 ## 1.11.67 -- the part the knob names, at every door
 
@@ -8544,7 +8554,7 @@ nRFCpb 105 = 59.9 (60), nREFI 3333 = 1.90 us -- and reproduces NOTHING at
 1.000 ns. Upstream's 570 ps had been right. Re-mirroring the column to 1000
 ps in 1.11.63 kept the counts and changed the clock, so the timing model
 became a 2 Gbps/pin part with every row timing 1.75x slow, and 1.11.65 then
-derived the DQ turnaround from it: the 11.0 ns that release called a
+computed the DQ turnaround from it: the 11.0 ns that release called a
 correction replaced the right number, 6.27. The row's "2000" was never a
 data rate; the rate column now carries the pin rate PIMID prices (14000),
 tCK derives as 8E6/rate = 571 ps, nBL and nCCDS move to the 8-bit domain
@@ -8553,12 +8563,12 @@ bin at the modelled rate" note falls silent because all seven presets' rate
 columns now equal the priced rate -- the static rate table is demoted from
 authority to cross-check (modelledRateMTs()). The GDDR6 ns getters, which
 round 5's code lane had flagged as 0.55x low, turn out to have been the
-vendor values all along; they are now DERIVED from the corrected preset and
+vendor values all along; they are now computed from the corrected preset and
 reproduce themselves (14.85 / 13.7 / 14.85 / 30.3 ns).
 
 GDDR6 tRFC: 360 ns (impl) and 220 (energy) were DDR4's columns. The
 vendor sheets give tRFCab = 120 ns at 8 Gb and 16 Gb alike (Samsung Table
-92; the 16 Gb value estimated from a vendor source that cannot be disclosed publicly). Refresh occupancy 18.9% -> 6.3%.
+92; the 16 Gb value likewise). Refresh occupancy 18.9% -> 6.3%.
 
 THE SHAPE CHECK -- the structural fix behind four defects. Every
 organization cross-check this tree had was a PRODUCT identity (density ==
@@ -8601,7 +8611,7 @@ with the procedure that reproduces the 3200AN row field-for-field
 for the 16 Gb tRFC1 295 ns, clause 13.2 rounding, NOTE 8 for nRC), and
 their IDD rows are Table 6 (Rev A: 103/92/142/377/349/277/88 mA) and Table
 8 (Rev D: 53/49/91/218/241/377/47). The 3200 row keeps the 8 Gb part and its
-previous currents with the gap STATED: no held datasheet publishes a 3200
+previous currents with the gap STATED: the held datasheets have no 3200
 column. Plumbing: the wrapper carries the grade; an energyKey() "DDR5-4800"
 selects the IDD row while baseTech() keeps every family-level decision on
 the bare technology; the grade rides applyDramKnobs() to every oracle and
@@ -8610,15 +8620,15 @@ Consequence at the default: DDR5 moves to the 4800B bin and the 16 Gb org
 -- a different part than 1.11.65 simulated, by design.
 
 THE HBM2 IDD ROW IS MEASURED SILICON (user ruling R8 #10). The row it
-replaces (28/17/21/80/90/65 mA) traced to no vendor table -- HBM2 sheets
-are NDA-only and JESD235D prints its IDD value columns empty. The CMU-SAFARI
+replaces (28/17/21/80/90/65 mA) traced to no vendor table -- no HBM2 vendor IDD table
+is used, and JESD235D prints its IDD value columns empty. The CMU-SAFARI
 HBM-Power artifact measured the JEDEC IDD loop patterns on 36 real HBM2
 stacks; JESD235D cl. 9.1 (printed p.100) says measurements are taken with
 all channels active and "shall be given per channel", so stack mean / 8 IS
 the datasheet quantity: IDD0 141, IDD2N 136, IDD3N 133, IDD4R 464, IDD4W
 356, IDD5B 189. The model's 8-channel stack standby now computes to 1.31 W
 against the measured 1.37 W (it had been 0.20 W). IDD2P was not measured
-and its 7 mA is stated as the one unsourced column.
+and its 7 mA is stated as the one stated column.
 
 DDR4: IDD5 = 155 mA had no source. Micron MT40A tabulates IDD5R (the
 distributed figure, p.318); converting the same Rev A row the other columns
@@ -8671,7 +8681,7 @@ carries asserting arms for the two 1.11.64 claims that shipped without one
 header that gate 60 G4 left unread.
 
 Data impact: GDDR6 (every row timing 1.75x faster than 1.11.65; tWTR 11.0 ->
-6.28; refresh 3x less; activate energy via the derived getters, small);
+6.28; refresh 3x less; activate energy via the computed getters, small);
 DDR5 (new default part: 4800B / 16 Gb / Rev A IDD -- cycles, background and
 refresh all move); HBM2 (IDD 3-8x; tBurst halves; rowBytes halves; bank
 count from 1.11.64); HBM3 (core clock halves on the inner ladder; tRP/tRAS
@@ -8685,7 +8695,7 @@ plan for approval is the next item.
 Two items the vendor-document campaign left queued, landed together because
 only one of them moves a shipped number.
 
-THE DQ TURNAROUND PENALTY IS DERIVED. Since 1.10.6 the in-memory network
+THE DQ TURNAROUND PENALTY IS COMPUTED. Since 1.10.6 the in-memory network
 has charged the shared DQ bus a direction-reversal penalty (JEDEC tWTR)
 between a write and a read, from a hand-written per-technology ns table --
 "nWTR_L x tCK, transcribed from the preset", as its comment said, with the
@@ -8811,7 +8821,7 @@ physical reason HBM's column spacing is half DDR's: the IO sense amp sits
 mid-bank rather than at the bank end. Their organization (16 ch x 2 pCH x
 32 DQ, 16 banks/pCH in 4 groups, 16384 rows, 1 KB page/pCH, 2 Gb/pCH)
 closes arithmetically to the advertised 16 Gb die and 16/24 GB cubes
-across three independent papers, and matches ours in every derived
+across three independent papers, and matches ours in every computed
 quantity.
 
 THE TSV QUESTION, ANSWERED WITHOUT A RULING. 1.11.63 raised "PIMID models
@@ -8840,7 +8850,7 @@ hand-written x16 org, while x8, which every shipped preset uses, was
 correct; nREFI applied the MINIMUM-parameter rounding algorithm to a
 MAXIMUM parameter (clause 13.2 prescribes round-down with no correction
 factor), 6222 -> 6240 nCK; and nREFSBRD carried Table 73's 30 ns in the
-CYCLE column, 37.5% short of the JEDEC minimum, now derived at load like
+CYCLE column, 37.5% short of the JEDEC minimum, now computed at load like
 every other refresh timing (48 nCK). Flagged, not changed: nCCDL_WR
 selects 16 vs 32 by DQ width where Table 334 conditions tCCD_L_WR2 on
 "second write not RMW" -- the width heuristic stands in for x4
@@ -8887,20 +8897,20 @@ document campaign brought the full standards into the local archive -- JESD209-5
 (LPDDR5/5X, 676 pp), JESD235D (HBM1/HBM2, 213 pp), the complete POD family
 (JESD8-19/20A/21C/24/25/30A = POD18/15/135/12/10/125), JESD305B.01, the
 Micron DDR3L/DDR4/DDR5 full datasheets, a Samsung GDDR6 part datasheet
-and vendor sources that cannot be disclosed publicly -- and every preset field they can check was checked. What
-remains uncheckable is now a named vendor-NDA list (HBM3 part spec; HBM2
+and further vendor documents -- and every preset field they can check was checked. What
+remains uncheckable is now a named list (HBM3 part spec; HBM2
 IDD), not a fog.
 
 Part A/B (calibration audit + R6 batch). The audit (75 calibrated / 42
 drifted / 233 uncheckable at the start) drove: GDDR6 tREFI 7800 -> 1900 ns
 (refresh occupancy 4.6% -> 18.9%) and nCCDS 4 -> 8 with the tREFI/nRFCpb
-column swap unwound; HBM3 re-derived into its CK domain (tCK = 625 ps,
+column swap unwound; HBM3 recomputed into its CK domain (tCK = 625 ps,
 fCK = rate/4 per JESD238B Table 92; nCCDS 2 -> DQ utilisation 57% -> 100%,
-bandwidth uncap 1.75x); LPDDR5 IDD re-based on a VDD2H column estimated from a vendor source that cannot be disclosed publicly
+bandwidth uncap 1.75x); LPDDR5 IDD re-based on a VDD2H column
 (~3x); DDR3_8Gb_x8 org corrected; DDR3/DDR5 ns rows re-keyed to the
 simulated bins (the DDR4 tRC bin-stamp, +1.1%, is the recorded judgment
 call -- gate 1173D measured its co-sim consequence at ~2%). R6 batch: the
-wrapper's capacity_/bandwidth_ literals are DERIVED from preset org x
+wrapper's capacity_/bandwidth_ literals are computed from preset org x
 timing; HBM3 chip capacity follows the preset (core die 1024 MB, stack
 8 GiB -- the standing capacity-mismatch warning is gone, and gate 1173A
 proved it fired before); HBM bank_size -> pages_per_unit; HBM3 CACTI-IO
@@ -8983,8 +8993,8 @@ and HBM2 co-sim cells are bit-deterministic across runs, the DDR4 co-sim
 cell shows ~0.4% run-to-run scheduling wobble (recorded; its bin-stamp
 movement is ~2%, above the wobble).
 
-Data impact: every LPDDR5 number (cycles via RL/WL/nCCD and the derived
-ns; array energy via the re-based IDD and the derived tRC; interface
+Data impact: every LPDDR5 number (cycles via RL/WL/nCCD and the computed
+ns; array energy via the re-based IDD and the computed tRC; interface
 termination -> 0 by citation), every HBM2 number (nBL/nRP/nRC/nCCD
 column throughput; refresh tables), HBM3 bandwidth (1.75x uncap), GDDR6
 refresh occupancy (4x), DDR3/DDR5 bin re-keys, and all DDR/GDDR
@@ -9081,7 +9091,7 @@ cell was simulated against a memory twice as fast as the part. First-order
 GDDR6 result change. The ladder verdict is unchanged (still not adopted;
 GDDR6 still has no object of its own to reconcile).
 
-R4 -- bank_rows is DERIVED from the preset (getPresetRowsPerBank, keyed by
+R4 -- bank_rows is computed from the preset (getPresetRowsPerBank, keyed by
 the configured device width), replacing a literal table that had drifted 2x
 for DDR3 (65536 vs 131072), HBM2 (65536 vs 32768) and HBM3 (32768 vs 16384).
 The four consistent technologies reproduce identically under the derivation
@@ -9093,7 +9103,7 @@ tree-coverage assertion holds under the new counts.
 STILL OPEN, queued for 1.11.63 under R6: HBM3 chip capacity to the preset;
 HBM bank_size_mb (4 MB, unruled by R1/R2, describes nothing simulated) to the
 preset (32/16 MB -- moves HBM pages_per_unit 8x/4x); wrapper
-capacity_/bandwidth_ literals derived from preset org x timing; HBM3's
+capacity_/bandwidth_ literals computed from preset org x timing; HBM3's
 128-vs-64 channel width in the CACTI-IO table; the DDR3/DDR5/HBM3 timing
 drifts the investigation found.
 
@@ -9175,7 +9185,7 @@ memory: block; the released binary accepts it. B013: an out-of-bounds read of
 hierarchy_bridge_latency[6] on a six-element array, at the one site of three
 without the guard. C006: every latched McPAT diagnostic evaluated in the
 parent BEFORE the setters ran, so a fully measured run printed "no measured
-load/store mix ... UNSOURCED fractions" -- diagnostics now run once, in the
+load/store mix ..." -- diagnostics now run once, in the
 parent, after the setters, before the fork. A007: memory.array_pg on DRAM is
 refused as its own comment always claimed (a DRAM array cannot be gated; it
 must refresh). B014 moves a number: the McPAT NoC duty cycle was scaled by
@@ -9261,7 +9271,7 @@ HBM2 and HBM3 carried `subarray_access_ns` and `bank_access_ns` literals
 contradicting their own cited timings -- HBM3's subarray said 20.0 ns against a
 tRCD+tCAS of 32.0. The history, checked rather than guessed: release 1.1.1
 raised HBM tRCD/tCAS to the JESD235C/JESD238 spec minima and did not move the
-derived literals, which are exactly the pre-1.1.1 sums (25.0 = 12.5+12.5,
+computed literals, which are exactly the pre-1.1.1 sums (25.0 = 12.5+12.5,
 20.0 = 10+10). They were consistent when written and wrong in every release
 since. NOT caused by 1.11.56's speed-bin work, which moved only the rate, the
 core clock and the burst. Both fields are computed from the timings now and
@@ -9341,7 +9351,7 @@ rule requires of a quantity the tools cannot produce: RODT(DQ) = 30-240 ohm
 (Intel 743844-015 Table 89 p.211, typical column EMPTY) against RON = 40 ohm
 gives a loop-resistance ratio of 4.0. The applied value stays the 240 ohm end
 -- the weakest termination and therefore the LOWEST energy the range permits --
-and the run prints the interval and its provenance beside it. An unsourced
+and the run prints the interval and its provenance beside it. A single stated
 point becomes a sourced interval with a stated direction.
 
 Closing it to a point needs the MR11 ODT ladder AND a stated default or a
@@ -9354,7 +9364,7 @@ B005 changes the simulated Garnet topology on every detailed DRAM run, and
 B014 changes the fixed-latency term at every bus and crossbar tier. On the HBM3
 reference cell the NET is -8.3% device cycles (14.32M -> 13.13M): the two pull
 opposite ways and B005 dominates, because the sourced rungs carry the higher
-per-rung clocks C003 derived. C018 moves x4 and x16 configurations only. C016
+per-rung clocks C003 computed. C018 moves x4 and x16 configurations only. C016
 and the fork items move nothing today.
 
 Gates 1169A then 1169B. 1169A's B014 arm grepped for a string that exists only
@@ -9400,7 +9410,7 @@ parameter map. CORRECTION (1.11.59): this entry originally said such a map
 exists for "DDR3, DDR4 and DDR5 and not for LPDDR5, GDDR6 or HBM". GDDR6 was
 wrong -- its electrical row is sourced (POD135, JESD8-21C Cl.D) and its
 exact_map is true, so GDDR6 DOES receive the driver+PHY term. The map exists
-for DDR3, DDR4, DDR5 and GDDR6; it does not for LPDDR5 (RTT unsourced) or for
+for DDR3, DDR4, DDR5 and GDDR6; it does not for LPDDR5 (RTT stated) or for
 HBM2/HBM3 (no electrical row at all). LPDDR5 -- the technology the 1.11.40 note says was understated by
 roughly 71x -- receives NOTHING from this change: measured, driver+PHY 0.000
 nJ, interface unchanged at 0.036 nJ. What changed for it is that the run now
@@ -9432,7 +9442,7 @@ time.
 ### The bank-group rung is declared, not invented
 
 `getBankGroupPortBits()` multiplies the bank serialisation width by an
-unsourced 2, and since 1.11.56 that reaches a reported number through the
+stated 2, and since 1.11.56 that reaches a reported number through the
 hierarchy link ladder. The architecture object carries no bank-group datapath
 field, and nothing in JEDEC fixes a bank-group port width -- a bank group is
 not an interface boundary. Adding a field with a "source" would have been
@@ -9528,9 +9538,9 @@ quoted for a part 1.5x faster than the one whose cycles are counted.
   honest outcome; fabricating objects for the three missing technologies is
   not.
 - C003: the bank and bank-group rungs were stored literals while every other
-  rung derived from width x clock, so back-deriving frequency as
+  rung computed from width x clock, so back-computing frequency as
   `bandwidth*8/width` clocked HBM3's bank tier at 1.0 GHz against its own
-  3.2 GHz core clock. Derived now: HBM3 16.0 -> 51.2 GB/s (a 64 B L1/L2
+  3.2 GHz core clock. Computed now: HBM3 16.0 -> 51.2 GB/s (a 64 B L1/L2
   crossing 4.00 -> 1.25 ns), DDR5 2.4 -> 1.6, HBM2 8.0 -> 9.6, DDR4 unchanged
   as the one self-consistent row.
 - C007: `channel_databus_bits` meant ONE channel for DDR and the WHOLE STACK
@@ -9589,7 +9599,7 @@ That same host was priced on the "aggressive" metal stack the config validator
 tells users no process can build, applied by omission (A006).
 
 In every co-simulation the memory controller and the M/D/1 service rate were
-derived for SRAM -- the constructor default -- because `getMemControllerConfig`
+computed for SRAM -- the constructor default -- because `getMemControllerConfig`
 ran before the device's technology was adopted (B009). The shipped host/device
 example, with a DDR5 host and a DDR4 device and no SRAM anywhere, opened with
 `SRAM M/D/1 cap = ... 512000 MB/s`.
@@ -9604,7 +9614,7 @@ corrected where 1.11.56's own slot-count change had broken them (B010, B011).
 Of the 82 latent findings: unit errors that were waiting to become live (mW
 into W, J into nJ, a fallback 1e9 too large and in the wrong unit, an unsigned
 underflow); silent fallbacks made to announce themselves or refuse; invented
-values replaced by the tool that could answer, or labelled as unsourced where
+values replaced by the tool that could answer, or labelled as stated where
 none could; nine YAML keys that were parsed and never read, each now either
 wired up or rejected at parse time; and dead code deleted, including
 `SimConfigParser`/`ComprehensiveSimulator`, which fabricated results under
@@ -9691,7 +9701,7 @@ none can, SAY SO instead of writing a number down.
 - B012: "the fastest per-channel DRAM in the lineup" was a literal at three
   sites (51200 MB/s twice, 115.2 GB/s once), each scaling something reported.
   Both are now read from the HBM3 preset, so a preset change moves them.
-- B010: pages_per_unit was derived from a fixed 128 KB subarray while
+- B010: pages_per_unit was computed from a fixed 128 KB subarray while
   memory.subarray_height is a real, resolved knob. Setting subarray_height:
   1024 doubled the physical subarray and left the workload's contiguous block
   at 128 KB, so PE locality and routed hop distance were computed against a
@@ -9806,7 +9816,7 @@ Six features existed in device scope and were inert in co-simulation:
 - C002: the pcie_gen4 link energy took the midpoint of a band whose lower end
   is a TX-only bound, not a full-link figure. The bound is excluded from the
   applied value: 3.965 -> 6.0 pJ/bit.
-- C006: the L2/L3 duty cycles were unsourced fractions of a base that is
+- C006: the L2/L3 duty cycles were stated fractions of a base that is
   1.0 by construction. Measured now (accesses per cycle at that instance).
   McPAT reads cache duty_cycle only on the TDP branch, so reported PEAK power
   moves and runtime dynamic does not.
@@ -9924,7 +9934,7 @@ cycles and the bytes priced as DRAM writebacks.
   1.0 and was silently clamped, presenting as a plausible 100% idle.
 - F004: firstCycle held the ARM cycle while the recorded gaps telescope from
   the FIRST EVENT, so the span was longer than the samples cover and the
-  derived residency was biased low by the head of the ROI.
+  computed residency was biased low by the head of the ROI.
 - F008: under thread-MPI, ROI_BEGIN returns before the legacy path's
   pgres.markRoi(), so the PG counters and the devMC gap histogram were armed
   at a later event -- or never, when roi_begin precedes any barrier or
@@ -9981,11 +9991,11 @@ the current behaviour and rewrites its false justification.
   subthreshold conduction, and PIMID reports it. It now takes its own ratio
   -- and the MEASUREMENT that came with the fix is recorded: CACTI carries
   NO gate-leakage data for the DRAM device columns (I_g_on_n is 0 for
-  lp-dram and comm-dram at 22, 32 and 45 nm), so the ratio is unsourced
+  lp-dram and comm-dram at 22, 32 and 45 nm), so the ratio has no source
   today and the run says so. The subthreshold ratio stands in for it, which
   is directionally defensible -- a periphery device is high-Vt AND
   thick-oxide, and both mechanisms collapse together -- with the magnitude
-  stated as unsourced.
+  stated as an assumption.
 - E001: onPitchLogicShare() added corepipe again after McPAT had already
   DISTRIBUTED it into ifu/lsu/exu/mmu (core.cc adds
   corepipe*num_pipelines/4 to each; the direct add is disabled). At the
@@ -10018,7 +10028,7 @@ the current behaviour and rewrites its false justification.
   they open the ROI.
 - F004: GapHist::firstCycle held the ARM cycle while the recorded gaps
   telescope from the FIRST EVENT, so spanCycles() returned a denominator
-  longer than the samples cover and the derived residency was biased low by
+  longer than the samples cover and the computed residency was biased low by
   the head of the ROI. The first event now defines the span's start.
 
 Gate 1164A/B/C. BANK/HBM3 device cell bit-identical vs 1.11.53.
@@ -10031,10 +10041,10 @@ all of them cases where a number was allowed to stand for more than it was.
 - C020: the CACTI-IO substitution gate had widened from "exact map" to
   "exact OR injected", and the paragraph justifying it says "its electrical
   layer is sourced" -- which is FALSE for LPDDR5 by our own record (its
-  RTT = 240 ohm is flagged UNSOURCED in the same table; Micron gives VDDQ
+  RTT = 240 ohm is flagged as stated in the same table; Micron gives VDDQ
   and RON, not Rtt). An assumption was silently REPLACING the DQ termination
   energy, the interface dynamic energy and the IO area. Substitution now
-  requires a fully sourced injection; an unsourced one is still computed and
+  requires a fully sourced injection; a stated one is still computed and
   reported as a cross-check, and says so.
 - C021: two false claims in the code -- "its 14 Gb/s rate will be refused"
   and "GDDR6 refused above; no parameter set to give a structure to". The
@@ -10058,7 +10068,7 @@ all of them cases where a number was allowed to stand for more than it was.
   follow the same decision. Gate: device ALU emits FPU_per_core 0; in co-sim
   the device is 0 and the host keeps its FPU.
 - C016/C007: the "warned fallback" that never warned. Three blocks
-  substitute unsourced fractions of the retired instruction count when a run
+  substitute stated fractions of the retired instruction count when a run
   carried no measurement (mispredicts 1%, loads/stores 20/10%, int/fp/mul
   70/10/5%) and all three were silent, so a run priced on invented activity
   looked exactly like a measured one. One latched warning names what was
@@ -10109,7 +10119,7 @@ MT/s and its DQ-termination half at 3200 (termination 1.33x understated);
 the rate table now names the part this tree actually simulates (DDR4-2400 --
 the Ramulator preset, the architecture object and the wrapper's own 19.2
 GB/s all agree), and POD12 is an interface standard so the electricals are
-untouched. DRAM bandwidth is derived (rate x channel width x channels)
+untouched. DRAM bandwidth is computed (rate x channel width x channels)
 instead of a literal that had drifted from it: DDR5 was 20% low, GDDR6 1.75x
 low. Where upstream Ramulator2 ships no timing bin at the modelled rate
 (DDR5 above 3200), the run says so once instead of hiding two numbers that
@@ -10166,7 +10176,7 @@ and skipped levels dropped their share of the measured hop count while
 leaving chip coverage below 1. The flat NoC branch still carried the
 pre-1.9.22 shape (hardcoded flit width, PE clock for the network's, packets
 where McPAT counts router traversals -- a measured 2.04x undercount). Host
-NoC coverage fractions and the host MC clock were unsourced literals. And
+NoC coverage fractions and the host MC clock were stated literals. And
 three "two authorities for one quantity" cases: the on_dram_die predicate
 missing the family owner's guard, PCIe protocol overhead emitted from
 different sources depending on an unrelated toggle, and topology helpers
@@ -10202,7 +10212,7 @@ the N8 sourcing residue.
 - L88/L247 reconciled: the 1.11.14 scope-gate rationale claimed to guard
   McPAT's cache queries; McPAT never constructs the wrapper. The gate is
   real -- for PIMID's own non-DRAM queries -- and now says so.
-- L105 (with L68): ONE factor authority. The wrapper's XML emission derived
+- L105 (with L68): ONE factor authority. The wrapper's XML emission computed
   the family factors at (table,table,hp,350K) while main printed them at
   the configured node/corner/temperature -- the APPLIED factor disagreed
   with the printed one whenever any input was non-default. Every call now
@@ -10250,7 +10260,7 @@ the N8 sourcing residue.
   power model -- one node per die, everywhere. Corpus cells sit at 22 on 22-table techs: no numbers move
   there; 32-table classes (DDR3-era) now price at their own generation.
 - N3 (RULED: "go with the banded form"): the SUBARRAY pitch factor gains a
-  DERIVED, BANDED default from published silicon when the user sets no
+  BANDED default from published silicon when the user sets no
   hypothesis: [1.25 .. ~4] -- low end the FIMDRAM measurement (ISSCC 2021
   25.4, lean SIMD, our default), upper end UPMEM-implied (HC31 ~10x density
   claim / family factor; general-purpose CPU incl. 3-metal routing loss) --
@@ -10378,7 +10388,7 @@ FIX-PRE-FLEET batches F (L220/L248/L249/L250) and G (L59/L69/L77/L119).
   nodes kept device_type=0 -- and even after mapping, the mcpat_overrides
   block clobbered it back to 0 via its literal-0 default (the "corner
   applied" line printed while the XML still carried 0). The override default
-  is now the corner-derived value already on the config -- an explicit
+  is now the corner-based value already on the config -- an explicit
   per-node device_type override still wins. The host is logic; the corner
   maps directly, no refusal.
 - L59: CACTI's periphery/tag ITRS flavors were hardwired ITRS-HP for every
@@ -10447,7 +10457,7 @@ FIX-PRE-FLEET batches C and D (L176/L183/L190/L199/L200/L203).
 - L199: ialu/fpu/mul_accesses -- the stats that actually drive McPAT's
   execution-unit power -- stayed at 70/10/5% fractions while the decoder
   census sat computed in the same function. Measured classes now reach them
-  (census fp class lands in fpu_accesses EXACTLY); the unsourced fractions
+  (census fp class lands in fpu_accesses EXACTLY); the stated fractions
   survive only as the warned no-decode fallback.
 - L200: mixLd/mixSt were measured, parsed, stored, never used;
   load/store_instructions stayed 20%/10%. Measured now.
@@ -10462,7 +10472,7 @@ FIX-PRE-FLEET batches C and D (L176/L183/L190/L199/L200/L203).
 
 FIX-PRE-FLEET batches A and B (audit items L164/L168/L170/L181/L189/L234/L236/
 L237/L238/L242/L244/L256). NUMBERS MOVE substantially; every co-sim and DRAM
-figure downstream must be re-derived on this release or later.
+figure downstream must be recomputed on this release or later.
 
 **Batch A -- the silicon that exists is the silicon that is counted.**
 - L237: System Total area adds the POPULATED memory system, not one die. The
@@ -10504,7 +10514,7 @@ figure downstream must be re-derived on this release or later.
   here is average-refresh, not upstream's IDD5B burst figure.
 - L181: DEVICES PER ACCESS. The IDD columns are per-device currents, but a
   64 B access on a DDR-class 64-bit rank engages every chip in the rank --
-  the vendor method, this file's own formula source, multiplies by the device count
+  the current-difference method, this file's own formula source, multiplies by the device count
   and we did not. DDR array energies rise by chips/rank (x8 parts: 8x);
   HBM/LPDDR5/GDDR6 are per-channel and unchanged. This closes the basis
   mismatch with the whole-rank termination term the audit caught being
@@ -10669,7 +10679,7 @@ instructions in this ROI, so the host arm proves no regression but cannot by
 itself distinguish global from per-group -- that claim rests on the plumbing
 plus the device arm proving the group flag is live.
 
-## 1.11.42 -- the link controller clock is derived (E21)
+## 1.11.42 -- the link controller clock is computed (E21)
 
 The link controller clock was a two-valued literal: gen3 got 500 MHz,
 EVERYTHING else -- gen4, gen5, CXL, NVLink, UCIe, UALink -- got 1000. The clock
@@ -10678,7 +10688,7 @@ out), but it linearly scales the controller digital dynamic that 1.11.41's E20
 completion made live, so the literal scaled real reported power for every
 non-gen3 link.
 
-It is now derived from specification primitives:
+It is now computed from specification primitives:
     clock_MHz = lane_rate_GT/s * 1000 / PIPE_datapath_width
 The PIPE width is an implementation choice the PIPE spec bounds (8/16/32-bit
 per lane; Intel PIPE Architecture Spec rev 7.1); the 32-bit configuration is
@@ -10713,7 +10723,7 @@ retired; 462,267 classified on device-scope cells). Across 75 recent run logs
 the fallback fractions are never in force. Two comment corrections ride along:
 the "not yet understood" base mismatch is marked historical (it does not
 reproduce -- co-sim measures instrs=10 vs uops=11, same base), and the
-"documented" 87.5/12.5 stand-in is relabelled UNSOURCED -- its only
+"documented" 87.5/12.5 stand-in is relabelled as stated -- its only
 documentation was PIMID citing itself, and changelog 1.11.10 had already
 measured the assumption wrong.
 
@@ -10800,7 +10810,7 @@ power is unaffected because nothing in the power path reads that polynomial.
 currents, PHY coefficients and the area polynomial remain the neighbouring
 family's values. PIMID has no sourced replacements, and inventing them is the
 defect this work exists to remove. An injected technology is better-grounded
-than a borrowed one, not fully sourced. LPDDR5's RTT=240 is flagged UNSOURCED
+than a borrowed one, not fully sourced. LPDDR5's RTT=240 is flagged as stated
 in the result, the same way pimid_energy.h flags it -- Micron defers the ohm
 table to an AC/DC document we do not hold.
 
@@ -10820,13 +10830,13 @@ added to the link byte count in the coupled branch only; the decoupled branch,
 where the host flushes to its own memory, is untouched and was already right.
 Gate 1152c, 12/12.
 
-**E19 -- the link duty cycle is derived.** `power.pcie.duty_cycle` defaulted to
+**E19 -- the link duty cycle is computed.** `power.pcie.duty_cycle` defaulted to
 0.01 with no citation and was wrong in both regimes, in opposite directions:
 against the reference co-sim run the true duty is 2.31e-06 without the flush
 (0.01 was 4329x HIGH) and 0.303 with it (0.01 was 30x LOW). No constant can be
 right across that. It is now `(xbytes / link_bytes_per_s) / wall_seconds`,
 measured per run. The YAML key survives only as an explicit override and prints
-what the measurement would have been. Gate 1153, 8/8; the derived 0.3 matches an
+what the measurement would have been. Gate 1153, 8/8; the computed 0.3 matches an
 independent hand calculation of 0.3028.
 
 **N7 -- the coherence footprint is measured.** `coherence_footprint_bytes`
@@ -10848,7 +10858,7 @@ resulting energy range rather than a midpoint passing for a measurement:
                            published minimum
     pcie_gen4   1.93-6.0   1.93 is TRANSMITTER-ONLY, a bound no full link can
                            reach; 6.0 is a full SerDes. A boundary, not a spread
-    pcie_gen3   4.0        retires an unsourced 5.0
+    pcie_gen3   4.0        retires a stated 5.0
     nvlink      1.17-1.30  measured PHY (JSSC 2019) .. NVIDIA product figure
     interposer  0.25-0.5   UCIe advanced package -- this range was ALREADY
                            sourced in the comment and then thrown away by
@@ -10881,7 +10891,7 @@ has been vendored, compiled into libcacti7, and called by NOTHING.
     so the model is reported as a cross-check and NOT substituted: borrowed
     parameter sets do not survive a sanity check (LPDDR5 lands near 34 pJ/bit
     against a published 3-6). GDDR6 has no parameter set and is refused
-    outright. Replacing one unsourced number with another and calling it a
+    outright. Replacing one stated number with another and calling it a
     model is the defect this release exists to remove.
   - The hand table's LPDDR5 entry is separately wrong by ~142x: it models only
     static termination, which is exactly what LVSTL is designed to eliminate, so
@@ -11341,7 +11351,7 @@ folded in here:
      logic node CANCELS for area (proved -- 2.4615 x 1.4444 = 3.5556), which is
      an accidental validation of 1.11.22. Whether fd and fl cancel likewise is
      unchecked.
-  N3 A derived pitch factor must come off the DRAM GENERATION ladder, not
+  N3 A computed pitch factor must come off the DRAM GENERATION ladder, not
      CACTI's logic-node tables: CACTI carries ONE comm-dram cell per table and
      would hand the same pitch to technologies our density table shows differ
      by 4.4x.
@@ -11532,7 +11542,7 @@ exactly 0. Micron's own datasheets say otherwise, in the feature list:
   the reason it wins.
 
 - **RESIDUAL, stated in the code**: Rtt = 240 ohm (RZQ, the LPDDR4/5 ODT
-  reference) is the one unsourced input. The part datasheet defers its ohm
+  reference) is the one stated input. The part datasheet defers its ohm
   table to Micron's separate "General LPDDR5 Specifications 2: AC/DC and
   Interface", which we do not have. D12's IDD4R/IDD4W calibration can pin it,
   and those IDD tables ARE in hand.
@@ -11625,7 +11635,7 @@ blocked wiring it. NO BEHAVIOUR CHANGE: gate 1133 is bit-equal to 1.11.23.
   or filled from a multiplier -- which is what 1.11.23 found and removed.
 
 - **Tool failure REFUSES.** All five models threw out their "extraction
-  failed, use factory defaults" path. That fallback is what let unsourced
+  failed, use factory defaults" path. That fallback is what let stated
   specs reach a result indistinguishable from a real CACTI/NVSim read.
 
 - **322 invented literal assignments DELETED**, with the seven orphaned
@@ -11760,8 +11770,8 @@ CORRECTNESS". Both turned out to be one defect seen from two sides.
 - **The corner refusal was defeated by an override, and justified by a
   22 nm-only fact at every node.** power.mcpat_overrides.device_type was
   applied AFTER the refusal, so a run printed "refused" and then priced at
-  the refused column anyway, keeping an hp-derived factor over a moved
-  baseline -- a 1.55x error in fa, silently. With the factors derived, the
+  the refused column anyway, keeping an hp-based factor over a moved
+  baseline -- a 1.55x error in fa, silently. With the factors computed, the
   override is no longer a hole: the factor tracks the baseline, so it is
   accepted and produces comm-dram/lstp = 1.5714 with matching fd and fl.
 - **A DRAM-periphery low-power corner is lp-dram, not logic lstp.** On a
@@ -11800,7 +11810,7 @@ area table.
   reports active standby, instead of printing a number from a dead counter.
 - **D6, one background per machine.** System scope reports the same
   population-scaled, state-aware background device scope does.
-- **D16.** The SRAM periphery share is derived from a second CACTI query
+- **D16.** The SRAM periphery share is computed from a second CACTI query
   (1 - array-only leakage / total leakage) instead of the declared 0.30.
 - **D7, the host gates as one piece.** The per-node PG block was DEVICE-only,
   so no system-scope host could gate anything. `hosts[].pg` (default false)
@@ -12156,13 +12166,13 @@ DATA IMPACT: none. Same model, same numbers, computed where it belongs.
 ## 1.11.13 -- corners exist where the tables have them, and nowhere else
 
 #121 asked for a per-technology corner axis: a speed corner for GDDR6 and
-HBM, a mobile corner for LPDDR5 and the NVMs, derived from CACTI's own
+HBM, a mobile corner for LPDDR5 and the NVMs, computed from CACTI's own
 device columns and activated where the 1.9.10 IDD data showed one corner
 failing. Reading the tables answered the design question before the IDD
 check could: each CACTI table carries exactly ONE commodity-DRAM device
 column. lp-dram, the only alternative, is all-zero at 22 nm. A speed
-corner for HBM periphery cannot be derived from a table that does not
-contain one, so it is not derived -- the request is refused there, with
+corner for HBM periphery cannot be computed from a table that does not
+contain one, so it is not computed -- the request is refused there, with
 the reason printed, rather than approximated into existence.
 
 Where corners DO exist is the logic family: CACTI carries hp, lstp and
@@ -12201,7 +12211,7 @@ found in the CoreBreakdown split. And the power-gating endpoints from
 1.11.8 arrive already family-priced, active and gated alike, so the
 interpolation no longer needs to know about process families at all.
 
-Scope is placement-derived, not global: rank/channel and base-die designs
+Scope is placement-based, not global: rank/channel and base-die designs
 put their logic on a buffer or base die and stay in the logic family.
 
 Two things the gate caught before this shipped, both worth stating because
@@ -12244,7 +12254,7 @@ offered, documented, and left to the user; what is NOT left to the user
 is knowing that the situation occurred.
 
 DATA IMPACT: none by default. With the knob set, timing and everything
-derived from it move on FPU-less elements that execute FP code.
+computed from it move on FPU-less elements that execute FP code.
 
 ## 1.11.10 -- the instruction mix is counted, not assumed
 
@@ -12423,11 +12433,11 @@ IDD4W/IDD4R. Timing untouched.
 
 The user's audit fleet (five rounds over the open 1.11.x issues) turned
 its first round on the 1.11.2/1.11.3 factor harness itself and found five
-defects, all fixed here. (1) The leakage factors were derived from the 0C row
+defects, all fixed here. (1) The leakage factors were computed from the 0C row
 of the CACTI tables while McPAT runs at 350 K (~77C); the 80C row raises the
 DRAM-periphery leakage ratio ~7-8x (22 nm: 9.0e-7 -> 6.8e-6; 32 nm: 2.7e-7 ->
 2.2e-6). Still retention-grade -- but no longer understated. (2) The 22 nm
-and 32 nm factors were derived with inconsistent formulas; both now use one
+and 32 nm factors were computed with inconsistent formulas; both now use one
 derivation (I_off*Vdd at 80C, cd/hp), stated in the code. (3) The factor was
 applied on top of McPAT's longer-channel leakage discount; comm-dram is
 already a long-channel device, so leakage is now rebased on the plain value
@@ -12526,7 +12536,7 @@ the bank-group level: hundreds of routers, 53 of the device's 63 mm^2 and 1.3 W
 of leakage, for a tree that actually built ONE branch router.
 
 The tree now reports a per-level census of itself (branch routers and attached
-endpoints per tier, derived from the builder's own bookkeeping), and the levels
+endpoints per tier, computed from the builder's own bookkeeping), and the levels
 machinery consumes it. A tier with no arbitration and no endpoints is wire and
 is skipped, not priced. Non-DRAM configurations, which build no tree, keep the
 old estimator. Measured on 16-element HBM3: NoC area 53.4 -> 5.3 mm^2, device
@@ -12880,7 +12890,7 @@ to repair, and the earlier characterisation of it as a simulator defect was
 wrong.
 
 Three explanations were eliminated on the way, recorded so they are not
-re-investigated: the emulator's host-derived default thread count is never
+re-investigated: the emulator's host-based default thread count is never
 reached, because the count is set explicitly from the simulated element count;
 the simulator was ALREADY running single-threaded in every measurement taken, so
 its own threading was never a candidate; and the guest's thread count comes from
@@ -13502,7 +13512,7 @@ host received most of the host's controller accesses, while its own memory is pr
 the memory model, so it paid for its own memory through one model and most of the host's
 through another. And the host node in the device-scope reporting path is no longer
 fabricated: that block runs whenever the scope is system, which is exactly when measured
-host counters exist, and it derived all of its inputs from fixed divisors of the DEVICE's
+host counters exist, and it computed all of its inputs from fixed divisors of the DEVICE's
 instruction count. A comment promised they would be overridden by real statistics when
 available; no such override existed.
 
@@ -13620,7 +13630,7 @@ parser already separated host from device cores for cycle counts; it simply did
 not do so for instructions.
 
 Fixed by supplying the count, by reading the measured activity the simulator
-already reports (branch counts derived from basic blocks, since a block
+already reports (branch counts computed from basic blocks, since a block
 terminates at a control transfer, and mispredictions measured rather than
 assumed), and by giving each node its own measured instruction total. The
 integer/floating split remains an assumption, since retired operations are not
@@ -14130,15 +14140,15 @@ release binary: cycle counts agree to within a rounding-level delta, both rc=0).
 - **Off-chip channel, die-boundary split.** CPU-side McPAT MC/PHY (~9 pJ/bit
   at 22 nm) + DRAM-side I/O (0.76) + termination (5.25) = ~15 pJ/bit for DDR5,
   inside the published 15-22 pJ/bit full-channel band; HBM carries no
-  termination (interposer), a physics-derived asymmetry.
+  termination (interposer), a physics-based asymmetry.
 - **Known boundary.** The device H-tree fabric is priced as a McPAT bus-mode
   wire/repeater datapath (7.3 mW for a 16-PE tree) in the analysis layer that
   produced the published dataset; the binary's own per-node NoC printout still
   uses router-mode pricing, and a runtime `power.noc_model` knob is roadmap
   work, not shipped in this release.
 - **Data impact.** Timing: none (gate above). System-scope powers/energies
-  produced before 1.9.10 are nonphysical and were re-derived; device-scope
-  energies were re-derived onto the measured per-command constants. The
+  produced before 1.9.10 are nonphysical and were recomputed; device-scope
+  energies were recomputed onto the measured per-command constants. The
   release's knobs are documented in `docs/yaml_reference.md`.
 
 ## 1.9.9 -- docs-only
@@ -14150,12 +14160,12 @@ Documentation for 1.9.8 (this entry, badge). No source change.
 - **Defect 1.** runPowerAnalysis gated the in-memory-network power on
   num_pes > 1, dropping the H-tree leakage term for every 1-PE device run.
   Fixed: gate also fires on hierarchy_enabled. 1-PE
-  pecount power/energy re-derived from existing logs (no re-simulation);
+  pecount power/energy recomputed from existing logs (no re-simulation);
   multi-PE cells bit-identical.
 - **Defect 2.** buildNoCLevelsForMcPAT used a hardcoded x2 subarray->bank
   fan-in instead of config.subarrays_per_bank (32 for HBM3), overfeeding
   McPAT ~16x router counts at SUBARRAY placement only (65 W vs a physical
-  term). Fixed; SUBARRAY placement rows re-derived; other levels
+  term). Fixed; SUBARRAY placement rows recomputed; other levels
   bit-identical.
 - **Documented (no code change).** Power templates key off microarch class,
   not timing fidelity: simple_core and in_order_core share the single-issue

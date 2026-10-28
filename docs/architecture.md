@@ -52,7 +52,7 @@ A co-sim system has **two fabrics joined by one bridge**:
         host cores                              device PEs
            |                                        |
       host fabric            host<->device       device H-tree
-   (analytic ring,          BRIDGE (protocol      (JEDEC-derived,
+   (analytic ring,          BRIDGE (protocol      (JEDEC-based,
     crossbar or bus)      --  x phy; boundary  --  placement-driven
            |                traffic only)             tree)
        host main memory                          device memory tech
@@ -61,7 +61,7 @@ A co-sim system has **two fabrics joined by one bridge**:
 ```
 
 - **Device H-tree** -- the device side of DRAM technologies is always a tree
-  derived from the JEDEC organization ([network.md](network.md)). Every PE
+  built from the JEDEC organization ([network.md](network.md)). Every PE
   memory access is priced here (own unit = 0 hops; elsewhere = tree distance).
 - **Host fabric** -- analytic: the `ring` (default since 1.12.23, the
   published Nehalem-EX ring), a `crossbar` or a `bus`

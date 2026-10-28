@@ -42,6 +42,7 @@
 // resistor-network dissipation VDDQ^2/Rtt over the bit period, per I/O standard.
 // ---------------------------------------------------------------------------
 #include <string>
+#include "common/debug_checks.h"   // provenance labels print only under PIMID_DEBUG_CHECKS=1
 #include <map>
 #include <vector>
 #include <cstdlib>
@@ -508,7 +509,7 @@ inline IDDSpec iddAtRunTemperature(IDDSpec s, const PartIddFacts& f, const std::
         std::cout << "  [mem] " << baseTech(tech) << " IDD at " << tk << " K: "
                   << (q.form == 1 ? "standby currents linear in temperature from the measured point"
                       : (t_c > q.above_c ? "the datasheet derating above its stated range" : "inside the datasheet range, currents as stored"))
-                  << " (" << q.source << "): IDD2N " << s.idd2n << ", IDD3N " << s.idd3n << ", IDD2P " << s.idd2p << " mA" << std::endl;
+                  << ((pimid::debugChecks() && !q.source.empty()) ? " (" + q.source + ")" : std::string()) << ": IDD2N " << s.idd2n << ", IDD3N " << s.idd3n << ", IDD2P " << s.idd2p << " mA" << std::endl;
     }
     return s;
 }
@@ -1614,7 +1615,8 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
     std::cerr << "[power] FATAL: the activate/precharge energy for '" << tech
               << "' comes out NEGATIVE (" << e_actpre_pJ << " pJ), so the array "
                  "energy this run would report is not a physical quantity.\n"
-                 "  vendor method (cannot be disclosed publicly): E = Vdd x (IDD0 x tRC - IDD3N x tRAS - "
+              << (pimid::debugChecks() ? "  vendor method (cannot be disclosed publicly): " : "  the activate/precharge energy: ")
+              << "E = Vdd x (IDD0 x tRC - IDD3N x tRAS - "
                  "IDD2N x (tRC - tRAS)), which presumes IDD0 exceeds the standby "
                  "currents it subtracts.\n"
                  "  This row: IDD0 " << s.idd0 << ", IDD2N " << s.idd2n
@@ -2605,7 +2607,7 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
         std::ostringstream o;
         o << "[guard] " << bt << " activate+precharge " << f3(act) << " nJ per ACT (" << static_cast<long>(row_bytes) << " B row) = VDD " << f3(vdd);
         if (ratio_on)
-            o << " + VPP " << f3(act - vdd) << " (" << f3(rs.vpp_act_ratio) << " x VDD, " << pf->vpp_act.provenance << ", " << pf->vpp_act.device
+            o << " + VPP " << f3(act - vdd) << " (" << f3(rs.vpp_act_ratio) << " x VDD, " << ((pimid::debugChecks() && !pf->vpp_act.provenance.empty()) ? pf->vpp_act.provenance + ", " : std::string()) << pf->vpp_act.device
               << "; " << pf->vpp_act.alt_device << " would give " << f3(pf->vpp_act.alt_ratio) << " x VDD = " << f3(pf->vpp_act.alt_ratio * vdd)
               << " -> " << f3(vdd * (1.0 + pf->vpp_act.alt_ratio)) << " nJ)";
         else if (rs.vpp_act_ratio >= 0.0)

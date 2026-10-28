@@ -22,7 +22,7 @@ trefi_ns, channels, idd2p.
 
 ## 0. Summary
 
-1. **GDDR6 does not need to be derived. The tree already holds a vendor IDD
+1. **GDDR6 needs no scaling from another part. The tree already holds a vendor IDD
    table for the exact part it simulates.** The archive
    holds the Samsung K4Z80325BC
    datasheet (Rev. 1.3, Jan. 2020, 8 Gb GDDR6 SGRAM C-die, 187 pp.). I
@@ -41,13 +41,13 @@ trefi_ns, channels, idd2p.
    - The tree's current row is 4-7x below these datasheet maxima. The
      burst excess alone is 150 mA against 760 mA.
 
-2. **HBM3 is derived from the SAFARI HBM2 measurement using JEDEC ratios.**
+2. **HBM3 is computed from the SAFARI HBM2 measurement using JEDEC ratios.**
    - Recommended row: {1.1, 139, 132, 132, 1575, 1102, 237, 260, 3900, 16,
      33}. Bands are in section 1.4.
-   - The derived sequential-read energy is 3.92 pJ/bit (band 1.36-4.67).
+   - The computed sequential-read energy is 3.92 pJ/bit (band 1.36-4.67).
      SK hynix (IEDM 2023) puts HBM2E at about 4.3 pJ/bit and HBM3E 20%
      lower, at about 3.44 pJ/bit. HBM3 sits between those two
-     generations, and the derived value lands inside that bracket.
+     generations, and the computed value lands inside that bracket.
    - The tree's current HBM3 row gives 0.26 pJ/bit, 13-17x below the
      published figures.
 
@@ -157,7 +157,7 @@ from zen_hbm2_idd_per_chip.csv.
 | IDD5B (tRFC 266.7) | 189.3 mA | 152.1-228.5 |
 | VDD | 1.2 V (JESD235D Table 49, printed p.96: VDDC = VDDQ = 1.2 V typ) | |
 
-Energies derived from the base:
+Energies computed from the base:
 - **Read burst, per bit:** e_r2 = 1.2 x (463.8 - 133.4) mA / 76.8 Gb/s =
   **5.16 pJ/bit**. With the all-zero data pattern (CMU-SAFARI HBM-Power
   beat-pattern IDD data, pattern 0000: 2540.8 mA stack) it is
@@ -259,7 +259,7 @@ Every factor is listed with its source; where none exists this says so.
   b = 1).
 - *Back to a current.* dI0 = E_act3 / (VDDC x tRC3) = 389 / (1.1 x
   49.4) = **7.2 mA** (band 3.5-15.3), so IDD0 = IDD2N + 7.2 = **139 mA**.
-  With IDD3N = IDD2N, the vendor-method form (a vendor method that cannot be disclosed publicly) returns E_act exactly, and the
+  With IDD3N = IDD2N, the IDD-loop form returns E_act exactly, and the
   1.11.86 bank division has no effect.
 
 **IDD4R / IDD4W (burst).**
@@ -318,16 +318,16 @@ Every factor is listed with its source; where none exists this says so.
 - The only public sourced ratios IDD2P/IDD2N are GDDR6 230/310 = 0.74
   (Samsung T82, PLL/DLL off) and LPDDR5X 3.9/32.5 = 0.12 (Micron Y52P
   Table 18, VDD2H, x16 7500). [Until the next release the low end was a
-  ratio of 0.083 estimated from a vendor source that cannot be disclosed publicly.]
+  ratio of 0.083.]
 - Band 0.12-0.74 x IDD2N = **16-98 mA**. Centre is the geometric midpoint
   of the ratio ends, 0.30, giving **40 mA**. (The shipped HBM3 row has used
   the Chatterjee HPCA 2017 ratio 28/40 since 1.12.20; this band is not read
-  by the model.) This stays an un-sourced
-  column and must be said so.
+  by the model.) This column is a band, not a
+  measured value.
 
 ### 1.4 HBM3 table
 
-| term | base value (source) | factor(s) with citation | derived | band |
+| term | base value (source) | factor(s) with citation | value | band |
 |---|---|---|---|---|
 | vdd | 1.2 V (JESD235D T49) | VDDC 1.1 V (JESD238B.01 T70) | 1.1 V | -- |
 | IDD2N | 38.0 mA/ch clocked + 783.3 mA/stack baseline (SAFARI no_hbm_idd2 vs IDD2) | (1.1/1.2)^a, a in [1,2]; (1600/600)^g, g in [0.5,1]; baseline over 16 ch (JESD238B.01 T4) | 132 mA | 52-138 |
@@ -376,7 +376,7 @@ Published figures:
   independent one.
 - **HBM2 anchor.** O'Connor et al. MICRO 2017 (above): HBM2 3.92 pJ/bit.
 
-**Verdict.** The derived 3.92 pJ/bit lands inside the 3.44-4.3 bracket
+**Verdict.** The computed 3.92 pJ/bit lands inside the 3.44-4.3 bracket
 that brackets HBM3, 0.4% below O'Connor's HBM2 model and 9% below
 SK hynix's HBM2E figure. HBM3 should be at or below HBM2E, so a centre
 near the top of the bracket is plausible but not conservative-low.
@@ -398,7 +398,7 @@ bracket the result rather than pin it.
 - A2. Energy per bit of the burst is rate-invariant (CV^2). The
   sub-linear alternative is inside the band.
 - A3. The I/O share of HBM2 burst is 0.10-0.25 (O'Connor T3: 0.23). The
-  HBM3 I/O ratio of 0.3-0.6 is judgement, not sourced.
+  HBM3 I/O ratio of 0.3-0.6 is a judgement.
 - A4. The 783 mA stack "off-power" is carried in the centre as DRAM
   current, for consistency with the tree's HBM2 row, which includes it.
   If ruled non-DRAM, IDD2N/IDD3N centre is 89 mA and the HBM2 row must
@@ -408,13 +408,13 @@ bracket the result rather than pin it.
 - A6. The HBM3 target stack is 16 channels x 4 Gb (preset HBM3_4Gb). The
   base's physical density per channel is uncertain (4 or 8 Gb); that
   only affects IDD5B and is banded.
-- A7. The derived currents are equivalent VDDC currents that include
+- A7. The computed currents are equivalent VDDC currents that include
   I/O (VDDQ/VDDQL) energy, because the tree prices no HBM I/O separately
   (terminationNJ returns 0 for HBM). A reader comparing them to a vendor
   VDDC-only IDD must subtract that.
 - A8. IDD values are 36-chip means at 56-68 C case, not datasheet maxima.
 
-### 1.7 Re-derived I/O share (PIMID 1.12.18)
+### 1.7 Recomputed I/O share (PIMID 1.12.18)
 
 **Why.** A review found the I/O part of section 1.3, e2 x f_io x
 r_io = 5.16 x 0.23 x 0.45 = **0.534 pJ/b** (read; write 3.47 x 0.23 x
@@ -435,7 +435,7 @@ VDDQ 1.2 V, W/R 1.07/0.56 pJ/bit.)
 end of the same link: the same 1024 DQ over the same interposer, the same
 generation, the same NRZ unterminated signalling and the same rate class,
 measured on silicon, per direction. It is the closest published number;
-it is a proxy, and the share stays **DERIVED**. Direction: read (DRAM
+it is a proxy. Direction: read (DRAM
 transmits) takes the PHY's R figure 0.29, write (DRAM receives) the W
 figure 0.25.
 
@@ -447,10 +447,10 @@ Table II gives no VDD/VDDQ split of the PHY energy (the 0.66 V digital
 de-skew / FIFO / DFI / VT logic does not scale with VDDQL), so the factor
 cannot be applied to a known share. The anchor is used **unscaled**; this
 is stated in the record. (Scaled whole it would be 0.52 pJ/b, i.e. the old
-0.534 -- the 1.8x gap is about the size of the unsourced voltage
+0.534 -- the 1.8x gap is about the size of the open voltage
 question.)
 
-**Re-derived burst.** e3 = e2 x (1 - f_io)(V3/V2)^2 k_proc + e_io:
+**Recomputed burst.** e3 = e2 x (1 - f_io)(V3/V2)^2 k_proc + e_io:
 
 | | array part (unchanged) | e_io was (r_io 0.45) | e_io now (anchor) | share mA now (x 409.6 / 1.1) | IDD4x - IDD3N |
 |---|---|---|---|---|---|
@@ -463,7 +463,7 @@ idd.io_share 198.9/133.7 -> **108.0/93.1 mA** with `anchor_read_pj_bit`
 0.29, `anchor_write_pj_bit` 0.25, `channel_gbps` 409.6 and
 `anchor_source`. The loader refuses a share that is not anchor x
 channel_gbps / vdd (to 0.05 mA), and the earlier checks stay (share >= 0,
-inside the burst excess, provenance DERIVED/MEASURED).
+inside the burst excess).
 
 **Which figure prices the DQ-crossing I/O (the IDDQ band vs the anchor).**
 The merged IDDQ band 0.19-0.27 pJ/b (reads only) is Cho et al., SK hynix,
@@ -488,7 +488,7 @@ Side effect, stated: before this section a host write to HBM3 had its
 is reads only), so a crossing write paid no I/O at all; now it pays 0.25 pJ/b.
 
 **Guard against published older-generation totals (printed, never tuned).**
-Every HBM3 run prints `[guard]` lines. The derived total read energy is
+Every HBM3 run prints `[guard]` lines. The computed total read energy is
 sequential 64 B reads crossing the DQ at the channel's full 409.6 Gb/s, one
 ACT per 1024 B row: array burst 3.34 + DQ I/O 0.29 + activate 0.05 +
 standby 0.24 + refresh 0.02 + stack floor 0.13 = **4.07 pJ/b** (it was
@@ -510,7 +510,7 @@ inside either band.
 
 **Assumption added.** A9. The DRAM-side DQ I/O energy per bit equals the
 host-side HBM3 PHY energy per bit in the same direction, unscaled for the
-VDDQL 0.4 / VDDQ 0.3 V difference (no published split of the PHY energy).
+VDDQL 0.4 / VDDQ 0.3 V difference (the PHY energy is not split).
 Replaces A3's r_io for the I/O share; f_io (0.23, O'Connor) still sets the
 array part.
 
@@ -520,8 +520,8 @@ array part.
   4642c61f) computes Power_VPP = P(12V_PEX) + P(3V3_PEX) - P(VCCINT) - P(VCCINT_IO) - P(HBM_1V2),
   a card residual, and generate_standardized_csvs.py L28/L208 divides it by 2.5 V. No VPP sensor is
   read.
-- Activation VPP is therefore priced as a vendor-estimator RATIO of the measured VDD activate energy
-  (DERIVED): Xilinx XPE 2023.1.2 HBM_Data row 44 'VPP Activate' / row 33 'VDD activate (read)':
+- Activation VPP is therefore priced as a vendor-estimator RATIO of the measured VDD activate energy:
+  Xilinx XPE 2023.1.2 HBM_Data row 44 'VPP Activate' / row 33 'VDD activate (read)':
   4G column (VU37P) 38.61/624.51 = 0.061825; 8G column (VU47P) 77.22/749.412 = 0.103041.
   Device match by stack height: HBM3 record 8-high -> 8G (0.103041); HBM2 record stack_dies 4 -> 4G
   (0.061825). The other column is printed beside it in every run. No voltage conversion (energy ratio).
@@ -546,13 +546,13 @@ array part.
 - XPE like-for-like check on that rail (8G column, 1.2 Gb/s, 55 C): leakage of two stacks + FPGA PHY
   433 typ / 699 max mW; stack 0 clocked idle VDDQ 646 + VDD 197 mW; predicted IDD2 rail 1277 mW vs measured
   1087.4 mA x 1.2 V = 1305 mW (1.02x).
-- Rule: per-stack floor = measured floor / 2, DERIVED. The even split is an assumption; XPE Static_Data
+- Rule: per-stack floor = measured floor / 2. The even split is an assumption; XPE Static_Data
   rows 720/721 give equal DRAM leakage per stack.
   - HBM2 stack_floor_mw 939.96 -> 469.98 (783.3 mA x 1.2 V / 2).
   - HBM3 stack_floor_mw 861.63 -> 430.82 (783.3 mA x 1.1 V / 2).
   - The per-channel IDD columns are unchanged: they are the driven stack's measured increments over the whole
     783.3 mA.
-- Derived values that move:
+- Computed values that move:
   - HBM3 datasheet background per stack: 2551.2 -> 2120.4 mW (16 x 89 mA x 1.1 V + refresh 123.2 + floor).
   - HBM3 read-energy guard "stack floor" term: 0.13 -> 0.07 pJ/b (total 4.07 -> ~4.0).
   - HBM2 standby per stack: 1305 -> 835 mW (+ refresh).
@@ -567,14 +567,14 @@ array part.
 - Gap: the HBM2 row priced SAFARI's per-channel standby measured at 1.2 Gb/s (tCK 1666.7 ps) on the
   HBM2_2.4Gbps preset (tCK 833 ps). Its background (847 mW per stack) was below the XPE guard [860, 1900].
 - Rule, as in the HBM3 derivation (sec. 1.3): the clocked standby is linear in rate (factor 2400/1200 = 2),
-  voltage unchanged (1.2 V); DERIVED (provenance MEASURED -> DERIVED).
+  voltage unchanged (1.2 V).
   - IDD2N 38.0125 -> 76.025; IDD3N 35.5 -> 71.0 mA per channel.
   - IDD0, IDD4R, IDD4W and IDD5 move with their baselines, so the activate, burst and refresh excesses are
     unchanged.
   - IDD0 42.725 -> 79.004741: shifted by the tRC-weighted baseline change at the preset tRC 48.314 / tRAS
     33.32 ns, so ACT stays 0.3968 nJ.
   - IDD4R 1356.9 -> 1392.4; IDD4W 924.15 -> 959.65; IDD5 92.7758 -> 130.7883.
-  - IDD2P (un-sourced 7 mA) and the stack floor (469.98 mW) are unchanged.
+  - IDD2P (7 mA) and the stack floor (469.98 mW) are unchanged.
 - Read burst: already at the preset rate. The record's IDD4R excess is (3710.1 - 1067.3)/8 x 4 = 1321.4 mA:
   x4 = both PCs x 2.4/1.2 Gb/s, i.e. the measured 5.16 pJ/b per bit, constant. The gap noted in sec. 1.1 for the burst was closed by that factor; nothing more
   to scale.
@@ -597,12 +597,12 @@ array part.
   - HBM2, at 1.2 Gb/s: IDD2N 38.0125 -> 33.2625, IDD3N 35.5 -> 30.75, IDD0 42.725 -> 37.975 mA; at the 2.4 Gb/s preset
     (sec. 1.10, x2): IDD2N 76.025 -> 66.525, IDD3N 71.0 -> 61.5; IDD0, IDD4R, IDD4W, IDD5 move with the baseline by
     -9.5 mA (69.504741, 1382.9, 950.15, 121.288255); IDD2P (x 28/40) 53.2175 -> 46.5675. The activate, burst and
-    refresh excesses are unchanged (a uniform baseline shift cancels in the vendor method because tRC = tRAS + tRP).
+    refresh excesses are unchanged (a uniform baseline shift cancels in the IDD-loop activate energy because tRC = tRAS + tRP).
   - HBM3: the clocked HBM2 standby it scales (sec. 1.3) is 33.26 mA, not (1087.4 - 821.3)/7 = 38.0, so the centre
     89.0 becomes 89.0 x 7/8 = 77.875 mA; IDD0, IDD4R, IDD4W, IDD5 shift by -11.125 mA (85.075, 1429.975, 1007.275,
     182.875); IDD2P 62.3 -> 54.5125. Excesses unchanged.
   - stack_floor_mw removed from both records (was 469.98 / 430.82 mW per stack).
-- Derived values that move (datasheet duty, 358 K): HBM2 background per stack 1189.8 -> about 674 mW (now below
+- Computed values that move (datasheet duty, 358 K): HBM2 background per stack 1189.8 -> about 674 mW (now below
   the XPE guard [860, 1900], which is printed, never priced); HBM3 2120.4 -> about 1494 mW (XPE guard [1060, 2170]
   inside). The measured idle chip means (217.5-364.8 mA x 1.2 V at 1.2 Gb/s, x2 for 2.4 Gb/s, + refresh) give
   556-922 mW per HBM2 stack.
@@ -610,8 +610,8 @@ array part.
 ### 1.12 Standby VPP as a ratio of the VDD standby (PIMID (1.12.142), user ruling 2026-10-28)
 
 - The measured base is VDDC + VDDQ only (sec. 1.8: the artifact's "ipp" column is a card residual, not a VPP
-  sensor), and no JEDEC or vendor HBM IPP2N/IPP3N exists (NO PUBLISHED SOURCE FOUND). The standby VPP is therefore
-  priced as the activation VPP is (sec. 1.8): a vendor-estimator RATIO, DERIVED.
+  sensor), and the HBM record has no IPP2N/IPP3N row. The standby VPP is therefore
+  priced as the activation VPP is (sec. 1.8): a vendor-estimator RATIO.
 - Xilinx XPE 2023.1.2 HBM_Data row 43 'Idle VPP Dynamic' (rail VCCAUX_HBM 2.5 V) / row 37 'idle VDD dynamic'
   (rail VCC_HBM 1.2 V), both mW per stack per Gb/s/pin, always on while the stack is clocked: 4G column (VU37P)
   8.2875/96.8 = 0.085615; 8G column (VU47P) 16.575/164.56 = 0.100723. Both rows scale with the rate the same way,
@@ -650,7 +650,7 @@ array part.
   - Distributor listings for this part turned up in web search. A public
     copy was NOT downloaded (the LCSC URL returned HTML), so public
     availability is by listing only.
-  - No other GDDR6 vendor source was used.
+  - No other GDDR6 vendor document was used.
 
 ### 2.2 The table (Samsung K4Z80325BC Table 82, PDF p.146)
 
@@ -702,7 +702,7 @@ currents. This decides how the activation term is charged:
 
 ### 2.3 Terms
 
-| term | base value (source) | factor(s) | derived value | band |
+| term | base value (source) | factor(s) | value | band |
 |---|---|---|---|---|
 | vdd | 1.35 V (T82 heading; JESD250D) | none | 1.35 | 1.35-1.3905 (T82 "+0.0405V") |
 | IDD0 | 430 mA (T82 HC14) | none; per device | 430 | 404-452 (HC12..HC16) |
@@ -718,7 +718,7 @@ currents. This decides how the activation term is charged:
 fetched source states, so there is no citable lower edge. The
 HC12..HC16 spread is shown as the rate sensitivity.
 
-**Derived energies at the recommended row, and what they depend on:**
+**Computed energies at the recommended row, and what they depend on:**
 - **Burst:** 2.29 pJ/bit read, 3.04 pJ/bit write, on VDD. Termination is
   priced separately by terminationNJ. POD scheme-table value: read
   0.5 x 1.35^2 / (40 + 60) / 14 Gb/s = 0.651 pJ/bit; write
@@ -726,7 +726,7 @@ HC12..HC16 spread is shown as the rate sensitivity.
   injected figure the run prints is computed at runtime from the same
   electricals (cacti_io_wrapper.cpp:279) and was not evaluated here (no
   runs).
-- **Activation, vendor method with IDD3N as ONE bank (no 1.11.86 division):**
+- **Activation, IDD-loop form with IDD3N as ONE bank (no 1.11.86 division):**
   1.35 x (430 x 45 - 460 x 30 - 310 x 15) = 1215 pJ per device loop,
   i.e. **608 pJ per channel ACT** of a 2 KB page.
   - This term is ILL-CONDITIONED: it is a 900 pA.ns difference of

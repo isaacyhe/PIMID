@@ -75,7 +75,7 @@ and citation (`VerifiedValue`): `row_buffer_bits`, `gsa_datapath_bits`,
 `prefetch_datapath_bits`, `bank_serialization_bits` (the bank-level PIM
 bottleneck, and the one stage nobody publishes), `chip_io_bits`,
 `rank_databus_bits`, `channel_databus_bits`. Bank and bank-group bandwidth
-are derived, not stored: `getBankEffectiveBW()`,
+are computed, not stored: `getBankEffectiveBW()`,
 `getBankGroupEffectiveBW()`.
 
 **Organization (`DRAMArchitectureV2::organization`)** -- physical hierarchy
@@ -84,7 +84,7 @@ groups per chip, chips per rank, per-level capacities).
 
 **Timing (`DRAMArchitectureV2::timing`)** -- standard DRAM timing (tRCD,
 tCAS, ...) plus hierarchical access latencies. `subarray_access_ns` and
-`bank_access_ns` are DERIVED from tRCD/tCAS/tRP by
+`bank_access_ns` are computed from tRCD/tCAS/tRP by
 `deriveHierarchicalAccessTimes()` rather than written as literals, which is
 what the deleted v1 object got wrong. The header also breaks down the
 inner-bank datapath hidden inside tCAS (column decoder, mux, output driver,
@@ -98,7 +98,7 @@ subarray / bank / chip / rank, with an `energy_source` citation string.
 
 Timing and organization values come from JEDEC standards (JESD79-4/-5,
 JESD235A, JESD238) and vendor datasheets. External I/O widths are exact;
-internal port bitwidths are not published, so they are estimates based on
+internal port bitwidths are estimates based on
 industry knowledge and bandwidth measurements (treat them as ~representative,
 not vendor-exact). Background reading: SALP (ISCA'12), Tiered-Latency DRAM
 (HPCA'13), FIGARO (MICRO'20) for DRAM internals; ISAAC and PRIME (ISCA'16)

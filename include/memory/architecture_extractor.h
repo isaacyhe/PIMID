@@ -28,6 +28,7 @@
 #include "memory/pcm_architecture.h"
 #include "memory/reram_architecture.h"
 #include "memory/dram_architecture_v2.h"
+#include "common/debug_checks.h"   // provenance labels: PIMID_DEBUG_CHECKS=1 only
 
 #include <memory>
 #include <cstdlib>
@@ -430,7 +431,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
                            : VerificationStatus::UNKNOWN;
     arch->timing.inner_bank.source = stt_has_components
         ? ("NVSim: decoder/wordline/bitline/sense-amp/column-mux/cell-write; "
-           "ASSERTED (unsourced): local_io, global_io, bank_output_drv -- "
+           "ASSERTED" + std::string(pimid::provLabel(" (unsourced)")) + ": local_io, global_io, bank_output_drv -- "
            + arch->process_node)
         : ("NOT SOURCED: this characterization came from the NVSim result "
            "CACHE, which carries only the top-level figures, so the "
@@ -536,7 +537,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->endurance.retention_years = 10.0;
     arch->endurance.ecc_required = true;
     arch->endurance.endurance_source =
-        "ASSERTED (unsourced literals): NVSim does not model endurance or "
+        std::string("ASSERTED") + pimid::provLabel(" (unsourced literals)") + ": NVSim does not model endurance or "
         "retention. No citation is attached to 1e15 cycles / 10 years.";
 
     return arch;
@@ -888,7 +889,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->endurance.retention_years = 10.0;
     arch->endurance.mlc_support = true;  // PCM can support MLC
     arch->endurance.endurance_source =
-        "ASSERTED (unsourced literals): NVSim does not model endurance or "
+        std::string("ASSERTED") + pimid::provLabel(" (unsourced literals)") + ": NVSim does not model endurance or "
         "retention. No citation is attached to 1e8 cycles / 10 years.";
 
     // ===== DATAPATH =====
@@ -1154,7 +1155,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->endurance.mlc_support = analog_capable;
     arch->endurance.analog_capable = analog_capable;
     arch->endurance.endurance_source =
-        "ASSERTED (unsourced literals): NVSim does not model endurance or "
+        std::string("ASSERTED") + pimid::provLabel(" (unsourced literals)") + ": NVSim does not model endurance or "
         "retention. No citation is attached to 1e11 cycles / 10 years.";
 
     // ===== DATAPATH =====
@@ -1386,7 +1387,8 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
      * function has just written above, which is the only way the width and
      * the bandwidth of a rung cannot end up describing different parts. */
     arch->bandwidth_limits.inference_method =
-        "DERIVED on read from the extracted datapath widths and clock";
+        pimid::debugChecks() ? "DERIVED on read from the extracted datapath widths and clock"
+                             : "computed on read from the extracted datapath widths and clock";
     arch->bandwidth_limits.confidence_level = "High - based on Ramulator model";
 
     // ===== ENERGY (from Ramulator) =====

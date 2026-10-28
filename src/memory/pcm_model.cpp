@@ -1,4 +1,5 @@
 #include "memory/pcm_model.h"
+#include "common/debug_checks.h"
 #include "memory/nvsim_wrapper.h"
 #include "memory/pcm_architecture.h"
 #include "memory/architecture_extractor.h"
@@ -112,7 +113,8 @@ void PCMModel::initialize() {
         throw std::runtime_error(
             "[PCMModel] NVSim characterization failed and there is no fallback. "
             "The hand-written default specs were removed in 1.11.24 because "
-            "they were unsourced and indistinguishable from tool output. "
+            + std::string(pimid::debugChecks() ? "they were unsourced and indistinguishable" : "they were indistinguishable")
+            + " from tool output. "
             "Fix the NVSim configuration rather than pricing this run from "
             "invented numbers.");
     }

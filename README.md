@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.159-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.160-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -137,8 +137,8 @@ system:
 | [docs/memory_spec_structs.md](docs/memory_spec_structs.md) | C++ architecture-spec structs |
 | [docs/cache_warehouse.md](docs/cache_warehouse.md) | characterization cache internals |
 | [docs/external.md](docs/external.md) | vendored external simulators |
-| [docs/sources.md](docs/sources.md) | every external number's provenance (papers, JEDEC standards, datasheets) |
-| [docs/derivations/hbm_gddr6_idd.md](docs/derivations/hbm_gddr6_idd.md) | how the HBM3, HBM2 and GDDR6 IDD rows are derived, with bands |
+| [docs/sources.md](docs/sources.md) | every external number's source (papers, JEDEC standards, datasheets) |
+| [docs/derivations/hbm_gddr6_idd.md](docs/derivations/hbm_gddr6_idd.md) | how the HBM3, HBM2 and GDDR6 IDD rows are computed, with bands |
 | [docs/external_models.md](docs/external_models.md) | plugging in your own models |
 
 ## Citation

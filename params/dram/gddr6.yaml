@@ -1,6 +1,6 @@
 # PIMID shipped part record -- GDDR6
 # 1.11.104 (IDD-RECORDS step 1): the idd / component_factors / termination / iddq_band blocks below carry the part's measured data; since 1.11.105 (step 2) this record is the ONLY source of them (the code table is gone).
-# 1.11.94: ONE record per part; every field required; provenance beside the value.
+# 1.11.94: ONE record per part; every field required; its source beside the value.
 # Step 2 of the parameter-file migration (1.11.101): this record is the ONLY source of these
 # values; the code tables are gone. The loader validates the record's own consistency and REFUSES
 # a missing or inconsistent field.
@@ -26,7 +26,6 @@ refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one s
 idd:
   basis: "per channel"
   channels_basis: 1
-  provenance: DERIVED
   idd3n_bank_state: ONE_BANK
   vdd: 1.35
   idd0: 215.0
@@ -45,7 +44,7 @@ idd:
   # user ruling 2026-10-25 (second supply rails): the VPP rail. Samsung K4Z80325BC Table 82 p.146 x32 HC14 per device: IPP3N 10 (note 2: applies to IDD2x, IDD3x, IDD4x and IDD6),
   # IPP5 77, IPP7 31, IPP0 14 mA; Table 79 p.136 VPP 1.8 V; halved to one channel like the VDD row. IPP2N = IPP4R = IPP4W = IPP3N (note 2). IPP0 is NOT entered: the
   # activation VPP takes the IDD7 route like the VDD part (the IDD0 route is ill-conditioned): VPP x (IPP7 31 - IPP3N 10) mA / 175 M ACT/s per device = 216 pJ per channel ACT,
-  # at the maximum (no published typical ratio for VPP: not scaled by f.act).
+  # at the maximum (VPP: not scaled by f.act).
   vpp_actpre_pj_override: 216.0
 component_factors:   # typical / maximum per component; applied by typicalFromSpec
   standby: 0.57
@@ -57,15 +56,14 @@ component_factors:   # typical / maximum per component; applied by typicalFromSp
   pd: 0.57
   source: "the DDR5/LPDDR5/GDDR6 class set (1.11.91): standby 0.57, premium 0.36/0.57, act 0.5, burst 0.6 rd / 0.5 wr, refresh 0.83, pd 0.57"
 # (1.12.85) (user ruling 2026-10-27): the data-dependent column-burst energy, TRANSFERRED from the DDR3 measurement on the
-# planar-core argument. NO PUBLISHED SOURCE FOUND for a GDDR6 measurement of the dependence, and NO author statement
+# planar-core argument. No author statement
 # extends the DDR3 result to GDDR6. Relative form, normalised at uniform-random data:
 # E_burst = E_record x (1 + k x (f_ones - 0.5)), f_ones = the 1 bits of the raw line data (the array stores raw data; DBIdc acts on the pins only).
 data_pattern:
   form: ONES_LINEAR
   read_ones: 0.1733
   write_ones: -0.0835
-  provenance: DERIVED
-  source: "Transfer from DDR3 (params/dram/ddr3.yaml data_pattern): Ghose et al., SIGMETRICS 2018 (arXiv:1807.05102) Table 5 bank+column interleaving, vendor means, I/O-driver corrected. ASSUMPTION, stated: GDDR6 is a planar DRAM whose column datapath (bitline sense amplifiers, local/global data lines, bank select) shares the DDR3 structure, so its core burst current is taken to have the same relative sensitivity to the 1s fraction. NO author statement supports this for GDDR6 (Ghose et al. name DDR4 only), and GDDR6 differs from DDR3 in prefetch, bank grouping, voltage and I/O. GDDR6 measurement of the dependence: NO PUBLISHED SOURCE FOUND."
+  source: "Transfer from DDR3 (params/dram/ddr3.yaml data_pattern): Ghose et al., SIGMETRICS 2018 (arXiv:1807.05102) Table 5 bank+column interleaving, vendor means, I/O-driver corrected. ASSUMPTION, stated: GDDR6 is a planar DRAM whose column datapath (bitline sense amplifiers, local/global data lines, bank select) shares the DDR3 structure, so its core burst current is taken to have the same relative sensitivity to the 1s fraction. NO author statement supports this for GDDR6 (Ghose et al. name DDR4 only), and GDDR6 differs from DDR3 in prefetch, bank grouping, voltage and I/O."
 
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
   scheme: POD

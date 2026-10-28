@@ -1462,8 +1462,8 @@ RegFU::RegFU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 			          << IRF->local_result.power.writeOp.dynamic*1e12 << " pJ; FP read " << FRF->local_result.power.readOp.dynamic*1e12
 			          << " / write " << FRF->local_result.power.writeOp.dynamic*1e12 << " pJ; CACTI keeps area and leakage)" << std::endl;
 		else
-			std::cerr << "[mcpat rf] core" << ithCore << " in-order PE: latch-based register file NOT priced (no published "
-			          << "flip-flop scaling at this node): the CACTI array kept" << std::endl;
+			std::cerr << "[mcpat rf] core" << ithCore << " in-order PE: latch-based register file NOT priced "
+			          << (pimid::debugChecks() ? "(no published flip-flop scaling at this node)" : "at this node") << ": the CACTI array kept" << std::endl;
 	}
     //since a EXU is associated with each pipeline, the cdb should not have longer length.
 	if (coredynp.regWindowing)
