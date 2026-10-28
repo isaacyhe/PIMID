@@ -234,12 +234,21 @@ class PimidSourceRowPolicy : public IRowPolicy, public Implementation {
       const int b = flat(req_it->addr_vec);
       if (b < 0 || b >= (int)m_armed.size()) return;
       if (!host_src(req_it->source_id)) { m_armed[b] = 0; return; }   // a PE access: the row is the PE's (open page)
-      if (m_explicit_close) {
-        Request req(req_it->addr_vec, m_PRE_req_id);
-        m_ctrl->priority_send(req);
-        s_explicit_closes++;
-      } else if (m_use_timeout) {
-        m_armed[b] = 1; m_last[b] = clk; m_addr[b] = req_it->addr_vec;
+      /* PIMID (1.12.151): a lock-step host request (source_id 1/3 with the chip split) holds its row on every chip of the
+       * rank: each chip's bank is closed (as each chip copy's was before) */
+      const int ls = (req_it->source_id == 1 || req_it->source_id == 3) ? m_ctrl->m_pimid_lockstep_chips : 1;
+      const int rl = (ls > 1 && m_dram->m_levels.contains("rank")) ? m_dram->m_levels("rank") : -1;
+      for (int c = 0; c < (rl >= 0 ? ls : 1); c++) {
+        AddrVec_t a = req_it->addr_vec;
+        if (rl >= 0) a[rl] = (a[rl] / ls) * ls + c;
+        const int bc = (rl >= 0) ? flat(a) : b;
+        if (m_explicit_close) {
+          Request req(a, m_PRE_req_id);
+          m_ctrl->priority_send(req);
+          s_explicit_closes++;
+        } else if (m_use_timeout && bc >= 0 && bc < (int)m_armed.size()) {
+          m_armed[bc] = 1; m_last[bc] = clk; m_addr[bc] = a;
+        }
       }
     };
 };

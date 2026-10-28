@@ -59,6 +59,8 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         const uint32_t bpg0 = std::max(1u, zinfo->hierarchy.banksPerBG), bgc0 = std::max(1u, zinfo->hierarchy.bgPerChip);
         hostRowSlots_ = (plv0 == 2) ? bpg0 : (plv0 == 3) ? bpg0 * bgc0 : 1u;   // the PE row model's slots per unit
         if (chipSplit_) config["MemorySystem"]["Controller"]["pimid_host_ca_bus"] = true;
+        /* (1.12.151): a host request is sent once and driven on the rank's chips in lock step by the controller */
+        if (chipSplit_) config["MemorySystem"]["Controller"]["pimid_lockstep_chips"] = (int)chips_;
     }
     config["MemorySystem"]["DRAM"]["org"]["channel"] = (int)nch;
     if (hasRankLevel)
@@ -443,17 +445,15 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
             if (chipSplit_) {
                 /* 1.12.18 (user ruling 2026-10-24): a host access drives every chip of the rank in lock step:
                  * its row is chips_ x the per-chip row (the PE row model's stripe is one chip's page), the same
-                 * bank and row in every chip; copy 0 is the counted request, the others its shadows. */
+                 * bank and row in every chip. (1.12.151): sent ONCE, at chip 0's address; the controller
+                 * (pimid_lockstep_chips) drives the rank's chips with it -- one queue entry, one rank-wide command
+                 * per step on the CA bus, one burst. Before, each chip was a request of its own (copy 0 counted,
+                 * the others source_id 4/6 shadows), so the queue held 4 entries per host request. */
                 const uint64_t s = hostRowSlots_ ? hostRowSlots_ : 1;
                 const uint64_t stripe = (row * s + slot) / chips_;
                 slot = (uint32_t)(stripe % s); row = stripe / s;
-                futex_lock(&lock_);
-                uint32_t grp = ++nextGrp_; if (grp == 0) grp = ++nextGrp_;
-                futex_unlock(&lock_);
-                for (uint32_t c = 0; c < chips_; c++) {
-                    const uint64_t a = composeAddr(unit, slot, row, lineAddr, &ch, (int)c);
-                    recordAddr(epoch, stamp, a, ch, isWrite, mi, (uint8_t)(c ? 1 : 0), grp);
-                }
+                addr = composeAddr(unit, slot, row, lineAddr, &ch, 0);
+                recordAddr(epoch, stamp, addr, ch, isWrite, mi);
             } else {
                 addr = composeAddr(unit, slot, row, lineAddr, &ch);
                 recordAddr(epoch, stamp, addr, ch, isWrite, mi);
@@ -1326,15 +1326,16 @@ void DramEpochReplay::finalize() {
         tickTo((uint64_t)((double)((uint64_t)zinfo->numPhases * pl) * ticksPerCycle_));
     }
     if (chipSplit_ && !chipReported_) {   /* 1.12.18 (user ruling 2026-10-24) */
-        uint64_t sa = 0, cw = 0;
+        uint64_t sa = 0, cw = 0, cc = 0, ca = 0;
         bool got = false;
         if (par()) {   // (1.12.144)
-            for (Chan& K : chans_) { uint64_t a = 0, b = 0; if (K.sys->pimid_chip_totals(a, b)) { sa += a; cw += b; got = true; } }
-        } else got = sys_ && sys_->pimid_chip_totals(sa, cw);
+            for (Chan& K : chans_) { uint64_t a = 0, b = 0, x = 0, y = 0; if (K.sys->pimid_chip_totals(a, b, x, y)) { sa += a; cw += b; cc += x; ca += y; got = true; } }
+        } else got = sys_ && sys_->pimid_chip_totals(sa, cw, cc, ca);
         if (got) {
             chipReported_ = true;
-            info("[mem] %s: 1.12.18: chip split x%u -- host lock-step shadow-copy ACTs %lu (host chip ACTs beyond chip 0, counted in the host ACTs for energy, never in the row counts); "
-                 "host candidate-cycles held by the DIMM CA bus %lu (cumulative, every window)", name_.c_str(), chips_, (unsigned long)sa, (unsigned long)cw);
+            info("[mem] %s: chip split x%u, host requests in lock step: host commands on the DIMM CA bus %lu, of them ACTs %lu (TIMING: one rank-wide ACT each); "
+                 "host chip ACTs beyond chip 0 %lu (ENERGY: every chip's ACT is in hostActivates); host candidate-cycles held by the DIMM CA bus %lu (cumulative, every window)",
+                 name_.c_str(), chips_, (unsigned long)cc, (unsigned long)ca, (unsigned long)sa, (unsigned long)cw);
         }
     }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);

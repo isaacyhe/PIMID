@@ -6,6 +6,51 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.151 -- DDR5 chip split: a lock-step host request is one queue entry and one rank-wide command per step
+
+- **The problem.** At a PE placement at or below the chip tier on a rank-level DRAM (every DDR5 host baseline and
+  co-sim of the corpus: BANK placement), each x8 chip is its own Ramulator rank, and a host request was replayed once
+  per chip: copy 0 (source_id 1/3) and three lock-step "shadow" copies (source_id 4/6), each a request of its own.
+  The CA bus already took one slot per command (only copy 0 waited for it and occupied it), so in TIMING a host ACT
+  was one ACT on the CA bus (16-core OpenMP stream_triad: 3.02 M CA-bus ACTs for 5.57 M requests) and in ENERGY
+  four chip ACTs (hostActivates 12.10 M). But the shadows were scheduled independently of copy 0: they never waited
+  for the CA bus, issued their own ACT/RD/WR whenever their chip was ready, sat in the read/write queues as 3 extra
+  entries per request, and the request completed with the slowest of the 4 copies.
+- **Mechanism (measured, 16-core DDR5 OpenMP stream_triad).** Not the write-drain watermarks: excluding the shadows
+  from the watermark and read-empty tests (a dev switch) moved the replayed host latency 275.8 -> 271.9 cycles and the
+  run time +1.1%. The cost is the slowest-copy completion of four independently scheduled copies: in 3.32 M of the
+  5.57 M requests (60%) a shadow finished after copy 0, on average 47.6 host cycles later over all requests; copy 0
+  alone averaged 232.7 cycles, the request (slowest copy) 280.3. Without shadows (a dev switch) the mean was 238.9.
+  gemv 16 cores: 58% of requests, +19.3 cycles; stream_triad 4 cores: 51%, +11.9 cycles. A 1-core pointer chase
+  (no load) is unaffected (146.9 vs 146.1).
+- **The fix (external/ramulator/src/dram_controller/impl/generic_dram_controller.cpp, external/zsim/src/
+  dram_epoch_replay.cpp, rowpolicy/basic_rowpolicies.cpp).** The replay sends a host request ONCE, at chip 0's
+  address, and sets the controller's pimid_lockstep_chips (4 on x8 DDR5). The controller drives the rank's chips with
+  that one request as a DIMM controller does: one queue entry (capacity, write-drain watermarks, FR-FCFS order,
+  read-after-write forwarding, auto-precharge choice); each command it needs is ONE rank-wide command, issued in the
+  same cycle to every chip that needs it, only when every one of them is ready, taking one CA-bus slot and one data
+  burst (one column command). Each chip keeps its own bank state, rows, tRRD/tFAW and power-down unit (a lock-step
+  request keeps all of them awake); where PE traffic has left the chips in different states, the least advanced
+  chips' command goes first (PRE, then ACT, then the column command, which issues on all chips together), so the
+  request still completes with its slowest chip. Every chip's ACT is counted for energy (hostActivates, unchanged
+  meaning); the chip-split line now prints the CA-bus commands and ACTs (timing) next to the chip ACTs past chip 0
+  (energy). The timeout / explicit-PRE host row policies close the row on every chip. PE (device) requests take the
+  same code paths as before.
+- **Validation (d7e9238d + chain vs this change; DDR5 host baselines, run time = ROI cycles).** omp stream_triad
+  1/4/16 cores -0.5/-2.0/-5.3%, replay host mean 137.1->135.4 / 159.5->151.7 / 275.8->238.1 cycles; gemv
+  -1.0/-1.6/-2.6%; bfs -0.3/-0.1/-0.3%; stencil_2d -0.5/-0.7/-3.4%; pointer_chase 1/16 -0.3/-0.2% (146.9->146.1,
+  160.3->159.4); mpi stream_triad 4 ranks host mean 227.2->193.3. CA-bus ACTs = hostActivates / 4 on every cell
+  (e.g. 2.92 M vs 11.67 M). Total power +0.0..+1.0% (more work per second); HBM3 cells (no chip split) identical.
+  Co-sim DDR5 omp stream_triad: run time identical, device mean 35.3 identical, host mean 906->737; co-sim DDR5 mpi
+  gemv: run time +0.05%, host mean 1107->1311 (a rank-wide host command now waits until all four chips' banks,
+  busy with PE traffic, are ready at once), device mean identical.
+- **Data impact.** DDR5 (and DDR4/LPDDR5) host baselines and co-sim host latencies at chip-or-below placements:
+  bandwidth-bound host baselines get faster (up to ~5% run time at 16 cores); latency-bound and PE-bound runs within
+  noise. HBM3, GDDR6, RANK/CHANNEL placements and PE-only traffic unchanged.
+
+  ((1.12.151): one queue entry and one rank-wide command per step, issued to every chip together; before, each chip
+  copy was its own request.)
+
 ## 1.12.150 -- every device NoC link, router and TSV is priced from measured activity; NoC duty cycles lie in [0, 1]; the router model is calibrated per shape on published routers
 
 - **Defect 1: a flat device fabric was priced as a tree it does not have, and its links were not priced.** An SRAM or

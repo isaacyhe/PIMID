@@ -32,6 +32,9 @@ class IDRAMController : public Clocked<IDRAMController> {
      * closed page with auto-precharge: a host column command (source_id 1/3, lock-step shadows 4/6) is issued as
      * RDA/WRA when no other queued request hits its row (chosen at issue; PE requests: open page). */
     bool m_pimid_host_autoprecharge = false;
+    /* PIMID (1.12.151): chips per rank one host request drives in lock step (the chip split; 1 = none). Set from the
+     * controller's pimid_lockstep_chips; the row policy closes a host row on every chip of the rank. */
+    int m_pimid_lockstep_chips = 1;
     Clk_t pimid_clk() const { return m_clk; }   // PIMID 1.12.18 (row policy): the controller clock, for a row-policy timer
   public:
     /**
@@ -58,9 +61,10 @@ class IDRAMController : public Clocked<IDRAMController> {
     /* PIMID 1.12.18: activate commands this controller ISSUED (every command
      * whose meta is_opening), cumulative; refresh-forced re-opens included. */
     virtual void pimid_cmd_totals(uint64_t& /*activates*/) const {}
-    /* PIMID 1.12.18 (user ruling 2026-10-24): ACTs of the host lockstep shadow copies (source_id 4/6) and the
-     * candidate-cycles a host command waited for the DIMM CA bus */
-    virtual void pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/) const {}
+    /* PIMID 1.12.18 (user ruling 2026-10-24): chip ACTs of the host lock-step requests beyond chip 0 and the
+     * candidate-cycles a host command waited for the DIMM CA bus; (1.12.151): the host commands that took a CA-bus
+     * slot (one per rank-wide command) and the ACTs among them */
+    virtual void pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/, uint64_t& /*caCmds*/, uint64_t& /*caActs*/) const {}
     /* PIMID 1.12.20: precharge power-down -- unit-cycles spent in power-down (an open interval counted to now),
      * the power-down units this controller holds, and the power-down exits (each cost tXP) */
     virtual void pimid_pd_totals(uint64_t& /*pdUnitCycles*/, uint64_t& /*units*/, uint64_t& /*exits*/) const {}

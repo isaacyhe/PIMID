@@ -35,17 +35,90 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     bool m_pimid_bank_parallel = false;
     int  m_pimid_banks_per_channel = 1;
     /* PIMID 1.12.18 (user ruling 2026-10-24): per-chip bank state for PE traffic at chip-level placement.
-     * Each x8 chip is its own Ramulator rank; a host request is sent once per chip, copy 0 with its own source_id
-     * (1 in the ROI, 3 outside) and the lockstep SHADOW copies with source_id + 3 (4 / 6): replayed, timed and
-     * state-changing, never in the row-hit/miss/conflict counts; their ACTs are host chip ACTs (energy).
+     * Each x8 chip is its own Ramulator rank; a host request (source_id 1 in the ROI, 3 outside) drives every chip of
+     * its rank in lock step (see m_pimid_ls; (1.12.151): one queue entry, before that one request per chip with the
+     * copies past chip 0 sent as source_id 4/6 "shadows"); its chip ACTs past chip 0 are host chip ACTs (energy).
      * The DIMM command/address bus binds HOST commands only (PE commands are issued by each chip's in-chip
-     * controller): a host copy-0 command occupies the channel's CA bus for its command cycles (the channel-level
-     * ACT-following constraint of the unfiltered timing table: DDR5 two-cycle ACT/RD/WR = 2, else 1); the shadow
-     * copies ride the same broadcast slot. Off unless the replay sets pimid_host_ca_bus. */
+     * controller): a host command occupies the channel's CA bus for its command cycles (the channel-level
+     * ACT-following constraint of the unfiltered timing table: DDR5 two-cycle ACT/RD/WR = 2, else 1), once for all
+     * the chips it is broadcast to. Off unless the replay sets pimid_host_ca_bus. */
     bool m_pimid_host_ca = false;
     std::vector<int> m_pimid_ca_occ;
     long m_pimid_ca_free = 0;
     uint64_t s_pimid_shadow_acts = 0, s_pimid_ca_waits = 0;
+    /* PIMID (1.12.151): LOCK-STEP host requests at the chip split. The replay sends a host request ONCE (chip 0's
+     * address, source_id 1/3) and sets pimid_lockstep_chips; the controller drives every chip of the rank with it
+     * as a DIMM controller does: one queue entry (buffer capacity, write-drain watermarks, scheduler), and each
+     * command it needs is ONE rank-wide command -- one CA-bus slot, one burst on the data bus -- issued in the same
+     * cycle to every chip that needs it (each chip keeps its own bank state, rows, tRRD/tFAW, power-down unit) and
+     * only when every one of them is ready (so the request completes with its slowest chip). Where PE traffic has
+     * left the chips in different states, the least advanced chips' command goes first (PRE, then ACT, then the
+     * column command, which issues on all chips together). Every chip's ACT is counted (energy: 4 chip ACTs per
+     * rank-wide ACT on a x8 DDR5 sub-channel); chips past 0 also in s_pimid_shadow_acts. Before (1.12.18) each chip
+     * copy was its own request (source_id 4/6): 4 queue entries per host request. */
+    int m_pimid_ls = 1, m_pimid_rank_lv = -1;
+    uint64_t s_pimid_ca_cmds = 0, s_pimid_ca_acts = 0;
+    std::vector<AddrVec_t> m_ls_a;   // the chips' addresses of the lock-step request last evaluated (ls_group_cmd)
+    std::vector<uint8_t> m_ls_sel;   // the chips the group command goes to
+    AddrVec_t m_ls_tmp;
+    bool pimid_ls(const Request& r) const { return m_pimid_ls > 1 && (r.source_id == 1 || r.source_id == 3); }
+    int ls_chip0(const AddrVec_t& a) const { return (a[m_pimid_rank_lv] / m_pimid_ls) * m_pimid_ls; }
+    int ls_stage(int cmd) const {
+      const auto& m = m_dram->m_command_meta(cmd);
+      return m.is_closing ? 0 : m.is_opening ? 1 : 2;
+    }
+    /* the rank-wide command the lock-step request r needs next: the least advanced chip's prerequisite command
+     * (closing < opening < column); m_ls_sel marks the chips that take it */
+    int ls_group_cmd(const Request& r) {
+      const int c0 = ls_chip0(r.addr_vec);
+      int g = -1, gs = 3;
+      for (int c = 0; c < m_pimid_ls; c++) {
+        m_ls_a[c] = r.addr_vec; m_ls_a[c][m_pimid_rank_lv] = c0 + c;
+        const int cmd = m_dram->get_preq_command(r.final_command, m_ls_a[c]);
+        m_ls_sel[c] = (uint8_t)cmd;   // provisional: the chip's own command (fits: command ids are small)
+        const int st = ls_stage(cmd);
+        if (st < gs) { gs = st; g = cmd; }
+      }
+      for (int c = 0; c < m_pimid_ls; c++) m_ls_sel[c] = ((int)m_ls_sel[c] == g) ? 1 : 0;
+      return g;
+    }
+    bool ls_ready(int cmd) {
+      for (int c = 0; c < m_pimid_ls; c++) if (m_ls_sel[c] && !pimid_ready(cmd, m_ls_a[c])) return false;
+      return true;
+    }
+    bool ls_pd_ok() const {
+      for (int c = 0; c < m_pimid_ls; c++) if (m_ls_sel[c] && !pd_ok(m_ls_a[c])) return false;
+      return true;
+    }
+    template <class Keys> bool ls_taken(const Keys& used) const {
+      for (int c = 0; c < m_pimid_ls; c++) {
+        if (!m_ls_sel[c]) continue;
+        for (const auto& k : used) if (pimid_same_bank(k, m_ls_a[c])) return true;
+      }
+      return false;
+    }
+    /* a closing command at a would close a row a request in the active buffer is opening (a lock-step request
+     * there holds the same bank of every chip of its rank) */
+    bool pimid_close_blocked(const AddrVec_t& a, const Request* self = nullptr) {
+      for (auto e = m_active_buffer.begin(); e != m_active_buffer.end(); ++e) {
+        if (&(*e) == self) continue;
+        if (pimid_ls(*e) && a[m_pimid_rank_lv] >= 0) {
+          m_ls_tmp = e->addr_vec; m_ls_tmp[m_pimid_rank_lv] = ls_chip0(e->addr_vec) + a[m_pimid_rank_lv] % m_pimid_ls;
+          if (pimid_same_bank(m_ls_tmp, a)) return true;
+        } else if (pimid_same_bank(e->addr_vec, a)) return true;
+      }
+      return false;
+    }
+    bool ls_close_blocked(const Request* self) {
+      for (int c = 0; c < m_pimid_ls; c++) if (m_ls_sel[c] && pimid_close_blocked(m_ls_a[c], self)) return true;
+      return false;
+    }
+    void pimid_count_act(int source_id, bool shadow) {   /* PIMID 1.12.18: a chip ACT of the host (1/3) past chip 0 is a "shadow" ACT */
+      const int sid_ = pimid_sid(source_id);
+      s_pimid_activates++; if (shadow || source_id >= 4) s_pimid_shadow_acts++;
+      if (sid_ == 1) s_pimid_src_acts++;
+      if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; }   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */
+    }
     /* PIMID 1.12.20: PRECHARGE POWER-DOWN in the replayed controller. A power-down unit (the rank -- with the
      * per-chip split, one chip -- or the whole channel on a standard without a rank level: HBM, GDDR6) with no
      * request queued and no command for pimid_pd_idle_clocks memory clocks enters power-down (CKE low). The first
@@ -92,7 +165,16 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       for (ReqBuffer* b : {&m_read_buffer, &m_write_buffer, &m_active_buffer, &m_priority_buffer}) {
         for (auto it = b->begin(); it != b->end() && nbusy < nu; ++it) {
           const int u = pd_unit(it->addr_vec);
-          if (u >= 0) { if (!m_pd_busy[u]) { m_pd_busy[u] = 1; nbusy++; } }
+          if (u >= 0 && pimid_ls(*it)) {   // PIMID (1.12.151): a lock-step host request keeps every chip of its rank awake
+            m_ls_tmp = it->addr_vec;
+            const int c0 = ls_chip0(it->addr_vec);
+            for (int c = 0; c < m_pimid_ls; c++) {
+              m_ls_tmp[m_pimid_rank_lv] = c0 + c;
+              const int uc = pd_unit(m_ls_tmp);
+              if (uc >= 0 && !m_pd_busy[uc]) { m_pd_busy[uc] = 1; nbusy++; }
+            }
+          }
+          else if (u >= 0) { if (!m_pd_busy[u]) { m_pd_busy[u] = 1; nbusy++; } }
           else { std::fill(m_pd_busy.begin(), m_pd_busy.end(), 1); nbusy = nu; }
         }
         if (nbusy >= nu) break;
@@ -151,7 +233,8 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       m_pimid_pd_txp = param<int>("pimid_pd_txp_clocks").desc("PIMID 1.12.20: power-down exit time tXP, memory clocks (0: from the ns/nCK pair).").default_val(0);
       m_pimid_pd_txp_ns = param<double>("pimid_pd_txp_ns").desc("PIMID 1.12.20: tXP, ns part of max(nCK, ns).").default_val(0.0);
       m_pimid_pd_txp_nck = param<int>("pimid_pd_txp_nck").desc("PIMID 1.12.20: tXP, nCK part of max(nCK, ns).").default_val(0);
-      m_pimid_host_ca = param<bool>("pimid_host_ca_bus").desc("PIMID 1.12.18: host commands obey the DIMM CA bus; lockstep shadow copies (source_id 4/6).").default_val(false);
+      m_pimid_host_ca = param<bool>("pimid_host_ca_bus").desc("PIMID 1.12.18: host commands obey the DIMM CA bus.").default_val(false);
+      m_pimid_ls = param<int>("pimid_lockstep_chips").desc("PIMID (1.12.151): chips of a rank a host request (source_id 1/3) drives in lock step (1: none).").default_val(1);
       m_scheduler = create_child_ifce<IScheduler>();
       m_refresh = create_child_ifce<IRefreshManager>();    
       m_rowpolicy = create_child_ifce<IRowPolicy>();    
@@ -179,6 +262,14 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_active_buffer.max_size *= m_pimid_banks_per_channel;
       }
 
+      if (m_pimid_ls > 1) {   /* PIMID (1.12.151): lock-step host requests need the rank level (the chips are its ranks) */
+        if (!m_dram->m_levels.contains("rank") || m_dram->m_organization.count[m_dram->m_levels("rank")] % m_pimid_ls != 0)
+          throw std::runtime_error("pimid_lockstep_chips: the DRAM has no rank level holding whole groups of lock-step chips");
+        m_pimid_rank_lv = m_dram->m_levels("rank");
+        m_ls_a.assign(m_pimid_ls, AddrVec_t());
+        m_ls_sel.assign(m_pimid_ls, 0);
+        m_pimid_lockstep_chips = m_pimid_ls;
+      } else m_pimid_ls = 1;
       if (m_pimid_host_ca) {   /* PIMID 1.12.18: CA occupancy per command, from the still-unfiltered channel level */
         const int ncmd = (int)m_dram->m_commands.size();
         /* 1.12.18 (AA10): the opening command by name, checked (LPDDR5 splits it into ACT-1/ACT-2); without one every
@@ -325,6 +416,12 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       ReqBuffer::iterator req_it;
       ReqBuffer* buffer = nullptr;
       bool request_found = schedule_request(req_it, buffer);
+      if (request_found && pimid_ls(*req_it)) {   /* PIMID (1.12.151): a lock-step host request issues one rank-wide command, on
+                                                   * every chip that needs it, when all of them are ready */
+        req_it->command = ls_group_cmd(*req_it);
+        request_found = ls_ready(req_it->command) &&
+                        !(m_dram->m_command_meta(req_it->command).is_closing && ls_close_blocked(&(*req_it)));
+      }
 
       // 2.1 Take row policy action
       m_rowpolicy->update(request_found, req_it);
@@ -335,7 +432,8 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       }
 
       // 4. Finally, issue the commands to serve the request
-      if (request_found) {
+      if (request_found && pimid_ls(*req_it)) pimid_issue(req_it, buffer);   // PIMID (1.12.151): the rank-wide issue
+      else if (request_found) {
         // If we find a real request to serve
         if (req_it->is_stat_updated == false) {
           update_request_stats(req_it);
@@ -343,7 +441,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
         pd_issued(req_it->addr_vec);   // PIMID 1.12.19
         m_dram->issue_command(req_it->command, req_it->addr_vec);
-        if (m_dram->m_command_meta(req_it->command).is_opening) { const int sid_ = pimid_sid(req_it->source_id); s_pimid_activates++; if (req_it->source_id >= 4) s_pimid_shadow_acts++; if (sid_ == 1) s_pimid_src_acts++; if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; } }   /* PIMID 1.12.18: a lockstep shadow (4/6) is a chip ACT of the host (1/3) */   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
+        if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
 
         // If we are issuing the last command, set depart clock cycle and move the request to the pending queue
         if (req_it->command == req_it->final_command) {
@@ -404,17 +502,20 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       ReqBuffer::iterator cand = buf.end();
       bool cand_hit = false;
       for (auto it = buf.begin(); it != buf.end(); ++it) {
+        if (pimid_ls(*it)) {   /* PIMID (1.12.151): a lock-step host request: its rank-wide command on every chip that needs it */
+          it->command = ls_group_cmd(*it);
+          if (ls_taken(used)) continue;
+          if (!ls_ready(it->command)) continue;
+          if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }
+          if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing && ls_close_blocked(&(*it))) continue;
+        } else {
         bool taken = false;
         for (const auto& k : used) if (pimid_same_bank(k, it->addr_vec)) { taken = true; break; }
         if (taken) continue;
         it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
         if (!pimid_ready(it->command, it->addr_vec)) continue;
         if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
-        if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing) {
-          bool blocks = false;
-          for (auto a = m_active_buffer.begin(); a != m_active_buffer.end(); ++a)
-            if (pimid_same_bank(a->addr_vec, it->addr_vec)) { blocks = true; break; }
-          if (blocks) continue;
+        if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing && pimid_close_blocked(it->addr_vec)) continue;   // (1.12.151): a lock-step entry holds its bank on every chip
         }
         const bool hit = (it->command == it->final_command);
         if (cand == buf.end() || (hit && !cand_hit) || (hit == cand_hit && it->arrive < cand->arrive)) {
@@ -444,7 +545,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
      *  2. pimid_pending_hit over the read, write and active queues = a count of queued requests per row.
      *  3. Read-after-write forwarding = a count of queued writes per address. */
     struct PlSlot { ReqBuffer::iterator it; uint64_t seq = 0; int cmd = -1; Clk_t nb = 0; int bank = -1; uint32_t ver = 0;
-                    uint32_t ep = 0; Clk_t inHeap = -1; bool cached = false, dead = false, active = false; };
+                    uint32_t ep = 0; Clk_t inHeap = -1; bool cached = false, dead = false, active = false, ls = false; };
     struct PlBuf {
       std::vector<PlSlot> S;
       std::vector<int> act;
@@ -471,6 +572,21 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     std::vector<uint32_t> m_pl_bank_ver;
     std::vector<int> m_pl_bank_radix, m_pl_row_radix;
     int m_pl_row_lv = -1;
+    int m_pl_rank_stride = 0;   // PIMID (1.12.151): flat-bank distance between two chips (ranks) of a lock-step group
+    /* PIMID (1.12.151): the flat bank of chip c of a lock-step slot (s.bank: the bank of the slot's own address) */
+    int pl_chip_bank(const PlSlot& s, int c) const { return s.bank + (c - s.it->addr_vec[m_pimid_rank_lv] % m_pimid_ls) * m_pl_rank_stride; }
+    uint32_t pl_ver(const PlSlot& s) const {   // the bank-state version a slot's evaluation depends on (a lock-step slot: every chip's bank)
+      if (!s.ls) return m_pl_bank_ver[s.bank];
+      uint32_t v = 0;
+      for (int c = 0; c < m_pimid_ls; c++) v += m_pl_bank_ver[pl_chip_bank(s, c)];
+      return v;
+    }
+    void pl_index(PlBuf& P, int id) {   // file slot id under its bank(s)
+      const PlSlot& s = P.S[id];
+      if (s.bank < 0) return;
+      if (!s.ls) { P.byBank[s.bank].push_back(id); return; }
+      for (int c = 0; c < m_pimid_ls; c++) P.byBank[pl_chip_bank(s, c)].push_back(id);
+    }
     uint32_t m_pl_ep = 1;
     int m_pl_mode = -1;   // -1 not set up, 0 = pimid_best (no pimid_ready_at or not bank-parallel), 1 = pl_best
     std::vector<FutureAction> m_pl_fa;   // the DRAM's future actions as seen last cycle
@@ -520,6 +636,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       m_pl_bank_radix.clear();
       size_t n = 1;
       for (int l = 0; l <= m_bank_addr_idx; l++) { m_pl_bank_radix.push_back(std::max(1, m_dram->m_organization.count[l])); n *= (size_t)m_pl_bank_radix.back(); }
+      if (m_pimid_ls > 1) { m_pl_rank_stride = 1; for (int l = m_pimid_rank_lv + 1; l <= m_bank_addr_idx; l++) m_pl_rank_stride *= m_pl_bank_radix[l]; }
       m_pl_bank_ver.assign(n, 0);
       AddrVec_t probe(m_dram->m_levels.size(), 0);
       m_pl_mode = (m_pimid_bank_parallel && m_bank_addr_idx >= 0 && m_dram->m_commands.contains("ACT") &&
@@ -563,10 +680,10 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       const int bi = (b == &m_read_buffer) ? 0 : (b == &m_write_buffer) ? 1 : -1;
       if (bi < 0 || m_pl_mode != 1) return;
       PlBuf& P = m_pb[bi];
-      PlSlot s; s.it = std::prev(b->end()); s.seq = P.seq++; s.bank = pl_bank_flat(r.addr_vec); s.active = true;
+      PlSlot s; s.it = std::prev(b->end()); s.seq = P.seq++; s.bank = pl_bank_flat(r.addr_vec); s.active = true; s.ls = pimid_ls(r);
       const int id = (int)P.S.size();
       P.S.push_back(s); P.act.push_back(id); P.live++;
-      if (s.bank >= 0) P.byBank[s.bank].push_back(id);
+      pl_index(P, id);
     }
     /* it is about to leave b */
     void pl_on_remove(ReqBuffer* b, ReqBuffer::iterator it) {
@@ -615,7 +732,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       decltype(P.far) w; P.far.swap(w);
       for (int id = 0; id < (int)P.S.size(); id++) {
         PlSlot& s = P.S[id];
-        if (s.bank >= 0) P.byBank[s.bank].push_back(id);
+        pl_index(P, id);
         if (s.active) { s.inHeap = -1; P.act.push_back(id); } else { s.inHeap = s.nb; pl_wait(P, s.nb, id); }
       }
       P.dead = 0; P.lastPick = -1;
@@ -666,10 +783,27 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         const int id = P.act[i];
         PlSlot& s = P.S[id];
         if (s.dead) { s.active = false; continue; }
-        const bool known = s.cached && s.ep == m_pl_ep && s.bank >= 0 && s.ver == m_pl_bank_ver[s.bank];
+        const bool known = s.cached && s.ep == m_pl_ep && s.bank >= 0 && s.ver == pl_ver(s);
         if (known && m_clk < s.nb) { s.active = false; if (s.inHeap != s.nb) { s.inHeap = s.nb; pl_wait(P, s.nb, id); } continue; }   // dormant (see above)
         P.act[k++] = id;
         auto it = s.it;
+        if (s.ls) {   /* PIMID (1.12.151): a lock-step host request -- its rank-wide command, ready when every chip taking it is
+                       * (the latest of their ready clocks; dormant until then unless a bank of one of its chips changes) */
+          it->command = ls_group_cmd(*it);
+          if (ls_taken(used)) continue;
+          if (!known) { s.cmd = it->command; s.cached = s.bank >= 0; s.ep = m_pl_ep; s.ver = s.bank >= 0 ? pl_ver(s) : 0; }
+          Clk_t ra = -1;
+          for (int c = 0; c < m_pimid_ls; c++) if (m_ls_sel[c]) { const Clk_t r = m_dram->pimid_ready_at(it->command, m_ls_a[c]); if (r > ra) ra = r; }
+          if (ra >= 0 && m_clk < ra) {
+            s.nb = ra;
+            if (s.cached) { s.active = false; if (s.inHeap != s.nb) { s.inHeap = s.nb; pl_wait(P, s.nb, id); } k--; }
+            continue;
+          }
+          s.nb = 0;
+          if (!ls_pd_ok()) continue;
+          if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }
+          if (m_dram->m_command_meta(it->command).is_closing && ls_close_blocked(&(*it))) continue;
+        } else {
         bool taken = false;
         for (const auto& u : used) if (pimid_same_bank(u, it->addr_vec)) { taken = true; break; }
         if (taken) continue;
@@ -687,11 +821,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         s.nb = 0;
         if (!pd_ok(it->addr_vec)) continue;   // = !pimid_ready
         if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
-        if (m_dram->m_command_meta(it->command).is_closing) {
-          bool blocks = false;
-          for (auto a = m_active_buffer.begin(); a != m_active_buffer.end(); ++a)
-            if (pimid_same_bank(a->addr_vec, it->addr_vec)) { blocks = true; break; }
-          if (blocks) continue;
+        if (m_dram->m_command_meta(it->command).is_closing && pimid_close_blocked(it->addr_vec)) continue;   // (1.12.151): a lock-step entry holds its bank on every chip
         }
         const bool hit = (it->command == it->final_command);
         if (cand < 0) { cand = id; cand_hit = hit; continue; }
@@ -737,7 +867,8 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       if (pl_row_count(req_it->addr_vec) > 1) return;   // a queued hit keeps the row open (PIMID (1.12.127): = pimid_pending_hit
                                                         // over the read, write and active queues, by index; the request itself is one of the count)
       const int ap = m_dram->m_commands(req_it->command == rd ? "RDA" : "WRA");
-      if (!pimid_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
+      if (pimid_ls(*req_it) ? !ls_ready(ap) : !pimid_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
+                                                                                              // (1.12.151): a lock-step request on every chip (ls_group_cmd set by the caller)
       req_it->command = ap;
       req_it->final_command = ap;
     }
@@ -746,13 +877,29 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       if (req_it->is_stat_updated == false) {
         update_request_stats(req_it);
       }
+      const bool ls = pimid_ls(*req_it);
+      if (ls) req_it->command = ls_group_cmd(*req_it);   // PIMID (1.12.151): the rank-wide command and the chips that take it
       pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
+      if (ls) {   /* PIMID (1.12.151): one rank-wide command, issued in this cycle to every chip that needs it */
+        const bool opening = m_dram->m_command_meta(req_it->command).is_opening;
+        const int c0 = req_it->addr_vec[m_pimid_rank_lv] % m_pimid_ls;
+        for (int c = 0; c < m_pimid_ls; c++) {
+          if (!m_ls_sel[c]) continue;
+          pd_issued(m_ls_a[c]);
+          pl_bump(m_ls_a[c]);
+          m_dram->issue_command(req_it->command, m_ls_a[c]);
+          if (opening) pimid_count_act(req_it->source_id, c != c0);   // every chip's ACT (energy); chips past chip 0 also as shadow ACTs
+        }
+      } else {
       pd_issued(req_it->addr_vec);   // PIMID 1.12.19
       pl_bump(req_it->addr_vec);   // PIMID (1.12.127): its bank's state may change
       m_dram->issue_command(req_it->command, req_it->addr_vec);
-      if (pimid_ca_host(*req_it) && req_it->command >= 0 && req_it->command < (int)m_pimid_ca_occ.size())   // PIMID 1.12.18
+      if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
+      }
+      if (pimid_ca_host(*req_it) && req_it->command >= 0 && req_it->command < (int)m_pimid_ca_occ.size()) {   // PIMID 1.12.18
         m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
-      if (m_dram->m_command_meta(req_it->command).is_opening) { const int sid_ = pimid_sid(req_it->source_id); s_pimid_activates++; if (req_it->source_id >= 4) s_pimid_shadow_acts++; if (sid_ == 1) s_pimid_src_acts++; if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; } }   /* PIMID 1.12.18: a lockstep shadow (4/6) is a chip ACT of the host (1/3) */   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
+        s_pimid_ca_cmds++; if (m_dram->m_command_meta(req_it->command).is_opening) s_pimid_ca_acts++;   // (1.12.151): one CA slot per rank-wide command
+      }
       if (req_it->command == req_it->final_command) {
         if (req_it->type_id == Request::Type::Read) {
           req_it->depart = m_clk + m_dram->m_read_latency;
@@ -921,7 +1068,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       for (size_t u = 0; u < m_pd_in.size(); u++) if (m_pd_in[u]) c += (uint64_t)(m_clk - m_pd_since[u]);
       pdUnitCycles += c; units += m_pd_in.size(); exits += s_pimid_pd_exits;
     }
-    void pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits) const override { shadowActs += s_pimid_shadow_acts; caWaits += s_pimid_ca_waits; }   // PIMID 1.12.18
+    void pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits, uint64_t& caCmds, uint64_t& caActs) const override {   // PIMID 1.12.18; (1.12.151): CA slots
+      shadowActs += s_pimid_shadow_acts; caWaits += s_pimid_ca_waits; caCmds += s_pimid_ca_cmds; caActs += s_pimid_ca_acts;
+    }
     /* PIMID 1.12.18 (ruling 17 / R0605): the host's share (source_id 1). */
     uint64_t s_pimid_src_hits = 0, s_pimid_src_misses = 0, s_pimid_src_conflicts = 0, s_pimid_src_acts = 0;
     void pimid_src_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates) const override {

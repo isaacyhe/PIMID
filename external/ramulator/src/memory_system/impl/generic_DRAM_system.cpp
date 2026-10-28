@@ -94,9 +94,9 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       return true;
     }
 
-    bool pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits) override {   // PIMID 1.12.18 (user ruling 2026-10-24)
-      shadowActs = caWaits = 0;
-      for (auto controller : m_controllers) controller->pimid_chip_totals(shadowActs, caWaits);
+    bool pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits, uint64_t& caCmds, uint64_t& caActs) override {   // PIMID 1.12.18 (user ruling 2026-10-24)
+      shadowActs = caWaits = caCmds = caActs = 0;
+      for (auto controller : m_controllers) controller->pimid_chip_totals(shadowActs, caWaits, caCmds, caActs);
       return true;
     }
     bool pimid_pd_totals(uint64_t& pdUnitCycles, uint64_t& units, uint64_t& exits) override {   // PIMID 1.12.19
