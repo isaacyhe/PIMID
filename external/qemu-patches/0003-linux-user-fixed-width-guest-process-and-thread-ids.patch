@@ -1,15 +1,19 @@
-PIMID: fixed-width guest process and thread IDs (-tid-base N)
+PIMID: fixed-width guest process and thread IDs in order of first sight (-tid-base N)
 
 QEMU user mode hands the guest the host's Linux process and thread IDs. glibc
 2.39's start_thread formats every new thread's ID in decimal (it names the
 thread's stack mapping "glibc: pthread user stack: %u", whether or not the name
 is applied), one _itoa iteration per digit, so the number of instructions a
 thread runs at its start followed the length of the host's IDs (5 to 7 digits
-on one cluster, set by how many processes the host had started).
+on one cluster, set by how many processes the host had started). The IDs
+themselves also reach the guest's memory: glibc stores a thread's ID in its
+thread descriptor and in the owner word of every mutex it locks, so a host-
+numbered ID made the contents of those memory lines differ between two runs.
 
 With -tid-base N (or QEMU_TID_BASE=N) every process, thread, process-group and
-session ID the guest sees is the host's plus N, and every such ID the guest
-passes back is the guest's minus N:
+session ID the guest sees is N + 4194304 + its order of first sight (1 for the
+first ID the guest is given, 2 for the next, ...), and every such ID the guest
+passes back is translated back to the host's:
  - returned: gettid, getpid, getppid, getpgrp, getpgid, getsid, setsid,
    set_tid_address, fork/vfork/clone/clone3, wait4/waitpid; the IDs written
    by CLONE_PARENT_SETTID / CLONE_CHILD_SETTID; si_pid of a delivered
@@ -21,16 +25,22 @@ passes back is the guest's minus N:
    calls, prlimit64, get_robust_list, pidfd_open, process_vm_readv/writev;
    "/proc/<id>/..." and "/proc/<id>/task/<id>/..." in open, openat and
    readlink(at).
-With N = 10000000 and pid_max at most 4194304 every guest-visible ID has
-eight digits. Not translated: IDs the kernel writes into priority-inheritance
-or robust futex words, and IDs inside /proc text other than /proc/self/stat.
+Host IDs stay below 4194305 (Linux's largest pid_max), so the sequence starts
+above every host ID plus N. The table is in memory shared with the processes
+the guest forks, so a parent and its child agree on every ID; a thread's entry
+is released when the thread exits. An ID the table cannot hold (more than
+1048575 IDs seen) is the host's plus N. With N = 10000000 every guest-visible
+ID has eight digits. The translation (pid_g2h) is exported to plugins, for a
+plugin that keys threads by their host ID.
+Not translated: IDs the kernel writes into priority-inheritance or robust
+futex words, and IDs inside /proc text other than /proc/self/stat.
 N = 0 (the default) leaves QEMU unchanged.
 
 diff --git a/linux-user/main.c b/linux-user/main.c
-index 60a695b..2fad601 100644
+index 60a695b..acc3118 100644
 --- a/linux-user/main.c
 +++ b/linux-user/main.c
-@@ -342,6 +342,18 @@ static void handle_arg_seed(const char *arg)
+@@ -342,6 +342,21 @@ static void handle_arg_seed(const char *arg)
      seed_optarg = arg;
  }
  
@@ -44,17 +54,20 @@ index 60a695b..2fad601 100644
 +        exit(EXIT_FAILURE);
 +    }
 +    qemu_pid_base = v;
++    if (v) {
++        qemu_pid_map_init();
++    }
 +}
 +
  static void handle_arg_gdb(const char *arg)
  {
      gdbstub = g_strdup(arg);
-@@ -518,6 +530,8 @@ static const struct qemu_argument arg_table[] = {
+@@ -518,6 +533,8 @@ static const struct qemu_argument arg_table[] = {
       "",           "log system calls"},
      {"seed",       "QEMU_RAND_SEED",   true,  handle_arg_seed,
       "",           "Seed for pseudo-random number generator"},
 +    {"tid-base",   "QEMU_TID_BASE",    true,  handle_arg_tid_base,
-+     "number",     "guest process and thread IDs are the host's plus this base"},
++     "number",     "guest process and thread IDs are this base plus 4194304 plus their order of first sight"},
      {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
       "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
  #ifdef CONFIG_PLUGIN
@@ -98,14 +111,115 @@ index f0a2257..c92c3a3 100644
      __get_user(sival_ptr, &tinfo->_sifields._rt._sigval.sival_ptr);
      info->si_value.sival_ptr = (void *)(long)sival_ptr;
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index 9f45450..f494900 100644
+index 9f45450..22cdff8 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
-@@ -6928,6 +6928,47 @@ typedef struct {
+@@ -6928,6 +6928,148 @@ typedef struct {
      sigset_t sigmask;
  } new_thread_info;
  
 +abi_long qemu_pid_base;   /* PIMID patch 0003 (user-internals.h) */
++
++/*
++ * PIMID patch 0003: the guest's IDs in order of first sight. Host IDs stay
++ * below 4194305 (Linux's largest pid_max), so the sequence starts above every
++ * host-plus-base ID and the two kinds never collide.
++ */
++#define PID_SEQ_FIRST 4194305
++#define PID_HOST_LIMIT 4194305
++#define PID_SEQ_LIMIT (1 << 20)
++typedef struct {
++    int lock;
++    int32_t next;
++    int32_t h2g[PID_HOST_LIMIT];   /* host ID -> sequence number (0: none) */
++    int32_t g2h[PID_SEQ_LIMIT];    /* sequence number -> host ID (0: none) */
++} PidMap;
++static PidMap *pid_map;
++
++void qemu_pid_map_init(void)
++{
++    void *p;
++    if (pid_map) {
++        return;
++    }
++    p = mmap(NULL, sizeof(PidMap), PROT_READ | PROT_WRITE,
++             MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++    pid_map = (p == MAP_FAILED) ? NULL : p;
++}
++
++static void pid_map_lock(void)
++{
++    while (__atomic_exchange_n(&pid_map->lock, 1, __ATOMIC_ACQUIRE)) {
++        sched_yield();
++    }
++}
++
++static void pid_map_unlock(void)
++{
++    __atomic_store_n(&pid_map->lock, 0, __ATOMIC_RELEASE);
++}
++
++abi_long pid_h2g(abi_long h)
++{
++    int32_t s;
++    if (!qemu_pid_base || h <= 0) {
++        return h;
++    }
++    if (!pid_map || h >= PID_HOST_LIMIT) {
++        return h + qemu_pid_base;
++    }
++    s = __atomic_load_n(&pid_map->h2g[h], __ATOMIC_ACQUIRE);
++    if (!s) {
++        pid_map_lock();
++        s = pid_map->h2g[h];
++        if (!s && pid_map->next < PID_SEQ_LIMIT - 1) {
++            s = ++pid_map->next;
++            pid_map->g2h[s] = (int32_t)h;
++            __atomic_store_n(&pid_map->h2g[h], s, __ATOMIC_RELEASE);
++        }
++        pid_map_unlock();
++        if (!s) {
++            return h + qemu_pid_base;
++        }
++    }
++    return qemu_pid_base + PID_SEQ_FIRST - 1 + s;
++}
++
++abi_long pid_g2h(abi_long g)
++{
++    abi_long r;
++    if (!qemu_pid_base) {
++        return g;
++    }
++    if (g < -qemu_pid_base) {
++        return -pid_g2h(-g);   /* a negated process group */
++    }
++    if (g <= qemu_pid_base) {
++        return g;
++    }
++    r = g - qemu_pid_base;
++    if (pid_map && r >= PID_SEQ_FIRST) {
++        abi_long s = r - PID_SEQ_FIRST + 1;
++        int32_t h = s < PID_SEQ_LIMIT ? __atomic_load_n(&pid_map->g2h[s], __ATOMIC_ACQUIRE) : 0;
++        return h ? h : r;   /* r: above every pid_max, no such host process */
++    }
++    return r;
++}
++
++void pid_map_release(abi_long h)
++{
++    int32_t s;
++    if (!qemu_pid_base || !pid_map || h <= 0 || h >= PID_HOST_LIMIT) {
++        return;
++    }
++    pid_map_lock();
++    s = pid_map->h2g[h];
++    if (s) {
++        pid_map->h2g[h] = 0;
++        pid_map->g2h[s] = 0;
++    }
++    pid_map_unlock();
++}
 +
 +static const char *proc_id_g2h(const char *q, char **out, char *end)
 +{
@@ -149,7 +263,7 @@ index 9f45450..f494900 100644
  static void *clone_func(void *arg)
  {
      new_thread_info *info = arg;
-@@ -6944,9 +6985,9 @@ static void *clone_func(void *arg)
+@@ -6944,9 +7086,9 @@ static void *clone_func(void *arg)
      info->tid = sys_gettid();
      task_settid(ts);
      if (info->child_tidptr)
@@ -161,7 +275,7 @@ index 9f45450..f494900 100644
      qemu_guest_random_seed_thread_part2(cpu->random_seed);
      /* Enable signals.  */
      sigprocmask(SIG_SETMASK, &info->sigmask, NULL);
-@@ -7141,7 +7182,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
+@@ -7141,7 +7283,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
                 mapping.  We can't repeat the spinlock hack used above because
                 the child process gets its own copy of the lock.  */
              if (flags & CLONE_CHILD_SETTID)
@@ -170,7 +284,7 @@ index 9f45450..f494900 100644
              ts = get_task_state(cpu);
              if (flags & CLONE_SETTLS)
                  cpu_set_tls (env, newtls);
-@@ -7150,7 +7191,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
+@@ -7150,7 +7292,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
          } else {
              cpu_clone_regs_parent(env, flags);
              if (flags & CLONE_PARENT_SETTID)
@@ -179,7 +293,7 @@ index 9f45450..f494900 100644
              if (flags & CLONE_PIDFD) {
                  int pid_fd = 0;
  #if defined(__NR_pidfd_open) && defined(TARGET_NR_pidfd_open)
-@@ -8645,7 +8686,7 @@ static int open_self_stat(CPUArchState *cpu_env, int fd)
+@@ -8645,7 +8787,7 @@ static int open_self_stat(CPUArchState *cpu_env, int fd)
      for (i = 0; i < 44; i++) {
          if (i == 0) {
              /* pid */
@@ -188,7 +302,7 @@ index 9f45450..f494900 100644
          } else if (i == 1) {
              /* app name */
              gchar *bin = g_strrstr(ts->bprm->argv[0], "/");
-@@ -8656,7 +8697,7 @@ static int open_self_stat(CPUArchState *cpu_env, int fd)
+@@ -8656,7 +8798,7 @@ static int open_self_stat(CPUArchState *cpu_env, int fd)
              g_string_assign(buf, "R "); /* we are running right now */
          } else if (i == 3) {
              /* ppid */
@@ -197,7 +311,7 @@ index 9f45450..f494900 100644
          } else if (i == 4) {
              /* pgid */
              g_string_printf(buf, FMT_pid " ", getpgrp());
-@@ -8923,6 +8964,8 @@ static int maybe_do_fake_open(CPUArchState *cpu_env, int dirfd,
+@@ -8923,6 +9065,8 @@ static int maybe_do_fake_open(CPUArchState *cpu_env, int dirfd,
  int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
                      int flags, mode_t mode, bool safe)
  {
@@ -206,7 +320,7 @@ index 9f45450..f494900 100644
      int fd = maybe_do_fake_open(cpu_env, dirfd, pathname, flags, mode, 0, safe);
      if (fd > -2) {
          return fd;
-@@ -8993,6 +9036,8 @@ static int do_openat2(CPUArchState *cpu_env, abi_long dirfd,
+@@ -8993,6 +9137,8 @@ static int do_openat2(CPUArchState *cpu_env, abi_long dirfd,
  
  ssize_t do_guest_readlink(const char *pathname, char *buf, size_t bufsiz)
  {
@@ -215,7 +329,15 @@ index 9f45450..f494900 100644
      ssize_t ret;
  
      if (!pathname || !buf) {
-@@ -11123,14 +11168,16 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -9819,6 +9965,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+ 
+             thread_cpu = NULL;
+             g_free(ts);
++            pid_map_release(sys_gettid());   /* PIMID patch 0003 */
+             rcu_unregister_thread();
+             pthread_exit(NULL);
+         }
+@@ -11123,14 +11270,16 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
      case TARGET_NR_readlinkat:
          {
              void *p2;
@@ -233,7 +355,7 @@ index 9f45450..f494900 100644
                  /*
                   * Don't worry about sign mismatch as earlier mapping
                   * logic would have thrown a bad address error.
-@@ -11139,7 +11186,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -11139,7 +11288,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
                  /* We cannot NUL terminate the string. */
                  memcpy(p2, real_exec_path, ret);
              } else {
@@ -242,7 +364,7 @@ index 9f45450..f494900 100644
              }
              unlock_user(p2, arg3, ret);
              unlock_user(p, arg2, 0);
-@@ -14699,6 +14746,143 @@ static bool send_through_syscall_filters(CPUState *cpu, int num,
+@@ -14699,6 +14848,143 @@ static bool send_through_syscall_filters(CPUState *cpu, int num,
      return filtered;
  }
  
@@ -386,7 +508,7 @@ index 9f45450..f494900 100644
  abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
                      abi_long arg2, abi_long arg3, abi_long arg4,
                      abi_long arg5, abi_long arg6, abi_long arg7,
-@@ -14747,8 +14931,15 @@ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -14747,8 +15033,15 @@ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
  
      if (!send_through_syscall_filters(cpu, num, arg1, arg2, arg3, arg4, arg5,
                                        arg6, arg7, arg8, &ret)) {
@@ -404,40 +526,58 @@ index 9f45450..f494900 100644
  
      if (unlikely(qemu_loglevel_mask(LOG_STRACE))) {
 diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
-index e7fbddd..2abf9cc 100644
+index e7fbddd..e6c2e4d 100644
 --- a/linux-user/user-internals.h
 +++ b/linux-user/user-internals.h
-@@ -61,6 +61,33 @@ int info_is_fdpic(struct image_info *info);
+@@ -61,6 +61,29 @@ int info_is_fdpic(struct image_info *info);
  
  void target_set_brk(abi_ulong new_brk);
  void syscall_init(void);
 +/*
 + * PIMID patch 0003: fixed-width guest process and thread IDs (-tid-base N).
 + * With N > 0 every process, thread, process-group and session ID the guest
-+ * sees is the host's ID plus N, and every such ID the guest passes back is
-+ * the guest's minus N. With N = 10000000 and Linux's pid_max at most 4194304,
-+ * every guest-visible ID has eight decimal digits, so guest code that formats
-+ * its thread ID (glibc 2.39's start_thread names each thread's stack with
-+ * "%u" of its TID) does the same work on every host. N = 0: unchanged.
++ * sees is N + 4194304 + its order of first sight (1 for the first ID the guest
++ * is given, 2 for the next, ...), and every such ID the guest passes back is
++ * translated back to the host's. With N = 10000000 every guest-visible ID has
++ * eight decimal digits, so guest code that formats its thread ID (glibc
++ * 2.39's start_thread names each thread's stack with "%u" of its TID) does the
++ * same work on every host, and the IDs themselves -- which glibc stores in
++ * its thread descriptors and mutex owner words, in memory the simulator reads
++ * -- do not depend on the host's process numbering. The table lives in memory
++ * shared by the processes the guest forks; a thread's entry is released when
++ * the thread exits. An ID the table cannot hold is the host's plus N, as
++ * before. N = 0: unchanged.
 + */
 +extern abi_long qemu_pid_base;
-+static inline abi_long pid_h2g(abi_long h)
-+{
-+    return (qemu_pid_base && h > 0) ? h + qemu_pid_base : h;
-+}
-+static inline abi_long pid_g2h(abi_long g)
-+{
-+    if (qemu_pid_base && g > qemu_pid_base) {
-+        return g - qemu_pid_base;
-+    }
-+    if (qemu_pid_base && g < -qemu_pid_base) {
-+        return g + qemu_pid_base;   /* a negated process group */
-+    }
-+    return g;
-+}
++void qemu_pid_map_init(void);
++abi_long pid_h2g(abi_long h);
++abi_long pid_g2h(abi_long g);
++void pid_map_release(abi_long h);
 +/* "/proc/<id>..." and "/proc/<x>/task/<id>..." with guest IDs, rewritten to host IDs */
 +const char *proc_path_g2h(const char *pathname, char *buf, size_t len);
 +
  abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
                      abi_long arg2, abi_long arg3, abi_long arg4,
                      abi_long arg5, abi_long arg6, abi_long arg7,
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 9899f16..7c9c6d8 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -22,6 +22,8 @@ if not enable_modules
+     # out of the box with dllexport/dllimport attribute we set in the code.
+   else
+     emulator_link_args += ['-Xlinker', '--dynamic-list=' + qemu_plugin_symbols.full_path()]
++    # PIMID patch 0003: pid_g2h for a plugin that keys threads by host ID
++    emulator_link_args += ['-Xlinker', '--dynamic-list=' + meson.current_source_dir() / 'pimid-pid.symbols']
+   endif
+ endif
+ 
+diff --git a/plugins/pimid-pid.symbols b/plugins/pimid-pid.symbols
+new file mode 100644
+index 0000000..4638dcd
+--- /dev/null
++++ b/plugins/pimid-pid.symbols
+@@ -0,0 +1,3 @@
++{
++  pid_g2h;
++};

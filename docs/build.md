@@ -19,6 +19,8 @@ git clone --depth 1 --branch v11.1.2 https://gitlab.com/qemu-project/qemu.git .
 git apply ../qemu-patches/0001-i386-one-rep-iteration-per-block-with-plugins.patch
 git apply ../qemu-patches/0002-x86_64-linux-user-reserved-va-without-vsyscall-page.patch
 git apply ../qemu-patches/0003-linux-user-fixed-width-guest-process-and-thread-ids.patch
+git apply ../qemu-patches/0004-linux-user-fixed-step-guest-time-stamp-counter.patch
+git apply ../qemu-patches/0005-linux-user-seeded-getrandom.patch
 mkdir build && cd build
 ../configure --target-list=x86_64-linux-user --enable-plugins --enable-tcg \
              --disable-docs --disable-werror
@@ -32,7 +34,7 @@ ninja -j$(nproc) qemu-x86_64
 > cores. Its plugin header includes `<glib.h>`, so building PIMID's plugins needs the glib
 > development headers (found through `pkg-config glib-2.0`), which building QEMU needs anyway.
 >
-> **All three patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
+> **All five patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
 > string instruction (`memset`, `memcpy`) for up to 65535 iterations inside one block execution;
 > ZSim ends a phase only at a block boundary, so a long one piled its timing events into one phase
 > and overflowed ZSim's global heap. With a plugin loaded the patch runs one iteration per block
@@ -43,11 +45,16 @@ ninja -j$(nproc) qemu-x86_64
 > guest -- the run stops with `qemu-x86_64: Cannot allocate vsyscall page` -- because the legacy
 > vsyscall page lies outside any reservation; the patch runs the guest without that page under
 > `-R`, as on a host booted with `vsyscall=none` (glibc reaches the time calls through the vDSO).
-> 0003 (since PIMID (1.12.124)): PIMID launches the guest with `-tid-base 10000000`: every process and
-> thread ID the guest sees is the host's plus 10000000 (eight digits on any Linux host), and every ID
-> it passes back is translated back (see [Reproducibility](architecture.md#reproducibility)). A QEMU
-> without the patch stops at once with `qemu: unknown option 'tid-base'`. Built from QEMU 11.1.2 with
-> the three patches, `qemu-x86_64` has md5 `6a3d45114415dee2fb51eed1997f757d` (configure as above).
+> 0003 (since PIMID (1.12.124), second version since (1.12.157)): PIMID launches the guest with
+> `-tid-base 10000000`: every process and thread ID the guest sees is 10000000 + 4194304 + its order of
+> first sight (eight digits, independent of the host's process numbering), and every ID it passes back
+> is translated back (see [Reproducibility](architecture.md#reproducibility)). A QEMU without the patch
+> stops at once with `qemu: unknown option 'tid-base'`. 0004 (since (1.12.157)): PIMID launches the guest
+> with `-tsc-step 1001`: the guest's time stamp counter advances by 1001 on every read instead of
+> following the host's; a QEMU without it stops at once with `qemu: unknown option 'tsc-step'`. 0005
+> (since (1.12.157)): with `-seed` the guest's `getrandom()` is answered from QEMU's seeded generator, as
+> `AT_RANDOM` already was (without it the host answered; a QEMU without 0005 runs, but the guest's heap
+> contents then differ between runs). Built from QEMU 11.1.2 with the five patches, `qemu-x86_64` has md5 `59266fcf3af6ef7bea13a3d3c8884e20` (configure as above).
 
 ## Guest libraries (since (1.12.135))
 

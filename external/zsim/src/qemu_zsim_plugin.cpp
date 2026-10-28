@@ -28,6 +28,9 @@
 #include <sys/mman.h>   // (1.12.107): MFD_CLOEXEC
 #include <fcntl.h>      // (1.12.107): O_ACCMODE, O_CLOEXEC
 #include <errno.h>
+#include <dlfcn.h>     // (1.12.157): dlsym of QEMU's pid_g2h (patch 0003)
+#include <sys/stat.h>   // (1.12.157): struct stat / statx answers given fixed host-identity fields
+#include <map>
 #include <atomic>
 #include <unordered_map>
 #include <map>   // 1.11.97: barrier-generation table
@@ -5363,7 +5366,82 @@ static void stackAtRoiBeginReg() {
 
 static uint32_t g_detFutexOp[MAX_VCPUS];   // (1.12.123): the futex op and nr_wake at entry
 static uint64_t g_detFutexNr[MAX_VCPUS];
+/* (1.12.157): THE GUEST'S FILE STATUS CARRIES NO HOST FILE STATE.
+ * stat, fstat, lstat, newfstatat and statx answered with the host file's device, inode, times,
+ * block size and block count: the dynamic linker stats every library it opens, glibc's stdio
+ * stats a stream at its first use, and the buffers stay in stack lines the measured DQ data
+ * statistics read later, so the data-pattern counters followed the host (access times change
+ * between two runs; device, inode and change times differ between two copies of a tree). When
+ * such a call succeeds, its answer is rewritten in the guest's buffer: device 1 (statx: 0:1),
+ * inode = the order in which the guest first saw that host file (1, 2, ...; so two names of one
+ * file still compare equal and two files still differ), every time 0, blocks = size / 512 rounded
+ * up, statx mount id 0. Type, permissions, links, owner, device number, size and the block size
+ * (glibc sizes a stream's buffer by it) stay the host's, except that a status of descriptor 0, 1 or 2 (fstat, or an empty path with
+ * AT_EMPTY_PATH) reports size 0: the guest's standard streams are the launcher's log files,
+ * whose length follows the log. */
+static bool readGuestString(uint64_t addr, std::string* out);   // below
+static uint64_t g_statWant[MAX_VCPUS];   // the guest buffer of the stat call in flight (0: none)
+static int g_statFd[MAX_VCPUS];          // its descriptor when it names one (else -1)
+static std::mutex g_statMu;
+static std::map<std::pair<uint64_t, uint64_t>, uint64_t> g_statIno;
+static uint64_t statGuestIno(uint64_t dev, uint64_t ino) {
+    std::lock_guard<std::mutex> g(g_statMu);
+    auto it = g_statIno.find({dev, ino});
+    if (it != g_statIno.end()) return it->second;
+    const uint64_t n = g_statIno.size() + 1;
+    g_statIno[{dev, ino}] = n;
+    return n;
+}
+static void statCallEnter(unsigned int vcpu, int64_t num, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    if (vcpu >= MAX_VCPUS) return;
+    g_statWant[vcpu] = 0; g_statFd[vcpu] = -1;
+    if (num == SYS_stat || num == SYS_lstat) g_statWant[vcpu] = a2;
+    else if (num == SYS_fstat) { g_statWant[vcpu] = a2; g_statFd[vcpu] = (int)a1; }
+    else if (num == SYS_newfstatat || num == SYS_statx) {
+        g_statWant[vcpu] = (num == SYS_newfstatat) ? a3 : a5;
+        const uint64_t flags = (num == SYS_newfstatat) ? a4 : a3;
+        std::string path;
+        if ((flags & AT_EMPTY_PATH) && (!a2 || (readGuestString(a2, &path) && path.empty()))) g_statFd[vcpu] = (int)a1;
+    }
+    if (g_statWant[vcpu]) g_statWant[vcpu] |= (num == SYS_statx) ? (1ull << 63) : 0;
+}
+static void statCallReturn(unsigned int vcpu, int64_t ret) {
+    if (vcpu >= MAX_VCPUS || !g_statWant[vcpu]) return;
+    const bool sx = (g_statWant[vcpu] >> 63) & 1;
+    const uint64_t buf = g_statWant[vcpu] & ~(1ull << 63);
+    const int fd = g_statFd[vcpu];
+    g_statWant[vcpu] = 0;
+    if (ret != 0) return;
+    const bool stream = fd >= 0 && fd <= 2;
+    const size_t len = sx ? sizeof(struct statx) : sizeof(struct stat);   // the x86_64 guest's layouts are the host's
+    GByteArray* b = g_byte_array_new();
+    if (qemu_plugin_read_memory_vaddr(buf, b, len) && b->len == len) {
+        if (sx) {
+            struct statx x; memcpy(&x, b->data, sizeof(x));
+            const uint64_t ino = statGuestIno(((uint64_t)x.stx_dev_major << 32) | x.stx_dev_minor, x.stx_ino);
+            x.stx_dev_major = 0; x.stx_dev_minor = 1; x.stx_ino = ino;
+            if (stream) x.stx_size = 0;
+            x.stx_blocks = (x.stx_size + 511) / 512;
+            memset(&x.stx_atime, 0, sizeof(x.stx_atime)); memset(&x.stx_btime, 0, sizeof(x.stx_btime));
+            memset(&x.stx_ctime, 0, sizeof(x.stx_ctime)); memset(&x.stx_mtime, 0, sizeof(x.stx_mtime));
+            x.stx_mnt_id = 0;
+            memcpy(b->data, &x, sizeof(x));
+        } else {
+            struct stat t; memcpy(&t, b->data, sizeof(t));
+            const uint64_t ino = statGuestIno((uint64_t)t.st_dev, (uint64_t)t.st_ino);
+            t.st_dev = 1; t.st_ino = (ino_t)ino;
+            if (stream) t.st_size = 0;
+            t.st_blocks = (t.st_size + 511) / 512;
+            memset(&t.st_atim, 0, sizeof(t.st_atim)); memset(&t.st_mtim, 0, sizeof(t.st_mtim)); memset(&t.st_ctim, 0, sizeof(t.st_ctim));
+            memcpy(b->data, &t, sizeof(t));
+        }
+        qemu_plugin_write_memory_vaddr(buf, b);
+    }
+    g_byte_array_free(b, TRUE);
+}
+
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
+    statCallReturn(vcpu_index, ret);   // (1.12.157): fixed host-identity fields of a file status
     if (g_detOrder && vcpu_index < MAX_VCPUS) {   // (1.12.123): a futex wait that returned is no longer watched
         const uint32_t t = vcpuToTid[vcpu_index];
         if (t < MAX_THREADS && g_detSleepWatch[t].exchange(0)) g_detSleepers.fetch_sub(1);
@@ -5385,12 +5463,16 @@ static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, vo
     }
     if (num == 56 && ret > 0 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // (1.12.76): hand the domain to the child
         {
-            /* (1.12.124): clone returns the guest's ID of the child, the host's plus QEMU's
-             * -tid-base (src/main.cpp kGuestTidBase); the child looks itself up by its
-             * host ID. Host IDs stay below 4194304, so a smaller value is already a
-             * host ID (a QEMU launched without -tid-base). */
+            /* (1.12.124): clone returns the guest's ID of the child; the child looks
+             * itself up by its host ID. (1.12.157): QEMU's -tid-base gives IDs in order of
+             * first sight (patch 0003), translated back by QEMU's own pid_g2h, which the
+             * patch exports to plugins; without it (a QEMU launched without -tid-base,
+             * or the patch's first version) the guest's ID is the host's plus the base,
+             * and host IDs stay below 4194304. */
+            typedef int64_t (*PidG2h)(int64_t);
+            static const PidG2h g2h = (PidG2h)dlsym(RTLD_DEFAULT, "pid_g2h");
             static const int64_t kGuestTidBase = 10000000;
-            const int hostTid = (int)(ret > kGuestTidBase ? ret - kGuestTidBase : ret);
+            const int hostTid = (int)(g2h ? g2h(ret) : (ret > kGuestTidBase ? ret - kGuestTidBase : ret));
             std::lock_guard<std::mutex> g(g_cloneMu);
             g_cloneDom[hostTid] = g_cloneDomPending[vcpu_index];
         }
@@ -5541,6 +5623,24 @@ static bool readGuestString(uint64_t addr, std::string* out) {
     g_byte_array_free(b, TRUE);
     return ok;
 }
+/* (1.12.157): THE GUEST NAMES PIMID'S MPI SHIM BY A FIXED PATH.
+ * The launcher gave the guest LD_PRELOAD and LD_LIBRARY_PATH with the build directory's own path,
+ * and the dynamic linker keeps those strings (the environment on the stack, each library's name in
+ * its link map), memory the measured DQ data statistics read: two equal-length copies of a tree
+ * gave different counts. The guest now opens the shim as /pimid-shim/libpimid_mpi.so and its MPI
+ * library names as /pimid-shim/guest_mpi/...; this plugin opens them from the directory the
+ * launcher names in PIMID_GUEST_SHIM_HOST_DIR (the host environment of QEMU, not the guest's). */
+static const char kGuestShimPrefix[] = "/pimid-shim/";
+static bool guestShimOpen(const std::string& path, uint64_t flags, uint64_t mode, int64_t* sysret) {
+    static const char* const hostDir = getenv("PIMID_GUEST_SHIM_HOST_DIR");
+    const size_t n = sizeof(kGuestShimPrefix) - 1;
+    if (!hostDir || !*hostDir || path.compare(0, n, kGuestShimPrefix) != 0) return false;
+    const std::string rest = path.substr(n);
+    if (rest.empty() || rest.find("..") != std::string::npos) { *sysret = -ENOENT; return true; }
+    const int fd = open((std::string(hostDir) + "/" + rest).c_str(), (int)flags, (mode_t)mode);
+    *sysret = fd < 0 ? -errno : fd;
+    return true;
+}
 static bool guestCpuSyscallFilter(unsigned int vcpu_index, int64_t num, uint64_t a1, uint64_t a2,
                                   uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                                   uint64_t a8, int64_t* sysret, void* userdata) {
@@ -5571,12 +5671,13 @@ static bool guestCpuSyscallFilter(unsigned int vcpu_index, int64_t num, uint64_t
         *sysret = !ok ? -EFAULT : (any ? 0 : -EINVAL);
         return true;
     }
-    uint64_t pathAddr = 0, flags = 0;
-    if (num == SYS_openat) { pathAddr = a2; flags = a3; }
-    else if (num == SYS_open) { pathAddr = a1; flags = a2; }
+    uint64_t pathAddr = 0, flags = 0, mode = 0;
+    if (num == SYS_openat) { pathAddr = a2; flags = a3; mode = a4; }
+    else if (num == SYS_open) { pathAddr = a1; flags = a2; mode = a3; }
     else return false;
     std::string path, content;
     if (!readGuestString(pathAddr, &path) || path.empty() || path[0] != '/') return false;
+    if (guestShimOpen(path, flags, mode, sysret)) return true;   // (1.12.157): /pimid-shim/...
     if (!guestCpuFile(path, &content)) return false;
     if (content.empty()) { *sysret = -ENOENT; return true; }
     if ((flags & O_ACCMODE) != O_RDONLY) { *sysret = -EACCES; return true; }
@@ -5597,6 +5698,7 @@ static void syscall_cb(unsigned int vcpu_index,
                        uint64_t a7, uint64_t a8, void *userdata) {
     if (vcpu_index >= MAX_VCPUS) return;
     if (vcpu_is_internal[vcpu_index]) return;
+    statCallEnter(vcpu_index, num, a1, a2, a3, a4, a5);   // (1.12.157): a file status call (its answer is rewritten at return)
     /* Guard: skip if we're already inside ZSim code (e.g., reentrant
      * callback from barrier/scheduler futex operations). */
     if (in_zsim[vcpu_index]) return;
@@ -6155,6 +6257,12 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_vcpu_syscall_ret_cb(id, syscall_ret_cb, NULL);   /* 1.12.17: MAP_STACK mappings */
     g_guestCpus = zinfo->numCores;   /* (1.12.107): the guest's processor queries (guestCpuSyscallFilter) */
     qemu_plugin_register_vcpu_syscall_filter_cb(id, guestCpuSyscallFilter, NULL);
+    /* (1.12.157): PIMID seeds the guest (-seed); QEMU answers the guest's getrandom() from that seed only with
+     * external/qemu-patches/0005, which exports this flag (without it the host answered, and glibc's malloc
+     * stores a getrandom() value in every freed chunk, memory the DQ data statistics read) */
+    if (!dlsym(RTLD_DEFAULT, "qemu_getrandom_seeded"))
+        panic("this QEMU lacks external/qemu-patches/0005-linux-user-seeded-getrandom.patch (docs/build.md): "
+              "the guest's getrandom() would come from the host");
     {
         char gm[256];
         snprintf(gm, sizeof(gm), "[guest] processors: the guest sees %u (0-%u, the simulated cores) in sched_getaffinity and"

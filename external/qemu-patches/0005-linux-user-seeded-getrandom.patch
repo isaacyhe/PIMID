@@ -1,0 +1,95 @@
+PIMID: with -seed, answer the guest's getrandom from the seeded generator
+
+QEMU's -seed fixes the auxiliary vector's AT_RANDOM bytes, but the guest's
+getrandom system call went to the host's getrandom. glibc's malloc draws its
+tcache key from getrandom and stores it in every freed chunk, so the contents
+of the guest's heap differed between two runs of the same program.
+
+With -seed (or QEMU_RAND_SEED) getrandom now fills the guest's buffer from
+QEMU's seeded generator, the same one AT_RANDOM comes from: each thread has its
+own sequence, seeded from its creator's at clone, so the bytes depend only on
+the order of the program's own calls. The call returns the full length; the
+flags (GRND_NONBLOCK, GRND_RANDOM, GRND_INSECURE) change nothing, since the
+generator never blocks. Without -seed the host's getrandom answers, as before.
+The flag (qemu_getrandom_seeded) is exported to plugins, so a plugin can
+require the patch.
+
+diff --git a/linux-user/main.c b/linux-user/main.c
+index c1cf9d8..d6d3c95 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -931,6 +931,7 @@ int main(int argc, char **argv, char **envp)
+         Error *err = NULL;
+         if (seed_optarg != NULL) {
+             qemu_guest_random_seed_main(seed_optarg, &err);
++            qemu_getrandom_seeded = true;   /* PIMID patch 0005 */
+         } else {
+             qcrypto_init(&err);
+         }
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index 22cdff8..f7d8e35 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -6929,6 +6929,7 @@ typedef struct {
+ } new_thread_info;
+ 
+ abi_long qemu_pid_base;   /* PIMID patch 0003 (user-internals.h) */
++bool qemu_getrandom_seeded;   /* PIMID patch 0005 (user-internals.h) */
+ 
+ /*
+  * PIMID patch 0003: the guest's IDs in order of first sight. Host IDs stay
+@@ -11603,7 +11604,13 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+         if (!p) {
+             return -TARGET_EFAULT;
+         }
+-        ret = get_errno(getrandom(p, arg2, arg3));
++        if (qemu_getrandom_seeded) {
++            /* PIMID patch 0005: -seed answers getrandom from QEMU's seeded generator */
++            qemu_guest_getrandom_nofail(p, arg2);
++            ret = arg2;
++        } else {
++            ret = get_errno(getrandom(p, arg2, arg3));
++        }
+         unlock_user(p, arg1, ret);
+         return ret;
+ #endif
+diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
+index 94e581c..ab35fe3 100644
+--- a/linux-user/user-internals.h
++++ b/linux-user/user-internals.h
+@@ -83,6 +83,13 @@ extern abi_long qemu_pid_base;
+  * the host's time stamp counter. S = 0 (the default): unchanged.
+  */
+ extern uint64_t qemu_tsc_step;
++/*
++ * PIMID patch 0005: with -seed (QEMU_RAND_SEED) the guest's getrandom() is
++ * answered from QEMU's seeded generator (each thread's own sequence, seeded
++ * from its creator's at clone), as AT_RANDOM already is; without -seed the
++ * host's getrandom answers, unchanged.
++ */
++extern bool qemu_getrandom_seeded;
+ void qemu_pid_map_init(void);
+ abi_long pid_h2g(abi_long h);
+ abi_long pid_g2h(abi_long g);
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 7c9c6d8..231e4b7 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -24,6 +24,8 @@ if not enable_modules
+     emulator_link_args += ['-Xlinker', '--dynamic-list=' + qemu_plugin_symbols.full_path()]
+     # PIMID patch 0003: pid_g2h for a plugin that keys threads by host ID
+     emulator_link_args += ['-Xlinker', '--dynamic-list=' + meson.current_source_dir() / 'pimid-pid.symbols']
++    # PIMID patch 0005: qemu_getrandom_seeded, for a plugin that requires the seeded getrandom
++    emulator_link_args += ['-Xlinker', '--dynamic-list=' + meson.current_source_dir() / 'pimid-random.symbols']
+   endif
+ endif
+ 
+diff --git a/plugins/pimid-random.symbols b/plugins/pimid-random.symbols
+new file mode 100644
+index 0000000..0b8a2fe
+--- /dev/null
++++ b/plugins/pimid-random.symbols
+@@ -0,0 +1,3 @@
++{
++  qemu_getrandom_seeded;
++};

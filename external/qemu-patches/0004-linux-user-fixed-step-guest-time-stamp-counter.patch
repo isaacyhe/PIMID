@@ -1,0 +1,88 @@
+PIMID: a fixed-step guest time stamp counter (-tsc-step S)
+
+QEMU user mode answers the guest's RDTSC and RDTSCP with the host's time stamp
+counter. The guest's dynamic linker reads it at startup (its startup timing)
+and stores the values in its data, and glibc's adaptive mutex reads it for its
+backoff jitter, so host time reached the guest's memory and differed between
+two runs of the same program.
+
+With -tsc-step S (or QEMU_TSC_STEP=S) the counter the guest reads advances by
+S on every read of the reading thread and starts at 0; a new thread or process
+starts from its creator's count (the CPU state is copied at clone and fork).
+Every read therefore returns a larger value than the thread's previous one, and
+a wait for T ticks ends after T/S reads. S = 0 (the default) leaves QEMU
+unchanged.
+
+diff --git a/linux-user/i386/cpu_loop.c b/linux-user/i386/cpu_loop.c
+index fe922fc..fb9e701 100644
+--- a/linux-user/i386/cpu_loop.c
++++ b/linux-user/i386/cpu_loop.c
+@@ -28,8 +28,19 @@
+ /***********************************************************/
+ /* CPUX86 core interface */
+ 
++uint64_t qemu_tsc_step;   /* PIMID patch 0004 (user-internals.h) */
++
+ uint64_t cpu_get_tsc(CPUX86State *env)
+ {
++    if (qemu_tsc_step) {
++        /*
++         * PIMID patch 0004: the guest's time stamp counter advances by a fixed
++         * step on every read of this thread; a new thread or process starts
++         * from its creator's count (cpu_copy copies env->tsc).
++         */
++        env->tsc += qemu_tsc_step;
++        return env->tsc;
++    }
+     return cpu_get_host_ticks();
+ }
+ 
+diff --git a/linux-user/main.c b/linux-user/main.c
+index acc3118..c1cf9d8 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -357,6 +357,18 @@ static void handle_arg_tid_base(const char *arg)
+     }
+ }
+ 
++static void handle_arg_tsc_step(const char *arg)
++{
++    /* PIMID patch 0004: a fixed-step guest time stamp counter */
++    char *end;
++    unsigned long long v = strtoull(arg, &end, 10);
++    if (*end || !*arg || v > 0x100000000ULL) {
++        fprintf(stderr, "qemu: -tsc-step expects a number from 0 to 4294967296\n");
++        exit(EXIT_FAILURE);
++    }
++    qemu_tsc_step = v;
++}
++
+ static void handle_arg_gdb(const char *arg)
+ {
+     gdbstub = g_strdup(arg);
+@@ -535,6 +547,8 @@ static const struct qemu_argument arg_table[] = {
+      "",           "Seed for pseudo-random number generator"},
+     {"tid-base",   "QEMU_TID_BASE",    true,  handle_arg_tid_base,
+      "number",     "guest process and thread IDs are this base plus 4194304 plus their order of first sight"},
++    {"tsc-step",   "QEMU_TSC_STEP",    true,  handle_arg_tsc_step,
++     "number",     "the guest's time stamp counter advances by this step on every read (0: the host's)"},
+     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
+      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
+ #ifdef CONFIG_PLUGIN
+diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
+index e6c2e4d..94e581c 100644
+--- a/linux-user/user-internals.h
++++ b/linux-user/user-internals.h
+@@ -77,6 +77,12 @@ void syscall_init(void);
+  * before. N = 0: unchanged.
+  */
+ extern abi_long qemu_pid_base;
++/*
++ * PIMID patch 0004: with -tsc-step S > 0 the guest's RDTSC and RDTSCP read a
++ * counter that advances by S on every read of the reading thread, instead of
++ * the host's time stamp counter. S = 0 (the default): unchanged.
++ */
++extern uint64_t qemu_tsc_step;
+ void qemu_pid_map_init(void);
+ abi_long pid_h2g(abi_long h);
+ abi_long pid_g2h(abi_long g);

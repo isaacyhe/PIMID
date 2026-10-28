@@ -757,7 +757,9 @@ static void noteGuestBindNow() {
  *     arguments) to a multiple of 4096 bytes, so the stack pointer at main
  *     depends only on the number of arguments and variables.
  *  3. AT_RANDOM. QEMU fills the 16 auxv random bytes (and answers getrandom())
- *     from the host's generator; `-seed` makes both a fixed sequence.
+ *     from the host's generator; `-seed` makes both a fixed sequence (getrandom()
+ *     only since (1.12.157), external/qemu-patches/0005: QEMU passed it to the host,
+ *     and glibc's malloc stores its value in every freed chunk).
  * The main stack is sized explicitly (`-s 8M`, QEMU's default) so the host's
  * stack rlimit does not size it.
  * All of these are QEMU's documented user-mode options. */
@@ -772,8 +774,25 @@ static const char* const kGuestSeed       = "0";
  * digit. The host's PID counter (5, 6 or 7 digits on one cluster) thereby
  * moved every multi-threaded result. With -tid-base every ID the guest sees
  * is the host's plus 10000000, eight digits on any Linux host (pid_max is at
- * most 4194304), and the IDs the guest passes back are translated back. */
+ * most 4194304), and the IDs the guest passes back are translated back.
+ * (1.12.157): the IDs no longer follow the host's numbering either: glibc stores
+ * them in its thread descriptors and mutex owner words, lines the measured DQ
+ * data statistics read, so the data-pattern counters (and the DQ I/O power)
+ * differed between two runs of the same cell. Every ID is now 10000000 +
+ * 4194304 + its order of first sight (patch 0003, second version). */
 static const char* const kGuestTidBase    = "10000000";
+/* (1.12.157): A FIXED-STEP GUEST TIME STAMP COUNTER (QEMU -tsc-step, patch 0004).
+ * RDTSC gave the guest the host's counter: the dynamic linker stores its
+ * startup timings in its data, and the lines around them are read and written
+ * back inside the ROI, so host time reached the measured DQ data statistics.
+ * The counter now advances by 1001 on every read of the reading thread (a new
+ * thread starts from its creator's count). The step is odd, so the low bits
+ * glibc's adaptive mutex takes as its backoff jitter still vary from read to
+ * read, and about the cost of a short timed loop on a 3 GHz core (a tick-based
+ * timeout of T ticks expires after T/1001 reads). Guest code that waits on the
+ * counter therefore still ends; the shipped guest code reads it only in the
+ * dynamic linker's startup timing and in that bounded mutex backoff. */
+static const char* const kGuestTscStep    = "1001";
 static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
 static const size_t      kGuestStringBlock = 4096;
 /* (1.12.107): THE GUEST FINDS ITS LIBRARIES WITHOUT THE HOST'S LOADER CACHE.
@@ -923,7 +942,8 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
     std::vector<std::string> o;
     if (!guestSysroot().empty()) { o.push_back("-L"); o.push_back(guestSysroot()); }   // (1.12.135): pinned guest libraries
     const std::vector<std::string> o0 = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
-                                  "-seed", kGuestSeed, "-tid-base", kGuestTidBase};
+                                  "-seed", kGuestSeed, "-tid-base", kGuestTidBase,
+                                  "-tsc-step", kGuestTscStep};   // (1.12.157): patch 0004
     o.insert(o.end(), o0.begin(), o0.end());
     std::map<std::string, std::string> genv;   // name -> NAME=VALUE, sorted by name
     std::vector<std::string> inherited;        // kept values QEMU's -E cannot carry (a comma)
@@ -993,7 +1013,8 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
 static void noteGuestLaunch(size_t envVars, const std::string& binary) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
-              << kGuestSeed << "), guest thread and process IDs the host's plus " << kGuestTidBase << " (-tid-base), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
+              << kGuestSeed << "), guest thread and process IDs " << kGuestTidBase << " + 4194304 + their order of first sight (-tid-base),"
+              << " time stamp counter +" << kGuestTscStep << " per read (-tsc-step), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
               << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), libraries"
               << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
               << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]; guest libraries "
@@ -1351,6 +1372,17 @@ static std::string guestMpiLibDir(const std::string& shimPath) {
         }
     }
     return dir;
+}
+/* (1.12.157): the guest names the shim by a fixed path (/pimid-shim/, opened by the ZSim plugin from
+ * PIMID_GUEST_SHIM_HOST_DIR, the shim's directory): the guest keeps these strings in its memory,
+ * so a tree-dependent path changed the measured DQ data of two equal-length copies of a tree.
+ * Adds LD_PRELOAD (and LD_LIBRARY_PATH when guestMpiLibDir could make its directory) to guestSet
+ * and sets the host variable the plugin reads; userLibPath is guestUserLibPath's value. */
+static void guestShimEnv(const std::string& shimPath, const std::string& userLibPath, std::vector<std::string>* guestSet) {
+    const size_t slash = shimPath.rfind('/');
+    setenv("PIMID_GUEST_SHIM_HOST_DIR", slash == std::string::npos ? "." : shimPath.substr(0, slash).c_str(), 1);
+    guestSet->push_back("LD_PRELOAD=/pimid-shim/libpimid_mpi.so");
+    if (!guestMpiLibDir(shimPath).empty()) guestSet->push_back("LD_LIBRARY_PATH=/pimid-shim/guest_mpi" + userLibPath);
 }
 static std::string guestUserLibPath(const std::map<std::string, std::string>& workloadEnv) {   // (1.12.122): ":" + a workload.env value
     auto it = workloadEnv.find("LD_LIBRARY_PATH");
@@ -26354,9 +26386,7 @@ int main(int argc, char** argv) {
                     setWorkloadEnv(config.workload_env);   // (1.12.120): LD_* entries reach the guest only
                     std::vector<std::string> guest_set = {kGuestBindNowEnv};   // 1.12.18 (ruling 2026-10-24): bind at load
                     if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
-                        guest_set.push_back("LD_PRELOAD=" + mpi_thread_lib);
-                        const std::string mdir = guestMpiLibDir(mpi_thread_lib);   // (1.12.122)
-                        if (!mdir.empty()) guest_set.push_back("LD_LIBRARY_PATH=" + mdir + guestUserLibPath(config.workload_env));
+                        guestShimEnv(mpi_thread_lib, guestUserLibPath(config.workload_env), &guest_set);   // (1.12.122); (1.12.157): fixed path
                     }
                     // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
                     execGuestQemu(guestQemuArgv(qemu_binary, guest_set, plugin_arg, config.workload_binary,
@@ -26899,9 +26929,7 @@ int main(int argc, char** argv) {
                     // LD_PRELOAD must be GUEST-scoped (qemu -E): a host-env preload
                     // would load the interposer into QEMU itself.
                     if (config.workload_type == "mpi" && config.mpi_ranks > 0) {
-                        guest_set.push_back("LD_PRELOAD=" + sys_mpi_lib);
-                        const std::string mdir = guestMpiLibDir(sys_mpi_lib);   // (1.12.122)
-                        if (!mdir.empty()) guest_set.push_back("LD_LIBRARY_PATH=" + mdir + guestUserLibPath(config.workload_env));
+                        guestShimEnv(sys_mpi_lib, guestUserLibPath(config.workload_env), &guest_set);   // (1.12.122); (1.12.157): fixed path
                     }
                     // (1.12.62): the guest's layout, environment and AT_RANDOM are fixed by the launch (guestQemuArgv)
                     execGuestQemu(guestQemuArgv(qemu_binary, guest_set, plugin_arg, config.workload_binary,

@@ -6,6 +6,63 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.157 -- the measured data carries no host values: two runs of a cell give the same data-pattern counts
+
+- **Problem.** The measured data statistics (the DQ data-pattern counters `dq*`, the wire activity `nocWire*` and
+  `hostFabWire*`, and the DQ I/O and termination power priced from them) differed between two runs of the same cell
+  (pecount_HBM3_mpi_gemv_pe64: 2.990652 vs 2.990655 W at 1.12.144; DQ write-data bit counts of 1-core OpenMP host
+  baselines; host-side DQ counters of co-sim and 4-core MPI baselines) and between two copies of a tree with paths
+  of equal length. Cycles and request counts repeated.
+- **Root cause.** Each line is read when its access is simulated, on the issuing thread, so the read time is not
+  the cause: the guest's own memory held values that came from the host, and the lines holding them were read or
+  written back inside the counted window:
+  - the time stamp counter (RDTSC): the dynamic linker stores its startup timings in its data, beside variables
+    the program uses later; glibc's adaptive mutex reads it for its backoff;
+  - thread and process IDs, the host's plus 10000000 (patch 0003): glibc stores them in every thread descriptor
+    and in the owner word of every mutex it locks;
+  - `getrandom()`: QEMU passed it to the host (`-seed` fixed only `AT_RANDOM`); glibc's malloc stores the value in
+    every freed chunk;
+  - file status: `stat`/`fstat`/`newfstatat`/`statx` returned the host file's device, inode and times (the
+    dynamic linker stats each library; stdio stats a stream at its first use: rank 0's "ROI end" line, inside the
+    counted window of a device-scope MPI cell, carried the log file's inode, size and times);
+  - the MPI shim's path: `LD_PRELOAD` and `LD_LIBRARY_PATH` named the build directory, and the dynamic linker keeps
+    those strings (environment, link-map names).
+- **Fix (external/qemu-patches/0003 second version, 0004, 0005; external/zsim/src/qemu_zsim_plugin.cpp;
+  src/main.cpp).**
+  - QEMU `-tsc-step 1001` (new patch 0004): the guest's RDTSC/RDTSCP read a counter that advances by 1001 on every
+    read of the reading thread (a new thread starts from its creator's count). The step is odd, so the low bits
+    glibc's mutex takes as backoff jitter still vary from read to read, and a wait of T ticks ends after T/1001
+    reads; the shipped guest code reads the counter only in the dynamic linker's startup timing and that bounded
+    backoff (libgomp and the MPI shim never read it).
+  - `-tid-base 10000000` (patch 0003, second version): every ID the guest sees is 10000000 + 4194304 + its order
+    of first sight (eight digits as before), translated back through a table shared with forked processes; a
+    thread's entry is released when it exits; `kill`, `tgkill`, `wait4`, the `sched_*` calls and `/proc/<id>/...`
+    paths translate as before. QEMU exports the translation to plugins (`pid_g2h`), which the ZSim plugin uses for
+    the clone hand-off.
+  - `-seed` now covers `getrandom()` (new patch 0005: QEMU's seeded generator, each thread its own sequence);
+    the launch line's "AT_RANDOM/getrandom seeded" is true from this release. The plugin stops at load, naming the
+    patch, on a QEMU without it.
+  - The plugin rewrites every successful file-status answer: device 1, inode = the order in which the guest first
+    saw that host file (two names of one file still compare equal), all times 0, blocks = size / 512 rounded up,
+    `statx` mount id 0, size 0 for descriptors 0-2 (the launcher's log files). Type, permissions, links, owner,
+    device number, size and block size stay the host's (glibc sizes a stream's buffer by the block size: a
+    canonical 4096 moved serial cells' cycles, so it is left alone).
+  - The guest opens the MPI shim as `/pimid-shim/libpimid_mpi.so` and its MPI library names under
+    `/pimid-shim/guest_mpi/`; the plugin opens them from the shim's directory (host variable
+    `PIMID_GUEST_SHIM_HOST_DIR`, not passed to the guest).
+- **Required QEMU.** QEMU 11.1.2 with the five patches of external/qemu-patches (md5 `59266fcf3af6ef7bea13a3d3c8884e20`,
+  docs/build.md). A QEMU without 0004 stops at once (`qemu: unknown option 'tsc-step'`); without 0005 the plugin
+  stops naming the patch.
+- **Data impact.** Cycles unchanged on the 116-cell validation set (serial, OpenMP, host
+  baselines, co-sim) and on the shared-memory cells of the exact-repeat sample; the data-pattern counters of the
+  lines that held host values change (co-sim `dqWr*` and their DQ termination / array power in the last digits,
+  `hostFabWire256Toggles` of 16-core host baselines). Thread-MPI cells move once, because the guest's environment
+  and link map now hold the short fixed shim path instead of the build directory's (before, their results followed
+  the length of that path): pecount_HBM3_mpi_gemv_pe64 39189 -> 39353 cycles, placement_HBM3_mpi_bfs_pe16
+  13722594 -> 13790677, cosim_DDR5_mpi_bfs_g3200 16353752 -> 16191108 (measured on 1.12.154). Host time unchanged
+  (40 cells: 4140 s -> 4158 s). The exact-repeat sample's full logs are identical across two runs and across two
+  copies of the tree.
+
 ## 1.12.156 -- Serial links: the link controller's logic priced from a published hard block, per class and bandwidth
 
 - **Controller logic (user ruling 2026-10-28):** the PCIe / CXL / NVLink / UALink link controller's dynamic power was
