@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.137 -- host speed: the guest-memory read described in 1.12.128 is in the code
+
+- **Correction.** Release 1.12.128 recorded the page-table guest read in this changelog but carried none of its code.
+  Its three source changes had landed as text at the end of its changelog section; that text is removed here. The
+  measured DQ and wire statistics kept reading the guest's memory with `process_vm_readv`.
+- **The change (external/zsim/src: dq_data_stats.h, qemu_zsim_plugin.cpp, zsim_trace_driver.cpp)** is the one
+  1.12.128 describes, edge case included. On a vCPU thread the line is read through QEMU's guest page table
+  (`qemu_plugin_read_memory_vaddr`). Off a vCPU thread, and in the trace-driven driver, `process_vm_readv` is used.
+- **Validation (same machine, same guest binaries).** Identical in every simulated and priced line to 1.12.136 on the
+  serial cells: 8 PIM kernels on HBM3 BANK pe16 `alu_core`, and DDR5 BANK and CHANNEL serial gemv.
+- **Data impact:** as 1.12.128 states: none on the cells checked.
+
 ## 1.12.136 -- docs: the program's command line and environment move multi-threaded results (corrects 1.12.125)
 
 - **Correction (docs/architecture.md, Reproducibility).** 1.12.125 said the program path's length moves results by

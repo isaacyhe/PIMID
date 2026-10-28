@@ -58,7 +58,20 @@ extern bool dqDataReadable;
  * guest_base 0). process_vm_readv on the process itself: an unmapped or
  * unreadable address returns false instead of faulting. Shared by every
  * counter that reads the data of a line, so one access reads its line once. */
+/* (next, user ruling 2026-10-27): set by the QEMU plugin: reads the guest's memory through QEMU's own guest page table
+ * (qemu_plugin_read_memory_vaddr) on a vCPU thread, with no system call. process_vm_readv cost ~1-2 us per line, and
+ * the reads of the host's lines run inside the shared L3's lock, so a 16-thread run queued on it. Returns 1 read,
+ * 0 not readable, -1 cannot read on this thread (process_vm_readv is used). nullptr: process_vm_readv.
+ * Edge case (documented, ruled): QEMU reads a page the guest mapped but made unreadable (PROT_NONE / write-only, e.g.
+ * a heap region given back with mmap(PROT_NONE)) through /proc/self/mem, so a line still cached from such a page is
+ * counted from its contents; process_vm_readv refused it and the line was counted as unread (dq*Unread). A page the
+ * guest unmapped is unreadable in both. */
+extern int (*pimidGuestReadHook)(uint64_t addr, uint8_t* dst, uint32_t n);
 static inline bool pimidReadGuestBytes(uint64_t addr, uint8_t* dst, uint32_t n) {
+    if (pimidGuestReadHook) {
+        const int r = pimidGuestReadHook(addr, dst, n);
+        if (r >= 0) return r == 1;
+    }
     static const pid_t self = getpid();
     struct iovec l = {dst, n}, r = {(void*)(uintptr_t)addr, n};
     return process_vm_readv(self, &l, 1, &r, 1, 0) == (ssize_t)n;

@@ -76,6 +76,18 @@ uint32_t procIdx;
 uint32_t lineBits;
 uint64_t procMask;
 bool dqDataReadable = false;   // measured DQ data: set at init (user ruling 2026-10-25: measured termination duty)
+/* (next, user ruling 2026-10-27): guest line reads for the measured data statistics through QEMU's guest page table
+ * (dq_data_stats.h), on vCPU threads (QEMU's read needs the calling thread's vCPU); elsewhere process_vm_readv. */
+static thread_local bool t_pimidVcpu = false;
+static int pimidPluginGuestRead(uint64_t addr, uint8_t* dst, uint32_t n) {
+    if (!t_pimidVcpu) return -1;
+    static thread_local GByteArray* buf = nullptr;
+    if (!buf) buf = g_byte_array_sized_new(256);
+    if (!qemu_plugin_read_memory_vaddr(addr, buf, n) || buf->len != n) return 0;
+    memcpy(dst, buf->data, n);
+    return 1;
+}
+int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;
 Core* cores[MAX_THREADS];
 
 /* 1.9.0 thread-MPI epoch cut: per-core ROI state (0=ACTIVE, 1=QUIESCENT parked in
@@ -5409,6 +5421,7 @@ static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, vo
  * execution callback, so we know the thread's domain (HOST vs DEVICE).
  */
 static void vcpu_init_cb(unsigned int vcpu_index, void *userdata) {
+    t_pimidVcpu = true;   // (1.12.137): this thread runs a vCPU (pimidPluginGuestRead)
     /* vCPUs created during SimInit are ZSim-internal (watchdog, contention sim).
      * They must not participate in the phase barrier. */
     if (!sim_initialized && vcpu_index > 0) {
@@ -5894,6 +5907,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
      * procIdx > 0 the process bits are OR-ed into it, and another process's
      * lines are not in this address space. */
     dqDataReadable = (procIdx == 0 && zinfo->numProcs == 1);
+    pimidGuestReadHook = pimidPluginGuestRead;   // (next, user ruling 2026-10-27)
     perProcessEndFlag = 0;
 
     /* Compute core-type masks for co-sim domain routing.
