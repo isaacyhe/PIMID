@@ -549,6 +549,15 @@ static uint32_t g_mpi_rank_count = 1;
  * out-migration drains the population exactly as before (OMP unchanged). */
 static std::atomic<int> g_deviceWorkers{0};
 static std::atomic<bool> g_roiClosing{false};
+/* (1.12.170): co-simulation thread-MPI ranks that have entered the device window. Rank 0's roi_end closes the window
+ * (g_roiClosing) but a rank that has not yet run its kernel still enters it, at its next block or barrier; the
+ * window drains only when every rank has entered and left. Until then a rank whose turn came after rank 0's
+ * roi_end ran its kernel on its host core (its own scratchpad DMA then had no device PE to run on). */
+static bool g_rankEntered[MAX_THREADS] = {false};
+static std::atomic<uint32_t> g_ranksEnteredN{0};
+static inline void markRankEntered(uint32_t tid) {
+    if (tid < MAX_THREADS && !g_rankEntered[tid]) { g_rankEntered[tid] = true; g_ranksEnteredN.fetch_add(1); }
+}
 
 /* 1.11.97 (x01-qemu-zsim-plugin-5, ruled): the DEVICE-scope thread-MPI ROI
  * ends at the LAST rank's roi_end, not the opener's.
@@ -2825,7 +2834,8 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         info("Thread %d: ROI window migrate-in (co-sim thread born before roi_begin)", tid);
     }
     if (unlikely(g_mpi_thread_mode && g_cosim_mode && !g_cosim_no_offload &&
-                 g_in_device_region.load(std::memory_order_acquire) &&
+                 (g_in_device_region.load(std::memory_order_acquire) ||
+                  (g_roiClosing.load() && tid < MAX_THREADS && !g_rankEntered[tid])) &&   // (1.12.170): a late rank
                  thread_domain[tid].load() == DOMAIN_HOST)) {
         /* 1.8.5: per-rank flush+launch charges reinstated (mirrors the
          * entry-barrier leg). Charge on THIS rank's host core -- still
@@ -2842,6 +2852,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             std::lock_guard<std::mutex> mig(g_migrateMutex);
             detachThreadForMigration(tid, DOMAIN_DEVICE);
             g_deviceWorkers.fetch_add(1);
+            markRankEntered(tid);   // (1.12.170)
         }
         ensureThreadInit(tid);  // may block on the scheduler: OUTSIDE the lock
         info("Thread %d: ROI window migrate-in (co-sim MPI rank, flush+launch charged) [1.8.5]", tid);
@@ -3094,6 +3105,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     }
 
     if (op == ZSIM_MAGIC_OP_MPI_BARRIER) {
+        const bool lateRankPre = g_mpi_thread_mode && tid < MAX_THREADS && !g_rankEntered[tid];   // (1.12.170)
         /* 1.8.4 co-sim ROI window (defect #14), KERNEL-ENTRY migration.
          * Rank 0's roi_begin cannot open the window early enough: a parked
          * rank 0 wakes AFTER the other ranks have already raced through
@@ -3104,7 +3116,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * relies on. Each rank charges its own coherence flush + launch on
          * ITS host core, then migrates ITSELF to its device PE. */
         if (unlikely(g_mpi_thread_mode && g_cosim_mode && !g_cosim_no_offload &&
-                     !g_roiClosing.load() && tid < MAX_THREADS &&
+                     tid < MAX_THREADS && (!g_roiClosing.load() || !g_rankEntered[tid]) &&   // (1.12.170): a late rank enters too
                      thread_domain[tid].load() == DOMAIN_HOST)) {
             /* 1.8.5: per-rank flush+launch charges reinstated. Each rank
              * charges its OWN host core here -- still DOMAIN_HOST, still
@@ -3123,11 +3135,14 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             {
                 std::lock_guard<std::mutex> mig(g_migrateMutex);
                 detachThreadForMigration(tid, DOMAIN_DEVICE);
-                if (!g_in_device_region.exchange(true)) {
+                if (g_roiClosing.load()) {
+                    g_deviceWorkers.fetch_add(1);   // (1.12.170): a late rank joins the closing window's population
+                } else if (!g_in_device_region.exchange(true)) {
                     g_deviceWorkers.store(1);
                 } else {
                     g_deviceWorkers.fetch_add(1);
                 }
+                markRankEntered(tid);   // (1.12.170)
             }
             ensureThreadInit(tid);  // may block on the scheduler: OUTSIDE the lock
             info("Thread %d: ROI window migrate-in at entry barrier (co-sim, flush+launch charged) [1.8.5]", tid);
@@ -3141,6 +3156,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
         if (unlikely(g_mpi_thread_mode && g_cosim_mode && !g_cosim_no_offload &&
                      g_roiClosing.load() && tid < MAX_THREADS &&
                      thread_domain[tid].load() == DOMAIN_DEVICE &&
+                     !(lateRankPre && g_rankEntered[tid]) &&   // (1.12.170): a rank that entered at this very op has not run its kernel
                      !g_tailMarked[tid])) {
             /* 1.8.7 guard: skip a rank already tail-marked. The opener (rank 0)
              * marks at its roi_end and -- unlike 1.8.6, where it migrated to the
@@ -3189,7 +3205,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
              * it now runs on the device PE is attributed device->host at dump. */
             recordTailMarker(tid);
             info("Thread %d: ROI window close (co-sim MPI rank, stays on device PE, tail marked) [1.8.7]", tid);
-            if (g_deviceWorkers.fetch_sub(1) - 1 == 0) {
+            if (g_deviceWorkers.fetch_sub(1) - 1 == 0 && g_ranksEnteredN.load() >= g_mpi_rank_count) {   // (1.12.170): every rank has entered
                 /* Last rank out: window close is a bookkeeping event only --
                  * no migration, no dump (heap abort, round 3), no termination
                  * (kill-mid-protocol, rounds 4-6), no in_roi freeze (round 7).
@@ -3793,10 +3809,10 @@ static void handleSpmMagicOp(uint64_t op, uint32_t tid) {
         memmove((void*)dst, (const void*)src, bytes);
         m[4] = 1;
     } else if (hostSide && g_spmPendSet[tid]) {
-        /* (1.12.164): a thread-MPI rank that reaches its kernel while still on the host (it passed the entry
-         * barrier after the ROI window began closing, so it is never migrated in) holds a scratchpad opened
-         * for the device: the host has no DMA engine, so the block is moved here and is not priced on a
-         * device PE. Answering 0 would abort the guest, which stalls the other ranks in their barriers. */
+        /* (1.12.170): a thread that holds a scratchpad opened for the device but stays on the host has no DMA engine
+         * to use: the block is moved here and is not priced on a device PE (every thread-MPI rank of an
+         * offloading co-simulation moves to its device PE before its kernel, so this is the exceptional path).
+         * Answering 0 would abort the guest, which stalls the other ranks in their barriers. */
         memmove((void*)dst, (const void*)src, bytes);
         m[4] = 1;
     } else {
@@ -4414,6 +4430,7 @@ static void cosimRoiBeginOffload(uint32_t tid) {
     } else {
         g_deviceWorkers.fetch_add(1);
     }
+    if (g_mpi_thread_mode) markRankEntered(tid);   // (1.12.170)
     g_roiClosing.store(false);
     if (!g_mpi_thread_mode)
         g_roi_offload_window.store(true, std::memory_order_release);   // 1.11.94 (H11)
@@ -4647,7 +4664,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (g_mpi_thread_mode) {
             if (g_roiRefCount.fetch_sub(1) - 1 > 0) return;
             if (g_cosim_mode && !g_cosim_no_offload &&
-                g_deviceWorkers.load() > 0) {
+                (g_deviceWorkers.load() > 0 || g_ranksEnteredN.load() < g_mpi_rank_count)) {   // (1.12.170): a rank still owes its kernel
                 /* 1.8.4 ROI window: the window is closing but other ranks
                  * are still computing on device PEs. The LAST rank out (at
                  * its barrier arrival, handleMpiMagicOp) freezes stats;
@@ -5008,7 +5025,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (g_mpi_thread_mode) {
             if (g_roiRefCount.fetch_sub(1) - 1 > 0) return;
             if (g_cosim_mode && !g_cosim_no_offload &&
-                g_deviceWorkers.load() > 0) {
+                (g_deviceWorkers.load() > 0 || g_ranksEnteredN.load() < g_mpi_rank_count)) {   // (1.12.170): a rank still owes its kernel
                 /* 1.8.4 ROI window: the window is closing but other ranks
                  * are still computing on device PEs. The LAST rank out (at
                  * its barrier arrival, handleMpiMagicOp) freezes stats;

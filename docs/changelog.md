@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.170 -- co-simulation: every thread-MPI rank's kernel runs on the device, inside the priced window
+
+- **Defect (external/zsim/src/qemu_zsim_plugin.cpp).** In an offloading co-simulation of a thread-MPI program, rank 0's
+  roi_end marked the ROI window as closing, and a rank whose turn came after that point was never migrated in: it
+  ran its kernel on its host core, outside the priced window, while the window closed on the ranks that had entered.
+  The device side of such a run priced fewer ranks' work than the program does (and a rank holding a device
+  scratchpad bind could not do its block transfers there).
+- **Fix.** A rank that has not yet run its kernel enters the device window at its next block or barrier even after
+  the window began closing (it is charged its own coherence flush and launch as every rank is, and joins the window's
+  population); the window drains only when every rank has entered and left, and the stats are frozen at that last
+  rank's marker. A rank that entered at the very barrier it is migrated at is not closed there. The block transfer of
+  a thread that holds a device scratchpad bind but stays on the host (none in a thread-MPI co-simulation) is moved
+  without a device price. OpenMP co-simulation, device runs and host baselines (PIMID_COSIM_NO_OFFLOAD) are unchanged.
+- **Data impact.** Thread-MPI co-simulation cells in which a rank reached its kernel after rank 0's roi_end: the
+  kernel window and device energy now include that rank's work.
+
 ## 1.12.169 -- DDR5 bank-parallel placements: host column commands obey the shared data bus
 
 - **The gap.** At BANK and BANK_GROUP placement the replayed controller is bank-parallel: it removes every
