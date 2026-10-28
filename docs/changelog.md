@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.163 -- RERAM and STT_MRAM write supplies from a charge pump
+
+- **Power (external/nvsim/MemCell.cpp, MemCell.h, SubArray.cpp, RRAM_1T1R.cell, sample_STTRAM.cell;
+  src/memory/nvsim_wrapper.cpp, include/memory/nvsim_wrapper.h; src/main.cpp):** both technologies write from a supply
+  above the logic supply.
+  - RERAM's 2.0 V SET/RESET pulses come from an on-chip charge pump (Intel 22FFL, Jain et al. ISSCC 2019: "a single
+    supply coming from an in-situ charge pump").
+  - STT_MRAM writes from about 1.3 V against a 1.15 V read maximum (Intel, US9875783B2); TSMC's 22 nm macro
+    charge-pumps its word line (ISSCC 2020).
+- **The model.** The cell energy was charged at the logic supply. Two new cell-file keys, `-WriteSupplyVoltage (V)` and
+  `-WritePumpEfficiency (ratio)`, give the write supply and its pump efficiency; when the supply is above the run's
+  logic supply Vdd, the cell write energy is divided by that efficiency. A cell file with a supply and no efficiency
+  uses the ideal n-stage Dickson pump, Vw / ((n + 1) Vdd) with n + 1 = ceil(Vw / Vdd) (Atmel, US7259612B2; Kashiwase
+  et al., 2002).
+- **New option (docs/yaml_reference.md):** `memory.nvm_write_pump.efficiency`, default `0.5`; `ideal` for the Dickson
+  bound (0.741 for RERAM and 0.722 for STT_MRAM at 22 nm, Vdd 0.9 V); or a number in (0, 1]. The default is just under
+  the efficiencies measured on a published on-chip pump: 52.3 % conventional and 63.7 % with charge sharing (Huang,
+  Zhang, Yoshihara, IEICE Trans. Fundamentals E95-A, 2012); the 5 V PCM RESET pump is 21.6 % (Jiang et al., ISCA
+  2014). The option is part of the NVSim characterisation key, and the run's `[nvm]` line names the value in force.
+- **Cache:** the characterisation key carries the pump option; the tool version moved with the write-verify entry.
+- **At the 64 KB / 512 b / 22 nm unit (with write-verify):** RERAM write 6.80 pJ/bit at the default 0.5 (5.24 with
+  `ideal`); STT_MRAM write 2.77 pJ/bit (2.11 with `ideal`). Latencies are unchanged.
+- **Data impact (fig2 cells, smoke, MPI), energy over the write-verify entry:** RERAM gemv +0.9 % and stream_triad
+  +2.5 %; STT_MRAM gemv +0.4 % and stream_triad +1.2 %. With `ideal`: RERAM +0.3 % and +1.0 %; STT_MRAM +0.1 % and
+  +0.5 %. Run times are unchanged; PCM, SRAM and DRAM are unchanged.
+
 ## 1.12.162 -- RERAM and STT_MRAM writes are priced with write-verify
 
 - **Power and timing (external/nvsim/MemCell.cpp, MemCell.h, SubArray.cpp, RRAM_1T1R.cell, sample_STTRAM.cell;

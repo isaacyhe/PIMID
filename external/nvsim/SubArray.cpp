@@ -784,6 +784,17 @@ void SubArray::CalculatePower() {
 				cellResetEnergy *= cell->writePulsesPerBit;
 				cellSetEnergy *= cell->writePulsesPerBit;
 				writeDynamicEnergy *= cell->writePulsesPerBit;
+				/* PIMID (1.12.163): a write supply above the logic supply comes from a charge pump. Its
+				 * efficiency is the cell file's (a published pump design), or the ideal Dickson bound
+				 * eta = Vw / ((n + 1) Vdd) with n + 1 = ceil(Vw / Vdd) stages when the file gives none
+				 * (Atmel, US7259612B2; Kashiwase et al., 2002). Vw from the cell file; none = no pump. */
+				if (cell->writeSupplyVoltage > tech->vdd && tech->vdd > 0) {
+					double eta = cell->writeSupplyVoltage / (ceil(cell->writeSupplyVoltage / tech->vdd) * tech->vdd);
+					if (cell->writePumpEfficiency > 0) eta = cell->writePumpEfficiency;
+					cellResetEnergy /= eta;
+					cellSetEnergy /= eta;
+					writeDynamicEnergy /= eta;
+				}
 			}
 			leakage = 0;                       //TO-DO: cell leaks during read/write operation
 		} else if (cell->memCellType == SLCNAND) {

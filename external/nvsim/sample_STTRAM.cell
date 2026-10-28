@@ -32,3 +32,8 @@
 # 1 + sum_k p^(2k-1) = 1.045. Chosen with memory.nvm_write_verify.stt_retries: cumulative.
 -CumulativeWriteVerifyRounds (avg): 2.046
 -CumulativeWritePulsesPerBit (avg): 1.045
+# PIMID (1.12.163): the write supply. STT-MRAM writes need a supply above the logic supply: 1.3 V against a
+# 1.15 V read maximum (Intel, US9875783B2); a charge-pumped word line (TSMC 22 nm, ISSCC 2020).
+# Pump efficiency 0.5: see RRAM_1T1R.cell.
+-WriteSupplyVoltage (V): 1.3
+-WritePumpEfficiency (ratio): 0.5

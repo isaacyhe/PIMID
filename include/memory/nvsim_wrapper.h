@@ -105,6 +105,8 @@ public:
     struct WriteOptions {
         double reram_rounds = 13.0;       // memory.nvm_write_verify.reram_rounds
         bool   stt_cumulative = false;    // memory.nvm_write_verify.stt_retries: cumulative
+        double pump_eff = 0.0;            // memory.nvm_write_pump.efficiency: 0 = the cell file's (0.5), >0 = the number
+        bool   pump_ideal = false;        // memory.nvm_write_pump.efficiency: ideal (the Dickson bound)
     };
     static WriteOptions& writeOptions() { static WriteOptions o; return o; }
 

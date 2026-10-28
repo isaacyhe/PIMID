@@ -46,3 +46,10 @@
 # pulses per bit (Fig. 5.10). Its ISPP starts from 0 V, so these are on the high side.
 -WriteVerifyRounds (avg): 13
 -WritePulsesPerBit (avg): 3.2
+# PIMID (1.12.163): the write supply. The 2.0 V SET/RESET pulses come from an on-chip charge pump above the
+# logic supply (Intel 22FFL, Jain et al. ISSCC 2019: "a single supply coming from an in-situ charge pump").
+# Efficiency 0.5: a published on-chip pump measures 52.3 % (conventional) and 63.7 % (charge-sharing dual
+# pump) at 0.18 um (Huang, Zhang, Yoshihara, IEICE Trans. Fundamentals E95-A, 2012); a 5 V PCM RESET pump
+# is 21.6 % (Jiang et al., ISCA 2014). 0.5 is taken just under the measured pumps.
+-WriteSupplyVoltage (V): 2.0
+-WritePumpEfficiency (ratio): 0.5

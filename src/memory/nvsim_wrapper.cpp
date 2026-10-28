@@ -234,6 +234,11 @@ std::string NVSimWrapper::writeOptionsKey() const {
     } else if (config_.nvm_type == NVMType::STTRAM) {
         os << (o.stt_cumulative ? "wvcum" : "wvind");
     }
+    if (config_.nvm_type == NVMType::RERAM || config_.nvm_type == NVMType::STTRAM) {
+        if (o.pump_ideal) os << "_peideal";
+        else if (o.pump_eff > 0) os << "_pe" << o.pump_eff;
+        else os << "_pecell";   // the cell file's published-design efficiency
+    }
     return os.str();
 }
 
@@ -352,6 +357,13 @@ void NVSimWrapper::loadCellParameters() {
             nvsim_cell_->writeVerifyRounds = nvsim_cell_->writeVerifyRoundsAlt;
             nvsim_cell_->writePulsesPerBit = std::max(1.0, nvsim_cell_->writePulsesPerBitAlt);
         }
+    }
+    /* (1.12.163): the charge-pump efficiency. The cell file carries the published-design
+     * value; `ideal` clears it (the Dickson bound), a number replaces it. */
+    {
+        const WriteOptions& o = writeOptions();
+        if (o.pump_ideal) nvsim_cell_->writePumpEfficiency = 0;
+        else if (o.pump_eff > 0) nvsim_cell_->writePumpEfficiency = o.pump_eff;
     }
     // NOTE: Don't set global cell here - do it in runNVSim() to match
     // NVSim's main() initialization order (after Technology is initialized)

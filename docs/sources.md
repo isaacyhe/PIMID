@@ -136,6 +136,7 @@ comments and in the changelog.
 | PCM device write-power budget (1.12.114; off by default) | 162 mW per device (the RESET pump's 7 mA load at 5 V = 35 mW, at 21.6% efficiency; the device taken as one chip) | Jiang, Zhao, Yang, Zhang, ISCA 2014, Table 4 | `memory.nvm_write_budget.mw` default (`src/main.cpp`) |
 | RERAM write-verify rounds (default of `memory.nvm_write_verify.reram_rounds`) | 13 rounds and 3.2 pulses per bit | EMBER, TSMC 40 nm SLC write-verify RRAM macro, Levy et al., JSSC 2024 (energy and bandwidth against pulse count: 12.9 and 13.2 rounds per word) | `external/nvsim/RRAM_1T1R.cell` |
 | STT_MRAM write-verify rounds (`memory.nvm_write_verify.stt_retries`) | 2.69 rounds, 1.047 pulses per bit (independent); 2.046, 1.045 (cumulative) | Dong et al., ISSCC 2018, Fig. 30.2.5a (write error probability 0.045 at 10 ns); write-verify-write in Wei et al., ISSCC 2019 and Chih et al., ISSCC 2020 | `external/nvsim/sample_STTRAM.cell` |
+| RERAM and STT_MRAM write-supply pump efficiency (default of `memory.nvm_write_pump.efficiency`) | 0.5 (2.0 V and 1.3 V supplies) | Huang, Zhang, Yoshihara, IEICE Trans. Fundamentals E95-A, 2012 (52.3 % and 63.7 %); Jiang et al., ISCA 2014 (21.6 %); supplies: Jain et al., ISSCC 2019 and US9875783B2 | `external/nvsim/RRAM_1T1R.cell`, `external/nvsim/sample_STTRAM.cell` |
 
 ## Tools' own models (integrated components)
 

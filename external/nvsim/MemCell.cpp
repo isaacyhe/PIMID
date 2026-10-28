@@ -58,6 +58,8 @@ MemCell::MemCell() {
 	readEnergy          = 0;
 	writeVerifyRounds   = 0;
 	writePulsesPerBit   = 1;
+	writeSupplyVoltage  = 0;
+	writePumpEfficiency = 0;
 	writeVerifyRoundsAlt = 0;
 	writePulsesPerBitAlt = 0;
         wordlineBoostRatio  = 1.0;
@@ -254,6 +256,14 @@ void MemCell::ReadCellFromFile(const string & inputFile)
 		}
 		if (!strncmp("-CumulativeWritePulsesPerBit", line, strlen("-CumulativeWritePulsesPerBit"))) {
 			sscanf(line, "-CumulativeWritePulsesPerBit (avg): %lf", &writePulsesPerBitAlt);
+			continue;
+		}
+		if (!strncmp("-WriteSupplyVoltage", line, strlen("-WriteSupplyVoltage"))) {
+			sscanf(line, "-WriteSupplyVoltage (V): %lf", &writeSupplyVoltage);
+			continue;
+		}
+		if (!strncmp("-WritePumpEfficiency", line, strlen("-WritePumpEfficiency"))) {
+			sscanf(line, "-WritePumpEfficiency (ratio): %lf", &writePumpEfficiency);
 			continue;
 		}
 		if (!strncmp("-WritePulsesPerBit", line, strlen("-WritePulsesPerBit"))) {

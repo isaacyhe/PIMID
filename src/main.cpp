@@ -2887,7 +2887,7 @@ static const char* kSchemaPaths[] = {
     "core.in_order.branch_predictor", "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
-    "memory.array_pg", "memory.bank_kb", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.nvm_write_verify.reram_rounds", "memory.nvm_write_verify.stt_retries", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
+    "memory.array_pg", "memory.bank_kb", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.nvm_write_verify.reram_rounds", "memory.nvm_write_verify.stt_retries", "memory.nvm_write_pump.efficiency", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology", "memory.topology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
@@ -3879,6 +3879,8 @@ struct UnifiedConfig {
     double nvm_wb_mw = -1.0;     // (1.12.114): memory.nvm_write_budget.mw (-1 = not given)
     double nvm_wv_reram_rounds = 13.0;   // (1.12.162): memory.nvm_write_verify.reram_rounds
     bool nvm_wv_stt_cumulative = false;  // (1.12.162): memory.nvm_write_verify.stt_retries: cumulative
+    double nvm_pump_eff = 0.0;           // (1.12.163): memory.nvm_write_pump.efficiency (0 = the default 0.5)
+    bool nvm_pump_ideal = false;         // (1.12.163): memory.nvm_write_pump.efficiency: ideal
     std::string pcie_model = "simple";    // "simple" or "md1" for PCIe timing model
     // Host<->device link technology. Selects preset latency/BW/overhead unless
     // the user overrides them. "interposer" = 2.5D silicon interposer (UCIe-class
@@ -13130,6 +13132,12 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
                     << (wopt.reram_rounds == 13.0 ? " (EMBER, Levy et al., JSSC 2024)" : " (memory.nvm_write_verify.reram_rounds; 13 in EMBER, Levy et al., JSSC 2024)")
                     << ")";
         }
+        if (tech == "STT_MRAM" || tech == "RERAM") {   // (1.12.163): the write supply's charge pump
+            cell_os << "; " << (tech == "RERAM" ? "2.0" : "1.3") << " V write supply from a charge pump at "
+                    << (wopt.pump_ideal ? std::string("its ideal Dickson efficiency (memory.nvm_write_pump.efficiency: ideal)")
+                        : wopt.pump_eff > 0 ? [&]{ std::ostringstream t; t << wopt.pump_eff << " efficiency (memory.nvm_write_pump.efficiency)"; return t.str(); }()
+                                            : std::string("0.5 efficiency, just under the 0.52 and 0.64 measured on published on-chip pumps (Huang et al., IEICE 2012)"));
+        }
         const std::string cell = cell_os.str();
         pimid::fmt_scoped(std::cout) << std::setprecision(6)
             << "  [nvm] " << tech << " array, NVSim, cell " << cell << ": one "
@@ -21480,8 +21488,26 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
                 }
             }
         }
+        if (root["memory"] && root["memory"]["nvm_write_pump"]) {   // (1.12.163): the charge pump of the RERAM and STT_MRAM write supply
+            const YAML::Node wp = root["memory"]["nvm_write_pump"];
+            if (wp["efficiency"]) {
+                const std::string e = yamlString(wp["efficiency"], "0.5", sc.pfx + "memory.nvm_write_pump.efficiency");
+                if (e == "ideal") { config.nvm_pump_ideal = true; config.nvm_pump_eff = 0.0; }
+                else {
+                    char* endp = nullptr;
+                    const double v = std::strtod(e.c_str(), &endp);
+                    if (e.empty() || *endp != '\0' || !(v > 0.0 && v <= 1.0)) {
+                        std::cerr << "ERROR: " << sc.pfx << "memory.nvm_write_pump.efficiency must be 'ideal' or a number in (0, 1], got '" << e << "'" << std::endl;
+                        return 1;
+                    }
+                    config.nvm_pump_ideal = false; config.nvm_pump_eff = v;
+                }
+            }
+        }
         pimid::NVSimWrapper::writeOptions().reram_rounds = config.nvm_wv_reram_rounds;
         pimid::NVSimWrapper::writeOptions().stt_cumulative = config.nvm_wv_stt_cumulative;
+        pimid::NVSimWrapper::writeOptions().pump_eff = config.nvm_pump_eff;
+        pimid::NVSimWrapper::writeOptions().pump_ideal = config.nvm_pump_ideal;
         if (root["memory"] && root["memory"]["nvm_write_budget"]) {   // (1.12.114): the NVM device write-power budget
             const YAML::Node wb = root["memory"]["nvm_write_budget"];
             if (wb["enabled"]) config.nvm_wb_enabled = yamlBool(wb["enabled"], false, sc.pfx + "memory.nvm_write_budget.enabled");
@@ -22311,6 +22337,10 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.nvm_wb_mw = d.nvm_wb_mw;
         config.nvm_wv_reram_rounds = d.nvm_wv_reram_rounds;   // (1.12.162)
         config.nvm_wv_stt_cumulative = d.nvm_wv_stt_cumulative;
+        config.nvm_pump_eff = d.nvm_pump_eff;
+        config.nvm_pump_ideal = d.nvm_pump_ideal;
+        pimid::NVSimWrapper::writeOptions().pump_eff = config.nvm_pump_eff;
+        pimid::NVSimWrapper::writeOptions().pump_ideal = config.nvm_pump_ideal;
         pimid::NVSimWrapper::writeOptions().reram_rounds = config.nvm_wv_reram_rounds;
         pimid::NVSimWrapper::writeOptions().stt_cumulative = config.nvm_wv_stt_cumulative;
         config.dq_turnaround_enabled = d.dq_turnaround_enabled;
