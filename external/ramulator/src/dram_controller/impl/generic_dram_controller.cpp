@@ -463,8 +463,44 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     uint32_t m_pl_ep = 1;
     int m_pl_mode = -1;   // -1 not set up, 0 = pimid_best (no pimid_ready_at or not bank-parallel), 1 = pl_best
     std::vector<FutureAction> m_pl_fa;   // the DRAM's future actions as seen last cycle
-    std::unordered_map<uint64_t, int> m_pl_rowcnt;          // queued requests per row (read + write + active queues)
-    std::unordered_map<Addr_t, int> m_pl_wraddr;            // queued writes per address
+    /* PIMID (1.12.138): a count per 64-bit key in an open-addressing table (linear probing, deletion by backward shift):
+     * no allocation per request, as an unordered_map node was */
+    struct PlCount {
+      std::vector<uint64_t> K; std::vector<int> V; size_t n = 0, mask = 0;
+      static uint64_t h(uint64_t k) { k ^= k >> 33; k *= 0xff51afd7ed558ccdull; k ^= k >> 33; return k; }
+      void grow() {
+        std::vector<uint64_t> k0; std::vector<int> v0; k0.swap(K); v0.swap(V);
+        const size_t cap = k0.empty() ? 64 : k0.size() * 2;
+        K.assign(cap, 0); V.assign(cap, 0); mask = cap - 1; n = 0;
+        for (size_t i = 0; i < k0.size(); i++) if (v0[i] > 0) { size_t j = h(k0[i]) & mask; while (V[j] > 0) j = (j + 1) & mask; K[j] = k0[i]; V[j] = v0[i]; n++; }
+      }
+      int get(uint64_t k) const {
+        if (K.empty()) return 0;
+        for (size_t j = h(k) & mask; V[j] > 0; j = (j + 1) & mask) if (K[j] == k) return V[j];
+        return 0;
+      }
+      void inc(uint64_t k) {
+        if ((n + 1) * 2 > K.size()) grow();
+        size_t j = h(k) & mask;
+        while (V[j] > 0) { if (K[j] == k) { V[j]++; return; } j = (j + 1) & mask; }
+        K[j] = k; V[j] = 1; n++;
+      }
+      void dec(uint64_t k) {
+        if (K.empty()) return;
+        size_t j = h(k) & mask;
+        while (V[j] > 0 && K[j] != k) j = (j + 1) & mask;
+        if (V[j] <= 0) return;
+        if (--V[j] > 0) return;
+        n--;   // empty slot j: shift the following run back (keeps every key reachable from its home)
+        size_t i = j;
+        for (size_t x = (i + 1) & mask; V[x] > 0; x = (x + 1) & mask) {
+          const size_t home = h(K[x]) & mask;
+          if (((x - home) & mask) >= ((x - i) & mask)) { K[i] = K[x]; V[i] = V[x]; V[x] = 0; i = x; }
+        }
+      }
+    };
+    PlCount m_pl_rowcnt;   // queued requests per row (read + write + active queues)
+    PlCount m_pl_wraddr;   // queued writes per address
     void pl_setup() {
       if (m_pl_mode >= 0) return;
       m_pl_row_lv = m_dram->m_levels.contains("row") ? m_dram->m_levels("row") : -1;
@@ -503,17 +539,16 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           }
         return n;
       }
-      auto f = m_pl_rowcnt.find(k);
-      return f == m_pl_rowcnt.end() ? 0 : f->second;
+      return m_pl_rowcnt.get(k);
     }
-    bool pl_write_has(Addr_t a) const { auto f = m_pl_wraddr.find(a); return f != m_pl_wraddr.end() && f->second > 0; }
+    bool pl_write_has(Addr_t a) const { return m_pl_wraddr.get((uint64_t)a) > 0; }
     /* the request just enqueued at the back of b */
     void pl_on_add(ReqBuffer* b) {
       pl_setup();
       const Request& r = b->buffer.back();
       uint64_t k;
-      if (pl_row_key(r.addr_vec, k)) m_pl_rowcnt[k]++;
-      if (b == &m_write_buffer) m_pl_wraddr[r.addr]++;
+      if (pl_row_key(r.addr_vec, k)) m_pl_rowcnt.inc(k);
+      if (b == &m_write_buffer) m_pl_wraddr.inc((uint64_t)r.addr);
       const int bi = (b == &m_read_buffer) ? 0 : (b == &m_write_buffer) ? 1 : -1;
       if (bi < 0 || m_pl_mode != 1) return;
       PlBuf& P = m_pb[bi];
@@ -526,9 +561,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     void pl_on_remove(ReqBuffer* b, ReqBuffer::iterator it) {
       uint64_t k;
       if (b == &m_read_buffer || b == &m_write_buffer || b == &m_active_buffer) {
-        if (pl_row_key(it->addr_vec, k)) { auto f = m_pl_rowcnt.find(k); if (f != m_pl_rowcnt.end() && --f->second == 0) m_pl_rowcnt.erase(f); }
+        if (pl_row_key(it->addr_vec, k)) m_pl_rowcnt.dec(k);
       }
-      if (b == &m_write_buffer) { auto f = m_pl_wraddr.find(it->addr); if (f != m_pl_wraddr.end() && --f->second == 0) m_pl_wraddr.erase(f); }
+      if (b == &m_write_buffer) m_pl_wraddr.dec((uint64_t)it->addr);
       const int bi = (b == &m_read_buffer) ? 0 : (b == &m_write_buffer) ? 1 : -1;
       if (bi < 0 || m_pl_mode != 1) return;
       PlBuf& P = m_pb[bi];
@@ -744,6 +779,15 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
        * Every source counts (device, host, lock-step shadows 4/6; outside-ROI
        * 2/3): they all occupy the queue. Bank-parallel mode bypassed this. */
       set_write_mode();
+      if (m_read_buffer.size() == 0 && m_write_buffer.size() == 0 && m_active_buffer.size() == 0 && m_priority_buffer.size() == 0) {
+        /* PIMID (1.12.138): every queue is empty. The loop below would find nothing at its first pick and only tell the row
+         * policy and the plugins so (no request exists for the scheduler's indexes to track: pl_cycle catches up, from
+         * the DRAM's future-action list, at the next cycle with a request). */
+        ReqBuffer::iterator none;
+        m_rowpolicy->update(false, none);
+        for (auto plugin : m_plugins) plugin->update(false, none);
+        return;
+      }
       pl_cycle();   // PIMID (1.12.127)
       std::vector<AddrVec_t> used;
       int issued = 0;

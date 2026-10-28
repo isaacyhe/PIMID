@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.138 -- host speed: the replayed controller costs nothing extra when it is idle
+
+- **The problem.** The scheduler indexes of the first host-speed change cost about 30 host cycles per DRAM cycle even
+  with empty queues. A 1-core host baseline ticks ~2.8 G nearly idle controller cycles, so the 1-core OpenMP gemv
+  baseline took 252 s against 1.12.125's 245 s (qc-mi210, same job).
+- **The change (external/ramulator/src/dram_controller/impl/generic_dram_controller.cpp).**
+  - With every queue empty, the bank-parallel cycle now only tells the row policy and the plugins that nothing was
+    found. That is all the original loop did with empty queues. The scheduler's index catches up with refreshes at the
+    next cycle that has a request.
+  - The per-row and per-address counts are kept in flat open-addressing tables, so a queued request no longer
+    allocates.
+- **Validation (same node, same job, same guest binaries).** Identical in every simulated and priced line to
+  1.12.125 on the serial cells of the first entry. Host time (qc-mi210, one job; the
+  previous change in brackets): 1-core OpenMP gemv 202 s (252 s), 1-core OpenMP stream_triad 153 s (174 s), 4-core MPI
+  stream_triad 439 s (452 s), 16-core OpenMP stream_triad 724 s (723 s).
+- **Data impact:** none.
+
 ## 1.12.137 -- host speed: the guest-memory read described in 1.12.128 is in the code
 
 - **Correction.** Release 1.12.128 recorded the page-table guest read in this changelog but carried none of its code.
