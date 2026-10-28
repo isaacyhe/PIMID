@@ -13330,7 +13330,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * nothing in the log tell them that is what a temperature means here. */
     if (config.temperature_k != 350)
         std::cout << "  [tech] temperature " << config.temperature_k
-                  << " K: CACTI leakage rows snap to the nearest 10 C step;"
+                  << " K: CACTI leakage rows are interpolated between their 10 K steps (1.12.105);"
                      " DRAM tREFI follows temperature (JESD halves it above"
                      " 85 C, so refresh power doubles); the IDD currents follow"
                      " the part record's idd_temperature block where it has one"
@@ -22848,6 +22848,17 @@ int main(int argc, char** argv) {
                   << ((yaml_cfg["power"] && (yaml_cfg["power"]["temperature_k"] || yaml_cfg["power"]["temperature_c"]))
                           ? "" : " default")
                   << ": one temperature for every leakage, refresh and IDD model" << std::endl;
+        /* (1.12.159): the static terms that do NOT follow it, said once per run. Each is a measured idle or standby figure
+         * whose source states no temperature dependence, and no published source splits it into leakage and bias
+         * (a 2026-10-28 search of FinFET, PHY, SerDes and NVM literature found none), so it is held at its source's
+         * value at every temperature. NVM cells draw no standby current (NVSim, Dong et al. TCAD 2012; IRDS 2022
+         * More Moore 5.3.3: the access transistor cuts the leakage path); their periphery leakage follows the
+         * temperature through the device tables. The provenance label prints only under PIMID_DEBUG_CHECKS=1. */
+        std::cout << "[config] held at their sources' values at every temperature: host memory-controller PHY idle, "
+                     "HBM PHY idle, SerDes ASPM L1 and L0 idle, UCIe clock-gated idle, RDIMM register static, host uncore "
+                     "static; NVM cells draw no standby current (their periphery leakage follows the temperature)"
+                  << (pimid::debugChecks() ? " [NO PUBLISHED SOURCE FOUND for the held terms' temperature dependence]" : "")
+                  << std::endl;
 
             // memory (1.11.107: the device-scope parse, shared with a system device node)
             if (parseDeviceMemoryBlocks(yaml_cfg, config, top_sc) != 0) return 1;

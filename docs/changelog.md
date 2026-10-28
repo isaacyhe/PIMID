@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.159 -- the run says which static terms do not follow the operating temperature
+
+- **Report** (src/main.cpp, docs/yaml_reference.md): a second configuration line names the static terms held at
+  their sources' values at every temperature: host memory-controller PHY idle, HBM PHY idle, SerDes ASPM L1 and L0
+  idle, UCIe clock-gated idle, RDIMM register static and host uncore static. Each is a measured idle or standby
+  figure whose source states no temperature dependence.
+- **NVM cells:** the line also states that PCM, ReRAM and STT-MRAM cells (1T1R) draw no standby current. Sources:
+  NVSim, Dong et al., TCAD 2012; IRDS 2022 More Moore 5.3.3, "the leakage path is cut off by an access
+  transistor". Their periphery leakage follows the temperature.
+- **Fix:** the "[tech] temperature" line said that CACTI leakage rows snap to 10 C steps. Since 1.12.105 they are
+  interpolated, and the line now says so.
+- **Data impact:** none; reporting only.
+
 ## 1.12.158 -- the fixed thread order covers the whole run: 4-core co-sim cells repeat
 
 - **Problem.** The 4-core co-sim cells (16 threads on 4 host cores; 30 cells, OpenMP and thread-MPI) gave a different

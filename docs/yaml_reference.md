@@ -1016,6 +1016,20 @@ specifies a rate (HBM CATTRIP is 120 C); the last rung is held. The default
 from earlier releases -- the ladder engages only when a config states a
 temperature above 85 C.
 
+**Static terms held at every temperature ((1.12.159)).** These are measured idle or standby figures whose sources
+state no temperature dependence, so they are held at their sources' values. Every run says so on a
+"[config] held at their sources' values" line:
+- host memory-controller PHY idle;
+- HBM PHY idle;
+- SerDes ASPM L1 and L0 idle;
+- UCIe clock-gated idle;
+- RDIMM register static;
+- host uncore static.
+
+NVM cells (PCM, ReRAM, STT-MRAM, all 1T1R) draw no standby current: NVSim (Dong et al., TCAD 2012) and IRDS 2022
+More Moore 5.3.3 say the access transistor cuts the leakage path. Their periphery leakage follows the temperature
+through the device tables.
+
 **IDD currents vs temperature (1.12.88).** A part record may carry an
 `idd_temperature` block; the run prints `[mem] <TECH> IDD at <T> K` when it
 applies. Records without one keep their stated-condition currents at every
