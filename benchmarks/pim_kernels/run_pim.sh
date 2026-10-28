@@ -7,7 +7,7 @@ TIER="${TIER:-tiny}"
 METHOD="${METHOD:-exec}"
 PASS=0; FAIL=0; SKIP=0
 
-KERNELS="stream_triad vector_add gemv spmv_csr bfs histogram reduction stencil_2d"
+KERNELS="stream_triad vector_add gemv spmv_csr bfs histogram reduction stencil_2d pointer_chase"
 VARIANTS="serial omp"
 [ -x "$(command -v mpirun)" ] && VARIANTS="serial omp mpi"
 

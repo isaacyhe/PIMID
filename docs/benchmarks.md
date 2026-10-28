@@ -1,11 +1,11 @@
 # Benchmarks
 
-48 self-contained benchmarks across 7 suites, all with ROI markers
+49 self-contained benchmarks across 7 suites, all with ROI markers
 (`zsim_roi_begin/end`) and four input-size tiers (tiny/small/medium/large):
 
 | Suite | Benchmarks | Parallelism |
 |---|---|---|
-| PIM kernels (8) | stream_triad, vector_add, gemv, spmv_csr, bfs, histogram, reduction, stencil_2d | serial + OpenMP + MPI |
+| PIM kernels (9) | stream_triad, vector_add, gemv, spmv_csr, bfs, histogram, reduction, stencil_2d, pointer_chase | serial + OpenMP + MPI |
 | BabelStream (1) | babelstream | OpenMP |
 | Rodinia (10) | hotspot, needle, pathfinder, srad, kmeans, lud, backprop, lavamd, particlefilter, myocyte | OpenMP |
 | Classic (6) | dhrystone, whetstone, binary_search, quicksort, sha256, naive_matmul | serial |
@@ -156,6 +156,42 @@ max)`, then `Run time: <W> cycles = <source>; busy max <max>`, then
 longer the busiest PE. A message-passing run prints `Run time:` after its
 `Total:` line; its run time is the latest rank's ROI-relative end, which
 equals its `(max: N)`. The per-PE `cycles:` lines are busy activity.
+
+## The pointer chase: load-to-use latency
+
+`pim_kernels/pointer_chase` measures the memory latency a core sees, the
+application's view of the memory. A random cyclic permutation over `--lines`
+cache lines (Sattolo's algorithm from `--seed`, default 12345, so every run
+builds the same chain) is laid out as a linked list, one 64-byte line per node.
+In the ROI each thread (OpenMP) or rank (MPI) follows the chain for `--steps`
+loads; every load depends on the one before it, so
+
+    load-to-use latency = ROI cycles / steps
+
+on the clock of the core that runs it. OpenMP thread t of T starts at position
+t x lines / T of the one shared chain (the segments do not overlap while steps
+<= lines / T), so T threads put T independent misses in flight; each MPI rank
+builds its own copy of the chain. `BENCH_CHECKSUM` is the sum of the line
+indices the chains end on.
+
+- Keep the working set (lines x 64 B) well above the last-level cache: the
+  default 1,048,576 lines are 64 MB, twice the 32 MB L3 of the host baselines.
+- Give the chase enough steps to span many replay epochs (40,000 cycles each):
+  the 50,000 steps of the large tier take 16 million host cycles on one DDR5 host core (324 cycles per step).
+- The chain is built before the ROI and is not relocated into a PE's unit (no
+  device-organization prep), so on the device it measures the access path of
+  the placement as configured, not a near-data layout.
+- Host baseline example (4 host cores, DDR5):
+  `PIMID_COSIM_NO_OFFLOAD=1 OMP_NUM_THREADS=4 pimid --method exec --config <baseline yaml>
+  --workload benchmarks/pim_kernels/pointer_chase/pointer_chase_omp --lines 1048576 --steps 50000
+  --workload-type openmp`.
+
+The run's statistics give the two other views of the same accesses: the
+latency charged to the core at the memory interface (host: `mem-0` `rdlat +
+wrlat` over `rd + wr`, which includes the host-path adder printed as
+"host-path adder N cycles"; device: `pe-mi-*` `replayLat / replayPriced`) and
+the memory simulator's own mean (`dramReplay` `hostLatencySum / hostRequests`,
+`latencySum / ctrlRequests`).
 
 ## Parallel runtime on PEs (PIM runtime primitives)
 

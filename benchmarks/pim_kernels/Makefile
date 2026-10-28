@@ -13,7 +13,7 @@ OMPFLAGS := -fopenmp
 # LD_BIND_NOW=1 for the guest.
 LDFLAGS  := -Wl,-z,now -lpthread
 
-KERNELS := stream_triad vector_add gemv spmv_csr bfs histogram reduction stencil_2d
+KERNELS := stream_triad vector_add gemv spmv_csr bfs histogram reduction stencil_2d pointer_chase
 
 # Targets per kernel
 SERIAL_BINS := $(foreach k,$(KERNELS),$(BENCHDIR)/$(k)/$(k))

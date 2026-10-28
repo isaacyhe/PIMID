@@ -1,0 +1,20 @@
+scope: device
+workload:
+  binary: benchmarks/pim_kernels/pointer_chase/pointer_chase
+  args: ["--lines", "1048576", "--steps", "50000"]
+pim:
+  pe:
+    type: alu_core
+    count: 8
+    frequency_mhz: 1000
+    placement:
+      level: BANK
+  mc:
+    type: simple
+memory:
+  technology: SRAM
+noc:
+  topology: MESH_2D
+  model: simple
+simulation:
+  max_instructions: 1000000000

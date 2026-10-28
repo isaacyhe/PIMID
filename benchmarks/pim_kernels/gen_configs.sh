@@ -2,7 +2,7 @@
 #
 # gen_configs.sh -- Generate all PIM kernel YAML config files.
 #
-# 8 benchmarks x 3 variants (serial, omp, mpi) x 4 tiers (tiny, small, medium, large) = 96 configs.
+# 9 benchmarks x 3 variants (serial, omp, mpi) x 4 tiers (tiny, small, medium, large) = 108 configs.
 #
 
 set -euo pipefail
@@ -168,5 +168,13 @@ gen_all_tier "$D" "$N" tiny   '"--size", "32", "--iters", "3"'         $MAX_TINY
 gen_all_tier "$D" "$N" small  '"--size", "64", "--iters", "5"'         $MAX_SMALL
 gen_all_tier "$D" "$N" medium '"--size", "128", "--iters", "10"'       $MAX_MEDIUM
 gen_all_tier "$D" "$N" large  '"--size", "256", "--iters", "20"'       $MAX_LARGE
+
+# ===== pointer_chase ===== (working set = lines x 64 B; steps = dependent loads per thread / rank)
+D="${SCRIPT_DIR}/pointer_chase"
+N="pointer_chase"
+gen_all_tier "$D" "$N" tiny   '"--lines", "4096", "--steps", "2000"'       $MAX_TINY
+gen_all_tier "$D" "$N" small  '"--lines", "65536", "--steps", "10000"'     $MAX_SMALL
+gen_all_tier "$D" "$N" medium '"--lines", "262144", "--steps", "20000"'    $MAX_MEDIUM
+gen_all_tier "$D" "$N" large  '"--lines", "1048576", "--steps", "50000"'   $MAX_LARGE
 
 echo "Generated ${COUNT} YAML config files."

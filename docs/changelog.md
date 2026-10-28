@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.149 -- benchmarks: a pointer-chase kernel (load-to-use latency)
+
+- **New PIM kernel (benchmarks/pim_kernels/pointer_chase, serial + OpenMP + MPI).** A random cyclic permutation
+  over N cache lines (Sattolo's algorithm, seeded: the same chain on every run) is followed for a given number of
+  dependent loads per thread or rank, so ROI cycles / steps is the load-to-use latency the core sees, the
+  application's view of memory latency beside the interface's and the memory simulator's (docs/benchmarks.md, "The
+  pointer chase"). Built with the other kernels (`make omp mpi serial`), configs for the four tiers from
+  gen_configs.sh, listed in run_pim.sh.
+- **Data impact.** None: a new workload; no existing kernel, config or model changes.
+
 ## 1.12.148 -- statistics: the replayed DRAM latency charged at each device memory interface
 
 - **New counters (external/zsim pe_memory_interface.h, `pe-mi-*` groups).** `replayPriced` counts the accesses an

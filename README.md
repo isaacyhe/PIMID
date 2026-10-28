@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.148-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.149-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -34,7 +34,7 @@ McPAT, and Garnet for timing, power, and area.
   NVLink-class links -> [docs/cosim.md](docs/cosim.md)
 - **4 simulation methods** -- `exec`, `trace-gen`, `trace`, `synthetic`
   -> [docs/architecture.md](docs/architecture.md)
-- **48 benchmarks** across 7 suites; any of them runs in co-sim (no
+- **49 benchmarks** across 7 suites; any of them runs in co-sim (no
   co-sim-specific workloads) -> [docs/benchmarks.md](docs/benchmarks.md)
 - **Power/area** via McPAT -> [docs/power.md](docs/power.md)
 
