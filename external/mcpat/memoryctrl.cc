@@ -256,6 +256,13 @@ void MCPHY::compute()
 		  //This is power not energy, 10mw/Gb/s @90nm for each channel and scaling down
 		  //power.readOp.dynamic = 0.02*memAccesses*llcBlocksize*8;//change from Bytes to bits.
 		  power_t.readOp.dynamic = power_per_gb_per_s*sqrt(l_ip.F_sz_um/0.09)*g_tp.peri_global.Vdd/1.2*g_tp.peri_global.Vdd/1.2;
+		  /* PIMID (1.12.132) (user ruling 2026-10-28): a published PHY energy per bit
+		   * REPLACES the formula above (W per Gb/s = pJ/bit x 1e-3), unscaled: it
+		   * is a measurement of a real PHY, not a 90 nm figure to carry. The peak
+		   * uses the larger of the two directions; the run uses each direction's
+		   * own (computeEnergy). */
+		  if (mcp.phy_pj_bit_rd > 0.0 && mcp.phy_pj_bit_wr > 0.0)
+			  power_t.readOp.dynamic = std::max(mcp.phy_pj_bit_rd, mcp.phy_pj_bit_wr)*1e-3;
 		  power_t.readOp.leakage = area.get_area()/2 *(g_tp.scaling_factor.core_tx_density)*cmos_Isub_leakage(g_tp.min_w_nmos_, g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd;//unit W
 		  power_t.readOp.gate_leakage = area.get_area()/2 *(g_tp.scaling_factor.core_tx_density)*cmos_Ig_leakage(g_tp.min_w_nmos_, g_tp.min_w_nmos_*pmos_to_nmos_sizing_r, 1, inv)*g_tp.peri_global.Vdd;//unit W
 
@@ -349,6 +356,8 @@ void MCPHY::computeEnergy(bool is_tdp)
 //    						stats_t.writeAc.access*power_t.readOp.dynamic);
 
     	rt_power.readOp.dynamic=power_t.readOp.dynamic*(stats_t.readAc.access + stats_t.writeAc.access)*(mcp.llcBlockSize)*8/1e9/mcp.executionTime*(mcp.executionTime);
+		if (mc_type == MC && mcp.phy_pj_bit_rd > 0.0 && mcp.phy_pj_bit_wr > 0.0)   /* PIMID (1.12.132): each direction at its published pJ/bit, in place of the line above */
+			rt_power.readOp.dynamic = (stats_t.readAc.access*mcp.phy_pj_bit_rd + stats_t.writeAc.access*mcp.phy_pj_bit_wr)*(mcp.llcBlockSize)*8*1e-12;
     	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     }
 }
@@ -922,6 +931,8 @@ void MemoryController::set_mc_param()
 		mcp.background_fraction = XML->sys.mc.background_fraction;   /* PIMID 1.11.98 (row 28, ruling (c)) */
 		mcp.command_ops = XML->sys.mc.pimid_command_ops;   /* PIMID 1.12.18 */
 		mcp.phy_class = XML->sys.mc.phy_class;   // PIMID 1.11.19 (D2/D3)
+		mcp.phy_pj_bit_rd = XML->sys.mc.phy_pj_bit_rd;   // PIMID (1.12.132)
+		mcp.phy_pj_bit_wr = XML->sys.mc.phy_pj_bit_wr;   // PIMID (1.12.132)
 
 		if ( XML->sys.mc.vdd>0)
 		{

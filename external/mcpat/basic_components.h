@@ -255,6 +255,7 @@ public:
 	 *   1 = interposer/TSV    (HBM base die, channel tier: microbumps)
 	 * withPHY=false means no driver at all (on-die element MCs). */
 	int    phy_class;
+	double phy_pj_bit_rd, phy_pj_bit_wr;   /* PIMID (1.12.132): > 0 replaces the PHY dynamic per bit */
 	double vdd;
 	double power_gating_vcc;
     ~MCParam(){};

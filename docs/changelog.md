@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.132 -- an HBM host memory controller is priced as an interposer PHY at the published HBM PHY energy; HBM2 host PHY idle
+
+- **Defect (user ruling 2026-10-28).** A host memory controller whose memory is HBM2 or HBM3 was emitted at McPAT's
+  off-package tier (phy_class 0: DDR-class DQ pins with ODT). Its PHY energy came from McPAT's LVDS formula, about
+  2.2 pJ/bit at the host's 22 nm, and its area and leakage were those of an off-package PHY. An HBM PHY drives an
+  interposer: microbumps, unterminated (JESD235 / JESD238). The published HBM PHY energies are 0.25-1.07 pJ/bit.
+- **Fix (src/main.cpp, src/power/mcpat_wrapper.cpp, include/power/mcpat_wrapper.h, src/power/cacti_io_wrapper.cpp,
+  external/mcpat: XML_Parse.h/.cc, basic_components.h, memoryctrl.cc).**
+  - *Tier:* an HBM host memory controller is emitted at McPAT's interposer tier (phy_class 1), the tier the HBM base
+    die already uses. Its PHY structure, leakage and area follow from it. This applies to both host pricing sites.
+  - *Energy per bit:* the PHY's energy per bit comes from the published HBM PHY figure. It REPLACES McPAT's own PHY
+    dynamic and is not added to it: a new McPAT parameter pair `phy_pj_bit_rd` / `phy_pj_bit_wr`, each direction at
+    its own figure. The peak uses the larger figure.
+  - *HBM3:* 0.29 pJ/bit read, 0.25 pJ/bit write, PUBLISHED (K. Chae et al., IEEE JSSC 59(1), 2024, Table II: the
+    SoC-side HBM3 PHY at 9 Gb/s/pin, 0.66 / 0.30 V; DRAM die excluded). It is a per-bit energy, used at the run's
+    rate.
+  - *HBM2:* 0.56 pJ/bit read, 1.07 pJ/bit write, DERIVED from the Samsung Foundry HBM2E PHY (S. Hwang, K. Chae,
+    T. Yeo et al., Hot Chips 32, 2020, slide 10, energy row: 0.56 read / 1.07 write, 7 nm, 0.75 / 1.2 V, 3.2 Gb/s),
+    each direction at its own published figure.
+    - Rate factor 1: a per-bit switching energy does not change with the rate.
+    - Voltage factor 1: HBM2's I/O supply is the measured 1.2 V. No HBM2 host-PHY core voltage is published, so the
+      measured 0.75 V is kept.
+  - The run prints the tier, the figures and their source on a `[power] <host> memory-controller PHY` line.
+- **HBM2 host PHY idle (user ruling 2026-10-28), DERIVED.** It is the same HBM2E measurement at HBM2's data rate:
+  - hard macro 36 mW x 2400 / 3200 = 27 mW, plus I/O 14 mW (HBM2 VDDQ 1.2 V is the measured supply; no core voltage
+    scaling) = 41 mW per stack (1024 DQ);
+  - that is 5.125 mW per 128-DQ channel, charged per channel (8 per stack). Was 0.
+- **The two ends of the interface, each charged once:**
+  - Host end, per access: this PHY energy.
+  - Host end, idle: the PHY idle above.
+  - DRAM end, per access: the part record's `idd.io_share`.
+  - DRAM end, idle: the DRAM background.
+- **Data impact:** HBM2/HBM3-host cells change in `host.memory_controllers` (PHY dynamic, leakage), in the MC area, and
+  through the uncore term's subtraction of the MC leakage; HBM2-host cells also gain `host.memory_controllers_phy`.
+  Device elements (their tier follows the placement, as before), and DDR, LPDDR5 and GDDR6 hosts, are unchanged.
+  Cycles are unchanged. Measured: HBM3-6400 host, stream_triad 1 core full size: host.memory_controllers 0.0482 -> 0.0226 W (its PHY dynamic at
+  0.29 / 0.25 pJ/bit is 0.0023 W; MC leakage 0.0129 -> 0.0063 W), host area 70.82 -> 69.44 mm^2, System Total 22.77 -> 22.75 W; HBM2-2400
+  host, same cell: host.memory_controllers 0.0837 -> 0.0458 W, host.memory_controllers_phy 0 -> 0.041 W, System Total
+  21.90 -> 21.87 W. The die clock trunk (smaller MC area) moves by under 0.1 mW per core.
+
 ## 1.12.131 -- the HBM3 host memory-controller PHY idle is priced
 
 - **Gap.** With HBM3 as the host memory, the host memory-controller PHY static (idle) power was 0 W, printed as

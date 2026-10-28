@@ -615,6 +615,7 @@ typedef struct{
 	int addressbus_width;
 	bool LVDS;
 	int phy_class;   /* PIMID 1.11.19 (D2/D3): 0=off-package DDR, 1=interposer/TSV */
+	double phy_pj_bit_rd, phy_pj_bit_wr;   /* PIMID (1.12.132): a published PHY energy per bit; > 0 replaces the PHY dynamic */
 	double vdd;
 	double power_gating_vcc;
 

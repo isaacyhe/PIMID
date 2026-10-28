@@ -206,6 +206,9 @@ public:
      * connector and the DRAM (CACTI-IO rs1_dq / rs2_dq) for the memory
      * node's topology; < 0 = the technology's default topology
      * (resolveDramTopology). */
+    /* (1.12.132) (user ruling 2026-10-28) HBM host memory-controller PHY energy per
+     * bit (pJ), read / write, with its source; false for other technologies. */
+    static bool hbmHostPhyEnergyPJBit(const std::string& tech, double& rd, double& wr, std::string& src);
     static LinkIOResult computeDramIO(const std::string& tech,
                                       int num_dq,
                                       double rate_mts,

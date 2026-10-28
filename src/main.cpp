@@ -10182,6 +10182,24 @@ static int dieProcessLogicNode(const UnifiedConfig& config) {
  * non-DRAM memory (SRAM, NVM) has no preset: its controller runs at the
  * array's own bandwidth (banks x line / access time, the run's computed
  * md1 bandwidth) on a 64-bit path, one rank. */
+/* (1.12.132) (user ruling 2026-10-28) An HBM host memory controller drives an
+ * interposer (microbumps, unterminated; JESD235/JESD238), not off-package DQ:
+ * it is emitted at McPAT's interposer tier (phy_class 1: structure, leakage,
+ * area), and its PHY energy per bit is the published HBM PHY figure
+ * (CactiIOWrapper::hbmHostPhyEnergyPJBit), which replaces McPAT's own PHY
+ * dynamic -- it is not added to it. */
+static bool hbmHostMc(const std::string& tech) {
+    return tech == "HBM2" || tech == "HBM3";
+}
+static void applyHbmHostPhyEnergy(pimid::McPATWrapper::MCTechParams& p, const std::string& tech, const std::string& who) {
+    double rd = 0.0, wr = 0.0; std::string src;
+    if (!hbmHostMc(tech) || !PIMID::CactiIOWrapper::hbmHostPhyEnergyPJBit(tech, rd, wr, src)) return;
+    p.phy_pj_bit_rd = rd; p.phy_pj_bit_wr = wr;
+    std::cout << "  [power] " << who << " memory-controller PHY (" << tech << " host memory): interposer tier (McPAT phy_class 1:"
+                 " structure, leakage, area); PHY energy " << rd << " pJ/bit read, " << wr << " pJ/bit write (" << src
+              << "), in place of McPAT's own PHY energy, not added to it" << std::endl;
+}
+
 static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
     const std::string& tech, int num_mcs, const UnifiedConfig& config)
 {
@@ -13593,6 +13611,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         }
         host_cfg.temperature_k = config.temperature_k;   // 1.11.52
 
+        {   /* (1.12.132) (user ruling 2026-10-28): an HBM host memory is on the interposer */
+            const std::string& hmt0 = (host_node && !host_node->memory_tech.empty()) ? host_node->memory_tech
+                                                                                     : config.host_memory_tech;
+            if (hbmHostMc(canonicalMemTech(hmt0))) host_cfg.mc_phy_tier = McPAT::SystemConfig::MCPhyTier::INTERPOSER;
+        }
         McPAT host_mcpat(host_cfg);
         host_mcpat.setDeviceProfile(McPAT::DeviceProfile::OOO);
         try {
@@ -13676,7 +13699,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             const std::string& hmt =
                 (host_node && !host_node->memory_tech.empty()) ? host_node->memory_tech
                                                                : config.host_memory_tech;
-            host_mcpat.setMCTechParams(getMCTechParamsForMcPAT(hmt, host_cfg.num_memory_controllers, config));   // 1.11.96
+            McPAT::MCTechParams hp = getMCTechParamsForMcPAT(hmt, host_cfg.num_memory_controllers, config);   // 1.11.96
+            applyHbmHostPhyEnergy(hp, canonicalMemTech(hmt), "host");   // (1.12.132) (user ruling 2026-10-28)
+            host_mcpat.setMCTechParams(hp);
         }
 
         // PCIe for host-device transfers (configurable via power.pcie YAML)
@@ -16035,6 +16060,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             mcfg.device_type = corner;
             mcfg.periphery_leakage_device = config.periphery_leakage_device;   // 1.11.94
             mcfg.arch_int_regs = config.arch_int_regs; mcfg.arch_fp_regs = config.arch_fp_regs;   // 1.11.94
+            /* (1.12.132) (user ruling 2026-10-28): an HBM host memory is on the interposer */
+            if (hbmHostMc(canonicalMemTech(node.memory_tech))) mcfg.mc_phy_tier = McPAT::SystemConfig::MCPhyTier::INTERPOSER;
         }
 
         McPAT::DeviceProfile profile;
@@ -17149,7 +17176,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                        * so it could not print. */
                       << "  (measured, per-node)"
                       << std::endl;
-            mcpat.setMCTechParams(getMCTechParamsForMcPAT(node.memory_tech, mcfg.num_memory_controllers, config));   // 1.11.96
+            {
+                McPAT::MCTechParams np = getMCTechParamsForMcPAT(node.memory_tech, mcfg.num_memory_controllers, config);   // 1.11.96
+                if (node.role == UnifiedConfig::SystemNode::HOST)   // (1.12.132) (user ruling 2026-10-28)
+                    applyHbmHostPhyEnergy(np, canonicalMemTech(node.memory_tech), node.name);
+                mcpat.setMCTechParams(np);
+            }
 
             mcpat.computePower();
             {

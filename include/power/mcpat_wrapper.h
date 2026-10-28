@@ -217,6 +217,10 @@ public:
         int databus_width = 64;         // bits
         int number_ranks = 2;
         int number_mcs = 1;
+        /* (1.12.132) (user ruling 2026-10-28) the PHY energy per bit (pJ), read and
+         * write; > 0 replaces McPAT's own PHY dynamic (never added to it). */
+        double phy_pj_bit_rd = -1.0;
+        double phy_pj_bit_wr = -1.0;
         /* 1.11.56 (audit C008): the controller's STRUCTURE used to be five
          * literals written straight into the XML, with no field to carry
          * them and therefore no way for any caller to describe a controller

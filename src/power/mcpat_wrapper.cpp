@@ -4470,6 +4470,10 @@ std::string McPATWrapper::generateXMLConfig() const {
     xml << "      <param name=\"background_fraction\" value=\"" << config_.mc_background_fraction << "\"/>\n";   /* 1.11.98 (row 28, ruling (c)): 0 when the controller is measured */
     xml << "      <param name=\"phy_class\" value=\""
         << (config_.mc_phy_tier == SystemConfig::MCPhyTier::INTERPOSER ? 1 : 0) << "\"/>\n";
+    if (mc_tech_.phy_pj_bit_rd > 0.0 && mc_tech_.phy_pj_bit_wr > 0.0) {   // (1.12.132) (user ruling 2026-10-28)
+        xml << "      <param name=\"phy_pj_bit_rd\" value=\"" << mc_tech_.phy_pj_bit_rd << "\"/>\n";
+        xml << "      <param name=\"phy_pj_bit_wr\" value=\"" << mc_tech_.phy_pj_bit_wr << "\"/>\n";
+    }
     /* 1.11.19 (user decision D10): state the interface class explicitly
      * instead of riding McPAT's default. XML_Parse defaults LVDS=true, which
      * is why the code path yields ~2.2 pJ/bit while docs/changelog.md:2088

@@ -1378,6 +1378,8 @@ void ParseXML::parse(char* filepath)
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"number_ranks")==0) {sys.mc.number_ranks=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"LVDS")==0) {sys.mc.LVDS=(bool)atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"phy_class")==0) {sys.mc.phy_class=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"phy_pj_bit_rd")==0) {sys.mc.phy_pj_bit_rd=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (1.12.132) */
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"phy_pj_bit_wr")==0) {sys.mc.phy_pj_bit_wr=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (1.12.132) */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"type")==0) {sys.mc.type=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"withPHY")==0) {sys.mc.withPHY=(bool)atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"background_fraction")==0) {sys.mc.background_fraction=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.11.98 */
@@ -1957,6 +1959,7 @@ void ParseXML::initialize() //Initialize all
 	sys.mc.withPHY = false;   /* PIMID 1.11.57 (E014) */
 	sys.mc.background_fraction = 0.1;   /* PIMID 1.11.98 (row 28): McPAT's convention unless the XML measures it */
 	sys.mc.phy_class=0;   /* PIMID 1.11.19: off-package DDR unless said otherwise */
+	sys.mc.phy_pj_bit_rd = -1.0; sys.mc.phy_pj_bit_wr = -1.0;   /* PIMID (1.12.132): McPAT's own PHY energy unless given */
 	sys.mc.type=1;
 	sys.mc.vdd =0;
 	sys.mc.power_gating_vcc = -1;

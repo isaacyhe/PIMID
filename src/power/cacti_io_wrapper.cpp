@@ -562,6 +562,42 @@ bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::str
     return true;
 }
 
+/* (1.12.132) (user ruling 2026-10-28) The per-bit energy of an HBM host
+ * memory-controller PHY, read and write, in place of McPAT's own PHY energy
+ * (the host MC is emitted at McPAT's interposer tier for its structure,
+ * leakage and area).
+ *   HBM3: PUBLISHED, K. Chae et al. (Samsung Foundry), "A 4-nm 1.15 TB/s HBM3
+ *     Interface With Resistor-Tuned Offset Calibration and In Situ Margin
+ *     Detection", IEEE JSSC 59(1), Jan. 2024, Table II: 0.29 pJ/bit read,
+ *     0.25 pJ/bit write at 9 Gb/s/pin, VDD/VDDQ 0.66/0.30 V; scope: the SoC-side
+ *     PHY (TRX, strobe control, per-bit de-skew, read FIFO, VT tracking, DFI
+ *     logic, address/command interface, DFT), the DRAM die excluded. Used per
+ *     bit at the run's rate (a per-bit energy; no rate factor).
+ *   HBM2: DERIVED from S. Hwang, K. Chae, T. Yeo et al. (Samsung Foundry),
+ *     "A 3.2 Gbps/pin HBM2E PHY ...", Hot Chips 32 (2020), slide 10, energy
+ *     row: 0.56 pJ/bit read, 1.07 pJ/bit write (hard macro + I/O, 7 nm,
+ *     0.75/1.2 V, 3.2 Gb/s). Rate: a
+ *     per-bit switching energy (C V^2 per bit) does not change with the rate,
+ *     factor 1 at 2.4 Gb/s. Voltage: HBM2's I/O supply is the measured 1.2 V
+ *     (JESD235), factor 1; no HBM2 host-PHY core voltage is published, the
+ *     measured 0.75 V kept. So 0.56 pJ/bit read and 1.07 pJ/bit write, each
+ *     direction at its own published figure (user ruling 2026-10-28). */
+bool CactiIOWrapper::hbmHostPhyEnergyPJBit(const std::string& tech, double& rd, double& wr, std::string& src) {
+    if (tech == "HBM3") {
+        rd = 0.29; wr = 0.25;
+        src = "PUBLISHED: Chae et al. JSSC 59(1) 2024 Table II, SoC-side HBM3 PHY at 9 Gb/s/pin, 0.66/0.30 V";
+        return true;
+    }
+    if (tech == "HBM2") {
+        rd = 0.56; wr = 1.07;
+        src = "DERIVED: Samsung Foundry HBM2E PHY 0.56 pJ/bit read, 1.07 pJ/bit write (Hwang, Chae, Yeo et al., Hot Chips 32 2020, slide 10; 7 nm, "
+              "0.75/1.2 V, 3.2 Gb/s) x rate factor 1 (per-bit energy) x voltage factor 1 (HBM2 VDDQ 1.2 V = the measured I/O "
+              "supply; no HBM2 host-PHY core voltage published)";
+        return true;
+    }
+    return false;
+}
+
 LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
                                            int num_dq,
                                            double rate_mts,
@@ -886,6 +922,26 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
                  "(0.66/0.75 V)^2 = " << hm << " mW + I/O x (0.30/1.2 V)^2 = " << iom << " mW (HBM3 PHY supplies, Chae et al. JSSC "
                  "59(1) 2024 Table II) = " << stack_mw << " mW per 1024 DQ = " << pch << " mW per " << num_dq << "-DQ channel, x the "
                  "memory's channels; " << 100.0 * stack_mw / active << "% of the active HBM3 PHY at 0.29 pJ/bit (Chae)";
+            r.phy_static_source = o.str();
+        }
+        /* (1.12.132) (user ruling 2026-10-28) HBM2 host PHY idle (DERIVED): the same
+         * HBM2E measurement at HBM2's data rate. HBM2 is 1024 DQ per stack (8
+         * channels x 128) like HBM2E, and its I/O supply is the measured 1.2 V
+         * (JESD235 VDDQ 1.2 V), so the I/O idle carries over unscaled. No HBM2
+         * host-PHY core voltage is published, so the measured 0.75 V is kept and
+         * only the rate scales the hard macro: 36 mW x rate / 3200. */
+        if (tech == "HBM2") {
+            const double hm = 36.0 * rate_mts / 3200.0;
+            const double iom = 14.0;
+            const double stack_mw = hm + iom;                     // 1024 DQ
+            const double pch = stack_mw * num_dq / 1024.0;
+            r.phy_static_power_mw = pch;
+            r.phy_static_sourced = true;
+            std::ostringstream o;
+            o << "DERIVED from the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
+                 "7 nm, 0.75/1.2 V, 1024 DQ at 3.2 Gb/s, hard macro 36 + I/O 14 mW): hard macro x " << rate_mts << "/3200 MT/s = "
+              << hm << " mW + I/O 14 mW (HBM2 VDDQ 1.2 V, the measured supply; no HBM2 host-PHY core voltage is published, 0.75 V "
+                 "kept) = " << stack_mw << " mW per 1024 DQ = " << pch << " mW per " << num_dq << "-DQ channel, x the memory's channels";
             r.phy_static_source = o.str();
         }
         r.phy_dynamic_power_mw = io.getPHYDynamicPowerMW();
