@@ -226,7 +226,12 @@ within the same phase; a turn passes on only when every thread it woke, created
 or moved has joined and every thread it put to sleep is queued in the kernel on
 its futex word (read from /proc, so the next turn cannot change the word before
 the kernel compares it); a new thread takes the core (thread id mod n) of its
-mask; and threads waiting for a core are served by phase and thread id. The
+mask; and threads waiting for a core are served by phase and thread id. Since (1.12.158)
+that includes a thread that rejoins after a wait while its core runs another
+thread: it waits in that queue, and the queue is served once every join the turn
+caused has arrived. Before, the threads one turn woke took the free and parked
+cores in the order their host threads arrived, so with more threads than cores
+(the 4-core co-sim cells run 16) the runs differed from program start. The
 simulated time still comes from the model; the host decides neither the order
 in which threads touch shared state nor which core a thread gets. The cost is
 host time: OpenMP device cells take about a fifth longer to simulate.

@@ -318,6 +318,22 @@ class Scheduler : public GlobAlloc, public Callee {
             } else {
                 assert(th->state == BLOCKED || th->state == STARTED);
 
+                /* (1.12.158) fixed thread order for the whole run: a thread that rejoins after a
+                 * wait (BLOCKED: its core went to another thread) no longer takes a core the
+                 * moment its host thread arrives -- several threads woken in one turn raced for
+                 * the free and parked cores, so with more threads than cores the order in which
+                 * the host threads ran decided which thread ran where (4-core co-sim cells
+                 * differed between two runs before the ROI). It queues (by phase, then id), and
+                 * the queue is served once every join the turn caused has arrived (detDispatch). */
+                if (g_detOrder && th->state == BLOCKED) {
+                    th->state = QUEUED;
+                    th->futexWord = 1;   // armed before a dispatch can wake it
+                    enqueueRun(th);
+                    if (g_detPending.load() == 0) detDispatchLocked();
+                    waitForContext(th, true); //releases lock, might join
+                    return th->cid;
+                }
+
                 ContextInfo* ctx = schedThread(th);
                 if (ctx) {
                     schedule(th, ctx);
@@ -411,6 +427,27 @@ class Scheduler : public GlobAlloc, public Callee {
         }
 
         void setFixedOrder() { bar.setFixedOrder(); }   // (1.12.123)
+        /* (1.12.158): hand the free and parked cores to the queued threads in queue order (phase,
+         * then id); called when every join a turn caused has arrived (the last such join, or
+         * the turn's settle). Caller holds schedLock for the Locked form. */
+        void detDispatchLocked() {
+            ThreadInfo* th = runQueue.front();
+            while (th) {
+                ThreadInfo* nx = th->next;
+                ContextInfo* ctx = schedThread(th);
+                if (ctx) {
+                    runQueue.remove(th);
+                    schedule(th, ctx);
+                    wakeup(th, true);
+                }
+                th = nx;
+            }
+        }
+        void detDispatch() {
+            futex_lock(&schedLock);
+            if (!runQueue.empty()) detDispatchLocked();
+            futex_unlock(&schedLock);
+        }
         bool detOthersToRun() const { return bar.detOthersToRun(); }   // (1.12.123): unlocked, benign
         void detYield(uint32_t pid, uint32_t tid, uint32_t cid) {   // (1.12.123): see Barrier::yield
             futex_lock(&schedLock);
@@ -639,8 +676,8 @@ class Scheduler : public GlobAlloc, public Callee {
             if (!prev) runQueue.push_front(th); else runQueue.insertAfter(prev, th);
         }
 
-        void waitForContext(ThreadInfo* th) {
-            th->futexWord = 1;
+        void waitForContext(ThreadInfo* th, bool armed = false) {
+            if (!armed) th->futexWord = 1;
             waitEvents.inc();
             //info("%d waiting to be scheduled", th->gid);
             //printState();

@@ -1493,6 +1493,7 @@ static void detSettle(int64_t own = 0) {   // wait until every thread this turn 
             g_detPending.store(0);
         }
     }
+    if (g_detPending.load() <= 0 && zinfo && zinfo->sched) zinfo->sched->detDispatch();   // (1.12.158): the queued rejoins get their cores, in queue order
 }
 
 /* (1.12.123) fixed thread order: a turn lasts at most kDetTurnCycles of the core's own

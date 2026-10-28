@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.158 -- the fixed thread order covers the whole run: 4-core co-sim cells repeat
+
+- **Problem.** The 4-core co-sim cells (16 threads on 4 host cores; 30 cells, OpenMP and thread-MPI) gave a different
+  run time in each run (cosim_HBM3_omp_gemv_4core 362589 / 365127 cycles in two runs of one build), and so did
+  every comparison of two builds that differed only in power code.
+- **Root cause.** The fixed thread order of 1.12.123 queues a thread that waits for a core by phase and id, but a
+  thread that rejoined after a futex wait whose core had gone to another thread did not wait in that queue: it took
+  a free core, or the core of a parked thread, the moment its host thread got to the scheduler. When one turn woke
+  several threads and the cores were fewer than the threads, the host decided which woken thread ran where, from
+  the program's start (the state at roi_begin already differed: 17990 vs 19687 lines taken M -> E by the ROI-entry
+  flush).
+- **Fix (external/zsim/src/scheduler.h, qemu_zsim_plugin.cpp).** Under the fixed order such a thread joins the run
+  queue (by phase, then id) and the queue is served once every join the turn caused has arrived: by the last such
+  join, or by the turn's settle (`Scheduler::detDispatch`). A thread whose core is still its own (parked) and a new
+  thread take their cores as before.
+- **Data impact (one-time).** the 30 4-core co-sim cells take one fixed value each; across four runs
+  before, they spread by 0.2% (cosim_HBM3_omp_stream_triad_4core) to 132% (cosim_DDR5_mpi_gemv_g3200_4core 400564 ..
+  927502 cycles), and the fixed value lies within that spread or up to 43% beyond it (cosim_HBM3_mpi_stencil_2d_4core
+  615736 vs 429423 .. 595164). Every other cell is unchanged (116-cell validation set and the exact-repeat sample),
+  except the scheduler's `waitEvs` count of co-sim cells. Host time unchanged (40 cells: 4158 s -> 4151 s).
+
 ## 1.12.157 -- the measured data carries no host values: two runs of a cell give the same data-pattern counts
 
 - **Problem.** The measured data statistics (the DQ data-pattern counters `dq*`, the wire activity `nocWire*` and
