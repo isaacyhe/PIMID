@@ -28,7 +28,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     /* PIMID 1.12.17: bank-parallel mode for processing elements placed below the
      * channel tier. Each element drives its own bank, so there is no shared
      * command bus (one command per BANK per cycle, not per channel) and no shared
-     * data bus to turn around (reads and writes both served). The DRAM's
+     * data bus of their own (reads and writes both served; a HOST request still obeys the DIMM data bus, see m_pimid_hdb). The DRAM's
      * remaining timing constraints decide readiness, re-evaluated after every
      * command issued in the cycle, so activation limits (tRRD, tFAW) still hold
      * across banks. Off by default: the shipped behaviour is unchanged. */
@@ -46,6 +46,24 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     std::vector<int> m_pimid_ca_occ;
     long m_pimid_ca_free = 0;
     uint64_t s_pimid_shadow_acts = 0, s_pimid_ca_waits = 0;
+    /* PIMID (1.12.169): the HOST DATA BUS at bank-parallel placements. Bank-parallel mode removes every column-to-column
+     * constraint above the PE tier because a PE's data stays inside its chip; a HOST column command (RD/WR/RDA/WRA
+     * of source_id 1/3) crosses the DIMM's DQ bus, which carries one burst at a time: BL/2 clocks (nBL: BL16 = 8 tCK,
+     * JEDEC JESD79-5, burst length and the CAS timing parameters) per column access of a channel (a DDR5 sub-channel),
+     * in either direction. A host column command therefore cannot issue before the previous host burst of its channel
+     * has left the bus; the chips of a lock-step rank share it (one burst per host request). A PE command neither
+     * waits for the bus nor occupies it. Off unless the replay sets pimid_host_data_bus. */
+    bool m_pimid_hdb = false;
+    int  m_hdb_burst = 0;                  // clocks one burst holds the bus
+    std::vector<char> m_hdb_col;           // by command: a column command
+    Clk_t m_hdb_free = 0;                  // the first clock the bus takes the next host burst
+    uint64_t s_hdb_cmds = 0;
+    bool hdb_host(const Request& r, int cmd) const {
+      return m_pimid_hdb && (r.source_id == 1 || r.source_id == 3) && cmd >= 0 && cmd < (int)m_hdb_col.size() && m_hdb_col[cmd];
+    }
+    /* the first clock the host data bus takes command cmd of r (-1: the bus does not bind it) */
+    Clk_t hdb_ready_at(const Request& r, int cmd) const { return hdb_host(r, cmd) ? m_hdb_free : (Clk_t)-1; }
+    bool hdb_blocks(const Request& r, int cmd) const { return hdb_host(r, cmd) && m_clk < m_hdb_free; }
     /* PIMID (1.12.151): LOCK-STEP host requests at the chip split. The replay sends a host request ONCE (chip 0's
      * address, source_id 1/3) and sets pimid_lockstep_chips; the controller drives every chip of the rank with it
      * as a DIMM controller does: one queue entry (buffer capacity, write-drain watermarks, scheduler), and each
@@ -226,6 +244,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     void init() override {
       m_wr_low_watermark =  param<float>("wr_low_watermark").desc("Threshold for switching back to read mode.").default_val(0.2f);
       m_wr_high_watermark = param<float>("wr_high_watermark").desc("Threshold for switching to write mode.").default_val(0.8f);
+      m_pimid_hdb = param<bool>("pimid_host_data_bus").desc("PIMID (1.12.169): host column commands obey the shared data bus (bank-parallel mode).").default_val(false);
       m_pimid_bank_parallel = param<bool>("pimid_bank_parallel").desc("PIMID: one command per bank per cycle, no shared bus (processing elements below the channel tier).").default_val(false);
 
       m_pimid_pd = param<bool>("pimid_power_down").desc("PIMID 1.12.20: precharge power-down after an idle timer, tXP exit.").default_val(false);
@@ -270,6 +289,13 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_ls_sel.assign(m_pimid_ls, 0);
         m_pimid_lockstep_chips = m_pimid_ls;
       } else m_pimid_ls = 1;
+      if (m_pimid_hdb) {   /* PIMID (1.12.169): the host data bus -- one burst of nBL clocks per host column command */
+        if (!m_pimid_bank_parallel || !m_dram->m_timings.contains("nBL") || !m_dram->m_commands.contains("RD") || !m_dram->m_commands.contains("WR"))
+          throw std::runtime_error("pimid_host_data_bus: needs the bank-parallel controller and a DRAM with RD, WR and nBL");
+        m_hdb_burst = m_dram->m_timing_vals("nBL");
+        m_hdb_col.assign(m_dram->m_commands.size(), 0);
+        for (const char* n : {"RD", "WR", "RDA", "WRA"}) if (m_dram->m_commands.contains(n)) m_hdb_col[m_dram->m_commands(n)] = 1;
+      }
       if (m_pimid_host_ca) {   /* PIMID 1.12.18: CA occupancy per command, from the still-unfiltered channel level */
         const int ncmd = (int)m_dram->m_commands.size();
         /* 1.12.18 (AA10): the opening command by name, checked (LPDDR5 splits it into ACT-1/ACT-2); without one every
@@ -506,6 +532,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           it->command = ls_group_cmd(*it);
           if (ls_taken(used)) continue;
           if (!ls_ready(it->command)) continue;
+          if (hdb_blocks(*it, it->command)) continue;   // PIMID (1.12.169): the host data bus
           if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }
           if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing && ls_close_blocked(&(*it))) continue;
         } else {
@@ -514,6 +541,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         if (taken) continue;
         it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
         if (!pimid_ready(it->command, it->addr_vec)) continue;
+        if (hdb_blocks(*it, it->command)) continue;   // PIMID (1.12.169): the host data bus
         if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
         if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing && pimid_close_blocked(it->addr_vec)) continue;   // (1.12.151): a lock-step entry holds its bank on every chip
         }
@@ -794,6 +822,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           if (!known) { s.cmd = it->command; s.cached = s.bank >= 0; s.ep = m_pl_ep; s.ver = s.bank >= 0 ? pl_ver(s) : 0; }
           Clk_t ra = -1;
           for (int c = 0; c < m_pimid_ls; c++) if (m_ls_sel[c]) { const Clk_t r = m_dram->pimid_ready_at(it->command, m_ls_a[c]); if (r > ra) ra = r; }
+          { const Clk_t h = hdb_ready_at(*it, it->command); if (h > ra) ra = h; }   // PIMID (1.12.169): the host data bus
           if (ra >= 0 && m_clk < ra) {
             s.nb = ra;
             if (s.cached) { s.active = false; if (s.inHeap != s.nb) { s.inHeap = s.nb; pl_wait(P, s.nb, id); } k--; }
@@ -812,8 +841,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           s.cached = s.bank >= 0; s.ep = m_pl_ep; s.ver = s.bank >= 0 ? m_pl_bank_ver[s.bank] : 0;
         }
         it->command = s.cmd;
-        const Clk_t ra = m_dram->pimid_ready_at(it->command, it->addr_vec);
-        if (ra >= 0 && m_clk < ra) {   // not ready (= !check_ready): dormant until ra
+        Clk_t ra = m_dram->pimid_ready_at(it->command, it->addr_vec);
+        { const Clk_t h = hdb_ready_at(*it, it->command); if (h > ra) ra = h; }   // PIMID (1.12.169): the host data bus
+        if (ra >= 0 && m_clk < ra) {   // not ready (= !check_ready, or the host data bus is busy): dormant until ra
           s.nb = ra;
           if (s.cached) { s.active = false; if (s.inHeap != s.nb) { s.inHeap = s.nb; pl_wait(P, s.nb, id); } k--; }
           continue;
@@ -900,6 +930,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
         s_pimid_ca_cmds++; if (m_dram->m_command_meta(req_it->command).is_opening) s_pimid_ca_acts++;   // (1.12.151): one CA slot per rank-wide command
       }
+      if (hdb_host(*req_it, req_it->command)) { m_hdb_free = m_clk + m_hdb_burst; s_hdb_cmds++; }   // PIMID (1.12.169): the burst takes the host data bus
       if (req_it->command == req_it->final_command) {
         if (req_it->type_id == Request::Type::Read) {
           req_it->depart = m_clk + m_dram->m_read_latency;
@@ -1067,6 +1098,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       uint64_t c = s_pimid_pd_cycles;
       for (size_t u = 0; u < m_pd_in.size(); u++) if (m_pd_in[u]) c += (uint64_t)(m_clk - m_pd_since[u]);
       pdUnitCycles += c; units += m_pd_in.size(); exits += s_pimid_pd_exits;
+    }
+    void pimid_hdb_totals(uint64_t& cmds, uint64_t& burstClocks) const override {   // PIMID (1.12.169): the host data bus
+      cmds += s_hdb_cmds; burstClocks += s_hdb_cmds * (uint64_t)m_hdb_burst;
     }
     void pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits, uint64_t& caCmds, uint64_t& caActs) const override {   // PIMID 1.12.18; (1.12.151): CA slots
       shadowActs += s_pimid_shadow_acts; caWaits += s_pimid_ca_waits; caCmds += s_pimid_ca_cmds; caActs += s_pimid_ca_acts;

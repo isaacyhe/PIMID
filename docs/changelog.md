@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.169 -- DDR5 bank-parallel placements: host column commands obey the shared data bus
+
+- **The gap.** At BANK and BANK_GROUP placement the replayed controller is bank-parallel: it removes every
+  column-to-column constraint above the processing element's tier, because a PE's data stays inside its chip.
+  The host's requests (the host baselines, and the host of a co-sim run) go through the same controller, so a host read or
+  write burst waited for no other burst on the DIMM data bus; since 1.12.18 only the command bus limited host
+  column commands.
+- **The change** (ramulator generic_dram_controller.cpp, zsim dram_epoch_replay.{h,cpp}). A host column command
+  (RD, WR, RDA, WRA of a host request, inside or outside the ROI) holds the data bus of its channel (a DDR5
+  sub-channel) for BL/2 clocks (nBL = 8 tCK for BL16, JEDEC JESD79-5), in either direction, and the next host
+  column command of that channel is not ready before the burst has left the bus. The chips of a lock-step rank
+  (1.12.151) carry one burst per host request. A PE's commands neither wait for the bus nor occupy it, and the
+  scheduler is unchanged: a host column command the bus cannot take is simply not ready. The change adds the burst
+  occupancy only; the read/write turnaround and the rank switch of the standard's timing table are not added at
+  these placements. It applies to DDR5 only; the other standards, and every run without a PE below the channel
+  tier, keep their timing.
+- **Report.** One line per replay: the host column commands that took the bus and the burst clocks they carried.
+- **Impact (DDR5 host baselines, run time).** One core: +0.06% to +0.34%. Four cores: OpenMP stream_triad +6.8%,
+  gemv +2.0%, bfs +0.1%; MPI stream_triad +10.5%, gemv +1.1%, bfs +1.4%. Sixteen cores: OpenMP stream_triad +17.8%,
+  gemv +5.3%, bfs +0.1%; MPI stream_triad +20.8%, gemv +5.5%, bfs +21.6%. At 16 cores the bus carries 0.44 of its
+  burst capacity in stream_triad. Average power falls by at most 1.4% (the same energy over a longer run).
+  At BANK_GROUP placement the 16-core stream_triad baseline moves +21.3%. The latency check (latency charged to the
+  cores over latency measured by the replay) moves by at most 0.03 on every DDR5 host baseline except the 16-rank
+  MPI bfs, where bursts fill the controller queue and the ratio reads 0.10 (0.93 before): the cores are charged
+  less than the replay measures, and that run time is a lower bound.
+- **Impact (co-sim, device).** Co-sim DDR5 cells (default and 3200 MT/s): -0.2% to +6.2% in run time (the 3200 MT/s MPI bfs cell is
+  the +6.2%; the others are within +2%), power within 0.05 W; the host requests of a co-sim run (the flush around an offload) now queue for the bus. A device-only
+  run (the PEs alone) gives identical counters and run time. HBM3 host baselines and co-sim cells are identical.
+  Results of DDR5 cells at BANK and BANK_GROUP placement with host traffic change; other results do not.
+
 ## 1.12.168 -- host speed: the replayed DRAM controller of HBM3, HBM2, DDR4 and DDR3 schedules from the ready-clock index
 
 - **The change (external/ramulator/src/dram/impl: HBM3.cpp, HBM2.cpp, DDR4.cpp, DDR3.cpp).** The scheduler index of

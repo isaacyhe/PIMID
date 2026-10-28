@@ -250,6 +250,7 @@ class DramEpochReplay {
     bool chipSplit_ = false;
     uint32_t chips_ = 1, hostRowSlots_ = 1, nextGrp_ = 0;
     bool chipReported_ = false;
+    bool hostDataBus_ = false, hdbReported_ = false;   // (1.12.169): the host data bus (bank-parallel DDR5) and its report line
     std::map<uint32_t, std::pair<uint32_t, uint64_t>> grpLat_;   // host request -> (copies outstanding, slowest latency)
     std::vector<int> counts_;     // Ramulator level counts (channel first, column last)
     int rowIdx_ = -1, colIdx_ = -1;

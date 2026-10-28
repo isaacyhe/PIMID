@@ -65,6 +65,9 @@ class IDRAMController : public Clocked<IDRAMController> {
      * candidate-cycles a host command waited for the DIMM CA bus; (1.12.151): the host commands that took a CA-bus
      * slot (one per rank-wide command) and the ACTs among them */
     virtual void pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/, uint64_t& /*caCmds*/, uint64_t& /*caActs*/) const {}
+    /* PIMID (1.12.169): the host data bus at bank-parallel placements -- the host column commands that took it and the
+     * burst clocks it carried */
+    virtual void pimid_hdb_totals(uint64_t& /*cmds*/, uint64_t& /*burstClocks*/) const {}
     /* PIMID 1.12.20: precharge power-down -- unit-cycles spent in power-down (an open interval counted to now),
      * the power-down units this controller holds, and the power-down exits (each cost tXP) */
     virtual void pimid_pd_totals(uint64_t& /*pdUnitCycles*/, uint64_t& /*units*/, uint64_t& /*exits*/) const {}

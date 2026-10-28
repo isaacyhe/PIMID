@@ -85,6 +85,7 @@ class IMemorySystem : public TopLevel<IMemorySystem> {
     /* PIMID 1.12.18: activate commands issued, summed over every controller. */
     virtual bool pimid_cmd_totals(uint64_t& /*activates*/) { return false; };
     virtual bool pimid_chip_totals(uint64_t& /*shadowActs*/, uint64_t& /*caWaits*/, uint64_t& /*caCmds*/, uint64_t& /*caActs*/) { return false; };
+    virtual bool pimid_hdb_totals(uint64_t& /*cmds*/, uint64_t& /*burstClocks*/) { return false; };   // PIMID (1.12.169): host data bus
     virtual bool pimid_pd_totals(uint64_t& /*pdUnitCycles*/, uint64_t& /*units*/, uint64_t& /*exits*/) { return false; };   // PIMID 1.12.20   // PIMID 1.12.18
     /* PIMID 1.12.18 (ruling 17 / R0605): the share of the row hits / misses /
      * conflicts and activates that belongs to requests sent with source_id 1

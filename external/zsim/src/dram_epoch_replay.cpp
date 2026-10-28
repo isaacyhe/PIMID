@@ -85,6 +85,10 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         pdOn_ = true;
     }
     if (bankPar) config["MemorySystem"]["Controller"]["pimid_bank_parallel"] = true;
+    /* (1.12.169): a host column command crosses the DIMM data bus, which the bank-parallel controller does not model for the PEs
+     * (their data stays in the chip). DDR5 only: the standard whose DIMM sub-channel bus the host baselines and co-sim hosts share. */
+    hostDataBus_ = bankPar && dimpl == "DDR5";
+    if (hostDataBus_) config["MemorySystem"]["Controller"]["pimid_host_data_bus"] = true;
     fe_  = Ramulator::Factory::create_frontend(config);
     sys_ = Ramulator::Factory::create_memory_system(config);
     fe_->connect_memory_system(sys_);
@@ -1405,6 +1409,19 @@ void DramEpochReplay::finalize() {
     if (!closedAtEnd && hostOnly_ && !cutMode_ && roiMarked_) {
         const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
         tickTo((uint64_t)((double)((uint64_t)zinfo->numPhases * pl) * ticksPerCycle_));
+    }
+    if (hostDataBus_ && !hdbReported_) {   /* (1.12.169): the host data bus at bank-parallel placements */
+        uint64_t hc = 0, hb = 0;
+        bool got = false;
+        if (par()) {
+            for (Chan& K : chans_) { uint64_t a = 0, b = 0; if (K.sys->pimid_hdb_totals(a, b)) { hc += a; hb += b; got = true; } }
+        } else got = sys_ && sys_->pimid_hdb_totals(hc, hb);
+        if (got) {
+            hdbReported_ = true;
+            info("[mem] %s: host data bus (bank-parallel placement; JEDEC JESD79-5 burst length BL/2 clocks per column access of a channel, "
+                 "either direction; PE data stays in the chip and does not use it): host column commands %lu, burst clocks %lu (cumulative, every window)",
+                 name_.c_str(), (unsigned long)hc, (unsigned long)hb);
+        }
     }
     if (chipSplit_ && !chipReported_) {   /* 1.12.18 (user ruling 2026-10-24) */
         uint64_t sa = 0, cw = 0, cc = 0, ca = 0;
