@@ -529,7 +529,7 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   prints the McPAT literal (reference) beside the value used.
 - **Interface energy** per access is computed from the part record (DQ termination per JEDEC ODT class,
   the IDDQ row where one is published, the RDIMM register where present) on the measured accesses that
-  cross the DQ pins; a row without an IDDQ figure (DDR3, DDR4, GDDR6, the DDR5-3200 row) charges termination only.
+  cross the DQ pins; a row without an IDDQ figure (DDR3, DDR4, GDDR6) charges termination only.
 - **Power gating** has no temporal weighting of its own.
 - **Host uncore (1.12.97).** The host socket's I/O and system agent is one term per
   socket, `<host>.uncore_static`, from the Haswell-EP package C1E power (Intel

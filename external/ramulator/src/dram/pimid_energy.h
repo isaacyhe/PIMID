@@ -558,7 +558,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * DDR3 32 mA = MT41K Rev E Table 20 IDD2P1 (fast exit) p.43, DDR4 25 mA
      * = MT40A Rev B Table 148 IDD2P p.332 -- and so are the two DDR5 16 Gb
      * entries (1.11.66, MT60B IDD2P). The rest of this note stands for the
-     * HBM, GDDR6, LPDDR5 and DDR5-3200 entries. */
+     * HBM, GDDR6 and LPDDR5 entries; the DDR5-3200 row takes the 4800
+     * column's IDD2P ((1.12.141), DERIVED). */
     /* 1.11.63 (calibration): FOUR trfc_ns values and the whole LPDDR5 IDD
      * column. Each is tagged in place below; the reasoning, once:
      *
@@ -631,12 +632,14 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * Both are "maximum values ... worst-case process, temperature and
      * voltage" at VDD = VDDQ = 1.1 V, and both list IDD5B (burst, all-bank)
      * directly -- no IDD5R conversion needed, unlike DDR4. The 3200 row
-     * (8 Gb, DDR5_3200AN) keeps its previous currents with the gap STATED:
-     * no held datasheet publishes a 3200 column, so that row's IDD is
-     * unsourced (lane C F6 measured it 2-3x below either addendum on
-     * standby). Default grade is the part record's: 4800 (Rev A) since
+     * (16 Gb since (1.12.141), DDR5_3200AN): no vendor publishes a 3200 column; since (1.12.141)
+     * (user ruling 2026-10-28) its IDD, IDDQ and IPP rows are DERIVED from
+     * the Rev A 4800 column by data-rate scaling (burst increments and the
+     * background standby x 3200/4800, the LPDDR5 7500 -> 6400 method; the
+     * part record states each step). Until then the row carried unsourced
+     * currents and no IDDQ/IPP. Default grade is the part record's: 4800 (Rev A) since
      * 1.12.19 (user ruling 2026-10-24). The energy caller passes the grade;
-     * the tRFC column is 195 ns at 8 Gb and 295 ns at 16 Gb. */
+     * the tRFC column is 295 ns at 16 Gb (195 ns at 8 Gb, the 3200 part until (1.12.141)). */
     /* 1.11.91 (audit R8-8, user ruling (a)): the IDDQ and IPP rows of the
      * SAME two addenda, x8 column, read page-ranged. VDDQ = VDD = 1.1 V and
      * VPP = 1.8 V nominal: Micron DDR5 core sheet p.1 "VDD = VDDQ = 1.1V
@@ -662,8 +665,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *    terminationNJ() prices that same write loop, so on a write the two
      *    terms overlap by at most the termination term. Reads do not
      *    overlap: the read loop's DC path is fed from the receiver's VDDQ.
-     * The 3200 row stays without IDDQ/IPP (no held sheet has a 3200
-     * column, the same stated gap as its IDD). */
+     * The 3200 row's IDDQ and IPP are DERIVED from the 4800 column ((1.12.141),
+     * user ruling 2026-10-28; see the part record). */
     /* 1.11.91 (item 11, user rulings 2026-09-26 18:44-19:00 and 19:30):
      * ONE ABSOLUTE VALUE PER QUANTITY, FROM MEASURED ANCHORS, BY COMPONENT.
      * Datasheet IDD values are guardbanded MAXIMA (worst process,
@@ -732,11 +735,11 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * BANDS (comment only): the per-vendor spread of [G] is the band of a
      * factor, e.g. IDD3N 0.23-0.53, IDD4R 0.46-0.95.
      *
-     * DDR5 (both 16 Gb grades and the 8 Gb 3200 row): the stored rows are
+     * DDR5 (all three grades, 16 Gb): the stored rows are
      * the maxima; under the component rule the activate term is f.act x
      * the spec row's (positive, the 1.11.86 one-bank baseline), so the
-     * per-current failure above no longer arises. The 3200 row's IDD is
-     * unsourced (stated below); it is factored like the others. */
+     * per-current failure above no longer arises. The 3200 row is DERIVED
+     * from the 4800 column ((1.12.141)); it is factored like the others. */
 // [former table row]     if (tech == "DDR5-3200") return {1.1, 55, 34, 42,148,168,120, 195.0, 3900.0, 1, 20};   // 8 Gb, UNSOURCED IDD (stated)
 // [former table row]     if (tech == "DDR5-5600") {
 // [former table row]         IDDSpec s{1.1, 53, 49, 91,218,241,377, 295.0, 3900.0, 1, 47};   // MT60B Rev D T8, 16 Gb
@@ -2162,7 +2165,7 @@ inline bool dqIoFromAnchoredShare(const std::string& tech) {
  * 1.12.18 -- only the standby pair the ruling names (see vppActPrePJ /
  * vppBurstPJ / vppRefreshPerUnitPJ and the refresh term below). Returns < 0 when the row has no IPP
  * (HBM2/HBM3: no published value; DDR3: no VPP
- * rail; DDR5-3200: no sheet). */
+ * rail). The DDR5-3200 row carries the 4800 column's IPP rows ((1.12.141), DERIVED). */
 inline double ippUnitMW(const std::string& tech, double active_frac) {
     const IDDSpec s = iddFor(tech);
     if (s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) return -1.0;

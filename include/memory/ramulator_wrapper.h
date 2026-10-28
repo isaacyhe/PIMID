@@ -230,9 +230,9 @@ public:
     /* 1.11.66 (round 5 F6, user ruling R8 #9): DDR5 SPEED GRADE as a
      * setting -- 3200, 4800 or 5600 MT/s (default = the part record's
      * grade: 4800 since 1.12.19, user ruling 2026-10-24). The grade selects ONE
-     * PART: timing preset (DDR5_3200AN / DDR5_4800B / DDR5_5600B), org (8 Gb
-     * at 3200 -- the only 3200 datasheet class held -- and the 16 Gb Micron
-     * MT60B die at 4800/5600), IDD row (Rev A = 4800B, Rev D = 5600B), the
+     * PART: timing preset (DDR5_3200AN / DDR5_4800B / DDR5_5600B), org (the
+     * 16 Gb Micron MT60B die at every grade; 8 Gb at 3200 until (1.12.141)), IDD
+     * row (Rev A = 4800B, Rev D = 5600B, 3200 DERIVED from Rev A), the
      * data rate the energy/bandwidth basis uses, and every transcription.
      * Must be called before initialize(); ignored for other technologies. */
     void setDdr5SpeedGrade(int mtps);

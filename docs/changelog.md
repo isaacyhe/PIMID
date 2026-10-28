@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.141 -- DDR5-3200 runs the 16 Gb die, with a current row derived from the published DDR5-4800 column
+
+- **Gap closed (params/dram/ddr5.yaml; user rulings 2026-10-28).** No vendor publishes a DDR5-3200 current column.
+  The 3200 grade carried an unsourced 8 Gb row (IDD0 55, IDD2N 34, IDD3N 42, IDD4R 148, IDD4W 168, IDD5 120,
+  IDD2P 20 mA) with no IDDQ and no IPP row, so its VPP rail (standby, activate, burst and refresh) was not priced and
+  its pin I/O was termination only. The row is now DERIVED from the Micron MT60B 16 Gb Rev A Table 6 x8 DDR5-4800
+  column by data-rate scaling, the method of the LPDDR5 7500 -> 6400 row (1.11.91 item 11, 1.12.78, 1.12.79):
+  IDD4R/IDD4W over IDD3N, IDDQ4R over IDDQ3N and IPP4R/IPP4W over IPP3N scale x 3200/4800; the background standby
+  is priced x 3200/4800; IDD0, IDD5B, IDD2P, IPP0, IPP5B, IPP2N/IPP3N and IDDQ4W keep the 4800 column.
+- **The 3200 grade runs the 16 Gb die (src/memory/ramulator_wrapper.cpp, src/main.cpp).** The organisation the
+  currents describe: DDR5_16Gb_x8 (JESD79-5D Table 4: 8 bank groups x 4 banks), at the published DDR5-3200AN bin
+  (JESD79-5D Table 283, 24-24-24; the bin does not depend on density), tRFC1 295 ns at 16 Gb (Table 71). It ran the
+  8 Gb part (2 banks per group, tRFC1 195 ns). No timing value is derived.
+- **Data impact.** DDR5-3200 cells only (the fig3 `g3200` and co-sim `g3200` companions): timing changes (twice the
+  banks, longer refresh), memory background, VPP and burst energy rise, and the memory area doubles (16 Gb dies).
+  The 4800 and 5600 grades are unchanged.
+
 ## 1.12.140 -- host speed: the replayed controller's per-cycle bank lists keep their storage
 
 - **The change (external/ramulator/src/dram_controller/impl/generic_dram_controller.cpp).** The bank-parallel cycle

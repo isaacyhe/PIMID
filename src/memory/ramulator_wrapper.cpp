@@ -399,10 +399,11 @@ void RamulatorWrapper::resolvePresetOrganization() {
     const int ww = (wk > 0) ? wk : widthOfOrgName(rec.organization_preset, 8);
     int cap_gb = capacityGbOfOrgName(rec.organization_preset, 8);
     if (dt == "DDR5") {
-        /* the 4800 and 5600 grades are the 16 Gb Micron MT60B die (both addenda are 16 Gb parts); 3200 keeps
-         * the 8 Gb part (1.11.66 R8 #9). The grade knob therefore moves the capacity component too. */
+        /* every grade is the 16 Gb Micron MT60B die: 4800 and 5600 are its two addenda; since (1.12.141) (user ruling
+         * 2026-10-28) 3200 runs the same 16 Gb organisation, matching its row, which is DERIVED from the 4800
+         * column (until then 3200 selected the 8 Gb part, 1.11.66 R8 #9). */
         const int g = effectiveDdr5GradeMTs();
-        if (g == 3200) cap_gb = 8; else if (g == 4800 || g == 5600) cap_gb = 16;
+        if (g == 3200 || g == 4800 || g == 5600) cap_gb = 16;
     }
     const std::string name = (dt == "HBM2" || dt == "HBM3") ? rec.organization_preset
                            : (dt == "LPDDR5") ? rec.organization_preset   // 1.12.44: the record's (was the literal LPDDR5_8Gb_x16)
@@ -1472,7 +1473,7 @@ void RamulatorWrapper::setDdr5SpeedGrade(int mtps) {
                   << " is not one of 3200 / 4800 / 5600 -- the three grades for "
                      "which this tree holds a timing bin (JESD79-5D Tables 283 / 287 "
                      "/ 289) AND a matching IDD row (Micron MT60B Rev A = 4800B, "
-                     "Rev D = 5600B; the 3200 row keeps its stated IDD gap)."
+                     "Rev D = 5600B; the 3200 row DERIVED from the 4800 column by data rate)."
                   << std::endl;
         std::exit(2);
     }
@@ -2913,7 +2914,7 @@ double RamulatorWrapper::getBackgroundSystemStatesMW(double active_frac, double 
                          "measured power-down residency, so the Background line for '"
                       << dram_type_ << "' rests on the IDD2P column of "
                          "pimid_energy.h, which is a datasheet read only for "
-                         "DDR3/DDR4/DDR5-4800/5600 (see its comment)." << std::endl;
+                         "DDR3/DDR4/DDR5-4800/5600 (DDR5-3200: the 4800 column's, DERIVED; see its comment)." << std::endl;
         }
     }
     return Ramulator::pimid_energy::backgroundSystemStatesMW(

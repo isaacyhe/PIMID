@@ -6490,7 +6490,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * architecture object; see the note in dram_architecture_v2.h. */
     /* 1.11.72: DDR5's banks per group FOLLOW THE GRADE. The 1.11.66 knob made
      * the default part 4800B / 16 Gb, and JESD79-5D Table 4 gives that part
-     * 4 banks per group (the 8 Gb part, which the 3200 grade selects, has 2).
+     * 4 banks per group (the 8 Gb part, which the 3200 grade selected until (1.12.141), has 2).
      * This row stayed at 2, so the placement tree covered 128 bank
      * organisations on a 256-bank device at the default grade -- and the
      * coverage invariant could not object, because both of its inputs come
@@ -6499,7 +6499,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * row now says the same thing. Measured effect: +2.7% cycles on the
      * corrected tree (3 x 3 A/B, DDR5 BANK 100k, row-miss fraction identical
      * -- the access stream is unchanged, only the mapping). */
-    else if (tech == "DDR5")     { banks_per_bg = (effectiveDdr5Grade(config) == 3200) ? 2 : 4;
+    else if (tech == "DDR5")     { banks_per_bg = 4;   // (1.12.141): every grade is the 16 Gb die (JESD79-5D Table 4: 4 banks per group)
                                    bg_per_chip = 8; chips_per_rank = 8; }
     else if (tech == "LPDDR5")   { banks_per_bg = 4; bg_per_chip = 4; chips_per_rank = 1; }
     /* 1.11.70: chips_per_rank = 2, NOT 1 -- GDDR6 IS A TWO-CHANNEL DEVICE.

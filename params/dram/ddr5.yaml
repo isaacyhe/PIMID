@@ -81,18 +81,29 @@ idd:
       iddq: { iddq3n: 70.0, iddq4r: 218.0, iddq4w: 271.0, vddq: 1.1, source: "Rev D T8 pp.19-20", wr_includes_rtt_wr: true, wr_rtt_source: "Micron DDR5 core sheet Rev D Table 387 pp.449-452 (IDD4W/IDDQ4W: Output Buffer and RTT Enabled) + notes 2-4 p.452 (RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2 = 120 ohm); IDDQ on the VDDQ balls (p.448)" }
       ipp: { ipp2n: 7.0, ipp3n: 8.0, vpp: 1.8, ipp0: 9.0, ipp4r: 10.0, ipp4w: 23.0, ipp5b: 33.0, source: "Rev D T8 pp.18-19; 1.12.18: x8 DDR5-5600 IPP0 9 (p.18), IPP4R 10 (p.19), IPP4W 23 and IPP5B 33 (p.20)" }
     3200:
+      # (1.12.141) (user ruling 2026-10-28): DERIVED from the sourced 4800 row above (Micron MT60B Rev A Table 6, x8
+      # DDR5-4800B, maxima) by data-rate scaling, the LPDDR5 7500 -> 6400 method (1.11.91 item 11, 1.12.78, 1.12.79):
+      # the burst increments over their own baseline scale x 3200/4800 (IDD4R/IDD4W over IDD3N, IDDQ4R over IDDQ3N,
+      # IPP4R/IPP4W over IPP3N); the background standby is priced x 3200/4800 (standby_clock); the activate, refresh
+      # and power-down columns (IDD0, IDD5B, IDD2P, IPP0, IPP5B, IPP2N/IPP3N) and IDDQ4W (its excess holds the write
+      # termination DC current, wr_includes_rtt_wr) keep the row. No vendor publishes a DDR5-3200 column. Was the
+      # unsourced 8 Gb row {55, 34, 42, 148, 168, 120, IDD2P 20} with no IDDQ and no IPP row (VPP not priced).
+      # The 3200 bin now runs the 16 Gb organisation these currents describe (tRFC1 295 ns at 16 Gb).
       vdd: 1.1
-      idd0: 55.0
-      idd2n: 34.0
-      idd3n: 42.0
-      idd4r: 148.0
-      idd4w: 168.0
-      idd5: 120.0
+      idd0: 103.0
+      idd2n: 92.0
+      idd3n: 142.0
+      idd4r: 298.666666667
+      idd4w: 280.0
+      idd5: 277.0
       # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
-      idd2p: 20.0
-      trfc_ns: 195.0
+      idd2p: 88.0
+      trfc_ns: 295.0
       trefi_ns: 3900.0
-      source: "8 Gb DDR5-3200 row: IDD UNSOURCED (stated in the code since 1.11.63; kept as the stated gap); tRFC1 195 ns at 8 Gb = DDR5.cpp tRFC_TABLE"
+      source: "DERIVED (user ruling 2026-10-28): the Micron MT60B 16 Gb DDR5 core sheet Rev A (16gb_ddr5_sdram_dierevA.pdf Rev. D 02/2023) Table 6, pp.17-20, x8 DDR5-4800 column, MAXIMA, scaled to DDR5-3200 by data rate as the LPDDR5 row is scaled from 7500 to 6400 (1.11.91 item 11): IDD4R = 142 + (377 - 142) x 3200/4800, IDD4W = 142 + (349 - 142) x 3200/4800; IDD0, IDD2N, IDD3N, IDD5B, IDD2P as the 4800 column. The 3200 bin runs the same 16 Gb die (organisation DDR5_16Gb_x8, JESD79-5D Table 4: 8 bank groups x 4 banks) at the DDR5-3200AN bin (JESD79-5D Table 283 p.390, CL-nRCD-nRP 24-24-24; the bin does not depend on density), so tRFC1 is 295 ns (JESD79-5D Table 71 p.173 at 16 Gb, DDR5.cpp tRFC_TABLE); until (1.12.141) it ran the 8 Gb organisation (tRFC1 195 ns). No vendor publishes a DDR5-3200 column."
+      standby_clock: { scale: 0.666666666667, source: "(user ruling 2026-10-28) the row is the 4800 MT/s column, the model runs DDR5-3200: the standby states' clock-driven current scales with the clock, so the background standby (IDD2N/IDD3N and IPP2N/IPP3N) is priced x 3200/4800; power-down, refresh and the activate / burst baselines keep the row (the LPDDR5 7500 -> 6400 method, 1.12.79). Estimated from a vendor source that cannot be disclosed publicly." }
+      iddq: { iddq3n: 31.0, iddq4r: 48.333333333, iddq4w: 198.0, vddq: 1.1, source: "DERIVED (user ruling 2026-10-28) from Rev A T6 pp.18-19 (VDDQ rail), x8 DDR5-4800: IDDQ4R excess is a switching current proportional to the data rate, scaled as the LPDDR5 IDD4RQ (1.12.78): IDDQ4R = 31 + (57 - 31) x 3200/4800; IDDQ3N 31 and IDDQ4W 198 (its excess holds the write termination DC current) as the 4800 column", wr_includes_rtt_wr: true, wr_rtt_source: "Micron DDR5 core sheet Rev D Table 387 pp.449-452 (IDD4W/IDDQ4W: Output Buffer and RTT Enabled) + notes 2-4 p.452 (RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2 = 120 ohm); IDDQ on the VDDQ balls (p.448)" }
+      ipp: { ipp2n: 6.0, ipp3n: 7.0, vpp: 1.8, ipp0: 8.0, ipp4r: 8.333333333, ipp4w: 27.0, ipp5b: 28.0, source: "DERIVED (user ruling 2026-10-28) from Rev A T6 pp.17-20 (VPP rail), x8 DDR5-4800: IPP2N 6, IPP3N 7, IPP0 8, IPP5B 28 as the 4800 column; the burst increments scaled x 3200/4800 as the LPDDR5 second-rail burst rows are (user ruling 2026-10-25): IPP4R = 7 + (9 - 7) x 3200/4800, IPP4W = 7 + (37 - 7) x 3200/4800" }
 component_factors:   # typical / maximum per component; applied by typicalFromSpec
   standby: 0.57
   standby_premium: 0.631578947368
