@@ -295,6 +295,11 @@ class HBM3 : public IDRAM, public Implementation {
       return m_channels[channel_id]->check_ready(command, addr_vec, m_clk);
     };
 
+    Clk_t pimid_ready_at(int command, const AddrVec_t& addr_vec) override {   // scheduler ready-clock index, as DDR5
+      int channel_id = addr_vec[m_levels["channel"]];
+      return m_channels[channel_id]->ready_at(command, addr_vec);
+    };
+
     bool check_rowbuffer_hit(int command, const AddrVec_t& addr_vec) override {
       int channel_id = addr_vec[m_levels["channel"]];
       return m_channels[channel_id]->check_rowbuffer_hit(command, addr_vec, m_clk);

@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.168 -- host speed: the replayed DRAM controller of HBM3, HBM2, DDR4 and DDR3 schedules from the ready-clock index
+
+- **The change (external/ramulator/src/dram/impl: HBM3.cpp, HBM2.cpp, DDR4.cpp, DDR3.cpp).** The scheduler index of
+  1.12.127, which lets the bank-parallel controller skip a queued request that cannot become ready before the largest
+  ready clock on its path, was available for DDR5 only. These four standards now give that clock too
+  (`DRAM::pimid_ready_at`, the same lookup as DDR5). The scheduling rules are unchanged; the pick, the counters and
+  every printed value are the same.
+- **Validation (a build without it and one with it, same node, same guest binaries).**
+  - Identical in every printed and priced line (host-side lines excluded: thread start order, times): 36 serial PIM
+    cells (8 kernels at BANK plus gemv at CHANNEL, `alu_core` pe16) on each of HBM3, HBM2, DDR4 and DDR3; 20 smoke-size
+    OpenMP cells (5 kernels on each of the four) and 8 full-size OpenMP cells (stream_triad and gemv on each);
+    `ooo_core` stencil_2d (2828, 3 iterations) on each of the four.
+  - Host time of that `ooo_core` stencil_2d run (eight runs at once on one node; without it to with it): HBM3 543 s to
+    527 s, HBM2 431 s to 423 s, DDR4 3035 s to 2816 s, DDR3 2607 s to 2542 s.
+- **Impact:** none on results; host time only.
+
 ## 1.12.167 -- a device run's DRAM replay covers the whole priced window
 
 - **The problem.** A device run timed on the PEs' own clocks (a single process, cut mode) takes its run time from the
