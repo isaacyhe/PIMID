@@ -865,9 +865,12 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
          * rails. NXP AN13917 Rev. 4.0 (i.MX 93 Power Consumption Measurement,
          * Jan 2025) measures the two rails its Table 6 (p.12) names "Power supply
          * for DRAM PHY" (vdd2_ddr + vddq_ddr) of an LPDDR4X x16 PHY with the
-         * system idle and the controller clock-gated: 18.9 + 6.4 = 25.3 mW at
-         * 3733 MT/s (Table 28, p.38), 9.6 + 4.0 = 13.6 mW at 1866 (Table 29,
-         * p.39), 3.8 + 4.5 = 8.3 mW at 625 (Table 31, p.41). The least-squares
+         * system idle and the controller clock-gated: 18.9 + 4.0 = 22.9 mW at
+         * 3733 MT/s (Table 28, p.38), 9.6 + 4.5 = 14.1 mW at 1866 (Table 29,
+         * p.39), 3.8 + 4.0 = 7.8 mW at 625 (Table 31, p.41). Each table's
+         * vddq_ddr row is on its "...continued" part on the next page ((1.12.133):
+         * 1.12.116 read the row printed above each table, which belongs to the
+         * previous table: 6.4 / 4.0 / 4.5). The least-squares
          * line through the three points, per 16 DQ, is scaled by the channel
          * width and evaluated at the run's rate (DERIVED: an LPDDR4X PHY for a
          * DDR4/DDR5 host PHY; no measured DDR4/DDR5 host-PHY idle is
@@ -875,7 +878,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
          * supply), so the parameter set's PLL static is added. It replaces the
          * set's phase rotator + RX + PLL static (30 mW per 64 DQ). */
         if (tech == "DDR4" || tech == "DDR5") {
-            const double xs[3] = {3.733, 1.866, 0.625}, ys[3] = {25.3, 13.6, 8.3};   // Gb/s per pin, mW per x16
+            const double xs[3] = {3.733, 1.866, 0.625}, ys[3] = {22.9, 14.1, 7.8};   // Gb/s per pin, mW per x16 ((1.12.133): AN13917 transcription)
             double mx = 0.0, my = 0.0;
             for (int i = 0; i < 3; ++i) { mx += xs[i] / 3.0; my += ys[i] / 3.0; }
             double sxx = 0.0, sxy = 0.0;
@@ -884,7 +887,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             const double phy16 = a + b * rate_mts / 1000.0;
             r.phy_static_power_mw = phy16 * num_dq / 16.0 + iop.phy_pll_s;
             std::ostringstream o;
-            o << "DERIVED from measured LPDDR4X PHY idle rails (NXP AN13917 Rev. 4.0 Tables 28/29/31: 25.3/13.6/8.3 mW per x16 at "
+            o << "DERIVED from measured LPDDR4X PHY idle rails (NXP AN13917 Rev. 4.0 Tables 28/29/31: 22.9/14.1/7.8 mW per x16 at "
                  "3733/1866/625 MT/s; fit " << a << " + " << b << " mW per Gb/s per 16 DQ) x " << num_dq << "/16 DQ at "
               << rate_mts << " MT/s = " << phy16 * num_dq / 16.0 << " mW, + CACTI-IO PLL " << iop.phy_pll_s
               << " mW (the measured rails exclude the PLL)";

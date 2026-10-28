@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.133 -- the DDR4/DDR5 host PHY idle reads the NXP measurement's vddq_ddr rows correctly
+
+- **Defect (1.12.116).** The DDR4/DDR5 host memory-controller PHY idle is a least-squares line through the measured
+  LPDDR4X PHY idle rails of NXP AN13917 Rev. 4.0 (vdd2_ddr + vddq_ddr, Tables 28 / 29 / 31). Each table runs onto the
+  next page, and its vddq_ddr row is on the "...continued" part. 1.12.116 read, for each table, the vddq_ddr row
+  printed just above it. That row belongs to the previous table: 6.4 / 4.0 / 4.5 mW in place of 4.0 / 4.5 / 4.0 mW.
+- **Fix (src/power/cacti_io_wrapper.cpp).**
+  - The per-x16 sums are 18.9 + 4.0 = 22.9 mW (3733 MT/s), 9.6 + 4.5 = 14.1 mW (1866), 3.8 + 4.0 = 7.8 mW (625); they
+    were 25.3 / 13.6 / 8.3.
+  - The fit is now 4.88 + 4.85 mW per Gb/s per 16 DQ (was 4.25 + 5.53).
+- **Data impact:** DDR4-2400 host PHY idle 80.13 -> 76.04 mW, DDR5-4800 133.25 -> 122.57 mW (64 DQ, PLL included).
+  With `power.models.host_uncore_static` on, the host uncore term takes back the difference, so System Total is
+  unchanged. HBM, LPDDR5 and GDDR6 are unchanged.
+
 ## 1.12.132 -- an HBM host memory controller is priced as an interposer PHY at the published HBM PHY energy; HBM2 host PHY idle
 
 - **Defect (user ruling 2026-10-28).** A host memory controller whose memory is HBM2 or HBM3 was emitted at McPAT's
