@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.12.134 LANGUAGES CXX)
+project(PIMID VERSION 1.12.135 LANGUAGES CXX)
+
+# (1.12.135): PIMID's pinned guest system libraries (src/main.cpp guestSysroot, docs/build.md "Guest libraries").
+option(PIMID_FETCH_GUEST_SYSROOT "Download PIMID's pinned guest libraries (Ubuntu 24.04 packages, sha256-checked) at configure time" ON)
+if(PIMID_FETCH_GUEST_SYSROOT AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/guest-sysroot/noble/MANIFEST.md5")
+    message(STATUS "Fetching the guest sysroot (scripts/fetch_guest_sysroot.sh)")
+    execute_process(COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fetch_guest_sysroot.sh"
+                    RESULT_VARIABLE _gsr_rc)
+    if(NOT _gsr_rc EQUAL 0)
+        message(WARNING "The guest sysroot could not be fetched: guests will run on this host's own libraries "
+                        "(results then depend on the host's distribution). Run scripts/fetch_guest_sysroot.sh later.")
+    endif()
+endif()
 
 # The reported version is taken FROM the project version, so the two cannot
 # drift apart again (see release 1.10.2).

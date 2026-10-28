@@ -791,6 +791,88 @@ static const size_t      kGuestStringBlock = 4096;
  * front of them. */
 static const char* const kGuestLibraryPath = "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib";
 
+/* (1.12.135): THE GUEST RUNS ON PIMID'S OWN COPY OF ITS SYSTEM LIBRARIES.
+ * Under QEMU user mode the guest loaded the HOST's C library, C++ library and
+ * OpenMP runtime, and their code runs inside the simulated region: a host with
+ * another distribution (glibc 2.43 instead of 2.39, another libgomp) gave other
+ * results for the same program. PIMID now gives QEMU a pinned guest sysroot
+ * with -L: QEMU opens a file the guest asks for (/lib/x86_64-linux-gnu/libc.so.6,
+ * the dynamic linker /lib64/ld-linux-x86-64.so.2, ...) from the sysroot when it
+ * is there, and from the host otherwise. The sysroot is Ubuntu 24.04's
+ * packages, unchanged (scripts/fetch_guest_sysroot.sh downloads them with
+ * pinned sha256 sums; the build runs it once). Before each launch the
+ * libraries a guest loads are checked against the sizes and hashes below; a
+ * missing sysroot runs on the host's libraries with a warning, a modified one
+ * is refused. PIMID_GUEST_SYSROOT=<dir> names another copy (it must pass the
+ * same check); PIMID_GUEST_SYSROOT=host runs on the host's libraries. */
+struct GuestLib { const char* name; long long size; unsigned long long fnv; };
+static const GuestLib kGuestSysrootLibs[] = {   // Ubuntu 24.04: libc6 2.39-0ubuntu8.9, GCC 14.2.0-4ubuntu2~24.04.1
+    {"ld-linux-x86-64.so.2", 236616, 0x8ec6aacd3ad25bedULL},
+    {"libc.so.6", 2129424, 0x949eab41809ff15dULL},
+    {"libm.so.6", 952616, 0x6f2e0f6ba90b98a7ULL},
+    {"libmvec.so.1", 1018144, 0x9006bcf9baf1c2bcULL},
+    {"libgcc_s.so.1", 183024, 0xaa0223f9e640a0c5ULL},
+    {"libgomp.so.1.0.0", 352304, 0x8645911222e90ad2ULL},
+    {"libstdc++.so.6.0.33", 2592224, 0xa24547f82ba0005bULL}};
+static const char* const kGuestSysrootName = "Ubuntu 24.04 (glibc 2.39-0ubuntu8.9, GCC 14.2.0 runtime)";
+
+static unsigned long long fnv1a64File(const std::string& path, long long* size) {
+    FILE* f = fopen(path.c_str(), "rb");
+    *size = -1;
+    if (!f) return 0;
+    unsigned long long h = 0xcbf29ce484222325ULL;
+    unsigned char buf[65536];
+    size_t n;
+    long long total = 0;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+        for (size_t i = 0; i < n; i++) { h ^= buf[i]; h *= 0x100000001b3ULL; }
+        total += (long long)n;
+    }
+    fclose(f);
+    *size = total;
+    return h;
+}
+
+/* "" = the host's libraries. Resolved once per process. */
+static std::string guestSysroot() {
+    static bool done = false;
+    static std::string dir;
+    if (done) return dir;
+    done = true;
+    const char* e = getenv("PIMID_GUEST_SYSROOT");
+    if (e && std::string(e) == "host") {
+        std::cerr << "[guest] NOTE: PIMID_GUEST_SYSROOT=host: the guest runs on this host's own system libraries;"
+                     " results then depend on the host's distribution" << std::endl;
+        return dir;
+    }
+    std::string d = (e && e[0]) ? std::string(e) : getPimidRoot() + "/guest-sysroot/noble";
+    struct stat st;
+    if (stat((d + "/usr/lib/x86_64-linux-gnu").c_str(), &st) != 0) {
+        std::cerr << "[guest] WARNING: no guest sysroot at " << d << ": the guest runs on this host's own system"
+                     " libraries (C, C++, OpenMP), so results depend on the host's distribution. Run"
+                     " scripts/fetch_guest_sysroot.sh once to install PIMID's pinned copy." << std::endl;
+        return dir;
+    }
+    for (const auto& L : kGuestSysrootLibs) {
+        long long sz;
+        const unsigned long long h = fnv1a64File(d + "/usr/lib/x86_64-linux-gnu/" + L.name, &sz);
+        if (sz != L.size || h != L.fnv) {
+            std::cerr << "[guest] FATAL: the guest sysroot " << d << " is not PIMID's pinned copy (" << L.name
+                      << (sz < 0 ? " missing" : " differs") << "); reinstall it with scripts/fetch_guest_sysroot.sh,"
+                         " or set PIMID_GUEST_SYSROOT=host to run on the host's libraries." << std::endl;
+            std::exit(2);
+        }
+    }
+    struct stat l1, l2;
+    if (lstat((d + "/lib").c_str(), &l1) != 0 || lstat((d + "/lib64").c_str(), &l2) != 0) {
+        std::cerr << "[guest] FATAL: the guest sysroot " << d << " lacks its lib and lib64 links;"
+                     " reinstall it with scripts/fetch_guest_sysroot.sh" << std::endl;
+        std::exit(2);
+    }
+    dir = d;
+    return dir;
+}
+
 /* (1.12.64): the guest's environment holds configuration values only, in a fixed
  * order. QEMU writes the strings in its list order (each variable is inserted at
  * the head, util/envlist.c), so a string's address follows the lengths and the
@@ -838,8 +920,11 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                                                    const std::vector<std::string>& guestSet,
                                                    const std::map<std::string, std::string>& workloadEnv,
                                                    size_t* guestVars) {
-    std::vector<std::string> o = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
+    std::vector<std::string> o;
+    if (!guestSysroot().empty()) { o.push_back("-L"); o.push_back(guestSysroot()); }   // (1.12.135): pinned guest libraries
+    const std::vector<std::string> o0 = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
                                   "-seed", kGuestSeed, "-tid-base", kGuestTidBase};
+    o.insert(o.end(), o0.begin(), o0.end());
     std::map<std::string, std::string> genv;   // name -> NAME=VALUE, sorted by name
     std::vector<std::string> inherited;        // kept values QEMU's -E cannot carry (a comma)
     for (char** e = environ; e && *e; ++e) {
@@ -911,7 +996,9 @@ static void noteGuestLaunch(size_t envVars, const std::string& binary) {
               << kGuestSeed << "), guest thread and process IDs the host's plus " << kGuestTidBase << " (-tid-base), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
               << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), libraries"
               << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
-              << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]; program path " << binary
+              << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]; guest libraries "
+              << (guestSysroot().empty() ? std::string("this host's own (no pinned sysroot)") : guestSysroot() + ", " + kGuestSysrootName)
+              << "; program path " << binary
               << " (" << binary.size() << " characters, passed as given: runs compare exactly with the same path string)"
               << std::endl;
 }

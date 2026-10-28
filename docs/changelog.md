@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.135 -- results no longer depend on the host's distribution (pinned guest libraries)
+
+- **Defect.** QEMU user mode gave the guest the HOST's own C library, C++ library and OpenMP runtime, and their code
+  runs inside the simulated region. On a host with Ubuntu 26.04 (glibc 2.43) instead of the cluster's Ubuntu 24.04
+  (glibc 2.39), serial cells moved by up to 0.25% and small OpenMP cells by tens of percent; supplying the cluster's
+  libraries made them match.
+- **Fix.** `scripts/fetch_guest_sysroot.sh` (run once by CMake at configure time; option `PIMID_FETCH_GUEST_SYSROOT`,
+  default ON) downloads the Ubuntu 24.04 packages libc6 2.39-0ubuntu8.9, libstdc++6, libgcc-s1 and libgomp1
+  14.2.0-4ubuntu2~24.04.1 from Launchpad, checks their pinned sha256 sums, and unpacks them into
+  `guest-sysroot/noble/`. PIMID checks the libraries a guest loads against sizes and hashes compiled into it and
+  launches QEMU with `-L` on that directory (src/main.cpp `guestSysroot`). A missing sysroot runs on the host's
+  libraries with a warning; a modified one is refused; `PIMID_GUEST_SYSROOT=<dir>|host` selects another copy or the
+  host's libraries. The `[guest] launch:` line names the libraries in use.
+- No timing, energy or area model changes.
+- **Validation:**
+  - Cluster (Ubuntu 24.04; the pinned libraries are md5-identical to its own): 59 serial cells and the
+    multi-threaded cells (omp_DDR3, cosim_DDR5, hostn_16core) on qc-pvc and qc-mi210 give the same cycles and the
+    same simulated and priced figures as before; only the launch line and the libgomp path in one runtime line
+    change.
+  - A host with Ubuntu 26.04 (glibc 2.43), the 1.12.128 smoke set with the fetched sysroot: every cell gives the
+    cluster's cycles and power (gemv HBM3 571682, stream_triad 98884, vector_add 91129, DDR5 BANK 615348, DDR5
+    CHANNEL 1086153, small OpenMP 87741, OpenMP DDR5 182883, 1-core host baseline 198944); on its own libraries the
+    same host gave 571018, 98885, 91240, 615348, 1088847, 69372, 193058 and 198537. One cell keeps a +0.06%
+    difference (gemv serial without scratchpad) that comes from the host-side build, not from the guest.
+- **Data impact:** none on the cluster.
+
 ## 1.12.134 -- docs: how the HBM3 PHY energy of Chae et al. (JSSC 2024) is used
 
 - **Contradiction (docs/sources.md).** The "HBM3 PHY energy" row said the figure was for validating a controller-PHY

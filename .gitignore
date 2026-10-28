@@ -121,3 +121,6 @@ benchmarks/cosim/reduction_tree/rt_peer
 cache/*
 !cache/.gitkeep
 !cache/README.md
+
+# PIMID's pinned guest libraries (scripts/fetch_guest_sysroot.sh)
+guest-sysroot/

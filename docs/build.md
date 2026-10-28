@@ -49,6 +49,35 @@ ninja -j$(nproc) qemu-x86_64
 > without the patch stops at once with `qemu: unknown option 'tid-base'`. Built from QEMU 11.1.2 with
 > the three patches, `qemu-x86_64` has md5 `6a3d45114415dee2fb51eed1997f757d` (configure as above).
 
+## Guest libraries (since (1.12.135))
+
+The guest program runs under QEMU user mode, which by default gives it the HOST's own C library, C++
+library and OpenMP runtime. Their code runs inside the simulated region, so a host with another
+distribution gives other results for the same program (measured: glibc 2.43 instead of 2.39 moved
+serial cells by up to 0.25% and small OpenMP cells by tens of percent). PIMID therefore runs every
+guest on one pinned copy of these libraries, the Ubuntu 24.04 packages
+`libc6 2.39-0ubuntu8.9`, `libstdc++6`, `libgcc-s1` and `libgomp1 14.2.0-4ubuntu2~24.04.1`:
+
+```bash
+scripts/fetch_guest_sysroot.sh        # once; CMake runs it at configure time (PIMID_FETCH_GUEST_SYSROOT, default ON)
+```
+
+The script downloads the four packages from Launchpad, checks their pinned sha256 sums, and unpacks
+them into `guest-sysroot/noble/` (about 13 MB; not tracked by git). At every launch PIMID checks the
+libraries a guest loads (`ld.so`, `libc`, `libm`, `libmvec`, `libgcc_s`, `libgomp`, `libstdc++`)
+against sizes and hashes compiled into it and passes the directory to QEMU with `-L`: QEMU then
+opens a file the guest asks for from this directory when it is there and from the host otherwise,
+so the guest sees its usual paths (`/lib/x86_64-linux-gnu/libc.so.6`) and libraries the sysroot
+does not hold (a workload's own) still come from the host. The `[guest] launch:` line names the
+guest libraries in use.
+
+- No network on the build machine: download the four `.deb` files elsewhere and run the script with
+  `PIMID_GUEST_DEBS=<dir>`.
+- A missing sysroot: the run continues on the host's libraries, with a warning.
+- A modified sysroot: the run stops (`[guest] FATAL: ... is not PIMID's pinned copy`).
+- `PIMID_GUEST_SYSROOT=<dir>` names another copy (it must pass the same check);
+  `PIMID_GUEST_SYSROOT=host` runs on the host's libraries.
+
 ## Build PIMID
 
 ```bash
