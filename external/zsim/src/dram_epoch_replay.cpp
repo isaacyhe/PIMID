@@ -15,6 +15,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include "log.h"
 #include "zsim.h"
 
@@ -114,6 +117,18 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
             const int act = cmdId("ACT");
             auto isCol = [&col](int c) { return std::find(col.begin(), col.end(), c) != col.end(); };
             uint64_t removed = 0, kept = 0;
+            stripCons_ = [keepLv, act, col](Ramulator::IDRAM* dd) {   // (1.12.144): the same filter for the channel instances
+                auto isC = [&col](int c) { return std::find(col.begin(), col.end(), c) != col.end(); };
+                for (int l = 0; l < keepLv; l++)
+                    for (int pc = 0; pc < (int)dd->m_timing_cons[l].size(); pc++) {
+                        auto& v = dd->m_timing_cons[l][pc];
+                        v.erase(std::remove_if(v.begin(), v.end(), [&](const Ramulator::TimingConsEntry& t) {
+                            if (isC(pc) && isC(t.cmd)) return true;
+                            if (l == 0 && (pc == act || isC(pc))) return true;
+                            return false;
+                        }), v.end());
+                    }
+            };
             for (int l = 0; l < keepLv; l++) {
                 for (int pc = 0; pc < (int)d->m_timing_cons[l].size(); pc++) {
                     auto& v = d->m_timing_cons[l][pc];
@@ -164,6 +179,29 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     sumLat_.assign(numMIs_, 0); cntLat_.assign(numMIs_, 0);
     lastValue_.assign(numMIs_, 0);
     miTicksPerCycle_.assign(numMIs_, ticksPerCycle_);   // 1.12.18 (R0605): host interfaces carry their own clock
+    /* (1.12.144): the per-channel replay (see Chan in the header). Only for DDR5, the organisation it was validated on: a
+     * DDR5 channel is a separate DIMM sub-channel with its own chips, so a one-channel instance keeps every chip's
+     * density and organisation. A GDDR6 device holds both channels on one die (its density counts them), and other
+     * standards are not validated: they keep the single instance. */
+    if (cutMode_ && !hostOnly_ && dimpl == "DDR5" && counts_.size() > 1 && counts_[0] == 2 && !(getenv("PIMID_REPLAY_SERIAL") && atoi(getenv("PIMID_REPLAY_SERIAL")))) {
+        YAML::Node one = YAML::Clone(config);
+        one["MemorySystem"]["DRAM"]["org"]["channel"] = 1;
+        uint64_t stride = 1;
+        for (int i = 1; i <= rowIdx_; i++) stride *= (uint64_t)std::max(1, counts_[i]);
+        stride = (stride * colCount_) << txBits_;
+        chans_.resize(2);
+        for (int c = 0; c < 2; c++) {
+            Chan& K = chans_[c];
+            K.fe = Ramulator::Factory::create_frontend(one);
+            K.sys = Ramulator::Factory::create_memory_system(one);
+            K.fe->connect_memory_system(K.sys);
+            K.sys->connect_frontend(K.fe);
+            if (stripCons_) stripCons_(K.sys->get_ifce<Ramulator::IDRAM>());
+            K.addrOffset = (uint64_t)c * stride;
+            if (K.sys->get_tCK() != tck) panic("DramEpochReplay %s: channel instance tCK %.4f != %.4f", name, K.sys->get_tCK(), tck);
+        }
+        info("[mem] %s: the two channels are replayed on two host threads, one Ramulator2 instance each [(1.12.144): host speed]", name);
+    }
     info("[mem] %s: DRAM epoch replay armed: Ramulator2 from %s, tCK %.4f ns = %.4f DRAM cycles per core cycle, %u interfaces, %u column commands per line [1.11.98 ruling 4 (c)]",
          name, configFile.c_str(), tck, ticksPerCycle_, numMIs_, burstsPerLine_);
 }
@@ -490,6 +528,25 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
 }
 
 void DramEpochReplay::bankTotals() {
+    if (par()) {   // (1.12.144): the sums over the channel instances
+        Raw t;
+        for (Chan& K : chans_) {
+            uint64_t w = 0, o = 0, a = 0;
+            if (bankTracked_ && K.sys->pimid_bank_open_totals(w, o)) { t.bankW += w; t.bankO += o; }
+            if (K.sys->pimid_cmd_totals(a)) t.acts += a;
+            if (pdOn_) { uint64_t pc = 0, pu = 0, px = 0; K.sys->pimid_pd_totals(pc, pu, px); t.pdC += pc; t.pdU += pu; t.pdX += px; }
+            uint64_t sh = 0, sm = 0, sc = 0, sa = 0;
+            if (hostMis_ > 0 && K.sys->pimid_src_totals(sh, sm, sc, sa)) { t.hhits += sh; t.hmisses += sm; t.hconflicts += sc; t.hacts += sa; }
+            uint64_t oh = 0, om = 0, oc = 0, oa = 0, oha = 0;
+            if (K.sys->pimid_out_totals(oh, om, oc, oa, oha)) { t.ohits += oh; t.omisses += om; t.oconflicts += oc; t.oacts += oa; t.ohacts += oha; }
+        }
+        if (bankTracked_) { raw_.bankW = t.bankW; raw_.bankO = t.bankO; }
+        raw_.acts = t.acts;
+        if (pdOn_) { raw_.pdC = t.pdC; raw_.pdU = t.pdU; raw_.pdX = t.pdX; }
+        if (hostMis_ > 0) { raw_.hhits = t.hhits; raw_.hmisses = t.hmisses; raw_.hconflicts = t.hconflicts; raw_.hacts = t.hacts; }
+        raw_.ohits = t.ohits; raw_.omisses = t.omisses; raw_.oconflicts = t.oconflicts; raw_.oacts = t.oacts; raw_.ohacts = t.ohacts;
+        return;
+    }
     uint64_t w = 0, o = 0, a = 0;
     if (sys_ && bankTracked_ && sys_->pimid_bank_open_totals(w, o)) { raw_.bankW = w; raw_.bankO = o; }
     if (sys_ && sys_->pimid_cmd_totals(a)) raw_.acts = a;   // 1.12.18
@@ -626,6 +683,14 @@ void DramEpochReplay::armClose(bool fromFinalize) {
 /* 1.12.18: cut mode -- see closeArmed_ in the header. Called under lock_. */
 
 void DramEpochReplay::takeSnap(Snap& s) {
+    if (par()) {   // (1.12.144): between calls: the channel sums
+        s.tick = curTick_; s.ticks = raw_.ticks; s.idle = raw_.idle; s.refreshes = 0;
+        s.bankW = raw_.bankW; s.bankO = raw_.bankO; s.pdC = 0; s.pdX = 0;
+        uint64_t bw = 0, bo = 0;
+        for (Chan& K : chans_) { ChanSnap p; chanTakeSnap(K, p); s.refreshes += p.refreshes; bw += p.bankW; bo += p.bankO; s.pdC += p.pdC; s.pdX += p.pdX; }
+        if (bankTracked_) { s.bankW = bw; s.bankO = bo; }
+        return;
+    }
     uint64_t h = 0, m = 0, c = 0, r = 0;
     ctrlTotals(h, m, c, r);
     s.tick = curTick_; s.ticks = raw_.ticks; s.idle = raw_.idle; s.refreshes = r;
@@ -647,6 +712,7 @@ void DramEpochReplay::snapClose() {
 }
 
 void DramEpochReplay::tickTo(uint64_t tick) {
+    if (par()) { tickToPar(tick); return; }   // (1.12.144)
     while (curTick_ < tick) tickOnce();
 }
 
@@ -759,6 +825,7 @@ void DramEpochReplay::finalizeEpoch(uint64_t epoch) {
 /* everything fed is served (pre-ROI before the window opens; the tail before
  * the counters are read). Bounded so a lost request cannot hang the run. */
 void DramEpochReplay::drainAll() {
+    if (par()) { drainAllPar(); return; }   // (1.12.144)
     uint64_t guard = 0;
     while ((outstanding_ > 0 || waitingN_ > 0) && guard < 50000000ull) { tickOnce(); guard++; }
     if (outstanding_ > 0 || waitingN_ > 0) {
@@ -769,6 +836,7 @@ void DramEpochReplay::drainAll() {
 }
 
 void DramEpochReplay::replayEpoch(uint64_t epoch) {
+    if (par()) { replayEpochPar(epoch); return; }   // (1.12.144)
     armClose(false);   // 1.12.18: cut mode, once the run time's ROI end is known
     std::vector<Rec>& recs = pending_[epoch];
     std::sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) {
@@ -804,8 +872,301 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
     raw_.epochs++;
 }
 
+
+/* ---- (1.12.144): the per-channel replay (see Chan in the header) ---- */
+
+struct DramEpochReplay::ParHelper {
+    std::mutex mu;
+    std::condition_variable cv;
+    const std::function<void(Chan&)>* job = nullptr;
+    Chan* chan = nullptr;
+    uint64_t gen = 0, done = 0;
+};
+
+void DramEpochReplay::parRun(const std::function<void(Chan&)>& f) {
+    if (!helper_) {
+        helper_ = new ParHelper();
+        ParHelper* h = helper_;
+        std::thread th([h]() {
+            uint64_t seen = 0;
+            while (true) {
+                const std::function<void(Chan&)>* j; Chan* c;
+                {
+                    std::unique_lock<std::mutex> lk(h->mu);
+                    h->cv.wait(lk, [&]() { return h->gen != seen; });
+                    seen = h->gen; j = h->job; c = h->chan;
+                }
+                (*j)(*c);
+                { std::lock_guard<std::mutex> lk(h->mu); h->done = seen; }
+                h->cv.notify_all();
+            }
+        });
+        th.detach();
+    }
+    ParHelper* h = helper_;
+    uint64_t g;
+    { std::lock_guard<std::mutex> lk(h->mu); h->job = &f; h->chan = &chans_[1]; g = ++h->gen; }
+    h->cv.notify_all();
+    f(chans_[0]);
+    std::unique_lock<std::mutex> lk(h->mu);
+    h->cv.wait(lk, [&]() { return h->done == g; });
+}
+
+void DramEpochReplay::chanTotals(uint64_t& h, uint64_t& m, uint64_t& c, uint64_t& r) const {
+    h = m = c = r = 0;
+    for (const Chan& K : chans_) { uint64_t a = 0, b = 0, x = 0, y = 0; K.sys->pimid_ctrl_totals(a, b, x, y); h += a; m += b; c += x; r += y; }
+}
+
+void DramEpochReplay::chanTakeSnap(Chan& K, ChanSnap& s) const {
+    s.tick = K.curTick;
+    uint64_t a = 0, b = 0, x = 0, y = 0;
+    K.sys->pimid_ctrl_totals(a, b, x, y); s.refreshes = y;
+    uint64_t w = 0, o = 0;
+    if (bankTracked_ && K.sys->pimid_bank_open_totals(w, o)) { s.bankW = w; s.bankO = o; }
+    if (pdOn_) { uint64_t u = 0; K.sys->pimid_pd_totals(s.pdC, u, s.pdX); }
+}
+
+/* acceptOne on one channel: its own door, in-flight table and counters; the completion is logged, not applied */
+bool DramEpochReplay::chanAccept(Chan& K, Waiting& w) {
+    const Rec& r = w.r;
+    const uint64_t lineBytes = 1ull << lineBits_;
+    const uint64_t step = lineBytes / burstsPerLine_;
+    const int typeId = r.wr ? Ramulator::Request::Type::Write : Ramulator::Request::Type::Read;
+    for (; w.b < burstsPerLine_; ++w.b) {
+        const uint64_t id = w.id;
+        Chan* Kp = &K;
+        auto cb = [this, Kp, id](Ramulator::Request&) {
+            Chan& Q = *Kp;
+            auto it = Q.inflight.find(id);
+            if (it == Q.inflight.end()) return;
+            Inflight& f = it->second;
+            if (f.remaining > 1) { f.remaining--; return; }
+            const uint64_t lat = (Q.curTick + 1 > f.issueTick) ? (Q.curTick + 1 - f.issueTick) : 1;
+            const double tpc = (f.mi < miTicksPerCycle_.size()) ? miTicksPerCycle_[f.mi] : ticksPerCycle_;
+            uint64_t latCyc = (uint64_t)((double)lat / tpc + 0.5);
+            bool account = true;
+            if (f.grp) {
+                auto& g = Q.grpLat[f.grp];
+                if (g.first == 0) g.first = chips_;
+                if (latCyc > g.second) g.second = latCyc;
+                if (--g.first > 0) account = false; else { latCyc = g.second; Q.grpLat.erase(f.grp); }
+            }
+            if (Q.evTick != Q.curTick) { Q.evTick = Q.curTick; Q.seq = 0; }
+            Q.evs.push_back(ChanEv{Q.curTick, Q.seq++, f.epoch, f.mi, latCyc, account, f.out, isHostMi(f.mi)});
+            Q.outstanding--;
+            Q.inflight.erase(it);
+        };
+        if (!K.fe->receive_external_requests(typeId, (Ramulator::Addr_t)(r.addr - K.addrOffset + w.b * step),
+                                             (isHostMi(r.mi) ? 1 : 0) + (w.out ? 2 : 0) + (r.shadow ? 3 : 0), cb))
+            return false;
+        if (w.b == 0) {
+            K.inflight[w.id] = Inflight{burstsPerLine_, K.curTick, r.mi, r.wr != 0, w.out, w.epoch, r.grp};
+            K.outstanding++;
+            if (K.curTick > w.target) {
+                const uint64_t dd = K.curTick - w.target;
+                K.doorRecs++; K.doorTicks += dd; if (dd > K.doorMax) K.doorMax = dd;
+            }
+            if (r.shadow) { }
+            else if (w.out) {
+                if (isHostMi(r.mi)) { K.d.ohreq++; if (r.wr) K.d.ohwr++; else K.d.ohrd++; }
+                else { K.d.oreq++; if (r.wr) K.d.owr++; else K.d.ord++; }
+                if (r.mi < outRd_.size()) { if (r.wr) K.outWr[r.mi]++; else K.outRd[r.mi]++; }
+            }
+            else if (isHostMi(r.mi)) { K.d.hreq++; if (r.wr) K.d.hwr++; else K.d.hrd++; }
+            else { K.d.req++; if (r.wr) K.d.wr++; else K.d.rd++; }
+        }
+    }
+    return true;
+}
+
+void DramEpochReplay::chanServeDoors(Chan& K) {
+    for (auto& kv : K.doors) {
+        std::deque<Waiting>& q = kv.second;
+        while (!q.empty() && q.front().target <= K.curTick && chanAccept(K, q.front())) { q.pop_front(); K.waitingN--; }
+    }
+}
+
+/* tickOnce on one channel: the controller tick, its idle state, its door, the snapshots */
+void DramEpochReplay::chanTickOnce(Chan& K) {
+    K.sys->tick();
+    K.curTick++;
+    const bool idle = (K.outstanding == 0 && K.waitingN == 0);
+    if (idle != K.idleNow) { K.idleFlips.push_back(K.curTick); K.idleNow = idle; }
+    if (K.waitingN > 0) chanServeDoors(K);
+    if (closeArmed_ && !K.closeSnappedIn && K.curTick >= closeTick_) { chanTakeSnap(K, K.closeSnap); K.closeTaken = true; K.closeSnappedIn = true; }
+    else if (roiMarked_ && !closeArmed_ && (K.curTick % kSnapEvery) == 0) { ChanSnap s; chanTakeSnap(K, s); K.snaps.push_back(s); }
+}
+
+void DramEpochReplay::chanTickTo(Chan& K, uint64_t tick) {
+    while (K.curTick < tick) chanTickOnce(K);
+}
+
+void DramEpochReplay::chanBegin() {
+    for (Chan& K : chans_) {
+        K.evs.clear(); K.seq = 0; K.evTick = ~0ull;
+        K.idleFlips.clear(); K.idleAtStart = K.idleNow = (K.outstanding == 0 && K.waitingN == 0);
+        K.snaps.clear(); K.closeTaken = false; K.closeSnappedIn = closeSnapped_;
+        K.d = Chan::Cnt(); K.doorRecs = K.doorTicks = K.doorMax = 0; K.drained = 0;
+        K.outRd.assign(outRd_.size(), 0); K.outWr.assign(outWr_.size(), 0);
+        if (K.curTick != curTick_) panic("DramEpochReplay %s: channel clock %lu != %lu", name_.c_str(), (unsigned long)K.curTick, (unsigned long)curTick_);
+    }
+}
+
+/* the shared state after a parallel call over (startTick, endTick], in the single instance's order */
+void DramEpochReplay::chanMerge(uint64_t startTick, uint64_t endTick) {
+    /* idle ticks in (startTick, upTo]: both channels idle after the tick (a flip at t holds from t on) */
+    auto idleCount = [&](uint64_t upTo) -> uint64_t {
+        uint64_t n = 0;
+        size_t i0 = 0, i1 = 0;
+        bool s0 = chans_[0].idleAtStart, s1 = chans_[1].idleAtStart;
+        const auto& F0 = chans_[0].idleFlips; const auto& F1 = chans_[1].idleFlips;
+        uint64_t t = startTick;   // ticks <= t are counted
+        while (t < upTo) {
+            uint64_t nx = upTo + 1;
+            if (i0 < F0.size() && F0[i0] < nx) nx = F0[i0];
+            if (i1 < F1.size() && F1[i1] < nx) nx = F1[i1];
+            const uint64_t last = std::min(nx - 1, upTo);   // ticks t+1 .. last keep the states
+            if (last > t && s0 && s1) n += last - t;
+            if (nx > upTo) break;
+            while (i0 < F0.size() && F0[i0] == nx) { s0 = !s0; i0++; }
+            while (i1 < F1.size() && F1[i1] == nx) { s1 = !s1; i1++; }
+            if (s0 && s1) n++;   // tick nx
+            t = nx;
+        }
+        return n;
+    };
+    const uint64_t idle0 = raw_.idle, ticks0 = raw_.ticks;
+    const auto& A = chans_[0].snaps; const auto& B = chans_[1].snaps;
+    if (A.size() != B.size()) panic("DramEpochReplay %s: channel snapshots differ (%lu vs %lu)", name_.c_str(), (unsigned long)A.size(), (unsigned long)B.size());
+    for (size_t i = 0; i < A.size(); i++) {
+        Snap s; s.tick = A[i].tick; s.ticks = ticks0 + (A[i].tick - startTick); s.idle = idle0 + idleCount(A[i].tick);
+        s.refreshes = A[i].refreshes + B[i].refreshes;
+        s.bankW = raw_.bankW; s.bankO = raw_.bankO;
+        if (bankTracked_) { s.bankW = A[i].bankW + B[i].bankW; s.bankO = A[i].bankO + B[i].bankO; }
+        s.pdC = A[i].pdC + B[i].pdC; s.pdX = A[i].pdX + B[i].pdX;
+        hist_.push_back(s);
+    }
+    if (chans_[0].closeTaken != chans_[1].closeTaken) panic("DramEpochReplay %s: channel close snapshots differ", name_.c_str());
+    if (chans_[0].closeTaken) {
+        const ChanSnap& a = chans_[0].closeSnap; const ChanSnap& b = chans_[1].closeSnap;
+        Snap s; s.tick = a.tick; s.ticks = ticks0 + (a.tick - startTick); s.idle = idle0 + idleCount(a.tick);
+        s.refreshes = a.refreshes + b.refreshes;
+        s.bankW = raw_.bankW; s.bankO = raw_.bankO;
+        if (bankTracked_) { s.bankW = a.bankW + b.bankW; s.bankO = a.bankO + b.bankO; }
+        s.pdC = a.pdC + b.pdC; s.pdX = a.pdX + b.pdX;
+        applySnap(s);
+    }
+    raw_.ticks += endTick - startTick;
+    raw_.idle += idleCount(endTick);
+    curTick_ = endTick;
+    for (Chan& K : chans_) {
+        raw_.req += K.d.req; raw_.rd += K.d.rd; raw_.wr += K.d.wr;
+        raw_.hreq += K.d.hreq; raw_.hrd += K.d.hrd; raw_.hwr += K.d.hwr;
+        raw_.oreq += K.d.oreq; raw_.ord += K.d.ord; raw_.owr += K.d.owr;
+        raw_.ohreq += K.d.ohreq; raw_.ohrd += K.d.ohrd; raw_.ohwr += K.d.ohwr;
+        for (size_t m = 0; m < outRd_.size() && m < K.outRd.size(); m++) { outRd_[m] += K.outRd[m]; outWr_[m] += K.outWr[m]; }
+        doorRecs_ += K.doorRecs; doorTicks_ += K.doorTicks; if (K.doorMax > doorMax_) doorMax_ = K.doorMax;
+    }
+    outstanding_ = chans_[0].outstanding + chans_[1].outstanding;
+    waitingN_ = chans_[0].waitingN + chans_[1].waitingN;
+    // completions: tick, then channel 0 before channel 1, then the channel's own order
+    const auto& E0 = chans_[0].evs; const auto& E1 = chans_[1].evs;
+    size_t i = 0, j = 0;
+    while (i < E0.size() || j < E1.size()) {
+        const bool take0 = (j >= E1.size()) || (i < E0.size() && E0[i].tick <= E1[j].tick);
+        const ChanEv& e = take0 ? E0[i++] : E1[j++];
+        auto a = acc_.find(e.epoch);
+        if (e.account) {
+            if (a != acc_.end() && e.mi < a->second.sum.size()) { a->second.sum[e.mi] += e.latCyc; a->second.cnt[e.mi] += 1; }
+            if (e.out) raw_.olat += e.latCyc;
+            else if (e.host) {
+                raw_.hlat += e.latCyc;
+                if (e.latCyc < hLatMin_) hLatMin_ = e.latCyc;
+                if (e.latCyc > hLatMax_) hLatMax_ = e.latCyc;
+            } else raw_.lat += e.latCyc;
+        }
+        if (a != acc_.end() && a->second.pend > 0 && --a->second.pend == 0 && a->second.fed) finalizeEpoch(e.epoch);
+    }
+}
+
+void DramEpochReplay::tickToPar(uint64_t tick) {
+    if (curTick_ >= tick) return;
+    const uint64_t t0 = curTick_;
+    chanBegin();
+    std::function<void(Chan&)> f = [this, tick](Chan& K) { chanTickTo(K, tick); };
+    parRun(f);
+    chanMerge(t0, tick);
+}
+
+void DramEpochReplay::drainAllPar() {
+    const uint64_t t0 = curTick_;
+    chanBegin();
+    std::function<void(Chan&)> f1 = [this, t0](Chan& K) {
+        uint64_t guard = 0;
+        while ((K.outstanding > 0 || K.waitingN > 0) && guard < 50000000ull) { chanTickOnce(K); guard++; }
+        K.drained = K.curTick - t0;
+    };
+    parRun(f1);
+    const uint64_t end = t0 + std::max(chans_[0].drained, chans_[1].drained);
+    std::function<void(Chan&)> f2 = [this, end](Chan& K) { chanTickTo(K, end); };
+    parRun(f2);
+    chanMerge(t0, end);
+    if (outstanding_ > 0 || waitingN_ > 0) {
+        raw_.unserved += outstanding_ + waitingN_;
+        outstanding_ = 0; waitingN_ = 0;
+        for (Chan& K : chans_) { K.outstanding = 0; K.waitingN = 0; K.doors.clear(); K.inflight.clear(); }
+    }
+    while (!acc_.empty()) finalizeEpoch(acc_.begin()->first);
+}
+
+void DramEpochReplay::replayEpochPar(uint64_t epoch) {
+    armClose(false);
+    std::vector<Rec>& recs = pending_[epoch];
+    std::sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) {
+        if (a.stamp != b.stamp) return a.stamp < b.stamp;
+        if (a.mi != b.mi) return a.mi < b.mi;
+        if (a.addr != b.addr) return a.addr < b.addr;
+        return a.wr < b.wr;
+    });
+    EpochAcc& acc = acc_[epoch];
+    if (acc.sum.empty()) { acc.sum.assign(numMIs_, 0); acc.cnt.assign(numMIs_, 0); }
+    acc.pend += recs.size(); acc.fed = false;
+    std::vector<ChanWork> work[2];
+    uint64_t end = curTick_;
+    for (size_t i = 0; i < recs.size(); ++i) {
+        const Rec& r = recs[i];
+        uint64_t target = (uint64_t)((double)r.stamp * ticksPerCycle_);
+        if (cutMode_) target += roiTick0_;
+        const bool out = closeArmed_ && target > closeTick_;
+        if (out) pastEndRecs_++;
+        if (target > end) end = target;
+        if (r.ch > 1) panic("DramEpochReplay %s: record on channel %u of a two-channel replay", name_.c_str(), r.ch);
+        work[r.ch].push_back(ChanWork{target, Waiting{r, epoch, target, out, 0, nextId_++}});
+    }
+    const uint64_t t0 = curTick_;
+    chanBegin();
+    std::function<void(Chan&)> f = [this, &work, end](Chan& K) {
+        const int c = (&K == &chans_[0]) ? 0 : 1;
+        for (ChanWork& cw : work[c]) {
+            chanTickTo(K, cw.target);
+            const uint32_t key = cw.w.r.ch * 2u + (cw.w.r.wr ? 1u : 0u);
+            std::deque<Waiting>& q = K.doors[key];
+            if (!q.empty() || !chanAccept(K, cw.w)) { q.push_back(cw.w); K.waitingN++; }
+        }
+        chanTickTo(K, end);
+    };
+    parRun(f);
+    chanMerge(t0, end);
+    acc.fed = true;
+    if (acc.pend == 0) finalizeEpoch(epoch);
+    if (cutMode_) { lastFolded_ = epoch; anyFolded_ = true; }
+    lastReplayed_ = epoch; anyReplayed_ = true;
+    raw_.epochs++;
+}
+
 void DramEpochReplay::ctrlTotals(uint64_t& h, uint64_t& m, uint64_t& c, uint64_t& r) {
     h = m = c = r = 0;
+    if (par()) { chanTotals(h, m, c, r); return; }   // (1.12.144)
     if (!sys_->pimid_ctrl_totals(h, m, c, r))
         warn("[mem] %s: the memory system keeps no controller totals; row and refresh counters stay 0", name_.c_str());
 }
@@ -914,7 +1275,11 @@ void DramEpochReplay::finalize() {
     }
     if (chipSplit_ && !chipReported_) {   /* 1.12.18 (user ruling 2026-10-24) */
         uint64_t sa = 0, cw = 0;
-        if (sys_ && sys_->pimid_chip_totals(sa, cw)) {
+        bool got = false;
+        if (par()) {   // (1.12.144)
+            for (Chan& K : chans_) { uint64_t a = 0, b = 0; if (K.sys->pimid_chip_totals(a, b)) { sa += a; cw += b; got = true; } }
+        } else got = sys_ && sys_->pimid_chip_totals(sa, cw);
+        if (got) {
             chipReported_ = true;
             info("[mem] %s: 1.12.18: chip split x%u -- host lock-step shadow-copy ACTs %lu (host chip ACTs beyond chip 0, counted in the host ACTs for energy, never in the row counts); "
                  "host candidate-cycles held by the DIMM CA bus %lu (cumulative, every window)", name_.c_str(), chips_, (unsigned long)sa, (unsigned long)cw);

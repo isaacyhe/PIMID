@@ -6,6 +6,40 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.144 -- host speed: the two channels of a replayed DRAM controller run on two host threads
+
+- **The cost.** The device DRAM epoch replay ticks one Ramulator2 memory system cycle by cycle. With two channels
+  (the DDR5 configurations) that is about a quarter of the host time of a 1-core run and a fifth of a 16-core run,
+  all on one thread.
+- **The change (external/zsim/src: dram_epoch_replay.h, dram_epoch_replay.cpp).** In cut mode, a non-host-only
+  DDR5 replay whose organisation has exactly two channels now runs as two one-channel Ramulator2 instances, one per
+  channel. Only DDR5 takes this path, the organisation it was validated on. A GDDR6 device holds its two channels on
+  one die and its Ramulator density counts them, so a one-channel GDDR6 instance is refused at construction. GDDR6 and
+  every other standard keep the single instance. The calling thread ticks channel 0 and one persistent helper thread ticks channel 1 through every replay
+  call. The two-channel instance keeps the organisation (address composition, tCK, level counts) and is not ticked.
+  The bank-parallel constraint filter is applied to both channel instances. `PIMID_REPLAY_SERIAL=1` keeps the single
+  instance. Every other replay (other standards, phase mode, host-only instances, one channel, more than two) is unchanged.
+- **Why it is exact.** The channels of one Ramulator2 memory system share nothing that times a command: each
+  controller drives its own channel's nodes, and the future actions and bank-open sums are kept per channel. Each
+  one-channel instance therefore goes through the states its channel went through, cycle for cycle. The replay's own
+  shared state is merged after each call in the order the single instance produced it:
+  - request completions (epoch accounting, epoch finalisation, latency sums), by DRAM tick, then channel 0 before
+    channel 1, then the order inside the channel;
+  - idle ticks (no request in flight on either channel), from each channel's idle state per tick;
+  - the periodic and ROI-end snapshots, as the two channels' sums at the same tick with the merged idle count;
+  - the request, outside-ROI and door counters, as sums (the door wait as a maximum).
+  Request ids are given in record order before the records are split by channel.
+- **Validation (qc-pvc, same node, same job, same guest binaries).** Identical to the previous change in every
+  simulated, timed and priced line on the 8 serial PIM kernels (HBM3, BANK, 16 alu_core PEs), the DDR5 BANK and
+  CHANNEL serial gemv, the 1-core OpenMP gemv and stream_triad full baselines, and the 16-core OpenMP and 4-core MPI
+  stream_triad full baselines. The only differences are log order of two start-up lines, the new info line, and the
+  measured DQ and host-fabric wire data counts. Those counts change between runs of the same build by a few units
+  (the guest's data is read while the guest runs), as before this change.
+  Host time, previous change vs this one: 16-core OpenMP stream_triad 888 s -> 706 s (-20%), 4-core MPI
+  stream_triad 669 s -> 506 s (-24%), 1-core OpenMP gemv 252 s -> 188 s (-25%). The 1-core runs use about
+  50 s more CPU time (the helper thread).
+- **Data impact:** none.
+
 ## 1.12.143 -- analytical NoC: the in-die fabric is walked and its links are priced
 
 - **Defect 1 (external/zsim/src/sparse_htree.h, SparseHTree::endpointForUnit).** On a DRAM device with an in-die

@@ -56,7 +56,7 @@
 #include "locks.h"
 #include "stats.h"
 
-namespace Ramulator { class IFrontEnd; class IMemorySystem; }
+namespace Ramulator { class IFrontEnd; class IMemorySystem; class IDRAM; }
 
 class DramEpochReplay {
   public:
@@ -190,6 +190,62 @@ class DramEpochReplay {
     std::vector<uint64_t> perChan_;
     void tickTo(uint64_t tick);
     void tickOnce();
+
+    /* (1.12.144): host speed -- the per-channel replay. A device whose replay organisation has exactly two channels
+     * (ChRaBaRoCo: the channel is the top address field) is replayed in cut mode as two one-channel Ramulator2
+     * instances, one per channel, ticked on two host threads (the calling thread and one helper) through every
+     * replay call; the two-channel instance above keeps the organisation (composeAddr, tCK, counts) and is never
+     * ticked. The channels of one Ramulator2 memory system share nothing that times a command (each controller
+     * drives its own channel's nodes; the DRAM's future actions and bank-open sums are per channel), so each
+     * one-channel instance goes through the states its channel went through, cycle for cycle. What the replay
+     * itself shares between the channels is merged after each call in the order the single instance produced it:
+     *  - request completions (epoch accounting, epoch finalisation, latency sums), by (DRAM tick, channel, order
+     *    inside the channel): the single instance ticked channel 0's controller before channel 1's;
+     *  - the idle-tick count (no request in flight on ANY channel), from each channel's idle state per tick;
+     *  - the periodic and the ROI-end snapshots (the two channels' sums at the same tick, the merged idle count);
+     *  - the request and door counters (sums; the door wait maximum).
+     * Request ids are given in record order before the records are split. PIMID_REPLAY_SERIAL=1 keeps the single
+     * instance. */
+    struct ChanEv { uint64_t tick; uint32_t seq; uint64_t epoch; uint32_t mi; uint64_t latCyc; bool account, out, host; };
+    struct ChanSnap { uint64_t tick = 0, refreshes = 0, bankW = 0, bankO = 0, pdC = 0, pdX = 0; };
+    struct ChanWork { uint64_t target; Waiting w; };
+    struct Chan {
+        Ramulator::IFrontEnd* fe = nullptr;
+        Ramulator::IMemorySystem* sys = nullptr;
+        uint64_t addrOffset = 0;      // the channel's base in the two-channel address
+        std::map<uint32_t, std::deque<Waiting>> doors;
+        uint64_t waitingN = 0, outstanding = 0, curTick = 0;
+        std::unordered_map<uint64_t, Inflight> inflight;
+        std::map<uint32_t, std::pair<uint32_t, uint64_t>> grpLat;
+        // per call
+        std::vector<ChanEv> evs; uint32_t seq = 0; uint64_t evTick = ~0ull;
+        std::vector<uint64_t> idleFlips;   // ticks at which this channel's idle state changes
+        bool idleAtStart = true, idleNow = true;
+        std::vector<ChanSnap> snaps; bool closeTaken = false; ChanSnap closeSnap;
+        bool closeSnappedIn = false;
+        struct Cnt { uint64_t req = 0, rd = 0, wr = 0, hreq = 0, hrd = 0, hwr = 0, oreq = 0, ord = 0, owr = 0, ohreq = 0, ohrd = 0, ohwr = 0; };
+        Cnt d;                        // request counters of this call
+        uint64_t doorRecs = 0, doorTicks = 0, doorMax = 0;
+        uint64_t drained = 0;         // drainAll: ticks this channel needed
+        std::vector<uint64_t> outRd, outWr;   // outside requests per interface, this call
+    };
+    std::vector<Chan> chans_;         // empty = the single-instance path
+    std::function<void(Ramulator::IDRAM*)> stripCons_;   // the bank-parallel constraint filter, for the channel instances
+    bool par() const { return chans_.size() == 2; }
+    void chanTotals(uint64_t& h, uint64_t& m, uint64_t& c, uint64_t& r) const;
+    bool chanAccept(Chan& C, Waiting& w);
+    void chanServeDoors(Chan& C);
+    void chanTickOnce(Chan& C);
+    void chanTickTo(Chan& C, uint64_t tick);
+    void chanTakeSnap(Chan& C, ChanSnap& s) const;
+    void chanBegin();
+    void chanMerge(uint64_t startTick, uint64_t endTick);
+    void parRun(const std::function<void(Chan&)>& f);
+    void replayEpochPar(uint64_t epoch);
+    void tickToPar(uint64_t tick);
+    void drainAllPar();
+    struct ParHelper;
+    ParHelper* helper_ = nullptr;
 
     std::string name_;
     Ramulator::IFrontEnd*     fe_  = nullptr;
