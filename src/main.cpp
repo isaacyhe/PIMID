@@ -2898,6 +2898,7 @@ static const char* kSchemaPaths[] = {
     "power.models.idle_halt", "power.models.per_die_process", "power.models.clock_die_trunk",   // PIMID 1.12.18 (rulings 2026-10-23)
     "power.models.host_noc",   // 1.12.23: host on-chip network power
     "power.models.host_uncore_static", "power.host_uncore.w_per_socket",   // (1.12.97): host socket uncore, awake
+    "power.models.host_uncore_load", "power.host_uncore.load_w_per_mb_llc",   // (1.12.154): host uncore rise under load
     "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
     "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
@@ -3323,6 +3324,9 @@ struct UnifiedConfig {
     bool pm_host_uncore_static = true;      // (1.12.97): power.models.host_uncore_static
     double host_uncore_w_per_socket = 18.5; // (1.12.97): power.host_uncore.w_per_socket (DERIVED, Intel 330783-002 Sec. 2.10)
     bool host_uncore_w_per_socket_user_set = false;
+    bool pm_host_uncore_load = true;        // (1.12.154): power.models.host_uncore_load
+    double host_uncore_load_w_per_mb = 6.2 / 20.0;   // (1.12.154): power.host_uncore.load_w_per_mb_llc (DERIVED, Gholkar et al. SC19)
+    bool host_uncore_load_user_set = false;
     /* PIMID 1.12.18 (per-die process): system.devices[].process, as given.
      * 0 / -1 / empty = not given (the die keeps today's pricing). */
     bool proc_given = false;
@@ -16331,6 +16335,9 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         double uncore_priced_trunk_w = 0.0;     // (1.12.97): host die clock trunk (McPAT)
         int cores = 0;                          // (1.12.97)
         int link_ctrls = 0;                     // (1.12.97): link controllers on this host (PLL count)
+        double run_frac_max = -1.0;             // (1.12.154): the busiest host core's running fraction of the window
+        double l3_mb = 0.0;                     // (1.12.154): host L3 capacity
+        double uncore_clock_priced_w = 0.0;     // (1.12.154): McPAT L3 + NoC + MC clock networks (runtime)
     };
     std::vector<NodePowerResult> results;
 
@@ -17734,6 +17741,16 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                         result.uncore_priced_trunk_w += t.rt_w + t.leak_w + t.gate_w;
                     result.cores = node.num_cores;
                     result.link_ctrls = (mcpat.getComponentPower(CT::PCIE).total_power != 0.0) ? 1 : 0;
+                    /* (1.12.154): inputs of the host uncore load term (below the ledger). */
+                    for (CT t : {CT::L3_CACHE, CT::NOC, CT::MEMORY_CONTROLLER})
+                        result.uncore_clock_priced_w += mcpat.getClockPower(t).runtime_dynamic;
+                    result.l3_mb = (node.enable_l3 && node.l3_kb > 0) ? node.l3_kb / 1024.0 : 0.0;
+                    const auto rc = zsim_stats.runCyclesPerCore(1);
+                    if (!rc.empty() && node_cycles > 0) {
+                        double m = 0.0;
+                        for (uint64_t c : rc) m = std::max(m, std::min(1.0, static_cast<double>(c) / static_cast<double>(node_cycles)));
+                        result.run_frac_max = m;
+                    }
                 }
             }
 
@@ -18552,6 +18569,47 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         }
     }
     sys_power += host_uncore_total_w;
+    /* (1.12.154) (power.models.host_uncore_load): the uncore's rise above the awake-idle floor
+     * under load. The floor (package C1E) is the uncore at rest; under load the hardware
+     * raises the uncore clock and voltage: "Intel's firmware sets the uncore frequency to
+     * its maximum on detecting even the slightest of uncore activity" (Gholkar, Mueller,
+     * Rountree, "Uncore Power Scavenger", SC19, Sec. 1). The same paper (Sec. 2.1, Table 1,
+     * Fig. 2a; one Xeon E5-2620 v4 socket, Broadwell-EP, 8 cores, 20 MB LLC) measures the
+     * RAPL package power of a compute-bound code (NPB EP: no LLC or memory traffic) falling
+     * linearly from 40 W at the 2.7 GHz uncore clock to about 0.845 x 40 W at 1.2 GHz (read
+     * from Fig. 2a): 6.2 W, "attributed to the uncore's idle power consumption" -- the
+     * uncore clock and voltage themselves, without the per-access energy McPAT prices.
+     * Per MB of LLC (the uncore clock domain is the ring and the LLC slices): 0.31 W/MB
+     * (DERIVED). The host's term = load_w_per_mb_llc x its L3 MB x the fraction of the
+     * window the uncore runs at its raised clock -- taken as the busiest host core's
+     * measured running fraction (the firmware raises the clock while any core is active;
+     * a lower bound of the union of the cores' running times) -- minus the uncore clock
+     * networks the run already prices (McPAT's L3, NoC and MC clocks), never below 0.
+     * DERIVED and stated: the uncore clock in package C1E is taken as the minimum (NO
+     * PUBLISHED SOURCE FOUND for the C1E uncore clock); no node scaling (14 nm source,
+     * the host's node printed). */
+    std::vector<std::pair<std::string, double>> host_uncore_load_w;
+    double host_uncore_load_total_w = 0.0;
+    if (config.pm_host_uncore_load && config.pm_host_uncore_static) {
+        for (const auto& r : results) {
+            if (!r.valid || r.cores <= 0) continue;
+            const double a = (r.run_frac_max >= 0.0) ? r.run_frac_max : 1.0;
+            const double full = config.host_uncore_load_w_per_mb * r.l3_mb;
+            const double w = std::max(0.0, full * a - r.uncore_clock_priced_w);
+            host_uncore_load_w.push_back({r.name, w});
+            host_uncore_load_total_w += w;
+            pimid::fmt_scoped(std::cout) << "  [power] " << r.name << " uncore load (power.models.host_uncore_load): "
+                      << config.host_uncore_load_w_per_mb << " W/MB"
+                      << (config.host_uncore_load_user_set ? " (power.host_uncore.load_w_per_mb_llc)"
+                                                           : " (DERIVED: Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)")
+                      << " x L3 " << r.l3_mb << " MB = " << full << " W at the raised uncore clock x running fraction "
+                      << a << (r.run_frac_max >= 0.0 ? " (busiest host core, measured)" : " (not measured: 1)")
+                      << " minus the uncore clock networks McPAT prices (L3 + NoC + MC) " << r.uncore_clock_priced_w
+                      << " W = " << w << " W (ledger " << r.name << ".uncore_load; above the awake-idle floor "
+                      << r.name << ".uncore_static)" << std::endl;
+        }
+    }
+    sys_power += host_uncore_load_total_w;
     for (const auto& p : host_rcd_w) sys_power += p.second;   // (user ruling 2026-10-27)
     pimid::fmt_scoped(std::cout) << "  Power: " << std::fixed << std::setprecision(2)
               << sys_power << " W (" << sys_dyn << " dyn + " << sys_leak << " leak";
@@ -18567,6 +18625,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_phy_total_w << " host-MC PHY static";
     if (host_uncore_total_w > 0.0)   // (1.12.97)
         pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_uncore_total_w << " host uncore";
+    if (host_uncore_load_total_w > 0.0)   // (1.12.154)
+        pimid::fmt_scoped(std::cout) << " + " << std::setprecision(6) << host_uncore_load_total_w << " host uncore load";
     {   // (user ruling 2026-10-27) the RDIMM registers' static power, its own ledger line
         double rcd_w = 0.0;
         for (const auto& p : host_rcd_w) rcd_w += p.second;
@@ -18656,6 +18716,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         if (mem_power_total != 0.0) add("memory.array", mem_power_total);
         for (const auto& p : host_mc_phy_w) add(p.first + ".memory_controllers_phy", p.second);   // 1.12.18
         for (const auto& p : host_uncore_w) if (p.second != 0.0) add(p.first + ".uncore_static", p.second);   // (1.12.97)
+        for (const auto& p : host_uncore_load_w) if (p.second != 0.0) add(p.first + ".uncore_load", p.second);   // (1.12.154)
         for (const auto& p : host_rcd_w) add(p.first + ".memory_rcd", p.second);   // (user ruling 2026-10-27)
         double lsum = 0.0;
         for (const auto& t : ledger) lsum += t.w;
@@ -22953,6 +23014,15 @@ int main(int argc, char** argv) {
                 config.pm_clock_die_trunk = yamlBool(pmn["clock_die_trunk"], true, "power.models.clock_die_trunk");
                 config.pm_host_noc = yamlBool(pmn["host_noc"], true, "power.models.host_noc");   // 1.12.19
                 config.pm_host_uncore_static = yamlBool(pmn["host_uncore_static"], true, "power.models.host_uncore_static");   // (1.12.97)
+                config.pm_host_uncore_load = yamlBool(pmn["host_uncore_load"], true, "power.models.host_uncore_load");   // (1.12.154)
+            }
+            if (yaml_cfg["power"] && yaml_cfg["power"]["host_uncore"] && yaml_cfg["power"]["host_uncore"]["load_w_per_mb_llc"]) {   // (1.12.154)
+                config.host_uncore_load_w_per_mb = yaml_cfg["power"]["host_uncore"]["load_w_per_mb_llc"].as<double>();
+                config.host_uncore_load_user_set = true;
+                if (!(config.host_uncore_load_w_per_mb >= 0.0)) {
+                    std::cerr << "[config] FATAL: power.host_uncore.load_w_per_mb_llc must be >= 0 W/MB" << std::endl;
+                    std::exit(2);
+                }
             }
             if (yaml_cfg["power"] && yaml_cfg["power"]["host_uncore"] && yaml_cfg["power"]["host_uncore"]["w_per_socket"]) {   // (1.12.97)
                 config.host_uncore_w_per_socket = yaml_cfg["power"]["host_uncore"]["w_per_socket"].as<double>();

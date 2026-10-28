@@ -564,7 +564,10 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   330783-002, Sec. 2.10; the intercept of a fit over 34 SKUs), not a
   block-by-block model: no published source gives the root complex, interrupt
   controller, power-management unit or PLLs separately. It is an awake-idle
-  floor and includes regulator loss in its source.
+  floor and includes regulator loss in its source. Under load the uncore
+  clock rises (1.12.154): `<host>.uncore_load`, 0.31 W per MB of host L3 at the
+  raised clock (Gholkar et al., SC19, DERIVED) x the busiest host core's running
+  fraction, less the uncore clock networks McPAT already prices.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
   conversion loss, the board and cooling are not modelled; no total includes
   them.

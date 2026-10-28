@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.154 -- the host uncore's rise above its awake-idle floor under load
+
+- **Model (power.models.host_uncore_load; src/main.cpp):** the host uncore term of 1.12.97 is the awake-idle floor
+  (package C1E). Under load the hardware raises the uncore clock and voltage: "Intel's firmware sets the uncore
+  frequency to its maximum on detecting even the slightest of uncore activity" (Gholkar, Mueller, Rountree, "Uncore
+  Power Scavenger", SC19, Sec. 1). The same paper (Sec. 2.1, Table 1, Fig. 2a; one Xeon E5-2620 v4 socket, 8 cores,
+  20 MB LLC) measures the RAPL package power of a compute-bound code with no LLC or memory traffic (NPB EP) falling
+  linearly from 40 W at the 2.7 GHz uncore clock to about 0.845 x 40 W at 1.2 GHz (read from the figure): 6.2 W,
+  the uncore clock and voltage themselves, without the per-access energy McPAT already prices. Per MB of LLC (the
+  uncore clock domain is the ring and the LLC slices) 0.31 W/MB, DERIVED (`power.host_uncore.load_w_per_mb_llc`). A
+  new ledger entry `<host>.uncore_load` = 0.31 W/MB x the host's L3 MB x the busiest host core's measured running
+  fraction of the window (the clock is raised while any core is active) minus the uncore clock networks McPAT prices
+  (L3, NoC and memory controller), never below 0. The uncore clock in package C1E is taken as the minimum (NO
+  PUBLISHED SOURCE FOUND for it); no node scaling (14 nm source). `power.models.host_uncore_load: false` leaves the
+  term out.
+- **Data impact:** host baselines and co-simulations with a 32 MB host L3 gain up to 9.9 W less the priced uncore
+  clocks, in proportion to how long the host cores run.
+
 ## 1.12.153 -- the replayed DRAM latency follows the controller under message passing and on bursty device kernels: a price window, thread-MPI host records shifted with their rank, the charged view on ROI requests
 
 User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising other cells").
