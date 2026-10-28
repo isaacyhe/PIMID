@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.165 -- co-simulation: data placement as the device run places it, an option; parity stated as measured
+
+- **New key `system.page_placement` (src/main.cpp; external/zsim/src: qemu_zsim_plugin.cpp, pe_memory_interface.h,
+  core.h, alu_core.h, init.cpp, zsim.h).** `first_touch` (the default) is the placement co-simulations have had:
+  a page the host initialised is placed by the first element that touches it inside the ROI. `standalone` places
+  it as a device run of the same program does: before the ROI baseline every guest access claims its page for the
+  element the accessing thread will run on (its home, vcpu modulo the device's elements), through that element's
+  first-touch table, as the device run's elements claim the pages they initialise. The claim is made at the access
+  in the plugin, because the host's pre-ROI requests never reach the device's memory interfaces (the replay opens at
+  the ROI). Registered stacks keep their own rule. Compute-unit elements only; refused in a device run and with
+  other element types (rc 1); no effect under PIMID_COSIM_NO_OFFLOAD.
+- **Validation (gate co-sim cells at smoke size: HBM3 and DDR5-3200, gemv, stream_triad, bfs, stencil_2d,
+  histogram, OpenMP and 16-rank MPI).**
+  - The default is unchanged: device cycles, run time and power equal the build without this change in every cell.
+  - With `standalone`, the elements' in-ROI first touches drop to the device run's (OpenMP 0 in every cell).
+  - Parity, 8 alu_core PEs at BANK, 2 GHz, element busy cycles (OpenMP) or kernel window (MPI) over the device run:
+
+    | cell | OpenMP first_touch | OpenMP standalone | MPI first_touch | MPI standalone |
+    |---|---|---|---|---|
+    | HBM3 histogram | +21% | +160% | +57% | +1009% |
+    | HBM3 gemv | +18% | +14% | +26% | +38% |
+    | HBM3 stream_triad | +8% | +8% | +209% | +610% |
+    | HBM3 bfs | +24% | +12% | -4% | +13% |
+    | DDR4 histogram | +84% | +84% | -16% | +186% |
+    | DDR4 gemv | +10% | +13% | +44% | +111% |
+    | DDR4 stream_triad | +22% | +22% | +88% | +104% |
+    | DDR4 bfs | +29% | +1% | +9% | +1% |
+
+    The placement becomes the device run's; the time does not, apart from bfs. Under `standalone` the coherence
+    flush's dirty lines and, under message passing, the window's extra accesses (about twice the device run's)
+    land on the units the elements read (element 0's interface: 938 cycles per access against 187, MPI histogram
+    on HBM3).
+- **docs/cosim.md, examples/figures/co_sim.sh.** The co-simulation's device side was documented as giving the device
+  run's cycles exactly. The page now states the measured band (OpenMP element busy cycles +8% to +84%;
+  message-passing kernel windows -16% to +209%), what would indicate a bug, and the placement option.
+- **Statistics text (external/zsim/src/pe_memory_interface.h).** The `bankWaits` description named "next release";
+  it names 1.12.111. docs/yaml_reference.md: `simulation.dram_price_window` names its release (1.12.153).
+- **Data impact.** None by default. A configuration that sets `system.page_placement: standalone` changes its
+  device-side time as in the table.
+
 ## 1.12.164 -- co-simulation: a device kernel's scratchpad opened before the offload is the device PE's
 
 - **Defect (external/zsim/src/qemu_zsim_plugin.cpp).** A PIM kernel opens its scratchpad

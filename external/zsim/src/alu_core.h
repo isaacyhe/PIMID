@@ -230,6 +230,7 @@ class ALUCore : public Core {
         }
         /* the RAM a kernel may bind: the scratchpad less the stack's reserve */
         uint64_t spmBufferCap() const { return spmCap_ - stkReserve_; }
+        PEMemoryInterface* firstTouchMI() const override { return mi_; }   // (1.12.165)
         void spmQuery(uint64_t* cap, uint64_t* mode) const override { *cap = spmBufferCap(); *mode = spmCap_ ? spmMode_ : 0; }
         bool spmBind(uint64_t lo, uint64_t bytes, uint64_t cmd) override;
         bool spmDma(uint64_t dst, uint64_t src, uint64_t bytes, bool toDram) override;

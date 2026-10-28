@@ -2681,10 +2681,28 @@ static bool isRepString(const uint8_t* b, size_t n) {
     return false;
 }
 
+/* (1.12.165): system.page_placement: standalone. Before the ROI baseline, every guest access of an offloading
+ * co-simulation claims its page for the element the accessing thread will run on (its home: vcpu mod the
+ * device's elements, 1.12.76), as a device run's elements claim the pages they touch before the ROI. The host's
+ * pre-ROI requests do not reach the device's memory interfaces (the replay opens at the ROI), so the claim is
+ * made here, at the access. */
+static uint64_t g_ppLastPage[MAX_VCPUS];
+static void pagePlaceClaim(unsigned int vcpu, uint64_t vaddr) {
+    if (!g_cosim_mode || g_cosim_no_offload || vcpu >= MAX_VCPUS || vcpu_is_internal[vcpu] || device_core_list.empty()) return;
+    const uint64_t pg = (vaddr >> 12) + 1;
+    if (g_ppLastPage[vcpu] == pg) return;
+    g_ppLastPage[vcpu] = pg;
+    const uint32_t cid = device_core_list[vcpu % (uint32_t)device_core_list.size()];
+    PEMemoryInterface* mi = (cid < zinfo->numCores && zinfo->cores[cid]) ? zinfo->cores[cid]->firstTouchMI() : nullptr;
+    if (mi) mi->claimForPlacement(vaddr);
+}
+
 static void mem_cb(unsigned int vcpu_index,
                    qemu_plugin_meminfo_t info,
                    uint64_t vaddr,
                    void *userdata) {
+    if (unlikely(zinfo && zinfo->pagePlacementStandalone) && !zinfo->hierarchy.mpiNocBaselined)
+        pagePlaceClaim(vcpu_index, vaddr);   // (1.12.165)
     if (!in_roi) return;
     if (vcpu_index < MAX_VCPUS && vcpu_is_internal[vcpu_index]) return;
     if (userdata == &rep_string_tag && vcpu_index < MAX_VCPUS && ++rep_mem_since_bbl[vcpu_index] > 2)

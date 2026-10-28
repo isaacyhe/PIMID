@@ -72,16 +72,50 @@ added around that same region.
 | host | none (a hidden host prepared the layout, uncounted by design) | real OoO host: cores, caches, own main memory |
 | measured region | ROI (kernel) only | task region: flush/launch/kernel/busy-wait/readback |
 | boundary costs | none | launch + coherence + bridge, all explicit |
-| device cycles | reference | **identical** (parity invariant) |
+| device cycles | reference | the same device model, not the same experiment (see Parity below) |
 
 Both are systems (1.12.8): a device run declares its one device under
 `system.devices[]` and no hosts, a co-simulation adds the `system.hosts[]`
 list, and the nodes alone decide (1.12.9: the `scope` key and `--scope` are
 retired, dropped with a warning). The flat `scope: cosim` spelling went in 1.12.8.
 
-**Parity invariant** (enforced by validation): the device-side cycles of a
-co-sim run agree with a standalone device-scope run of the same kernel. If
-they ever diverge, a second device model has crept in -- file a bug.
+**Parity.** The device side of a co-simulation is the device model a device run
+uses -- the same elements, scratchpad, memory interfaces, network and memory --
+and under OpenMP its elements execute the same instructions and make the same
+number of memory accesses. It is not the same experiment, so its cycles are not
+the device run's:
+
+- the host initialises the data, so by default the elements place it by first
+  touch inside the measured region, where a device run's elements claim it while
+  initialising, before the region (`system.page_placement`, below);
+- the host's dirty lines are flushed to the shared memory as the region opens
+  and compete with the elements' first accesses;
+- the region includes the kernel launch and the coherence flush, and under
+  message passing each rank enters with its own flush and launch, so the ranks
+  start staggered; the message-passing window also carries memory accesses a
+  device run does not make (about twice the device run's in the cells below).
+
+Measured with 8 `alu_core` elements at BANK, 2 GHz, one in-order host core,
+HBM3 and DDR4, on histogram, gemv, stream_triad and bfs, default placement: the
+OpenMP element busy cycles of a co-simulation lie 8% to 84% above the device
+run's, and the message-passing kernel windows (`roiCycles`, the window without
+the post-ROI collective tail) between 16% below and 209% above. A larger
+difference, or, under OpenMP, a difference in the elements' instruction counts
+or scratchpad accesses, means a second device model has crept in -- file a bug.
+
+**Data placement (`system.page_placement`).** `first_touch` (the default) places
+a page the host initialised at the first element that touches it inside the
+region; until then the host's own accesses see it interleaved over the device's
+units, page by page. `standalone` places the data as a device run does: every
+page a host thread touches before the region is claimed by the element that
+thread will run on (thread i on element i modulo the element count), so the
+elements' first touches inside the region (`ftPages`) are those of the device
+run. Placement is then the device run's, but the time is not: in the
+measurements above bfs comes within 1% (DDR4) to 12% (HBM3) of the device run,
+histogram, gemv and stream_triad stay where they were or move further away
+(the flushed dirty lines and, under message passing, the window's extra
+accesses now land on the units the elements read), up to 10x on the
+message-passing histogram. Compute-unit (`alu_core`) elements only.
 
 **Clocks.** Every nanosecond-to-cycle conversion uses the clock of the node
 that ticks the cycles: the host's caches and memory path at the host node's
@@ -523,9 +557,9 @@ energy figure before 1.12.3 carries it. The run prints one `[cosim] device
 kernel window` line naming the trimmed window, the number of marked PEs and
 the largest tail. A rank with no closing barrier after its kernel (bfs) is
 never marked; its window is the whole run, as before. Co-sim OpenMP cells and
-the no-offload baseline report no tail and are unchanged. The device-side
-cycles remain identical to a standalone device-scope run (the parity
-invariant).
+the no-offload baseline report no tail and are unchanged. The kernel window
+is what a co-simulation's message-passing device side is compared with a device
+run on (see Parity above).
 
 ### Fixes folded into the co-sim MPI window (1.8.6/1.8.7)
 

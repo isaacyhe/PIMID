@@ -135,6 +135,8 @@ extern uint64_t g_mpiRoiCyc[];
 
 //Generic core class
 
+class PEMemoryInterface;
+
 class Core : public GlobAlloc {
     private:
         uint64_t lastUpdateCycles;
@@ -400,6 +402,8 @@ class Core : public GlobAlloc {
          * without one answers capacity 0, refuses a binding and performs no
          * DMA; the kernel then runs on DRAM (benchmarks/include/pimid_spm.h). */
         virtual void spmQuery(uint64_t* cap, uint64_t* mode) const { *cap = 0; *mode = 0; }
+        /* (1.12.165): the memory interface whose first-touch table places this element's data (none: not a compute unit) */
+        virtual PEMemoryInterface* firstTouchMI() const { return nullptr; }
         virtual bool spmBind(uint64_t /*lo*/, uint64_t /*bytes*/, uint64_t /*cmd*/) { return false; }
         virtual bool spmDma(uint64_t /*dst*/, uint64_t /*src*/, uint64_t /*bytes*/, bool /*toDram*/) { return false; }
         virtual void spmOwnStack(uint64_t /*sp*/) {}

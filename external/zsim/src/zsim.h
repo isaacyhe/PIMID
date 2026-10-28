@@ -508,6 +508,7 @@ struct GlobSimInfo {
         volatile uint64_t flushCount = 0;
         volatile uint64_t flushCyclesCharged = 0;
     } coherence;
+    bool pagePlacementStandalone = false;   // (1.12.165): system.page_placement: standalone
 
     /* 1.11.7 (#85): host<->device crossing counters. The QEMU plugin is the
      * only layer that sees each crossing WITH its byte size, so it counts

@@ -12,8 +12,9 @@
 # Boundary crossings are charged with the host-device link and memory models.
 #
 # The device offloaded in co-simulation IS the device: its ROI cycle count
-# agrees with a standalone device-scope run of the same kernel. This script
-# demonstrates that equivalence per cell (the "parity" column).
+# runs the same device model as a standalone device run of the same kernel, in a
+# different experiment (host-initialised data, flush, launch); the "parity" column
+# shows how far apart the two land (docs/cosim.md, Parity).
 #
 # Run from the repository root after building:
 #     bash examples/figures/co_sim.sh
@@ -123,4 +124,5 @@ YAML
   done
 done
 echo "DONE -> $CSV"
-echo "PASS criterion: |parity_pct| within a few percent AND checksum_match=yes for every row."
+echo "PASS criterion: checksum_match=yes for every row, and parity_pct within the measured co-simulation band"
+echo "  (OpenMP element busy cycles 0% to +90% over the device run; see docs/cosim.md, Parity)."

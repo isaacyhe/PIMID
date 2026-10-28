@@ -991,6 +991,10 @@ static void InitSystem(Config& config) {
             }
         }
         zinfo->coherence.flushFixedCycles = config.get<uint32_t>("sys.coherence.flushFixedCycles", 0);
+        zinfo->pagePlacementStandalone = config.get<uint32_t>("sys.pagePlacement", 0) != 0;   // (1.12.165)
+        if (zinfo->pagePlacementStandalone)
+            info("[ZSim] page placement: standalone -- the pages the host's threads touch before the ROI are claimed "
+                 "by the element each thread will run on, as a device run's elements claim them");
         const char* wbpc = config.get<const char*>("sys.coherence.writebackBytesPerCycle", "0.0");
         zinfo->coherence.writebackBytesPerCycle = atof(wbpc);
         /* 1.11.59 (audit F021): this line used to print "footprint=%llu B"

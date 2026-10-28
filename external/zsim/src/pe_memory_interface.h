@@ -1373,7 +1373,7 @@ public:
         s->append(&profReads_);
         profWrites_.init("wr", "Write requests");
         s->append(&profWrites_);
-        profBankWaits_.init("bankWaits", "Accesses that found their bank busy (SRAM/NVM bank model, next release)");
+        profBankWaits_.init("bankWaits", "Accesses that found their bank busy (SRAM/NVM bank model, 1.12.111)");
         s->append(&profBankWaits_);
         profBankWaitCycles_.init("bankWaitCycles", "Cycles waited for a busy bank (SRAM/NVM bank model)");
         s->append(&profBankWaitCycles_);
@@ -1905,6 +1905,18 @@ protected:
      * the claims, which belong to the PEs). Bank slot and row from the same
      * stripe arithmetic as localAccessLatency. Any interface answers the same
      * (totalUnits_ and the row model are the device's). */
+    /* (1.12.165): system.page_placement: standalone. Claim the page of byteAddr for this interface, as the first
+     * access of this interface's element would; a registered stack keeps its own rule. */
+    void claimForPlacement(uint64_t byteAddr) const {
+        if (zinfo->stackRanges && byteAddr >= zinfo->stackMin && byteAddr < zinfo->stackMax) {
+            for (uint32_t i = 0; i < zinfo->stackRanges; i++)
+                if (byteAddr >= zinfo->stackLo[i] && byteAddr < zinfo->stackHi[i]) return;
+        }
+        const uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0) ? zinfo->hierarchy.pagesPerUnit : 1;
+        uint32_t u;
+        (void)firstTouchUnit(byteAddr >> 12, ppu, &u);
+    }
+
     void hostTarget(Address lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row) const {
         const uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0) ? zinfo->hierarchy.pagesPerUnit : 1;
         const uint32_t page = (uint32_t)(lineAddr >> 6);

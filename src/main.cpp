@@ -2950,7 +2950,7 @@ static const char* kSchemaPaths[] = {
     "simulation.pim_runtime.mpi_barrier_cycles", "simulation.pim_runtime.mpi_barrier_scaling",
     "synthetic.injection_rate", "synthetic.injection_rate_max", "synthetic.injection_rate_min", "synthetic.injection_rate_step", "synthetic.packets", "synthetic.pattern", "synthetic.power", "synthetic.warmup",
     "system.bridge.bandwidth_gbs", "system.bridge.channels", "system.bridge.latency_ns", "system.bridge.phy", "system.bridge.protocol", "system.bridge.protocol_overhead_ns", "system.bridge.uncached_ns",
-    "system.cache_line_size", "system.frequency_mhz", "system.tech_node_nm",
+    "system.cache_line_size", "system.frequency_mhz", "system.tech_node_nm", "system.page_placement",
     "system.coherence.flush_fixed_ns", "system.coherence.footprint_bytes", "system.coherence.mode", "system.coherence.writeback_bw_gbs",
     /* system.devices[]: the node keys and the flat aliases. Every device-scope path in this list (pim, memory,
      * noc, cache, core, technology) is accepted under system.devices[] as well (schemaPathsAll, 1.11.107). */
@@ -3910,6 +3910,7 @@ struct UnifiedConfig {
     // mode: "unified" (Case 1, flush inputs + invalidate outputs) or "separate"
     // (Case 2, cache bypass -> no flush). Present only in the co-sim path.
     std::string coherence_mode = "unified";        // unified | separate
+    std::string page_placement = "first_touch";    // (1.12.165) system.page_placement: first_touch | standalone
     double coherence_writeback_bw_gbs = -1.0;      // host cache writeback BW (-1 = auto from host tech)
     double coherence_flush_fixed_ns = 200.0;       // fixed flush/wbinvd latency (ns)
     // Kernel input+output working-set footprint (bytes). REG_DEVBUF is retired to
@@ -19688,6 +19689,17 @@ static void emitZSimCoherenceBlock(std::ostream& out, const UnifiedConfig& confi
         << wb_bytes_per_cycle << "\";\n" << std::defaultfloat;
     out << "        flushFixedCycles = " << fixed_cyc << ";\n";
     out << "    };\n";
+    if (config.page_placement == "standalone") {   // (1.12.165): system.page_placement
+        for (const auto& n : config.system_nodes) {
+            if (n.role == UnifiedConfig::SystemNode::DEVICE && n.pe_type != "alu_core") {
+                std::cerr << "[config] ERROR: system.page_placement: standalone places the data at the compute-unit "
+                             "elements' memory interfaces; device '" << n.name << "' runs " << n.pe_type
+                          << " elements. Use first_touch, or alu_core elements." << std::endl;
+                std::exit(1);
+            }
+        }
+        out << "    pagePlacement = 1;  // standalone: pre-ROI host touches claim pages for the thread's element\n";
+    }
     if (getenv("PIMID_DEBUG_COHERENCE")) {
         // Login-node observable: the deterministic flush charge the plugin will
         // apply at roi_begin (unified) or skip (separate).
@@ -24402,6 +24414,22 @@ int main(int argc, char** argv) {
                             config.system_network.links.push_back(link);
                         }
                     }
+                }
+
+                /* (1.12.165): where a co-simulation's host-initialised data lives. first_touch (default): a page
+                 * the host initialised is placed by the first element that touches it inside the ROI.
+                 * standalone: the elements claim the pages the host's threads touch before the ROI, each
+                 * thread for the element it will run on, as a device run's master element claims the data
+                 * it initialises, so the device side is placed as a device run places it. */
+                if (sys["page_placement"]) {
+                    if (config.scope != "system") {
+                        std::cerr << "[config] ERROR: system.page_placement applies to a co-simulation (a system with "
+                                     "system.hosts[]); a device run places its data as its own elements touch it." << std::endl;
+                        std::exit(1);
+                    }
+                    config.page_placement = yamlString(sys["page_placement"], config.page_placement, "system.page_placement");
+                    if (config.page_placement != "first_touch" && config.page_placement != "standalone")
+                        refuseEnum("system.page_placement", config.page_placement, "first_touch, standalone", "run first_touch");
                 }
 
                 // Host<->device two-layer bridge (1.7.1). All fields optional;
