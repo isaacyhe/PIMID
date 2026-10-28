@@ -406,7 +406,7 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
     	  area.set_area(area.get_area()+ BPT->area.get_area());
       }
 
-      /* PIMID (next, user ruling 2026-10-24): the decoders' output load is DERIVED from this core's
+      /* PIMID (1.12.28, user ruling 2026-10-24): the decoders' output load is DERIVED from this core's
        * control structure -- the pipeline-register sink count the core's clock tree is built over
        * (Core: corepipe->num_piperegs x num_pipelines x existing/num_units; every unit exists on the
        * cores PIMID emits, so it is num_piperegs x num_pipelines), at minimum-size gates. The
@@ -424,7 +424,7 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_, InputParameter* in
     		  coredynp.arch_ireg_width, 1,
     		  coredynp.x86,
     		  Core_device, coredynp.core_ty, decode_fanout);
-      /* PIMID (next, user ruling 2026-10-24, "remove it only if it double-counts"): it does.
+      /* PIMID (1.12.28, user ruling 2026-10-24, "remove it only if it double-counts"): it does.
        * ID_operand decodes the arch_ireg_width-bit register specifier into 2^width lines; the
        * register file McPAT prices (RegFU IRF/FRF, a CACTI array) decodes the SAME index with its
        * own row predecoder + decoder inside every read/write energy it charges (the CACTI
@@ -1619,7 +1619,7 @@ EXECU::EXECU(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip
 
 		  if (coredynp.num_fpus>0)
 		  {
-			  /* PIMID (next, user ruling 2026-10-25 #2): the FP bus carries one FP datum, fp_data_width bits
+			  /* PIMID (1.12.32, user ruling 2026-10-25 #2): the FP bus carries one FP datum, fp_data_width bits
 			   * (upstream: machine_bits x 1.5, unsourced); the OOO branch below already uses fp_data_width. */
 			  fp_bypass    = new interconnect("FP Bypass Data" , Core_device, 1, 1, int(ceil(coredynp.fp_data_width)),
 					  rfu->fp_regfile_height + fp_u->FU_height, &interface_ip, 3,
@@ -2418,7 +2418,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 		            << " (plain " << csr_pl + struct_pl << " + gated x duty " << duty_csr*csr_en + duty_nc*struct_en << " + gates " << icg << ")" << std::endl;
 	  }
 	  clk_extra_regs += clk_front_regs + clk_struct_regs;
-	  /* PIMID (next, user ruling 2026-10-25, F1): the tree spans the CLOCKED LOGIC only -- DERIVED as the
+	  /* PIMID (1.12.30, user ruling 2026-10-25, F1): the tree spans the CLOCKED LOGIC only -- DERIVED as the
 	   * pipeline-register area McPAT builds for the units that exist (corepipe area x num_pipelines x
 	   * existing/num_units) plus the logic units: the integer ALU(s), the complex ALU (mul/div) and the
 	   * instruction decoders. Excluded: the FPU and every array (instruction/data store, register files,
@@ -2447,7 +2447,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	                       clk_pipe_regs + clk_extra_regs, src.str(),
 	                       corepipe->clock_energy_per_reg, clockRate, XML->sys.Embedded,
 	                       Core_device, coredynp.core_ty, XML->sys.pimid_clock_network != 0);
-	  /* PIMID (next, user ruling 2026-10-26): the CORE-ONLY clock tree, printed for internal verification only
+	  /* PIMID (1.12.77, user ruling 2026-10-26): the CORE-ONLY clock tree, printed for internal verification only
 	   * (pimid::debugChecks()): the same tree built over the core's own register sinks, the DMA registers apart
 	   * (as the instruction and data stores are reported apart from the core's energy). Cluster count, lengths and
 	   * local clock buffers follow the smaller sink count; the span is the same clocked logic. Nothing is priced
@@ -2587,7 +2587,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 	  }
   }
   /* PIMID 1.12.18: (user ruling 2026-10-24) CLOCK FEASIBILITY OF
-   * THE CORE AT ITS DEVICE. PIMID (next, user ruling 2026-10-26 (2)): the
+   * THE CORE AT ITS DEVICE. PIMID (1.12.72, user ruling 2026-10-26 (2)): the
    * arrays are NOT sized for the clock. McPAT's clock-targeted search
    * (ArrayST::optimize_array, run only when opt_for_clk && opt_local) is off:
    * PIMID describes every core with opt_local=0 (upstream's setting "for
@@ -2927,7 +2927,7 @@ void InstFetchU::computeEnergy(bool is_tdp)
     	BTB->power_t.reset();
     }
 
-    /* PIMID (next, user ruling 2026-10-26 (1)): with an output narrower than
+    /* PIMID (1.12.71, user ruling 2026-10-26 (1)): with an output narrower than
      * the line (config field 6, a processing element's fetch width), a line
      * fill is line/out_w array writes, as LoadStoreU charges the data cache's
      * fills. A full-line output keeps upstream's one write per miss. */
@@ -4004,7 +4004,7 @@ void SchedulerU::displayEnergy(uint32_t indent,int plevel,bool is_tdp)
  * three register reads and writes and three adder operations (each register
  * steps once). Peak (TDP): the RAM at McPAT's 2:1 read/write port mix, the
  * engine at one line per cycle. */
-/* PIMID (next, user ruling 2026-10-25 #3): an IN-ORDER device PE has no load/store queue to search: its LSQ
+/* PIMID (1.12.32, user ruling 2026-10-25 #3): an IN-ORDER device PE has no load/store queue to search: its LSQ
  * structure is a STORE BUFFER only -- one write and one read per store (the store enters, then drains to the
  * memory), none per load (a load goes to the scratchpad / data store directly, as in RI5CY's LSU). DERIVED,
  * stated. OOO cores (and the host) keep McPAT's queue: 2 x (search + read) + 2 x write per load and store. */
@@ -4057,7 +4057,7 @@ void LoadStoreU::computeEnergyPimid(bool is_tdp)
 		}
 		LSQ->stats_t.readAc.access  = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
 		LSQ->stats_t.writeAc.access = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
-		pimid_store_buffer_stats();   /* PIMID (next, ruling #3) */
+		pimid_store_buffer_stats();   /* PIMID (1.12.32, ruling #3) */
 		LSQ->rtp_stats = LSQ->stats_t;
 		if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
 		{
@@ -4082,7 +4082,7 @@ void LoadStoreU::computeEnergyPimid(bool is_tdp)
 			LoadQ->stats_t.writeAc.access*LoadQ->local_result.power.writeOp.dynamic;
 	}
 	LSQ->power_t.readOp.dynamic += LSQ->stats_t.readAc.access*((pimid_store_buffer() ? 0.0 : LSQ->local_result.power.searchOp.dynamic) + LSQ->local_result.power.readOp.dynamic)
-		+ LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;   /* (next, ruling #3): a store buffer is not searched */
+		+ LSQ->stats_t.writeAc.access*LSQ->local_result.power.writeOp.dynamic;   /* (1.12.32, ruling #3): a store buffer is not searched */
 
 	powerDef dma_t;
 	if (dma_lbuf)
@@ -4218,7 +4218,7 @@ void LoadStoreU::computeEnergy(bool is_tdp)
 
 	    	LSQ->stats_t.readAc.access  = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;//flush overhead considered
 	    	LSQ->stats_t.writeAc.access = (XML->sys.core[ithCore].load_instructions + XML->sys.core[ithCore].store_instructions)*2;
-	    	pimid_store_buffer_stats();   /* PIMID (next, ruling #3) */
+	    	pimid_store_buffer_stats();   /* PIMID (1.12.32, ruling #3) */
 	    	LSQ->rtp_stats = LSQ->stats_t;
 
 	    	if ((coredynp.core_ty==OOO) && (XML->sys.core[ithCore].load_buffer_size >0))
@@ -5027,7 +5027,7 @@ void Core::computeEnergy(bool is_tdp)
 			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
 			          << e_gat << std::endl;
 			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
-			/* PIMID (next, user ruling 2026-10-25): a device PE's instruction store and data store (scratchpad)
+			/* PIMID (1.12.32, user ruling 2026-10-25): a device PE's instruction store and data store (scratchpad)
 			 * energy, printed so the PE references can be judged on the CORE-only quantity (RI5CY Table V is
 			 * core-only; its I$ and TCDM are separate). McPAT-priced, before any DRAM-periphery factor. */
 			if (!is_tdp && XML->sys.Embedded)
@@ -5213,7 +5213,7 @@ void Core::computeEnergy(bool is_tdp)
 			          << clockNetwork.global_on() << ") + (local tree " << clk_tree_l << " + DMA) x a + max(0, pins x a - counted) = "
 			          << e_gat << std::endl;
 			if (!is_tdp) clockNetwork.report_runtime("(all cores)", executionTime);
-			/* PIMID (next, user ruling 2026-10-25): a device PE's instruction store and data store (scratchpad)
+			/* PIMID (1.12.32, user ruling 2026-10-25): a device PE's instruction store and data store (scratchpad)
 			 * energy, printed so the PE references can be judged on the CORE-only quantity (RI5CY Table V is
 			 * core-only; its I$ and TCDM are separate). McPAT-priced, before any DRAM-periphery factor. */
 			if (!is_tdp && XML->sys.Embedded)
@@ -5228,7 +5228,7 @@ void Core::computeEnergy(bool is_tdp)
 				          << " DRAM-periphery factor): FPU " << ((exu && exu->exist && exu->fp_u) ? exu->fp_u->rt_power.readOp.dynamic : 0.0)
 				          << " J; FP register file " << ((exu && exu->exist && exu->rfu && exu->rfu->FRF) ? exu->rfu->FRF->rt_power.readOp.dynamic : 0.0)
 				          << " J" << std::endl;
-			/* PIMID (next, user ruling 2026-10-24): DECODE + CLOCK GUARD. The instruction decoders'
+			/* PIMID (1.12.28, user ruling 2026-10-24): DECODE + CLOCK GUARD. The instruction decoders'
 			 * runtime energy per instruction plus this core's clock network per cycle at activity 1
 			 * (ungated, one core: per instruction at IPC 1, the basis of the published figure -- the
 			 * run's own clock per instruction would charge idle and stalled cycles to the instructions),

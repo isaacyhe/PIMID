@@ -1531,7 +1531,7 @@ protected:
                   (int)replayCut, (int)cutPricing());
         if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay &&
             (!replayCut || zinfo->hierarchy.mpiNocBaselined)) {
-            const uint32_t E = DramEpochReplay::epochPhases();   // (next, ruling 2026-10-28): the replay's own epoch
+            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28): the replay's own epoch
             uint64_t curEpoch, stamp;
             if (replayCut) {
                 const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -1936,7 +1936,7 @@ protected:
                 break;
             }
         }
-        /* (next, user ruling 2026-10-28: the multi-core host latency gap) a page no PE has placed is
+        /* (1.12.146, user ruling 2026-10-28: the multi-core host latency gap) a page no PE has placed is
          * the host's own: it is spread over all units page by page, as a host memory controller interleaves
          * its pages over channels and banks. It used to take the PIM block map (pages_per_unit contiguous
          * pages per unit), which put a host baseline's whole working set on one channel and a few banks

@@ -1635,7 +1635,7 @@ struct ZSimParsedOutput {
     uint64_t pemi_local_acc = 0;
     uint64_t pemi_remote_acc = 0;
     /* 1.11.91 (audit R8-7): MEASURED bank-open time from the Ramulator2 memory
-     * controller (ramulator_mem_ctrl.cpp; (next, user ruling 2026-10-28): the
+     * controller (ramulator_mem_ctrl.cpp; (1.12.147, user ruling 2026-10-28): the
      * replayed controller's, dram_epoch_replay.cpp): memory cycles x units with >= 1
      * bank open, over the cycles x units sampled, ROI-rebased with the rest of
      * the "mem" group. Present only when a Ramulator2-backed controller
@@ -1962,7 +1962,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
     CoreGroup cache_group = CoreGroup::NONE;
     bool host_replay_scope = false;   // 1.12.18 (R0605): inside the decoupled host memory's "hostDramReplay" group
     bool dev_replay_scope = false;    // 1.12.18: inside the device's "dramReplay" group
-    bool mem_replay_scope = false;    // (next, user ruling 2026-10-28): inside a Ramulator-typed memory's "memDramReplay" group
+    bool mem_replay_scope = false;    // (1.12.147, user ruling 2026-10-28): inside a Ramulator-typed memory's "memDramReplay" group
     bool pemi_scope = false;          // 1.12.18: inside a device "pe-mi-N"/"pe-mc-N" group
     /* 1.11.93 (F3/F4): the per-core record the current core block writes;
      * reset at every aggregate header so each "<group>-N:" block gets one. */
@@ -2147,7 +2147,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 pemi_scope = false;   // 1.12.18
                 continue;
             } else if (key == "memDramReplay") {
-                /* (next, user ruling 2026-10-28): the replayed controller of a
+                /* (1.12.147, user ruling 2026-10-28): the replayed controller of a
                  * memory of type Ramulator (HOST_MC: the elements share the
                  * host memory controller; zsim init.cpp). Its "mem-N"
                  * controllers count in the totals and the host group (as
@@ -2174,7 +2174,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 scope_indent = indent;
                 cache_group = CoreGroup::HOST;
                 host_replay_scope = true; dev_replay_scope = false;
-                mem_replay_scope = false;   // (next, user ruling 2026-10-28)
+                mem_replay_scope = false;   // (1.12.147, user ruling 2026-10-28)
                 pemi_scope = false;   // 1.12.18
                 continue;
             } else if (key.substr(0, 4) == "mem-" || key.substr(0, 4) == "mem_"
@@ -2207,7 +2207,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                                   key.substr(0, 6) == "pe-mi-");
                 cache_group = device_mi ? CoreGroup::DEVICE : CoreGroup::HOST;
                 host_replay_scope = false; dev_replay_scope = false;   // 1.12.18
-                mem_replay_scope = false;   // (next, user ruling 2026-10-28)
+                mem_replay_scope = false;   // (1.12.147, user ruling 2026-10-28)
                 pemi_scope = device_mi;   // 1.12.18
                 continue;
             }
@@ -2371,7 +2371,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 }
                 else if (key == "uops") { out.uops += val; if (grp) grp->uops += val; }
                 else if (key == "bbls") { out.bbls += val; if (grp) grp->bbls += val; }
-                else if (key == "ifetchChunks") {   // PIMID (next, user ruling 2026-10-26 (1))
+                else if (key == "ifetchChunks") {   // PIMID (1.12.71, user ruling 2026-10-26 (1))
                     out.ifetch_chunks += val; out.ifetch_present = true;
                     if (grp) { grp->ifetch_chunks += val; grp->ifetch_present = true; }
                 }
@@ -2385,7 +2385,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                      * the ROI may be fed a whole-run count. */
                     out.indirBranches += val; if (grp) grp->indirBranches += val;
                 } else if (key == "roiDirectBranches") {
-                    /* (next, user ruling 2026-10-25 (1)): taken direct branches through the in-order core's BTB. */
+                    /* (1.12.32, user ruling 2026-10-25 (1)): taken direct branches through the in-order core's BTB. */
                     out.directBranches += val; out.directPresent = true;
                     if (grp) { grp->directBranches += val; grp->directPresent = true; }
                 } else if (key == "roiRasReturns") {
@@ -2495,7 +2495,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                     continue;
                 }
                 if (mem_replay_scope) {
-                    /* (next, user ruling 2026-10-28): see the scope above. The
+                    /* (1.12.147, user ruling 2026-10-28): see the scope above. The
                      * host-interface share IS the controller's whole traffic;
                      * the device share (ctrl*, reads, writes, latencySum,
                      * priced, bootstrap) is empty in this instance, and the
@@ -3298,7 +3298,7 @@ struct UnifiedConfig {
     /* PIMID 1.12.18: (user rulings 2026-10-23 #3-#6), all default true. */
     bool pm_int_alu_published = true;       // power.models.int_alu_published (ruling 3)
     bool pm_clock_global_local = true;      // power.models.clock_global_local (ruling 4)
-    int pm_clock_leaf_sinks = 30;           // power.clock.leaf_cluster_sinks (next, F2): sinks per local clock buffer
+    int pm_clock_leaf_sinks = 30;           // power.clock.leaf_cluster_sinks (1.12.30, F2): sinks per local clock buffer
     bool pm_l1d_access_width = true;        // power.models.l1d_access_width (ruling 6)
     bool pm_tlb_btb_measured = true;        // power.models.tlb_btb_measured (ruling 5)
     bool pm_fu_area_published = true;       // 1.12.29: power.models.fu_area_published (ruling 2026-10-25)
@@ -4761,7 +4761,7 @@ static int applyCoreRecord(UnifiedConfig& config) {
                   << " B line; the wrong-path fetch model steps at least one cycle per line." << std::endl;
         return 1;
     }
-    /* PIMID (next, user ruling 2026-10-26 (1)): the in-order fetch width, the
+    /* PIMID (1.12.71, user ruling 2026-10-26 (1)): the in-order fetch width, the
      * width a processing element's instruction cache is read at (both core
      * types; the OOO core's is core.ooo.fetch_width_bytes, whose width the
      * power model uses only when it divides the line). A width that does not
@@ -9763,7 +9763,7 @@ static int dqBeatBytes(const std::string& tech) {
     return (col >= bl) ? col / bl : 8;
 }
 
-/* (next, user ruling 2026-10-28): the replayed Ramulator-typed memory's
+/* (1.12.147, user ruling 2026-10-28): the replayed Ramulator-typed memory's
  * bootstrap rate per controller (one controller per channel): the preset's
  * aggregate bandwidth over its channels at the run's knobs (DDR5 grade,
  * device width, temperature) -- the per-channel rate the host memory block's
@@ -9783,7 +9783,7 @@ static int ramulatorControllerMBs(const std::string& tech, const UnifiedConfig& 
     }
 }
 
-/* (next, user ruling 2026-10-28): the requesters of the replayed memory run a
+/* (1.12.147, user ruling 2026-10-28): the requesters of the replayed memory run a
  * weave phase (in-order / OOO cores): the bootstrap is then WeaveSimple's
  * (zero-load latency in the bound phase, the M/D/1 excess in the weave), as a
  * replayed host memory's is. The same core the weave upgrade of
@@ -9800,7 +9800,7 @@ static bool memRequestersWeave(const UnifiedConfig& config) {
     return pt == "in_order_core" || pt == "ooo_core";
 }
 
-/* (next, user ruling 2026-10-28): `built` says the block's controllers are
+/* (1.12.147, user ruling 2026-10-28): `built` says the block's controllers are
  * BUILT (no PE memory interfaces stand in for them: the HOST_MC placement, a
  * device without a PE controller, or the system emitter's device-only block);
  * only then are the bootstrap keys queried and written, so a run whose
@@ -9825,7 +9825,7 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
          * of 16; DDR5: 1 of 2 sub-channels). zsim interleaves lines across
          * the controllers (SplitAddrMemory: line % N, the address compacted). */
         out << "        controllers = " << hostMemControllerCount(mem_tech, config) << ";\n";
-        /* (next, user ruling 2026-10-28): the controllers are REPLAYED (zsim
+        /* (1.12.147, user ruling 2026-10-28): the controllers are REPLAYED (zsim
          * init.cpp: one DramEpochReplay instance for the memory, every
          * controller one interface, charged in the bound phase at the measured
          * service latency); latency (tRCD + tCAS) and bandwidth (the
@@ -10969,7 +10969,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     : std::string("UNKNOWN (no stack layout)");
             return "0 (base-die / off-die logic, not in the core-die stack)";
         };
-        /* (next, user ruling 2026-10-28): an in-die fabric (MESH_2D / RING /
+        /* (1.12.143, user ruling 2026-10-28): an in-die fabric (MESH_2D / RING /
          * CROSSBAR inside each DRAM die, ruling 9) walked by the analytical
          * NoC. The walk counts the die's node links apart from the tree's
          * up-links; the grid tier's switches leave the die only at its exit
@@ -14465,7 +14465,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              *
              * UNARMED-COUNTER REFUSAL: pgDevMCActivePhases is touched by
              * every non-PUTS request through the PE-MI (pe_memory_interface.h;
-             * (next, user ruling 2026-10-28): the weave-timed Ramulator MC,
+             * (1.12.147, user ruling 2026-10-28): the weave-timed Ramulator MC,
              * ramulator_mem_ctrl.cpp, is removed). If a run has
              * memory traffic but the counter never advanced, this machine is
              * not driving that tracker, and r_idle would come out 1.0 -- the
@@ -14596,7 +14596,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double ref_window_us = -1.0;   // 1.12.18 (ruling 2026-10-23)
             if (config.pm_dram_refresh_counted && zsim_stats.ctrl_refreshes > 0 && zsim_stats.ctrl_ticks > 0 && ram_oracle.getTckNs() > 0.0) {   // 1.12.18: option
                 const double span_ns = (double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs();
-                /* (next, user ruling 2026-10-28): at HOST_MC the counted
+                /* (1.12.147, user ruling 2026-10-28): at HOST_MC the counted
                  * refreshes are the memory's own replayed instance's -- one
                  * rank per channel, one channel per controller (zsim
                  * memDramReplay) -- not the device hierarchy's (which HOST_MC
@@ -18948,7 +18948,7 @@ public:
             cfg << "\n";
         }
 
-        /* (next, user ruling 2026-10-28): the block is built (and replayed)
+        /* (1.12.147, user ruling 2026-10-28): the block is built (and replayed)
          * where no PE memory interface serves the elements */
         emitZSimMemBlock(cfg, config_, mem_latency, config_.memory_tech,
                          config_.placement_level == "HOST_MC" || !config_.hierarchy_enabled || !config_.pe_mc_enabled);
@@ -22827,12 +22827,12 @@ int main(int argc, char** argv) {
                 /* 1.11.94 (sweep-94 rows 26/28): run settings that lived only in
                  * environment variables become config keys; the value is handed
                  * to the timing plugin / MPI shim through the same variable. */
-                if (yaml_cfg["simulation"]["dram_epoch_phases"]) {   // (next, user ruling 2026-10-28)
+                if (yaml_cfg["simulation"]["dram_epoch_phases"]) {   // (1.12.145, user ruling 2026-10-28)
                     int ep = yamlInt(yaml_cfg["simulation"]["dram_epoch_phases"], 1, "simulation.dram_epoch_phases");
                     if (ep < 1) { std::cerr << "Error: simulation.dram_epoch_phases must be >= 1" << std::endl; return 1; }
                     setenv("PIMID_DRAM_EPOCH_PHASES", std::to_string(ep).c_str(), 1);
                 }
-                if (yaml_cfg["simulation"]["dram_price_window"]) {   // (next, user ruling 2026-10-28)
+                if (yaml_cfg["simulation"]["dram_price_window"]) {   // (1.12.153, user ruling 2026-10-28)
                     int pw = yamlInt(yaml_cfg["simulation"]["dram_price_window"], 8, "simulation.dram_price_window");
                     if (pw < 1) { std::cerr << "Error: simulation.dram_price_window must be >= 1" << std::endl; return 1; }
                     setenv("PIMID_DRAM_PRICE_WINDOW", std::to_string(pw).c_str(), 1);
@@ -23040,7 +23040,7 @@ int main(int argc, char** argv) {
             pimid::mcpatFrontendFromTimingDefault() = config.pm_frontend_from_timing;
             pimid::mcpatIntAluPublishedDefault() = config.pm_int_alu_published;    // PIMID 1.12.18
             pimid::mcpatClockGlobalLocalDefault() = config.pm_clock_global_local;
-            /* (next, user ruling 2026-10-25, F2): sinks per leaf clock cluster; default 30 = the OpenROAD TritonCTS
+            /* (1.12.30, user ruling 2026-10-25, F2): sinks per leaf clock cluster; default 30 = the OpenROAD TritonCTS
              * sink-cluster cap (IBM US 8,458,634 B2: 24-32 latches per local clock buffer). */
             if (yaml_cfg["power"] && yaml_cfg["power"]["clock"] && yaml_cfg["power"]["clock"]["leaf_cluster_sinks"]) {
                 config.pm_clock_leaf_sinks = yamlInt(yaml_cfg["power"]["clock"]["leaf_cluster_sinks"], 30, "power.clock.leaf_cluster_sinks");

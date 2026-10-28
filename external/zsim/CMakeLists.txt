@@ -95,7 +95,7 @@ set(ZSIM_SIM_SRCS
     src/lookahead.cpp
     src/monitor.cpp
 
-    # Memory controllers ((next, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
+    # Memory controllers ((1.12.147, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
     # Ramulator2 times DRAM by epoch replay only)
     src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
 
@@ -228,7 +228,7 @@ set(ZSIM_SIM_SRCS_TRACE
     src/lookahead.cpp
     src/monitor.cpp
 
-    # Memory controllers ((next, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
+    # Memory controllers ((1.12.147, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
     # Ramulator2 times DRAM by epoch replay only)
     src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
 

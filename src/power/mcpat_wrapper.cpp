@@ -161,7 +161,7 @@ void McPATWrapper::setPerCoreRunCycles(const std::vector<uint64_t>& cycles) {
 }
 
 void McPATWrapper::setMeasuredDirectBranches(uint64_t direct_branches, bool present) {
-    meas_direct_ = direct_branches;   // (next, user ruling 2026-10-25 (1))
+    meas_direct_ = direct_branches;   // (1.12.32, user ruling 2026-10-25 (1))
     meas_direct_present_ = present;
     power_computed_ = false;
 }
@@ -1307,7 +1307,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.vector_moves_split ? 1 : 0);
     for (uint64_t v : meas_fpc_) f(v);                                              // 1.12.18
     for (uint64_t v : meas_iops_) f(v);                                             // PIMID 1.12.18
-    f(config_.int_alu_published ? 1 : 0); f(config_.clock_global_local ? 1 : 0); f(config_.clock_leaf_sinks);   /* (next, F2) */
+    f(config_.int_alu_published ? 1 : 0); f(config_.clock_global_local ? 1 : 0); f(config_.clock_leaf_sinks);   /* (1.12.30, F2) */
     f(config_.l1d_access_width ? 1 : 0);  f(config_.tlb_btb_measured ? 1 : 0);
     f(config_.fu_area_published ? 1 : 0);                                          // 1.12.19
     f(config_.tlb_published_geometry ? 1 : 0);                                     // 1.12.18
@@ -2795,7 +2795,7 @@ std::string McPATWrapper::generateXMLConfig() const {
     const int  lanes  = (config_.pe_lanes > 0) ? config_.pe_lanes : 1;
 
     int machine_type = is_ooo ? 0 : 1;
-    /* PIMID (next, user ruling 2026-10-24, "x86 for all"): every core is priced as an x86 core --
+    /* PIMID (1.12.28, user ruling 2026-10-24, "x86 for all"): every core is priced as an x86 core --
      * the workloads are x86 binaries the timing cores execute (QEMU user mode), in-order alu_core
      * PEs included. McPAT then decodes in two sequencer passes and keeps the x86 prefix decoder
      * (real x86 hardware), and the pipeline latches the micro-opcode (micro_opcode_width). */
@@ -2996,7 +2996,7 @@ std::string McPATWrapper::generateXMLConfig() const {
     xml << "    <param name=\"pimid_int_alu_published\" value=\"" << (config_.int_alu_published ? 1 : 0) << "\"/>\n";
     xml << "    <param name=\"pimid_fu_area_published\" value=\"" << (config_.fu_area_published ? 1 : 0) << "\"/>\n";   // 1.12.19
     xml << "    <param name=\"pimid_clock_split\" value=\"" << (config_.clock_global_local ? 1 : 0) << "\"/>\n";
-    xml << "    <param name=\"pimid_clock_leaf_sinks\" value=\"" << config_.clock_leaf_sinks << "\"/>\n";   /* (next, F2) */
+    xml << "    <param name=\"pimid_clock_leaf_sinks\" value=\"" << config_.clock_leaf_sinks << "\"/>\n";   /* (1.12.30, F2) */
     /* PIMID 1.12.18 (user rulings 2026-10-23: idle halt, per-die process,
      * per-die clock trunk): switches and STRUCTURE only; the models are the
      * fork's (logic.h ClockNetwork, processor.cc). */
@@ -3826,7 +3826,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             // multiplied by the core count).
             uint64_t l1i_reads_all = l1i_reads_;
             uint64_t l1i_misses_all = l1i_read_misses_;
-            /* PIMID (next, user ruling 2026-10-26 (1)): a processing element's
+            /* PIMID (1.12.71, user ruling 2026-10-26 (1)): a processing element's
              * instruction cache delivers its fetch width per read, not a whole
              * line: the output (config field 6) is the core type's fetch width
              * (core record: in_order / ooo fetch_width_bytes, 16 B) and the
@@ -3939,7 +3939,7 @@ std::string McPATWrapper::generateXMLConfig() const {
              * target) + zsim's measured indirect target rewrites
              * (ooo_core.h IndirectPredictor::update). power.models.
              * tlb_btb_measured: false restores the indirect-only counts. */
-            /* (next, user ruling 2026-10-25 (1)): an IN-ORDER device PE reads its BTB on the timing model's
+            /* (1.12.32, user ruling 2026-10-25 (1)): an IN-ORDER device PE reads its BTB on the timing model's
              * MEASURED lookups: the taken direct branches (zsim InOrderCore looks each up, 1.11.98) plus the
              * indirect resolutions (roiDirectBranches + roiIndirBranches); the direction predictor stays per
              * branch. OOO cores and the host keep the per-branch lookup. A dump without the direct count

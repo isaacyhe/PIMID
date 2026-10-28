@@ -27,7 +27,7 @@ inline bool& mcpatFrontendFromTimingDefault() { static bool v = true; return v; 
  * (all default true), set the same way. */
 inline bool& mcpatIntAluPublishedDefault() { static bool v = true; return v; }
 inline bool& mcpatClockGlobalLocalDefault() { static bool v = true; return v; }
-inline int& mcpatClockLeafSinksDefault() { static int v = 30; return v; }   /* PIMID (next, F2): power.clock.leaf_cluster_sinks */
+inline int& mcpatClockLeafSinksDefault() { static int v = 30; return v; }   /* PIMID (1.12.30, F2): power.clock.leaf_cluster_sinks */
 inline bool& mcpatL1dAccessWidthDefault() { static bool v = true; return v; }
 inline bool& mcpatTlbBtbMeasuredDefault() { static bool v = true; return v; }
 /* 1.12.29: (user ruling 2026-10-25) power.models.fu_area_published (default
@@ -532,7 +532,7 @@ public:
          * statistics. The models live in the fork. */
         bool int_alu_published = mcpatIntAluPublishedDefault();
         bool clock_global_local = mcpatClockGlobalLocalDefault();
-        int clock_leaf_sinks = mcpatClockLeafSinksDefault();   /* PIMID (next, F2) */
+        int clock_leaf_sinks = mcpatClockLeafSinksDefault();   /* PIMID (1.12.30, F2) */
         bool l1d_access_width = mcpatL1dAccessWidthDefault();
         bool tlb_btb_measured = mcpatTlbBtbMeasuredDefault();
         bool fu_area_published = mcpatFuAreaPublishedDefault();   // 1.12.29: sys param pimid_fu_area_published
@@ -781,7 +781,7 @@ public:
      * and RAS returns, measured by zsim (roiIndirBranches / roiRasReturns).
      * They drive the BTB and RAS McPAT now builds for cores that have them. */
     void setMeasuredControlFlow(uint64_t indirect_branches, uint64_t ras_returns);
-    /* (next, user ruling 2026-10-25 (1)): the in-order core's measured taken direct BTB lookups (ROI). */
+    /* (1.12.32, user ruling 2026-10-25 (1)): the in-order core's measured taken direct BTB lookups (ROI). */
     void setMeasuredDirectBranches(uint64_t direct_branches, bool present);
     /* 1.11.93 (F3): the pipeline duty the XML carries, with its parts, for
      * the core-description line. `per_core` says whether per-core counts
@@ -849,7 +849,7 @@ public:
 
     // Split cache stat setters -- use actual ZSim counters, not combined reads/writes
     void setL1IAccesses(uint64_t reads, uint64_t read_misses);
-    /* PIMID (next, user ruling 2026-10-26 (1)): a processing element's
+    /* PIMID (1.12.71, user ruling 2026-10-26 (1)): a processing element's
      * instruction cache is read at its fetch width. chunks = the cores'
      * ifetchChunks (zsim, ROI), present = the dump carried them, fetch_bytes
      * = the core type's fetch width (core record). Not called for host cores,

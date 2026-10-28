@@ -330,7 +330,7 @@ class InOrderCore : public Core {
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseTaken = takenBranches;                        // 1.12.1
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns; roiBaseBtbMiss = btbMisses;   // 1.11.93 (F6)
-            roiBaseDirect = directBranches;                      // PIMID (next, ruling 2026-10-25 (1))
+            roiBaseDirect = directBranches;                      // PIMID (1.12.32, ruling 2026-10-25 (1))
             roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10

@@ -894,7 +894,7 @@ void PCIeController::set_pcie_param()
 				   * init_tech_params reads it; the constructor re-initialises after. */
 				  init_interface(&interface_ip);
 				  const TechnologyParameter tp_saved = g_tp;
-				  /* PIMID (next): each node's minimum inverter at that node's OWN feature size. CACTI's
+				  /* PIMID (1.12.27): each node's minimum inverter at that node's OWN feature size. CACTI's
 				   * TechnologyParameter::init sizes every device from g_ip->F_sz_um (min_w_nmos_ = 1.5 F,
 				   * cell_h_def = 50 F; external/cacti/parameter.cc), not from the table it loads, so both
 				   * inverters used to be drawn at the run's F and the 22/32 nm ratio lacked the 22/32 linear

@@ -177,7 +177,7 @@ class LoadStoreU :public Component {
 	LoadStoreU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, bool exist_=true);
     void computeEnergy(bool is_tdp=true);
     void computeEnergyPimid(bool is_tdp);
-  bool pimid_store_buffer() const;   /* PIMID (next, ruling #3) */
+  bool pimid_store_buffer() const;   /* PIMID (1.12.32, ruling #3) */
   void pimid_store_buffer_stats();
     void displayEnergy(uint32_t indent = 0,int plevel = 100, bool is_tdp=true);
 	~LoadStoreU();

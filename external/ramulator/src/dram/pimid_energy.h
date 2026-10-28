@@ -1481,7 +1481,7 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
  *          BL4 x 128 b = 64 B, 1 burst
  *   HBM3   one 64-bit channel (the IDD basis, JESD238B.01 cl.9.1) = 1 unit;
  *          BL8 x 64 b = 64 B, 1 burst (the IDD4R loop moves 64 B per 1.25 ns)
- *          [(next) T1: the TIMING model now moves a 64 B line as two 32 B
+ *          [(1.12.37) T1: the TIMING model now moves a 64 B line as two 32 B
  *          pseudo-channel bursts (BL8 x 32 b, JESD238B.01 3.1.2; the Ramulator
  *          channel_width 128, burstsPerLine 2). The ENERGY basis is unchanged
  *          and stays right: the IDD4R/IDD4W row is the CHANNEL's current with

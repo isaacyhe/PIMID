@@ -234,7 +234,7 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zbm)>* roiBtbMissStat = new LambdaStat<decltype(zbm)>(zbm);
     roiBtbMissStat->init("roiBtbMisses", "Direct-branch BTB misses (ROI)");
     coreStat->append(roiBtbMissStat);
-    /* PIMID (next, user ruling 2026-10-25 (1)): the taken direct branches looked up in the BTB, ROI-windowed --
+    /* PIMID (1.12.32, user ruling 2026-10-25 (1)): the taken direct branches looked up in the BTB, ROI-windowed --
      * with roiIndirBranches, the BTB reads the power model prices for an in-order core. */
     auto zdb = [this]() -> uint64_t { return directBranches - roiBaseDirect; };
     LambdaStat<decltype(zdb)>* roiDirectStat = new LambdaStat<decltype(zdb)>(zdb);

@@ -72,7 +72,7 @@ void SimpleMemory::updateLatency() {
 }
 
 void SimpleMemory::flushWriteback(Address lineAddr, uint64_t cycle, uint32_t srcId) {   // 1.12.18 (bug 7)
-    const Address gLine = globalLine(lineAddr);   // (next, user ruling 2026-10-28): the line's own address under a split
+    const Address gLine = globalLine(lineAddr);   // (1.12.147, user ruling 2026-10-28): the line's own address under a split
     if (hostReplay) (void)hostReplay->hostAccess(hostReplayMi, gLine, cycle, srcId, true, true);   // 1.12.18 (R2): the flush passes the wall-free clock
     profWrites.atomicInc();
     dqStats.count(gLine, lineBits, true);
@@ -100,7 +100,7 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
      * adder replaces tRCD + tCAS + adder + the M/D/1 wait; the zero-load DRAM
      * time is not added again. A clean writeback (PUTS) is not an access. */
     uint32_t lat = curLatency;
-    /* (next, user ruling 2026-10-28): behind an address split req.lineAddr is
+    /* (1.12.147, user ruling 2026-10-28): behind an address split req.lineAddr is
      * the compacted controller-local line; the replayed controller (its own
      * address mapper over all channels) and the measured data statistics (a
      * read of the guest line) need the line's own address. Identical when the

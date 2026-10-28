@@ -89,12 +89,12 @@ class DramEpochReplay {
      * A request the replay finds stamped after the ROI end is still replayed
      * (the controller state stays correct) but is taken out of these
      * counters, as out of every replayed ROI total, and reported apart. */
-    /* (next, user ruling 2026-10-28: the message-passing and device latency gap): a device interface also binds
+    /* (1.12.153, user ruling 2026-10-28: the message-passing and device latency gap): a device interface also binds
      * its charged-latency counters (replayPriced / replayLat); an access priced at the replay and found outside the
      * ROI leaves them as it leaves rd/wr, so the charged view and the replay's measured view (latencySum /
      * ctrlRequests, ROI only) count the same requests. */
     void bindCounters(uint32_t mi, Counter* rd, Counter* wr, Counter* priced = nullptr, Counter* chargedLat = nullptr);
-    /* (next, user ruling 2026-10-28): the requesters of this instance's host
+    /* (1.12.147, user ruling 2026-10-28): the requesters of this instance's host
      * interfaces are the DEVICE's elements (a memory of type Ramulator in
      * device scope: HOST_MC placement, the elements share the host memory
      * controller). Under the single-process cut their records are stamped on
@@ -140,14 +140,14 @@ class DramEpochReplay {
      * keeps its analytical service). */
     uint32_t serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_t lag);
 
-    /* (next, user ruling 2026-10-28: the multi-core latency gap) the replay's own epoch length in phases,
+    /* (1.12.145, user ruling 2026-10-28: the multi-core latency gap) the replay's own epoch length in phases,
      * simulation.dram_epoch_phases (handed over as PIMID_DRAM_EPOCH_PHASES; default kDramEpochPhases),
      * separate from the NoC's det_epoch_phases. It was det_epoch_phases (4 phases = 40 000 cycles): a
      * price two such epochs old let the cores of a loaded controller issue in bursts the controller took
      * several epochs to serve. The read lag stays two epochs (kDramReadLagEpochs). */
     static constexpr uint32_t kDramEpochPhases = 1;
     static constexpr uint64_t kDramReadLagEpochs = 2;
-    /* (next, user ruling 2026-10-28: the message-passing and device latency gap) the price is the request-weighted
+    /* (1.12.153, user ruling 2026-10-28: the message-passing and device latency gap) the price is the request-weighted
      * mean latency over the epoch read (final, or in flight with its unfinished requests at their age) and the
      * kDramPriceWindow - 1 finalized epochs before it, simulation.dram_price_window (handed over as
      * PIMID_DRAM_PRICE_WINDOW; 1 = the epoch read alone, as before). A price read two epochs back from a single
@@ -202,7 +202,7 @@ class DramEpochReplay {
     void serveDoors();
     void finalizeEpoch(uint64_t epoch);
     uint32_t partialMean(uint64_t e, uint32_t mi);   // 1.12.18
-    /* (next, user ruling 2026-10-28): the partial mean of an epoch still in flight counts its unfinished
+    /* (1.12.145, user ruling 2026-10-28): the partial mean of an epoch still in flight counts its unfinished
      * requests (in the controller or waiting at its door) at their age so far; cached per controller tick. */
     struct PartialCache { uint64_t tick = ~0ull; std::vector<uint64_t> sum, cnt; };
     std::map<uint64_t, PartialCache> pcache_;
@@ -213,7 +213,7 @@ class DramEpochReplay {
     uint64_t doorRecs_ = 0, doorTicks_ = 0, doorMax_ = 0; bool doorReported_ = false;
     /* 1.12.18 (R0605): one record at a composed Ramulator address */
     void recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, uint32_t ch, bool isWrite, uint32_t mi, uint8_t shadow = 0, uint32_t grp = 0);
-    /* (next, user ruling 2026-10-28: the message-passing latency gap) thread-MPI host interfaces. The host cores of a
+    /* (1.12.153, user ruling 2026-10-28: the message-passing latency gap) thread-MPI host interfaces. The host cores of a
      * thread-MPI run never hold the consistent cut (their ROI baseline is no core roiBaseCycle: the cut reads their
      * absolute clock), so every host record is folded at the next phase barrier; a rank whose ROI-relative clock
      * trails the others (it waited, or was descheduled: a 16-rank DDR5 stream_triad rank 363 epochs behind) records
@@ -233,7 +233,7 @@ class DramEpochReplay {
     std::vector<uint64_t> outPriced_, outChgLat_, outPricedApplied_, outChgLatApplied_;
     bool isHostMi(uint32_t mi) const { return mi >= hostMi0_ && mi < hostMi0_ + hostMis_; }
     bool hostOnly_ = false;
-    bool devRequesters_ = false;   // (next, user ruling 2026-10-28): see setDeviceRequesters
+    bool devRequesters_ = false;   // (1.12.147, user ruling 2026-10-28): see setDeviceRequesters
     uint32_t hostMi0_ = ~0u, hostMis_ = 0;     // host interfaces [hostMi0_, hostMi0_ + hostMis_)
     std::vector<double> miTicksPerCycle_;     // DRAM ticks per cycle of each interface's own clock
     std::function<void(uint64_t, uint32_t&, uint32_t&, uint64_t&)> hostTarget_;

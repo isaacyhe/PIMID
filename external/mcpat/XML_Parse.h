@@ -748,7 +748,7 @@ typedef struct{
 	 * 0 = always powered; stops the GLOBAL part of their clock tree
 	 * (logic.h ClockNetwork). */
 	double pimid_clock_pg_core, pimid_clock_pg_cache, pimid_clock_pg_noc, pimid_clock_pg_mc;
-	int    pimid_clock_leaf_sinks;   /* PIMID (next, F2): sinks per leaf cluster (power.clock.leaf_cluster_sinks) */
+	int    pimid_clock_leaf_sinks;   /* PIMID (1.12.30, F2): sinks per leaf cluster (power.clock.leaf_cluster_sinks) */
 	int    pimid_clock_split;   /* PIMID 1.12.18 (ruling #4): 1 = global part every powered cycle, local gated */
 	/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): 1 = a core with
 	 * nothing to run is halted (x86 HLT/C1, ARM WFI): its whole clock tree,

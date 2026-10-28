@@ -340,7 +340,7 @@ public:
 	 * measured activity (the pre-ruling model). Set once per McPAT run
 	 * (Processor constructor), before any component is built. */
 	static bool split_enabled;
-	static double leaf_cluster_sinks;   /* PIMID (next, F2): sinks per local clock buffer (power.clock.leaf_cluster_sinks) */
+	static double leaf_cluster_sinks;   /* PIMID (1.12.30, F2): sinks per local clock buffer (power.clock.leaf_cluster_sinks) */
 	string activity_source;
 	bool built, enabled;   /* enabled: XML sys.pimid_clock_network (YAML power.models.clock_network) */
 	string owner, sink_source;
@@ -351,10 +351,10 @@ public:
 	double e_tree_cycle;       /* J per cycle per instance */
 	double e_pin_reg;          /* J per register per cycle (x sckt) */
 	double c_pin;              /* F: DFFCell clock_cap */
-	double n_clusters, a_reg_um2, cluster_side_um, c_local_per_um, wn, wp;   /* PIMID (next, F2) */
+	double n_clusters, a_reg_um2, cluster_side_um, c_local_per_um, wn, wp;   /* PIMID (1.12.30, F2) */
 	bool   span_is_clocked_logic;   /* PIMID (1.12.30): set by the owner when the tree area is clocked logic (a core) */
 	double cluster_area_um2, c_lcb_in, c_lcb_out, lcb_wn, lcb_wp;   /* PIMID (1.12.30): local nets, local clock buffers */
-	string c_local_source;     /* PIMID (next, CLK1): where c_local_per_um comes from */
+	string c_local_source;     /* PIMID (1.12.67, CLK1): where c_local_per_um comes from */
 	double vdd, clock_hz, sckt;
 	double leak, gate_leak;    /* W per instance (repeaters) */
 	double lc_reduction, pg_reduction;
@@ -385,7 +385,7 @@ public:
  * ae2 V^2 + ae1 V + ae0 with the Table 5 coefficients of node nm (45/32 nm: HP and LP rows;
  * 20 nm: HP and LSTP rows). Returns the number of rows written to f[] (0: no Table 5 row). */
 int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2]);
-/* PIMID (next, user ruling 2026-10-25 A): the published flip-flop (Nangate 45 nm DFF_X1, ASAP7 DFFHQNx1), node-scaled
+/* PIMID (1.12.31, user ruling 2026-10-25 A): the published flip-flop (Nangate 45 nm DFF_X1, ASAP7 DFFHQNx1), node-scaled
  * with Stillmaker & Baas 2017 (logic.cc). Energies in J, capacitances in F. */
 struct PimidDffPub {
 	const char *lib; double lib_nm; int row_nm; double ratio, ratio_lo, ratio_hi;
@@ -397,7 +397,7 @@ struct PimidDffPub {
 bool pimid_dff_published(double nm, double v, PimidDffPub &o);
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0, double *c_run = 0,
                                double *v_run = 0, double *v_src_cacti = 0);
-/* PIMID (next, Z12): the published-silicon (DeepScaleTool) node ratio for published per-op logic energies (logic.cc). */
+/* PIMID (1.12.33, Z12): the published-silicon (DeepScaleTool) node ratio for published per-op logic energies (logic.cc). */
 double pimid_logic_op_scale(double src_nm, double src_vdd, bool *silicon = 0);
 
 class FunctionalUnit :public Component{
@@ -422,7 +422,7 @@ public:
 	 * unit {8-bit mult, 32-bit mult}; set with pimid_int_alu_published. */
 	bool   pimid_int_pub = false;
 	double pimid_int_e[2] = {0, 0};
-	double pimid_int_e16 = 0, pimid_int_e64 = 0;   /* PIMID (next, ruling #1): ALU add/logic linear in width */
+	double pimid_int_e16 = 0, pimid_int_e64 = 0;   /* PIMID (1.12.32, ruling #1): ALU add/logic linear in width */
 	/* PIMID 1.12.29: (ruling 2026-10-25) the published area of ONE unit at
 	 * the run's node (um^2, before McPAT's macro layout overhead) that
 	 * replaced McPAT's literal; 0 = McPAT's literal (switch off, or no

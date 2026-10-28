@@ -29,19 +29,21 @@ for t in $TECHS; do
   for k in $KERNELS; do
     cfg="$OUT/cfg/${t}_${m}_${k}.yaml"
     cat > "$cfg" <<YAML
-scope: device
 workload:
   binary: benchmarks/pim_kernels/${k}/${k}_${m}
   args: [${ARGS[$k]}]
-pim:
-  pe: { type: alu_core, count: 16, frequency_mhz: 500 }
-  placement: { level: BANK }
-  mc: { type: simple }
-memory:
-  technology: ${t}
-  banks: 16
-noc:
-  model: detailed
+system:
+  devices:
+    - name: device
+      pim:
+        pe: { type: alu_core, count: 16, frequency_mhz: 500 }
+        placement: { level: BANK }
+        mc: { type: simple }
+      memory:
+        technology: ${t}
+        banks: 16
+      noc:
+        model: detailed
 YAML
     log="$OUT/logs/${t}_${m}_${k}.log"
     if [ "$m" = "mpi" ]; then

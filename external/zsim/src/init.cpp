@@ -413,7 +413,7 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
     } else if (type == "MD1" || type == "WeaveMD1") {
         panic("Memory controller type '%s' has been removed. Use 'Simple' (M/D/1 is always active) or 'WeaveSimple'.", type.c_str());
     } else if (type == "Ramulator") {
-        /* (next, user ruling 2026-10-28: "move HOST_MC placement and system
+        /* (1.12.147, user ruling 2026-10-28: "move HOST_MC placement and system
          * devices of type Ramulator onto the epoch replay (no DAMOV-style
          * weave path left)"): a memory of type Ramulator is a REPLAYED
          * controller. The controller object is the host memory's
@@ -1328,7 +1328,7 @@ static void InitSystem(Config& config) {
                 mems[i] = BuildMemoryController(config, zinfo->lineSize, zinfo->freqMHz, domain, name);
             }
 
-            /* (next, user ruling 2026-10-28): a memory of type Ramulator (the
+            /* (1.12.147, user ruling 2026-10-28): a memory of type Ramulator (the
              * HOST_MC placement's memory, any sys.mem of that type) gets ONE
              * replay instance of its own, hostOnly-style: the memory's own
              * Ramulator2 YAML (sys.mem.configFile), technology, channel count
@@ -1417,7 +1417,7 @@ static void InitSystem(Config& config) {
              * carry the replay hook); other types keep the array-side charge. */
             if (config.get<uint32_t>("sys.mem.flushWritebacksToMC", 0)) {
                 const string fType = config.get<const char*>("sys.mem.type", "Simple");
-                if (fType == "Simple" || fType == "WeaveSimple" || fType == "Ramulator") {   // (next, user ruling 2026-10-28): Ramulator is a replayed SimpleMemory
+                if (fType == "Simple" || fType == "WeaveSimple" || fType == "Ramulator") {   // (1.12.147, user ruling 2026-10-28): Ramulator is a replayed SimpleMemory
                     zinfo->flushHostMems = new g_vector<SimpleMemory*>();
                     for (uint32_t i = 0; i < memControllers; i++)
                         zinfo->flushHostMems->push_back(static_cast<SimpleMemory*>(mems[i]));
@@ -1493,7 +1493,7 @@ static void InitSystem(Config& config) {
 
                 MemObject* mc;
                 if (devType == "Ramulator") {
-                    /* (next, user ruling 2026-10-28): the weave-timed
+                    /* (1.12.147, user ruling 2026-10-28): the weave-timed
                      * RamulatorMemory is removed. No PIMID configuration
                      * reaches this branch: the system emitter writes every
                      * router device as Simple (its M/D/1 at the Ramulator2

@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.155 -- docs: code comments name their releases; the figure scripts write the current configuration shape
+
+- **Code comments (no code change).** 117 release placeholders "(next, ...)" left in source comments (src/,
+  include/, external/zsim, external/mcpat, external/ramulator; none is printed) now name the release that
+  introduced them, found from the history of each line (1.12.27 to 1.12.153).
+- **docs/network.md.** Thread-MPI per-access pricing reads epoch `k-2`'s frozen NoC sample (the lag of
+  `epochFrozenNocLat`, as for single-process runs); `k-1` is the trace method's per-rank-process shared log. The page
+  said `k-1`. The `noc.levels` / `noc.bridges` snippets, and the two `pim.pe` snippets of docs/cores.md, are written
+  inside a `system.devices[]` node, so they load when copied (a block at the left margin is dropped with a warning
+  since 1.12.8).
+- **docs/yaml_reference.md.** `simulation.phase_length` is in core cycles (each core advances that many of its own
+  cycles per phase), not instructions; `det_epoch_phases` no longer says it sets the DRAM replay's epoch (its own
+  since 1.12.145).
+- **examples/figures (co_sim.sh, dram_sweep.sh; mem_sweep.sh runs dram_sweep.sh).** The configurations they write
+  put every hardware block under `system:`; `scope:`, `--scope` and a device's `type:` (retired, ignored with a
+  warning) are gone. Since 1.12.8 the margin blocks of their device-scope configurations were dropped and the run
+  refused for want of a device node. co_sim.sh's device no longer names an in-die `MESH_2D`, which the detailed path
+  refuses (1.11.103); its parity configuration never named one.
+- No model change; every result is unchanged.
+
 ## 1.12.154 -- the host uncore's rise above its awake-idle floor under load
 
 - **Model (power.models.host_uncore_load; src/main.cpp):** the host uncore term of 1.12.97 is the awake-idle floor

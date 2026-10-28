@@ -51,15 +51,18 @@ follow from this simulator.
 processing-near-memory (PNM) sweeps:
 
 ```yaml
-pim:
-  pe:
-    type: alu_core
-    compute_factor: 10.0    # cycles per op (e.g. tRAS-scale for PUM)
-    access_factor: 0.0      # memory access cost scale (0 = free local access)
-    throughput_factor: 1.0  # issue throughput scale
-    bit_serial: false       # datapath: false = bit-parallel (default), true = bit-serial
-    operand_width: 32       # operand bit-width (affects cycles only when bit_serial: true)
-    energy_factor: 1.0      # per-op energy scale for reporting only
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: alu_core
+          compute_factor: 10.0    # cycles per op (e.g. tRAS-scale for PUM)
+          access_factor: 0.0      # memory access cost scale (0 = free local access)
+          throughput_factor: 1.0  # issue throughput scale
+          bit_serial: false       # datapath: false = bit-parallel (default), true = bit-serial
+          operand_width: 32       # operand bit-width (affects cycles only when bit_serial: true)
+          energy_factor: 1.0      # per-op energy scale for reporting only
 ```
 
 `compute_factor`, `access_factor`, and `throughput_factor` scale the simulated
@@ -112,11 +115,14 @@ bound, `null_core` for an IPC = 1 control bound.
 ## Scalar single-issue PE (`issue_width: 1`, `branch_predictor: none`)
 
 ```yaml
-pim:
-  pe:
-    type: in_order_core
-    issue_width: 1          # one uop issued per cycle
-    branch_predictor: none  # pag (default, the core record) | none
+system:
+  devices:
+    - name: device
+      pim:
+        pe:
+          type: in_order_core
+          issue_width: 1          # one uop issued per cycle
+          branch_predictor: none  # pag (default, the core record) | none
 ```
 
 `pim.pe.branch_predictor` (1.12.1) selects the in-order core's front end:

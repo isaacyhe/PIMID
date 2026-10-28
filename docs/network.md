@@ -173,9 +173,10 @@ rather than read live:
 
 - Garnet congestion is sampled once per N-phase **epoch** on the per-core
   ROI-relative axis; ROI-gated recording, single-actor complete-bucket folds.
-  An access in epoch `k` prices from epoch `k-1`'s **frozen** sample, looked up
-  by epoch index from the access's own simulated cycle -- a keyed table lookup,
-  never a live rolling scalar.
+  An access in epoch `k` prices from epoch `k-2`'s **frozen** sample (`k-1` on
+  the trace method's per-rank-process shared record log), looked up by epoch
+  index from the access's own simulated cycle -- a keyed table lookup, never a
+  live rolling scalar.
 - This replaces a live per-drain EWMA read, which depended on how many drains
   a rank had blended and was read-depth inflated. The frozen level sits
   **+5-12% above the analytical floor** with real congestion priced in.
@@ -267,17 +268,20 @@ Give any hierarchy level its own network parameters instead of the global
 `chip`, `rank`, `channel`, `system`.
 
 ```yaml
-noc:
-  model: detailed            # global default
-  levels:
-    bank:
-      model: simple          # this level: per-level analytical path
-      link_width_bits: 64    # narrow bank I/O
-      frequency_ghz: 2.4
-    chip:
-      model: detailed        # this level: full Garnet
-      router_latency: 3
-      virtual_channels_per_vn: 8
+system:
+  devices:
+    - name: device
+      noc:
+        model: detailed            # global default
+        levels:
+          bank:
+            model: simple          # this level: per-level analytical path
+            link_width_bits: 64    # narrow bank I/O
+            frequency_ghz: 2.4
+          chip:
+            model: detailed        # this level: full Garnet
+            router_latency: 3
+            virtual_channels_per_vn: 8
 ```
 
 Per-level knobs include `model`, `topology`, `link_width_bits`,
@@ -293,15 +297,18 @@ Valid boundary names: `subarray_bank`, `bank_bankgroup`, `bankgroup_chip`,
 `chip_rank`, `rank_channel`, `channel_system`.
 
 ```yaml
-noc:
-  bridges:
-    bank_bankgroup:
-      lower_width_bits: 64   # bank side of the crossing
-      upper_width_bits: 8    # serialized toward the bank group
-      latency_ns: 1.0
-    chip_rank:
-      model: detailed
-      router_latency: 2
+system:
+  devices:
+    - name: device
+      noc:
+        bridges:
+          bank_bankgroup:
+            lower_width_bits: 64   # bank side of the crossing
+            upper_width_bits: 8    # serialized toward the bank group
+            latency_ns: 1.0
+          chip_rank:
+            model: detailed
+            router_latency: 2
 ```
 
 A bridge override is the natural place to model serialization chokepoints

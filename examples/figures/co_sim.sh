@@ -2,7 +2,8 @@
 # Host-device co-simulation (the "co-sim" demonstration).
 #
 # This runs PIMID's REAL coupled co-simulation: ONE simulation per cell, with
-# the host and the device both live in the same process (--scope system).
+# the host and the device both live in the same process (a configuration with
+# system.hosts[]; the nodes decide, 1.12.9).
 # There are NO co-sim-specific workloads -- an ordinary pim_kernels binary is
 # launched; its ROI offload region executes on the DEVICE model (PEs + the
 # device's own in-memory network + memory technology, identical to a
@@ -45,10 +46,9 @@ for t in $TECHS; do
   for k in $KERNELS; do
     args="${KARGS[$k]}"
 
-    # ---- coupled co-simulation: host + device in one --scope system run ----
+    # ---- coupled co-simulation: host + device in one run (system.hosts[] present) ----
     cfg="$OUT/cfg/cosim_${t}_${k}.yaml"
     cat > "$cfg" <<YAML
-scope: system
 system:
   hosts:
     - name: host
@@ -60,7 +60,6 @@ system:
       memory: { technology: DDR5 }
   devices:
     - name: device
-      type: compute
       attachment: internal       # device IS the host's main memory (no external
                                  # link); for a discrete device add a links:
                                  # entry (pcie_gen5 / cxl_3_0 / interposer ...)
@@ -72,13 +71,14 @@ system:
         placement: { level: BANK }
         mc: { type: simple }
       memory: { technology: ${t}, banks: 16 }
-      noc: { topology: MESH_2D, model: detailed }
+      noc: { model: detailed }   # a DRAM device's network is its tier tree (an in-die
+                                 # MESH_2D is refused on the detailed path, 1.11.103)
   network:
     topology: crossbar
     model: detailed
 YAML
     clog="$OUT/logs/cosim_${t}_${k}.log"
-    "$PIMID" --method exec --scope system --config "$cfg" \
+    "$PIMID" --method exec --config "$cfg" \
       --workload "$(kbin "$k")" $args --workload-type openmp > "$clog" 2>&1
     rc=$?
     cdev=$(awk '/device_pes-0:/{f=1} f&&/cycles:/{print $2; exit}' "$clog")
@@ -88,19 +88,21 @@ YAML
     # ---- standalone device-scope run of the same kernel (parity baseline) ----
     dcfg="$OUT/cfg/dev_${t}_${k}.yaml"
     cat > "$dcfg" <<YAML
-scope: device
 workload:
   binary: $(kbin "$k")
   args: [$(printf '"%s", ' $args | sed 's/, $//')]
-pim:
-  pe: { type: alu_core, count: ${NPES}, frequency_mhz: ${FREQ} }
-  placement: { level: BANK }
-  mc: { type: simple }
-memory:
-  technology: ${t}
-  banks: 16
-noc:
-  model: detailed
+system:
+  devices:
+    - name: device
+      pim:
+        pe: { type: alu_core, count: ${NPES}, frequency_mhz: ${FREQ} }
+        placement: { level: BANK }
+        mc: { type: simple }
+      memory:
+        technology: ${t}
+        banks: 16
+      noc:
+        model: detailed
 YAML
     dlog="$OUT/logs/dev_${t}_${k}.log"
     "$PIMID" --method exec --config "$dcfg" --workload-type openmp > "$dlog" 2>&1

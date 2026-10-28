@@ -75,7 +75,7 @@ class SimpleMemory : public MemObject {
         DramEpochReplay* hostReplay = nullptr;
         uint32_t hostReplayMi = 0;
         uint32_t hostPathCycles = 0;
-        /* (next, user ruling 2026-10-28): this controller's place in an
+        /* (1.12.147, user ruling 2026-10-28): this controller's place in an
          * address split (SplitAddrMemory: line % n, the address handed on
          * compacted to line / n). The replayed controller and the measured
          * data statistics take the line's own address, splitIdx + line x
@@ -89,7 +89,7 @@ class SimpleMemory : public MemObject {
     public:
         SimpleMemory(uint32_t lineSize, uint32_t megacyclesPerSecond, uint32_t megabytesPerSecond, uint32_t _zeroLoadLatency, g_string& _name);
         void setHostReplay(DramEpochReplay* r, uint32_t mi, uint32_t pathCycles) { hostReplay = r; hostReplayMi = mi; hostPathCycles = pathCycles; }
-        void setAddrSplit(uint32_t idx, uint32_t n) { splitN = (n < 1) ? 1 : n; splitIdx = idx; }   // (next, user ruling 2026-10-28)
+        void setAddrSplit(uint32_t idx, uint32_t n) { splitN = (n < 1) ? 1 : n; splitIdx = idx; }   // (1.12.147, user ruling 2026-10-28)
         Counter* rdCounter() { return &profReads; }    // 1.12.18 (R1): bound to the replay
         Counter* wrCounter() { return &profWrites; }
         DqDataStats& dqData() { return dqStats; }

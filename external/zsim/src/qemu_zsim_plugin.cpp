@@ -76,7 +76,7 @@ uint32_t procIdx;
 uint32_t lineBits;
 uint64_t procMask;
 bool dqDataReadable = false;   // measured DQ data: set at init (user ruling 2026-10-25: measured termination duty)
-/* (next, user ruling 2026-10-27): guest line reads for the measured data statistics through QEMU's guest page table
+/* (1.12.137, user ruling 2026-10-27): guest line reads for the measured data statistics through QEMU's guest page table
  * (dq_data_stats.h), on vCPU threads (QEMU's read needs the calling thread's vCPU); elsewhere process_vm_readv. */
 static thread_local bool t_pimidVcpu = false;
 static int pimidPluginGuestRead(uint64_t addr, uint8_t* dst, uint32_t n) {
@@ -1391,12 +1391,12 @@ void EndOfPhaseActions() {
         if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
         if (foldNoc) { spNocCut = cut; spNocFolded = true; }
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
-            const uint32_t E = DramEpochReplay::epochPhases();   // (next, ruling 2026-10-28)
+            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->dramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }
         if (foldHostDram) {   // 1.12.18: as above, the host interfaces' epoch length is the same
-            const uint32_t E = DramEpochReplay::epochPhases();   // (next, ruling 2026-10-28)
+            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->hostDramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }
@@ -5905,7 +5905,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
      * procIdx > 0 the process bits are OR-ed into it, and another process's
      * lines are not in this address space. */
     dqDataReadable = (procIdx == 0 && zinfo->numProcs == 1);
-    pimidGuestReadHook = pimidPluginGuestRead;   // (next, user ruling 2026-10-27)
+    pimidGuestReadHook = pimidPluginGuestRead;   // (1.12.137, user ruling 2026-10-27)
     perProcessEndFlag = 0;
 
     /* Compute core-type masks for co-sim domain routing.

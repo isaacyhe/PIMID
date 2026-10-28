@@ -59,7 +59,7 @@ extern bool dqDataReadable;
  * guest_base 0). process_vm_readv on the process itself: an unmapped or
  * unreadable address returns false instead of faulting. Shared by every
  * counter that reads the data of a line, so one access reads its line once. */
-/* (next, user ruling 2026-10-27): set by the QEMU plugin: reads the guest's memory through QEMU's own guest page table
+/* (1.12.137, user ruling 2026-10-27): set by the QEMU plugin: reads the guest's memory through QEMU's own guest page table
  * (qemu_plugin_read_memory_vaddr) on a vCPU thread, with no system call. process_vm_readv cost ~1-2 us per line, and
  * the reads of the host's lines run inside the shared L3's lock, so a 16-thread run queued on it. Returns 1 read,
  * 0 not readable, -1 cannot read on this thread (process_vm_readv is used). nullptr: process_vm_readv.
