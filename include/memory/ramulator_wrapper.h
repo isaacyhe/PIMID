@@ -439,7 +439,7 @@ public:
                                  int ranks_per_channel = 1,
                                  int channels = 1) const;   // 1.11.52 (A015)
     /* 1.11.91 (audit R8-7): the same background, state-split by a MEASURED
-     * bank-open fraction (TN-41-01 BNK_ACT% = 1 - BNK_PRE%): IDD3N for
+     * bank-open fraction (vendor-method BNK_ACT% = 1 - BNK_PRE%): IDD3N for
      * active_frac, IDD2N/IDD2P (the existing descent, with r_pd as the
      * power-down residency, capped at the precharged share) for the rest.
      * *r_pd_used returns the residency actually applied. */

@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.151-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.152-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -67,7 +67,7 @@ pimid/
 |-- src/  include/        simulator core (ZSim integration, models, config)
 |-- external/             bundled backends: zsim, qemu, ramulator, cacti,
 |                         nvsim, mcpat, garnet
-|-- benchmarks/           48-benchmark suite + cosim/ + host/ kernels
+|-- benchmarks/           49-benchmark suite + host/ and hostphase/ kernels
 |-- examples/             runnable example configs (techs, cores, topologies,
 |                         placements, cosim) + integration/ extension demo
 |-- docs/                 full documentation (see below)
@@ -99,7 +99,8 @@ docker pull ghcr.io/isaacyhe/pimid:latest
 # synthetic NoC traffic, no workload needed
 ./build/pimid --method synthetic --config examples/topo_MESH_2D.yaml
 
-# bit-stable timing (disable ASLR)
+# timing does not depend on ASLR (1.12.62); for bit-stable logs (one McPAT
+# report line can move with it, docs/build.md) disable it
 setarch -R ./build/pimid --method exec --config examples/tech_DDR4.yaml
 ```
 

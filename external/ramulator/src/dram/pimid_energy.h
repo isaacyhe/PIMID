@@ -38,7 +38,7 @@
 // per-64B-access / per-device values used for analytical energy accounting. Both
 // draw from the same datasheet numbers.
 //
-// Formulas: Micron TN-41-01 (row ACT+PRE and read-burst energy); ODT/termination =
+// Formulas: the vendor method (a vendor method that cannot be disclosed publicly) (row ACT+PRE and read-burst energy); ODT/termination =
 // resistor-network dissipation VDDQ^2/Rtt over the bit period, per I/O standard.
 // ---------------------------------------------------------------------------
 #include <string>
@@ -131,7 +131,7 @@ struct IDDSpec {
     double ipp3n  = -1.0;   // mA on VPP, active standby
     double vpp    = -1.0;   // V
     /* 1.11.91 (item 11, user ruling 2026-09-26 18:44-19:00): an EXPLICIT
-     * activate+precharge energy per IDD unit, pJ, for a row whose TN-41-01
+     * activate+precharge energy per IDD unit, pJ, for a row whose vendor-method
      * difference (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS)) is not
      * the route its derivation chose. < 0 = unset: the formula is used, as
      * on every row before this release. arrayReadNJ/arrayWriteNJ consult it
@@ -702,7 +702,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *      0.553, IDD4W 0.430. Energy-level measured/model ratios 0.25-0.51
      *      (median 0.47).
      * WHY BY COMPONENT (19:30 ruling). The model prices DIFFERENCES of the
-     * IDD columns (TN-41-01: activate = IDD0 loop minus its standby
+     * IDD columns (vendor-method: activate = IDD0 loop minus its standby
      * baseline; burst = IDD4R/W minus IDD3N; refresh = IDD5B minus the
      * state it interrupts), so a factor must act on the quantity each IDD
      * loop measures, not on each absolute current. Per-current factors
@@ -721,7 +721,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *     shrinks by the ratio of the two measured standby factors ([G]
      *     IDD3N 23-53% of spec, IDD2N 38-77%: measured active standby sits
      *     barely above precharged)
-     *   activate excess (IDD0 loop minus its TN-41-01 standby baseline)
+     *   activate excess (IDD0 loop minus its vendor-method standby baseline)
      *                                      0.5   [S] energy ratios 0.25-
      *     0.51 (median 0.47); [G] IDD0 loop 0.43
      *   burst excess (IDD4R - IDD3N), (IDD4W - IDD3N)
@@ -877,7 +877,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *     18.525 + 7.5 x 0.6316 = 23.262, IDD4R 23.262 + 298.67 x 0.6 =
      *     202.46, IDD4W 23.262 + 192.0 x 0.5 = 119.26, IDD5B 18.525 + 172.5
      *     x 0.83 = 161.70, IDD2P 3.9 x 0.57 = 2.223 mA; activate = 0.5 x
-     *     the TN-41-01 term of the stored row.
+     *     the vendor-method term of the stored row.
      * STATED MISMATCHES: the sheet is a 16 Gb die at 7500/8533 Mb/s; the
      * emitted org was LPDDR5_8Gb_x16 at 6400. The burst is rate-scaled
      * (step 2); standby, activate and refresh currents are the 16 Gb
@@ -987,7 +987,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * ONE_BANK, the 1.11.86 /banks dilution does not apply (R8-2).
      * ACTIVATE: THE IDD7 ROUTE (e_actpre_pJ_override). Three routes, per
      * channel ACT+PRE of a 2 KB page, at the maxima:
-     *   IDD0 (TN-41-01, one bank)  1.35 x (430x45 - 460x30 - 310x15) / 2
+     *   IDD0 (vendor-method, one bank)  1.35 x (430x45 - 460x30 - 310x15) / 2
      *                              = 0.61 nJ -- ILL-CONDITIONED: a ~900
      *                              mA.ns difference of ~19000 mA.ns terms;
      *                              +-5% on IDD0 alone swings it -0.05..1.26
@@ -1240,7 +1240,7 @@ inline int devicesPerRank(const std::string& tech, const std::string& device_wid
  *   standby          precharged standby IDD2N
  *   standby_premium  the active-standby premium (IDD3N - IDD2N) shrinks by
  *                    the ratio of the two measured standby factors
- *   act              the activate excess: IDD0 loop minus its TN-41-01
+ *   act              the activate excess: IDD0 loop minus its vendor-method
  *                    standby baseline
  *   burst_rd/_wr     the burst excess (IDD4R - IDD3N), (IDD4W - IDD3N)
  *   refresh          the refresh excess (IDD5B - IDD2N)
@@ -1351,7 +1351,7 @@ inline double oneBankActiveStandbyMA(const IDDSpec& s, int banks_per_device,
  *   idd5_t  = idd2n_t + f.refresh x (idd5 - idd2n)
  *     -> refresh excess over precharged standby = f.refresh x spec
  *   idd2p_t = f.pd x idd2p
- * IDD0. TN-41-01 as this file writes it (arrayReadNJ):
+ * IDD0. vendor-method as this file writes it (arrayReadNJ):
  *   E = vdd x (idd0 x tRC - I1 x tRAS - idd2n x (tRC - tRAS))
  *     = vdd x tRC x (idd0 - B),   B = (I1 x tRAS + idd2n x (tRC - tRAS)) / tRC
  * with I1 = oneBankActiveStandbyMA(row, banks, basis), the tRC-weighted
@@ -1423,7 +1423,7 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
 /* 1.11.46 (FIX-PRE-FLEET L181): DEVICES PER ACCESS. The IDD columns are
  * PER-DEVICE currents (the struct says so), but a 64 B access on a DDR-class
  * 64-bit rank engages EVERY chip in the rank simultaneously -- x8 parts: 8
- * chips each activating and bursting 8 of the 64 DQ lines. Micron TN-41-01,
+ * chips each activating and bursting 8 of the 64 DQ lines. The vendor method (a vendor method that cannot be disclosed publicly),
  * this file's own cited formula source, multiplies per-DRAM power by the
  * number of DRAMs; we did not, so the array terms were per-DEVICE while the
  * termination term (x512 bits) was whole-rank -- the two bases the audit
@@ -1591,7 +1591,7 @@ inline int burstsPer64B(const std::string& tech, const std::string& device_width
  * that never runs. It runs the first time anyone wires a YAML key to it. */
 /* 1.11.79 (audit round 6, R6-11): THE ACTIVATE TERM MUST NOT COME OUT NEGATIVE.
  *
- * Micron TN-41-01's activate/precharge energy is
+ * The vendor method's activate/precharge energy is
  *     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
  * and it presumes IDD0 -- a cycling one-bank activate/precharge current --
  * exceeds the standby currents it subtracts. Six of this file's nine rows
@@ -1614,7 +1614,7 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
     std::cerr << "[power] FATAL: the activate/precharge energy for '" << tech
               << "' comes out NEGATIVE (" << e_actpre_pJ << " pJ), so the array "
                  "energy this run would report is not a physical quantity.\n"
-                 "  Micron TN-41-01: E = Vdd x (IDD0 x tRC - IDD3N x tRAS - "
+                 "  vendor method (cannot be disclosed publicly): E = Vdd x (IDD0 x tRC - IDD3N x tRAS - "
                  "IDD2N x (tRC - tRAS)), which presumes IDD0 exceeds the standby "
                  "currents it subtracts.\n"
                  "  This row: IDD0 " << s.idd0 << ", IDD2N " << s.idd2n
@@ -1634,7 +1634,7 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
 
 /* 1.11.86 (audit round 6, R6-11 resolved): THE ONE-BANK STANDBY BASELINE.
  *
- * Micron TN-41-01 prices activate+precharge by subtracting, from the IDD0
+ * The vendor method (a vendor method that cannot be disclosed publicly) prices activate+precharge by subtracting, from the IDD0
  * loop, the background that loop would have drawn anyway:
  *
  *   E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
@@ -1666,7 +1666,7 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
  *   IDD3N(1 bank) = IDD2N + (IDD3N - IDD2N) / banks_per_device
  *
  * which reduces to the published formula when banks_per_device is 1, and
- * recovers TN-41-01's intent on every part. */
+ * recovers the vendor method's intent on every part. */
 /* 1.11.91 (audit R8-2): ... and on a part whose IDD3N is ALREADY a one-bank
  * current (HBM2, HBM3, GDDR6 -- see Idd3nBasis above for the quoted
  * conditions) the same dilution divides a one-bank increment by the bank
@@ -1689,7 +1689,7 @@ inline double ioShareMA(const IDDSpec& s, bool is_write) {
     return (io > 0.0) ? io : 0.0;
 }
 /* 1.12.18: (bug 3b) THE PUMP RAIL'S ACTIVE TERMS, pJ per IDD unit, on the
- * same loops and baselines as the VDD terms they sit beside (TN-41-01 form):
+ * same loops and baselines as the VDD terms they sit beside (vendor-method form):
  *   activate + precharge  VPP x (IPP0 x tRC - IPP3N(one bank) x tRAS - IPP2N x (tRC - tRAS))
  *   burst                 VPP x (IPP4R | IPP4W - IPP3N) x tBurst
  *   refresh (one REF)     VPP x (IPP5B - IPP2N) x tRFC   (IPP2N-relative, as the VDD term: 1.12.18, user ruling 2026-10-23)
@@ -2365,8 +2365,8 @@ inline int backgroundUnits(const std::string& tech,
  * DELIBERATE BASELINE CHANGE: r_idle > 0 with pg OFF no longer reproduces
  * backgroundMW(). That was the point of D15, and it is why the 1.11.20 gate
  * asserts a stated delta for DRAM cells rather than bit-equality. */
-/* 1.11.91 (audit R8-7, user ruling (b)): TN-41-01 WITH A MEASURED BANK-OPEN
- * FRACTION. Micron TN-41-01 p.5 defines the two standby states as
+/* 1.11.91 (audit R8-7, user ruling (b)): vendor-method WITH A MEASURED BANK-OPEN
+ * FRACTION. The vendor method (a vendor method that cannot be disclosed publicly) defines the two standby states as
  * "precharged (all of the banks are precharged) or active (one or more
  * banks are open)", with the input BNK_PRE% = the percentage of time all
  * banks are precharged. Until this release the active share was 1 - r_idle,

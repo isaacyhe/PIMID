@@ -832,7 +832,7 @@ McPATWrapper::linkEnergyBandPJPerBit(const std::string& link_type) {
     }
     /* 1.11.103 (ruling COSIM-LINK-CLASS): a DIMM-resident device is reached
      * over its own DRAM channel. The channel's I/O and termination energy is
-     * priced per access by the DRAM energy model (TN-41-01 IDD + termination),
+     * priced per access by the DRAM energy model (vendor-method IDD + termination),
      * so this class carries NO separate link energy: the band stays invalid
      * on purpose and the caller prices 0 pJ/bit and says why. */
     if (link_type == "dram_channel") {

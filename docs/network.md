@@ -9,7 +9,8 @@ credit-based flow control, deadlock-free routing.
 
 - **Synchronous NoC accounting, always.** Garnet batches drain inline at
   phase boundaries, so every access is charged the latency the model actually
-  computes -- deterministic up to OS thread/process interleaving. There is no
+  computes -- and, with the fixed thread order (1.12.123) and the fixed
+  thread-MPI rank order (1.12.126), the same in every run. There is no
   approximate fast path inside `detailed`; if you need speed over cycle
   accounting, use `noc.model: analytical`.
 - **Rare MPI hang: resolved in 1.0.8.** Versions up to 1.0.7 could rarely
@@ -83,8 +84,8 @@ credit-based flow control, deadlock-free routing.
   rule, the tree or the in-die fabric below. The system network
   (`system.network.topology`) accepts `CROSSBAR`, `MESH_2D` (`MESH`),
   `TORUS_2D`, `RING`, `FAT_TREE` and `BUS`, upper-cased at load (so the
-  printed `System Network:` line is upper-case). The host fabric is always the
-  analytic crossbar (below).
+  printed `System Network:` line is upper-case). The host fabric is analytic:
+  `ring` (default), `crossbar` or `bus` (below).
 - **The in-die fabric (1.11.103, ruling 9).** A `MESH_2D`, `RING` or
   `CROSSBAR` named on a DRAM device is that fabric INSIDE EACH DIE, over the
   die's organisations at the placement tier (the grid of a chip's bank
@@ -101,7 +102,7 @@ credit-based flow control, deadlock-free routing.
   grid node and hub is a priced switch at the placement tier) take the same
   path. The detailed model runs the CROSSBAR and refuses a MESH or RING it
   cannot route deadlock-free by TABLE; the analytical model prices all three.
-  (next, user ruling 2026-10-28) On the analytical model the fabric's energy
+  (1.12.143, user ruling 2026-10-28) On the analytical model the fabric's energy
   follows the same walk: the grid tier's switches are priced as routers (not
   as a shared bus); the die's node links (MESH/RING node-node, CROSSBAR
   node-hub) are one link instance priced from the node-link traversals the
@@ -131,7 +132,11 @@ credit-based flow control, deadlock-free routing.
   `[NoC] level` line says `PRESET`; a run with fabric traffic and no count at
   all, or a detailed run with no stats file, is refused (exit 3). Levels with
   no branch router and no endpoint are not priced (pass-through wire; their
-  measured traversals are printed as not priced).
+  measured traversals are printed as not priced). Since 1.12.150 a flat
+  fabric Garnet built (an SRAM/NVM device's `MESH_2D`, say) is priced as that
+  fabric -- every router it built, from its measured crossbar flits, and on a
+  `MESH_2D` its links -- and the router model is calibrated per shape on
+  published routers (see [power.md](power.md)).
 
 ## `analytical` -- closed form
 
@@ -185,20 +190,22 @@ A/B comparison. It is no longer the default MPI model.
 
 ## Host fabric and the host<->device bridge (co-sim)
 
-Under `scope: system` the device H-tree above is joined to a **host fabric**
+In a co-simulation the device H-tree above is joined to a **host fabric**
 by a **bridge**. The two are priced separately and traffic is charged to
 exactly one of them:
 
 - **Device H-tree** prices every device-PE memory access (as above).
-- **Host crossbar** (`system.hosts[].noc`, default `crossbar` /
-  `analytical`) prices host-core loads/stores. A 1-core host has NO fabric
-  (crossbar degenerates: core -> caches -> MC direct). A multi-core host adds
-  a fixed one-hop latency (`hop_cycles`, core clock) on the host memory path;
-  port contention is already priced by the host memory controller (the replayed Ramulator2 controller since 1.12.18; the M/D/1 queue with `system.hosts[].memory.dram_replay: false`), so the fabric
-  stays analytic. No host Garnet is instantiated: a host `noc.topology` other
-  than `crossbar` or a `noc.model` other than `analytical` is accepted with a
-  WARNING (1.11.106; it used to be accepted in silence) and the fabric still
-  runs as this crossbar. The host NoC has no power model. Host
+- **Host fabric** (`system.hosts[].noc`, default `ring` / `analytical`)
+  prices host-core loads/stores. A 1-core host has NO fabric (core -> caches
+  -> MC direct). A multi-core host runs the topology it names (1.12.23):
+  `ring` (default; the published Nehalem-EX ring, one stop per core and per
+  host memory controller, 1 cycle per stop), `crossbar` (one hop,
+  `hop_cycles`, core clock) or `bus`; any other word is refused (rc 1). Port
+  contention is priced by the host memory controller (the replayed Ramulator2 controller since 1.12.18; the M/D/1 queue with `system.hosts[].memory.dram_replay: false`), so the fabric
+  stays analytic: no host Garnet is instantiated, and a `noc.model` other
+  than `analytical` is accepted with a WARNING. The same topology is priced
+  in McPAT from the data messages and hops it measured
+  (`power.models.host_noc`, 1.12.19; see [power.md](power.md)). Host
   memory bandwidth comes from the replayed Ramulator2 controller (since
   1.12.18; with `system.hosts[].memory.dram_replay: false`, a single
   aggregate M/D/1 queue at per-channel x channels GB/s), so one DDR5

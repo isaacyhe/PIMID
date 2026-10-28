@@ -7063,7 +7063,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             /* 1.11.79 (audit round 6, R6-11): FAIL HERE, NOT AFTER THE RUN.
              *
              * The array-energy model refuses when a technology's IDD row makes
-             * the TN-41-01 activate term negative (the two 16 Gb DDR5 rows do:
+             * the vendor-method activate term negative (the two 16 Gb DDR5 rows do:
              * IDD3N exceeds IDD0, and a default-grade DDR5 cell reported
              * "Total dynamic: -5.5 mJ"). That refusal lives in the energy path,
              * which a device run reaches only when it PRINTS its power report
@@ -11956,7 +11956,7 @@ static int memorySystemDieCount(const std::string& tech,
  *
  * MEASURED: the Ramulator2 controller exported bankOpenCycles and a non-zero
  * bankOpenWindow for the accesses that reach this array -> BNK_ACT% =
- * cycles / window, TN-41-01's "active (one or more banks are open)" state.
+ * cycles / window, the vendor method's "active (one or more banks are open)" state.
  * UNMEASURED: the pre-1.11.91 traffic-phase fraction (1 - idle residency) is
  * used, and the line says which and why. The why strings are run facts (a
  * counter absent from this run's dump, traffic this counter did not see).
@@ -11997,7 +11997,7 @@ static void printBankOpenLine(const BankOpenInput& b, double traffic_active,
     if (b.measured) {
         std::cout << indent << "[mem] bank-open fraction MEASURED " << b.active_frac
                   << " (" << b.open_cycles << " of " << b.window
-                  << " memory cycles with >= 1 bank open; TN-41-01 BNK_PRE% = 1-x = "
+                  << " memory cycles with >= 1 bank open; vendor-method BNK_PRE% = 1-x = "
                   << (1.0 - b.active_frac) << "); traffic-phase fraction "
                   << traffic_active << " (printed for comparison, not used)";
     } else {

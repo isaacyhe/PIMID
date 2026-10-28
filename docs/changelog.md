@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.152 -- docs: the public documentation agrees with 1.12.151
+
+- **Documentation (README.md; docs/README.md, architecture.md, benchmarks.md, cores.md, cosim.md,
+  dram_specs.md, memory.md, network.md, power.md, sources.md, yaml_reference.md, derivations/hbm_gddr6_idd.md,
+  changelog.md).** Statements that later releases had overtaken now say what the code does:
+  - the host fabric is the analytic `ring` (default), `crossbar` or `bus`, timed and priced (1.12.19, 1.12.23); any
+    other topology word is refused;
+  - an exec-method MPI run is thread-MPI (ranks are threads of one process driving one Garnet, 1.8.3), and the fixed
+    thread order (1.12.123) and rank order (1.12.126) replace "deterministic up to OS thread/process interleaving";
+  - the replayed DRAM latency is read from the newest epoch at or before k-2 of the replay's own one-phase epoch
+    (`simulation.dram_epoch_phases`, 1.12.145; architecture.md said 1.12.147);
+  - the flat `scope: cosim` form and the top-level `host:` block are retired (1.12.8, 1.12.9), and so is
+    `system.hosts[].mem` (1.12.10): a host's own main memory is a `system.memories[]` entry;
+  - ASLR does not move timing (1.12.62): the README no longer offers `setarch -R` for bit-stable timing;
+  - DDR5 runs DDR5-4800B on the 16 Gb die over two 32-bit sub-channels, and HBM3 the 16 Gb 8-High organisation
+    (dram_specs.md); the power-down exit times per technology and the DDR3 default termination (SSTL-15 at 1.5 V)
+    are corrected in sources.md;
+  - the device NoC pricing and router calibration of 1.12.150 and the NVM sources of 1.12.92 to 1.12.114 are
+    described in power.md and listed in sources.md;
+  - release placeholders in power.md, network.md and yaml_reference.md name their releases (1.12.30, 1.12.31,
+    1.12.67, 1.12.68, 1.12.77, 1.12.114, 1.12.143, 1.12.145); 49 benchmarks (the pointer chase of 1.12.149).
+- **Changelog.** The code text left at the end of 1.12.128's section is removed; 1.12.137 records that the code
+  shipped there. The 1.12.125 and 1.12.128 entries point to the entries that correct them.
+- **Vendor references.** Every vendor technical-note reference in sources.md, cosim.md, the HBM/GDDR6 IDD
+  derivation and this changelog (historical entries included) is reworded: a method is "a vendor method that cannot
+  be disclosed publicly", a value is "estimated from a vendor source that cannot be disclosed publicly". The run-log
+  lines that named them are reworded in the code (output text only).
+- No model change; every result is unchanged.
+
 ## 1.12.151 -- DDR5 chip split: a lock-step host request is one queue entry and one rank-wide command per step
 
 - **The problem.** At a PE placement at or below the chip tier on a rank-level DRAM (every DDR5 host baseline and
@@ -595,6 +624,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.128 -- host speed: the measured data statistics read the guest's memory without a system call
 
+- **Note (added later).** This release carried none of the code described below; the code shipped in 1.12.137.
 - **User ruling 2026-10-27.** The measured DQ and wire statistics read each DRAM line and each host-fabric data
   message from the guest's memory (since 1.12.58). They did so with `process_vm_readv`, about 1-2 us per line. The
   host's lines are read inside the shared L3's lock, and since 1.12.123 one thread runs at a time, so every read is on
@@ -612,35 +642,6 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   OpenMP stream_triad 173 s, 1-core OpenMP gemv 247 s.
 - **Data impact:** none on the cells checked. A run that keeps lines of a page it made unreadable can count more DQ
   and wire data, and fewer unread lines.
-
-/* (next, user ruling 2026-10-27): set by the QEMU plugin: reads the guest's memory through QEMU's own guest page table
- * (qemu_plugin_read_memory_vaddr) on a vCPU thread, with no system call. process_vm_readv cost ~1-2 us per line, and
- * the reads of the host's lines run inside the shared L3's lock (since 1.12.123 one thread runs at a time). Returns 1 read,
- * 0 not readable, -1 cannot read on this thread (process_vm_readv is used). nullptr: process_vm_readv.
- * Edge case (documented, ruled): QEMU reads a page the guest mapped but made unreadable (PROT_NONE / write-only, e.g.
- * a heap region given back with mmap(PROT_NONE)) through /proc/self/mem, so a line still cached from such a page is
- * counted from its contents; process_vm_readv refused it and the line was counted as unread (dq*Unread). A page the
- * guest unmapped is unreadable in both. */
-extern int (*pimidGuestReadHook)(uint64_t addr, uint8_t* dst, uint32_t n);
-    if (pimidGuestReadHook) {
-        const int r = pimidGuestReadHook(addr, dst, n);
-        if (r >= 0) return r == 1;
-    }
-/* (next, user ruling 2026-10-27): guest line reads for the measured data statistics through QEMU's guest page table
- * (dq_data_stats.h), on vCPU threads (QEMU's read needs the calling thread's vCPU); elsewhere process_vm_readv. */
-static thread_local bool t_pimidVcpu = false;
-static int pimidPluginGuestRead(uint64_t addr, uint8_t* dst, uint32_t n) {
-    if (!t_pimidVcpu) return -1;
-    static thread_local GByteArray* buf = nullptr;
-    if (!buf) buf = g_byte_array_sized_new(256);
-    if (!qemu_plugin_read_memory_vaddr(addr, buf, n) || buf->len != n) return 0;
-    memcpy(dst, buf->data, n);
-    return 1;
-}
-int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;
-    t_pimidVcpu = true;   // (1.12.128): this thread runs a vCPU (pimidPluginGuestRead)
-    pimidGuestReadHook = pimidPluginGuestRead;   // (next, user ruling 2026-10-27)
-int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;   // (1.12.128): no QEMU here (dq_data_stats.h)
 
 ## 1.12.127 -- host speed: the replayed DRAM controller schedules without re-scanning its queues
 
@@ -721,6 +722,7 @@ int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;   // (1.12.12
 
 ## 1.12.125 -- the program path is documented as part of the program's input
 
+- **Note (added later).** 1.12.136 corrects this entry: a multi-threaded program moves by up to about 4%.
 - **Documented (docs/architecture.md, Reproducibility; user ruling 2026-10-27).** PIMID passes the program path
   exactly as it was given, as the guest's `argv[0]` and as the file name QEMU records. The guest's startup reads it,
   so two spellings of one file (`/a/b/prog`, `/a/./b/prog`, `/a/x/../b/prog`) or two installations at paths of
@@ -1819,8 +1821,8 @@ int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;   // (1.12.12
   names the memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between
   the connector and the DRAM in the termination loop (CACTI-IO `rs1_dq` / `rs2_dq`): DDR3 and DDR4 DIMMs 15 ohm (Altera
   AN-520 p.10; Samsung DDR4 UDIMM M378A / SODIMM M471A data sheets Rev 1.1 pp.10-12), DDR5 RDIMM 15 ohm (JESD305B.01
-  PDF p.32), DDR5 UDIMM/SODIMM none (public UniIC and SK hynix module data; AMD UG863 v1.12), soldered none (Micron
-  TN-40-40 Rev. H p.31). DDR4 RDIMM takes the DDR4 DIMM value: no RDIMM-specific public figure was found.
+  PDF p.32), DDR5 UDIMM/SODIMM none (public UniIC and SK hynix module data; AMD UG863 v1.12), soldered none (estimated
+  from a vendor source that cannot be disclosed publicly). DDR4 RDIMM takes the DDR4 DIMM value: no RDIMM-specific public figure was found.
 - Defaults: DDR3/DDR4/DDR5 `rdimm` -- the host baselines are server class (the host-path latency is calibrated to
   Sapphire Rapids and Genoa sockets) -- so their numbers do not change; LPDDR5, GDDR6, HBM2 and HBM3 `soldered`, their
   only topology. Under `is_default_mem: true` the host memory is the device's array and takes the device's topology.
@@ -2184,7 +2186,7 @@ int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;   // (1.12.12
 ## 1.12.51 -- the DRAM second supply rails: DDR4 refresh VPP, LPDDR5 VDD1, GDDR6 VPP
 
 - **Second supply rails priced from the published rows** (user ruling 2026-10-25). A check of the DRAM-device
-  energy against the datasheet IDD tables by the Micron TN-40-07 / TN-41-01 / TN-53-01 current-difference method
+  energy against the datasheet IDD tables by the current-difference method, a vendor method that cannot be disclosed publicly,
   reproduced every VDD-rail term exactly and found the second rail missing on three records:
   - **DDR4** (params/dram/ddr4.yaml): refresh VPP. Micron MT40A Rev B Table 148 publishes the distributed-refresh
     IPP5R 5 mA (IPP3N 3 mA, note 22); `ipp.ipp5b` 47.571 mA is DERIVED from it exactly as `idd5` 457.4 is from
@@ -6052,10 +6054,10 @@ IDD3N stays subtracted and the residual (the other open banks' standby for
 tBurst) is stated in the comment, not corrected. Printed, one word on the
 model-inputs line: `; IDD3N basis ONE_BANK`.
 
-**(8) R8-7, ruling (b): TN-41-01 with a MEASURED bank-open fraction.**
+**(8) R8-7, ruling (b): the vendor method with a MEASURED bank-open fraction.**
 `backgroundUnitMW` priced IDD3N for 1 - r_idle, where r_idle is "phases with
 no memory-controller access" (10k-cycle phases) or the E17 gap histogram --
-traffic in the phase, i.e. the open-page assumption. TN-41-01 p.5 defines the
+traffic in the phase, i.e. the open-page assumption. The vendor method (a vendor method that cannot be disclosed publicly) defines the
 states as "precharged (all of the banks are precharged) or active (one or
 more banks are open)" with BNK_PRE% the percentage of time all banks are
 precharged. Ramulator2 now measures it: `dram/pimid_bank_open.h` keeps, per
@@ -6077,7 +6079,7 @@ residency is only the power-down input there, capped at the precharged share
 under the same rule. Without the counters the 1.11.90 expression is used
 bit for bit. One line per priced array:
 `[mem] bank-open fraction MEASURED x (N of M memory cycles with >= 1 bank
-open; TN-41-01 BNK_PRE% = 1-x = y); traffic-phase fraction z (printed for
+open; the vendor method's BNK_PRE% = 1-x = y); traffic-phase fraction z (printed for
 comparison, not used)`, or `[mem] bank-open fraction UNMEASURED (<why>); the
 traffic-phase fraction z sets the IDD3N share`. WHERE IT IS MEASURED: only
 where a Ramulator2 controller saw every access to the array. Device scope
@@ -6169,7 +6171,7 @@ rulings 2026-09-26 18:44-19:00 (PIMID outputs ONE absolute number per
 quantity, never a range; datasheet IDD values are guardbanded maxima) and
 19:30 (the typical values are derived by COMPONENT factors, not
 per-current factors). The model prices differences of the IDD columns --
-TN-41-01's activate term is the IDD0 loop minus its standby baseline, the
+the vendor method's activate term is the IDD0 loop minus its standby baseline, the
 burst is IDD4R/IDD4W minus IDD3N, refresh is IDD5B minus the state it
 interrupts -- so a factor acts on the quantity each IDD loop measures.
 The rows of `iddTableFor()` now STORE the datasheet maxima (HBM2/HBM3:
@@ -6211,7 +6213,7 @@ DDR3L and DDR4):
 |---|---|---|
 | precharged standby state (IDD2N) | 0.57 | [G] 3-vendor mean 0.566; [S] DDR4 0.576 |
 | active standby state (IDD3N) | IDD3N_typ = IDD2N_typ + 0.36/0.57 x (IDD3N_spec - IDD2N_spec), clamped >= IDD2N_typ: the premium shrinks by the ratio of the two measured standby factors ([G] IDD3N 23-53% of spec, IDD2N 38-77%) | [G] |
-| activate excess (IDD0 loop current minus its TN-41-01 standby baseline) | 0.5 | [S] energy-level ratios 0.25-0.51 (median 0.47); [G] IDD0 loop 0.43 |
+| activate excess (IDD0 loop current minus its vendor-method standby baseline) | 0.5 | [S] energy-level ratios 0.25-0.51 (median 0.47); [G] IDD0 loop 0.43 |
 | burst excess (IDD4R - IDD3N), (IDD4W - IDD3N) | 0.6 read, 0.5 write | [G] 0.74/0.54 (I/O-corrected), [S] 0.55/0.43 |
 | refresh excess (IDD5B - IDD2N) | 0.83 | [G] 88.6/72.0/88.0% |
 | precharge power-down (IDD2P) | 0.57 | same as standby ([G] gives ranges only); keeps IDD2P <= IDD2N |
@@ -6220,7 +6222,7 @@ The typical row: idd2n_t = f.standby x IDD2N; idd3n_t = idd2n_t +
 f.premium x (IDD3N - IDD2N), >= idd2n_t; idd4r_t = idd3n_t + f.rd x
 (IDD4R - IDD3N); idd4w_t likewise with f.wr; idd5b_t = idd2n_t +
 f.refresh x (IDD5B - IDD2N); idd2p_t = f.pd x IDD2P. IDD0: with the
-tRC-weighted baseline the TN-41-01 formula defines, B = (IDD3N_1b x tRAS +
+tRC-weighted baseline the vendor method's formula defines, B = (IDD3N_1b x tRAS +
 IDD2N x (tRC - tRAS)) / tRC (IDD3N_1b = `oneBankActiveStandbyMA` on the
 row's basis), E = Vdd x tRC x (IDD0 - B); setting idd0_t = B_t + f.act x
 (IDD0 - B_spec) gives E_t = Vdd x tRC x f.act x (IDD0 - B_spec) = f.act x
@@ -6230,7 +6232,7 @@ scaled by f.act. IDDQ, IPP, tRFC and tREFI are not factored (no anchor).
 
 Why per-current factors failed (the first pass of this item, 18:44-19:00,
 stopped before the build was accepted): DDR5 IDD0 x 0.48 fell below IDD2N
-x 0.57 (4800B 49.4 < 52.4; 5600B 25.4 < 27.9), so the TN-41-01 activate
+x 0.57 (4800B 49.4 < 52.4; 5600B 25.4 < 27.9), so the vendor-method activate
 term was negative at any tRC/tRAS and `refuseNegativeActivateEnergy`
 stopped every DDR5 run; IDD3N x 0.36 fell below IDD2N x 0.57 on every
 factored row, so the R8-11 guard priced the precharged state at the
@@ -6282,7 +6284,7 @@ Per row:
   burst); `backgroundUnits` already counts GDDR6 as ranks x channels with
   the preset's 2 channels per device, so background and refresh = 2 x half
   = per device. ACTIVATE via the IDD7 route, a new
-  `IDDSpec::e_actpre_pJ_override` the formula consults before TN-41-01:
+  `IDDSpec::e_actpre_pJ_override` the formula consults before the vendor method:
   1.35 V x (IDD7 1640 - IDD4R 1220) mA / 175 M ACT/s per device = 3.24 nJ
   per channel ACT/PRE at the maxima, x the activate-excess factor 0.5 =
   1620 pJ per activation. The three routes are recorded (IDD0: 0.61 nJ,
@@ -6646,7 +6648,7 @@ derivation's.] R8-2
 (the 1.11.86 one-bank baseline on HBM2/HBM3/GDDR6, whose IDD3N is already
 one-bank: a per-technology basis flag), R8-5 (GDDR6 IDD source and
 per-device vs per-channel basis -- which also decides whether GDDR6's burst
-term doubles under (3)), R8-7 (DDR background convention, TN-41-01 all-bank
+term doubles under (3)), R8-7 (DDR background convention, vendor-method all-bank
 IDD3N vs one-bank consistent), R8-8 (IDDQ and IPP/VPP terms), R8-9 (preset
 provenance per technology: DDR4, DDR3, HBM3, GDDR6), R8-10 (the PE-MI
 open-row model against Ramulator's ClosedRowPolicy on DDR4/DDR5). [R8-5
@@ -7190,7 +7192,7 @@ Micron really does specify IDD3N above IDD0 on both parts, and nothing is
 wrong with them. A 32-bank device draws more with all banks open than it does
 cycling one.
 
-**The baseline was wrong.** Micron TN-41-01 prices activate and precharge by
+**The baseline was wrong.** The current-difference method (a vendor method that cannot be disclosed publicly) prices activate and precharge by
 subtracting, from the IDD0 loop, the background that loop would have drawn:
 
     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
@@ -7207,7 +7209,7 @@ two specified points and linear in the number of open banks:
 
     IDD3N(1 bank) = IDD2N + (IDD3N - IDD2N) / banks_per_device
 
-which reduces to the published formula at one bank and recovers TN-41-01's
+which reduces to the published formula at one bank and recovers the vendor method's
 intent on every part. The bank count comes from the run's own organisation,
 so it follows the preset rather than a literal.
 
@@ -7572,7 +7574,7 @@ each fig3 shape with `--power`: DDR5 printed `Per-access: read=-0.344 nJ,
 write=-1.164 nJ` and `Total dynamic: -5.5 mJ`. DDR3 and DDR4 on the same
 shape printed 100.0 and 66.4 mJ.
 
-The cause is arithmetic, and it is exact. Micron TN-41-01's activate and
+The cause is arithmetic, and it is exact. The vendor method's activate and
 precharge energy is
 
     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
@@ -7594,7 +7596,7 @@ At 4800B: `IDD0 x tRC = 103 x 48.256 = 4970` against
 dominates the positive burst term.
 
 **Which side is wrong needs a ruling, so this release does not guess.** Either
-the rows mis-transcribe the addenda, or they are right and TN-41-01 does not
+the rows mis-transcribe the addenda, or they are right and the vendor method does not
 transfer to a 32-bank DDR5 part whose all-banks-active IDD3N can legitimately
 exceed a one-bank IDD0. Both readings need the datasheet. What is not in
 question is that a negative energy must not be printed as though it were a
@@ -10288,7 +10290,7 @@ figure downstream must be re-derived on this release or later.
   here is average-refresh, not upstream's IDD5B burst figure.
 - L181: DEVICES PER ACCESS. The IDD columns are per-device currents, but a
   64 B access on a DDR-class 64-bit rank engages every chip in the rank --
-  TN-41-01, this file's own formula source, multiplies by the device count
+  the vendor method, this file's own formula source, multiplies by the device count
   and we did not. DDR array energies rise by chips/rank (x8 parts: 8x);
   HBM/LPDDR5/GDDR6 are per-channel and unchanged. This closes the basis
   mismatch with the whole-rank termination term the audit caught being
@@ -12205,7 +12207,7 @@ IDD4W/IDD4R. Timing untouched.
 
 ## 1.11.4 -- audit hotfix: the leakage factor was read at the wrong temperature
 
-The user's Opus audit fleet (five rounds over the open 1.11.x issues) turned
+The user's audit fleet (five rounds over the open 1.11.x issues) turned
 its first round on the 1.11.2/1.11.3 factor harness itself and found five
 defects, all fixed here. (1) The leakage factors were derived from the 0C row
 of the CACTI tables while McPAT runs at 350 K (~77C); the 80C row raises the
@@ -13264,7 +13266,7 @@ the raw counters out of the log rather than trusting that line.
 Both are the shape of the interconnect key mismatch fixed in 1.9.24: a name that changed
 on one side of an interface and not the other, producing zeros that read as an idle
 component rather than as an error. Three instances in one release train is a pattern, and
-a name-contract check between the emitters and the reader is recorded for 1.16.
+a name-contract check between the emitters and the reader is recorded as a follow-up item.
 
 ### Counts that were apportioned rather than measured
 

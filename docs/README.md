@@ -8,7 +8,7 @@
 | [cores.md](cores.md) | The four PE core models (and the scalar single-issue in-order PE), MLP intensity, ALU scaling factors |
 | [cosim.md](cosim.md) | Host-device co-simulation: system model, the six boundary decisions (launch / coherence / host NoC / bridge / memory topology / host pricing), NO_OFFLOAD baseline, task-region window, MPI semantics |
 | [cosim_calibration.md](cosim_calibration.md) | Co-sim calibration: three-tier evidence, measured anchors + sources, source->sim provenance, the total-measured/split-inferred host-path note |
-| [benchmarks.md](benchmarks.md) | 48-benchmark suite, data-model variants, NPB details, building and running |
+| [benchmarks.md](benchmarks.md) | 49-benchmark suite, data-model variants, NPB details, building and running |
 | [examples.md](examples.md) | The example YAML config set and what each group covers |
 | [power.md](power.md) | McPAT power/area integration |
 | [build.md](build.md) | Building from source, custom QEMU, no-root/HPC notes, Docker, reproducibility |

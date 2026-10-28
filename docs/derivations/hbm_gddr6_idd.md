@@ -259,7 +259,7 @@ Every factor is listed with its source; where none exists this says so.
   b = 1).
 - *Back to a current.* dI0 = E_act3 / (VDDC x tRC3) = 389 / (1.1 x
   49.4) = **7.2 mA** (band 3.5-15.3), so IDD0 = IDD2N + 7.2 = **139 mA**.
-  With IDD3N = IDD2N, the TN-41-01 form returns E_act exactly, and the
+  With IDD3N = IDD2N, the vendor-method form (a vendor method that cannot be disclosed publicly) returns E_act exactly, and the
   1.11.86 bank division has no effect.
 
 **IDD4R / IDD4W (burst).**
@@ -597,7 +597,7 @@ array part.
   - HBM2, at 1.2 Gb/s: IDD2N 38.0125 -> 33.2625, IDD3N 35.5 -> 30.75, IDD0 42.725 -> 37.975 mA; at the 2.4 Gb/s preset
     (sec. 1.10, x2): IDD2N 76.025 -> 66.525, IDD3N 71.0 -> 61.5; IDD0, IDD4R, IDD4W, IDD5 move with the baseline by
     -9.5 mA (69.504741, 1382.9, 950.15, 121.288255); IDD2P (x 28/40) 53.2175 -> 46.5675. The activate, burst and
-    refresh excesses are unchanged (a uniform baseline shift cancels in TN-41-01 because tRC = tRAS + tRP).
+    refresh excesses are unchanged (a uniform baseline shift cancels in the vendor method because tRC = tRAS + tRP).
   - HBM3: the clocked HBM2 standby it scales (sec. 1.3) is 33.26 mA, not (1087.4 - 821.3)/7 = 38.0, so the centre
     89.0 becomes 89.0 x 7/8 = 77.875 mA; IDD0, IDD4R, IDD4W, IDD5 shift by -11.125 mA (85.075, 1429.975, 1007.275,
     182.875); IDD2P 62.3 -> 54.5125. Excesses unchanged.
@@ -726,7 +726,7 @@ HC12..HC16 spread is shown as the rate sensitivity.
   injected figure the run prints is computed at runtime from the same
   electricals (cacti_io_wrapper.cpp:279) and was not evaluated here (no
   runs).
-- **Activation, TN-41-01 with IDD3N as ONE bank (no 1.11.86 division):**
+- **Activation, vendor method with IDD3N as ONE bank (no 1.11.86 division):**
   1.35 x (430 x 45 - 460 x 30 - 310 x 15) = 1215 pJ per device loop,
   i.e. **608 pJ per channel ACT** of a 2 KB page.
   - This term is ILL-CONDITIONED: it is a 900 pA.ns difference of

@@ -51,21 +51,27 @@ A co-sim system has **two fabrics joined by one bridge**:
 ```
         host cores                              device PEs
            |                                        |
-      host crossbar          host<->device       device H-tree
-   (analytic; 1-hop,        BRIDGE (protocol      (JEDEC-derived,
-    contention at ports)  --  x phy; boundary  --  placement-driven
+      host fabric            host<->device       device H-tree
+   (analytic ring,          BRIDGE (protocol      (JEDEC-derived,
+    crossbar or bus)      --  x phy; boundary  --  placement-driven
            |                traffic only)             tree)
        host main memory                          device memory tech
-       (M/D/1, host-path adder)                  (PE-MI + Garnet)
+       (replayed DRAM +                          (PE-MI + Garnet)
+        host-path adder)
 ```
 
 - **Device H-tree** -- the device side of DRAM technologies is always a tree
   derived from the JEDEC organization ([network.md](network.md)). Every PE
   memory access is priced here (own unit = 0 hops; elsewhere = tree distance).
-- **Host crossbar** -- classic flat topology; at 1 core it degenerates (no
-  fabric), at multi-core it adds a fixed one-hop latency, with host memory
-  bandwidth as an aggregate M/D/1 queue. Host core loads/stores are priced
-  here (out-of-ROI code, and the whole kernel under NO_OFFLOAD baselines).
+- **Host fabric** -- analytic: the `ring` (default since 1.12.23, the
+  published Nehalem-EX ring), a `crossbar` or a `bus`
+  (`system.hosts[].noc.topology`). At 1 core there is no fabric; at
+  multi-core it adds the fabric's latency on the host memory path, and the
+  host memory is the replayed Ramulator2 controller (an M/D/1 queue only
+  before its first epoch, or with `dram_replay: false`). Host core
+  loads/stores are priced here (out-of-ROI code, and the whole kernel under
+  NO_OFFLOAD baselines); the fabric's power is priced from the data messages
+  and hops it measured (1.12.19).
 - **Bridge** -- the two-layer (`protocol` x `phy`) join. It carries ONLY
   boundary traffic: launch cmd/ack, Case-1 coherence flush, Case-2 DMA. It is
   where host-core traffic and device-PE traffic meet; neither fabric's ordinary
@@ -77,9 +83,12 @@ A co-sim system has **two fabrics joined by one bridge**:
 
 - **OpenMP**: one process; all threads share one simulator instance and one
   Garnet network (real cross-thread contention).
-- **MPI**: PIMID forks N QEMU children with `libpimid_mpi.so` preloaded; ranks
-  exchange data over a shared-memory mailbox (no external mpirun). Each rank
-  simulates its own network instance.
+- **MPI**: in the exec method the N ranks are threads of one process
+  (thread-MPI, since 1.8.3) with `libpimid_mpi.so` loaded in place of the
+  host's MPI library (1.12.122); ranks exchange data over a shared-memory
+  mailbox (no external mpirun) and drive ONE logical Garnet network. The trace
+  method runs the ranks as processes that replay one merged record log (see
+  [network.md](network.md)).
 
 ## Reproducibility
 
@@ -119,7 +128,7 @@ user-mode options):
 | `-B 0 -R 0x8000000000` | The guest address space [64 KiB, 512 GiB) is reserved at guest_base 0 before the program is loaded, and QEMU places every guest mapping in it with its own allocator, which no host thread touches. guest_base stays 0, so a guest address is still the host address. The bound stays below ZSim's shared heap (0xABBA000000). Needs `external/qemu-patches/0002-...` (see [Building](build.md)). |
 | `-s 8M` | The main stack is 8 MiB (QEMU's default), whatever the host's stack rlimit. |
 | `-seed 0` | `AT_RANDOM` and the guest's `getrandom()` are one fixed sequence. |
-| `-L <pimid>/guest-sysroot/noble` | The guest's system libraries (C, C++, OpenMP runtime, dynamic linker) come from PIMID's pinned Ubuntu 24.04 copy instead of the host's, so results do not depend on the host's distribution (since (1.12.135); see [Building: guest libraries](build.md#guest-libraries-since-next)). |
+| `-L <pimid>/guest-sysroot/noble` | The guest's system libraries (C, C++, OpenMP runtime, dynamic linker) come from PIMID's pinned Ubuntu 24.04 copy instead of the host's, so results do not depend on the host's distribution (since (1.12.135); see [Building: guest libraries](build.md#guest-libraries-since-112135)). |
 | `-tid-base 10000000` | Every process, thread, process-group and session ID the guest sees is the host's plus 10000000, and every such ID the guest passes back (`kill`, `tgkill`, `wait4`, `sched_*`, `/proc/<id>/...` paths, ...) is translated back (since (1.12.124); needs `external/qemu-patches/0003-...`). glibc formats each new thread's ID in decimal when the thread starts (it names the thread's stack mapping), so the host's ID length -- 5 to 7 digits on one cluster, set by how many processes the host had started -- changed every multi-threaded result; the guest's IDs now always have eight digits. Not translated: thread IDs the kernel itself writes into priority-inheritance or robust futex words (no shipped workload uses those mutex kinds; glibc, libgomp, libstdc++ and MPICH do not), and IDs inside `/proc/<id>/status` text. |
 | `-U` / `-E` | Every variable of pimid's environment is removed and the guest's set is added back in sorted order (since (1.12.64); QEMU writes the strings in its list order, so a string's address follows the strings around it, and the guest's startup scans them). The set is `workload.env`, the variables PIMID sets for the guest (the OpenMP settings below, `LD_BIND_NOW=1`, the MPI shim's), and, from pimid's own environment, `OMP_*`, `GOMP_*` and the `PIMID_*` variables the shipped guest code reads. Installation and user values (`PATH`, `LD_LIBRARY_PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TZ`, path-valued `PIMID_*` such as `PIMID_QEMU`) are not passed; a workload that needs one sets it in `workload.env`. `PIMID_GUEST_ENV_PAD` then pads the strings QEMU copies to the stack (the program's name, the environment, the arguments) to a multiple of 4096 bytes. A value holding a comma, which QEMU's `-E` cannot carry, is passed in the host's order, with a warning. |
 | `-E LD_LIBRARY_PATH=...` | The guest's dynamic linker searches `/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib` (its own default directories) before the host's `/etc/ld.so.cache` (since (1.12.107)). The cache lists every library installed on the machine, so its size and order differ between machines, and the lookup over it changed the number of loads the guest's startup made. A library found in these directories is opened by path and the cache is not read. A `workload.env` `LD_LIBRARY_PATH` stays in front of them; a library found in neither is still looked up in the cache. |
@@ -180,7 +189,7 @@ origin; and at each phase barrier the records are folded at the consistent
 cut (the earliest ROI-relative time over the cores still running or waiting).
 Accesses are priced from frozen epochs (`simulation.det_epoch_phases`): an
 access reads an earlier epoch's per-pair NoC latency and DRAM service latency
-by epoch index from its own clock, never a live value (DRAM: its own one-phase epoch, `simulation.dram_epoch_phases`, since (1.12.147)). DRAM is timed this way
+by epoch index from its own clock, never a live value (DRAM: its own one-phase epoch, `simulation.dram_epoch_phases`, since (1.12.145)). DRAM is timed this way
 only: every Ramulator2-timed memory -- the device's memory interfaces, the
 host memory controller, and since (1.12.147) (user ruling 2026-10-28) a memory of
 type Ramulator such as the `HOST_MC` placement's -- is a replayed controller

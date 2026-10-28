@@ -64,7 +64,6 @@ benchmarks/
 |                  #   reduction, spmv_csr -- each as <k>, <k>_omp, <k>_mpi
 |-- host/          # host-side variants of the core kernels:
 |                  #   <k>_serial, <k>_shared_memory, <k>_message_passing
-|-- cosim/         # a serial host offloads a parallel region to device PEs
 |-- babelstream/   # BabelStream (OpenMP)
 |-- rodinia/       # 10 Rodinia kernels (OpenMP)
 |-- classic/       # serial classics (dhrystone, whetstone, sha256, ...)

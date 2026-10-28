@@ -13,7 +13,7 @@ much as the results.
 | memory array (DRAM) | Ramulator2 | Ramulator2 | CACTI |
 | memory array (NVM) | NVSim | NVSim | NVSim |
 | caches | zsim | McPAT | CACTI |
-| interconnect | Garnet | McPAT (routers; links over CACTI wires since 1.12.18, energy-efficient repeaters since 2026-10-25) | McPAT |
+| interconnect | Garnet | McPAT (routers; links over CACTI wires since 1.12.18, energy-efficient repeaters since 1.12.54, routers calibrated per shape on published routers since 1.12.150) | McPAT |
 | stacked-die crossings (HBM TSVs) | Garnet | CACTI-3DD, in the McPAT fork (1.12.18) | CACTI-3DD |
 | clock distribution | -- | McPAT fork, Wattch model (1.12.18) | -- |
 | memory controllers | Ramulator2 (replayed) | McPAT | McPAT |
@@ -120,16 +120,17 @@ RISC core (RI5CY, Gautschi et al., IEEE TVLSI 2017, Table V: 26.28 uW/MHz at
 
 ## The memory array
 
-**There is one memory, and it is charged once.** This build models one host and
-one memory: the memory either *is* the processing device, or it is a plain
-non-PIM main memory and the run is host-only. In a co-simulation the host's
+**Each memory is charged once.** This build models one host, one device and
+at most one host memory (1.12.10): the device's memory either *is* the host's
+main memory, or the host has its own main memory, a `system.memories[]` entry
+(a memory without PEs). Where the device is the host's memory, the host's
 accesses and the elements' accesses land on the same silicon, so the charge is
-their sum, applied once. A host term beside a device term would price that
-silicon twice.
+their sum, applied once; a host term beside a device term would price that
+silicon twice. A separate host memory is its own silicon and is charged once,
+as itself.
 
-If two nodes ever name different memory technologies the run stops, rather than
-charging one and dropping the other -- that is a topology this build does not
-model, and mispricing it silently would be worse than refusing.
+A host-only system (no device) and multi-node systems are refused at load,
+rather than charged on a model this build does not have.
 
 **The host memory's controller is measured too (1.12.18, ruling 17).** The host
 memory is replayed through Ramulator2 like the device memory (see
@@ -215,7 +216,7 @@ rule), a router's matrix-arbiter flip-flops, a link's inserted pipeline
 registers. Pin energy McPAT already charges inside the pipeline is not
 charged again.
 
-(next, user rulings 2026-10-25) A CORE's tree spans its CLOCKED LOGIC only,
+(1.12.30, user rulings 2026-10-25) A CORE's tree spans its CLOCKED LOGIC only,
 DERIVED as the pipeline-register area McPAT builds for the units that exist
 plus the integer ALU(s), the multiplier/divider and the instruction decoders
 (the `[mcpat clock] coreN: tree span` line prints the parts). The FPU and the
@@ -239,7 +240,7 @@ extra bits (sixteen data words, unsourced) into each of EX/MEM and MEM/WB.
 The OOO branch has no such term (its stage registers already follow the
 renamed operands and tags).
 
-(next, user ruling 2026-10-25, F2) LEAF CLUSTERS. The register sinks of a
+(1.12.30, user ruling 2026-10-25, F2) LEAF CLUSTERS. The register sinks of a
 tree are grouped into leaf clusters of k = `power.clock.leaf_cluster_sinks`
 (default 30, the OpenROAD TritonCTS sink-cluster size cap; IBM US 8,458,634
 B2: a local clock buffer drives at most 24, 26 or 32 latches). The GLOBAL
@@ -250,7 +251,7 @@ net is unrepeated CACTI local wire, an H-tree to its k sinks, 1.5 d
 clocked logic (the flops sit among that logic), so a cluster's area is its
 share of it, A / ceil(N/k); in the other trees (caches, controllers,
 routers, links, whose area includes their arrays) it is k McPAT register
-cells. Each cluster has a LOCAL CLOCK BUFFER; (next, user ruling
+cells. Each cluster has a LOCAL CLOCK BUFFER; (1.12.68, user ruling
 2026-10-26, CLK2) it is a two-inverter clock buffer priced from published
 liberty data: input C = C_load / 10 (C_load = the cluster's net + its
 register clock pins; OpenROAD TritonCTS grows a sink cluster to at most 10x
@@ -271,7 +272,7 @@ network itself (wire + repeaters), beside the published observation that
 the local clock buffers' load is generally more than ~10x the clock
 network's own (arXiv 1401.0015): printed, not judged.
 
-(next, user ruling 2026-10-26, CLK1) In a core tree the local clock nets
+(1.12.67, user ruling 2026-10-26, CLK1) In a core tree the local clock nets
 are priced at MEASURED SILICON wire capacitance instead of CACTI's local
 wire: 0.200 fF/um at 32 nm (Natarajan et al., IEDM 2008: the measured
 median at M2, 112.5 nm pitch) and 0.169 fF/um at 22 nm (DERIVED: Auth et
@@ -285,13 +286,13 @@ worst-case Miller factor of 1.5 on both sidewalls (0.246 / 0.239 fF/um at
 except the leaf nets). At other nodes no published silicon value is
 carried and the CACTI local wire is kept; the tree prints which it used.
 
-(next, user ruling 2026-10-26) With the internal diagnostic switch on
+(1.12.77, user ruling 2026-10-26) With the internal diagnostic switch on
 (PIMID_DEBUG_CHECKS=1), a core with DMA registers also prints its tree
 built over the core's own register sinks alone ("coreN core-only"): same
 span, cluster count, lengths and local clock buffers recomputed for that
 sink count. It is printed, not priced; the priced tree keeps every sink.
 
-(next, user ruling 2026-10-25 A) THE FLIP-FLOP is re-sourced from two
+(1.12.31, user ruling 2026-10-25 A) THE FLIP-FLOP is re-sourced from two
 published open standard-cell libraries, node-scaled: Nangate 45 nm Open
 Cell Library DFF_X1 (1.10 V) and ASAP7 DFFHQNx1 RVT (0.70 V), from their
 liberty files (CK and D pin capacitance; CK internal energy per cycle with
@@ -353,6 +354,27 @@ messages are not priced on the ring and the crossbar (a lower bound); a
 columns of core/LLC-slice rows, the rings through the slice columns; Rusu,
 ISSCC 2009 / JSSC 2010) on a square die -- DERIVED, no published stop spacing
 in mm; McPAT's upstream 2-D mesh formula gave half of it.
+
+PIMID 1.12.150, device NoC routers and flat fabrics (user rulings
+2026-10-28): a device fabric Garnet built flat (an SRAM or NVM device's
+`MESH_2D`, say) is priced as that fabric -- every router Garnet built, at its
+port count and the Garnet flit, from the flits its crossbar counters
+measured, and on a `MESH_2D` its R(C-1) + C(R-1) links, one tile pitch
+sqrt(array area / tiles) long (DERIVED, the DSENT tile-pitch convention; no
+published SRAM/NVM PIM floorplan). A router's duty is accesses / (cycles x
+routers x min(input, output) ports), so every NoC duty lies in [0, 1]. A
+router's input buffer is one queue array per port, (VCs x entries) x flit
+bits. CACTI's router (buffers, crossbar, arbiters) is calibrated per shape on
+published routers: up to 8 ports its area and leakage are scaled by k, the
+published / model ratio of the ~1 GHz routers (Celerity, Piton, MIT SWIFT, the
+MIT 16-node chip, the DSENT validation router) and of the 3.6-4 GHz ones
+(Kumar et al., the Intel 80-tile router), log-log interpolated in clock x node
+between the two groups (DERIVED); at 16 ports and more the crossbar is scaled
+by the geometric mean over four published crossbars. 9 to 15 ports, and
+2-port datapaths wider than 128 b, have no published point: they take the
+low-radix rule and the run says NO PUBLISHED SOURCE FOUND. Leakage follows
+area (DERIVED); the dynamic energy per flit is not scaled. The anchors are in
+[sources.md](sources.md).
 
 (user ruling 2026-10-25, "Measured"), wire activity: every NoC link, bus
 and TSV wire is charged C V^2 per 0->1 transition (the DSENT / ORION 2.0
@@ -593,7 +615,11 @@ or waiting (sleeping, exited and vacated cores are exempt). Epochs of
 `simulation.det_epoch_phases` phases are frozen as they are folded, and an
 access is priced from an earlier epoch's frozen per-pair NoC latency table
 and DRAM service latency, read by epoch index from the access's own clock,
-never from a live value. The run time and every time-based power term use
+never from a live value (the DRAM replay has its own one-phase epoch,
+`simulation.dram_epoch_phases`, since 1.12.145). Since 1.12.123 the threads of
+a shared-memory run, and since 1.12.126 the ranks of a thread-MPI run, take
+their turns in a fixed order, so multi-threaded timing is the same in every
+run (see [architecture.md](architecture.md#reproducibility)). The run time and every time-based power term use
 the ROI's elapsed wall-clock time, the latest ROI end on the cores' own
 clocks. See [network.md](network.md) and the YAML reference
 (`simulation.det_epoch_phases`).

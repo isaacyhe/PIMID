@@ -719,7 +719,7 @@ Cycle DRAMModel::calculateLatency(const MemoryRequest& req) {
              * full per-64 B array energy for this request, and that quantity
              * -- whether it comes from the IDD path or from the architecture
              * object's bank energy -- already contains the activate and
-             * precharge share (Micron TN-41-01's row energy is exactly
+             * precharge share (the vendor method's row energy is exactly
              * ACT+PRE plus the burst). Charging 8 nJ more per row miss on top
              * of it roughly quadrupled the energy of a missing access, with
              * numbers that matched no technology in the tree. The row-miss

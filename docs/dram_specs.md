@@ -10,11 +10,11 @@ between the simulated parts and the latest shipping silicon.
 |---|---|---|---|---|---|---|
 | DDR3 | `DDR3_4Gb_x8` (1.12.19; was `DDR3_8Gb_x8`) | `DDR3_1600K` (1.12.38; was `DDR3_1600H`) | 1600 MT/s | 12.8 GB/s | 1 | 12.8 GB/s |
 | DDR4 | `DDR4_8Gb_x8` | `DDR4_2400R` | 2400 MT/s | 19.2 GB/s | 1 | 19.2 GB/s |
-| DDR5 | `DDR5_8Gb_x8` | `DDR5_3200AN` | 3200 MT/s | 25.6 GB/s | 1 | 25.6 GB/s |
+| DDR5 | `DDR5_16Gb_x8` (every grade since 1.12.141) | `DDR5_4800B` (default since 1.12.19; `DDR5_3200AN` and `DDR5_5600B` selectable) | 4800 MT/s | 19.2 GB/s (one 32-bit sub-channel) | 2 | 38.4 GB/s |
 | LPDDR5 | `LPDDR5_16Gb_x16` (1.12.44; was `LPDDR5_8Gb_x16`) | `LPDDR5_6400` | 6400 MT/s | 12.8 GB/s | 4 | 51.2 GB/s |
 | GDDR6 | `GDDR6_8Gb_x16` | `GDDR6_2000_1350mV_double` | 16 Gb/s/pin | 32 GB/s | 2 | 64 GB/s |
 | HBM2 | `HBM2_4Gb` | `HBM2_2.4Gbps` | 2.4 Gb/s/pin | 32 GB/s | 8 | 307 GB/s |
-| HBM3 | `HBM3_4Gb` | `HBM3_6.4Gbps` | 6.4 Gb/s/pin | 102 GB/s | 16 | 819 GB/s |
+| HBM3 | `HBM3_8Gb_8H` (16 Gb 8-High, 1.12.41; was `HBM3_4Gb`) | `HBM3_6.4Gbps` | 6.4 Gb/s/pin | 102 GB/s | 16 | 819 GB/s |
 
 HBM gen-1 is **not supported** (removed) -- use HBM2 or HBM3. An unknown
 `memory.technology` value is a hard error (PIMID exits rather than silently
@@ -30,7 +30,7 @@ a generation; cycle counts follow from the clock period (tCK).
 |---|---|---|
 | DDR3-1600K | JESD79-3 | OK matches (11-11-11, tRAS 35 ns, tRC 49 ns) |
 | DDR4-2400R | JESD79-4 | OK matches (16-16-16, tRAS 32 ns, tRC 45 ns) |
-| DDR5-3200AN | JESD79-5 | OK within one speed-grade (nCL 24 vs spec-AN 22; ~1.25 ns) |
+| DDR5-3200AN | JESD79-5 | OK matches the 3200AN bin (24-24-24, JESD79-5D Table 283) |
 | LPDDR5-6400 | JESD209-5 | OK matches (tRCDpb ~18 ns, tRAS ~42 ns) |
 | GDDR6 16 Gb/s | JESD250 | OK matches vendor specs (tRCD ~14.8 ns, tRC ~45 ns) |
 | HBM2 | JESD235C | **fixed** -- see below |

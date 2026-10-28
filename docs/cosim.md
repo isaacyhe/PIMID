@@ -10,11 +10,12 @@ code path a standalone device run (no hosts) uses (same PE memory interfaces,
 same Garnet/analytical NoC, same JEDEC-derived memory timing), so device-only
 cycles are unchanged by co-sim.
 
-A co-sim system is declared under `system.hosts[]` / `system.devices[]`, or
-spelled with the flat keys under `scope: cosim`: the top-level `host:` block is
-`system.hosts[0]` and the top-level device keys are the device node, both read
-as declared nodes (1.12.2; see
-[yaml_reference.md](yaml_reference.md#host-block-host-scope-cosim)).
+A co-sim system is declared under `system.hosts[]` / `system.devices[]`. The
+flat spelling of 1.12.2 to 1.12.7 (`scope: cosim`, a top-level `host:` block
+and the device keys at the left margin) is retired: since 1.12.8 a hardware
+block at the margin is dropped with a warning, and since 1.12.9 a `scope:`
+word is ignored with a warning (see
+[yaml_reference.md](yaml_reference.md#host-block-host-scope-cosim----retired-in-1128)).
 
 There are **no special co-sim workloads**: any ordinary ROI-marked workload
 runs in co-sim unchanged. In a standalone device simulation only the ROI
@@ -37,14 +38,15 @@ added around that same region.
 
 ## System model
 
-- **Host.** The co-sim host is a **single OoO core** at 2 GHz (crossbar
-  degenerates to core + MC + bridge ports). Under **OMP** offload the host
+- **Host.** The fig5 co-sim host is a **single OoO core** at 2 GHz (a 1-core
+  host has no fabric: core + MC + bridge ports); the `system.hosts[]`
+  defaults are `ooo_core`, 4 cores, 3000 MHz. Under **OMP** offload the host
   busy-waits on the device fence during the kernel (decision 1). Under
   **MPI** the finalized model (1.8.7) is different: the MPI ranks **are** the
   device PEs, so the host is not a busy-waiting rank-0 master -- it does the
   per-rank prep before the window and the final readback after it (see
-  [Co-sim MPI](#co-sim-mpi-the-per-rank-device-window)). The default (and the
-  fig5 cells) is a single OoO core; an **in-order host core is also supported**
+  [Co-sim MPI](#co-sim-mpi-the-per-rank-device-window)). The fig5 cells use a
+  single OoO core; an **in-order host core is also supported**
   as of 1.7.7 (the recorder `memRespCycle` skew fix -- see
   [Limitations](#limitations)).
 - **Device = PIM.** PEs (default `alu_core`) placed at a memory level (BANK,
@@ -84,10 +86,9 @@ they ever diverge, a second device model has crept in -- file a bug.
 **Clocks.** Every nanosecond-to-cycle conversion uses the clock of the node
 that ticks the cycles: the host's caches and memory path at the host node's
 clock, the device's hierarchy ladder (every rung, the `HOST_MC` rung included
-since 1.12.5) at the device node's. In the flat form (`scope: cosim`, a `host:`
-block and the device as the top-level configuration) the top-level clock IS
-the device's and `host.frequency_mhz` the host's; with declared nodes the
-top-level `system.frequency_mhz` is only the run's reference clock.
+since 1.12.5) at the device node's. The top-level `system.frequency_mhz` is
+only the run's reference clock (in the flat form retired in 1.12.8 the
+top-level clock was the device's).
 
 **Memory speed.** The device node's `memory.dram.ddr5_speed_grade` is the run's
 DRAM part. A memory declared beside the device (`system.memories[]`, a memory
@@ -201,27 +202,31 @@ PIM-side only and honesty demands it. Defaults: `flush_fixed_ns: 200`,
 channels). The footprint has no default: it is measured, and a configured
 `footprint_bytes` is refused (above).
 
-### 3. Host network -- the analytic crossbar
+### 3. Host network -- the analytic host fabric
 
-The host fabric is configured under `system.hosts[].noc`, with the device's
-config syntax, but only one tier is modelled: the analytic **crossbar**
-(uniform one-hop; contention at ports, not hops).
+The host fabric is configured under `system.hosts[].noc`. It is analytic, one
+of three topologies (1.12.23): the **ring** (default; the published
+Nehalem-EX ring, one stop per core and per host memory controller, 1 cycle
+per stop), the **crossbar** (uniform one hop, `hop_cycles`) or a **bus**; any
+other topology word is refused (rc 1).
 
 - A **1-core host has no fabric** -- a crossbar degenerates at a single core
   (core -> caches -> MC direct). The core-to-memory path is the calibrated
   analytic memory latency (see [cosim_calibration.md](cosim_calibration.md)).
-- A **multi-core host** (the 4/16-core baselines) adds a fixed one-hop
-  crossbar latency (`hop_cycles`, core clock) on the host memory path; port
+- A **multi-core host** (the 4/16-core baselines) adds the fabric's latency
+  on the host memory path (ring: the stops crossed; crossbar: `hop_cycles`,
+  core clock); port
   contention is already priced by the host memory controller (the replayed
   Ramulator2 controller since 1.12.18, see section 6; the M/D/1 queue when the
   replay is off), so the fabric stays analytic.
 
-> **Shipped behavior (1.11.106).** The host fabric always runs as the
-> analytic crossbar (one uniform hop plus the host memory controller's queue);
-> no host Garnet is instantiated. A `system.hosts[].noc.topology` other than
-> `crossbar` or a `noc.model` other than `analytical` (`detailed` included) is
-> accepted with a WARNING that says so; it used to be accepted in silence. A
-> host NoC has no model of its own (no power model).
+> **Shipped behavior (1.12.23).** No host Garnet is instantiated: a
+> `noc.model` other than `analytical` (`detailed` included) is accepted with a
+> WARNING and runs the analytical model of the chosen topology. The fabric is
+> priced in McPAT as the topology the timing ran, from the data messages and
+> hops it measured (`power.models.host_noc`, 1.12.19; see
+> [power.md](power.md)). Until 1.12.18 a host NoC had no power model, and
+> until 1.12.22 every host fabric ran as the crossbar.
 
 ### 3b. Host-device link class (`power.link.link_type`, `system.network.links[].type`)
 
@@ -334,7 +339,7 @@ controller's counter only.
 **IDD3N share, IDDQ and IPP (1.11.91).** The share of background priced at
 active standby (IDD3N) is the MEASURED bank-open fraction -- Ramulator2's
 `bankOpenCycles / bankOpenWindow` (memory cycles with >= 1 bank open, the
-TN-41-01 active state) -- when the controller that saw ALL of the array's
+active state of a vendor method that cannot be disclosed publicly) -- when the controller that saw ALL of the array's
 accesses exported it; the idle residency above is then the power-down input
 only. The PE memory interface keeps no bank state, so a shared array with
 PE-originated traffic, every decoupled device array and every device-scope
@@ -434,8 +439,8 @@ regenerated. Device-scope sweeps were never affected.
   at load. The address keys (`address`, `allowed_address_ranges`, 1.12.12)
   are accepted and checked. See the README, "What 1.12 simulates".
 - **Detailed host NoC not wired** (decision 3 note above): the host fabric is
-  the analytic crossbar; any other host topology or model warns (1.11.106) and
-  runs the crossbar. The host NoC has no power model.
+  analytic (`ring`, `crossbar` or `bus`); a host `noc.model` other than
+  `analytical` warns and runs the analytical model.
 - **Device-side weave phase quantum.** With in-order / OOO weave cores on
   the device, a phase boundary lands within one phase of the contention it
   ends (<=0.4% at production scale). This is a device-model effect,
@@ -470,7 +475,7 @@ near-data by construction.
 
 ## Co-sim MPI: the per-rank device window
 
-Under `scope: system` the co-sim MPI model is **ranks-are-PEs** (finalized
+In a co-simulation the co-sim MPI model is **ranks-are-PEs** (finalized
 1.8.7): each MPI rank IS a device PE, computes on its PE, and the host is
 involved only at the final readback. The measurement window is a **per-rank
 device window**, not a single host-driven offload:

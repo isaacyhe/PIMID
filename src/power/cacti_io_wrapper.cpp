@@ -506,8 +506,7 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
  *     SK hynix HMCG..MEBUA Rev 1.0 2021 p.12, HMCG..AEBSA Rev 1.1 2022 p.13);
  *     AMD UG863 v1.12 DDR5 signals: "None, uses ODT to 40 ohm".
  *   soldered: 0 -- "If a single DRAM device is on a DQ, no series resistor
- *     is required" (Micron TN-40-40 DDR4 Point-to-Point Design Guide, Rev. H
- *     p.31, Table 12 note 1).
+ *     is required" (estimated from a vendor source that cannot be disclosed publicly).
  * Defaults: DDR3/DDR4/DDR5 rdimm (the host baselines are server class: the
  * host-path latency is calibrated to Sapphire Rapids / Genoa sockets);
  * LPDDR5, GDDR6, HBM2, HBM3 soldered (their only topology). LRDIMM (data
@@ -540,7 +539,7 @@ bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::str
     out.name = t;
     if (t == "soldered") {
         out.stub_ohm = 0.0;
-        out.source = "no DQ series resistor point-to-point (Micron TN-40-40 Rev. H p.31, Table 12 note 1)";
+        out.source = "no DQ series resistor point-to-point (estimated from a vendor source that cannot be disclosed publicly)";
     } else if (tech == "DDR3") {
         out.stub_ohm = 15.0;
         out.source = "15 ohm DQ/DQS stub resistor on the DIMM (Altera AN-520, May 2009, p.10)";

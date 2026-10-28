@@ -25,8 +25,9 @@ memory timing and the device-internal network shape -- see
 **Both memories are replayed controllers (1.12.18, ruling 17).** The device
 memory's interfaces (since 1.11.98) and, in system scope, the host memory
 controller record every DRAM access per epoch and replay it through a
-Ramulator2 controller at the epoch boundary; each access is priced at the
-previous epoch's measured service latency of its interface. The host keeps its
+Ramulator2 controller at the epoch boundary; each access is priced at an
+earlier epoch's measured service latency of its interface (the newest epoch at
+or before k-2 the controller has been fed, (1.12.145)). The host keeps its
 calibrated host-path adder on top (no DRAM timing in it); the M/D/1 queue it
 used before prices only the first epoch, or everything with
 `system.hosts[].memory.dram_replay: false`. When the device is the host's

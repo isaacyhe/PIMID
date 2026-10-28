@@ -144,8 +144,8 @@ is set per element: `system.devices[].pim.pe.branch_predictor` for a device
 every device node that does not set it, 1.12.2),
 `system.hosts[].branch_predictor` for an in-order host (which also takes
 `system.hosts[].issue_width`, 1.11.107, so a host can be the scalar PE too;
-under `scope: cosim` the same keys are `host.branch_predictor` /
-`host.issue_width`, 1.12.2).
+the flat `host.branch_predictor` / `host.issue_width` of 1.12.2 went with the
+flat `scope: cosim` form in 1.12.8).
 Issue is per uop, so at width 1 a two-uop x86 instruction takes two issue
 slots.
 

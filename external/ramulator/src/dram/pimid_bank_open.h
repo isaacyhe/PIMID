@@ -4,7 +4,7 @@
 // PIMID 1.11.91 (audit R8-7, user ruling (b)): THE MEASURED BANK-OPEN
 // FRACTION.
 //
-// Micron TN-41-01 p.5 prices DRAM background in two states, "precharged (all
+// The vendor method (a vendor method that cannot be disclosed publicly) prices DRAM background in two states, "precharged (all
 // of the banks are precharged) or active (one or more banks are open)", with
 // BNK_PRE% = the percentage of time all banks are precharged. PIMID had no
 // measurement of that and used "memory-controller traffic in the 10k-cycle
