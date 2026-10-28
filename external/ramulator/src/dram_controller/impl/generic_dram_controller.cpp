@@ -389,7 +389,18 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
      * row hits first, then the oldest (FR-FCFS per bank); a closing command
      * that would close a row a request in the active buffer is opening is
      * skipped, as schedule_request does */
-    bool pimid_best(ReqBuffer& buf, const std::vector<AddrVec_t>& used, ReqBuffer::iterator& out) {
+    /* PIMID (1.12.140): a list of bank addresses that keeps its storage between cycles (the used and blocked lists of
+     * pimid_tick_bank_parallel were vectors of vectors built and freed every cycle and every pick) */
+    struct PlKeys {
+      std::vector<AddrVec_t> v; size_t n = 0;
+      void clear() { n = 0; }
+      void push(const AddrVec_t& a) { if (n < v.size()) v[n] = a; else v.push_back(a); n++; }
+      const AddrVec_t* begin() const { return v.data(); }
+      const AddrVec_t* end() const { return v.data() + n; }
+    };
+    PlKeys m_pl_used, m_pl_blocked;
+    AddrVec_t m_pl_key;
+    bool pimid_best(ReqBuffer& buf, const PlKeys& used, ReqBuffer::iterator& out) {
       ReqBuffer::iterator cand = buf.end();
       bool cand_hit = false;
       for (auto it = buf.begin(); it != buf.end(); ++it) {
@@ -644,7 +655,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       }
     }
     /* pimid_best over the read (bi 0) or write (bi 1) queue */
-    bool pl_best(int bi, ReqBuffer& buf, const std::vector<AddrVec_t>& used, ReqBuffer::iterator& out) {
+    bool pl_best(int bi, ReqBuffer& buf, const PlKeys& used, ReqBuffer::iterator& out) {
       if (m_pl_mode != 1) return pimid_best(buf, used, out);
       if (m_pb[bi].act.empty()) return false;   // nothing that can be ready (as pimid_best over it: no pick, no counter)
       PlBuf& P = m_pb[bi];
@@ -789,7 +800,8 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         return;
       }
       pl_cycle();   // PIMID (1.12.127)
-      std::vector<AddrVec_t> used;
+      PlKeys& used = m_pl_used;   // PIMID (1.12.140): storage kept between cycles
+      used.clear();
       int issued = 0;
       /* PIMID 1.12.18: a BANK-scoped priority request -- the row
        * policy's close-row PRE (ClosedRowPolicy, cap 4, on DDR4/DDR5) -- is
@@ -808,7 +820,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         ReqBuffer::iterator req_it;
         ReqBuffer* buffer = nullptr;
         bool found = false;
-        std::vector<AddrVec_t> blocked = used;   // used banks + banks with a pending, not-ready PRE
+        PlKeys& blocked = m_pl_blocked;   // used banks + banks with a pending, not-ready PRE (PIMID (1.12.140): storage kept)
+        blocked.clear();
+        for (const auto& k : used) blocked.push(k);
         if (bankScopedHead) {
           // 0. bank-scoped priority requests, in order, up to the first rank/channel-scoped one
           for (auto it = m_priority_buffer.begin(); it != m_priority_buffer.end(); ++it) {
@@ -818,7 +832,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
             if (taken) continue;
             it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
             if (pimid_ready(it->command, it->addr_vec)) { req_it = it; buffer = &m_priority_buffer; found = true; break; }
-            blocked.push_back(it->addr_vec);   // its bank waits for it
+            blocked.push(it->addr_vec);   // its bank waits for it
           }
         }
         // 1. requests already activating
@@ -863,9 +877,9 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         for (auto plugin : m_plugins) plugin->update(found, req_it);
         if (!found) break;
         const bool maintenance = (buffer == &m_priority_buffer) && !bankScopedHead;
-        AddrVec_t key = req_it->addr_vec;
+        m_pl_key = req_it->addr_vec;   // PIMID (1.12.140): storage kept (req_it may leave its queue at the issue)
         pimid_issue(req_it, buffer);
-        used.push_back(key);
+        used.push(m_pl_key);
         issued++;
         if (maintenance) break;   // a maintenance command may span every bank of its scope
       }

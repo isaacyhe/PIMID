@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.140 -- host speed: the replayed controller's per-cycle bank lists keep their storage
+
+- **The change (external/ramulator/src/dram_controller/impl/generic_dram_controller.cpp).** The bank-parallel cycle
+  built a list of the banks that had issued (`used`), and at every pick a copy of it (`blocked`); both were vectors of
+  address vectors, allocated and freed every cycle. They are now kept between cycles and refilled in place, with the
+  same contents and order.
+- **Validation (same node, same job, same guest binaries).** Identical in every simulated and priced line to
+  1.12.125 on the serial cells of the first entry. Host time (qc-mi210, same job; the
+  previous change in brackets): 16-core OpenMP stream_triad 685 s (713 s), 4-core MPI stream_triad 427 s (429 s),
+  1-core OpenMP stream_triad 147 s (157 s), 1-core OpenMP gemv 201 s (202 s).
+- **Data impact:** none.
+
 ## 1.12.139 -- host speed: the measured DQ and wire statistics count eight bytes at a time
 
 - **The change (external/zsim/src: dq_data_stats.h, noc_wire_data.h).** Each DRAM line and each data message is now
