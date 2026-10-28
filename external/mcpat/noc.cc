@@ -282,6 +282,59 @@ static PimidRouterCal pimid_router_cal(double M)
 	cache[key] = c;
 	return c;
 }
+/* PIMID (1.12.166): SHAPES WITH NO ABSOLUTE PUBLISHED POINT, SCALED BY PUBLISHED SWEEPS.
+ * The absolute calibration above has 5- and 6-port routers and >= 16-port
+ * crossbars. For 9..15 ports and for 2-port datapaths of 129..256 b the
+ * router is priced as the 5-port router of its width under that calibration,
+ * times the published growth from 5 ports to this shape over the model's
+ * growth for the same step:
+ *   s = [A_pub(P, W) / A_pub(5, W)] / [A_model(P, W) / A_model(5, W)],
+ * the model taken at the sweep's own buffering.
+ * 9..15 ports: OpenSMART (Kwon and Krishna, ISPASS 2017, Fig. 10(a); NanGate
+ *   15 nm; 128 b links, 4 VCs x 1 flit per port; router area in um^2, read
+ *   from the plot): 4 p 10493, 6 p 22042, 8 p 34930, 10 p 49668,
+ *   12 p 67014, 14 p 85143, 16 p 104577; 5 ports = the mean of 4 and 6,
+ *   linear in radix between points. Its 128 b radix growth is applied at
+ *   every width.
+ * 2-port, 129..256 b: Ou, Agwa, Batten, NOCS 2020, Fig. 2(a) (14 nm, 950 ps,
+ *   post-place-and-route; um^2 read from the plot): radix 2 / 4 / 6 at
+ *   128 b 662 / 1531 / 2608, at 256 b 1297 / 2972 / 5056; log-log in width.
+ *   Its buffering is not stated; the model's ratio is taken at one 2-entry
+ *   queue per port.
+ * Wider 2-port datapaths keep the 5-port rule. */
+static double pimid_lin(const double* x, const double* y, int n, double v)
+{
+	int i = 0; while (i < n - 2 && v > x[i + 1]) i++;
+	return y[i] + (v - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]);
+}
+static double pimid_router_shape(double P, double W, double M, bool* sourced, const char** src)
+{
+	*sourced = false; *src = "";
+	const bool mid = (P >= 9 && P <= 15);
+	const bool wide2 = (P <= 2 && W > 128 && W <= 256);
+	if (!mid && !wide2) return 1.0;
+	*sourced = true;
+	double pub, m;
+	if (mid) {
+		static const double R[7] = {4, 6, 8, 10, 12, 14, 16};
+		static const double A[7] = {10493, 22042, 34930, 49668, 67014, 85143, 104577};
+		pub = pimid_lin(R, A, 7, P) / pimid_lin(R, A, 7, 5);
+		Router rp(W, 4, 4, &(g_tp.peri_global), P, P, M);
+		Router r5(W, 4, 4, &(g_tp.peri_global), 5, 5, M);
+		m = rp.area.get_area() / r5.area.get_area();
+		*src = "OpenSMART radix sweep (Kwon and Krishna, ISPASS 2017)";
+	} else {
+		const double t = log(W / 128.0) / log(2.0);
+		auto atW = [&](double a128, double a256) { return exp(log(a128) + t * (log(a256) - log(a128))); };
+		const double a2 = atW(662, 1297), a5 = 0.5 * (atW(1531, 2972) + atW(2608, 5056));
+		pub = a2 / a5;
+		Router rp(W, 2, 1, &(g_tp.peri_global), P, P, M);
+		Router r5(W, 2, 1, &(g_tp.peri_global), 5, 5, M);
+		m = rp.area.get_area() / r5.area.get_area();
+		*src = "Ou, Agwa, Batten radix/width sweep (NOCS 2020)";
+	}
+	return (m > 0) ? pub / m : 1.0;
+}
 static double pimid_router_k(const PimidRouterCal& c, double fl)
 {
 	if (fl <= c.fl_lo) return c.k_lo;
@@ -349,10 +402,11 @@ void NoC::init_router()
 		const PimidRouterCal c = pimid_router_cal(M_traffic_pattern);
 		const double I = nocdynp.input_ports;
 		const double fl = (nocdynp.clockRate / 1e9) * g_ip->F_sz_nm;   /* GHz x nm */
-		const double k = pimid_router_k(c, fl);
+		bool shape_sourced = false; const char* shape_src = "";
+		const double s_shape = pimid_router_shape(nocdynp.input_ports, nocdynp.flit_size, M_traffic_pattern, &shape_sourced, &shape_src);
+		const double k = pimid_router_k(c, fl) * s_shape;
 		const bool high = (nocdynp.input_ports >= 16);
-		const bool unsourced = (nocdynp.input_ports > 8 && nocdynp.input_ports < 16) ||
-		                       (nocdynp.input_ports <= 2 && nocdynp.flit_size > 128);
+		const bool unsourced = !shape_sourced && (nocdynp.input_ports <= 2 && nocdynp.flit_size > 128);
 		const double kx = high ? c.kW : k;
 		const double a0 = router->area.get_area() * 1e-6, l0 = router->power.readOp.leakage;
 		const double a_buf = router->buffer.area.get_area() * 1e-6 * I, a_x = router->crossbar.area.get_area() * 1e-6;
@@ -384,6 +438,8 @@ void NoC::init_router()
 		          << ", MIT 16-node " << c.r[3] << ", DSENT router " << c.r[4] << ", Kumar 2007 " << c.r[5] << ", Intel 80-tile "
 		          << c.r[6] << " (k = " << c.k_lo << " at f x L <= " << c.fl_lo << ", " << c.k_hi << " at >= " << c.fl_hi
 		          << ", log-log between; DERIVED), high-radix crossbar kW (geomean of 4 published crossbars) " << c.kW
+		          << (shape_sourced ? std::string("; shape scaled by the published radix/width sweep: ") + shape_src
+		                              + ", s " + std::to_string(s_shape) : std::string())
 		          << (unsourced ? "; NO PUBLISHED SOURCE FOUND for a router of this shape (priced by the low-radix rule)" : "")
 		          << ". Per-flit dynamic not scaled." << std::endl;
 	}

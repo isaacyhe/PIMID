@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.166 -- the 9..15-port routers and the wide 2-port bank-group interface are priced from published radix and width sweeps
+
+- **Defect.** The router calibration of 1.12.150 rests on published routers of 5 and 6 ports and on crossbars of 16 to
+  64 ports. A router of 9 to 15 ports, or a 2-port datapath wider than 128 b, had no published counterpart. Those
+  routers were priced by the 5-port rule, whatever their radix or width. The HBM bank-group interface class (2 ports,
+  256 b) is in every HBM3 / HBM2 device cell; 9-port routers are in the placement and pecount cells.
+- **Fix (external/mcpat noc.cc).** Such a router is priced as the 5-port router of its width under the 1.12.150
+  calibration. It is then scaled by the published growth from 5 ports to its shape, over the model's growth for the
+  same step:
+  - **9..15 ports:** the OpenSMART router sweep (Kwon and Krishna, ISPASS 2017, Fig. 10(a); 15 nm, 128 b links,
+    4 VCs x 1 flit, 4 to 16 ports). The model's growth is taken at the same buffering.
+  - **2 ports, 129..256 b:** the radix and width sweep of Ou, Agwa and Batten (NOCS 2020, Fig. 2(a); 14 nm,
+    post-place-and-route, radix 2 to 10, 32 to 256 b). The model's growth is taken at one 2-entry queue per port.
+  - A 5-port reference is the mean of the 4- and 6-port points. Values between plotted points are interpolated:
+    linear in radix, log-log in width.
+  - 2-port datapaths wider than 256 b keep the 5-port rule. The run's diagnostic line (PIMID_DEBUG_CHECKS=1) names
+    the sweep and the factor for every router so priced.
+- **What moves** (smoke size, 1.12.160 vs 1.12.160 + this change; the device corpus and 102 system cells; device NoC W,
+  min..max per family):
+
+  | Cells | Before (W) | After (W) | Change |
+  |---|---|---|---|
+  | HBM2 | 0.0118..0.0281 | 0.0120..0.0283 | +2.1% on average |
+  | HBM3 device trees (placement, coremodel, pecount, fig3) | 0.0070..0.0369 | 0.0070..0.0369 | +0.13 to +0.18% |
+  | HBM3 co-simulated | | | +0.01 to +0.02% |
+  | DDR3 / DDR4 | | | -0.40% / -0.47% |
+
+  DDR5, GDDR6, LPDDR5, fig2 and the host fabrics are unchanged. No run time, area outside the NoC, or other ledger
+  entry moves.
+
 ## 1.12.165 -- co-simulation: data placement as the device run places it, an option; parity stated as measured
 
 - **New key `system.page_placement` (src/main.cpp; external/zsim/src: qemu_zsim_plugin.cpp, pe_memory_interface.h,
