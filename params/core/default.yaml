@@ -176,4 +176,4 @@ ooo:
   dtlb_entries: 64           # DTLB0, 4 KB pages (sec. 2.5.4)
   dtlb_large_entries: 32     # DTLB0, large pages (sec. 2.5.4)
   tlb_associativity: 4       # "All entries are 4-way associative" (sec. 2.5.4)
-  stlb_entries: 512          # second level, 4 KB pages (sec. 2.5.4); NOT priced (McPAT has no STLB)
+  stlb_entries: 512          # second level, 4 KB pages (sec. 2.5.4); priced (1.12.129): leakage and area, no lookup counted

@@ -106,6 +106,7 @@ typedef struct{
 	//params
 	int number_entries;
 	int pimid_assoc;   /* PIMID 1.12.18: as itlb_systemcore */
+	int pimid_stlb_entries;   /* PIMID (1.12.129): entries of the second-level TLB behind this DTLB (0 = none); same tag/data width and pimid_assoc */
 	int cache_policy;//0 no write or write-though with non-write allocate;1 write-back with write-allocate
 	//stats
 	double total_accesses;

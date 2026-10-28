@@ -1312,7 +1312,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.fu_area_published ? 1 : 0);                                          // 1.12.19
     f(config_.tlb_published_geometry ? 1 : 0);                                     // 1.12.18
     f(config_.layout_energy_overhead ? 1 : 0);                                     // 1.12.18 (ruling 2026-10-24)
-    f(config_.itlb_entries); f(config_.dtlb_entries); f(config_.tlb_assoc);
+    f(config_.itlb_entries); f(config_.dtlb_entries); f(config_.tlb_assoc); f(config_.stlb_entries);
     f(config_.fu_base_energy ? 1 : 0); f(config_.fpu_published ? 1 : 0); f(config_.frontend_from_timing ? 1 : 0);
     f(config_.sharer_bits_from_children ? 1 : 0);   // 1.12.18
     /* PIMID 1.12.18 (idle halt, per-die process, per-die trunk) */
@@ -4009,6 +4009,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "        <param name=\"number_entries\" value=\"" << dtlb_n << "\"/>\n";
         if (tlb_geo && config_.tlb_assoc > 0)
             xml << "        <param name=\"pimid_assoc\" value=\"" << config_.tlb_assoc << "\"/>\n";   /* 1.12.18: */
+        if (tlb_geo && config_.stlb_entries > 0)   /* (1.12.129): the second-level TLB behind the DTLB (leakage and area; no lookup is counted) */
+            xml << "        <param name=\"pimid_stlb_entries\" value=\"" << config_.stlb_entries << "\"/>\n";
         xml << "        <stat name=\"total_accesses\" value=\"" << dtlb_rd + dtlb_wr << "\"/>\n";
         xml << "        <stat name=\"read_accesses\" value=\"" << dtlb_rd << "\"/>\n";
         xml << "        <stat name=\"write_accesses\" value=\"" << dtlb_wr << "\"/>\n";

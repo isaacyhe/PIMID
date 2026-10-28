@@ -1224,6 +1224,7 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
  coredynp(dyn_p_),
  itlb(0),
  dtlb(0),
+ stlb(0),
  exist(exist_)
 {
 	  if (!exist) return;
@@ -1297,6 +1298,27 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_, InputParameter* interfac
 	  dtlb->area.set_area(dtlb->area.get_area()+ dtlb->local_result.area);
 	  area.set_area(area.get_area()+ dtlb->local_result.area);
 	  //output_data_csv(dtlb.tlb.local_result);
+
+	  /* PIMID (1.12.129): the SECOND-LEVEL TLB of the core the OOO timing model mirrors (Intel 64 and IA-32
+	   * Architectures Optimization Reference Manual, 248966-031, sec. 2.5.4: a unified second-level TLB of
+	   * 512 entries for 4 KB pages; "All entries are 4-way associative"). Same tag and data width as the
+	   * DTLB (a 4 KB-page translation), set-associative, one lookup/refill port: it is looked up only on a
+	   * first-level TLB miss. Upstream McPAT has no second-level TLB, so until this release the array was
+	   * recorded and not priced. zsim models no TLB misses, so no lookup is ever counted: the array's
+	   * leakage and area are priced; its runtime dynamic energy is zero by measurement. */
+	  if (XML->sys.core[ithCore].dtlb.pimid_stlb_entries > 0)
+	  {
+		  interface_ip.cache_sz            = XML->sys.core[ithCore].dtlb.pimid_stlb_entries*interface_ip.line_sz;
+		  interface_ip.assoc               = dtlb_assoc > 0 ? dtlb_assoc : 0;
+		  interface_ip.num_rw_ports        = 0;
+		  interface_ip.num_rd_ports        = dtlb_assoc > 0 ? 1 : 0;
+		  interface_ip.num_wr_ports        = 1;
+		  interface_ip.num_se_rd_ports     = 0;
+		  interface_ip.num_search_ports    = dtlb_assoc > 0 ? 0 : 1;
+		  stlb = new ArrayST(&interface_ip, "STLB", Core_device, coredynp.opt_local, coredynp.core_ty);
+		  stlb->area.set_area(stlb->area.get_area()+ stlb->local_result.area);
+		  area.set_area(area.get_area()+ stlb->local_result.area);
+	  }
 
 }
 
@@ -4432,6 +4454,17 @@ void MemManU::computeEnergy(bool is_tdp)
 
     itlb->power_t.reset();
     dtlb->power_t.reset();
+    if (stlb)
+    {   /* PIMID (1.12.129): no STLB lookup is counted at runtime (zsim models no TLB misses); peak takes one
+         * lookup per cycle at the LSU duty cycle, as the DTLB peak does. */
+    	stlb->stats_t.readAc.access = is_tdp ? coredynp.LSU_duty_cycle : 0;
+    	stlb->stats_t.readAc.miss   = 0;
+    	stlb->stats_t.readAc.hit    = stlb->stats_t.readAc.access;
+    	if (is_tdp) stlb->tdp_stats = stlb->stats_t; else stlb->rtp_stats = stlb->stats_t;
+    	stlb->power_t.reset();
+    	stlb->power_t.readOp.dynamic += stlb->stats_t.readAc.access*(stlb->l_ip.assoc > 0 ? stlb->local_result.power.readOp.dynamic
+    	                                                                                  : stlb->local_result.power.searchOp.dynamic);
+    }
 	/* PIMID 1.12.18: a set-associative TLB (pimid_assoc > 0) is READ
 	 * on every lookup (tag + data ways of one set); the fully associative CAM
 	 * is SEARCHED. A miss refills one entry (writeOp) either way. */
@@ -4447,12 +4480,14 @@ void MemManU::computeEnergy(bool is_tdp)
 		itlb->power = itlb->power_t + itlb->local_result.power *pppm_lkg;
 		dtlb->power = dtlb->power_t + dtlb->local_result.power *pppm_lkg;
 		power     = power + itlb->power + dtlb->power;
+		if (stlb) { stlb->power = stlb->power_t + stlb->local_result.power *pppm_lkg; power = power + stlb->power; }   /* PIMID (1.12.129) */
 	    }
 	    else
 	    {
 			itlb->rt_power = itlb->power_t + itlb->local_result.power *pppm_lkg;
 			dtlb->rt_power = dtlb->power_t + dtlb->local_result.power *pppm_lkg;
 			rt_power     = rt_power + itlb->rt_power + dtlb->rt_power;
+			if (stlb) { stlb->rt_power = stlb->power_t + stlb->local_result.power *pppm_lkg; rt_power = rt_power + stlb->rt_power; }   /* PIMID (1.12.129) */
 	    }
 }
 
@@ -5460,6 +5495,7 @@ MemManU ::~MemManU(){
 	if (!exist) return;
 	if(itlb) 	               {delete itlb; itlb = 0;}
     if(dtlb) 	               {delete dtlb; dtlb = 0;}
+    if(stlb) 	               {delete stlb; stlb = 0;}   /* PIMID (1.12.129) */
 	}
 
 RegFU ::~RegFU(){

@@ -537,6 +537,7 @@ public:
         bool tlb_published_geometry = mcpatTlbPublishedGeometryDefault();
         bool layout_energy_overhead = mcpatLayoutEnergyOverheadDefault();   // 1.12.18 (ruling 2026-10-24); sys param pimid_layout_energy_overhead
         int itlb_entries = 0, dtlb_entries = 0, tlb_assoc = 0;
+        int stlb_entries = 0;   /* (1.12.129): the core record's second-level TLB (ooo.stlb_entries); dtlb param pimid_stlb_entries */
         /* PIMID 1.12.18 (user rulings 2026-10-23): passed to the McPAT fork
          * as sys params pimid_idle_halt / pimid_clock_trunk; the models live
          * in the fork (logic.h ClockNetwork, processor.cc). */

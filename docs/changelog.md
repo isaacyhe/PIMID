@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.129 -- the host core's second-level TLB is priced
+
+- **Gap closed (src/main.cpp, src/power/mcpat_wrapper.cpp, external/mcpat core.cc/core.h/XML_Parse).** A host OOO
+  core carries the second-level TLB of the core its timing model mirrors (Intel 64 and IA-32 Architectures
+  Optimization Reference Manual, 248966-031, sec. 2.5.4: 512 entries for 4 KB pages; "All entries are 4-way
+  associative"; core record `ooo.stlb_entries`). Since 1.12.18 the record held it and every run printed "STLB 512
+  entries NOT priced (McPAT has no second-level TLB)". The McPAT fork now builds it as a CACTI array beside the DTLB,
+  with the DTLB's tag and data width (one 4 KB-page translation), the record's associativity and one lookup/refill
+  port, and prices its leakage and area in the core's memory-management unit.
+- **Dynamic energy.** zsim models no first-level TLB misses, so no STLB lookup is counted: its runtime dynamic
+  energy is 0 by measurement (peak power takes one lookup per cycle at the load/store duty cycle, as the DTLB's
+  peak does). Device elements have no TLB and are unchanged.
+- **Switch.** It follows `power.models.tlb_published_geometry` (the published first-level TLB geometry); with that
+  switch off the core keeps McPAT's 1-entry floor and no STLB.
+- **Data impact.** Host cores only (co-sim and host-baseline cells): +0.80 mW leakage per OOO host core at 22 nm,
+  350 K (smoke cells: 1-core +0.8 mW, 16-core +12.9 mW of a ~27 W node); run times unchanged; device cells identical.
+
 ## 1.12.128 -- host speed: the measured data statistics read the guest's memory without a system call
 
 - **User ruling 2026-10-27.** The measured DQ and wire statistics read each DRAM line and each host-fabric data

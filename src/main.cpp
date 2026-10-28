@@ -12013,6 +12013,7 @@ static pimid::McPATWrapper::DeviceProfile describeTimingCore(
         mcfg.itlb_entries = g_core_rec.ooo.itlb_entries + g_core_rec.ooo.itlb_large_entries;
         mcfg.dtlb_entries = g_core_rec.ooo.dtlb_entries + g_core_rec.ooo.dtlb_large_entries;
         mcfg.tlb_assoc = g_core_rec.ooo.tlb_associativity;
+        mcfg.stlb_entries = g_core_rec.ooo.stlb_entries;   // (1.12.129): the second-level TLB, leakage and area priced
         {
             static bool told_tlb = false;
             if (!told_tlb && mcfg.tlb_published_geometry) {
@@ -12021,7 +12022,8 @@ static pimid::McPATWrapper::DeviceProfile describeTimingCore(
                           << g_core_rec.ooo.itlb_entries << "+" << g_core_rec.ooo.itlb_large_entries << ", DTLB "
                           << g_core_rec.ooo.dtlb_entries << "+" << g_core_rec.ooo.dtlb_large_entries << " entries (4 KB + large), "
                           << mcfg.tlb_assoc << "-way; STLB " << g_core_rec.ooo.stlb_entries
-                          << " entries NOT priced (McPAT has no second-level TLB; zsim models no TLB misses)."
+                          << " entries (4 KB pages, same associativity) priced by the McPAT fork for leakage and area; no lookup is counted"
+                             " (zsim models no first-level TLB misses), so its runtime dynamic energy is 0."
                              " Device elements: no TLB (physical addressing), 1-entry floor." << std::endl;
             }
         }
