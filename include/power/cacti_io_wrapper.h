@@ -112,6 +112,10 @@ struct LinkIOResult {
     double phy_power_mw = 0.0;         // static + dynamic PHY
     double phy_static_power_mw = 0.0;
     std::string phy_static_source = "CACTI-IO parameter set: phase rotator + RX + PLL";   // (user ruling 2026-10-27)
+    /* (1.12.131) phy_static_power_mw is DERIVED from a published PHY measurement
+     * although the CACTI-IO map is not exact (HBM3 -> WideIO), so it may be
+     * charged. Per channel (num_dq DQ); the caller scales it to the channels. */
+    bool   phy_static_sourced = false;
     double phy_dynamic_power_mw = 0.0;
 
     double timing_margin_ui = 0.0;     // eye margins, reported not consumed

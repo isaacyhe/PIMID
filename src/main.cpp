@@ -14096,7 +14096,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * termination and IDDQ terms above use. An on-die placement has no
              * DQ PHY (McPAT is told withPHY=0 there); it used to be added at every
              * placement. System scope adds no PHY static term (checked). */
-            const double phy_static_mw = crosses_dq ? ram_oracle.getInterfacePhyStaticMW() : 0.0;   // 1.11.98 (row 28)
+            const double phy_static_mw = crosses_dq ? ram_oracle.getInterfacePhyStaticMW(config.hierarchy_dram_channels) : 0.0;   // 1.11.98 (row 28); (1.12.131) HBM3: over bg_units' channels
             std::string rcd_s_src, rcd_d_src;   // (user ruling 2026-10-27) the RDIMM register
             const double rcd_static_mw = crosses_dq ? ram_oracle.getRcdStaticMW(&rcd_s_src) : 0.0;
             const double rcd_drive_nj = crosses_dq ? ram_oracle.getRcdDriveEnergyNJ(&rcd_d_src) : 0.0;
@@ -17904,7 +17904,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     q.setTemperatureK(config.temperature_k);
                     q.setDdr5SpeedGrade(coupled ? config.ddr5_speed_grade : hostDdr5Grade(node, config));
                     q.initialize();
-                    mw = q.getInterfacePhyStaticMW();
+                    mw = q.getInterfacePhyStaticMW(config.hierarchy_dram_channels);   // (1.12.131) HBM3: the array background's channel population
                     phy_src = q.getInterfacePhyStaticSource();   // (user ruling 2026-10-27)
                     {   // (user ruling 2026-10-27) the RDIMM register of this host memory
                         q.setTopology(coupled ? (d_tech.empty() ? h_topo : d_topo) : node.memory_topology);

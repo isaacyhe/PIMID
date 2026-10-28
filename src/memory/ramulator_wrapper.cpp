@@ -2717,12 +2717,17 @@ double RamulatorWrapper::getInterfaceDynamicEnergyNJ() const {
  * the same CACTI-IO evaluation the interface energy comes from -- the
  * controller-side background that McPAT's 10%-of-peak convention stood in
  * for. Exact maps only, as the energy accessor. */
-double RamulatorWrapper::getInterfacePhyStaticMW() const {
+double RamulatorWrapper::getInterfacePhyStaticMW(int channels) const {
     const double rate = modelledRateMTs();
     const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
     if (rate <= 0.0 || ndq <= 0) return 0.0;
     PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
-    if (!io.valid || !io.exact_map) return 0.0;
+    if (!io.valid || !(io.exact_map || io.phy_static_sourced)) return 0.0;
+    if (io.phy_static_sourced && io.phy_static_power_mw > 0.0)
+        /* (1.12.131) HBM3: the PHY spans every channel of the memory it drives -- the
+         * population the array's background is charged over (getBackgroundUnits:
+         * 16 channels per stack x stacks). */
+        return io.phy_static_power_mw * getBackgroundUnits(device_width_, 1, channels > 0 ? channels : 1);
     return (io.phy_static_power_mw > 0.0) ? io.phy_static_power_mw : 0.0;
 }
 
@@ -2731,7 +2736,7 @@ std::string RamulatorWrapper::getInterfacePhyStaticSource() const {   // (user r
     const int    ndq  = PIMID::CactiIOWrapper::dramChannelWidthBits(dram_type_);
     if (rate <= 0.0 || ndq <= 0) return "no rate / width";
     PIMID::LinkIOResult io = PIMID::CactiIOWrapper::computeDramIO(dram_type_, ndq, rate, 1.0, topology().stub_ohm);
-    if (!io.valid || !io.exact_map) return "no exact CACTI-IO map";
+    if (!io.valid || !(io.exact_map || io.phy_static_sourced)) return "no exact CACTI-IO map";
     return io.phy_static_source;
 }
 

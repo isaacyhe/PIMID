@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.131 -- the HBM3 host memory-controller PHY idle is priced
+
+- **Gap.** With HBM3 as the host memory, the host memory-controller PHY static (idle) power was 0 W, printed as
+  "no exact CACTI-IO map for HBM3": the term existed only for technologies with an exact CACTI-IO parameter set (DDR3,
+  DDR4, DDR5, GDDR6), and HBM3 maps to CACTI-IO's WideIO set, which is not exact.
+- **Fix (src/power/cacti_io_wrapper.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp).** No HBM3 PHY idle power is
+  published. It is DERIVED from the one published measured HBM-class PHY idle: Samsung Foundry's 7 nm HBM2E PHY
+  (S. Hwang, K. Chae, T. Yeo et al., Hot Chips 32, 2020, poster slide 10: 1024 DQ at 3.2 Gb/s, 0.75 V / 1.2 V; idle
+  hard macro 36 mW + I/O 14 mW). The hard macro (clocked logic) is scaled by the run's rate over 3.2 Gb/s and by
+  (0.66 V / 0.75 V)^2; the I/O by (0.30 V / 1.2 V)^2 only (no data toggles while idle). 0.66 / 0.30 V are the
+  published HBM3 host-PHY supplies (K. Chae et al., IEEE JSSC 59(1), 2024, Table II). The process difference is not
+  applied. No separate PLL is added: the measured hard macro is taken to include the PHY's clock generation.
+- **Value.** HBM3-6400, one stack (16 channels, 1024 DQ): 55.76 + 0.88 = 56.6 mW (was 0), 3.5 mW per 64 DQ. That is
+  3.0% of the active HBM3 PHY power at the same rate (Chae: 0.29 pJ/bit). It is charged over the channels the array's
+  background is charged over, so a system of several stacks pays it per stack. It is charged once, on the ledger line
+  `<host>.memory_controllers_phy`; at a placement where device accesses cross the DQ pins, device scope charges the
+  same term.
+- **No double count.** The interface has two ends:
+  - The DRAM end's I/O energy is per access. It is in the HBM3 record's `idd.io_share` (IDD4R/IDD4W), shown in the
+    array's iddq column.
+  - The host end's switching energy is in McPAT's memory-controller PHY (dynamic).
+  - The DRAM's own idle is in its background (IDD2N/IDD3N; JEDEC IDD excludes the I/O).
+  - This term is the host PHY's idle alone. No other term prices it.
+  - With `power.models.host_uncore_static` on, the host uncore term subtracts it (as it does the DDR PHY idle), so
+    System Total does not change; the 56.6 mW moves from `host.uncore_static` to `host.memory_controllers_phy`.
+- HBM2 is unchanged (no published HBM2 host-PHY supply point; its host PHY idle stays 0, stated in the log).
+  DDR3, DDR4, DDR5, LPDDR5 and GDDR6 are unchanged.
+- **Data impact:** HBM3-host cells (host baselines and co-sim): the new ledger line is 0.0566 W, and `host.uncore_static`
+  is 0.0566 W lower. With the host uncore term on, System Total is unchanged. Cycles, every other ledger line and all
+  DDR4/DDR5 cells are unchanged.
+
 ## 1.12.130 -- docs: per-access interface energy is described as computed from the part record
 
 - **Documentation (docs/power.md, Measured and assumed).** The line that called the per-access interface energy

@@ -854,6 +854,40 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
               << " mW (the measured rails exclude the PLL)";
             r.phy_static_source = o.str();
         }
+        /* (1.12.131) HBM3 host memory-controller PHY idle (DERIVED). No HBM3 PHY idle
+         * is published. The published, measured HBM-class PHY idle is HBM2E:
+         * S. Hwang, K. Chae, T. Yeo et al. (Samsung Foundry), "A 3.2 Gbps/pin
+         * HBM2E PHY with Low Power I/O and Enhanced Training Scheme for 2.5D
+         * System-in-Package Solutions", Hot Chips 32 (2020), poster slide 10
+         * "Power and VWM measurement results": 7 nm, 0.75 V / 1.2 V, 8 channels
+         * (1024 DQ), IDLE: hard macro 36 mW + I/O 14 mW (the same table's WRITE
+         * 810 + 2700 mW at 1024 x 3.2 Gb/s is its 1.07 pJ/bit). Carried to the
+         * HBM3 host PHY (same 1024 DQ per stack) at the run's rate and at the
+         * published HBM3 host-PHY supplies, VDD 0.66 V / VDDQ 0.30 V (K. Chae et
+         * al., IEEE JSSC 59(1), Jan. 2024, Table II): the hard macro (clocked
+         * logic) x (rate / 3200) x (0.66 / 0.75)^2, the I/O x (0.30 / 1.2)^2
+         * (no data toggles in idle: no rate factor). Not applied, stated: the
+         * process (the measurement is 7 nm). The hard macro's idle is taken to
+         * include the PHY's clock generation (the poster gives no split), so no
+         * separate PLL is added. The per-channel share is charged per channel
+         * of the memory (16 per stack). */
+        if (tech == "HBM3") {
+            const double g = rate_mts / 3200.0;
+            const double hm = 36.0 * g * (0.66 / 0.75) * (0.66 / 0.75);
+            const double iom = 14.0 * (0.30 / 1.2) * (0.30 / 1.2);
+            const double stack_mw = hm + iom;                     // 1024 DQ
+            const double pch = stack_mw * num_dq / 1024.0;
+            const double active = 0.29 * (rate_mts / 1000.0) * 1024.0;   // mW: Chae Table II read pJ/bit, 1024 DQ
+            r.phy_static_power_mw = pch;
+            r.phy_static_sourced = true;
+            std::ostringstream o;
+            o << "DERIVED from the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
+                 "7 nm, 0.75/1.2 V, 1024 DQ at 3.2 Gb/s, hard macro 36 + I/O 14 mW): hard macro x " << rate_mts << "/3200 MT/s x "
+                 "(0.66/0.75 V)^2 = " << hm << " mW + I/O x (0.30/1.2 V)^2 = " << iom << " mW (HBM3 PHY supplies, Chae et al. JSSC "
+                 "59(1) 2024 Table II) = " << stack_mw << " mW per 1024 DQ = " << pch << " mW per " << num_dq << "-DQ channel, x the "
+                 "memory's channels; " << 100.0 * stack_mw / active << "% of the active HBM3 PHY at 0.29 pJ/bit (Chae)";
+            r.phy_static_source = o.str();
+        }
         r.phy_dynamic_power_mw = io.getPHYDynamicPowerMW();
         r.timing_margin_ui     = io.getTimingMarginUI();
         r.voltage_margin_v     = io.getVoltageMarginV();

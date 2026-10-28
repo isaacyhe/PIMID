@@ -424,7 +424,7 @@ public:
     double getCountedRefreshSystemMWOverNs(uint64_t refreshes, double span_ns,
                                            const std::string& device_width,
                                            int ranks_per_channel, int channels) const;
-    double getInterfacePhyStaticMW() const;        // 1.11.98 (row 28, ruling (c)): CACTI-IO PHY static power of the channel interface (0 = no exact map)
+    double getInterfacePhyStaticMW(int channels = 1) const;   // 1.11.98 (row 28, ruling (c)): CACTI-IO PHY static power of the channel interface (0 = no exact map); (1.12.131) HBM3: DERIVED, over the memory's channels (the background's population for `channels`)
     /* 1.11.20 (D13+D15): the memory system's background. Population-scaled
      * (one DDR chip / one HBM channel is the IDD unit) and state-aware
      * (IDD3N busy, IDD2N idle, IDD2P idle-with-pg). device_width is the
