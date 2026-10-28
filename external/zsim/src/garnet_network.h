@@ -208,6 +208,10 @@ struct GarnetStats {
      * edges than the hop count said). On a well-formed tree both are 0 and
      * the per-level sum equals link_traversals exactly. */
     uint64_t level_link_flit_traversals[7] = {0,0,0,0,0,0,0};
+    /* (1.12.143): flit traversals of the in-die fabric's node links (MESH_2D / RING
+     * node <-> node, CROSSBAR node <-> hub), counted by the analytical tier
+     * walk apart from the tree up-links above. */
+    uint64_t indie_grid_link_flit_traversals = 0;
     uint64_t link_traversals_unattributed = 0;
     uint64_t link_traversals_overattributed = 0;
     /* 1.12.18 (user ruling, HBM TSV layout): flit x DIE-BOUNDARY crossings
@@ -1539,6 +1543,7 @@ public:
         }
         stats_.link_traversals_unattributed = 0;     // 1.12.18
         stats_.link_traversals_overattributed = 0;   // 1.12.18
+        stats_.indie_grid_link_flit_traversals = 0;  // (1.12.143)
         for (int l = 0; l < 7; l++) stats_.level_tsv_die_crossings[l] = 0;   // 1.12.18
         for (int b = 0; b < 65; b++) stats_.tsv_dies_hist[b] = 0;
         stats_.measured_crossbar_flits = 0;
@@ -1602,7 +1607,8 @@ public:
      * Lock-free: PE-MI threads call it concurrently. */
     void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94 (H17): rung 7 = HOST_MC, no on-die router (not counted below)
                         bool ctrl = false,
-                        uint32_t tsvDies = 0, bool stackLayout = false) {   // 1.12.18: die boundaries this walk crossed
+                        uint32_t tsvDies = 0, bool stackLayout = false,   // 1.12.18: die boundaries this walk crossed
+                        uint32_t gridEdges = 0, int gridLevel = -1) {   // (1.12.143): in-die node links crossed, and the tier the grid sits at
         const uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
         const uint32_t bits = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
         const uint64_t flits = std::max(1u, (bits + fb - 1) / fb);
@@ -1632,13 +1638,23 @@ public:
             int top = -1;
             for (int l = 0; l < 8; l++) if (perLevel[l]) top = l;
             uint64_t attributed = 0;
+            /* (1.12.143): on an in-die fabric the grid tier's routers are visited
+             * along the grid, so only the walk's exits leave them by an
+             * up-link; its node <-> node (node <-> hub) edges are the die's
+             * own node links, recorded apart and priced as those links. */
+            uint64_t grid = 0;
             for (int l = 0; l < 7; l++) {
                 if (!perLevel[l]) continue;
-                const uint64_t e = (uint64_t)perLevel[l] - (l == top ? 1u : 0u);
+                uint64_t e = (uint64_t)perLevel[l] - (l == top ? 1u : 0u);
+                if (gridEdges && l == gridLevel) { grid = std::min<uint64_t>(e, gridEdges); e -= grid; }
                 if (!e) continue;
                 __atomic_fetch_add(&stats_.level_link_flit_traversals[l], e * flits,
                                    __ATOMIC_RELAXED);
                 attributed += e;
+            }
+            if (grid) {
+                __atomic_fetch_add(&stats_.indie_grid_link_flit_traversals, grid * flits, __ATOMIC_RELAXED);
+                attributed += grid;
             }
             if ((uint64_t)links >= attributed)
                 __atomic_fetch_add(&stats_.link_traversals_unattributed,
@@ -1873,6 +1889,9 @@ public:
                     stats_.link_traversals_unattributed);
             fprintf(f, "garnet.link_traversals_overattributed = %lu\n",
                     stats_.link_traversals_overattributed);
+            if (stats_.indie_grid_link_flit_traversals)   // (1.12.143)
+                fprintf(f, "garnet.indie_grid_link_traversals = %lu\n",
+                        stats_.indie_grid_link_flit_traversals);
         }
         fclose(f);
     }

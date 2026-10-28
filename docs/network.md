@@ -101,6 +101,23 @@ credit-based flow control, deadlock-free routing.
   grid node and hub is a priced switch at the placement tier) take the same
   path. The detailed model runs the CROSSBAR and refuses a MESH or RING it
   cannot route deadlock-free by TABLE; the analytical model prices all three.
+  (next, user ruling 2026-10-28) On the analytical model the fabric's energy
+  follows the same walk: the grid tier's switches are priced as routers (not
+  as a shared bus); the die's node links (MESH/RING node-node, CROSSBAR
+  node-hub) are one link instance priced from the node-link traversals the
+  walk counts, at the built link count and the mean node-link length (each
+  built link's Manhattan distance in node pitches, pitch = sqrt(die area /
+  nodes per die); a CROSSBAR spoke runs to the hub at the die centre); and
+  the die's exit -- one up-link per gridded die at the grid tier and at every
+  tier the grid replaced, as the timing charges it -- is priced on the tree's
+  links. Until then the node links rode a bus priced alike for all three
+  fabrics, and the exits above the grid tier were reported as not priced.
+  The same release makes the per-access walk reach the die: a target unit on
+  a gridded die is looked up by the chip and every component below it (its
+  grid node), where the lookup used to stop at the first tier the grid
+  replaced, find no endpoint and fall back to the arithmetic ladder -- so the
+  analytical timing never crossed the die fabric and MESH_2D, RING and
+  CROSSBAR ran identically.
 - **NoC energy (1.11.92).** McPAT charges one router access per FLIT per
   ROUTER crossed. The network counts true flits (ceil(message bits / source
   port width), 5 for a 576-bit data message on a 128-bit port) and routers

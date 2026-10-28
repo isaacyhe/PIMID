@@ -3578,6 +3578,13 @@ struct UnifiedConfig {
      * the link pricing reads both. -1 = no tree was built. */
     int htree_level_routers[7]   = {-1,-1,-1,-1,-1,-1,-1};
     int htree_root_level         = -1;
+    /* (1.12.143): the BUILT in-die fabric (ruling 9): its node links, the dies it
+     * grids (one exit up-link each), and the mean node-link length in node
+     * pitches (Manhattan, from the grid positions; a CROSSBAR spoke runs from
+     * the node to the hub at the die centre). 0 = no in-die fabric. */
+    int indie_grid_links         = 0;
+    int indie_grid_dies          = 0;
+    double indie_link_mean_pitch = 0.0;
     /* 1.12.18 (user ruling, HBM TSV layout): TSV SEGMENTS of the built
      * tree under the stated channel-to-die layout -- the sum, over the
      * chip-slot routers it built, of the die index each sits on (a channel
@@ -5297,6 +5304,23 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
         config.htree_level_branch[l]    = tree.branchAtLevel[l];
         config.htree_level_endpoints[l] = tree.endpointsAtLevel[l];
         config.htree_level_routers[l]   = 0;   // 1.12.18: counted below
+    }
+    /* (1.12.143): the in-die fabric as built (the links the analytical walk crosses). */
+    config.indie_grid_links = static_cast<int>(tree.gridLinks.size());
+    config.indie_grid_dies = (tree.fabricKind > 0) ? static_cast<int>(tree.dieExitOf.size()) : 0;
+    config.indie_link_mean_pitch = 0.0;
+    if (tree.fabricKind > 0 && !tree.gridLinks.empty()) {
+        const double cx = 0.5 * (tree.gridW - 1), cy = 0.5 * (tree.gridH - 1);
+        auto pos = [&](int r, double& x, double& y) {
+            const bool hub = (r >= 0 && r < (int)tree.gridX.size() && tree.gridX[(size_t)r] < 0);
+            x = hub ? cx : tree.gridX[(size_t)r]; y = hub ? cy : tree.gridY[(size_t)r];
+        };
+        double sum = 0.0;
+        for (const auto& l : tree.gridLinks) {
+            double ax, ay, bx, by; pos(l.a, ax, ay); pos(l.b, bx, by);
+            sum += std::fabs(ax - bx) + std::fabs(ay - by);
+        }
+        config.indie_link_mean_pitch = sum / static_cast<double>(tree.gridLinks.size());
     }
     /* 1.12.18: every router by its level, and the root's level. */
     for (int r = 0; r < tree.numRouters; ++r) {
@@ -9964,6 +9988,7 @@ struct GarnetParsedStats {
     uint64_t link_traversals_unattributed = 0;
     uint64_t link_traversals_overattributed = 0;
     bool level_links_present = false;
+    uint64_t indie_grid_link_traversals = 0;   // (1.12.143): in-die node links (analytical tier walk)
     /* 1.12.18 (TSV layout): flit x die-boundary crossings per level, the
      * packets-by-boundaries histogram, and whether a layout was in force. */
     uint64_t level_tsv_die_crossings[7] = {0,0,0,0,0,0,0};
@@ -10082,6 +10107,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
             else if (key == "total_cycles") stats.total_cycles = std::stoull(val);
             else if (key == "total_latency") stats.total_latency = std::stoull(val);
             else if (key == "num_routers") stats.num_routers = std::stoul(val);
+            else if (key == "indie_grid_link_traversals") stats.indie_grid_link_traversals = std::stoull(val);   // (1.12.143)
             else if (key == "num_rows") stats.num_rows = std::stoul(val);
             else if (key == "num_cols") stats.num_cols = std::stoul(val);
             else if (key == "flit_size_bits") stats.flit_size_bits = std::stoul(val);
@@ -10103,6 +10129,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
             stats.level_tsv_die_crossings[l] = 0;
         }
         stats.link_traversals = 0;                  // 1.12.18
+        stats.indie_grid_link_traversals = 0;       // (1.12.143)
         stats.link_traversals_unattributed = 0;
         stats.link_traversals_overattributed = 0;
     }
@@ -10773,13 +10800,88 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     : std::string("UNKNOWN (no stack layout)");
             return "0 (base-die / off-die logic, not in the core-die stack)";
         };
+        /* (next, user ruling 2026-10-28): an in-die fabric (MESH_2D / RING /
+         * CROSSBAR inside each DRAM die, ruling 9) walked by the analytical
+         * NoC. The walk counts the die's node links apart from the tree's
+         * up-links; the grid tier's switches leave the die only at its exit
+         * (node (0,0), or the CROSSBAR hub), and the tiers the grid replaced
+         * carry that exit as the tree would (the timing charges their
+         * latencies the same way). So the grid tier and every replaced tier
+         * have ONE up-link per gridded die, and the node links are a link
+         * instance of their own, priced from the counted traversals with the
+         * same wire model. */
+        const bool indie_walk = !config.indie_fabric.empty() && garnet.level_source == "tier_walk"
+                                && config.indie_grid_dies > 0;
+        auto emitGridLinks = [&](int lvl, const std::string& base, int on_die, double chip_cov) {
+            if (!indie_walk || lvl != pe_level || config.indie_grid_links <= 0) return;
+            if (!config.power_model_noc_links) {
+                std::cout << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " (" << base
+                          << ") in-die " << config.indie_fabric << " node links: NOT priced BY USER OPTION"
+                             " (power.models.noc_links: false)" << std::endl;
+                return;
+            }
+            const char* wsrc = nullptr;
+            const int W = levelWidth(lvl, &wsrc);
+            const double fW = flitsAt(W);
+            const uint64_t gf = garnet.indie_grid_link_traversals;
+            const double pk = static_cast<double>(gf) / fpp;
+            const uint64_t acc = static_cast<uint64_t>(std::llround(pk * fW));
+            const int nodes_die = std::max(1, config.indie_grid_w * config.indie_grid_h);
+            const double pitch_mm = (die_mm2 > 0.0) ? std::sqrt(die_mm2 / nodes_die) : 0.0;
+            const double len_mm = config.indie_link_mean_pitch * pitch_mm;
+            NoCLevel lk;
+            lk.name = base + "_grid_links";
+            lk.type = 1;
+            lk.routers_present = 0;
+            lk.has_global_link = 1;
+            lk.link_kind = 0;
+            /* McPAT's explicit length is 0.5 sqrt(span / regions): one region of
+             * span 4 L^2 gives the mean node-link length L itself */
+            lk.link_span_area_mm2 = 4.0 * len_mm * len_mm;
+            lk.link_parent_regions = 1;
+            lk.tech_node_nm = on_die ? dieProcessDramNode(config, config.memory_tech) : dieProcessLogicNode(config);
+            exactRect(config.indie_grid_links, lk.vertical_nodes, lk.horizontal_nodes);
+            lk.input_ports = 2;
+            lk.output_ports = 2;
+            lk.vcs_per_port = 1;
+            lk.vc_buffer_entries = 1;
+            lk.flit_bits = W;
+            lk.link_activity = wireActivity(g_dev_wire, static_cast<uint32_t>(W), nullptr);
+            lk.clock_mhz = (garnet.clock_mhz > 0.0) ? garnet.clock_mhz : deviceCycleClockMHz(config);
+            lk.chip_coverage = chip_cov;
+            lk.on_dram_die = on_die;
+            lk.total_accesses = acc;
+            lk.link_traversals = static_cast<int64_t>(acc);
+            double net_cycles = static_cast<double>(total_cycles);
+            {
+                const double cyc_mhz = deviceCycleClockMHz(config);
+                if (lk.clock_mhz > 0.0 && cyc_mhz > 0.0) net_cycles *= (lk.clock_mhz / cyc_mhz);
+            }
+            lk.duty_cycle = (net_cycles > 0.0) ? static_cast<double>(acc) / (net_cycles * config.indie_grid_links) : 0.0;
+            pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " in-die "
+                      << config.indie_fabric << " node links (" << lk.name << "): " << config.indie_grid_links
+                      << " link(s) over " << config.indie_grid_dies << " die(s) (" << config.indie_grid_w << " x "
+                      << config.indie_grid_h << " per die), traversals " << acc << " = " << pk
+                      << " packet crossings x " << fW << " flits (" << cutText(W) << ", " << wsrc << "); crossings = "
+                      << gf << " node-link flit traversals / " << fpp << " flits per packet, from the analytical"
+                         " walk over the built fabric; length " << len_mm * 1000.0 << " um = mean "
+                      << config.indie_link_mean_pitch << " node pitch(es) (Manhattan, from the grid positions) x pitch "
+                      << pitch_mm * 1000.0 << " um (sqrt(die " << die_mm2 << " mm^2 / " << nodes_die
+                      << " nodes)); structure to McPAT: span " << lk.link_span_area_mm2 << " mm^2 over 1 grid region(s)"
+                         " (4 L^2, so the explicit length 0.5 sqrt(span / regions) is L); node " << lk.tech_node_nm
+                      << " nm; duty " << lk.duty_cycle << std::endl;
+            levels.push_back(lk);
+        };
         auto emitLinks = [&](int lvl, const std::string& base, int on_die,
                              double chip_cov, bool passthrough) {
             if (!link_counts) return;
+            emitGridLinks(lvl, base, on_die, chip_cov);   // (1.12.143)
             const uint64_t lf = garnet.level_link_traversals[lvl];
             int parent = -1;
             for (int p = lvl + 1; p < 7; p++) if (lvl_routers[p] > 0) { parent = p; break; }
-            const int n_links = lvl_routers[lvl] - (lvl == root_lvl ? 1 : 0);
+            int n_links = lvl_routers[lvl] - (lvl == root_lvl ? 1 : 0);
+            if (indie_walk && lvl >= pe_level && lvl <= 2)   // (1.12.143): one exit up-link per gridded die (see emitGridLinks)
+                n_links = config.indie_grid_dies;
             if (parent < 0 || n_links <= 0) {
                 if (lf > 0)
                     std::cerr << "[NoC] WARNING: " << lbl << "level " << (lvl - pe_level)
@@ -11001,6 +11103,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
             // Lower levels (subarray/bank) -> bus; upper levels -> router NoC
             nc.type = (lvl <= 1) ? 0 : topologyToMcPATType(config.noc_topology);
+            /* (1.12.143): an in-die fabric's grid tier is switches joined by node
+             * links (ruling 9: every grid node, and a CROSSBAR hub, is a
+             * priced switch), not a shared bus; its node links and exits are
+             * priced by emitLinks. Analytical walk only: the detailed path
+             * keeps its measured attribution. */
+            if (indie_walk && lvl == pe_level) nc.type = 1;
 
             const std::string prefix = "noc." + std::to_string(lvl - pe_level);
 

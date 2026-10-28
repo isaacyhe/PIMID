@@ -107,7 +107,8 @@ struct TreeWalker {
      * both on one router: that router once, no links. */
     uint32_t walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
                   const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost,
-                  uint32_t* tsvDies = nullptr) const;   // 1.12.18: die boundaries crossed (stackDieCrossing)
+                  uint32_t* tsvDies = nullptr,     // 1.12.18: die boundaries crossed (stackDieCrossing)
+                  uint32_t* gridEdges = nullptr) const;   // (1.12.143): node <-> node (or node <-> hub) links of an in-die fabric
 };
 
 struct SparseHTree {
@@ -206,6 +207,24 @@ struct SparseHTree {
         for (size_t i = 0; i < path.size(); ++i) {
             key += "/" + std::to_string(path[i]);
             auto it = routerOf.find(key);
+            if (it == routerOf.end() && dieExitOf.count(parent)) {
+                /* (1.12.143): a GRIDDED die (in-die fabric, 1.11.103) has no
+                 * routers for the tiers its grid replaced: its nodes are keyed
+                 * by the chip's key + every component below the chip. Until
+                 * this release the lookup stopped at the first replaced tier,
+                 * found no aggregated endpoint on the chip router and returned
+                 * -1, so the analytical per-access walk fell back to the
+                 * arithmetic ladder and never crossed the die's fabric. */
+                std::string full = key;
+                for (size_t j = i + 1; j < path.size(); ++j) full += "/" + std::to_string(path[j]);
+                auto g = routerOf.find(full);
+                if (g != routerOf.end()) {
+                    auto p = peOfLeaf.find(g->second);
+                    if (p != peOfLeaf.end()) return p->second;
+                    auto a = abstractOf.find(g->second);
+                    if (a != abstractOf.end()) return a->second;
+                }
+            }
             if (it == routerOf.end()) {
                 // diverges into an empty region here -> parent's abstract endpoint
                 auto a = abstractOf.find(parent);
@@ -689,10 +708,11 @@ inline uint32_t stackDieCrossing(const SparseHTree& t, int a, int b) {
 
 inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
                                  const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost,
-                                 uint32_t* tsvDies) const {
+                                 uint32_t* tsvDies, uint32_t* gridEdges) const {
     for (int l = 0; l < 8; l++) perLevel[l] = 0;
     if (cost) *cost = 0;
     if (tsvDies) *tsvDies = 0;
+    if (gridEdges) *gridEdges = 0;
     std::vector<int> rs;
     if (!path(t, srcEp, dstEp, rs) || rs.empty()) return 0;
     auto lvlOf = [&](int r) -> int { return (r >= 0 && r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1; };
@@ -706,6 +726,11 @@ inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uin
             const int rn = rs[i + 1];
             const int la = lvlOf(r), lb = lvlOf(rn);
             if (tsvDies) *tsvDies += stackDieCrossing(t, r, rn);   // 1.12.18
+            /* (1.12.143): an edge between two switches of one gridded die (two grid
+             * nodes, or a node and its CROSSBAR hub) is one of the die's node
+             * links, not a tree up-link; counted apart so the power model can
+             * price it as that link. */
+            if (gridEdges && isDieNode(r) && isDieNode(rn) && t.gridDie[(size_t)r] == t.gridDie[(size_t)rn]) ++*gridEdges;
             /* 1.11.103: a die exit (grid node or hub <-> chip router) crosses the
              * tiers the grid replaced: charge their level latencies and bridges
              * as the tree would, so leaving a gridded die costs what leaving

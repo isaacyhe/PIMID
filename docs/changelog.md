@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.143 -- analytical NoC: the in-die fabric is walked and its links are priced
+
+- **Defect 1 (external/zsim/src/sparse_htree.h, SparseHTree::endpointForUnit).** On a DRAM device with an in-die
+  fabric (`noc.topology: MESH_2D`, `RING` or `CROSSBAR`, ruling 9) the target unit's endpoint was looked up through
+  the tiers the grid replaced; there is no router there, the chip router has no aggregated endpoint, so the lookup
+  returned none and every analytical access fell back to the arithmetic ladder. The analytical timing and the walk
+  counts therefore never crossed the die's fabric: MESH_2D, RING and CROSSBAR ran and priced identically. The lookup
+  now resolves a gridded die's unit to its grid node (the chip's key and every component below it).
+- **Defect 2 (src/main.cpp, NoC level pricing; external/zsim/src/garnet_network.h recordTierWalk,
+  sparse_htree.h TreeWalker::walk).** On the analytical walk the grid tier was priced as one shared bus, so the
+  die's node links rode a bus priced alike for every fabric, and the die exits counted at the tiers the grid
+  replaced were reported "NOT priced" (no router there to own an up-link). Now (user ruling 2026-10-28): the walk
+  counts the node links it crosses (MESH/RING node-node, CROSSBAR node-hub) apart from the tree up-links; they are
+  one link instance priced from those counted traversals with the shared wire model, at the built link count and
+  the mean node-link length (each built link's Manhattan length in node pitches, pitch = sqrt(die area / nodes per
+  die)); the grid tier is priced as switches (ruling 9), not a bus; and the die exit is one up-link per gridded die
+  at the grid tier and at each tier it replaced, as the timing charges it.
+- **Scope.** The pricing change applies to the analytical NoC with an in-die fabric only; the tree (no in-die
+  fabric), the detailed path's measured attribution and the SRAM/NVM flat fabric are unchanged. The lookup fix
+  (defect 1) also reaches the detailed in-die CROSSBAR (defect 3).
+- **Defect 3 (same lookup, detailed path).** A detailed run with an in-die CROSSBAR (the one in-die fabric the
+  detailed path routes) sent no fabric packets at all for the same reason: 0 packets, every remote access unpriced
+  on the fabric. It now routes them (DDR4 BANK, 16 elements, gemv: 0 -> 3110 packets).
+- **Data impact.** Only DRAM devices with a named in-die fabric change; every fleet cell, the tree, the SRAM/NVM flat
+  fabric and the examples without fabric traffic are unchanged (bit-identical results). DDR4 BANK, 16 elements,
+  gemv (small size), analytical: NoC 3.5 mW -> 94 / 94 / 99 mW (MESH_2D / RING / CROSSBAR; node links 0.9 mW, the
+  die exits including their off-package channel I/O the rest), cell 0.833 W -> 0.959 / 0.951 / 0.958 W, run time
+  52985 -> 54261 / 57858 / 54238 cycles (the three fabrics now differ). 64 elements: NoC 4.3 mW -> 198-207 mW, cell
+  0.953 W -> 1.17-1.18 W. Detailed in-die CROSSBAR: run time 53422 -> 193025 cycles, NoC 2.8 -> 26.9 mW.
+
 ## 1.12.142 -- HBM2/HBM3 standby VPP is priced
 
 - **Gap closed (params/dram/hbm2.yaml, hbm3.yaml `idd.vpp_standby`; external/ramulator pimid_energy.h ippUnitMW;

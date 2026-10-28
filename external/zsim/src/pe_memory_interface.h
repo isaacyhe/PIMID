@@ -313,7 +313,8 @@ public:
         return w;
     }
     static bool treeWalk(int srcEp, int dstEp, uint32_t perLevel[8], uint32_t* links, uint64_t* cost,
-                         uint32_t* tsvDies = nullptr) {   // 1.12.18: die boundaries crossed
+                         uint32_t* tsvDies = nullptr,     // 1.12.18: die boundaries crossed
+                         uint32_t* gridEdges = nullptr) {   // (1.12.143): in-die node links crossed
         if (zinfo->hierarchy.placementLevel >= 7) return false;   // HOST_MC: no tree below the element
         const pimid_htree::SparseHTree& t = tree();
         if (t.numPEs <= 0 || srcEp < 0 || dstEp < 0) return false;
@@ -321,7 +322,7 @@ public:
         if (!w.built) return false;
         uint64_t c = 0;
         uint32_t l = w.walk(t, srcEp, dstEp, perLevel, zinfo->hierarchy.levelLatency,
-                            zinfo->hierarchy.bridgeLatency, &c, tsvDies);
+                            zinfo->hierarchy.bridgeLatency, &c, tsvDies, gridEdges);
         bool visited = false;
         for (int i = 0; i < 7; i++) if (perLevel[i]) { visited = true; break; }
         if (!visited) return false;
@@ -1109,7 +1110,8 @@ public:
             uint32_t perLevel[8];   // 1.11.94 (H17): one more rung (HOST_MC)
             uint32_t links = 0; uint64_t walkCost = 0;
             uint32_t tsvDies = 0;   // 1.12.18
-            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost, &tsvDies);
+            uint32_t gridEdges = 0;   // (1.12.143): in-die node links this walk crossed
+            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost, &tsvDies, &gridEdges);
             if (!fromTree)
                 links = hierTraversalLevels(
                     myUnit, targetUnit, perLevel,
@@ -1119,12 +1121,14 @@ public:
             if (zinfo->garnetNetwork && !zinfo->terminationConditionMet) {
                 if (myUnit != targetUnit) {
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links, false, tsvDies,
-                        fromTree && zinfo->hierarchy.stackChannelsPerDie > 0);   // 1.12.18
+                        fromTree && zinfo->hierarchy.stackChannelsPerDie > 0,   // 1.12.18
+                        gridEdges, (int)zinfo->hierarchy.placementLevel);   // (1.12.143)
                     /* the access's control message (a read's request, a write's ack) over
                      * the same tiers (user ruling 2026-10-26: control messages); the analytical ladder
                      * charges the round trip as before */
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links, true, tsvDies,
-                        fromTree && zinfo->hierarchy.stackChannelsPerDie > 0);
+                        fromTree && zinfo->hierarchy.stackChannelsPerDie > 0,
+                        gridEdges, (int)zinfo->hierarchy.placementLevel);   // (1.12.143)
                 }
             }
             // hierLat = per-tier hop-based latency through the LCA path (no double-counting)
