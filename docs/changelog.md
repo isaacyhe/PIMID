@@ -6,6 +6,12 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.130 -- docs: per-access interface energy is described as computed from the part record
+
+- **Documentation (docs/power.md, Measured and assumed).** The line that called the per-access interface energy
+  an inherited constant is replaced: it is computed from the part record (DQ termination, the IDDQ row where one
+  is published, the RDIMM register) on the measured accesses that cross the DQ pins. Text only.
+
 ## 1.12.129 -- the host core's second-level TLB is priced
 
 - **Gap closed (src/main.cpp, src/power/mcpat_wrapper.cpp, external/mcpat core.cc/core.h/XML_Parse).** A host OOO
