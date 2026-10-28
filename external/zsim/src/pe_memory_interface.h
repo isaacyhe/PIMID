@@ -1918,10 +1918,17 @@ protected:
                 if (k == 0) break;                       // never touched by a PE
                 if (k != pg + 1) continue;
                 const uint32_t u = t.unit[h].load(std::memory_order_acquire);
-                if (u != 0) unit = u - 1;                // 0 = being placed right now: the address map
+                if (u != 0) { unit = u - 1; placed = true; }   // 0 = being placed right now: the address map
                 break;
             }
         }
+        /* (next, user ruling 2026-10-28: the multi-core host latency gap) a page no PE has placed is
+         * the host's own: it is spread over all units page by page, as a host memory controller interleaves
+         * its pages over channels and banks. It used to take the PIM block map (pages_per_unit contiguous
+         * pages per unit), which put a host baseline's whole working set on one channel and a few banks
+         * (ctrlMaxChannelPermille 1000 on every DDR5 and HBM3 host baseline): a 16-core pointer chase on
+         * DDR5 measured 12 705 host cycles per request in the replayed controller, 160 with the pages spread. */
+        if (!placed && totalUnits_ > 0) unit = page % totalUnits_;
         slot = 0;
         if (rowStrideBytes_ > 0) {
             const uint64_t stripe = byteAddr / rowStrideBytes_;

@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.146 -- a host baseline's own pages are spread over the memory like a host controller spreads them (user ruling 2026-10-28)
+
+- **The problem.** When the device is the host's memory (every host baseline and co-sim host of the corpus), the host's
+  requests are replayed at the bank the device's placement gives the line (1.12.18, ruling 17). A page no PE has placed
+  takes the PIM block map: pages_per_unit contiguous pages per unit. A host baseline's whole working set therefore sat
+  on one channel and a few banks: ctrlMaxChannelPermille 1000 on every DDR5 and HBM3 host baseline, 4 ACTs per request
+  on DDR5 (chip split) and a row miss on nearly every request. The controller was overloaded by construction (16-core
+  DDR5 pointer chase: 12 705 host cycles per request measured in the replay; 16-core DDR5 stream_triad 5.9 GB/s).
+  A host memory controller interleaves its pages over channels and banks.
+- **The fix (external/zsim/src/pe_memory_interface.h, PEMemoryInterface::hostTarget).** A page no PE has placed is
+  spread over all units page by page (unit = page mod units). Pages a PE has first-touched, and thread stacks, keep the
+  device's placement, so the host sees the device's data where the device put it.
+- **Validation:** measured (busiest channel's share 0.50-0.62 on DDR5, 0.07-0.15 on HBM3; 16-core DDR5
+  pointer chase 160 host cycles per request; charged / measured 0.97-1.00 on the loaded cells).
+- **Data impact:** every host baseline and co-sim host with the replay on (large on DDR5 multi-core cells:
+  stream_triad 16 cores about -68% run time); device (PIM) cells do not move.
+
 ## 1.12.145 -- the replayed DRAM latency follows the controller under load: queue wait counted, partial means aged, a one-phase DRAM epoch
 
 User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"), prompted by Esmaili-Dokht et al.,
