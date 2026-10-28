@@ -370,8 +370,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
         panic("DramEpochReplay %s: cut mode %d disagrees with the pricing mode %d (host interface)",
               name_.c_str(), (int)cutMode_, (int)detMpi);
     if (cutMode_ && !zinfo->hierarchy.mpiNocBaselined) { rawHBoot_.fetch_add(1, std::memory_order_relaxed); return 0; }
-    uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
-    if (E < 1) E = 1;
+    const uint32_t E = epochPhases();   // (next, ruling 2026-10-28): the replay's own epoch
     uint64_t epoch, stamp;
     if (cutMode_) {
         const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -455,7 +454,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
         }
         if (hostOnly_) recordAddr(epoch, stamp, addr, ch, isWrite, mi);
     }
-    const uint32_t v = cutMode_ ? serviceLatencyCut(mi, epoch, PEMemoryInterface::kNocReadLagEpochs)
+    const uint32_t v = cutMode_ ? serviceLatencyCut(mi, epoch, kDramReadLagEpochs)
                                 : serviceLatency(mi, epoch);
     if (v > 0) rawHPriced_.fetch_add(1, std::memory_order_relaxed); else rawHBoot_.fetch_add(1, std::memory_order_relaxed);
     return v;
@@ -514,8 +513,17 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
     /* 1.12.18: epoch r fed but still in flight (drain the lag: its last
      * requests have not completed): the mean of its requests completed so
      * far, not an older final epoch's value */
-    if ((it == carried_.begin() || std::prev(it)->first != r) && (v = partialMean(r, mi)) > 0) {
+    /* (next, user ruling 2026-10-28): the newest epoch at or before r the controller has been fed, final or
+     * not. When the cut trails (r not fed yet) and the newest fed epoch is still in flight, its aged partial
+     * mean is newer than any final value; such a read used to fall back to an older final epoch or, when
+     * none had finished, to the analytical bootstrap (16-core DDR5 pointer chase: 84 022 of 87 893 priced
+     * reads), so the cores issued far faster than the controller served. */
+    uint64_t fedE = ~0ull;
+    for (auto a = acc_.begin(); a != acc_.end() && a->first <= r; ++a) if (a->second.fed) fedE = a->first;
+    const bool newerFed = fedE != ~0ull && (it == carried_.begin() || std::prev(it)->first < fedE);
+    if (newerFed && (v = partialMean(fedE, mi)) > 0) {
         partial_++;
+        if (fedE != r) stale_++;
     } else if (it != carried_.begin()) {
         --it;
         if (it->first != r) stale_++;
@@ -770,7 +778,11 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
                                             (isHostMi(r.mi) ? 1 : 0) + (w.out ? 2 : 0) + (r.shadow ? 3 : 0), cb))   /* 1.12.18: +3 = a lock-step shadow copy */   // 1.12.18 (R1): +2 = outside the ROI; (R0605): source_id 1 = host
             return false;   // the queue is full: the record waits at the door
         if (w.b == 0) {   // the request has entered the controller: in flight from now
-            inflight_[w.id] = Inflight{burstsPerLine_, curTick_, r.mi, r.wr != 0, w.out, w.epoch, r.grp};
+            /* (next, user ruling 2026-10-28): the latency is counted from the tick the record reached the
+             * door (its stamp, or later when the replay clock already stood past it). A request that waited
+             * at a full queue's door was waiting for this controller; its latency used to start only when it
+             * entered the queue, so the wait was charged to no core. */
+            inflight_[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, curTick_), r.mi, r.wr != 0, w.out, w.epoch, r.grp};
             outstanding_++;
             if (curTick_ > w.target) {
                 const uint64_t d = curTick_ - w.target;
@@ -801,9 +813,40 @@ void DramEpochReplay::serveDoors() {
  * Called under lock_. */
 uint32_t DramEpochReplay::partialMean(uint64_t e, uint32_t mi) {
     auto a = acc_.find(e);
-    if (a == acc_.end() || !a->second.fed || mi >= a->second.cnt.size() || a->second.cnt[mi] == 0) return 0;
+    if (a == acc_.end() || !a->second.fed || mi >= a->second.cnt.size()) return 0;
+    /* (next, user ruling 2026-10-28): the finished requests of an epoch in flight are its fast ones; the
+     * slow ones are still queued. Each unfinished request now counts at its age so far (a lower bound on
+     * its latency): in the controller since it reached the door, or still waiting at the door. */
+    PartialCache& pc = pcache_[e];
+    if (pc.tick != curTick_) {
+        pc.tick = curTick_;
+        pc.sum.assign(numMIs_, 0); pc.cnt.assign(numMIs_, 0);
+        std::unordered_map<uint32_t, std::pair<uint64_t, uint32_t>> grpAge;   // a lock-step host request counts once, as its oldest copy
+        auto add = [&](uint32_t m, uint64_t from, uint32_t grp) {
+            if (m >= numMIs_) return;
+            const uint64_t t = (curTick_ + 1 > from) ? (curTick_ + 1 - from) : 1;
+            const double tpc = (m < miTicksPerCycle_.size()) ? miTicksPerCycle_[m] : ticksPerCycle_;
+            const uint64_t c = (uint64_t)((double)t / tpc + 0.5);
+            if (grp) { auto& g = grpAge[grp]; if (c > g.first) g.first = c; g.second = m; return; }
+            pc.sum[m] += c; pc.cnt[m] += 1;
+        };
+        for (const auto& kv : inflight_) if (kv.second.epoch == e) add(kv.second.mi, kv.second.issueTick, kv.second.grp);
+        for (const auto& q : doors_) for (const Waiting& w : q.second)
+            if (w.epoch == e && !w.r.shadow) add(w.r.mi, w.feed, 0);
+        for (const Chan& K : chans_) {   // (1.12.144) the per-channel replay keeps its own in-flight requests and doors
+            for (const auto& kv : K.inflight) if (kv.second.epoch == e) add(kv.second.mi, kv.second.issueTick, kv.second.grp);
+            for (const auto& q : K.doors) for (const Waiting& w : q.second)
+                if (w.epoch == e && !w.r.shadow) add(w.r.mi, w.feed, 0);
+        }
+        for (const auto& kv : grpAge) { pc.sum[kv.second.second] += kv.second.first; pc.cnt[kv.second.second] += 1; }
+        while (pcache_.size() > 4) pcache_.erase(pcache_.begin());
+    }
+    const uint64_t n = a->second.cnt[mi] + (mi < pc.cnt.size() ? pc.cnt[mi] : 0);
+    if (n == 0) return 0;
+    const uint64_t s = a->second.sum[mi] + (mi < pc.sum.size() ? pc.sum[mi] : 0);
+    if (mi < pc.cnt.size() && pc.cnt[mi] > 0) partialAged_++;
     if (!cutMode_) partial_++;
-    return (uint32_t)((a->second.sum[mi] + a->second.cnt[mi] / 2) / a->second.cnt[mi]);
+    return (uint32_t)((s + n / 2) / n);
 }
 
 void DramEpochReplay::finalizeEpoch(uint64_t epoch) {
@@ -860,7 +903,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
         const bool out = closeArmed_ && target > closeTick_;
         if (out) pastEndRecs_++;
         tickTo(target);   // monotone: a stamp behind the clock arrives now
-        Waiting w{r, epoch, target, out, 0, nextId_++};
+        Waiting w{r, epoch, target, out, 0, nextId_++, curTick_};   // (1.12.145): feed = now
         const uint32_t key = r.ch * 2u + (r.wr ? 1u : 0u);
         std::deque<Waiting>& q = doors_[key];
         if (!q.empty() || !acceptOne(w)) { q.push_back(w); waitingN_++; }   // FIFO behind its queue's door
@@ -960,7 +1003,7 @@ bool DramEpochReplay::chanAccept(Chan& K, Waiting& w) {
                                              (isHostMi(r.mi) ? 1 : 0) + (w.out ? 2 : 0) + (r.shadow ? 3 : 0), cb))
             return false;
         if (w.b == 0) {
-            K.inflight[w.id] = Inflight{burstsPerLine_, K.curTick, r.mi, r.wr != 0, w.out, w.epoch, r.grp};
+            K.inflight[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, K.curTick), r.mi, r.wr != 0, w.out, w.epoch, r.grp};   // (1.12.145): from the door
             K.outstanding++;
             if (K.curTick > w.target) {
                 const uint64_t dd = K.curTick - w.target;
@@ -1149,6 +1192,7 @@ void DramEpochReplay::replayEpochPar(uint64_t epoch) {
         const int c = (&K == &chans_[0]) ? 0 : 1;
         for (ChanWork& cw : work[c]) {
             chanTickTo(K, cw.target);
+            cw.w.feed = K.curTick;   // (next, ruling 2026-10-28): the tick the record reached the door
             const uint32_t key = cw.w.r.ch * 2u + (cw.w.r.wr ? 1u : 0u);
             std::deque<Waiting>& q = K.doors[key];
             if (!q.empty() || !chanAccept(K, cw.w)) { q.push_back(cw.w); K.waitingN++; }
@@ -1182,6 +1226,7 @@ void DramEpochReplay::markRoi() {
      * frozen pre-ROI epochs are on the old axis and must not be found, or
      * pruned instead of the new ones (gate 1208B) */
     frozen_.clear();
+    pcache_.clear();   // (next, ruling 2026-10-28)
     if (cutMode_) {   // 1.12.17: the ROI-relative axis starts here
         roiTick0_ = curTick_;
         carried_.clear();
@@ -1352,8 +1397,12 @@ void DramEpochReplay::finalize() {
     futex_unlock(&lock_);
     if (doorRecs_ > 0 && !doorReported_) {   // 1.12.18 (drain the lag)
         doorReported_ = true;
-        info("[mem] %s: 1.12.18 drain the lag: %lu request(s) found their controller queue full and entered when it could take them, mean wait %.0f, max %lu DRAM cycles; %lu read(s) of an epoch still in flight took its partial mean",
-             name_.c_str(), (unsigned long)doorRecs_, (double)doorTicks_ / (double)doorRecs_, (unsigned long)doorMax_, (unsigned long)partial_);
+        info("[mem] %s: 1.12.18 drain the lag: %lu request(s) found their controller queue full and entered when it could take them, mean wait %.0f, max %lu DRAM cycles; %lu read(s) of an epoch still in flight took its partial mean (%lu with unfinished requests at their age)",
+             name_.c_str(), (unsigned long)doorRecs_, (double)doorTicks_ / (double)doorRecs_, (unsigned long)doorMax_, (unsigned long)partial_, (unsigned long)partialAged_);
+    }
+    {   // (next, ruling 2026-10-28): once per dump
+        info("[mem] %s: (1.12.145) epoch %u phase(s), read %lu epochs back; %lu partial mean(s) counted unfinished requests at their age",
+             name_.c_str(), epochPhases(), (unsigned long)kDramReadLagEpochs, (unsigned long)partialAged_);
     }
     if (cutMode_)
         info("[mem] %s: message-passing epoch replay (1.12.17): ROI-relative stamps, epochs folded at the consistent cut; "

@@ -2853,7 +2853,7 @@ static const char* kSchemaPaths[] = {
     "power.pcie.process_node_nm", "power.link.process_node_nm",   // 1.12.18: two-node UCIe rows
     "power.link.bandwidth_GBs", "power.link.base_latency_ns", "power.link.coherence_extra_ns", "power.link.duty_cycle", "power.link.enabled", "power.link.header_bytes", "power.link.link_type",
     "power.link.model", "power.link.num_channels", "power.link.num_lanes", "power.link.num_units", "power.link.pj_per_bit_override", "power.link.total_load_perc",
-    "simulation.det_epoch_phases", "simulation.lock_sync", "simulation.max_instructions", "simulation.mpi_contention_points", "simulation.parallel", "simulation.phase_length", "simulation.stats_interval",
+    "simulation.det_epoch_phases", "simulation.dram_epoch_phases", "simulation.lock_sync", "simulation.max_instructions", "simulation.mpi_contention_points", "simulation.parallel", "simulation.phase_length", "simulation.stats_interval",
     /* 1.12.18 (user rulings 2026-10-23): PIM runtime primitives */
     "simulation.pim_runtime.enabled", "simulation.pim_runtime.apply_to", "simulation.pim_runtime.cycle_basis", "simulation.pim_runtime.source_clock_mhz",
     "simulation.pim_runtime.omp_launch_cycles", "simulation.pim_runtime.omp_launch_scaling", "simulation.pim_runtime.omp_barrier_cycles", "simulation.pim_runtime.omp_barrier_scaling",
@@ -22456,6 +22456,11 @@ int main(int argc, char** argv) {
                 /* 1.11.94 (sweep-94 rows 26/28): run settings that lived only in
                  * environment variables become config keys; the value is handed
                  * to the timing plugin / MPI shim through the same variable. */
+                if (yaml_cfg["simulation"]["dram_epoch_phases"]) {   // (next, user ruling 2026-10-28)
+                    int ep = yamlInt(yaml_cfg["simulation"]["dram_epoch_phases"], 1, "simulation.dram_epoch_phases");
+                    if (ep < 1) { std::cerr << "Error: simulation.dram_epoch_phases must be >= 1" << std::endl; return 1; }
+                    setenv("PIMID_DRAM_EPOCH_PHASES", std::to_string(ep).c_str(), 1);
+                }
                 if (yaml_cfg["simulation"]["det_epoch_phases"]) {
                     int ep = yamlInt(yaml_cfg["simulation"]["det_epoch_phases"], 4, "simulation.det_epoch_phases");
                     if (ep < 1) { std::cerr << "Error: simulation.det_epoch_phases must be >= 1" << std::endl; return 1; }

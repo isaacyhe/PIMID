@@ -36,6 +36,12 @@ decoupled host memory has its own instance. The controller counters (row hits /
 misses / conflicts, activates, refresh commands, replayed and idle cycles,
 bank-open time) feed the energy model; see [power.md](power.md).
 
+**Under load the price follows the controller ((1.12.145), user ruling 2026-10-28).** A request's latency
+counts from the moment it reached the controller's door, so a wait at a full queue is latency. The replay has its own
+epoch (`simulation.dram_epoch_phases`, one phase), and an epoch still in flight is priced with its unfinished requests
+counted at their age, so the latency the cores pay follows what the controller measures on loaded multi-core cells as
+it already did on single-core ones.
+
 ## PE placement levels
 
 PEs attach inside the memory hierarchy via `pim.placement.level`. The levels,

@@ -46,6 +46,7 @@
 #define DRAM_EPOCH_REPLAY_H_
 
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <string>
@@ -126,6 +127,21 @@ class DramEpochReplay {
      * keeps its analytical service). */
     uint32_t serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_t lag);
 
+    /* (next, user ruling 2026-10-28: the multi-core latency gap) the replay's own epoch length in phases,
+     * simulation.dram_epoch_phases (handed over as PIMID_DRAM_EPOCH_PHASES; default kDramEpochPhases),
+     * separate from the NoC's det_epoch_phases. It was det_epoch_phases (4 phases = 40 000 cycles): a
+     * price two such epochs old let the cores of a loaded controller issue in bursts the controller took
+     * several epochs to serve. The read lag stays two epochs (kDramReadLagEpochs). */
+    static constexpr uint32_t kDramEpochPhases = 1;
+    static constexpr uint64_t kDramReadLagEpochs = 2;
+    static uint32_t epochPhases() {
+        static const uint32_t e = [] {
+            const char* v = getenv("PIMID_DRAM_EPOCH_PHASES");
+            const int n = v ? atoi(v) : 0;
+            return n > 0 ? (uint32_t)n : kDramEpochPhases;
+        }();
+        return e;
+    }
     void initStats(AggregateStat* parentStat);
     /* 1.11.98 (gate 1208A): open the statistics window at roi_begin, where the
      * traffic counters are rebased (1.11.90). Everything recorded so far is
@@ -142,13 +158,13 @@ class DramEpochReplay {
 
   private:
     struct Rec { uint64_t stamp; uint64_t addr; uint32_t mi; uint8_t wr; uint32_t ch; uint8_t shadow = 0; uint32_t grp = 0; };   // 1.12.18 (drain the lag): ch = the controller channel; shadow = a host lock-step copy past chip 0, grp = its host request
-    struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; bool out; uint64_t epoch; uint32_t grp = 0; };   // 1.12.18: out = stamped after the ROI end (R1); grp
+    struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; bool out; uint64_t epoch; uint32_t grp = 0; };   // (1.12.145): issueTick = the tick the request reached the controller's door   // 1.12.18: out = stamped after the ROI end (R1); grp
     /* 1.12.18 (user ruling 2026-10-24, "drain the lag"): a record that finds
      * its controller queue full waits at that queue's door (FIFO per channel
      * and direction) and enters the instant the controller can take it; an
      * epoch's requests stay in flight across the epoch boundary, and its
      * measured service latency is final when its last request completes. */
-    struct Waiting { Rec r; uint64_t epoch; uint64_t target; bool out; uint32_t b; uint64_t id; };
+    struct Waiting { Rec r; uint64_t epoch; uint64_t target; bool out; uint32_t b; uint64_t id; uint64_t feed = 0; };   // (1.12.145): feed = the tick the record reached the door
     struct EpochAcc { std::vector<uint64_t> sum, cnt; uint64_t pend = 0; bool fed = false; };
     std::map<uint32_t, std::deque<Waiting>> doors_;
     uint64_t waitingN_ = 0, nextId_ = 0;
@@ -157,6 +173,12 @@ class DramEpochReplay {
     void serveDoors();
     void finalizeEpoch(uint64_t epoch);
     uint32_t partialMean(uint64_t e, uint32_t mi);   // 1.12.18
+    /* (next, user ruling 2026-10-28): the partial mean of an epoch still in flight counts its unfinished
+     * requests (in the controller or waiting at its door) at their age so far; cached per controller tick. */
+    struct PartialCache { uint64_t tick = ~0ull; std::vector<uint64_t> sum, cnt; };
+    std::map<uint64_t, PartialCache> pcache_;
+    uint64_t partialAged_ = 0;                       // reads whose partial mean included unfinished requests
+
     uint64_t partial_ = 0;                           // 1.12.18: reads served a partial mean
     void drainAll();
     uint64_t doorRecs_ = 0, doorTicks_ = 0, doorMax_ = 0; bool doorReported_ = false;

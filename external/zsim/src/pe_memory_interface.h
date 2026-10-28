@@ -1524,8 +1524,7 @@ protected:
                   (int)replayCut, (int)cutPricing());
         if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay &&
             (!replayCut || zinfo->hierarchy.mpiNocBaselined)) {
-            uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
-            if (E < 1) E = 1;
+            const uint32_t E = DramEpochReplay::epochPhases();   // (next, ruling 2026-10-28): the replay's own epoch
             uint64_t curEpoch, stamp;
             if (replayCut) {
                 const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -1553,7 +1552,7 @@ protected:
                 row = (uint64_t)(req.lineAddr << 6) / 1024;   // no row model armed: 1 KB rows, stated
             }
             zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_);
-            uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, kNocReadLagEpochs)
+            uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, DramEpochReplay::kDramReadLagEpochs)
                                    : zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
             zinfo->dramReplay->notePriced(v > 0);
             if (v > 0) { if (byReplay) *byReplay = true; return v; }

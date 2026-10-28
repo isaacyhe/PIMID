@@ -6,6 +6,42 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.145 -- the replayed DRAM latency follows the controller under load: queue wait counted, partial means aged, a one-phase DRAM epoch
+
+User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"), prompted by Esmaili-Dokht et al.,
+"Integration, Enhancements and Evaluation of Memory Simulators" (IISWC 2026, arXiv 2610.15873).
+
+- **The problem.** A core is charged, in the bound phase, the mean service latency the replayed Ramulator2 controller
+  measured for its memory interface two epochs earlier. On single-core cells the two views agree to the cycle; on
+  loaded multi-core host baselines the cores were charged far less than the controller measured (charged / measured,
+  DRAM part: 16-core DDR5 OpenMP stream_triad 0.16, 16-core bfs 0.17 (DDR5) and 0.13 (HBM3), 4-core MPI stream_triad
+  0.04, 4-core and 16-core DDR5 pointer chase 0.14 and 0.0003). Bandwidth stayed consistent; the per-access latency did
+  not follow the controller -- the symptom the paper reports for ZSim + Ramulator, from a different mechanism.
+- **Causes in the pricing (per-epoch traces of charged vs measured; 16-core DDR5 bfs unless said).** (1) A partial
+  mean of an epoch still in flight counted only its finished requests, the fast ones (priced reads paid 879 host
+  cycles where the controller measured 6516). (2) Epochs of 40 000 cycles read two back priced a burst from the quiet
+  epochs before it (correlation of an epoch's request count with its measured latency 0.80). (3) When the cut trailed
+  and nothing at or before k-2 had finished, a read fell back to an older value or the analytical bootstrap (16-core
+  DDR5 pointer chase: 84 022 of 87 893 priced reads). (4) A request held at a full queue's door started its latency
+  only when it entered the queue (4-core MPI stream_triad: 2.1 M requests, 2.8k DRAM cycles each, charged to no core).
+  Per-core pricing would not help: the per-core measured means of one interface lie within about 10% of its mean.
+  The dominant cause is outside the pricing: see the next entry (host pages on one channel and a few banks).
+- **The fix (external/zsim/src: dram_epoch_replay.{h,cpp}, pe_memory_interface.h, qemu_zsim_plugin.cpp; src/main.cpp).**
+  - A request's latency counts from the tick it reached the controller's door (its stamp, or later when the replay
+    clock already stood past it), so a wait at a full queue is latency.
+  - A partial mean counts each unfinished request of the epoch (in the controller or at the door) at its age so far.
+  - A read uses the newest epoch at or before k-2 the controller has been fed, final or not.
+  - The replay has its own epoch length, `simulation.dram_epoch_phases` (default 1 phase = 10 000 cycles; it was the
+    NoC's det_epoch_phases, 4). The read lag stays two epochs; the NoC is unchanged.
+  - Measured and left out: the paper's 5% price smoothing (16-core DDR5 bfs 0.19 -> 0.25 at best, 0.12 at 5%); a
+    repayment (integral) term, which closed the gap on OpenMP cells but drove co-sim MPI cells to 10-15x their run time
+    and made overloaded cells depend on the host node; a backlog projection (over-charged HBM3 by 30%).
+  - The run prints one line per replay: epoch length, read lag, and how many partial means counted unfinished requests.
+- **Validation:** a shift table over 73 cells: host baselines 1/4/16 cores DDR5 and HBM3,
+  pointer chase, co-sim OpenMP and MPI, PIM device cells, and SRAM/PCM/ReRAM cells, which are identical in every
+  simulated and priced line).
+- **Data impact:** loaded multi-core host baselines and co-sim hosts; single-core and device cells move by under 1%.
+
 ## 1.12.144 -- host speed: the two channels of a replayed DRAM controller run on two host threads
 
 - **The cost.** The device DRAM epoch replay ticks one Ramulator2 memory system cycle by cycle. With two channels

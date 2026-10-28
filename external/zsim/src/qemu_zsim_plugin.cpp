@@ -1391,14 +1391,12 @@ void EndOfPhaseActions() {
         if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
         if (foldNoc) { spNocCut = cut; spNocFolded = true; }
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
-            uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
-            if (E < 1) E = 1;
+            const uint32_t E = DramEpochReplay::epochPhases();   // (next, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->dramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }
         if (foldHostDram) {   // 1.12.18: as above, the host interfaces' epoch length is the same
-            uint32_t E = zinfo->garnetNetwork ? zinfo->garnetNetwork->detEpochPhases() : 4;
-            if (E < 1) E = 1;
+            const uint32_t E = DramEpochReplay::epochPhases();   // (next, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->hostDramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }

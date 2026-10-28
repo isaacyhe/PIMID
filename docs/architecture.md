@@ -180,7 +180,7 @@ origin; and at each phase barrier the records are folded at the consistent
 cut (the earliest ROI-relative time over the cores still running or waiting).
 Accesses are priced from frozen epochs (`simulation.det_epoch_phases`): an
 access reads an earlier epoch's per-pair NoC latency and DRAM service latency
-by epoch index from its own clock, never a live value. Message-passing ranks
+by epoch index from its own clock, never a live value (DRAM: its own one-phase epoch, `simulation.dram_epoch_phases`, since (1.12.145)). Message-passing ranks
 use the same mechanism and also meet at their rendezvous. The run time is the
 ROI's elapsed wall-clock time, the latest ROI end on the cores' own clocks.
 Since (1.12.76) a guest thread's identity is its QEMU vCPU index (the guest's own
