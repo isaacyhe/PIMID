@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.134 -- docs: how the HBM3 PHY energy of Chae et al. (JSSC 2024) is used
+
+- **Contradiction (docs/sources.md).** The "HBM3 PHY energy" row said the figure was for validating a controller-PHY
+  term only, never DRAM I/O energy. The HBM3 part record has used it as the DRAM-side I/O anchor since 1.12.18.
+- **Now stated.** The row lists every place the published figure (0.29 pJ/bit read, 0.25 pJ/bit write, SoC-side
+  HBM3 PHY, DRAM die excluded) enters the model:
+  1. As the host PHY's own energy per bit (its scope).
+  2. Its supplies (0.66 / 0.30 V) scale the HBM3 host PHY idle.
+  3. Unscaled, as the stand-in for the DRAM end's per-access I/O energy (`params/dram/hbm3.yaml` `idd.io_share`).
+     No DRAM-side HBM3 I/O energy is published; the measured DRAM VDDQ band 0.19-0.27 pJ/bit is its printed guard.
+- **Not a double count.** Uses 1 and 3 price the two ends of the link, each once. The same published number stands
+  in for both ends because only the host end is measured.
+- Documentation only; every result is unchanged.
+
 ## 1.12.133 -- the DDR4/DDR5 host PHY idle reads the NXP measurement's vddq_ddr rows correctly
 
 - **Defect (1.12.116).** The DDR4/DDR5 host memory-controller PHY idle is a least-squares line through the measured
