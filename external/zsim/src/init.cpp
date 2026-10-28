@@ -1286,7 +1286,8 @@ static void InitSystem(Config& config) {
             uint32_t lineBits = 0; while ((1u << lineBits) < zinfo->lineSize) lineBits++;
             zinfo->dramReplay = new DramEpochReplay(replayCfg, (uint64_t)peMiFreqMHz * 1000000ull, mcCount, bursts, lineBits, "dramReplay");
             for (uint32_t i = 0; i < mcCount; i++)   // 1.12.18 (R1): requests outside the ROI leave the interfaces' rd/wr
-                zinfo->dramReplay->bindCounters(rawMIs[i]->replayMi(), rawMIs[i]->rdCounter(), rawMIs[i]->wrCounter());
+                zinfo->dramReplay->bindCounters(rawMIs[i]->replayMi(), rawMIs[i]->rdCounter(), rawMIs[i]->wrCounter(),
+                                                rawMIs[i]->replayPricedCounter(), rawMIs[i]->replayLatCounter());   // (1.12.153): and the charged view
         }
 
         if (cosimMode) {

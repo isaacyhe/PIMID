@@ -6,6 +6,71 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.153 -- the replayed DRAM latency follows the controller under message passing and on bursty device kernels: a price window, thread-MPI host records shifted with their rank, the charged view on ROI requests
+
+User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising other cells").
+
+- **The problem.** After 1.12.145-1.12.151 the OpenMP host baselines charged 0.86-0.99 of the latency the replayed
+  Ramulator2 controller measured (charged / measured, DRAM part), but the thread-MPI host baselines did not
+  (348592b8: 4-rank / 16-rank bfs 0.84 / 0.21 on DDR5 and 0.79 / 0.47 on HBM3; 4-rank DDR5 stream_triad 0.81).
+  The device interfaces were low too: co-sim MPI stream_triad 0.86 (DDR5) and 0.83 (HBM3), co-sim MPI bfs
+  0.79 / 0.85, co-sim HBM3 OpenMP bfs 0.82, device bfs_omp (ALU PEs) 0.42 and spmv_csr_omp 0.32.
+- **Causes (measured).**
+  1. *Thread-MPI host records join later epochs.* The consistent cut reads a host core's clock against its
+     roiBaseCycle, which an OOO host core does not keep (0), so a host core never holds the cut and every host
+     record is folded at the next phase barrier. Records keyed by their own ROI-relative clock then found their
+     epoch already folded: 0.13-22 M records per host MPI cell "joined a later epoch" (92% of the 4-rank DDR5 bfs
+     records, 4-7 epochs late; 0 on every OpenMP cell). An access, priced from epoch k-2 of its own clock, read an
+     epoch whose records were stamped about eight epochs earlier: burst epochs (about 1000 requests against 160)
+     were priced at the quiet epochs before them (charged 700 against a measured 1234 cycles).
+  2. *A trailing rank's records issue at one tick.* Rank clocks drift apart (the per-barrier cut debug of 16-rank
+     DDR5 stream_triad: one rank 363 epochs behind the others for the whole run). Its records arrive behind the
+     replay clock and each one issued AT the clock, a phase of that rank's traffic in one tick: door waits of
+     0.48 M DRAM cycles (mean) on 16-rank DDR5 stream_triad and a measured 6820 cycles per request on 16-rank DDR5
+     bfs, which the cores were never charged. Holding the cut at the host ranks instead (tried) removes the late
+     records but leaves the leading ranks priced from epochs hundreds of phases old (16-rank DDR5 stream_triad 0.53).
+  3. *A one-epoch price two epochs back locks a bursty load into a cycle of period two lags.* Device spmv_csr_omp:
+     burst epochs (about 2000 requests, 450-550 cycles) are priced at the quiet epoch two back (about 40 cycles), the
+     quiet epochs at the burst; per-epoch charged / measured alternates 0.1 / 5.
+  4. *The charged view counted requests outside the ROI.* replayPriced / replayLat count every priced access; the
+     replay's measured view (latencySum / ctrlRequests) counts the ROI's requests only. On co-sim MPI stream_triad
+     33.0 M of 99.0 M priced device requests (co-sim MPI bfs: 30.2 M of 44.7 M) were stamped after the ROI end.
+  - Measured and left out: issue-time-weighted epoch means (no change), per-
+    source means (worse: per-rank means differ by only +-12%), a read lag of one epoch (no change), a bounded per-rank
+    settlement of the measured-minus-charged deficit (closes 4-rank cells to 0.98-1.02 but overshoots to 1.11-1.12 on
+    bfs, and cannot help when the price itself is stale: 16-rank DDR5 stream_triad 0.55), and holding the DRAM cut at
+    the host ranks (see 2).
+- **The fix (external/zsim/src: dram_epoch_replay.{h,cpp}, pe_memory_interface.h, init.cpp; src/main.cpp).**
+  - The price is the request-weighted mean over the epoch read (final, or in flight with its unfinished requests at
+    their age) and the seven finalized epochs before it, per interface: `simulation.dram_price_window` (8 epochs;
+    1 = the epoch read alone, the rule before).
+  - Thread-MPI host interfaces (the host cores never hold the cut, see cause 1): an access reads the newest epoch the
+    controller has been fed, not k-2 of its own clock; a record behind the replay clock shifts its source rank, as a
+    whole, to the clock (one offset per rank, which only grows), so a trailing rank's requests keep their spacing.
+  - A device interface binds replayPriced / replayLat to the replay: a request priced at the replay and found
+    outside the ROI leaves them, as it leaves rd / wr (1.12.18 R1). The device access is priced before it is
+    recorded, so the record carries its charge (the record's own epoch is never read by that access).
+  - The run prints the window, and on thread-MPI how many host records were shifted (largest shift, sources).
+- **Validation (sbatch, genoa, 348592b8 vs this build, the 73-cell list; charged / measured, run-time shift).**
+  - Thread-MPI host: DDR5 bfs 4 / 16 0.837 -> 0.975 (-3.1%) / 0.210 -> 0.825 (-37.1%); HBM3 bfs 4 / 16 0.792 -> 0.976
+    (-2.0%) / 0.471 -> 0.959 (-11.8%); DDR5 stream_triad 4 / 16 0.812 -> 0.999 (-11.3%) / 0.917 -> 1.000 (-33.9%);
+    HBM3 stream_triad 4 / 16 0.984 -> 0.999 (-1.7%) / 0.989 -> 0.999 (+1.9%). Door waits on 16-rank DDR5
+    stream_triad: 3.37 M requests at 0.48 M DRAM cycles mean -> 95 770 at 1 cycle; its largest rank shift 4.44 M cycles. 16-rank DDR5 bfs stays just under the band; with the window at 12
+    it reads 0.913, at 16 0.831 (the cell is sensitive to the window, not monotone).
+  - OpenMP host (30 cells) and pointer chase (6): every ratio moves toward 1 (0.87-0.99 -> 0.986-1.006), run time
+    -1.0% .. +3.3% (16-core DDR5 stencil_2d +3.3%, histogram +2.1%, gemv +1.9%; all others under 1.4%).
+  - Device interfaces: co-sim MPI stream_triad 0.861 -> 1.001 (DDR5) and 0.831 -> 0.993 (HBM3), co-sim MPI bfs
+    0.788 -> 0.910 / 0.848 -> 0.980, co-sim HBM3 OpenMP bfs 0.818 -> 0.975, the DDR5-3200 co-sim MPI stream_triad
+    0.862 -> 1.001; other device cells 0.98-1.03. Co-sim run time -0.6% .. +0.7% (co-sim HBM3 OpenMP bfs +3.2%).
+    Still below the band: device bfs_omp on ALU PEs 0.415 -> 0.777 and spmv_csr_omp (31 epochs, 14% of its accesses
+    before the first epoch) 0.321 -> 0.794. With the window at 16 epochs (the same 73 cells, host side) bfs_omp
+    reads 0.926 and spmv 0.815, the host cells stay within 0.89-1.01 except 16-rank DDR5 bfs (0.831); 8 is kept as
+    the default (the full validation above).
+  - Every checksum equal; results identical on two genoa nodes and a qc-mi210 node.
+- **Data impact.** Thread-MPI host baselines (DDR5: up to -37% run time, the door-wait artefact removed); every
+  cell whose replay prices a bursty load (OpenMP host +-3%, device bfs_omp +19% run time); the device charged
+  counters of co-sim MPI cells (ROI requests only). Single-core and steady cells move under 1.4%.
+
 ## 1.12.152 -- docs: the public documentation agrees with 1.12.151
 
 - **Documentation (README.md; docs/README.md, architecture.md, benchmarks.md, cores.md, cosim.md,

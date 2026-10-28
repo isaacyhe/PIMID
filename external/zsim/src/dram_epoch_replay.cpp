@@ -21,6 +21,10 @@
 #include "log.h"
 #include "zsim.h"
 
+/* (1.12.153): the host core of the host access being recorded, and the charge of the device access being recorded */
+static thread_local uint32_t t_recSrc = ~0u;
+static thread_local uint32_t t_recChg = 0;
+
 #ifdef _WITH_RAMULATOR_
 
 DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFreqHz,
@@ -34,6 +38,7 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         const char* r = getenv("PIMID_MPI_RANKS");
         cutMode_ = (r && atoi(r) > 1 && !getenv("PIMID_MPI_RANK"));
         if (PEMemoryInterface::singleProcCut()) cutMode_ = true;   // 1.12.18 (ruling 2026-10-24): single-process runs too
+        mpiHost_ = cutMode_ && PEMemoryInterface::mpiThreadDetPricing();   // (1.12.153): see mpiHost_
     }
     YAML::Node config = YAML::LoadFile(configFile);
     /* 1.11.98 (gate 1208A): ONE instance for the whole DEVICE. The device's
@@ -177,6 +182,8 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     ticksPerCycle_ = corePeriodNs / tck;
     coreFreqHz_ = coreFreqHz; tckNs_ = tck;   // 1.12.18 (R2): the run time's clock may be another node's
     miRd_.assign(numMIs_, nullptr); miWr_.assign(numMIs_, nullptr);   // 1.12.18 (R1)
+    miPriced_.assign(numMIs_, nullptr); miChgLat_.assign(numMIs_, nullptr);   // (1.12.153)
+    outPriced_.assign(numMIs_, 0); outChgLat_.assign(numMIs_, 0); outPricedApplied_.assign(numMIs_, 0); outChgLatApplied_.assign(numMIs_, 0);
     outRd_.assign(numMIs_, 0); outWr_.assign(numMIs_, 0); outRdApplied_.assign(numMIs_, 0); outWrApplied_.assign(numMIs_, 0);
     sumLat_.assign(numMIs_, 0); cntLat_.assign(numMIs_, 0);
     lastValue_.assign(numMIs_, 0);
@@ -224,6 +231,8 @@ uint32_t DramEpochReplay::addHostInterface(uint64_t hostFreqHz) {
     sumLat_.push_back(0); cntLat_.push_back(0); lastValue_.push_back(0);
     miTicksPerCycle_.push_back(tpc);
     miRd_.push_back(nullptr); miWr_.push_back(nullptr);   // 1.12.18 (R1)
+    miPriced_.push_back(nullptr); miChgLat_.push_back(nullptr);   // (1.12.153)
+    outPriced_.push_back(0); outChgLat_.push_back(0); outPricedApplied_.push_back(0); outChgLatApplied_.push_back(0);
     outRd_.push_back(0); outWr_.push_back(0); outRdApplied_.push_back(0); outWrApplied_.push_back(0);
     futex_unlock(&lock_);
     info("[mem] %s: host memory interface %u joined the replay (%s): host clock %.1f MHz = %.4f DRAM cycles per host cycle; its requests carry source_id 1 and the controller splits their row hits/misses/conflicts and activates [1.12.18 ruling 17]",
@@ -232,9 +241,9 @@ uint32_t DramEpochReplay::addHostInterface(uint64_t hostFreqHz) {
     return mi;
 }
 
-void DramEpochReplay::bindCounters(uint32_t mi, Counter* rd, Counter* wr) {   // 1.12.18 (R1)
+void DramEpochReplay::bindCounters(uint32_t mi, Counter* rd, Counter* wr, Counter* priced, Counter* chargedLat) {   // 1.12.18 (R1)
     futex_lock(&lock_);
-    if (mi < numMIs_) { miRd_[mi] = rd; miWr_[mi] = wr; }
+    if (mi < numMIs_) { miRd_[mi] = rd; miWr_[mi] = wr; miPriced_[mi] = priced; miChgLat_[mi] = chargedLat; }
     futex_unlock(&lock_);
 }
 
@@ -246,6 +255,10 @@ void DramEpochReplay::applyOutside() {
         const uint64_t dr = outRd_[m] - outRdApplied_[m], dw = outWr_[m] - outWrApplied_[m];
         if (dr && miRd_[m]) { miRd_[m]->atomicInc((uint64_t)0 - dr); outRdApplied_[m] += dr; }
         if (dw && miWr_[m]) { miWr_[m]->atomicInc((uint64_t)0 - dw); outWrApplied_[m] += dw; }
+        /* (1.12.153): the charged view of the same requests (a device interface's replayPriced / replayLat) */
+        const uint64_t dp = outPriced_[m] - outPricedApplied_[m], dl = outChgLat_[m] - outChgLatApplied_[m];
+        if (dp && miPriced_[m]) { miPriced_[m]->atomicInc((uint64_t)0 - dp); outPricedApplied_[m] += dp; }
+        if (dl && miChgLat_[m]) { miChgLat_[m]->atomicInc((uint64_t)0 - dl); outChgLatApplied_[m] += dl; }
     }
 }
 
@@ -336,13 +349,15 @@ uint64_t DramEpochReplay::composeAddr(uint32_t unit, uint32_t slot, uint64_t row
 }
 
 void DramEpochReplay::record(uint64_t epoch, uint64_t stamp, uint32_t unit, uint32_t slot, uint64_t row,
-                             uint64_t lineAddr, bool isWrite, uint32_t mi) {
+                             uint64_t lineAddr, bool isWrite, uint32_t mi, uint32_t charged) {
     /* 1.11.98: the window closes with the ROI, as every other counter does
      * (post-termination accesses are not counted anywhere). */
     if (zinfo->terminationConditionMet) return;
     uint32_t ch = 0;
     const uint64_t addr = composeAddr(unit, slot, row, lineAddr, &ch);
+    t_recChg = charged;   // (1.12.153)
     recordAddr(epoch, stamp, addr, ch, isWrite, mi);
+    t_recChg = 0;
 }
 
 void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, uint32_t ch, bool isWrite, uint32_t mi, uint8_t shadow, uint32_t grp) {
@@ -353,7 +368,8 @@ void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, 
      * issues at the clock, as the shared-memory replay does with a late
      * stamp; a folded epoch is never replayed twice. */
     if (cutMode_ && anyFolded_ && epoch <= lastFolded_) { epoch = lastFolded_ + 1; late_++; }
-    pending_[epoch].push_back(Rec{stamp, addr, mi, (uint8_t)(isWrite ? 1 : 0), ch, shadow, grp});
+    pending_[epoch].push_back(Rec{stamp, addr, mi, (uint8_t)(isWrite ? 1 : 0), ch, shadow, grp,
+                                  (mpiHost_ && isHostMi(mi)) ? t_recSrc : ~0u, t_recChg});   // (1.12.153): source, charge
     if (ch < perChan_.size()) perChan_[ch]++;
     futex_unlock(&lock_);
 }
@@ -367,6 +383,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
      * cycles per phase); the DRAM clock reads it at the instance's clock, and
      * the latency is converted to host cycles per interface. */
     if (!sys_ || !isHostMi(mi)) return 0;
+    t_recSrc = srcId;   // (1.12.153): the source of the records below (thread-MPI host: shiftLate)
     const bool detMpi = PEMemoryInterface::cutPricing();   // 1.12.18: thread-MPI or single-process cut
     if (cutMode_ != detMpi)
         panic("DramEpochReplay %s: cut mode %d disagrees with the pricing mode %d (host interface)",
@@ -509,8 +526,11 @@ void DramEpochReplay::foldByCut(uint64_t cut, uint64_t epochLen) {
 }
 
 uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_t lag) {
-    if (!cutMode_ || mi >= numMIs_ || epoch < lag) return 0;
-    const uint64_t r = epoch - lag;
+    if (!cutMode_ || mi >= numMIs_) return 0;
+    /* (next, user ruling 2026-10-28): a thread-MPI host interface reads the newest epoch fed (see mpiHost_) */
+    const bool newest = mpiHost_ && isHostMi(mi);
+    if (!newest && epoch < lag) return 0;
+    const uint64_t r = newest ? ~0ull - 1 : epoch - lag;
     futex_lock(&lock_);
     uint32_t v = 0;
     /* the latest folded epoch at or before r: r itself once the cut has
@@ -528,16 +548,39 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
     uint64_t fedE = ~0ull;
     for (auto a = acc_.begin(); a != acc_.end() && a->first <= r; ++a) if (a->second.fed) fedE = a->first;
     const bool newerFed = fedE != ~0ull && (it == carried_.begin() || std::prev(it)->first < fedE);
+    uint64_t e0 = ~0ull, n0 = 0;   // (1.12.153): the epoch read and its request count, for the price window
     if (newerFed && (v = partialMean(fedE, mi)) > 0) {
         partial_++;
-        if (fedE != r) stale_++;
+        if (fedE != r && !newest) stale_++;
+        e0 = fedE;
+        auto a = acc_.find(fedE); auto pc = pcache_.find(fedE);
+        n0 = ((a != acc_.end() && mi < a->second.cnt.size()) ? a->second.cnt[mi] : 0)
+           + ((pc != pcache_.end() && mi < pc->second.cnt.size()) ? pc->second.cnt[mi] : 0);
     } else if (it != carried_.begin()) {
         --it;
-        if (it->first != r) stale_++;
+        if (it->first != r && !newest) stale_++;
         if (mi < it->second.size()) v = it->second[mi];
+        e0 = it->first;
+        auto w = winCnt_.find(e0);
+        n0 = (w != winCnt_.end() && mi < w->second.size()) ? w->second[mi] : 0;
     }
-    while (carried_.size() > 1 && carried_.begin()->first + 16 < r && std::next(carried_.begin())->first <= r)
-        carried_.erase(carried_.begin());
+    /* (next, user ruling 2026-10-28): the price window -- the request-weighted mean over the epoch read and the
+     * priceWindow() - 1 finalized epochs before it (an interface idle in the epoch read weighs its carried value
+     * once) */
+    const uint32_t W = priceWindow();
+    if (W > 1 && v > 0 && e0 != ~0ull) {
+        double s = (double)v * (double)(n0 ? n0 : 1), c = (double)(n0 ? n0 : 1);
+        uint32_t k = 1;
+        for (auto w = winSum_.lower_bound(e0); w != winSum_.begin() && k < W; k++) {
+            --w;
+            auto wc = winCnt_.find(w->first);
+            if (mi < w->second.size() && wc != winCnt_.end()) { s += (double)w->second[mi]; c += (double)wc->second[mi]; }
+        }
+        v = (uint32_t)(s / c + 0.5);
+    }
+    if (!newest)
+        while (carried_.size() > 1 && carried_.begin()->first + 16 < r && std::next(carried_.begin())->first <= r)
+            carried_.erase(carried_.begin());
     futex_unlock(&lock_);
     return v;
 }
@@ -770,6 +813,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
             }
             if (account) {
             if (a != acc_.end() && f.mi < a->second.sum.size()) { a->second.sum[f.mi] += latCyc; a->second.cnt[f.mi] += 1; }
+            if (f.out && f.chg && f.mi < outPriced_.size()) { outPriced_[f.mi]++; outChgLat_[f.mi] += f.chg; }   // (1.12.153)
             if (f.out) raw_.olat += latCyc;   // 1.12.18 (R1)
             else if (isHostMi(f.mi)) {
                 raw_.hlat += latCyc;
@@ -789,7 +833,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
              * door (its stamp, or later when the replay clock already stood past it). A request that waited
              * at a full queue's door was waiting for this controller; its latency used to start only when it
              * entered the queue, so the wait was charged to no core. */
-            inflight_[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, curTick_), r.mi, r.wr != 0, w.out, w.epoch, r.grp};
+            inflight_[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, curTick_), r.mi, r.wr != 0, w.out, w.epoch, r.grp, r.chg};
             outstanding_++;
             if (curTick_ > w.target) {
                 const uint64_t d = curTick_ - w.target;
@@ -862,6 +906,10 @@ void DramEpochReplay::finalizeEpoch(uint64_t epoch) {
     std::vector<uint32_t> perMi(numMIs_, 0);
     for (uint32_t m = 0; m < numMIs_ && m < a->second.cnt.size(); ++m)
         if (a->second.cnt[m] > 0) perMi[m] = (uint32_t)((a->second.sum[m] + a->second.cnt[m] / 2) / a->second.cnt[m]);
+    if (cutMode_ && priceWindow() > 1) {   // (1.12.153): the price window's finalized epochs
+        winSum_[epoch] = a->second.sum; winCnt_[epoch] = a->second.cnt;
+        while (winSum_.size() > 4 * (size_t)priceWindow() + 8) { winSum_.erase(winSum_.begin()); winCnt_.erase(winCnt_.begin()); }
+    }
     acc_.erase(a);
     frozen_[epoch] = perMi;
     if (cutMode_) {   // 1.12.17: an interface idle in this epoch keeps its last measured value
@@ -870,6 +918,24 @@ void DramEpochReplay::finalizeEpoch(uint64_t epoch) {
         carried_[epoch] = c;
     }
     for (uint32_t m = 0; m < numMIs_ && m < lastValue_.size(); ++m) if (perMi[m] > 0) lastValue_[m] = perMi[m];
+}
+
+/* (next, user ruling 2026-10-28): see mpiHost_ in the header. A record of a thread-MPI host source stamped behind the
+ * replay clock (at the start of this replay call, in core cycles from the ROI origin) moves its source's offset up
+ * to the clock; every record of the source carries the offset, so a trailing rank's requests keep their spacing
+ * instead of all issuing at the clock. The records are re-sorted on the shifted stamps (stable: ties keep the
+ * deterministic order of the sort above). Called under lock_. */
+void DramEpochReplay::shiftLate(std::vector<Rec>& recs) {
+    if (recs.empty()) return;
+    const uint64_t clk = (curTick_ > roiTick0_) ? (uint64_t)((double)(curTick_ - roiTick0_) / ticksPerCycle_) : 0;
+    bool any = false;
+    for (Rec& r : recs) {
+        if (r.src == ~0u) continue;
+        uint64_t& sh = srcShift_[r.src];
+        if (r.stamp + sh < clk) { sh = clk - r.stamp; if (sh > shiftMax_) shiftMax_ = sh; }
+        if (sh) { r.stamp += sh; any = true; shiftedRecs_++; }
+    }
+    if (any) std::stable_sort(recs.begin(), recs.end(), [](const Rec& a, const Rec& b) { return a.stamp < b.stamp; });
 }
 
 /* everything fed is served (pre-ROI before the window opens; the tail before
@@ -895,6 +961,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
         if (a.addr != b.addr) return a.addr < b.addr;
         return a.wr < b.wr;
     });
+    if (mpiHost_) shiftLate(recs);   // (1.12.153)
     EpochAcc& acc = acc_[epoch];
     if (acc.sum.empty()) { acc.sum.assign(numMIs_, 0); acc.cnt.assign(numMIs_, 0); }
     acc.pend += recs.size(); acc.fed = false;
@@ -1002,7 +1069,7 @@ bool DramEpochReplay::chanAccept(Chan& K, Waiting& w) {
                 if (--g.first > 0) account = false; else { latCyc = g.second; Q.grpLat.erase(f.grp); }
             }
             if (Q.evTick != Q.curTick) { Q.evTick = Q.curTick; Q.seq = 0; }
-            Q.evs.push_back(ChanEv{Q.curTick, Q.seq++, f.epoch, f.mi, latCyc, account, f.out, isHostMi(f.mi)});
+            Q.evs.push_back(ChanEv{Q.curTick, Q.seq++, f.epoch, f.mi, latCyc, account, f.out, isHostMi(f.mi), f.chg});
             Q.outstanding--;
             Q.inflight.erase(it);
         };
@@ -1010,7 +1077,7 @@ bool DramEpochReplay::chanAccept(Chan& K, Waiting& w) {
                                              (isHostMi(r.mi) ? 1 : 0) + (w.out ? 2 : 0) + (r.shadow ? 3 : 0), cb))
             return false;
         if (w.b == 0) {
-            K.inflight[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, K.curTick), r.mi, r.wr != 0, w.out, w.epoch, r.grp};   // (1.12.145): from the door
+            K.inflight[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, K.curTick), r.mi, r.wr != 0, w.out, w.epoch, r.grp, r.chg};   // (1.12.145): from the door
             K.outstanding++;
             if (K.curTick > w.target) {
                 const uint64_t dd = K.curTick - w.target;
@@ -1128,6 +1195,7 @@ void DramEpochReplay::chanMerge(uint64_t startTick, uint64_t endTick) {
         auto a = acc_.find(e.epoch);
         if (e.account) {
             if (a != acc_.end() && e.mi < a->second.sum.size()) { a->second.sum[e.mi] += e.latCyc; a->second.cnt[e.mi] += 1; }
+            if (e.out && e.chg && e.mi < outPriced_.size()) { outPriced_[e.mi]++; outChgLat_[e.mi] += e.chg; }   // (1.12.153)
             if (e.out) raw_.olat += e.latCyc;
             else if (e.host) {
                 raw_.hlat += e.latCyc;
@@ -1178,6 +1246,7 @@ void DramEpochReplay::replayEpochPar(uint64_t epoch) {
         if (a.addr != b.addr) return a.addr < b.addr;
         return a.wr < b.wr;
     });
+    if (mpiHost_) shiftLate(recs);   // (1.12.153)
     EpochAcc& acc = acc_[epoch];
     if (acc.sum.empty()) { acc.sum.assign(numMIs_, 0); acc.cnt.assign(numMIs_, 0); }
     acc.pend += recs.size(); acc.fed = false;
@@ -1234,6 +1303,7 @@ void DramEpochReplay::markRoi() {
      * pruned instead of the new ones (gate 1208B) */
     frozen_.clear();
     pcache_.clear();   // (next, ruling 2026-10-28)
+    winSum_.clear(); winCnt_.clear(); srcShift_.clear();   // (1.12.153)
     if (cutMode_) {   // 1.12.17: the ROI-relative axis starts here
         roiTick0_ = curTick_;
         carried_.clear();
@@ -1412,6 +1482,11 @@ void DramEpochReplay::finalize() {
         info("[mem] %s: (1.12.145) epoch %u phase(s), read %lu epochs back; %lu partial mean(s) counted unfinished requests at their age",
              name_.c_str(), epochPhases(), (unsigned long)kDramReadLagEpochs, (unsigned long)partialAged_);
     }
+    info("[mem] %s: (1.12.153) price window %u epoch(s) (request-weighted)%s", name_.c_str(), priceWindow(),
+         mpiHost_ && hostMis_ ? "; thread-MPI host interfaces read the newest epoch fed" : "");
+    if (mpiHost_ && hostMis_)
+        info("[mem] %s: (1.12.153) thread-MPI host records behind the replay clock: %lu shifted with their source (largest shift %lu cycles, %lu source(s))",
+             name_.c_str(), (unsigned long)shiftedRecs_, (unsigned long)shiftMax_, (unsigned long)srcShift_.size());
     if (cutMode_)
         info("[mem] %s: message-passing epoch replay (1.12.17): ROI-relative stamps, epochs folded at the consistent cut; "
              "%lu record(s) joined a later epoch, %lu read(s) took an epoch before the lag", name_.c_str(),
@@ -1438,10 +1513,10 @@ void DramEpochReplay::finalize() {
 DramEpochReplay::DramEpochReplay(const std::string&, uint64_t, uint32_t, uint32_t, uint32_t, const char* name, bool, uint32_t) { panic("DramEpochReplay %s: built without Ramulator", name); }
 uint32_t DramEpochReplay::addHostInterface(uint64_t) { return 0; }
 uint32_t DramEpochReplay::hostAccess(uint32_t, uint64_t, uint64_t, uint32_t, bool, bool) { return 0; }
-void DramEpochReplay::bindCounters(uint32_t, Counter*, Counter*) {}
+void DramEpochReplay::bindCounters(uint32_t, Counter*, Counter*, Counter*, Counter*) {}
 void DramEpochReplay::recordAddr(uint64_t, uint64_t, uint64_t, uint32_t, bool, uint32_t, uint8_t, uint32_t) {}
 DramEpochReplay::~DramEpochReplay() {}
-void DramEpochReplay::record(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t, uint64_t, bool, uint32_t) {}
+void DramEpochReplay::record(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t, uint64_t, bool, uint32_t, uint32_t) {}
 void DramEpochReplay::markRoi() {}
 void DramEpochReplay::ctrlTotals(uint64_t&, uint64_t&, uint64_t&, uint64_t&) {}
 uint64_t DramEpochReplay::composeAddr(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t*, int) { return 0; }

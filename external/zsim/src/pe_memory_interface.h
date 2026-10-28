@@ -1338,6 +1338,8 @@ public:
 
     Counter* rdCounter() { return &profReads_; }    // 1.12.18 (R1): bound to the replay
     Counter* wrCounter() { return &profWrites_; }
+    Counter* replayPricedCounter() { return &profReplayPriced_; }   // (1.12.153): bound to the replay (outside-ROI requests leave them)
+    Counter* replayLatCounter() { return &profReplayLat_; }
     DqDataStats& dqData() { return dqStats_; }
     uint32_t replayMi() const { return mcId_; }
     void initStats(AggregateStat* parentStat) override {
@@ -1556,9 +1558,11 @@ protected:
             } else {
                 row = (uint64_t)(req.lineAddr << 6) / 1024;   // no row model armed: 1 KB rows, stated
             }
-            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_);
+            /* (1.12.153): priced first, so the record carries its charge (the record joins epoch curEpoch, which no read
+             * of this access looks at) */
             uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, DramEpochReplay::kDramReadLagEpochs)
                                    : zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
+            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_, v);
             zinfo->dramReplay->notePriced(v > 0);
             if (v > 0) {
                 profReplayPriced_.atomicInc();   // (1.12.148): the charged side of the charged vs measured latency check

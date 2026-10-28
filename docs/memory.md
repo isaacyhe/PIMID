@@ -43,6 +43,17 @@ epoch (`simulation.dram_epoch_phases`, one phase), and an epoch still in flight 
 counted at their age, so the latency the cores pay follows what the controller measures on loaded multi-core cells as
 it already did on single-core ones.
 
+**The price is a window, and message-passing host records keep their spacing ((1.12.153), user ruling 2026-10-28).**
+An access is charged the request-weighted mean latency over the epoch it reads and the seven finalized epochs before
+it (`simulation.dram_price_window`, 8 epochs; 1 = the epoch read alone). A single epoch read two back let a bursty
+load lock into a cycle of period two lags -- burst epochs priced at the quiet epoch before them, quiet epochs at the
+burst. Under thread-MPI the host cores never hold the consistent cut, so every host record is folded at the next phase
+barrier; a host interface reads the newest epoch the controller has been fed, and a rank whose ROI-relative clock
+trails the others has its records shifted to the replay clock as a whole (one offset per rank, which only grows)
+instead of each issuing at the clock at one tick. An access a device interface priced at the replay and the replay
+then found outside the ROI leaves `replayPriced` / `replayLat`, as it leaves rd / wr, so the charged view counts the
+ROI's requests only.
+
 **So is a memory of type Ramulator ((1.12.147), user ruling 2026-10-28).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,
 which is built as one controller per channel of the memory (HBM3 16, DDR5 2).
