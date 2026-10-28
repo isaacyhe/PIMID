@@ -41,7 +41,8 @@ namespace {
 /* (1.12.94): the PCM write supply efficiency is the published charge-pump 0.388. */
 /* (1.12.108): a PCM write is priced at the mean of the SET and RESET energies. */
 /* (1.12.109): RERAM is characterised on the 1T1R cell RRAM_1T1R.cell. */
-const char* kToolVersion = "1.12.109";
+/* (1.12.162): STT_MRAM and RERAM writes are priced with write-verify (cell files and memory.nvm_write_verify.*). */
+const char* kToolVersion = "1.12.162";
 
 struct State {
     Mode mode = Mode::RW;

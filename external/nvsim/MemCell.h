@@ -80,6 +80,10 @@ public:
 	double minSenseVoltage; /* Minimum sense voltage */
         double wordlineBoostRatio; /*TO-DO: function not realized: ratio of boost wordline voltage to vdd */
 	double readPower;       /* Read power per bitline (uW)*/
+	double writeVerifyRounds;    /* PIMID (1.12.162): average program-verify rounds per write access (0 = no verify) */
+	double writePulsesPerBit;    /* PIMID (1.12.162): average write pulses per programmed bit (>= 1; 1 = one pulse) */
+	double writeVerifyRoundsAlt; /* PIMID (1.12.162): rounds under the cell's alternative retry model (0 = none given) */
+	double writePulsesPerBitAlt; /* PIMID (1.12.162): pulses per bit under the alternative retry model (0 = none given) */
 	double readEnergy;      /* PIMID (1.12.92): published energy of one cell read (pJ in the file, J here); 0 = not given */
 	bool   resetMode;		/* true = voltage-mode, false = current-mode */
 	double resetVoltage;	/* Reset voltage */

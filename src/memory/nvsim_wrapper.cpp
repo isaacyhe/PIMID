@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <iomanip>      // 1.11.94 (l04-robustness-security-15): full-precision store
 #include <cstdlib>
 #include <cmath>
@@ -223,6 +224,19 @@ std::string NVSimWrapper::getCellFileName() const {
     }
 }
 
+/* (1.12.162): the write options that reach this characterisation, as a key string. Only
+ * RERAM and STT_MRAM have any; "" for every other technology. */
+std::string NVSimWrapper::writeOptionsKey() const {
+    const WriteOptions& o = writeOptions();
+    std::ostringstream os;
+    if (config_.nvm_type == NVMType::RERAM) {
+        os << "wv" << o.reram_rounds;
+    } else if (config_.nvm_type == NVMType::STTRAM) {
+        os << (o.stt_cumulative ? "wvcum" : "wvind");
+    }
+    return os.str();
+}
+
 void NVSimWrapper::createNVSimInput() {
     // NVSim classes are now in the nvsim:: namespace (local copy in external/nvsim)
     // to avoid symbol collision with CACTI's global namespace classes.
@@ -322,6 +336,23 @@ void NVSimWrapper::loadCellParameters() {
         }
     }
 
+    /* (1.12.162): the write-verify options. The cell file carries the defaults; a
+     * RERAM rounds override scales the pulses per bit with it (the cell file's
+     * pulses per round, never below one pulse), and the STT_MRAM cumulative model
+     * takes the cell file's cumulative pair. */
+    {
+        const WriteOptions& o = writeOptions();
+        if (nvsim_cell_->memCellType == memristor && nvsim_cell_->writeVerifyRounds > 0 &&
+            o.reram_rounds != nvsim_cell_->writeVerifyRounds) {
+            const double scale = o.reram_rounds / nvsim_cell_->writeVerifyRounds;
+            nvsim_cell_->writePulsesPerBit = std::max(1.0, nvsim_cell_->writePulsesPerBit * scale);
+            nvsim_cell_->writeVerifyRounds = o.reram_rounds;
+        } else if (nvsim_cell_->memCellType == MRAM && o.stt_cumulative &&
+                   nvsim_cell_->writeVerifyRoundsAlt > 0) {
+            nvsim_cell_->writeVerifyRounds = nvsim_cell_->writeVerifyRoundsAlt;
+            nvsim_cell_->writePulsesPerBit = std::max(1.0, nvsim_cell_->writePulsesPerBitAlt);
+        }
+    }
     // NOTE: Don't set global cell here - do it in runNVSim() to match
     // NVSim's main() initialization order (after Technology is initialized)
 }
@@ -374,6 +405,7 @@ namespace {
         uint64_t page_size_bits;
         uint64_t block_size_bits;
         std::string cell_file;   // "" = the per-type sample cell
+        std::string write_opts;  // (1.12.162): RERAM/STT_MRAM write options ("" = none)
         bool operator<(const NVMCacheKey& o) const {
             if (nvm_type != o.nvm_type) return nvm_type < o.nvm_type;
             if (capacity_bytes != o.capacity_bytes) return capacity_bytes < o.capacity_bytes;
@@ -387,7 +419,8 @@ namespace {
             if (opt_target != o.opt_target) return opt_target < o.opt_target;
             if (page_size_bits != o.page_size_bits) return page_size_bits < o.page_size_bits;
             if (block_size_bits != o.block_size_bits) return block_size_bits < o.block_size_bits;
-            return cell_file < o.cell_file;
+            if (cell_file != o.cell_file) return cell_file < o.cell_file;
+            return write_opts < o.write_opts;
         }
     };
     struct NVMCacheVal {
@@ -488,6 +521,8 @@ namespace {
             }
             os << "_cell" << safe;
         }
+        /* (1.12.162): the write options join the name whenever a technology has them. */
+        if (!k.write_opts.empty()) os << "_" << k.write_opts;
         return os.str();
     }
     static std::string nvsimCachePath(const NVMCacheKey& k) {
@@ -607,6 +642,16 @@ namespace {
         if (!agrees("opt_target", k.opt_target)) return false;
         if (!agrees("page_size_bits", static_cast<double>(k.page_size_bits))) return false;
         if (!agrees("block_size_bits", static_cast<double>(k.block_size_bits))) return false;
+        {
+            std::string wo;
+            if (getStr("write_opts", wo) && wo != k.write_opts) {
+                std::cerr << "[NVSimWrapper] REFUSING cached characterization "
+                          << src << ": its <write_opts> is \"" << wo
+                          << "\" but this query asks for \"" << k.write_opts
+                          << "\". Recharacterizing." << std::endl;
+                return false;
+            }
+        }
         {
             std::string cf;
             if (getStr("cell_file", cf) && cf != k.cell_file) {
@@ -745,6 +790,7 @@ namespace {
           << "  <page_size_bits>" << k.page_size_bits << "</page_size_bits>\n"
           << "  <block_size_bits>" << k.block_size_bits << "</block_size_bits>\n"
           << "  <cell_file>" << k.cell_file << "</cell_file>\n"
+          << "  <write_opts>" << k.write_opts << "</write_opts>\n"
           << "  <read_latency_s>" << v.read_latency_s << "</read_latency_s>\n"
           << "  <write_latency_s>" << v.write_latency_s << "</write_latency_s>\n"
           << "  <read_energy_nj>" << v.read_energy_nj << "</read_energy_nj>\n"
@@ -785,7 +831,8 @@ void NVSimWrapper::runNVSim() {
                      opt_target,
                      config_.page_size_bits,
                      config_.block_size_bits,
-                     config_.cell_file };
+                     config_.cell_file,
+                     writeOptionsKey() };
     // Reads (both the in-memory map and the on-disk XML) are skipped unless the
     // warehouse mode permits reading -- OFF/WO must truly recompute.
     if (pimid::cache::readEnabled()) {
@@ -1153,7 +1200,8 @@ void NVSimWrapper::runNVSim() {
                         << ",\"opt_target\":" << key.opt_target
                         << ",\"page_size_bits\":" << key.page_size_bits
                         << ",\"block_size_bits\":" << key.block_size_bits
-                        << ",\"cell_file\":\"" << key.cell_file << "\"";
+                        << ",\"cell_file\":\"" << key.cell_file << "\""
+                        << ",\"write_opts\":\"" << key.write_opts << "\"";
                 valss << "\"read_latency_s\":" << v.read_latency_s
                       << ",\"write_latency_s\":" << v.write_latency_s
                       << ",\"read_energy_nj\":" << v.read_energy_nj

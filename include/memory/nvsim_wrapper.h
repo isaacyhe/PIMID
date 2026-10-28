@@ -100,6 +100,14 @@ public:
         {}
     };
 
+    /* (1.12.162): the write options of the RERAM and STT_MRAM cells, set once from the
+     * configuration (memory.nvm_write_verify.*). They are part of the cache key. */
+    struct WriteOptions {
+        double reram_rounds = 13.0;       // memory.nvm_write_verify.reram_rounds
+        bool   stt_cumulative = false;    // memory.nvm_write_verify.stt_retries: cumulative
+    };
+    static WriteOptions& writeOptions() { static WriteOptions o; return o; }
+
     explicit NVSimWrapper(const NVMConfig& config);
     ~NVSimWrapper();
 
@@ -268,6 +276,7 @@ private:
     void createNVSimInput();
     void loadCellParameters();
     std::string getCellFileName() const;
+    std::string writeOptionsKey() const;   // (1.12.162): "" for technologies without write options
 };
 
 } // namespace pimid

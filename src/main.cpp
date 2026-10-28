@@ -2887,7 +2887,7 @@ static const char* kSchemaPaths[] = {
     "core.in_order.branch_predictor", "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
-    "memory.array_pg", "memory.bank_kb", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
+    "memory.array_pg", "memory.bank_kb", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.nvm_write_verify.reram_rounds", "memory.nvm_write_verify.stt_retries", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology", "memory.topology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
@@ -3877,6 +3877,8 @@ struct UnifiedConfig {
     bool mem_array_pg = false;   // memory.array_pg    NVM retention-free periphery gating
     bool nvm_wb_enabled = false; // (1.12.114): memory.nvm_write_budget.enabled (default off)
     double nvm_wb_mw = -1.0;     // (1.12.114): memory.nvm_write_budget.mw (-1 = not given)
+    double nvm_wv_reram_rounds = 13.0;   // (1.12.162): memory.nvm_write_verify.reram_rounds
+    bool nvm_wv_stt_cumulative = false;  // (1.12.162): memory.nvm_write_verify.stt_retries: cumulative
     std::string pcie_model = "simple";    // "simple" or "md1" for PCIe timing model
     // Host<->device link technology. Selects preset latency/BW/overhead unless
     // the user overrides them. "interposer" = 2.5D silicon interposer (UCIe-class
@@ -13112,11 +13114,23 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
      * they ARE the technology. */
     {
         const double bits = static_cast<double>(nvm_cfg.word_width_bits);
-        const char* cell = (tech == "STT_MRAM") ? "sample_STTRAM.cell (NVSim's sample cell; the file names no source)"
-                         : (tech == "PCM")      ? "sample_PCRAM.cell (NVSim's sample cell, from Lee et al., ISCA 2009: read, SET and RESET "
-                                                  "energies from its Table 1; its 90 nm currents and resistances as given)"
-                                                : "RRAM_1T1R.cell (1T1R, NVMExplorer HPCA 2022 / TSMC N40-derived 53 F^2; resistances and SET/RESET from NVSim's sample; the file "
-                                                  "names its sources)";
+        const pimid::NVSimWrapper::WriteOptions& wopt = pimid::NVSimWrapper::writeOptions();
+        std::ostringstream cell_os;   // (1.12.162): the cell text names the write-verify options in force
+        if (tech == "STT_MRAM") {
+            cell_os << "sample_STTRAM.cell (NVSim's sample cell; write-verify "
+                    << (wopt.stt_cumulative ? "2.046 rounds, 1.045 pulses per bit, cumulative retries (memory.nvm_write_verify.stt_retries)"
+                                            : "2.69 rounds, 1.047 pulses per bit, independent retries")
+                    << ", from Dong et al., ISSCC 2018)";
+        } else if (tech == "PCM") {
+            cell_os << "sample_PCRAM.cell (NVSim's sample cell, from Lee et al., ISCA 2009: read, SET and RESET "
+                       "energies from its Table 1; its 90 nm currents and resistances as given)";
+        } else {
+            cell_os << "RRAM_1T1R.cell (1T1R, NVMExplorer HPCA 2022 / TSMC N40-derived 53 F^2; resistances and SET/RESET from NVSim's sample; the file "
+                       "names its sources; write-verify " << wopt.reram_rounds << " rounds"
+                    << (wopt.reram_rounds == 13.0 ? " (EMBER, Levy et al., JSSC 2024)" : " (memory.nvm_write_verify.reram_rounds; 13 in EMBER, Levy et al., JSSC 2024)")
+                    << ")";
+        }
+        const std::string cell = cell_os.str();
         pimid::fmt_scoped(std::cout) << std::setprecision(6)
             << "  [nvm] " << tech << " array, NVSim, cell " << cell << ": one "
             << (nvm_cfg.capacity_bytes / 1024ULL) << " KB bank, " << nvm_cfg.word_width_bits << "-bit access, "
@@ -21447,6 +21461,27 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
          * keys, and a power: key is not a device key. */
         if (root["memory"]["array_pg"])
             config.mem_array_pg = yamlBool(root["memory"]["array_pg"], config.mem_array_pg, sc.pfx + "memory.array_pg");
+        if (root["memory"] && root["memory"]["nvm_write_verify"]) {   // (1.12.162): write-verify of the RERAM and STT_MRAM cells
+            const YAML::Node wv = root["memory"]["nvm_write_verify"];
+            if (wv["reram_rounds"]) {
+                config.nvm_wv_reram_rounds = yamlDouble(wv["reram_rounds"], 13.0, sc.pfx + "memory.nvm_write_verify.reram_rounds");
+                if (!(config.nvm_wv_reram_rounds >= 1.0)) {
+                    std::cerr << "ERROR: " << sc.pfx << "memory.nvm_write_verify.reram_rounds must be >= 1 (program-verify rounds per access)" << std::endl;
+                    return 1;
+                }
+            }
+            if (wv["stt_retries"]) {
+                const std::string r = yamlString(wv["stt_retries"], "independent", sc.pfx + "memory.nvm_write_verify.stt_retries");
+                if (r == "independent") config.nvm_wv_stt_cumulative = false;
+                else if (r == "cumulative") config.nvm_wv_stt_cumulative = true;
+                else {
+                    std::cerr << "ERROR: " << sc.pfx << "memory.nvm_write_verify.stt_retries must be 'independent' or 'cumulative', got '" << r << "'" << std::endl;
+                    return 1;
+                }
+            }
+        }
+        pimid::NVSimWrapper::writeOptions().reram_rounds = config.nvm_wv_reram_rounds;
+        pimid::NVSimWrapper::writeOptions().stt_cumulative = config.nvm_wv_stt_cumulative;
         if (root["memory"] && root["memory"]["nvm_write_budget"]) {   // (1.12.114): the NVM device write-power budget
             const YAML::Node wb = root["memory"]["nvm_write_budget"];
             if (wb["enabled"]) config.nvm_wb_enabled = yamlBool(wb["enabled"], false, sc.pfx + "memory.nvm_write_budget.enabled");
@@ -22274,6 +22309,10 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.mem_array_pg = d.mem_array_pg;
         config.nvm_wb_enabled = d.nvm_wb_enabled;   // (1.12.114)
         config.nvm_wb_mw = d.nvm_wb_mw;
+        config.nvm_wv_reram_rounds = d.nvm_wv_reram_rounds;   // (1.12.162)
+        config.nvm_wv_stt_cumulative = d.nvm_wv_stt_cumulative;
+        pimid::NVSimWrapper::writeOptions().reram_rounds = config.nvm_wv_reram_rounds;
+        pimid::NVSimWrapper::writeOptions().stt_cumulative = config.nvm_wv_stt_cumulative;
         config.dq_turnaround_enabled = d.dq_turnaround_enabled;
         config.hierarchy_ranks_per_channel = d.hierarchy_ranks_per_channel;
         config.subarray_height = d.subarray_height;

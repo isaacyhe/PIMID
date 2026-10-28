@@ -20,3 +20,15 @@
 -AccessType: CMOS
 -VoltageDropAccessDevice (V): 0.15
 -AccessCMOSWidth (F): 8
+# PIMID (1.12.162): write-verify (published STT-MRAM macros program with write-verify-write: Intel 22FFL,
+# Wei et al. ISSCC 2019; TSMC 22 nm, Chih et al. ISSCC 2020). From Dong et al., ISSCC 2018
+# (28 nm 1 Mb), Fig. 30.2.5a: a 10 ns write fails a bit with probability p = 0.045 (25 C). A round
+# re-pulses the failing bits and reads the word back; with independent retries over a 512-bit access
+# the expected rounds are sum_k [1 - (1 - p^k)^512] = 2.69, and the pulses per bit 1 / (1 - p) = 1.047.
+-WriteVerifyRounds (avg): 2.69
+-WritePulsesPerBit (avg): 1.047
+# PIMID (1.12.162): the same write when a retry adds to the switching already made, so the chance a bit is still
+# unwritten after k rounds is p^(2k-1): rounds 1 + sum_k [1 - (1 - p^(2k-1))^512] = 2.046, pulses per bit
+# 1 + sum_k p^(2k-1) = 1.045. Chosen with memory.nvm_write_verify.stt_retries: cumulative.
+-CumulativeWriteVerifyRounds (avg): 2.046
+-CumulativeWritePulsesPerBit (avg): 1.045

@@ -56,6 +56,10 @@ MemCell::MemCell() {
 	readCurrent         = 0;
 	readPower           = 0;
 	readEnergy          = 0;
+	writeVerifyRounds   = 0;
+	writePulsesPerBit   = 1;
+	writeVerifyRoundsAlt = 0;
+	writePulsesPerBitAlt = 0;
         wordlineBoostRatio  = 1.0;
 	resetMode           = true;
 	resetVoltage        = 0;
@@ -239,6 +243,24 @@ void MemCell::ReadCellFromFile(const string & inputFile)
 		 * sample_PCRAM.cell (Lee et al., ISCA 2009: 40 uW for 48 ns, ~2 pJ) and
 		 * no line read it, so a PCM read was priced on the sense-amplifier latch
 		 * time alone (3 ps at the 64 KB / 512 b / 22 nm unit). */
+		/* PIMID (1.12.162): write-verify, from the cell's published macro. */
+		if (!strncmp("-WriteVerifyRounds", line, strlen("-WriteVerifyRounds"))) {
+			sscanf(line, "-WriteVerifyRounds (avg): %lf", &writeVerifyRounds);
+			continue;
+		}
+		if (!strncmp("-CumulativeWriteVerifyRounds", line, strlen("-CumulativeWriteVerifyRounds"))) {
+			sscanf(line, "-CumulativeWriteVerifyRounds (avg): %lf", &writeVerifyRoundsAlt);
+			continue;
+		}
+		if (!strncmp("-CumulativeWritePulsesPerBit", line, strlen("-CumulativeWritePulsesPerBit"))) {
+			sscanf(line, "-CumulativeWritePulsesPerBit (avg): %lf", &writePulsesPerBitAlt);
+			continue;
+		}
+		if (!strncmp("-WritePulsesPerBit", line, strlen("-WritePulsesPerBit"))) {
+			sscanf(line, "-WritePulsesPerBit (avg): %lf", &writePulsesPerBit);
+			if (writePulsesPerBit < 1) writePulsesPerBit = 1;
+			continue;
+		}
 		if (!strncmp("-ReadEnergy", line, strlen("-ReadEnergy"))) {
 			sscanf(line, "-ReadEnergy (pJ): %lf", &readEnergy);
 			readEnergy /= 1e12;

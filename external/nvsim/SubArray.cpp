@@ -621,6 +621,12 @@ void SubArray::CalculateLatency(double _rampInput) {
 					resetLatency = writeLatency + cell->resetPulse;
 					setLatency = writeLatency + cell->setPulse;
 					writeLatency += MAX(cell->resetPulse, cell->setPulse);
+					/* PIMID (1.12.162): write-verify. A round is a pulse and a verify read; the first pulse
+					 * is above, so R rounds add (R - 1) pulses and R reads (cell file; 0 = no verify). */
+					if (cell->writeVerifyRounds > 0) {
+						const double extraPulses = (cell->writeVerifyRounds > 1) ? cell->writeVerifyRounds - 1 : 0;
+						writeLatency += extraPulses * MAX(cell->resetPulse, cell->setPulse) + cell->writeVerifyRounds * readLatency;
+					}
 				}
 			}
 		} else if (cell->memCellType == SLCNAND) {
@@ -774,6 +780,10 @@ void SubArray::CalculatePower() {
 				cellResetEnergy /= SHAPER_EFFICIENCY_AGGRESSIVE;
 				cellSetEnergy /= SHAPER_EFFICIENCY_AGGRESSIVE;  /* Due to the shaper inefficiency */
 				writeDynamicEnergy /= SHAPER_EFFICIENCY_AGGRESSIVE;
+				/* PIMID (1.12.162): write-verify's repeated pulses, from the cell file (1 = one pulse). */
+				cellResetEnergy *= cell->writePulsesPerBit;
+				cellSetEnergy *= cell->writePulsesPerBit;
+				writeDynamicEnergy *= cell->writePulsesPerBit;
 			}
 			leakage = 0;                       //TO-DO: cell leaks during read/write operation
 		} else if (cell->memCellType == SLCNAND) {
@@ -859,6 +869,10 @@ void SubArray::CalculatePower() {
 		readDynamicEnergy += cellReadEnergy + rowDecoder.readDynamicEnergy + bitlineMuxDecoder.readDynamicEnergy + senseAmpMuxLev1Decoder.readDynamicEnergy
 				+ senseAmpMuxLev2Decoder.readDynamicEnergy + precharger.readDynamicEnergy + bitlineMux.readDynamicEnergy
 				+ senseAmp.readDynamicEnergy + senseAmpMuxLev1.readDynamicEnergy + senseAmpMuxLev2.readDynamicEnergy;
+		/* PIMID (1.12.162): write-verify. Each program-verify round reads the word back once, priced
+		 * at this subarray's own read energy (cell file rounds; 0 = no verify). */
+		if ((cell->memCellType == MRAM || cell->memCellType == memristor) && cell->writeVerifyRounds > 0)
+			writeDynamicEnergy += cell->writeVerifyRounds * readDynamicEnergy;
 		writeDynamicEnergy += rowDecoder.writeDynamicEnergy + bitlineMuxDecoder.writeDynamicEnergy + senseAmpMuxLev1Decoder.writeDynamicEnergy
 				+ senseAmpMuxLev2Decoder.writeDynamicEnergy + bitlineMux.writeDynamicEnergy
 				+ senseAmp.writeDynamicEnergy + senseAmpMuxLev1.writeDynamicEnergy + senseAmpMuxLev2.writeDynamicEnergy;

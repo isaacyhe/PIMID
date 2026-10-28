@@ -6,6 +6,44 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.162 -- RERAM and STT_MRAM writes are priced with write-verify
+
+- **Power and timing (external/nvsim/MemCell.cpp, MemCell.h, SubArray.cpp, RRAM_1T1R.cell, sample_STTRAM.cell;
+  src/memory/nvsim_wrapper.cpp, include/memory/nvsim_wrapper.h; src/main.cpp; src/util/cache_warehouse.cpp):**
+  published RRAM and STT-MRAM macros program with write-verify: a pulse, a read-back, and a re-pulse of the bits that
+  failed (Intel 22FFL, Jain et al. and Wei et al., ISSCC 2019; TSMC, Chou et al. ISSCC 2018 / VLSI 2020, Chih et al.
+  ISSCC 2020). NVSim's write-verify branch was empty, so one pulse was priced.
+  - Two cell-file keys are now read: `-WriteVerifyRounds (avg)` (program-verify rounds per access) and
+    `-WritePulsesPerBit (avg)`. The write energy is the cell energy x the pulses per bit plus one read of the word per
+    round. The write latency adds (rounds - 1) pulses and one read per round. A cell file without them is priced as
+    before.
+- **New options (docs/yaml_reference.md):**
+  - `memory.nvm_write_verify.reram_rounds` (default 13): the RERAM program-verify rounds per access. A value other
+    than 13 scales the pulses per bit with it (3.2 per 13 rounds, never below one pulse).
+  - `memory.nvm_write_verify.stt_retries` (default `independent`): `independent` or `cumulative`, the STT_MRAM retry
+    model below.
+  - The options are part of the NVSim characterisation key (file name and stored fields), and the run's `[nvm]` line
+    names the value in force.
+- **STT_MRAM, `independent` (default):** 2.69 rounds and 1.047 pulses per bit. From Dong et al., ISSCC 2018 (28 nm),
+  Fig. 30.2.5a: a 10 ns write fails a bit with probability p = 0.045. With independent retries over a 512-bit access,
+  the expected rounds are 1 + sum_k [1 - (1 - p^k)^512] and the pulses per bit 1 / (1 - p).
+- **STT_MRAM, `cumulative`:** a retry adds to the switching already made, so the chance a bit is still unwritten after
+  k rounds is p^(2k-1): 2.046 rounds and 1.045 pulses per bit.
+- **RERAM:** 13 rounds and 3.2 pulses per bit. From the open SLC write-verify macro EMBER (TSMC 40 nm, Levy et al.,
+  JSSC 2024):
+  - its energy and bandwidth fits against pulse count give 12.9 and 13.2 rounds per word at 0.40 nJ/bit and
+    12.4 Mb/s;
+  - about 9 of 48 cells are pulsed per round.
+- **Cache:** the NVSim characterisation cache tool version moves.
+- **At the 64 KB / 512 b / 22 nm unit (defaults):** RERAM write 0.754 to 4.395 pJ/bit, 12.7 to 186.7 ns; STT_MRAM write
+  1.015 to 1.704 pJ/bit, 11.8 to 37.4 ns. Reads are unchanged.
+- **Data impact (fig2 cells, smoke, MPI, defaults):**
+  - RERAM gemv +16.6 % run time and +17.0 % energy; stream_triad +38.9 % run time and +41.6 % energy.
+  - STT_MRAM gemv +2.5 % run time and +2.6 % energy; stream_triad +5.8 % run time and +6.3 % energy.
+  - `reram_rounds: 20`: RERAM gemv +26.1 % run time and +26.9 % energy; stream_triad +65.0 % and +69.4 %.
+  - `stt_retries: cumulative`: STT_MRAM gemv +1.7 % run time and +1.8 % energy; stream_triad +4.0 % and +4.4 %.
+  - PCM, SRAM and DRAM are unchanged.
+
 ## 1.12.161 -- co-sim MPI cells repeat after the ROI too; the runtime's removed-instruction count repeats
 
 - **Problem.** Two runs of a co-sim MPI cell (1 host core, 8 PEs, 8 ranks) gave the same kernel window but a

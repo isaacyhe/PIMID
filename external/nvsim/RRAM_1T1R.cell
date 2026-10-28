@@ -38,3 +38,11 @@
 -AccessCMOSWidth (F): 6
 
 -ReadFloating: false
+# PIMID (1.12.162): write-verify (published RRAM macros program with write-verify: Intel 22FFL, Jain et al.
+# ISSCC 2019; TSMC, Chou et al. ISSCC 2018 / VLSI 2020). From the one open SLC write-verify
+# macro, EMBER (TSMC 40 nm RRAM, Levy et al., JSSC 2024; fits of energy and bandwidth vs pulse count):
+# 0.40 nJ/bit at 12.4 Mb/s gives (400 - 41.37) / 27.91 = 12.9 and (80.8 - 0.71) / 6.06 = 13.2 pulse-
+# and-verify rounds per word, about 13; and about 9 of 48 cells pulsed per round gives about 3.2 cell
+# pulses per bit (Fig. 5.10). Its ISPP starts from 0 V, so these are on the high side.
+-WriteVerifyRounds (avg): 13
+-WritePulsesPerBit (avg): 3.2
