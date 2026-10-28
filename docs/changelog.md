@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.167 -- a device run's DRAM replay covers the whole priced window
+
+- **The problem.** A device run timed on the PEs' own clocks (a single process, cut mode) takes its run time from the
+  latest PE end of the region of interest, read on that PE's clock. For an out-of-order or in-order core that clock
+  leaves out the cycles spent waiting on the wall, so the end can lie below the PEs' busy cycles. The run time printed
+  and priced is then raised to the busy maximum, but the DRAM epoch replay closed at the lower region end. Every
+  time-based memory term (refresh, background) that is counted by the replay then covered only part of the priced
+  window. Example: coremodel_HBM3_omp_stencil_2d_pe16_BANK_ooo_core, region end 72.46 M cycles, busy maximum 96.10 M
+  cycles, priced window 192.2 us: the replay covered 75% of it and priced refresh at 185.8 mW per stack, below the
+  222 to 271 mW range of the checker.
+- **The fix (external/zsim/src: dram_epoch_replay.cpp, dram_epoch_replay.h).** In that mode the replay closes at the
+  priced window, the larger of the run time and the busy maximum, as it already did when the run time comes from the
+  host cores. The close is armed at the dump, where the busy counts are final. Cycles and the run time are unchanged.
+  A run whose region end is not below its busy maximum closes where it did.
+- **Validation (full size, HBM3 BANK pe16, OpenMP coremodel cells, `ooo_core` and `in_order_core`, five kernels
+  each).**
+  - Cycles and run time are identical with and without the change in all ten cells. In eight of them the region end
+    is not below the busy maximum and every printed and priced value is identical (refresh 246.4 mW per stack).
+  - The two cells with a region end below the busy maximum change: stencil_2d `ooo_core` (96.10 M cycles; refresh
+    185.8 to 246.4 mW per stack, 594544 to 788544 refresh commands, total power 2.4187 to 2.4793 W, total energy
+    464.9 to 476.5 mJ, +2.5%) and stencil_2d `in_order_core` (243.89 M cycles; refresh 174.9 to 246.4 mW per stack,
+    1420304 to 2001136 commands, 2.1648 to 2.2363 W, 1055.9 to 1090.8 mJ, +3.3%). All ten cells now lie inside the
+    222 to 271 mW refresh range.
+  - The smoke-size coremodel cells (`alu_core`, `in_order_core`, `ooo_core`, five kernels, HBM3): all fifteen
+    identical.
+- **Impact:** a device run whose PE clock excludes wall waits and whose region end lies below the busy maximum:
+  refresh and background energy, and total power and energy, rise by the missing share of the window; cycles do not
+  change. Other runs are unchanged.
+
 ## 1.12.166 -- the 9..15-port routers and the wide 2-port bank-group interface are priced from published radix and width sweeps
 
 - **Defect.** The router calibration of 1.12.150 rests on published routers of 5 and 6 ports and on crossbars of 16 to

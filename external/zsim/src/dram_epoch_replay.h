@@ -388,7 +388,7 @@ class DramEpochReplay {
      * counts are final. Requests stamped past the close are "outside". */
     void armClose(bool fromFinalize);
     void snapClose();
-    uint64_t phaseWindowCycles(std::string* why);
+    uint64_t phaseWindowCycles(std::string* why, bool withRunTime = true);   // withRunTime false = the busy max alone
     double runTicksPerCycle() const;   // DRAM ticks per cycle of the clock roiWall.mpiEnd is counted in
     uint64_t coreFreqHz_ = 0;
     double tckNs_ = 0.0;

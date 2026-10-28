@@ -644,8 +644,8 @@ double DramEpochReplay::runTicksPerCycle() const {
  * window), so the replay closes there too. Read from the same per-core stats
  * the dump writes (the "cycles" lines, host cCycles added as the parser
  * does), evaluated now -- finalize runs right before every dump. */
-uint64_t DramEpochReplay::phaseWindowCycles(std::string* why) {
-    const uint64_t roi = zinfo->roiWall.cycles();
+uint64_t DramEpochReplay::phaseWindowCycles(std::string* why, bool withRunTime) {
+    const uint64_t roi = withRunTime ? zinfo->roiWall.cycles() : 0;
     const uint32_t nn = std::min<uint32_t>(zinfo->nodeMap.numNodes, 16);
     std::vector<uint64_t> wall(nn ? nn : 1, 0);
     uint32_t k = 0;
@@ -689,10 +689,21 @@ uint64_t DramEpochReplay::phaseWindowCycles(std::string* why) {
 void DramEpochReplay::armClose(bool fromFinalize) {
     if (!roiMarked_ || closeArmed_ || !zinfo->roiWall.ended) return;
     if (cutMode_ && zinfo->roiWall.source == 3) {
-        /* 1.12.18 (user ruling 2026-10-24 (a)): a single-process run in cut
-         * mode closes at its run time, the latest device PE's ROI end on the
-         * records' own axis (as thread-MPI's source 2): window == run time. */
-        closeTick_ = roiTick0_ + (uint64_t)((double)zinfo->roiWall.mpiEnd * runTicksPerCycle());
+        /* A single-process run in cut mode closes at its run time, raised to the busy max as the power model
+         * prices it (as source 1 below). The latest device PE ROI end is read on the PE clock, which for an
+         * out-of-order or in-order core excludes wall waits and can lie below its busy cycles; the run time printed
+         * and priced is then the busy max, and a replay closed at the lower ROI end would cover only part of the
+         * priced window (refresh and background energy short by the same fraction). Armed at the dump, where the
+         * busy counts are final. */
+        if (!fromFinalize) return;
+        const uint64_t run = (uint64_t)((double)zinfo->roiWall.mpiEnd * runTicksPerCycle());
+        std::string why;
+        const uint64_t busyCyc = phaseWindowCycles(&why, false);
+        const uint64_t busy = (uint64_t)((double)busyCyc * ticksPerCycle_);
+        closeTick_ = roiTick0_ + std::max(run, busy);
+        if (busy > run)
+            info("[mem] %s: replay window = the pricing window: run time %lu cycles raised to the busy max %lu (core clock of this replay)",
+                 name_.c_str(), (unsigned long)zinfo->roiWall.mpiEnd, (unsigned long)busyCyc);
     } else if (cutMode_ && zinfo->roiWall.source == 1) {
         /* 1.12.18 (ruling 2026-10-24): a single-process run in cut mode closes
          * at the pricing window (run time raised to the busy max, B4), counted
