@@ -6,6 +6,40 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.173 -- DDR5 bank-parallel placements: host read/write turnaround, same-bank-group spacing, and a host write drain sized to the channel queue
+
+- **The gap.** 1.12.169 gave the host's column commands the data-bus burst (BL/2 clocks) and nothing else of the standard's
+  column-to-column spacing: a host read could follow a host write at once, and two host columns of one bank group at
+  the burst spacing. Reads and writes were also interleaved one at a time, because the write-drain marks were fractions of
+  the bank-parallel queue (the per-channel queue times the bank count, built for the PEs), which the host never reaches.
+- **The change** (ramulator generic_dram_controller.cpp). Between HOST column commands of a channel the controller now
+  keeps the spacing of the standard's timing table (JEDEC JESD79-5; captured before the replay filters the table for the
+  PEs): the same-bank-group column spacing (tCCD_L, tCCD_L_WR), the write-to-read and read-to-write turnaround (tCCD_S
+  composites, tWTR_S/L), and the rank-to-rank switch. The chips of a lock-step rank count as one rank. The host's reads
+  and writes are batched like a controller's: write mode starts when the host writes held exceed 32 entries of a
+  48-entry per-channel write queue (the published controller whose marks the PE-side drain already uses: Chatterjee et
+  al., HPCA 2012, Table 1) or no host read is held, and ends when they fall below 16 while a host read is held. A host
+  request of the other direction waits for the mode before it opens a row; one that has opened its row finishes. PE
+  commands, their write drain and the device counters are unchanged. DDR5 only, as 1.12.169.
+- **Queue size.** Sensitivity of 16-core OpenMP stream_triad to the write queue (marks at 2/3 and 1/3 of it): 32 entries
+  +76.7% against 1.12.171, bus duty 0.25, charged/measured 0.50; 48 entries +50.6%, duty 0.29, 0.73; 64 entries (gem5's
+  64-entry write buffer is of this size) +55.5%, duty 0.28, 0.89; marks as fractions of the bank-parallel queue (no
+  batching) +160%, duty 0.17, 0.34. The bus duty of any size stays below 0.34: the host closed-page policy and the
+  four-activate window (tFAW) cap this cell at about half of the peak even with no bus constraint (19.9 GB/s of
+  38.4 GB/s), so the queue size moves the result by tens of percent but not to the 78 to 82% of peak that published
+  STREAM triad runs on DDR5 servers reach.
+- **Impact (DDR5 host baselines, run time against 1.12.171).** One core: -0.2% to +0.3%. Four cores: OpenMP stream_triad
+  +13.1%, gemv +2.2%, bfs +0.2%; MPI stream_triad +1.3%, gemv +1.3%, bfs +1.7%. Sixteen cores: OpenMP stream_triad +50.6%,
+  gemv +13.4%, bfs +0.9%; MPI stream_triad +31.1%, gemv +15.0%, bfs +11.9%. At BANK_GROUP placement the 16-core
+  stream_triad baseline moves +8.0%. Average power falls by up to 2.5% (the same energy over a longer run).
+- **Latency check.** The ratio of latency charged to the cores over latency measured by the replay falls below
+  0.85 on four cells: OpenMP stream_triad 16 cores 0.73 (0.98 before), MPI bfs 4 ranks 0.52 (0.91), MPI bfs 16 ranks
+  0.10 (0.10) and, at BANK_GROUP placement, OpenMP stream_triad 16 cores 0.71 (0.77); the others move by at most 0.06 (MPI
+  bfs 1 rank rises from 0.83 to 0.89). The run times of those cells understate the slowdown.
+- **Impact (co-sim, device).** Co-sim DDR5 cells (default and 3200 MT/s): -2.1% to +2.0% in run time, power within
+  0.02 W; the host requests of a co-sim run queue longer. Device-only DDR5 runs give identical counters and run time.
+  HBM3 host baselines and co-sim cells are identical.
+
 ## 1.12.172 -- a thread's exit is ordered: co-sim MPI cells repeat in every run
 
 - **Problem.** Co-sim MPI cells still gave a different post-ROI protocol tail in a few runs out of a hundred, with

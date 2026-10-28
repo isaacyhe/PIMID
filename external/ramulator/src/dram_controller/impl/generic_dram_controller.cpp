@@ -58,12 +58,67 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     std::vector<char> m_hdb_col;           // by command: a column command
     Clk_t m_hdb_free = 0;                  // the first clock the bus takes the next host burst
     uint64_t s_hdb_cmds = 0;
+    /* PIMID (1.12.173): the rest of the host column-to-column spacing of the standard (JEDEC JESD79-5, the timing table
+     * captured before the replay filters it): same-bank-group column spacing, the read/write and write/read turnaround
+     * and the rank-to-rank switch. Kept between HOST column commands only. The chips of a lock-step rank are one rank
+     * on the bus (the rank level counts DIMM ranks). */
+    struct HdbCons { int lvl; int prev; int val; bool sib; };
+    std::vector<std::vector<HdbCons>> m_hdb_cons;                 // by the following command
+    std::vector<int> m_hdb_radix;                                 // node count per level
+    std::vector<std::vector<std::vector<Clk_t>>> m_hdb_last;      // [level][command][node]: last host issue clock
+    int m_hdb_top = -1;
+    int hdb_node(int l, const AddrVec_t& a) const {
+      int id = 0;
+      for (int k = 1; k <= l; k++) {
+        int v = a[k];
+        if (v < 0) return -1;
+        if (k == m_pimid_rank_lv && m_pimid_ls > 1) v /= m_pimid_ls;
+        id = id * m_hdb_radix[k] + v;
+      }
+      return id;
+    }
+    /* PIMID (1.12.173): host write drain. The host's reads and writes are batched like a controller's: write mode is entered
+     * when the host writes held exceed the high mark of the per-channel queue (a 48-entry queue: the published controller the marks come from)
+     * or no host read is held, and left when they fall below the low mark while a host read is held (or none is left).
+     * The bank-parallel queue is scaled by the bank count for the PEs, so its marks would never be reached by the host. */
+    static constexpr int m_hdb_wq = 48;   // the per-channel write queue of the published controller (Chatterjee et al., HPCA 2012); marks 32/16
+    bool m_hdb_wm = false;
+    int m_hdb_hc[3][2] = {{0, 0}, {0, 0}, {0, 0}};                // host requests held: [read, write, active buffer][read, write]
+    void hdb_count(ReqBuffer* b, const Request& r, int d) {
+      if (!m_pimid_hdb || !(r.source_id == 1 || r.source_id == 3)) return;
+      const int bi = (b == &m_read_buffer) ? 0 : (b == &m_write_buffer) ? 1 : (b == &m_active_buffer) ? 2 : -1;
+      if (bi >= 0) m_hdb_hc[bi][r.type_id == Request::Type::Write ? 1 : 0] += d;
+    }
+    void hdb_set_mode() {
+      if (!m_pimid_hdb) return;
+      const int nrd = m_hdb_hc[0][0] + m_hdb_hc[2][0], nwr = m_hdb_hc[1][1] + m_hdb_hc[2][1];
+      if (!m_hdb_wm) { if (nwr > m_wr_high_watermark * m_hdb_wq || (nrd == 0 && nwr > 0)) m_hdb_wm = true; }
+      else if (nwr == 0 || (nwr < m_wr_low_watermark * m_hdb_wq && nrd > 0)) m_hdb_wm = false;
+    }
+    /* A host request of the other direction waits for the mode before it opens a row or takes a column hit. A request that
+     * has opened its row (the active buffer) is exempt: it finishes, so a row is never held by a request the mode keeps
+     * waiting (a held row would hold a bank-scoped precharge and, behind it, the refresh). */
+    bool hdb_dir_blocked(const Request& r, bool active) const {
+      return m_pimid_hdb && !active && (r.source_id == 1 || r.source_id == 3) && ((r.type_id == Request::Type::Write) != m_hdb_wm);
+    }
     bool hdb_host(const Request& r, int cmd) const {
       return m_pimid_hdb && (r.source_id == 1 || r.source_id == 3) && cmd >= 0 && cmd < (int)m_hdb_col.size() && m_hdb_col[cmd];
     }
     /* the first clock the host data bus takes command cmd of r (-1: the bus does not bind it) */
-    Clk_t hdb_ready_at(const Request& r, int cmd) const { return hdb_host(r, cmd) ? m_hdb_free : (Clk_t)-1; }
-    bool hdb_blocks(const Request& r, int cmd) const { return hdb_host(r, cmd) && m_clk < m_hdb_free; }
+    Clk_t hdb_ready_at(const Request& r, int cmd) const {
+      if (!hdb_host(r, cmd)) return (Clk_t)-1;
+      Clk_t t = m_hdb_free;
+      for (const auto& e : m_hdb_cons[cmd]) {
+        const auto& last = m_hdb_last[e.lvl][e.prev];
+        const int n = hdb_node(e.lvl, r.addr_vec);
+        if (n < 0) continue;
+        if (!e.sib) { if (last[n] + e.val > t) t = last[n] + e.val; continue; }
+        const int c = m_hdb_radix[e.lvl], base = (n / c) * c;   // the siblings: the other nodes under the same parent
+        for (int s = base; s < base + c; s++) if (s != n && last[s] + e.val > t) t = last[s] + e.val;
+      }
+      return t;
+    }
+    bool hdb_blocks(const Request& r, int cmd) const { return hdb_host(r, cmd) && m_clk < hdb_ready_at(r, cmd); }
     /* PIMID (1.12.151): LOCK-STEP host requests at the chip split. The replay sends a host request ONCE (chip 0's
      * address, source_id 1/3) and sets pimid_lockstep_chips; the controller drives every chip of the rank with it
      * as a DIMM controller does: one queue entry (buffer capacity, write-drain watermarks, scheduler), and each
@@ -295,6 +350,28 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_hdb_burst = m_dram->m_timing_vals("nBL");
         m_hdb_col.assign(m_dram->m_commands.size(), 0);
         for (const char* n : {"RD", "WR", "RDA", "WRA"}) if (m_dram->m_commands.contains(n)) m_hdb_col[m_dram->m_commands(n)] = 1;
+        const int ncmd = (int)m_dram->m_commands.size();
+        m_hdb_cons.assign(ncmd, {});
+        m_hdb_radix.assign(m_bank_addr_idx + 1, 1);
+        for (int l = 1; l < m_bank_addr_idx; l++) {
+          int c = std::max(1, m_dram->m_organization.count[l]);
+          if (l == m_pimid_rank_lv && m_pimid_ls > 1) c /= m_pimid_ls;
+          m_hdb_radix[l] = std::max(1, c);
+        }
+        m_hdb_last.assign(m_bank_addr_idx, std::vector<std::vector<Clk_t>>(ncmd));
+        for (int l = 0; l < m_bank_addr_idx && l < (int)m_dram->m_timing_cons.size(); l++) {
+          int nodes = 1;
+          for (int k = 1; k <= l; k++) nodes *= m_hdb_radix[k];
+          for (int pc = 0; pc < ncmd && pc < (int)m_dram->m_timing_cons[l].size(); pc++) {
+            if (!m_hdb_col[pc]) continue;
+            for (const auto& t : m_dram->m_timing_cons[l][pc]) {
+              if (!m_hdb_col[t.cmd]) continue;
+              m_hdb_cons[t.cmd].push_back(HdbCons{l, pc, t.val, t.sibling});
+              m_hdb_last[l][pc].assign(nodes, (Clk_t)-1000000);
+              if (l > m_hdb_top) m_hdb_top = l;
+            }
+          }
+        }
       }
       if (m_pimid_host_ca) {   /* PIMID 1.12.18: CA occupancy per command, from the still-unfiltered channel level */
         const int ncmd = (int)m_dram->m_commands.size();
@@ -533,6 +610,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           if (ls_taken(used)) continue;
           if (!ls_ready(it->command)) continue;
           if (hdb_blocks(*it, it->command)) continue;   // PIMID (1.12.169): the host data bus
+          if (hdb_dir_blocked(*it, &buf == &m_active_buffer)) continue;   // PIMID (1.12.173): the host write drain
           if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }
           if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing && ls_close_blocked(&(*it))) continue;
         } else {
@@ -542,6 +620,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         it->command = m_dram->get_preq_command(it->final_command, it->addr_vec);
         if (!pimid_ready(it->command, it->addr_vec)) continue;
         if (hdb_blocks(*it, it->command)) continue;   // PIMID (1.12.169): the host data bus
+        if (hdb_dir_blocked(*it, &buf == &m_active_buffer)) continue;   // PIMID (1.12.173): the host write drain
         if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
         if (&buf != &m_active_buffer && m_dram->m_command_meta(it->command).is_closing && pimid_close_blocked(it->addr_vec)) continue;   // (1.12.151): a lock-step entry holds its bank on every chip
         }
@@ -702,6 +781,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     void pl_on_add(ReqBuffer* b) {
       pl_setup();
       const Request& r = b->buffer.back();
+      hdb_count(b, r, 1);
       uint64_t k;
       if (pl_row_key(r.addr_vec, k)) m_pl_rowcnt.inc(k);
       if (b == &m_write_buffer) m_pl_wraddr.inc((uint64_t)r.addr);
@@ -715,6 +795,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     }
     /* it is about to leave b */
     void pl_on_remove(ReqBuffer* b, ReqBuffer::iterator it) {
+      hdb_count(b, *it, -1);
       uint64_t k;
       if (b == &m_read_buffer || b == &m_write_buffer || b == &m_active_buffer) {
         if (pl_row_key(it->addr_vec, k)) m_pl_rowcnt.dec(k);
@@ -830,6 +911,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           }
           s.nb = 0;
           if (!ls_pd_ok()) continue;
+          if (hdb_dir_blocked(*it, false)) continue;   // PIMID (1.12.173): the host write drain
           if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }
           if (m_dram->m_command_meta(it->command).is_closing && ls_close_blocked(&(*it))) continue;
         } else {
@@ -850,6 +932,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         }
         s.nb = 0;
         if (!pd_ok(it->addr_vec)) continue;   // = !pimid_ready
+        if (hdb_dir_blocked(*it, false)) continue;   // PIMID (1.12.173): the host write drain
         if (pimid_ca_host(*it) && m_clk < m_pimid_ca_free) { s_pimid_ca_waits++; continue; }   // PIMID 1.12.18: the DIMM CA bus is busy
         if (m_dram->m_command_meta(it->command).is_closing && pimid_close_blocked(it->addr_vec)) continue;   // (1.12.151): a lock-step entry holds its bank on every chip
         }
@@ -899,6 +982,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       const int ap = m_dram->m_commands(req_it->command == rd ? "RDA" : "WRA");
       if (pimid_ls(*req_it) ? !ls_ready(ap) : !pimid_ready(ap, req_it->addr_vec)) return;   // not ready as RDA/WRA this cycle: plain RD/WR (the row stays open)
                                                                                               // (1.12.151): a lock-step request on every chip (ls_group_cmd set by the caller)
+      if (hdb_host(*req_it, ap) && m_clk < hdb_ready_at(*req_it, ap)) return;   // PIMID (1.12.173): the host column spacing
       req_it->command = ap;
       req_it->final_command = ap;
     }
@@ -930,7 +1014,15 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
         s_pimid_ca_cmds++; if (m_dram->m_command_meta(req_it->command).is_opening) s_pimid_ca_acts++;   // (1.12.151): one CA slot per rank-wide command
       }
-      if (hdb_host(*req_it, req_it->command)) { m_hdb_free = m_clk + m_hdb_burst; s_hdb_cmds++; }   // PIMID (1.12.169): the burst takes the host data bus
+      if (hdb_host(*req_it, req_it->command)) {
+        m_hdb_free = m_clk + m_hdb_burst; s_hdb_cmds++;
+        for (int l = 0; l <= m_hdb_top; l++) {
+          auto& v = m_hdb_last[l][req_it->command];
+          if (v.empty()) continue;
+          const int n = hdb_node(l, req_it->addr_vec);
+          if (n >= 0) v[n] = m_clk;
+        }
+      }   // PIMID (1.12.169): the burst takes the host data bus
       if (req_it->command == req_it->final_command) {
         if (req_it->type_id == Request::Type::Read) {
           req_it->depart = m_clk + m_dram->m_read_latency;
@@ -968,6 +1060,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
        * Every source counts (device, host, lock-step shadows 4/6; outside-ROI
        * 2/3): they all occupy the queue. Bank-parallel mode bypassed this. */
       set_write_mode();
+      hdb_set_mode();   // PIMID (1.12.173): the host write drain
       if (m_read_buffer.size() == 0 && m_write_buffer.size() == 0 && m_active_buffer.size() == 0 && m_priority_buffer.size() == 0) {
         /* PIMID (1.12.138): every queue is empty. The loop below would find nothing at its first pick and only tell the row
          * policy and the plugins so (no request exists for the scheduler's indexes to track: pl_cycle catches up, from
