@@ -47,6 +47,7 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <string.h>
 #include "stats.h"
 
 /* True when the line addresses this process sees are its own guest addresses:
@@ -81,6 +82,14 @@ static inline bool pimidReadGuestBytes(uint64_t addr, uint8_t* dst, uint32_t n) 
  * per byte here (the target flags carry no POPCNT); every DRAM line and fabric data message counts 64-256 bytes */
 struct PimidPop8 { uint8_t v[256]; PimidPop8() { for (int i = 0; i < 256; i++) { int c = 0; for (int k = 0; k < 8; k++) c += (i >> k) & 1; v[i] = (uint8_t)c; } } };
 static inline uint32_t pimidPop8(uint8_t x) { static const PimidPop8 t; return t.v[x]; }
+/* (1.12.139): 64-bit helpers for the same counts eight bytes at a time (bit-parallel, exact) */
+static inline uint64_t pimidLanePop(uint64_t x) {   // the bits set in each byte lane, in that lane (0..8)
+    x = x - ((x >> 1) & 0x5555555555555555ull);
+    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
+    return (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full;
+}
+static inline uint32_t pimidPop64(uint64_t x) { return (uint32_t)((pimidLanePop(x) * 0x0101010101010101ull) >> 56); }
+static inline uint64_t pimidLoad64(const uint8_t* p) { uint64_t v; memcpy(&v, p, 8); return v; }
 
 class DqDataStats {
     public:
@@ -129,8 +138,27 @@ class DqDataStats {
             const int d = isWrite ? 1 : 0;
             if (n > 256) { unread[d].atomicInc(); return; }
             uint64_t o = 0, lp = 0, hl = 0, ip = 0, il = 0, t = 0, tp = 0, tl = 0;
-            uint8_t ep[256], el[256]; bool fp[256], fl[256];
-            for (uint32_t i = 0; i < n; i++) {
+            uint8_t ep[256 + 8], el[256 + 8]; bool fp[256 + 8], fl[256 + 8];
+            /* (1.12.139): eight bytes at a time; per byte c = its 1 bits, POD inverts when c < 4, LVSTL when c > 4 (the
+             * scalar rules below, which finish a tail of fewer than 8 bytes) */
+            uint32_t i0 = 0;
+            for (; i0 + 8 <= n; i0 += 8) {
+                const uint64_t v = pimidLoad64(b + i0), c = pimidLanePop(v);
+                const uint64_t ge4 = ((c & 0x0C0C0C0C0C0C0C0Cull) + 0x7F7F7F7F7F7F7F7Full) & 0x8080808080808080ull;   // lane c >= 4
+                const uint64_t pH = ~ge4 & 0x8080808080808080ull;                                                   // lane c < 4
+                const uint64_t lH = ((c + 0x0303030303030303ull) << 4) & 0x8080808080808080ull;                     // lane c > 4
+                const uint64_t pM = (pH >> 7) * 0xFF, lM = (lH >> 7) * 0xFF;                                        // full-lane masks
+                const uint64_t ev = v ^ pM, lv = v ^ lM;
+                memcpy(ep + i0, &ev, 8); memcpy(el + i0, &lv, 8);
+                const uint32_t sc = (uint32_t)((c * 0x0101010101010101ull) >> 56);
+                const uint32_t scp = (uint32_t)(((c & pM) * 0x0101010101010101ull) >> 56), np = pimidPop64(pH);
+                const uint32_t scl = (uint32_t)(((c & lM) * 0x0101010101010101ull) >> 56), nl = pimidPop64(lH);
+                o += sc; ip += np; il += nl;
+                lp += (scp + np) + (8u * (8u - np) - (sc - scp));   // POD: c+1 on inverted bytes, 8-c on the others
+                hl += (9u * nl - scl) + (sc - scl);                // LVSTL: 9-c on inverted bytes, c on the others
+                for (int k = 0; k < 8; k++) { fp[i0 + k] = (pH >> (8 * k + 7)) & 1; fl[i0 + k] = (lH >> (8 * k + 7)) & 1; }
+            }
+            for (uint32_t i = i0; i < n; i++) {
                 const uint32_t c = pimidPop8(b[i]);
                 o += c;
                 fp[i] = (8 - c) > 4;   // POD: more than four 0 bits -> invert, DBI_n LOW
@@ -142,7 +170,14 @@ class DqDataStats {
                 ip += fp[i]; il += fl[i];
             }
             const uint32_t w = (beatBytes_ > 0 && beatBytes_ <= n && (n % beatBytes_) == 0) ? beatBytes_ : 8;
-            for (uint32_t i = 0; i + w < n; i++) {
+            uint32_t j0 = 0;
+            for (; j0 + w + 8 <= n; j0 += 8) {   // (1.12.139): eight pairs at a time
+                t  += pimidPop64(pimidLoad64(b + j0) ^ pimidLoad64(b + j0 + w));
+                tp += pimidPop64(pimidLoad64(ep + j0) ^ pimidLoad64(ep + j0 + w));
+                tl += pimidPop64(pimidLoad64(el + j0) ^ pimidLoad64(el + j0 + w));
+                for (int k = 0; k < 8; k++) { tp += (fp[j0 + k] != fp[j0 + k + w]); tl += (fl[j0 + k] != fl[j0 + k + w]); }
+            }
+            for (uint32_t i = j0; i + w < n; i++) {
                 t  += pimidPop8((uint8_t)(b[i] ^ b[i + w]));
                 tp += pimidPop8((uint8_t)(ep[i] ^ ep[i + w])) + (fp[i] != fp[i + w]);
                 tl += pimidPop8((uint8_t)(el[i] ^ el[i + w])) + (fl[i] != fl[i + w]);

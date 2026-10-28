@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.139 -- host speed: the measured DQ and wire statistics count eight bytes at a time
+
+- **The change (external/zsim/src: dq_data_stats.h, noc_wire_data.h).** Each DRAM line and each data message is now
+  counted eight bytes at a time with 64-bit bit-parallel arithmetic. This covers its 1 bits, the POD and LVSTL DBI
+  inversions and their driven pins, and the pin transitions between beats or flits. Transitions between consecutive
+  flits are the packet against itself shifted by one flit, with the stream's last flit in front. A tail of fewer than
+  8 bytes uses the per-byte rules.
+- **Validation.** A standalone check of the new code against the per-byte code agreed on 400000 lines and packets
+  (random and structured data, line sizes 5-256 bytes, beat widths 2-32 bytes, all six flit widths). The serial cells
+  of the first entry are identical in every simulated and priced line to 1.12.125. Host time (qc-mi210, same job; the
+  previous change in brackets): 16-core OpenMP stream_triad 713 s (724 s), 4-core MPI stream_triad 429 s (439 s); the
+  1-core baselines within 3% of it (gemv 202 s, stream_triad 157 s against 202 s and 153 s).
+- **Data impact:** none.
+
 ## 1.12.138 -- host speed: the replayed controller costs nothing extra when it is idle
 
 - **The problem.** The scheduler indexes of the first host-speed change cost about 30 host cycles per DRAM cycle even

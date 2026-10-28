@@ -102,6 +102,26 @@ class NocWireData {
             for (int i = wlo; i <= whi; i++) {
                 const uint32_t wb = width(i) / 8;
                 const uint32_t f = (n + wb - 1) / wb;
+                if (n <= 256) {
+                    /* (1.12.139): flit k's lane j against flit k-1's is byte o of the zero-padded packet against byte
+                     * o - wb, the stream's last flit in front: B = last ++ packet ++ zeros, pairs (B[o], B[o + wb]),
+                     * eight at a time; the new last flit is B[f*wb .. f*wb+wb). Same counts as the loop below. */
+                    uint8_t B[32 + 256 + 40];
+                    const uint32_t L = f * wb;
+                    if (st.have) memcpy(B, st.last[i], wb); else memset(B, 0, wb);
+                    memcpy(B + wb, pkt, n);
+                    memset(B + wb + n, 0, L - n + 8);
+                    uint32_t o = 0;
+                    for (; o + 8 <= L; o += 8) {
+                        const uint64_t pv = pimidLoad64(B + o), cv = pimidLoad64(B + o + wb);
+                        r[i] += pimidPop64(~pv & cv);
+                        t[i] += pimidPop64(pv ^ cv);
+                    }
+                    for (; o < L; o++) { r[i] += pimidPop8((uint8_t)(~B[o] & B[o + wb])); t[i] += pimidPop8((uint8_t)(B[o] ^ B[o + wb])); }
+                    memcpy(st.last[i], B + L, wb);
+                    b[i] = (uint64_t)f * width(i);
+                    continue;
+                }
                 uint8_t prev[32];
                 if (st.have) memcpy(prev, st.last[i], wb); else memset(prev, 0, wb);
                 uint8_t cur[32];
