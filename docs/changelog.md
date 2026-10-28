@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.136 -- docs: the program's command line and environment move multi-threaded results (corrects 1.12.125)
+
+- **Correction (docs/architecture.md, Reproducibility).** 1.12.125 said the program path's length moves results by
+  at most about 0.01% and no device or PE-type cell. That holds for single-threaded programs only. Any string the
+  guest's startup reads -- the program path, the other arguments, the guest's environment -- changes its pre-ROI work
+  slightly, and a multi-threaded program amplifies that through the order of its threads inside the ROI. Measured on
+  one build and node (same program and configuration): MPI bfs 16 ranks host baseline 101726 / 105865 for two path
+  spellings and 103957 .. 105919 (4%) for one guest variable of 1 to 16 characters; OpenMP gemv on 16 host cores
+  15766 .. 16027 (1.7%); OpenMP gemv on 16 PEs 178759 / 179993 (0.7%). Each run repeats exactly. The thread stacks
+  and mappings did not move: it is not a memory-layout effect.
+- Results compare exactly when the program path, arguments and guest environment are the same strings.
+- An experiment that started the ROI on a phase boundary did not remove the effect; it is not part of this release.
+- No code change; every result is unchanged.
+
 ## 1.12.135 -- results no longer depend on the host's distribution (pinned guest libraries)
 
 - **Defect.** QEMU user mode gave the guest the HOST's own C library, C++ library and OpenMP runtime, and their code

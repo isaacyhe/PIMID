@@ -148,17 +148,27 @@ directories. A variable a workload needs from the shell beyond those passed
 goes in `workload.env`. Every run prints the launch it used (`[guest]
 launch: ...`).
 
-**The program path is part of the program's input (since (1.12.125)).** PIMID
-passes the program path exactly as it was given -- as the guest's `argv[0]`
-and as the file name QEMU records for it -- and the guest's startup reads it
-(glibc keeps the program's short name). Two spellings of the same file
-(`/a/b/prog`, `/a/./b/prog`, `/a/x/../b/prog`) or two installations at paths of
-different length therefore start the guest with slightly different work before
-the ROI: measured up to about 0.01% (at most 37 of about 199 000 cycles) on
-single-core host baselines of OpenMP programs, a similar fraction on
-multi-core host cells, and no change on any device or PE-type cell. Results
-compare exactly when the same path string is used; the `[guest] launch:` line
-prints the program path and its length.
+**The program's command line and environment are part of its input (since (1.12.125), corrected in (1.12.136)).**
+PIMID passes the program path exactly as it was given -- as the guest's `argv[0]` and as the file name QEMU
+records for it -- and the guest's startup reads it, as it reads the other arguments and the guest's environment
+variables. A different string length anywhere there -- two spellings of the same file (`/a/b/prog`,
+`/a/./b/prog`, `/a/x/../b/prog`), an installation at another path, a guest variable one character longer -- gives
+the guest a few more or fewer instructions and memory accesses before the ROI, so the caches and DRAM start the ROI
+in a slightly different state. A single-threaded program barely notices: serial device and PE-type cells did not
+change at all, 1-core host baselines moved by at most 0.01%. A multi-threaded program amplifies it, because its
+threads' order inside the ROI follows their simulated time, which this shifts. Measured on one build and node (base
+1.12.130), same program and configuration:
+
+| cell | program path spellings | one guest variable of 1 to 16 characters |
+|---|---|---|
+| MPI bfs, 16 ranks, host baseline | 101726 / 105865 | 103957 .. 105919 (4%) |
+| OpenMP gemv, 16 host cores | 15938 / 15766 | 15868 .. 16027 (1.0%) |
+| OpenMP gemv, 16 PEs (device) | 179993 / 179993 | 178759 (0.7%) |
+
+A small cell can move by much more in relative terms. Every one of these runs repeats exactly. Starting the ROI on
+a phase boundary does not remove the effect (tested), because the state the pre-ROI work leaves behind still
+differs. **Results compare exactly when the program path, its arguments and the guest's environment are the same
+strings** -- the `[guest] launch:` line prints the program path and its length.
 
 **A parallel workload is timed by the model.** Its threads are real threads
 inside the emulator, but their simulated time does not come from the host's
