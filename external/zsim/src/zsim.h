@@ -570,6 +570,9 @@ struct GlobSimInfo {
          *     RamulatorMemory with setPGDevice(true) -- so this is a trap
          *     rather than a live error, and it becomes live the moment a
          *     device topology terminates at the grand MC.
+         *     (next, user ruling 2026-10-28): RamulatorMemory is removed and a
+         *     router device of type Ramulator is refused, so no controller
+         *     touches devMC without the PE-MI's gap event; the trap is gone.
          * (2) "Nothing reads these back into the model". FALSE since 1.11.51:
          *     gapPowerDownResidency() reads the devMC histogram to weight
          *     DRAM background power. These are load-bearing now, which is

@@ -1635,7 +1635,8 @@ struct ZSimParsedOutput {
     uint64_t pemi_local_acc = 0;
     uint64_t pemi_remote_acc = 0;
     /* 1.11.91 (audit R8-7): MEASURED bank-open time from the Ramulator2 memory
-     * controller (ramulator_mem_ctrl.cpp): memory cycles x units with >= 1
+     * controller (ramulator_mem_ctrl.cpp; (next, user ruling 2026-10-28): the
+     * replayed controller's, dram_epoch_replay.cpp): memory cycles x units with >= 1
      * bank open, over the cycles x units sampled, ROI-rebased with the rest of
      * the "mem" group. Present only when a Ramulator2-backed controller
      * exported them; the PE memory interface keeps no bank state. */
@@ -1961,6 +1962,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
     CoreGroup cache_group = CoreGroup::NONE;
     bool host_replay_scope = false;   // 1.12.18 (R0605): inside the decoupled host memory's "hostDramReplay" group
     bool dev_replay_scope = false;    // 1.12.18: inside the device's "dramReplay" group
+    bool mem_replay_scope = false;    // (next, user ruling 2026-10-28): inside a Ramulator-typed memory's "memDramReplay" group
     bool pemi_scope = false;          // 1.12.18: inside a device "pe-mi-N"/"pe-mc-N" group
     /* 1.11.93 (F3/F4): the per-core record the current core block writes;
      * reset at every aggregate header so each "<group>-N:" block gets one. */
@@ -2141,7 +2143,27 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 scope_indent = indent;
                 cache_group = CoreGroup::DEVICE;
                 host_replay_scope = false; dev_replay_scope = true;   // 1.12.18
+                mem_replay_scope = false;
                 pemi_scope = false;   // 1.12.18
+                continue;
+            } else if (key == "memDramReplay") {
+                /* (next, user ruling 2026-10-28): the replayed controller of a
+                 * memory of type Ramulator (HOST_MC: the elements share the
+                 * host memory controller; zsim init.cpp). Its "mem-N"
+                 * controllers count in the totals and the host group (as
+                 * before); its array is THE memory of the run, so its counters
+                 * are the totals' controller counters (row hits / misses /
+                 * conflicts, activates, refreshes, ticks, idle, power-down,
+                 * bank-open time) -- read from its host-interface share (every
+                 * interface of the instance is a controller). The weave-timed
+                 * controller it replaces exported rd / wr / rdlat / wrlat, the
+                 * DQ data and bankOpenCycles / bankOpenWindow only. */
+                scope = Scope::MEM;
+                scope_indent = indent;
+                cache_group = CoreGroup::HOST;
+                host_replay_scope = false; dev_replay_scope = false;
+                mem_replay_scope = true;
+                pemi_scope = false;
                 continue;
             } else if (key == "hostDramReplay") {
                 /* 1.12.18 (ruling 17 / R0605): the decoupled host memory's own
@@ -2152,6 +2174,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 scope_indent = indent;
                 cache_group = CoreGroup::HOST;
                 host_replay_scope = true; dev_replay_scope = false;
+                mem_replay_scope = false;   // (next, user ruling 2026-10-28)
                 pemi_scope = false;   // 1.12.18
                 continue;
             } else if (key.substr(0, 4) == "mem-" || key.substr(0, 4) == "mem_"
@@ -2184,6 +2207,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                                   key.substr(0, 6) == "pe-mi-");
                 cache_group = device_mi ? CoreGroup::DEVICE : CoreGroup::HOST;
                 host_replay_scope = false; dev_replay_scope = false;   // 1.12.18
+                mem_replay_scope = false;   // (next, user ruling 2026-10-28)
                 pemi_scope = device_mi;   // 1.12.18
                 continue;
             }
@@ -2466,9 +2490,38 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 /* 1.12.18 (ruling 17 / R0605): the host interfaces' share of a
                  * replayed controller (either instance). */
                 /* user ruling 2026-10-25: the interfaces' line data (mem-N, pe-mi-N) */
-                if (!host_replay_scope && !dev_replay_scope && out.dq.take(key, val)) {
+                if (!host_replay_scope && !dev_replay_scope && !mem_replay_scope && out.dq.take(key, val)) {
                     if (cgrp) cgrp->dq.take(key, val);
                     continue;
+                }
+                if (mem_replay_scope) {
+                    /* (next, user ruling 2026-10-28): see the scope above. The
+                     * host-interface share IS the controller's whole traffic;
+                     * the device share (ctrl*, reads, writes, latencySum,
+                     * priced, bootstrap) is empty in this instance, and the
+                     * host interfaces' latency / pricing split is the
+                     * controller's: kept in the host group, as the decoupled
+                     * host memory's. The array-wide counters (ctrlRefreshes,
+                     * ctrlTicks, ctrlIdleTicks, ctrlPd*, bankOpen*) fall
+                     * through to the totals below. */
+                    ZSimParsedOutput::GroupCounters& hg = out.host;
+                    if (key == "hostRequests")          { out.ctrl_requests += val; hg.ctrl_requests += val; hg.ctrl_present = true; continue; }
+                    else if (key == "hostRowHits")      { out.ctrl_row_hits += val; hg.ctrl_row_hits += val; continue; }
+                    else if (key == "hostRowMisses")    { out.ctrl_row_misses += val; hg.ctrl_row_misses += val; continue; }
+                    else if (key == "hostRowConflicts") { out.ctrl_row_conflicts += val; hg.ctrl_row_conflicts += val; continue; }
+                    else if (key == "hostActivates")    { out.ctrl_activates += val; out.ctrl_act_present = true; hg.ctrl_activates += val; hg.ctrl_act_present = true; continue; }
+                    else if (key == "hostLatencySum")   { hg.ctrl_lat_sum += val; continue; }
+                    else if (key == "hostPriced")       { hg.ctrl_priced += val; continue; }
+                    else if (key == "hostBootstrap")    { hg.ctrl_bootstrap += val; continue; }
+                    else if (key == "ctrlRequests" || key == "ctrlRowHits" || key == "ctrlRowMisses" || key == "ctrlRowConflicts" ||
+                             key == "ctrlActivates" || key == "reads" || key == "writes" || key == "latencySum" ||
+                             key == "priced" || key == "bootstrap" || key == "hostReads" || key == "hostWrites") continue;
+                    if (key == "ctrlRefreshes")          hg.ctrl_refreshes += val;   // and the totals, below
+                    else if (key == "ctrlTicks")         hg.ctrl_ticks += val;
+                    else if (key == "ctrlIdleTicks")     hg.ctrl_idle_ticks += val;
+                    else if (key == "ctrlPdUnitCycles")  hg.ctrl_pd_cycles += val;
+                    else if (key == "ctrlPdUnits")       hg.ctrl_pd_units += val;
+                    else if (key == "ctrlPdExits")       hg.ctrl_pd_exits += val;
                 }
                 {
                     ZSimParsedOutput::GroupCounters& hg = out.host;
@@ -9706,7 +9759,51 @@ static int dqBeatBytes(const std::string& tech) {
     return (col >= bl) ? col / bl : 8;
 }
 
-static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int mem_latency, const std::string& mem_tech) {
+/* (next, user ruling 2026-10-28): the replayed Ramulator-typed memory's
+ * bootstrap rate per controller (one controller per channel): the preset's
+ * aggregate bandwidth over its channels at the run's knobs (DDR5 grade,
+ * device width, temperature) -- the per-channel rate the host memory block's
+ * bootstrap is built from (getHostMemBandwidth). A failure refuses, as every
+ * DRAM oracle failure does. */
+static int ramulatorControllerMBs(const std::string& tech, const UnifiedConfig& config) {
+    const std::string t = canonicalMemTech(tech);
+    try {
+        pimid::RamulatorWrapper q("", t);
+        applyDramKnobs(q, config);
+        q.initialize();
+        const double agg = static_cast<double>(q.getBandwidth());   // aggregate MB/s
+        const int nch = std::max(1, static_cast<int>(q.getNumChannels()));
+        return std::max(1, static_cast<int>(agg / static_cast<double>(nch)));
+    } catch (const std::exception& e) {
+        refuseWithoutDramOracle(t, e.what(), "the replayed memory controller's bootstrap bandwidth (its channel's MB/s)");
+    }
+}
+
+/* (next, user ruling 2026-10-28): the requesters of the replayed memory run a
+ * weave phase (in-order / OOO cores): the bootstrap is then WeaveSimple's
+ * (zero-load latency in the bound phase, the M/D/1 excess in the weave), as a
+ * replayed host memory's is. The same core the weave upgrade of
+ * getMemControllerConfig names (device scope: pim.pe.type; system scope: the
+ * first compute device's PEs). */
+static bool memRequestersWeave(const UnifiedConfig& config) {
+    std::string pt = config.pe_type;
+    if (config.scope == "system") {
+        for (const auto& n : config.system_nodes) {
+            if (n.role == UnifiedConfig::SystemNode::DEVICE &&
+                n.device_type == UnifiedConfig::SystemNode::COMPUTE) { pt = n.pe_type; break; }
+        }
+    }
+    return pt == "in_order_core" || pt == "ooo_core";
+}
+
+/* (next, user ruling 2026-10-28): `built` says the block's controllers are
+ * BUILT (no PE memory interfaces stand in for them: the HOST_MC placement, a
+ * device without a PE controller, or the system emitter's device-only block);
+ * only then are the bootstrap keys queried and written, so a run whose
+ * memory is served by its PE memory interfaces emits (and prints) nothing
+ * new. */
+static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int mem_latency, const std::string& mem_tech,
+                             bool built = true) {
     std::string ct = config.zsim_mem_controller_type;
     int bound_lat = (config.weave_bound_latency >= 0) ? config.weave_bound_latency : mem_latency;
 
@@ -9724,6 +9821,21 @@ static void emitZSimMemBlock(std::ostream& out, const UnifiedConfig& config, int
          * of 16; DDR5: 1 of 2 sub-channels). zsim interleaves lines across
          * the controllers (SplitAddrMemory: line % N, the address compacted). */
         out << "        controllers = " << hostMemControllerCount(mem_tech, config) << ";\n";
+        /* (next, user ruling 2026-10-28): the controllers are REPLAYED (zsim
+         * init.cpp: one DramEpochReplay instance for the memory, every
+         * controller one interface, charged in the bound phase at the measured
+         * service latency); latency (tRCD + tCAS) and bandwidth (the
+         * channel's MB/s) are the M/D/1 bootstrap before the first replayed
+         * epoch, weave = 1 selects WeaveSimple's bootstrap for in-order / OOO
+         * requesters. No weave-timed Ramulator controller remains. */
+        if (built) {
+            out << "        bandwidth = " << ramulatorControllerMBs(mem_tech, config) << ";\n";
+            out << "        weave = " << (memRequestersWeave(config) ? 1 : 0) << ";\n";
+            std::cout << "  [mem] memory controller: Ramulator2 EPOCH REPLAY (user ruling 2026-10-28): "
+                      << hostMemControllerCount(mem_tech, config) << " controller(s), one replayed instance of the "
+                      << canonicalMemTech(mem_tech) << " memory, priced in the bound phase at the previous epochs' measured service latency; "
+                         "M/D/1 at tRCD + tCAS (" << mem_latency << " cycles) is the bootstrap before the first replayed epoch" << std::endl;
+        }
         out << "    };\n";
     } else if (ct == "weavesimple") {
         out << "    mem = {\n";
@@ -14162,8 +14274,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * -- that gate is what kept the baseline knowingly at IDD3N.
              *
              * UNARMED-COUNTER REFUSAL: pgDevMCActivePhases is touched by
-             * every non-PUTS request through the Ramulator MC and the PE-MI
-             * (ramulator_mem_ctrl.cpp, pe_memory_interface.h). If a run has
+             * every non-PUTS request through the PE-MI (pe_memory_interface.h;
+             * (next, user ruling 2026-10-28): the weave-timed Ramulator MC,
+             * ramulator_mem_ctrl.cpp, is removed). If a run has
              * memory traffic but the counter never advanced, this machine is
              * not driving that tracker, and r_idle would come out 1.0 -- the
              * whole memory reported idle. Refuse the descent and say so,
@@ -14293,7 +14406,15 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             double ref_window_us = -1.0;   // 1.12.18 (ruling 2026-10-23)
             if (config.pm_dram_refresh_counted && zsim_stats.ctrl_refreshes > 0 && zsim_stats.ctrl_ticks > 0 && ram_oracle.getTckNs() > 0.0) {   // 1.12.18: option
                 const double span_ns = (double)zsim_stats.ctrl_ticks * ram_oracle.getTckNs();
-                const int rc = std::max(1, config.hierarchy_ranks_per_channel) * std::max(1, config.hierarchy_dram_channels);
+                /* (next, user ruling 2026-10-28): at HOST_MC the counted
+                 * refreshes are the memory's own replayed instance's -- one
+                 * rank per channel, one channel per controller (zsim
+                 * memDramReplay) -- not the device hierarchy's (which HOST_MC
+                 * does not build: dram_channels stays 1, and every REF was
+                 * charged at all channels' units: HBM3 x16, DDR5 x2). */
+                const int rc = (config.pe_hierarchy_level == 7)
+                    ? std::max(1, hostMemControllerCount(config.memory_tech, config))
+                    : std::max(1, config.hierarchy_ranks_per_channel) * std::max(1, config.hierarchy_dram_channels);
                 const double units_per_cmd = ((bg_units > 0) ? (double)bg_units / (double)rc : 1.0)
                                              / (double)ram_oracle.getPeChipSplit();   // 1.12.18: one REF per chip
                 const double e_nj = (double)zsim_stats.ctrl_refreshes * ram_oracle.getRefreshEnergyPerCommandNJ() * std::max(1.0, units_per_cmd);
@@ -18580,7 +18701,10 @@ public:
             cfg << "\n";
         }
 
-        emitZSimMemBlock(cfg, config_, mem_latency, config_.memory_tech);
+        /* (next, user ruling 2026-10-28): the block is built (and replayed)
+         * where no PE memory interface serves the elements */
+        emitZSimMemBlock(cfg, config_, mem_latency, config_.memory_tech,
+                         config_.placement_level == "HOST_MC" || !config_.hierarchy_enabled || !config_.pe_mc_enabled);
         cfg << "\n";
 
         // Configure Garnet-based network for all topologies

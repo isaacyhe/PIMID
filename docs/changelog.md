@@ -6,6 +6,65 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.147 -- a memory of type Ramulator (HOST_MC placement) is a replayed controller; the weave-timed Ramulator controller is removed
+
+- **Problem (user ruling 2026-10-28: "move HOST_MC placement and system devices of type Ramulator onto the epoch
+  replay (no DAMOV-style weave path left)").** Since 1.11.98 (device) and 1.12.18 (host, ruling 17) PIMID times DRAM
+  by epoch replay, but a memory of type Ramulator -- the `pim.placement.level: HOST_MC` placement's memory, where
+  the elements share the host memory controller -- was still built as `RamulatorMemory`: the bound phase returned
+  req.cycle + tRCD + tCAS (16 cycles at 500 MHz, DDR5 and HBM3) and Ramulator2 ran in the weave phase. A dependent
+  request never saw Ramulator's latency, and the DRAM was ticked by every one of its one-channel instances on every
+  core cycle. Its weave-measured latency (rdlat/rd) ran at 29-105 cycles on the cells below while the bound phase
+  charged 16, and at 206-4895 cycles on cells with 3-5 ROI misses (a weave-clock artefact). It exported rd / wr /
+  rdlat / wrlat, the DQ data and the bank-open time only: no row counts, activates or refresh commands, so the power
+  report priced HOST_MC with the 0.5 row-miss fallback and the datasheet refresh duty.
+- **Fix.** `sys.mem.type = "Ramulator"` builds a SimpleMemory (WeaveSimpleMemory for in-order / OOO requesters,
+  `sys.mem.weave`) per controller (one per channel, as before), every controller one host-style interface of ONE
+  `DramEpochReplay` instance of that memory ("memDramReplay": hostOnly, the memory's own Ramulator2 YAML, technology,
+  channel count and Ramulator's own address mapper, RoBaRaCoCh). No existing instance owns the array (with the
+  elements at the host controller no PE memory interface and no device replay exist), so it does not join one. The
+  controller is charged in the bound phase at its interface's measured service latency (epoch k-2, partial mean, the
+  host path's discipline; no path adder: it charges the DRAM service, as before); the M/D/1 at tRCD + tCAS and the
+  channel's bandwidth (`sys.mem.bandwidth`, the preset's aggregate over its channels) is the bootstrap before the
+  first replayed epoch, as on the replayed host memory. Records carry the line's own address (behind the address
+  split the controller saw line / n; the DQ data statistics read that compacted address too, now the line's own),
+  and, in device scope, are stamped on the device interfaces' cut axis (cutRoiRel, clkNoteRec for in-order / OOO
+  elements). The replay's row hits / misses / conflicts, activates, refreshes, ticks, idle ticks, power-down and
+  bank-open time are parsed as the run's controller counters; the counted refresh energy uses the instance's channels
+  (one rank each) as the units behind a command (HOST_MC builds no device hierarchy: dram_channels stayed 1, and the
+  first cut charged every REF at all channels' units, HBM3 x16). `RamulatorMemory` (ramulator_mem_ctrl.cpp/.h) is
+  deleted; a system router device of type Ramulator (the emitter writes every router device as Simple, so only a
+  hand-written zsim configuration can name one) panics at load. Files: external/zsim/src/init.cpp, mem_ctrls.h,
+  mem_ctrls.cpp, dram_epoch_replay.h, dram_epoch_replay.cpp (setDeviceRequesters only), zsim.h (comment),
+  external/zsim/CMakeLists.txt, src/main.cpp (emitZSimMemBlock bootstrap keys, the memDramReplay parser scope, the
+  HOST_MC refresh units), docs/memory.md, docs/architecture.md, docs/yaml_reference.md.
+- **Validation (sbatch, qc-pvc, a4c3dc1b vs this build, 16 elements at 500 MHz).** gemv --size 2048 and stream_triad
+  --size 1000000 at HOST_MC; run time before -> after, the bound charge before (16) and the weave-measured mean,
+  the charged mean after (mem-N rdlat+wrlat over rd+wr) against the replay's measured mean (hostLatencySum /
+  hostRequests), accesses priced by the replay / by the bootstrap:
+  DDR5 gemv in_order 3957245 -> 4143739 (+4.7%), weave 104.3, charged 62.7 vs replay 83.9, 286262 / 9076;
+  DDR5 gemv ooo 1787009 -> 2210562 (+23.7%), 105.1, 70.2 vs 94.1, 269085 / 26093;
+  DDR5 triad in_order 1883340 -> 1873906 (-0.5%), 41.6, 34.5 vs 36.0, 252337 / 19306;
+  DDR5 triad ooo 530696 -> 570106 (+7.4%), 40.8, 48.8 vs 69.8, 199493 / 72124;
+  HBM3 gemv in_order 3688555 -> 3866642 (+4.8%), 40.2, 40.1 vs 40.9, 286262 / 9076;
+  HBM3 gemv ooo 1555212 -> 1967721 (+26.5%), 42.6, 51.6 vs 59.2, 268986 / 26190;
+  HBM3 triad in_order 1815284 -> 1792963 (-1.2%), 29.5, 27.3 vs 28.1, 252337 / 19306;
+  HBM3 triad ooo 494514 -> 479950 (-2.9%), 34.9, 27.2 vs 31.1, 197875 / 73742.
+  Row-miss fraction now MEASURED (DDR5 0.93-1.00, HBM3 0.79-0.99; was the 0.5 fallback), ACTs and REFs counted,
+  0 unserved, 0 outside the ROI; total power -3.4% to +2.5%; simulator wall time 17-42% lower (no per-cycle
+  Ramulator tick). Small cells (gemv 256, triad 40000: 3-5 ROI misses, all bootstrap-priced) move by <= 2.6% in run
+  time and <= 2.8% in power. Identity (every line, host timers and pids masked): BANK HBM3 alu gemv, BANK DDR5 ooo
+  gemv and the 1-core DDR5 OMP host baseline IDENTICAL; the 4-core HBM3 triad host baseline identical except the
+  host-fabric wire toggle counts, which differ between two runs of a4c3dc1b as well. Timing deterministic (two runs
+  of the new build: every simulated and priced line equal; the DQ write-data counters differ in the 6th digit, see
+  data impact).
+- **Data impact.** HOST_MC cells on a DRAM technology (no corpus cell uses HOST_MC): run time, DRAM latency and
+  memory energy change as above. An `alu_core` element at HOST_MC has no memory interface and issues no DRAM
+  request (and at a4c3dc1b already panics on its scratchpad DMA): nothing to replay. The DQ write-data counters of a
+  multi-controller memory now read the written line itself; a line another thread is still writing is read live, so
+  they vary in the 6th digit between runs (as the host-fabric wire counts of multi-core host cells do). Every other
+  cell is unchanged.
+
 ## 1.12.146 -- a host baseline's own pages are spread over the memory like a host controller spreads them (user ruling 2026-10-28)
 
 - **The problem.** When the device is the host's memory (every host baseline and co-sim host of the corpus), the host's

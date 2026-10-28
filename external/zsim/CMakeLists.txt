@@ -95,8 +95,8 @@ set(ZSIM_SIM_SRCS
     src/lookahead.cpp
     src/monitor.cpp
 
-    # Memory controllers
-    src/ramulator_mem_ctrl.cpp
+    # Memory controllers ((next, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
+    # Ramulator2 times DRAM by epoch replay only)
     src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
 
     # QEMU-specific replacements
@@ -165,8 +165,6 @@ endif()
 if(TARGET ramulator)
     target_link_libraries(zsim_qemu PRIVATE ramulator)
     target_compile_definitions(zsim_qemu PRIVATE _WITH_RAMULATOR_)
-    set_source_files_properties(src/ramulator_mem_ctrl.cpp PROPERTIES
-        COMPILE_FLAGS "-std=c++20")
     set_source_files_properties(src/dram_epoch_replay.cpp PROPERTIES
         COMPILE_FLAGS "-std=c++20")
     target_include_directories(zsim_qemu PRIVATE
@@ -230,8 +228,8 @@ set(ZSIM_SIM_SRCS_TRACE
     src/lookahead.cpp
     src/monitor.cpp
 
-    # Memory controllers
-    src/ramulator_mem_ctrl.cpp
+    # Memory controllers ((next, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
+    # Ramulator2 times DRAM by epoch replay only)
     src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
 
     # Shared replacements (no Pin/XED)

@@ -42,11 +42,32 @@ epoch (`simulation.dram_epoch_phases`, one phase), and an epoch still in flight 
 counted at their age, so the latency the cores pay follows what the controller measures on loaded multi-core cells as
 it already did on single-core ones.
 
+**So is a memory of type Ramulator ((1.12.147), user ruling 2026-10-28).** With
+`pim.placement.level: HOST_MC` the elements share the host memory controller,
+which is built as one controller per channel of the memory (HBM3 16, DDR5 2).
+Each controller is one interface of a single replay instance of that memory --
+its own Ramulator2 YAML, technology, channel count and Ramulator's own address
+mapper (RoBaRaCoCh), the line's own address -- and is charged in the bound
+phase at the measured service latency of its interface (no path adder: the
+controller charges the DRAM service, as before). An M/D/1 at tRCD + tCAS and
+the channel's bandwidth prices the accesses before the first replayed epoch
+(WeaveSimple's form for in-order and OOO elements, as on the replayed host
+memory). The controller's row hits / misses / conflicts, activates, refresh
+commands, replayed and idle cycles and bank-open time are the run's controller
+counters (stats group `memDramReplay`). The weave-timed Ramulator controller
+this replaces -- DAMOV-style: the bound phase charged tRCD + tCAS, Ramulator2
+ran in the weave phase, so a dependent request never saw its latency -- is
+removed, and no DRAM is timed in the weave phase any more. A system router
+device of type Ramulator (PIMID's emitter never writes one; only a
+hand-written zsim configuration can) is refused at load. An ALU element at
+`HOST_MC` reaches no memory controller (it has no memory interface and
+charges its flat access cost), so its run has no DRAM traffic to replay.
+
 ## PE placement levels
 
 PEs attach inside the memory hierarchy via `pim.placement.level`. The levels,
 finest to coarsest, are `SUBARRAY`, `BANK`, `BANK_GROUP`, `RANK`, `CHANNEL`,
-`LOGIC_DIE`, plus `HOST_MC` (PEs share the host memory controller). `CHIP`
+`LOGIC_DIE`, plus `HOST_MC` (PEs share the host memory controller, a replayed controller since (1.12.147); see above). `CHIP`
 exists as a virtual layer but is degenerate -- not a distinct placement tier.
 
 Which levels are valid is **per technology**: a tier must be real silicon in

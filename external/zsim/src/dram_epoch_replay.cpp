@@ -402,7 +402,14 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
          * the wall-free clock already). */
         const uint64_t* hb = zinfo->hierarchy.mpiRoiBaseCyc;
         const bool hostBased = !based && hb && srcId < zinfo->numCores && srcId < zinfo->hierarchy.mpiRoiBaseCycN && zinfo->cores[srcId];
-        if (based) {
+        if (devRequesters_) {
+            /* (next, user ruling 2026-10-28): a device element at the host
+             * memory controller (HOST_MC): the device interfaces' stamp and
+             * ROI-end note (PEMemoryInterface::localAccessLatency) */
+            stamp = PEMemoryInterface::cutRoiRel(srcId, cycle);
+            if (PEMemoryInterface::singleProcCut() && srcId < zinfo->numCores && zinfo->cores[srcId] && !zinfo->cores[srcId]->wakeStampable())
+                PEMemoryInterface::clkNoteRec(srcId, stamp);
+        } else if (based) {
             stamp = PEMemoryInterface::perCoreRoiRel(srcId, cycle);
         } else if (hostBased) {
             const uint64_t c = adjustedClock ? cycle : PEMemoryInterface::wallFreeCycle(srcId, cycle);

@@ -90,6 +90,15 @@ class DramEpochReplay {
      * (the controller state stays correct) but is taken out of these
      * counters, as out of every replayed ROI total, and reported apart. */
     void bindCounters(uint32_t mi, Counter* rd, Counter* wr);
+    /* (next, user ruling 2026-10-28): the requesters of this instance's host
+     * interfaces are the DEVICE's elements (a memory of type Ramulator in
+     * device scope: HOST_MC placement, the elements share the host memory
+     * controller). Under the single-process cut their records are stamped on
+     * the axis the cut folds on and the device interfaces stamp on
+     * (PEMemoryInterface::cutRoiRel), and an in-order / OOO element's latest
+     * stamp joins its ROI end (clkNoteRec), as at a device interface. Off
+     * (every host memory before the ruling): unchanged. */
+    void setDeviceRequesters(bool on) { devRequesters_ = on; }
     bool hostOnly() const { return hostOnly_; }
     bool hasHost() const { return hostMis_ > 0; }
     ~DramEpochReplay();
@@ -186,6 +195,7 @@ class DramEpochReplay {
     void recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, uint32_t ch, bool isWrite, uint32_t mi, uint8_t shadow = 0, uint32_t grp = 0);
     bool isHostMi(uint32_t mi) const { return mi >= hostMi0_ && mi < hostMi0_ + hostMis_; }
     bool hostOnly_ = false;
+    bool devRequesters_ = false;   // (next, user ruling 2026-10-28): see setDeviceRequesters
     uint32_t hostMi0_ = ~0u, hostMis_ = 0;     // host interfaces [hostMi0_, hostMi0_ + hostMis_)
     std::vector<double> miTicksPerCycle_;     // DRAM ticks per cycle of each interface's own clock
     std::function<void(uint64_t, uint32_t&, uint32_t&, uint64_t&)> hostTarget_;

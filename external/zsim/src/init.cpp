@@ -44,7 +44,6 @@ using namespace std;
 #include "debug_zsim.h"
 #include "pe_memory_interface.h"
 #include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
-#include "ramulator_mem_ctrl.h"
 #include "event_queue.h"
 #include "filter_cache.h"
 #include "galloc.h"
@@ -414,12 +413,28 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
     } else if (type == "MD1" || type == "WeaveMD1") {
         panic("Memory controller type '%s' has been removed. Use 'Simple' (M/D/1 is always active) or 'WeaveSimple'.", type.c_str());
     } else if (type == "Ramulator") {
-        string ramCfg = config.get<const char*>("sys.mem.configFile");
-        uint64_t cpuFreqHz = 1000000ULL * frequency;
-        RamulatorMemory* rmem = new RamulatorMemory(ramCfg, cpuFreqHz, latency, domain, name);
-        rmem->setBurstsPerLine(config.get<uint32_t>("sys.mem.burstsPerLine", 1));   // 1.11.96 (H01/H02)
-        rmem->dqData().setBeatBytes(config.get<uint32_t>("sys.mem.dqBeatBytes", 8));   // measured DQ data: bytes per beat (channel width / 8)
-        mem = rmem;
+        /* (next, user ruling 2026-10-28: "move HOST_MC placement and system
+         * devices of type Ramulator onto the epoch replay (no DAMOV-style
+         * weave path left)"): a memory of type Ramulator is a REPLAYED
+         * controller. The controller object is the host memory's
+         * (SimpleMemory; WeaveSimpleMemory when sys.mem.weave = 1, the
+         * in-order / OOO requesters), charged in the bound phase with the
+         * measured service latency of its interface on the memory's own
+         * DramEpochReplay instance (built by the caller once every controller
+         * exists: InitSystem, "memDramReplay"); the M/D/1 at the zero-load
+         * latency and the controller's bandwidth is the bootstrap before the
+         * first replayed epoch, exactly as on the replayed host memory
+         * (1.12.18 ruling 17). RamulatorMemory -- bound phase req.cycle +
+         * minLatency, Ramulator2 run in the weave phase, so a dependent
+         * request never saw Ramulator's latency and a bound-only core
+         * (alu_core, simple_core) saw minLatency only -- is removed. */
+        if (!config.exists("sys.mem.bandwidth"))
+            panic("sys.mem.type = Ramulator (%s): the replayed controller's bootstrap (M/D/1 before the first replayed epoch) needs sys.mem.bandwidth, "
+                  "the controller's own MB/s; PIMID's emitter writes it (user ruling 2026-10-28)", name.c_str());
+        const uint32_t bandwidth = config.get<uint32_t>("sys.mem.bandwidth");
+        if (config.get<uint32_t>("sys.mem.weave", 0)) mem = new WeaveSimpleMemory(lineSize, frequency, bandwidth, latency, latency, domain, name);
+        else mem = new SimpleMemory(lineSize, frequency, bandwidth, latency, name);
+        static_cast<SimpleMemory*>(mem)->dqData().setBeatBytes(config.get<uint32_t>("sys.mem.dqBeatBytes", 8));   // measured DQ data: bytes per beat (channel width / 8)
     } else {
         panic("Invalid memory controller type %s", type.c_str());
     }
@@ -1312,6 +1327,48 @@ static void InitSystem(Config& config) {
                 mems[i] = BuildMemoryController(config, zinfo->lineSize, zinfo->freqMHz, domain, name);
             }
 
+            /* (next, user ruling 2026-10-28): a memory of type Ramulator (the
+             * HOST_MC placement's memory, any sys.mem of that type) gets ONE
+             * replay instance of its own, hostOnly-style: the memory's own
+             * Ramulator2 YAML (sys.mem.configFile), technology, channel count
+             * (sys.mem.channels; default one per controller, the emitter's
+             * hostMemControllerCount) and Ramulator's own address mapper (the
+             * YAML's RoBaRaCoCh). No existing instance owns this array: with
+             * the elements at the host controller there is no device
+             * interface and no device replay (zinfo->dramReplay is built only
+             * with PE memory interfaces), and a host memory block is never of
+             * this type. Every controller is one interface of the instance,
+             * clocked at the requesters' clock (sys.frequency: the elements'
+             * in device scope), with the line's own address (setAddrSplit)
+             * so the mapper sees the real channel / bank / row bits. No path
+             * adder: the controller charges the DRAM service only, as
+             * RamulatorMemory charged tRCD + tCAS (sys.mem.latency) only. */
+            if (memType == "Ramulator") {
+                if (config.get<uint32_t>("sys.mem.hostDramReplay", 0))
+                    panic("sys.mem.type = Ramulator is replayed by its own instance; sys.mem.hostDramReplay = 1 names a second replay of the same controllers (user ruling 2026-10-28)");
+                const string rCfg = config.get<const char*>("sys.mem.configFile", "");
+                if (rCfg.empty()) panic("sys.mem.type = Ramulator needs sys.mem.configFile (the memory's Ramulator2 YAML)");
+                const uint32_t rBursts = config.get<uint32_t>("sys.mem.burstsPerLine", 1);   // 1.11.96 (H01/H02)
+                const uint32_t rCh = config.get<uint32_t>("sys.mem.channels", memControllers);
+                const bool rSplit = (memControllers > 1) && config.get<bool>("sys.mem.splitAddrs", true);
+                const uint64_t rHz = 1000000ull * zinfo->freqMHz;
+                uint32_t rLineBits = 0; while ((1u << rLineBits) < zinfo->lineSize) rLineBits++;
+                if (zinfo->hostDramReplay) panic("sys.mem.type = Ramulator: a host memory replay instance already exists");
+                DramEpochReplay* rRep = new DramEpochReplay(rCfg, rHz, 0, rBursts, rLineBits, "memDramReplay", true, rCh);
+                rRep->setDeviceRequesters(!cosimMode);   // device scope: every requester is an element
+                zinfo->hostDramReplay = rRep;   // the driver slot (markRoi, foldByCut, finalize, initStats)
+                for (uint32_t i = 0; i < memControllers; i++) {
+                    SimpleMemory* sm = static_cast<SimpleMemory*>(mems[i]);
+                    const uint32_t mi = rRep->addHostInterface(rHz);
+                    sm->setHostReplay(rRep, mi, 0);
+                    if (rSplit) sm->setAddrSplit(i, memControllers);
+                    rRep->bindCounters(mi, sm->rdCounter(), sm->wrCounter());   // 1.12.18 (R1)
+                }
+                info("[ZSim] memory of type Ramulator: %u controller(s) replayed through Ramulator2 (one instance, %u channel(s), the YAML's address mapper), "
+                     "charged in the bound phase at the measured service latency of their interface; M/D/1 bootstrap before the first replayed epoch; "
+                     "no weave-timed controller [user ruling 2026-10-28]", memControllers, rCh);
+            }
+
             /* 1.12.18 (ruling 17 / R0605, user: "make the power model
              * complete"): the host memory is replayed through Ramulator2 like
              * the device memory (dram_epoch_replay.h). Coupled (the device IS
@@ -1359,7 +1416,7 @@ static void InitSystem(Config& config) {
              * carry the replay hook); other types keep the array-side charge. */
             if (config.get<uint32_t>("sys.mem.flushWritebacksToMC", 0)) {
                 const string fType = config.get<const char*>("sys.mem.type", "Simple");
-                if (fType == "Simple" || fType == "WeaveSimple") {
+                if (fType == "Simple" || fType == "WeaveSimple" || fType == "Ramulator") {   // (next, user ruling 2026-10-28): Ramulator is a replayed SimpleMemory
                     zinfo->flushHostMems = new g_vector<SimpleMemory*>();
                     for (uint32_t i = 0; i < memControllers; i++)
                         zinfo->flushHostMems->push_back(static_cast<SimpleMemory*>(mems[i]));
@@ -1435,17 +1492,16 @@ static void InitSystem(Config& config) {
 
                 MemObject* mc;
                 if (devType == "Ramulator") {
-                    string ramCfg = config.get<const char*>((devPrefix + ".configFile").c_str(), "");
-                    if (ramCfg.empty()) {
-                        panic("SystemRouter device%u: Ramulator type requires configFile", d);
-                    }
-                    uint64_t cpuFreqHz = 1000000ULL * zinfo->freqMHz;
-                    uint32_t domain = d * zinfo->numDomains / numDevices;
-                    RamulatorMemory* rmc = new RamulatorMemory(ramCfg, cpuFreqHz, devLat, domain, mcName);
-                    rmc->dqData().setBeatBytes(config.get<uint32_t>("sys.hierarchy.dqBeatBytes", 8));
-                    rmc->setPGDevice(true);   // 1.11.18: device-side PG tracker
-                    rmc->setBurstsPerLine(config.get<uint32_t>((devPrefix + ".burstsPerLine").c_str(), 1));   // 1.11.96 (H01/H02)
-                    mc = rmc;
+                    /* (next, user ruling 2026-10-28): the weave-timed
+                     * RamulatorMemory is removed. No PIMID configuration
+                     * reaches this branch: the system emitter writes every
+                     * router device as Simple (its M/D/1 at the Ramulator2
+                     * preset's latency and bandwidth), so a router device of
+                     * type Ramulator can only come from a hand-written zsim
+                     * configuration. It is refused, loudly, rather than timed
+                     * by the DAMOV-style path. */
+                    panic("SystemRouter device%u (sys.mem.device%u.type = Ramulator): the weave-timed Ramulator controller is removed (user ruling 2026-10-28: "
+                          "no DAMOV-style weave path left) and PIMID's emitter never writes this type for a router device; name Simple or WeaveSimple", d, d);
                 } else if (devType == "WeaveSimple") {
                     uint32_t bw = config.get<uint32_t>((devPrefix + ".bandwidth").c_str(), 12800);
                     uint32_t boundLat = config.get<uint32_t>((devPrefix + ".boundLatency").c_str(), devLat);

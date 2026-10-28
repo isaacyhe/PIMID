@@ -497,7 +497,7 @@ memory:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `memory.controller.type` | string | `"auto"` | Controller type: `auto`, `simple`, `weavesimple`, `ramulator`. `md1`/`weavemd1` were removed (M/D/1 queuing is always active in `simple`): they are accepted with a warning and run `simple`. `ramulator` on a non-DRAM technology is refused (1.11.106; it used to run `simple`). Any other word is refused. |
+| `memory.controller.type` | string | `"auto"` | Controller type: `auto`, `simple`, `weavesimple`, `ramulator`. `md1`/`weavemd1` were removed (M/D/1 queuing is always active in `simple`): they are accepted with a warning and run `simple`. `ramulator` on a non-DRAM technology is refused (1.11.106; it used to run `simple`). Any other word is refused. Since (1.12.147) (user ruling 2026-10-28) a `ramulator` controller that is built (the `HOST_MC` placement) is a replayed controller: Ramulator2 epoch replay, charged in the bound phase, an M/D/1 bootstrap before the first replayed epoch; the weave-timed Ramulator controller is removed. |
 | `memory.controller.bandwidth` | string | `""` | Bandwidth with units. Formats: `"25.6 GB/s"`, `"19200 MB/s"`, `"1 TB/s"`, `"6400000 KB/s"`, `"6400"` (bare number = MB/s). A value that does not parse is refused (1.11.106; it used to keep the default with a warning). On SRAM and the NVMs a value above the array's own cap (banks x line / access time from the array model, printed on the `[bw]` line) is refused (1.11.106; it used to be clamped in silence). On a DRAM technology under `simple`/`weavesimple` a value above the part's rank bandwidth is clamped to it with a warning. |
 | `memory.controller.bound_latency` | int | `-1` | Bound latency for Weave controllers (cycles). |
 | `memory.controller.ramulator_config` | string | `""` | Path to custom Ramulator2 YAML config. Overrides auto-generated config. |
@@ -505,7 +505,7 @@ memory:
 | `memory.controller.write_low_watermark` | float | `0.3333` (16/48) | Since 1.12.18. Write mode ends when the write queue holds less than this fraction of its size while a read is pending. Default: the published 16-of-48 low water mark (same source). |
 
 **Auto-derivation rules** (when `type: auto`):
-- DRAM technologies -> `ramulator` (cycle-accurate Ramulator2)
+- DRAM technologies -> `ramulator` (cycle-accurate Ramulator2, by epoch replay: the PE memory interfaces' replay, or at `HOST_MC` the replayed host-side controllers, since (1.12.147))
 - SRAM -> `simple` (fixed latency from CACTI)
 - NVM (STT-MRAM, PCM, ReRAM) -> `simple` (fixed latency from NVSim)
 - In-order/out-of-order cores auto-upgrade a `simple` controller to `weavesimple`
@@ -1743,7 +1743,7 @@ fabric a DRAM device runs the tree.
 | `RANK` | L4 | PE at rank level |
 | `CHANNEL` | L5 | PE at channel level (aggregation tier; on-die for the channel-centric LPDDR/GDDR/HBM families) |
 | `LOGIC_DIE` | L6 | PE on the logic/base die (HBM) |
-| `HOST_MC` | L7 | PE shares host memory controller (no PE-MC needed); the top rung, priced as the host path (since 1.11.94) |
+| `HOST_MC` | L7 | PE shares host memory controller (no PE-MC needed); the top rung, priced as the host path (since 1.11.94). On a DRAM technology the shared controllers (one per channel) are replayed through Ramulator2 and charged in the bound phase at the measured service latency (since (1.12.147), user ruling 2026-10-28; see [memory.md](memory.md)); `pim.mc.epoch_replay` does not apply (there is no weave-timed alternative). An `alu_core` element at this tier has no memory interface and issues no DRAM request. |
 
 The same family words apply to the two other places that name L0
 (1.11.74): the L0 count under `memory` -- `subarrays_per_bank` (DRAM; legacy
