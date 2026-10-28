@@ -6,6 +6,33 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.172 -- a thread's exit is ordered: co-sim MPI cells repeat in every run
+
+- **Problem.** Co-sim MPI cells still gave a different post-ROI protocol tail in a few runs out of a hundred, with
+  the kernel window unchanged: cosim_HBM3_mpi_histogram_4core rank 0 401798 vs 403927 cycles (about 1 run in 32,
+  with the network batch of phase 100 and the replay statistics), and the 1-host-core parity cell
+  cosim_DDR4_histogram_mpi 542403 vs 542096 (3 runs in 192, the statistics written one phase apart).
+- **Root cause.** Two steps of a thread's exit ran outside the fixed order, when QEMU tore the host thread down:
+  - the core was marked finished (exempt from the NoC and DRAM replays' consistent cut) in SimThreadFini, so a
+    barrier's cut sometimes still stopped at the finished core's frozen clock and the replays split their phase
+    buckets elsewhere;
+  - the exit's clear-and-wake of the thread's ID word (CLONE_CHILD_CLEARTID, what pthread_join waits on), so the
+    phase in which rank 0 woke from joining the rank threads, and every later step of its post-ROI path, followed
+    the host;
+  - the thread left its core and was finished in two steps, so an end of phase between them still counted it as
+    scheduled (the scheduler's occupancy histogram `occHist` of two 4-core co-sim MPI cells differed between two
+    copies of a tree).
+- **Fix (external/zsim/src/qemu_zsim_plugin.cpp, scheduler.h).** At the thread's `exit` call, in its own turn: its
+  core is marked finished, and the plugin clears the ID word recorded at the thread's clone (or set_tid_address) and
+  wakes its waiters, which the turn then awaits like the threads of a FUTEX_WAKE. QEMU's own clear and wake then find
+  the word cleared and no waiter. When the vCPU ends, the thread leaves its core and is finished in one critical
+  section (`Scheduler::leaveAndFinish`). SimThreadFini still marks a thread that ends without the call.
+- **Data impact (one-time).** Cycles, power and every CSV column unchanged on the 116-cell validation set and the
+  40-cell exact-repeat sample. The post-ROI protocol tails of co-sim MPI cells take one value, in some cells the
+  value seen less often before (cosim_HBM3_mpi_histogram_4core rank 0 401798 -> 403927 cycles; the parity cell
+  cosim_DDR4_histogram_mpi 542403 -> 542096, its statistics written one phase earlier), and with them the
+  post-ROI replay counts.
+
 ## 1.12.171 -- the NoC links: a link serves one flit of its width per cycle, and only the priced window's traffic is counted
 
 - **Defect (external/zsim/src: garnet_network.h, qemu_zsim_plugin.cpp; src/main.cpp).** The report's link duty (flit

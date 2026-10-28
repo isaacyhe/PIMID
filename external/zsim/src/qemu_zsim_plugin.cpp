@@ -28,6 +28,8 @@
 #include <sys/mman.h>   // (1.12.107): MFD_CLOEXEC
 #include <fcntl.h>      // (1.12.107): O_ACCMODE, O_CLOEXEC
 #include <errno.h>
+#include <linux/futex.h>   // (1.12.172): FUTEX_WAKE
+#include <climits>
 #include <dlfcn.h>     // (1.12.157): dlsym of QEMU's pid_g2h (patch 0003)
 #include <sys/stat.h>   // (1.12.157): struct stat / statx answers given fixed host-identity fields
 #include <map>
@@ -197,6 +199,9 @@ static const uint64_t kFutexWaitSynthPc = 0x2000 + 202;   // (1.12.76): futex WA
 static int g_cloneDomPending[MAX_VCPUS];
 static std::mutex g_cloneMu;
 static std::map<int, int> g_cloneDom;   // child OS tid -> domain read at the parent's clone
+/* (1.12.172): each thread's exit-clear word (CLONE_CHILD_CLEARTID at its clone, or its set_tid_address), by OS tid */
+static std::map<int, uint64_t> g_clearTidByHost;
+static uint64_t g_cloneClearPending[MAX_VCPUS];
 static std::mutex tidMutex;
 
 /* 1.9.20 (defect #15): deterministic device-PE homes.
@@ -5613,6 +5618,7 @@ static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, vo
             const int hostTid = (int)(g2h ? g2h(ret) : (ret > kGuestTidBase ? ret - kGuestTidBase : ret));
             std::lock_guard<std::mutex> g(g_cloneMu);
             g_cloneDom[hostTid] = g_cloneDomPending[vcpu_index];
+            if (g_cloneClearPending[vcpu_index]) g_clearTidByHost[hostTid] = g_cloneClearPending[vcpu_index];   // (1.12.172)
         }
         /* (1.12.123) fixed thread order: the new thread joins before its creator goes
          * on, so new threads take their cores in the order they were created */
@@ -5685,6 +5691,14 @@ static void vcpu_exit_cb(unsigned int vcpu_index, void *userdata) {
             if (pimidPostRoiFree()) return;   // (1.12.121): after the ROI a thread ends unsimulated (see syscall_cb)
             /* Leave scheduler if still scheduled */
             uint32_t cid = cids[tid];
+            if (g_detOrder && cid != INVALID_CID && cid != UNINITIALIZED_CID && !g_simThreadFinished[tid]) {
+                /* (1.12.172): leave and finish at once, in the thread's turn (Scheduler::leaveAndFinish) */
+                g_simThreadFinished[tid] = true;
+                if (g_mpi_thread_mode || g_spCut) g_coreRoiState[cid].store(2, std::memory_order_release);
+                zinfo->sched->leaveAndFinish(procIdx, tid, cid);
+                cids[tid] = UNINITIALIZED_CID;
+                return;
+            }
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
                 zinfo->sched->leave(procIdx, tid, cid);
             }
@@ -5844,11 +5858,39 @@ static void syscall_cb(unsigned int vcpu_index,
     if (num == 9 && (a4 & 0x20000)) g_stackMapLen[vcpu_index] = a2;
     else if (num == 56 && (a1 & 0x10000) && a2 && zinfo) stackOnClone(a2);
     if (g_detOrder && num == 202 && vcpu_index < MAX_VCPUS) { g_detFutexOp[vcpu_index] = (uint32_t)(a2 & 0x7f); g_detFutexNr[vcpu_index] = a3; }
+    if (num == 56) g_cloneClearPending[vcpu_index] = (a1 & 0x200000) ? a4 : 0;   // (1.12.172): CLONE_CHILD_CLEARTID's word
+    if (num == 218) { std::lock_guard<std::mutex> g(g_cloneMu); g_clearTidByHost[(int)syscall(SYS_gettid)] = a1; }   // (1.12.172): set_tid_address
     if (num == 56 && (a1 & 0x10000))   // (1.12.76): the child's domain, as its parent sees it at the clone
         g_cloneDomPending[vcpu_index] = g_in_device_region.load() ? DOMAIN_DEVICE : DOMAIN_HOST;
     else if (num == 11 && zinfo && zinfo->stackRanges) stackOnUnmap(a1, a2);
     if (num == 231) { g_guest_exit_seen = true; g_guest_exit_status = (int)(a1 & 0xff); }   // (1.12.115): the guest's own exit, whatever its thread's state
     uint32_t tid = vcpuToTid[vcpu_index];
+    /* (1.12.172): a thread that exits marks its core EXITED (exempt from the epoch cut) here, at its exit call, in
+     * its own turn of the fixed order. SimThreadFini, which marked it before, runs when QEMU tears the vCPU down,
+     * at a host-timed point: whether a phase barrier's cut still waited on the finished core, and so where the
+     * NoC and DRAM replays split their phase buckets, followed the host (1 run in 32 of a 4-core co-sim MPI cell
+     * folded one barrier earlier, and the published epoch latencies moved the ranks' post-ROI tail). */
+    if (num == 60 && (g_mpi_thread_mode || g_spCut) && tid < MAX_THREADS && cids[tid] < MAX_THREADS)
+        g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
+    /* (1.12.172): the exit's clear-and-wake of the thread's ID word (what pthread_join waits on) is done here, in the
+     * exiting thread's turn, and the threads it wakes are awaited like those of a FUTEX_WAKE. QEMU did it after the
+     * thread had left the fixed order, when the host thread was torn down, so the phase in which a joining thread
+     * (rank 0 joining the MPI rank threads) woke followed the host (about 1 run in 70 of a co-sim MPI cell moved its
+     * post-ROI tail). QEMU's own clear and wake then find the word cleared and no waiter. */
+    if (num == 60 && g_detOrder && detActive() && tid < MAX_THREADS) {
+        uint64_t w = 0;
+        { std::lock_guard<std::mutex> g(g_cloneMu); auto it = g_clearTidByHost.find((int)syscall(SYS_gettid)); if (it != g_clearTidByHost.end()) { w = it->second; g_clearTidByHost.erase(it); } }
+        if (w) {
+            GByteArray* b = g_byte_array_new(); const uint32_t z = 0;
+            g_byte_array_append(b, (const guint8*)&z, 4);
+            const bool ok = qemu_plugin_write_memory_vaddr(w, b);
+            g_byte_array_free(b, TRUE);
+            if (ok) {
+                const long n = syscall(SYS_futex, (void*)(uintptr_t)w, FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);   // guest_base 0: the guest address is the host's
+                if (n > 0) g_detPending.fetch_add(n);
+            }
+        }
+    }
     if (tid == UNINITIALIZED_CID || tid >= MAX_THREADS) return;
     if (!thread_initialized[tid]) return;  // not yet started
 

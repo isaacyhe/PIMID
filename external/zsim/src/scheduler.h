@@ -229,8 +229,24 @@ class Scheduler : public GlobAlloc, public Callee {
             futex_unlock(&schedLock);
         }
 
+        /* (1.12.172): under the fixed order a thread that ends leaves its core and is finished in one critical
+         * section, in its own turn: with the leave first and the finish after it, an end of phase between the two
+         * (run by the next turn) still counted the thread as scheduled, at a host-timed point (occHist). */
+        void leaveAndFinish(uint32_t pid, uint32_t tid, uint32_t cid) {
+            if (g_detBeforeLeave) g_detBeforeLeave(tid);
+            futex_lock(&schedLock);
+            leaveLocked(pid, tid, cid);
+            finishLocked(pid, tid);
+            futex_unlock(&schedLock);
+        }
+
         void finish(uint32_t pid, uint32_t tid) {
             futex_lock(&schedLock);
+            finishLocked(pid, tid);
+            futex_unlock(&schedLock);
+        }
+
+        void finishLocked(uint32_t pid, uint32_t tid) {
             uint32_t gid = getGid(pid, tid);
             //info("[G %d] Finish", gid);
             assert((gidMap.find(gid) != gidMap.end()));
@@ -268,7 +284,6 @@ class Scheduler : public GlobAlloc, public Callee {
             //At this point noone holds pointer to th, it's out from all queues, and either on OUT or BLOCKED means it's not pending a handoff
             delete th;
             threadsFinished.inc();
-            futex_unlock(&schedLock);
         }
 
         uint32_t join(uint32_t pid, uint32_t tid) {

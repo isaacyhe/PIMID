@@ -234,7 +234,10 @@ cores in the order their host threads arrived, so with more threads than cores
 (the 4-core co-sim cells run 16) the runs differed from program start. Since (1.12.161)
 the order also holds after the ROI's end, until the statistics are written: a
 co-sim MPI cell's post-ROI collective (its protocol tail) and the DRAM replay's
-last records ran in the host's order. The
+last records ran in the host's order. Since (1.12.172) a thread's exit is ordered too: at its
+exit call, in its own turn, its core is marked finished for the replays' consistent
+cut and its ID word is cleared and its joiners woken (before, both happened when
+QEMU tore the host thread down). The
 simulated time still comes from the model; the host decides neither the order
 in which threads touch shared state nor which core a thread gets. The cost is
 host time: OpenMP device cells take about a fifth longer to simulate.
