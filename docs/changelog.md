@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.178 -- message passing: each waiting rank is bounded by what can release it, on the clock the rendezvous uses
+
+- **The problem.** 1.12.176 bounded a rank that waits on a peer by the earliest wake still possible anywhere: the
+  oldest message posted to any rank and not yet received, or the clock of a rank that is not waiting. A message
+  posted to a receiver busy elsewhere (bfs exchanges its frontier rank by rank) stayed the earliest posted wake, so
+  the bound fell back to the waiting rank's own clock and the DRAM replay stood still at it while the other ranks
+  ran on (smoke 16-rank bfs, HBM3 CHANNEL and LOGIC_DIE placement: the replay stood still for most of the run).
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, src/parallel_abstraction/pimid_mpi.cpp). The transport's
+  wait announcement carries what the rank waits for (a receive from one source or any, or a barrier) and its rank.
+  A waiting rank is bounded by its own release: a receive from source s by the oldest message from s already posted
+  to it, or, with none, by s's own bound (s sends it later); a receive from any source by the messages posted to it
+  and the other ranks' bounds; a barrier by its latest arrival so far and, until it is released, the bounds of the
+  ranks that have not arrived. A rank that is not waiting is bounded by its clock (inside a transport bracket, the
+  clock it resumes at), an exited one never acts; the bounds are solved together at the phase end from the
+  simulated state alone. A wait that cannot be bounded falls back to the rank's own clock, as before.
+- **Two clocks.** The bounds are taken on the clock the rendezvous uses (send stamps, barrier arrivals and a
+  receive's arrival are on each rank's ROI-relative clock) and moved to the clock each rank's records carry; the
+  two differ for the ROI opener by its own re-baseline at roi_begin, which runs after the entry barrier. Nothing is
+  folded before that roi_begin, since until then the opener's record clock is not final.
+
 ## 1.12.177 -- message passing: a receive writes its payload after the message arrives, and no mailbox lock is held across priced work
 
 - **The problem.** Under thread-MPI a receive copied the payload into the user buffer at the clock it had when it

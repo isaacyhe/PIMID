@@ -466,7 +466,9 @@ static inline void mpi_comm_end(void)   { zsim_magic_op(ZSIM_MAGIC_OP_MPI_COMM_E
  * posts its message or arrives at the barrier. The simulator then bounds the
  * rank's next records by that peer's clock instead of holding its memory
  * replay at this rank's own (see the plugin's cut). */
-static inline void mpi_wait_peer(void)  { zsim_magic_op(ZSIM_MAGIC_OP_MPI_WAIT_PEER); }
+static inline void mpi_wait_peer(int kind, int want_src) {   /* kind 1 = receive (want_src, -1 any), 2 = barrier */
+    rt_op_rdx(ZSIM_MAGIC_OP_MPI_WAIT_PEER, ((uint64_t)(uint32_t)kind << 48) | ((uint64_t)(uint16_t)(want_src + 1) << 32) | (uint32_t)g_rank);
+}
 
 /* SEND-direction timing op. The plugin charges send latency on this rank's
  * core AND writes the current simulated time back into tl_mpi_params.sim_now,
@@ -897,7 +899,7 @@ static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref, bool more = 
         MPITRACE("recv_WAIT_src=%d", want_src);
         /* (1.12.177): a later chunk of a message already received carries no new arrival -- the rank
          * goes on from its own clock -- so that wait is not announced as a wait on a peer */
-        if (!more) mpi_wait_peer();
+        if (!more) mpi_wait_peer(1, want_src);
         pthread_cond_wait(&mb->can_recv, &mb->mtx);
     }
 }
@@ -1015,7 +1017,7 @@ static void recv_slot(MessageSlot* out, int want_src = -1) {
                 continue;   /* re-scan: ring now has space, blocked sender can enqueue */
             }
             MPITRACE("recv_WAIT_src=%d", want_src);
-            mpi_wait_peer();
+            mpi_wait_peer(1, want_src);
             pthread_cond_wait(&mb->can_recv, &mb->mtx);
         }
         pthread_mutex_unlock(&mb->mtx);
@@ -1403,7 +1405,7 @@ int MPI_Barrier(MPI_Comm comm) {
         } else {
             mpi_comm_begin();   /* frozen-clock bracket */
             while (g_shared->barrier_gen == gen) {
-                mpi_wait_peer();
+                mpi_wait_peer(2, -1);
                 pthread_cond_wait(&g_shared->bar_cv, &g_shared->bar_mtx);
             }
             /* (1.12.177): the release is taken in the window: a waiter does nothing priced between the end

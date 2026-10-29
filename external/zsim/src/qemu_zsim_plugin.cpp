@@ -1380,12 +1380,49 @@ struct CutWakeBar { uint32_t arr = 0, adv = 0; uint64_t maxArr = 0, gen = 0; };
 static std::map<uint64_t, CutWakeBar> g_cutWakeBars;
 static std::multiset<uint64_t> g_cutWakeFloor;   // the posted entries of the current origin
 static uint64_t g_cutWakeGen = 0, g_cutWakeStale = 0;
+/* (1.12.178): what each waiting thread waits for (set by MPI_WAIT_PEER: kind 1 = a receive from
+ * one source or any, 2 = a barrier; its own rank) and which thread runs each rank */
+static uint64_t g_cutWakeInfo[MAX_THREADS];
+static uint32_t g_cutWakeRankTid[MAX_THREADS];
+static uint32_t g_cutWakeCoreTid[MAX_THREADS];   // the thread that made the core WAITING (a waiting thread has left its core)
+/* (1.12.178): a core's cut-axis clock at its COMM_BEGIN. Inside a comm bracket the core's clock can run ahead
+ * of where the rank resumes: a thread that rejoins its core is moved to the current phase, and COMM_END
+ * rewinds that growth. The cut and the wake bounds read a bracketed core at this clock, not the grown one. */
+static uint64_t g_cutFrozenRr[MAX_THREADS];
+/* (1.12.178): the ROI opener's roi_begin has run. Under thread-MPI the opener (rank 0, the line after the entry
+ * barrier) re-baselines its own core there, so until then its clock origin is not final: its first ROI
+ * records would be stamped behind an epoch folded on the old origin. Nothing is folded before it. */
+static std::atomic<bool> g_cutOpenerBegun{false};
+static inline uint64_t cutAxisClock(uint32_t c);
+static inline uint64_t cutCoreClock(uint32_t c, uint32_t st) {
+    const uint64_t r = cutAxisClock(c);
+    return ((st == 1 || st == 4) && c < MAX_THREADS && g_cutFrozenRr[c] < r) ? g_cutFrozenRr[c] : r;
+}
+static std::once_flag g_cutWakeRankInit;
+static inline void cutWakeNoteRank(uint32_t rank, uint32_t tid) {
+    std::call_once(g_cutWakeRankInit, []() { for (uint32_t i = 0; i < MAX_THREADS; i++) g_cutWakeRankTid[i] = ~0u; });
+    if (rank < MAX_THREADS && tid < MAX_THREADS) g_cutWakeRankTid[rank] = tid;
+}
 static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative clock of core c (EndOfPhaseActions)
     Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
     if (!co) return 0;
     const uint64_t base = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
     const uint64_t cyc = co->getCycles();
     return (cyc > base) ? cyc - base : 0;
+}
+/* (1.12.178): the rendezvous axis. Send stamps, barrier arrivals and a receive's arrival are on each rank's
+ * ROI-relative clock (roiRelCycles: the core's clock minus mpi_roi_base_cyc); the cut is on the clock its
+ * records carry (cutAxisClock). The two differ for the ROI opener by its own re-baseline at roi_begin. The
+ * wake tables hold rendezvous-axis clocks; a bound is moved to a core's record axis by relToCut. */
+static inline int64_t cutRelDelta(uint32_t c) {   // rendezvous clock = cut clock + delta
+    Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
+    if (!co || c >= MAX_THREADS) return 0;
+    const uint64_t cutBase = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
+    return (int64_t)cutBase - (int64_t)mpi_roi_base_cyc[c];
+}
+static inline uint64_t relAxisClock(uint32_t c) {   // the core's rendezvous-axis clock (as roiRelCycles)
+    const int64_t v = (int64_t)cutAxisClock(c) + cutRelDelta(c);
+    return v > 0 ? (uint64_t)v : 0;
 }
 static void cutWakeRebase() {   // under g_cutWakeMu: entries of an older origin become stale
     const uint64_t g = g_roiBaseGen.load();
@@ -1404,7 +1441,8 @@ static void cutWakeMessage(uint32_t tid, bool recv, uint32_t src, uint32_t dst) 
     cutWakeRebase();
     auto& q = g_cutWakeMsgs[std::make_pair(src, dst)];
     if (!recv) {
-        const uint64_t t = (tid < MAX_THREADS && cids[tid] < MAX_THREADS) ? cutAxisClock(cids[tid]) : 0;
+        const uint64_t t = (tid < MAX_THREADS && cids[tid] < MAX_THREADS) ? relAxisClock(cids[tid]) : 0;   // (1.12.178): rendezvous axis
+        cutWakeNoteRank(src, tid);   // (1.12.178): the sender runs rank src
         q.push_back(CutWakeEntry{t, g_cutWakeGen});
         g_cutWakeFloor.insert(t);
     } else if (!q.empty()) {
@@ -1417,7 +1455,7 @@ static void cutWakeBarrier(uint32_t tid, uint64_t k, bool arrival) {
     cutWakeRebase();
     CutWakeBar& b = g_cutWakeBars[k];
     if (arrival) {
-        const uint64_t t = (tid < MAX_THREADS && cids[tid] < MAX_THREADS) ? cutAxisClock(cids[tid]) : 0;
+        const uint64_t t = (tid < MAX_THREADS && cids[tid] < MAX_THREADS) ? relAxisClock(cids[tid]) : 0;   // (1.12.178): rendezvous axis
         if (b.arr == 0) b.gen = g_cutWakeGen;
         if (t > b.maxArr) b.maxArr = t;
         if (++b.arr == g_mpi_rank_count) {   // released
@@ -1427,6 +1465,94 @@ static void cutWakeBarrier(uint32_t tid, uint64_t k, bool arrival) {
         if (b.arr >= g_mpi_rank_count) cutWakeDrop(CutWakeEntry{b.maxArr, b.gen});
         g_cutWakeBars.erase(k);
     }
+}
+/* (1.12.178): the earliest clock at which any WAITING core can record again, ~0 when none waits.
+ * Each waiting core c gets a bound L[c] no earlier than its own clock: a receive from source s
+ * resumes no earlier than the oldest message from s already posted to it, or, with none posted,
+ * than s's own bound (s sends it later); a receive from any source no earlier than the earliest
+ * of the messages posted to it and the other ranks' bounds; a barrier no earlier than its latest
+ * arrival so far and, until it is released, the bounds of the ranks that have not arrived. A core
+ * that is not waiting is bounded by its clock, an exited one never acts. The bounds are solved
+ * together (they only fall, at most one pass per core). A wait whose release cannot be bounded
+ * (no information, or a cycle of waits with nothing posted) falls back to the core's own clock,
+ * as before. 1.12.176 bounded every waiting rank by the earliest message posted anywhere, so one
+ * message waiting for a receiver that was busy elsewhere held the whole replay at a waiting
+ * rank's clock (smoke 16-rank bfs, CHANNEL placement: the replay stood still for most of the run). */
+static uint64_t cutWakeBound() {
+    const uint32_t nC = std::min<uint32_t>(zinfo->numCores, MAX_THREADS);
+    std::lock_guard<std::mutex> g(g_cutWakeMu);
+    cutWakeRebase();
+    std::call_once(g_cutWakeRankInit, []() { for (uint32_t i = 0; i < MAX_THREADS; i++) g_cutWakeRankTid[i] = ~0u; });
+    static uint32_t tidOf[MAX_THREADS]; static uint64_t L[MAX_THREADS], rr[MAX_THREADS]; static uint32_t st[MAX_THREADS];
+    static int64_t dl[MAX_THREADS];   // (1.12.178): rendezvous axis = record axis + dl; L and rr below are on the rendezvous axis
+    for (uint32_t c = 0; c < nC; c++) tidOf[c] = ~0u;
+    for (uint32_t t = 0; t < MAX_THREADS; t++) if (cids[t] < nC) tidOf[cids[t]] = t;
+    for (uint32_t c = 0; c < nC; c++)
+        if (g_coreRoiState[c].load(std::memory_order_acquire) == 4 && g_cutWakeCoreTid[c] < MAX_THREADS) tidOf[c] = g_cutWakeCoreTid[c];
+    bool anyWait = false;
+    for (uint32_t c = 0; c < nC; c++) {
+        st[c] = zinfo->cores[c] ? g_coreRoiState[c].load(std::memory_order_acquire) : 2;
+        dl[c] = cutRelDelta(c);
+        { const int64_t v = (int64_t)cutCoreClock(c, st[c]) + dl[c]; rr[c] = v > 0 ? (uint64_t)v : 0; }
+        L[c] = (st[c] == 0 || st[c] == 1) ? rr[c] : ~0ull;
+        if (st[c] == 4) anyWait = true;
+    }
+    if (!anyWait) return ~0ull;
+    const uint32_t N = std::min<uint32_t>(g_mpi_rank_count, MAX_THREADS);
+    auto coreOfRank = [&](uint32_t r) -> int {   // the core the rank's thread runs on, or waits on
+        const uint32_t t = (r < MAX_THREADS) ? g_cutWakeRankTid[r] : ~0u;
+        if (t >= MAX_THREADS) return -1;
+        if (cids[t] < nC) return (int)cids[t];
+        for (uint32_t c = 0; c < nC; c++) if (st[c] == 4 && tidOf[c] == t) return (int)c;
+        return -1;
+    };
+    auto Lrank = [&](uint32_t r) -> uint64_t { const int c = coreOfRank(r); return c < 0 ? 0 : L[c]; };   // unknown: no bound
+    for (uint32_t pass = 0; pass <= nC + 1; pass++) {
+        bool changed = false;
+        for (uint32_t c = 0; c < nC; c++) {
+            if (st[c] != 4) continue;
+            const uint32_t t = tidOf[c];
+            const uint64_t v = (t < MAX_THREADS) ? g_cutWakeInfo[t] : 0;
+            const uint32_t kind = (uint32_t)(v >> 48), me = (uint32_t)v;
+            const int32_t src = (int32_t)((v >> 32) & 0xffff) - 1;
+            uint64_t cand = 0;   // no information: the core's own clock
+            if (g_cutWakeStale == 0 && kind == 1 && me < N) {
+                if (src >= 0) {
+                    auto it = g_cutWakeMsgs.find(std::make_pair((uint32_t)src, me));
+                    cand = (it != g_cutWakeMsgs.end() && !it->second.empty()) ? it->second.front().t : Lrank((uint32_t)src);
+                } else {
+                    cand = ~0ull;
+                    for (auto& m : g_cutWakeMsgs) if (m.first.second == me && !m.second.empty()) cand = std::min(cand, m.second.front().t);
+                    for (uint32_t r = 0; r < N; r++) if (r != me) cand = std::min(cand, Lrank(r));
+                }
+            } else if (g_cutWakeStale == 0 && kind == 2 && me < N && t < MAX_THREADS) {
+                const uint64_t k = g_rankBarGen[t];
+                auto b = g_cutWakeBars.find(k);
+                const uint64_t sofar = (b != g_cutWakeBars.end() && b->second.gen == g_cutWakeGen) ? b->second.maxArr : 0;
+                if (b != g_cutWakeBars.end() && b->second.arr >= g_mpi_rank_count) cand = sofar;   // released
+                else {
+                    uint64_t late = ~0ull;
+                    for (uint32_t r = 0; r < N; r++) {
+                        if (r == me) continue;
+                        const uint32_t tr = g_cutWakeRankTid[r];
+                        if (tr >= MAX_THREADS) { late = 0; break; }   // a rank not seen yet: no bound
+                        if (g_rankBarGen[tr] < k) late = std::min(late, Lrank(r));
+                    }
+                    cand = (late == ~0ull) ? sofar : std::max(sofar, late);
+                }
+            }
+            const uint64_t nl = (cand == ~0ull) ? ~0ull : std::max(rr[c], cand);
+            if (nl < L[c]) { L[c] = nl; changed = true; }
+        }
+        if (!changed) break;
+    }
+    uint64_t b = ~0ull;   // on the record axis: each waiting core's bound moved back by its own dl
+    for (uint32_t c = 0; c < nC; c++) {
+        if (st[c] != 4 || rr[c] == 0) continue;
+        const int64_t v = (int64_t)(L[c] == ~0ull ? rr[c] : L[c]) - dl[c];
+        b = std::min(b, v > 0 ? (uint64_t)v : 0);
+    }
+    return b;
 }
 static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
     std::lock_guard<std::mutex> g(g_cutWakeMu);
@@ -1510,6 +1636,7 @@ void EndOfPhaseActions() {
             uint64_t cyc  = co->getCycles();
             uint64_t rr   = (cyc > base) ? cyc - base : 0;
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
+            else if (g_mpi_thread_mode && (st == 1 || st == 4) && g_cutFrozenRr[c] < rr) rr = g_cutFrozenRr[c];   // (1.12.178): the clock it resumes at
             if (rr == 0) continue;       // baselined but no ROI traffic yet
             /* 1.12.18 (ruling 2026-10-24): a SLEEPING single-process core (futex
              * wait, QUIESCENT) is exempt from BOTH cuts: it resumes at its waker's
@@ -1523,9 +1650,9 @@ void EndOfPhaseActions() {
             dbgActive++;
         }
         uint64_t wakeW = ~0ull;
-        if (minWait != ~0ull) {
-            wakeW = std::min(cutDram, cutWakeFloor());
-            cutDram = std::min(cutDram, (wakeW == ~0ull) ? minWait : std::max(minWait, wakeW));
+        if (minWait != ~0ull) {   // (1.12.178): each waiting core by its own release bound (cutWakeBound)
+            wakeW = cutWakeBound();
+            cutDram = std::min(cutDram, wakeW);
         }
         {   // PIMID_FOLD_DEBUG=1: which core pins the cut, and is it advancing?
             static const bool foldDbg = (getenv("PIMID_FOLD_DEBUG") != nullptr);
@@ -1543,6 +1670,7 @@ void EndOfPhaseActions() {
         }
         if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
         if (foldNoc) { spNocCut = cut; spNocFolded = true; }
+        if (g_mpi_thread_mode && !g_cosim_mode && !g_cutOpenerBegun.load()) cutDram = 0;   // (1.12.178): see g_cutOpenerBegun (device scope: in co-sim the device records only from the offload at roi_begin)
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
             const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -3140,6 +3268,12 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
         /* (1.12.176): the rank blocks on a peer inside its comm bracket: QUIESCENT ->
          * WAITING (the DRAM cut bounds it by the wake floor, EndOfPhaseActions) */
         if (g_mpi_thread_mode && cids[tid] < MAX_THREADS) {
+            uint64_t v = 0;   // (1.12.178): kind << 48 | (source + 1) << 32 | own rank (the transport's mpi_wait_peer)
+            if (!readRdx(&v)) v = 0;
+            {   std::lock_guard<std::mutex> g(g_cutWakeMu);
+                g_cutWakeInfo[tid] = v;
+                g_cutWakeCoreTid[cids[tid]] = tid;
+                if (v) cutWakeNoteRank((uint32_t)v, tid); }
             uint32_t q = 1;
             g_coreRoiState[cids[tid]].compare_exchange_strong(q, 4);
         }
@@ -3162,8 +3296,10 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 cores[tid]->pimidCommParked = true;
                 // Parked in a frozen-clock MPI wait -> QUIESCENT (exempt from the
                 // epoch cut) so it does not pin the barrier for still-running peers.
-                if (cids[tid] < MAX_THREADS)
+                if (cids[tid] < MAX_THREADS) {
+                    g_cutFrozenRr[cids[tid]] = cutAxisClock(cids[tid]);   // (1.12.178): before the state, so a reader never sees 1 with a stale clock
                     g_coreRoiState[cids[tid]].store(1, std::memory_order_release);
+                }
             }
             /* 1.9.0 epoch-frozen feedback: a rank parked in a frozen-clock MPI
              * wait injects nothing, so it must be QUIESCENT -- exempt from the
@@ -4661,6 +4797,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID &&
                 cid < zinfo->numCores && zinfo->cores[cid])
                 zinfo->cores[cid]->markRoiBegin();
+            g_cutOpenerBegun.store(true);   // (1.12.178): the DRAM cut may fold from here on
             if (prev == 0) {
                 /* 1.11.97 (review H10, refined by gate 1207D): did the ENTRY
                  * barrier already rebase every core? In all thirteen MPI
@@ -5043,6 +5180,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID &&
                 cid < zinfo->numCores && zinfo->cores[cid])
                 zinfo->cores[cid]->markRoiBegin();
+            g_cutOpenerBegun.store(true);   // (1.12.178): the DRAM cut may fold from here on
             if (prev == 0) {
                 /* 1.11.97 (H10 refined, gate 1207D): the same rule as the
                  * other magic-op entry point -- when the entry barrier has
