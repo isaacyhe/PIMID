@@ -6,6 +6,38 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.180 -- the fixed order holds until the statistics are written: OpenMP co-sim cells repeat in every run
+
+- **Problem.** Copies of one shared-memory (OpenMP) co-sim cell on one node now and then differed in the per-process
+  cycle count `procCycles`, everything else identical: cosim_DDR5_omp_gemv (smoke) 7276215 in most copies of one
+  launch and a lower value in 3 of 160 copies on 1.12.176, 4 of 160 on 1.12.177, 1 of 64 on 1.12.178 and 5 of 64 on
+  1.12.179; cosim_DDR5_omp_gemv_g3200 split in 4 copies. The per-PE `wakeSyncs` and `wakeSyncCycles`, labelled ROI,
+  counted wake syncs that came after the ROI end: in 37 of the 45 OpenMP co-sim smoke cells they disagreed with the
+  run log's "[wake-sync] ROI" line. Separately, a run that ends at an exit call while other threads are alive (a
+  message-passing rank aborting at a refused data preparation) reported a whole-run phase count that varied from run
+  to run.
+- **Root cause.** The fixed order was released when the termination statistics began to be written; 1.12.161 made it
+  hold "until the statistics are written". At the ROI end of an OpenMP co-sim cell the master first returns to the
+  host core, so its turn has passed on and the workers its parallel region's last barrier woke were held only by the
+  order. From the start of the write they ran, each moving its PE clock to its waker's release (sync to waker), while
+  the write read the cores: `procCycles` is taken at one point of the write, the per-PE counters at another, so how
+  many workers had run by then followed the host. A thread whose exit call ends the simulation leaves its core before
+  the write; the other threads (the other ranks of an aborted run, still waiting at their barrier) then took their
+  turns during it and advanced the phase count it reports.
+- **Fix (external/zsim/src/qemu_zsim_plugin.cpp, scheduler.cpp).** The order is released when the statistics have been
+  written (the end of the termination dump), not when the write starts. A thread whose exit call ends the simulation
+  holds every other turn until then. The scheduler watchdog no longer prints a line when it ends: it ends only at the
+  end of the simulation, and whether its line came out before the process exit followed the host. The termination flag
+  is read once where a thread tests it twice (at a phase barrier, at a rejoin, in the watchdog): it is set after the
+  flag that lets the program run to its own exit after the ROI, so a thread that missed it in the first test and saw
+  it in the second ended the process before the program had written its output after the ROI (seen once in 180 copies
+  when the threads were held to the end of the write).
+- **Data impact (one-time).** Run times, power, kernel windows and every CSV value unchanged. OpenMP co-sim cells:
+  `procCycles` and the per-PE `wakeSyncs` / `wakeSyncCycles` take their values at the ROI end (cosim_DDR5_omp_gemv
+  `procCycles` 7276215 -> 7158462 in that launch; the per-PE wake syncs now agree with the run log's ROI line in all
+  45 OpenMP co-sim smoke cells). The refused fig2 bfs cells report one whole-run length (the phase of the exit call).
+  Message-passing co-sim cells, device cells and host baselines are unchanged.
+
 ## 1.12.179 -- threads woken together take their places in core order: the rank order after a barrier repeats
 
 - **Problem.** The order of the ranks' turns after a barrier still came from the host. Before the receive-order and

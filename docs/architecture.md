@@ -237,7 +237,11 @@ co-sim MPI cell's post-ROI collective (its protocol tail) and the DRAM replay's
 last records ran in the host's order. Since (1.12.172) a thread's exit is ordered too: at its
 exit call, in its own turn, its core is marked finished for the replays' consistent
 cut and its ID word is cleared and its joiners woken (before, both happened when
-QEMU tore the host thread down). The
+QEMU tore the host thread down). Since (1.12.180) "until the statistics are written" means
+until the write has ended, not until it starts: the master of an OpenMP co-sim cell
+returns to the host before the write, so the workers its last barrier woke ran during
+it and moved their PE clocks under the write, and a thread whose exit call ends the
+run left its core before the write while the other threads took their turns. The
 simulated time still comes from the model; the host decides neither the order
 in which threads touch shared state nor which core a thread gets. The cost is
 host time: OpenMP device cells take about a fifth longer to simulate.

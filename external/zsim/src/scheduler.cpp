@@ -111,10 +111,11 @@ void Scheduler::watchdogThreadFunc() {
     while (true) {
         TrueSleep(multiplier*WATCHDOG_INTERVAL_USEC);
 
-        if (zinfo->terminationConditionMet && pimidPostRoiFree()) {
+        const bool term = zinfo->terminationConditionMet;   // (1.12.180): read once (see TakeBarrier in the plugin)
+        if (term && pimidPostRoiFree()) {
             continue;   // 1.12.18: the program is running to its own exit after the ROI
         }
-        if (zinfo->terminationConditionMet) {
+        if (term) {
             // Synchronize to avoid racing with EndOfPhaseActions code
             // (zinfo->terminationConditionMet is set on EndOfPhaseActions,
             // which has schedLock held, we must let it finish)
@@ -293,7 +294,9 @@ void Scheduler::watchdogThreadFunc() {
             futex_unlock(&schedLock);
         }
     }
-    info("Finished scheduler watchdog thread");
+    /* (1.12.180): no "finished" line: the loop ends only when the simulation ends (notifyTermination), and the process
+     * exits right after; whether this thread printed before the exit followed the host (a line present in a few
+     * runs of a cell and absent in the others) */
 }
 
 void Scheduler::threadTrampoline(void* arg) {

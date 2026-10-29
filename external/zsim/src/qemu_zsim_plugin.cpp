@@ -1803,13 +1803,17 @@ uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
     setCid(tid, newCid);
     detTurnBegin(tid, newCid);
 
-    if (zinfo->terminationConditionMet && pimidPostRoiFree()) {
+    /* (1.12.180): the termination flag is read once. It is set after the post-ROI free flag; read twice, a thread
+     * could miss it in the first test and see it in the second, and end the process while the program still had
+     * its output after the ROI to write (now and then, a thread released when the statistics had been written) */
+    const bool term = zinfo->terminationConditionMet;
+    if (term && pimidPostRoiFree()) {
         zinfo->sched->leave(procIdx, tid, newCid);
         clearCid(tid);
         fPtrs[tid] = nopPtrs;
         return INVALID_CID;
     }
-    if (zinfo->terminationConditionMet) {
+    if (term) {
         info("Termination condition met, exiting");
         zinfo->sched->leave(procIdx, tid, newCid);
         clearCid(tid);
@@ -1967,7 +1971,17 @@ static void dumpGapHistograms() {
 }
 
 static volatile uint32_t g_termStatsDumped = 0;
-static inline bool detActive() { return !g_termStatsDumped; }   // (1.12.161): see the fixed-order section
+/* (1.12.180): the fixed order holds until the statistics are written, not only until their writing starts. The
+ * thread that ends the ROI may already have left its core (the master of a co-sim shared-memory run returns
+ * to the host first), so the turn has passed on; with the order released at the start of the dump, the
+ * threads that turn woke ran during it, and their wake syncs moved device PE clocks under the dump's
+ * per-process cycle count (procCycles), which took a host-dependent value. */
+static volatile uint32_t g_termStatsWritten = 0;
+static inline bool detActive() { return !g_termStatsWritten; }   // (1.12.161): see the fixed-order section
+/* (1.12.180): a thread whose exit call ends the simulation leaves its core before the statistics are written, so
+ * the turn passes on; no other thread starts a turn until they are written (the other ranks of a run whose
+ * rank 0 aborted kept running during the write, and the whole-run phase count it reports followed the host) */
+static volatile uint32_t g_termHold = 0;
 /* 1.12.18: after a non-MPI ROI end the stats are written at once and the
  * program runs to its own exit, unsimulated (g_postRoiFree): a thread that
  * reaches a phase barrier or rejoins leaves the scheduler instead of ending
@@ -2027,6 +2041,8 @@ static void dumpTerminationStats() {
         zinfo->garnetNetwork->writeStatsFile(garnetStatsPath.c_str());
         zinfo->garnetNetwork->printStats();
     }
+    __sync_synchronize();
+    g_termStatsWritten = 1;   // (1.12.180): the statistics are written; from here nothing is ordered any more
 }
 
 /* 1.11.94: the guest's exit status. The exit/exit_group syscall hook below
@@ -2257,13 +2273,14 @@ static void Join(uint32_t tid) {
         g_coreRoiState[cid].compare_exchange_strong(q, 0);
     }
 
-    if (unlikely(zinfo->terminationConditionMet) && pimidPostRoiFree()) {
+    const bool term = zinfo->terminationConditionMet;   // (1.12.180): read once (see TakeBarrier)
+    if (unlikely(term) && pimidPostRoiFree()) {
         zinfo->sched->leave(procIdx, tid, cid);
         clearCid(tid);
         fPtrs[tid] = nopPtrs;
         return;
     }
-    if (unlikely(zinfo->terminationConditionMet)) {
+    if (unlikely(term)) {
         info("Caught termination on join, exiting");
         zinfo->sched->leave(procIdx, tid, cid);
         SimEnd();
@@ -6198,6 +6215,7 @@ static void syscall_cb(unsigned int vcpu_index,
             g_guest_exit_status = (int)(a1 & 0xff);   /* 1.11.94: carried to the host by SimEnd() */
             if (g_guest_exit_status != 0)
                 info("Guest exit status %d: the workload did not complete normally", g_guest_exit_status);
+            if (g_detOrder && detActive()) { g_termHold = 1; __sync_synchronize(); }   // (1.12.180): no turn starts until the statistics are written
             zinfo->sched->leave(procIdx, tid, cid);
             SimEnd();
             break;  /* not reached */
@@ -6634,7 +6652,10 @@ int qemu_plugin_install(qemu_plugin_id_t id,
          * simulated time comes from the model as before; the order in which the
          * threads touch shared state no longer comes from the host. */
         zinfo->sched->setFixedOrder();
-        g_detTurnStart = []() { if (detActive()) detSettle(); };
+        g_detTurnStart = []() {
+            while (g_termHold && !g_termStatsWritten) usleep(5);   // (1.12.180): the simulation is ending: the statistics are written first
+            if (detActive()) detSettle();
+        };
         g_detBeforeLeave = [](uint32_t tid) {
             if (detActive()) detSettle((tid < MAX_THREADS && g_detCredit[tid].load()) ? 1 : 0);
         };
