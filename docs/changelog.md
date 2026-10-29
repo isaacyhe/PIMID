@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.177 -- message passing: a receive writes its payload after the message arrives, and no mailbox lock is held across priced work
+
+- **The problem.** Under thread-MPI a receive copied the payload into the user buffer at the clock it had when it
+  blocked and only then moved its clock to the message's arrival (send stamp + contention + latency). The copy's
+  writes were stamped before the message existed; once the other ranks had moved on, the DRAM replay had already
+  folded those epochs, and the writes joined a later epoch and entered the controller all at once (the 1.12.17 rule),
+  where they overflowed its queue. Both ends also held a mailbox lock across priced work: a sender while it read its
+  buffer into the slot, a receiver while it wrote the payload out. A rank blocked on that lock stood still at its own
+  clock -- and with it the replay -- for as long as the holder's copy took in simulated time.
+- **The change** (src/parallel_abstraction/pimid_mpi.cpp, thread mode). Every chunk carries its message's size. A
+  receive takes the chunk out of the slot inside its transport bracket (transport memory to a per-rank copy buffer,
+  not priced), releases the slot and the lock, moves its clock to the message's arrival -- the rendezvous of the
+  first chunk, priced as before on the whole message -- and then writes the user buffer (priced). A send reads its
+  buffer into its copy buffer (priced) before it takes the receiver's lock, and moves it into the slot inside the
+  bracket. Each message is still one priced read of the sender's buffer, one transfer and one priced write of the
+  receiver's buffer; only their order and the locks change. Between the end of a wait and its advance -- the
+  receive's rendezvous, a barrier's release -- the rank does nothing that is priced: their parameters are written
+  inside the bracket. A wait for a later chunk of a message already being received is not announced as a wait on a
+  peer: that chunk brings no new arrival, and the rank goes on from its own clock.
+
 ## 1.12.176 -- message passing: no rank is charged the entry barrier's pre-ROI wait, and a rank that waits on a peer no longer holds the DRAM replay
 
 - **The problem (entry barrier).** The barrier at kernel entry releases its ranks at the latest arrival, rank 0's,

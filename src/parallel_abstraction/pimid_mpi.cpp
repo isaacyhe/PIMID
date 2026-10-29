@@ -131,6 +131,7 @@ struct MessageSlot {
     uint32_t  msg_id;
     uint64_t  sim_send_time;    /* sender's simulated send-time (cycles) */
     uint64_t  sim_contend_wait; /* cross-rank contention wait (cycles, Phase 2) */
+    uint64_t  msg_bytes;        /* (1.12.177): the whole message's size (every chunk carries it) */
     char      payload[PIMID_MPI_MAX_MSG_BYTES];
 };
 
@@ -481,13 +482,17 @@ static void inject_timing_send(int src_pe, int dst_pe, uint64_t msg_size) {
 /* RECV-direction timing op. The caller supplies the message's send-time stamp
  * and its cross-rank contention wait; the plugin advances this rank's core to
  * the deterministic arrival time (send_time + contend_wait + latency). */
-static void inject_timing_recv(int src_pe, int dst_pe, uint64_t msg_size,
-                               uint64_t send_time, uint64_t contend_wait) {
+static inline void set_timing_recv(int src_pe, int dst_pe, uint64_t msg_size,
+                                   uint64_t send_time, uint64_t contend_wait) {
     tl_mpi_params.src_pe           = (uint32_t)src_pe;
     tl_mpi_params.dst_pe           = (uint32_t)dst_pe;
     tl_mpi_params.msg_size         = msg_size;
     tl_mpi_params.sim_send_time    = send_time;
     tl_mpi_params.sim_contend_wait = contend_wait;
+}
+static void inject_timing_recv(int src_pe, int dst_pe, uint64_t msg_size,
+                               uint64_t send_time, uint64_t contend_wait) {
+    set_timing_recv(src_pe, dst_pe, msg_size, send_time, contend_wait);
     zsim_magic_op(ZSIM_MAGIC_OP_MPI_RECV);
 }
 
@@ -546,6 +551,12 @@ static MessageSlot* g_stage_slots = nullptr;
 static int32_t*     g_stage_order = nullptr;   /* [rank][cap]: slot index, arrival order */
 static uint32_t*    g_stage_n     = nullptr;   /* [rank]: staged count */
 static uint8_t*     g_stage_used  = nullptr;   /* [rank][cap] */
+/* (1.12.177): one chunk-sized copy buffer per rank, in the same transport arena: a send reads the
+ * sender's buffer into it (priced) before it takes the receiver's mailbox lock, a receive moves
+ * the chunk into it under the lock and writes the user buffer from it (priced) after the lock is
+ * released, so no mailbox lock is held across priced work */
+static char*        g_copy_bufs   = nullptr;   /* [rank][PIMID_MPI_MAX_MSG_BYTES] */
+static inline char* copy_buf(int r) { return g_copy_bufs + (size_t)r * PIMID_MPI_MAX_MSG_BYTES; }
 static void*        g_stage_arena = nullptr;
 static size_t       g_stage_arena_bytes = 0;
 static uint32_t     g_stage_cap = 0;
@@ -557,7 +568,8 @@ static bool stage_arena_create(int nranks) {
     const size_t b_order = ns * sizeof(int32_t);
     const size_t b_n     = (size_t)nranks * sizeof(uint32_t);
     const size_t b_used  = ns;
-    g_stage_arena_bytes = b_slots + b_order + b_n + b_used;
+    const size_t b_copy  = (size_t)nranks * PIMID_MPI_MAX_MSG_BYTES;   /* (1.12.177) */
+    g_stage_arena_bytes = b_slots + b_copy + b_order + b_n + b_used;
     g_stage_arena = calloc(1, g_stage_arena_bytes);
     if (!g_stage_arena) {
         fprintf(stderr, "[pimid_mpi] thread-mode staging arena alloc failed (%zu bytes)\n", g_stage_arena_bytes);
@@ -565,6 +577,7 @@ static bool stage_arena_create(int nranks) {
     }
     char* p = (char*)g_stage_arena;
     g_stage_slots = (MessageSlot*)p; p += b_slots;
+    g_copy_bufs   = p;               p += b_copy;
     g_stage_order = (int32_t*)p;     p += b_order;
     g_stage_n     = (uint32_t*)p;    p += b_n;
     g_stage_used  = (uint8_t*)p;
@@ -720,7 +733,7 @@ static void ring_evict_head(Mailbox* mb, int r);   /* 1.12.17, below */
 /* Push one chunk to the dest mailbox. A full ring moves its oldest message to the receiver staging (1.12.17). */
 static int send_chunk(int dest, int tag, const char* data, uint32_t size,
                       uint32_t chunk_idx, uint32_t n_chunks, uint32_t msg_id,
-                      uint64_t send_time, uint64_t contend_wait) {
+                      uint64_t send_time, uint64_t contend_wait, uint64_t msg_bytes) {
     Mailbox* mb = &g_shared->mailboxes[dest];
     MPITRACE("send_enter dest=%d tag=%d chunk=%u/%u", dest, tag, chunk_idx, n_chunks);
     /* Bracket the transport (poll + payload copy) so the simulator keeps the
@@ -735,6 +748,13 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
          * (cond parking rejoined at wall-dependent phases; window-frozen
          * cores deadlocked the phase barrier. Spin instrs are counted,
          * deterministically; purity refinement tracked for 1.6.1.) */
+        /* 1.12.17 (M1): outside the comm window, so the read of the sender's
+         * buffer is priced; the copy buffer is registered transport memory, so
+         * the write into it is not. (1.12.177): done before the receiver's mailbox
+         * lock is taken -- a sender no longer holds that lock across priced work,
+         * and a rank blocked on the lock no longer waits on another rank's copy. */
+        char* cb = copy_buf(g_rank);
+        if (data && size > 0) priced_memcpy(cb, data, size);   /* 1.12.18: RtPriced */
         mpi_comm_begin();   /* frozen-clock bracket: plugin rewinds at END */
         pthread_mutex_lock(&mb->mtx);
         while (mb->count >= PIMID_MPI_RING_SLOTS)
@@ -748,12 +768,8 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
         slot->msg_id           = msg_id;
         slot->sim_send_time    = send_time;
         slot->sim_contend_wait = contend_wait;
-        mpi_comm_end();
-        /* 1.12.17 (M1): outside the comm window, so the read of the sender's
-         * buffer is priced; the slot is registered transport memory, so the
-         * write into it is not. The mailbox mutex stays held. */
-        if (data && size > 0) priced_memcpy(slot->payload, data, size);   /* 1.12.18: RtPriced */
-        mpi_comm_begin();
+        slot->msg_bytes        = msg_bytes;
+        if (data && size > 0) memcpy(slot->payload, cb, size);   /* transport to transport, in the window */
         mb->tail = (mb->tail + 1) % PIMID_MPI_RING_SLOTS;
         mb->count++;
         pthread_cond_signal(&mb->can_recv);
@@ -780,6 +796,7 @@ static int send_chunk(int dest, int tag, const char* data, uint32_t size,
     slot->msg_id           = msg_id;
     slot->sim_send_time    = send_time;
     slot->sim_contend_wait = contend_wait;
+    slot->msg_bytes        = msg_bytes;
     if (data && size > 0) memcpy(slot->payload, data, size);
     mb->tail = (mb->tail + 1) % PIMID_MPI_RING_SLOTS;
     mb->count++;
@@ -821,6 +838,7 @@ static void stage_push(int r, const MessageSlot* src) {
     d->src = src->src; d->tag = src->tag; d->size = src->size;
     d->chunk_idx = src->chunk_idx; d->n_chunks = src->n_chunks; d->msg_id = src->msg_id;
     d->sim_send_time = src->sim_send_time; d->sim_contend_wait = src->sim_contend_wait;
+    d->msg_bytes = src->msg_bytes;
     if (src->size > 0) memcpy(d->payload, src->payload, src->size);
     g_stage_order[(size_t)r * g_stage_cap + n] = (int32_t)i;
     g_stage_n[r] = n + 1;
@@ -843,7 +861,7 @@ static void ring_evict_head(Mailbox* mb, int r) {
     pthread_cond_broadcast(&mb->can_send);
 }
 
-static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref) {
+static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref, bool more = false) {
     Mailbox* mb = &g_shared->mailboxes[g_rank];
     int32_t* order = &g_stage_order[(size_t)g_rank * g_stage_cap];
     mpi_comm_begin();   /* frozen-clock bracket: plugin rewinds at END */
@@ -877,14 +895,22 @@ static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref) {
             continue;
         }
         MPITRACE("recv_WAIT_src=%d", want_src);
-        mpi_wait_peer();
+        /* (1.12.177): a later chunk of a message already received carries no new arrival -- the rank
+         * goes on from its own clock -- so that wait is not announced as a wait on a peer */
+        if (!more) mpi_wait_peer();
         pthread_cond_wait(&mb->can_recv, &mb->mtx);
     }
 }
 
-static void recv_release_thread(const RecvRef* ref) {
+struct RecvTiming { int src; uint64_t size; uint64_t send_time; uint64_t contend_wait; };
+static void recv_release_thread(const RecvRef* ref, char* keep = nullptr, const char* from = nullptr, size_t n = 0,
+                                const RecvTiming* tm = nullptr) {
     Mailbox* mb = &g_shared->mailboxes[g_rank];
     mpi_comm_begin();
+    if (keep && n > 0) memcpy(keep, from, n);   /* (1.12.177): the chunk leaves the slot before the slot is freed */
+    /* (1.12.177): the rendezvous parameters are written here, in the window: between the end of the wait
+     * and the arrival the rank does nothing that is priced, so no access is stamped before the data */
+    if (tm) set_timing_recv(tm->src, g_rank, tm->size, tm->send_time, tm->contend_wait);
     if (ref->staged) {
         int32_t* order = &g_stage_order[(size_t)g_rank * g_stage_cap];
         const uint32_t i = (uint32_t)order[ref->pos];
@@ -1172,7 +1198,7 @@ static void send_chunk_at(int dest, int tag, const char* p, size_t nbytes,
     const size_t off = (size_t)i * PIMID_MPI_MAX_MSG_BYTES;
     const size_t left = (nbytes > off) ? nbytes - off : 0;
     const uint32_t take = (uint32_t)((left < PIMID_MPI_MAX_MSG_BYTES) ? left : PIMID_MPI_MAX_MSG_BYTES);
-    send_chunk(dest, tag, take ? p + off : nullptr, take, i, n, st.msg_id, st.send_time, st.contend_wait);
+    send_chunk(dest, tag, take ? p + off : nullptr, take, i, n, st.msg_id, st.send_time, st.contend_wait, nbytes);
 }
 
 static int send_bytes(const void* buf, size_t nbytes, int dest, int tag) {
@@ -1189,7 +1215,7 @@ static int send_bytes(const void* buf, size_t nbytes, int dest, int tag) {
 }
 
 /* Receive progress of one message (thread mode). */
-struct RecvState { int want; int src; size_t written; uint64_t send_time; uint64_t contend_wait; bool done; };
+struct RecvState { int want; int src; size_t written; uint64_t send_time; uint64_t contend_wait; bool done; bool timed; };
 
 /* 1.12.17 (M1): only the message bytes move, straight from the slot
  * (registered transport memory, not priced) into the user buffer
@@ -1197,16 +1223,24 @@ struct RecvState { int want; int src; size_t written; uint64_t send_time; uint64
  * path copied the whole 64 KB MessageSlot onto the stack per chunk. */
 static void recv_chunk_thread(RecvState* r, char* p, size_t nbytes) {
     RecvRef ref;
-    MessageSlot* s = recv_acquire_thread(r->want, &ref);
+    MessageSlot* s = recv_acquire_thread(r->want, &ref, r->timed);
     if (r->src < 0) { r->src = s->src; r->want = s->src; }
     r->send_time    = s->sim_send_time;     /* all chunks share the stamp */
     r->contend_wait = s->sim_contend_wait;  /* and the contention wait */
     size_t space = (nbytes > r->written) ? (nbytes - r->written) : 0;
     size_t take = (s->size < space) ? s->size : space;
-    if (p && take > 0) priced_memcpy(p + r->written, s->payload, take);   /* 1.12.18: RtPriced */
-    r->written += take;
+    const size_t total = (s->msg_bytes < nbytes) ? (size_t)s->msg_bytes : nbytes;   /* what the whole receive writes */
     r->done = (s->chunk_idx + 1 >= s->n_chunks);
-    recv_release_thread(&ref);
+    char* cb = copy_buf(g_rank);
+    const RecvTiming tm = { r->src, (uint64_t)total, r->send_time, r->contend_wait };
+    recv_release_thread(&ref, cb, s->payload, take, r->timed ? nullptr : &tm);   /* the mailbox lock is released here */
+    /* (1.12.177): the rendezvous comes first -- the clock moves to the message's arrival -- and the
+     * payload is written after it: a receive's copy cannot precede the data. It used to copy at
+     * the clock it had when it blocked, then advance; those writes were stamped before the
+     * message existed (and behind the DRAM replay's cut once the other ranks had moved on). */
+    if (!r->timed) { zsim_magic_op(ZSIM_MAGIC_OP_MPI_RECV); r->timed = true; }   /* parameters set in the window */
+    if (p && take > 0) priced_memcpy(p + r->written, cb, take);   /* 1.12.18: RtPriced */
+    r->written += take;
 }
 
 /* Returns the bytes received. */
@@ -1221,7 +1255,7 @@ static size_t recv_bytes(void* buf, size_t nbytes, int source) {
         RtScope rs;   /* 1.12.18 */
         RecvState r = { source, -1, 0, 0, 0, false };
         do recv_chunk_thread(&r, p, nbytes); while (!r.done);
-        inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);
+        if (!r.timed) inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);   /* (1.12.177): done at the first chunk */
         /* 1.12.18: the protocol primitive, AFTER the rendezvous (added to the ordering) */
         rt_event(tl_coll ? RTK_MPI_COLL_STEP : RTK_MPI_P2P, 2);
         return r.written;
@@ -1271,7 +1305,7 @@ static size_t xchg_bytes(const void* sbuf, size_t sbytes, int dest,
         if (i < ns) send_chunk_at(dest, 0, (const char*)sbuf, sbytes, i, ns, st);
         if (!r.done) recv_chunk_thread(&r, (char*)rbuf, rbytes);
     }
-    inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);
+    if (!r.timed) inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);   /* (1.12.177): done at the first chunk */
     return r.written;
 }
 
@@ -1365,17 +1399,19 @@ int MPI_Barrier(MPI_Comm comm) {
             g_shared->bar_max_arr = 0;
             g_shared->barrier_gen = gen + 1;
             pthread_cond_broadcast(&g_shared->bar_cv);
+            tl_mpi_params.sim_send_time = g_shared->bar_release;
         } else {
             mpi_comm_begin();   /* frozen-clock bracket */
             while (g_shared->barrier_gen == gen) {
                 mpi_wait_peer();
                 pthread_cond_wait(&g_shared->bar_cv, &g_shared->bar_mtx);
             }
+            /* (1.12.177): the release is taken in the window: a waiter does nothing priced between the end
+             * of its wait and its advance to the release */
+            tl_mpi_params.sim_send_time = g_shared->bar_release;
             mpi_comm_end();
         }
-        uint64_t release = g_shared->bar_release;
         pthread_mutex_unlock(&g_shared->bar_mtx);
-        tl_mpi_params.sim_send_time = release;
         zsim_magic_op(ZSIM_MAGIC_OP_MPI_ADVANCE);
         zsim_magic_op(ZSIM_MAGIC_OP_MPI_BARRIER);
         rs.close();
