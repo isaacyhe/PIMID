@@ -37,6 +37,8 @@
 #include <unordered_map>
 #include <map>   // 1.11.97: barrier-generation table
 #include <mutex>
+#include <deque>
+#include <set>
 #include <elf.h>      // 1.12.18: libgomp .dynsym (PIM runtime primitives)
 #include <string>
 #include <vector>
@@ -96,12 +98,14 @@ int (*pimidGuestReadHook)(uint64_t, uint8_t*, uint32_t) = nullptr;
 Core* cores[MAX_THREADS];
 
 /* 1.9.0 thread-MPI epoch cut: per-core ROI state (0=ACTIVE, 1=QUIESCENT parked in
- * MPI, 2=EXITED, 3=VACATED by a co-sim migration). Marked at DETERMINISTIC sim
+ * MPI, 2=EXITED, 3=VACATED by a co-sim migration, 4=WAITING: QUIESCENT and
+ * blocked on a peer, i.e. a receive waiting for its message or a barrier
+ * waiting for its last arrival; see EndOfPhaseActions). Marked at DETERMINISTIC sim
  * events (roi_end / thread-fini / MPI comm brackets / host-device migration),
  * NOT by a wall-dependent advancement heuristic. Read by
  * EndOfPhaseActions to build the consistent cut = min roiRel over ACTIVE cores.
  * Static zero-init => all ACTIVE at start.
- * QUIESCENT and VACATED are re-armed to ACTIVE when the core runs again (MPI
+ * QUIESCENT, WAITING and VACATED are re-armed to ACTIVE when the core runs again (MPI
  * wait resumed / a thread attaches); EXITED is sticky, since a finished ROI
  * never resumes. */
 static std::atomic<uint32_t> g_coreRoiState[MAX_THREADS];
@@ -287,6 +291,10 @@ static std::atomic<uint64_t> roi_transition_count{0};
  * barrier at the SAME deterministic cycle regardless of futex wake order. */
 #define ZSIM_MAGIC_OP_MPI_TIME       2058
 #define ZSIM_MAGIC_OP_MPI_ADVANCE    2059 /* charge sender cross-rank contention wait (Phase 2) */
+/* A thread-MPI rank inside a comm bracket is about to block on a peer (a
+ * receive whose message has not been posted, a barrier whose last rank has not
+ * arrived): its core becomes WAITING (state 4) until COMM_END. */
+#define ZSIM_MAGIC_OP_MPI_WAIT_PEER  2068
 
 /* Per-thread MPI comm-window flag. While set (bracketed by COMM_BEGIN/END from
  * libpimid_mpi), the rank's blocking transport sleeps do NOT trigger a
@@ -1355,6 +1363,78 @@ static void CheckForTermination() {
     }
 }
 
+/* ---- The DRAM replay cut's wake floor (thread-MPI) ----
+ * A WAITING rank (state 4) resumes no earlier than the event that releases it:
+ * a message already posted to it (no earlier than its sender's clock at the
+ * send), a barrier already released (its latest arrival), or an action a rank
+ * that is not waiting has yet to take (no earlier than that rank's clock now).
+ * These tables hold the posted ones, on the cut's ROI-relative axis: one entry
+ * per message from its SEND to its RECV (per source/destination pair, in
+ * order), one per released barrier until its last rank has advanced. An entry
+ * made before the last ROI re-baseline is on an older origin; while one is
+ * outstanding the floor is 0 (the cut holds at every waiting rank, as before). */
+static std::mutex g_cutWakeMu;
+struct CutWakeEntry { uint64_t t; uint64_t gen; };
+static std::map<std::pair<uint32_t, uint32_t>, std::deque<CutWakeEntry>> g_cutWakeMsgs;
+struct CutWakeBar { uint32_t arr = 0, adv = 0; uint64_t maxArr = 0, gen = 0; };
+static std::map<uint64_t, CutWakeBar> g_cutWakeBars;
+static std::multiset<uint64_t> g_cutWakeFloor;   // the posted entries of the current origin
+static uint64_t g_cutWakeGen = 0, g_cutWakeStale = 0;
+static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative clock of core c (EndOfPhaseActions)
+    Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
+    if (!co) return 0;
+    const uint64_t base = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
+    const uint64_t cyc = co->getCycles();
+    return (cyc > base) ? cyc - base : 0;
+}
+static void cutWakeRebase() {   // under g_cutWakeMu: entries of an older origin become stale
+    const uint64_t g = g_roiBaseGen.load();
+    if (g == g_cutWakeGen) return;
+    g_cutWakeStale += g_cutWakeFloor.size();
+    g_cutWakeFloor.clear();
+    g_cutWakeGen = g;
+}
+static void cutWakeDrop(const CutWakeEntry& e) {   // under g_cutWakeMu
+    if (e.gen != g_cutWakeGen) { if (g_cutWakeStale) g_cutWakeStale--; return; }
+    auto it = g_cutWakeFloor.find(e.t);
+    if (it != g_cutWakeFloor.end()) g_cutWakeFloor.erase(it);
+}
+static void cutWakeMessage(uint32_t tid, bool recv, uint32_t src, uint32_t dst) {
+    std::lock_guard<std::mutex> g(g_cutWakeMu);
+    cutWakeRebase();
+    auto& q = g_cutWakeMsgs[std::make_pair(src, dst)];
+    if (!recv) {
+        const uint64_t t = (tid < MAX_THREADS && cids[tid] < MAX_THREADS) ? cutAxisClock(cids[tid]) : 0;
+        q.push_back(CutWakeEntry{t, g_cutWakeGen});
+        g_cutWakeFloor.insert(t);
+    } else if (!q.empty()) {
+        cutWakeDrop(q.front());
+        q.pop_front();
+    }
+}
+static void cutWakeBarrier(uint32_t tid, uint64_t k, bool arrival) {
+    std::lock_guard<std::mutex> g(g_cutWakeMu);
+    cutWakeRebase();
+    CutWakeBar& b = g_cutWakeBars[k];
+    if (arrival) {
+        const uint64_t t = (tid < MAX_THREADS && cids[tid] < MAX_THREADS) ? cutAxisClock(cids[tid]) : 0;
+        if (b.arr == 0) b.gen = g_cutWakeGen;
+        if (t > b.maxArr) b.maxArr = t;
+        if (++b.arr == g_mpi_rank_count) {   // released
+            if (b.gen == g_cutWakeGen) g_cutWakeFloor.insert(b.maxArr); else g_cutWakeStale++;
+        }
+    } else if (++b.adv >= g_mpi_rank_count) {   // its last rank has advanced
+        if (b.arr >= g_mpi_rank_count) cutWakeDrop(CutWakeEntry{b.maxArr, b.gen});
+        g_cutWakeBars.erase(k);
+    }
+}
+static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
+    std::lock_guard<std::mutex> g(g_cutWakeMu);
+    cutWakeRebase();
+    if (g_cutWakeStale) return 0;
+    return g_cutWakeFloor.empty() ? ~0ull : *g_cutWakeFloor.begin();
+}
+
 /* ---- Phase actions (called by scheduler at end of phase) ---- */
 
 void EndOfPhaseActions() {
@@ -1406,13 +1486,22 @@ void EndOfPhaseActions() {
          * epochs already replayed (smoke t1217a: 4.17 M of 8.09 M stencil records,
          * which then issued as one burst). Only EXITED and VACATED cores are
          * exempt here, so no record can arrive behind this cut. */
-        uint64_t cutDram = ~0ull;
+        /* (1.12.176): a WAITING core (blocked on a peer) does not hold the DRAM cut at
+         * its own clock but at the earliest clock it can resume: no earlier than
+         * W = min(the cores that are not waiting, the posted wakes; see
+         * cutWakeFloor). So the cut no longer stops for the whole wait of a rank
+         * that finished its part early (an MPI reduce's root, a barrier's first
+         * arrival), which left the running ranks' records unfolded and their
+         * accesses priced by the bootstrap. min over waiting q of max(rr_q, W) is
+         * max(min rr_q, W). With no posted wake and no running core the cut holds
+         * at the waiting cores, as before. */
+        uint64_t cutDram = ~0ull, minWait = ~0ull;
         int dbgCutCore = -1, dbgActive = 0;
         for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++) {
             Core* co = zinfo->cores[c];
             if (!co) continue;
             const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
-            if (st != 0 && st != 1) continue;   // EXITED / VACATED: exempt from both cuts
+            if (st != 0 && st != 1 && st != 4) continue;   // EXITED / VACATED: exempt from both cuts
             /* 1.12.18 (W9): device scope (every core a PE): an ooo/in-order PE's
              * ROI origin (PEMemoryInterface::roiOriginOf), the origin its records
              * are stamped against; co-sim keeps the host cores out of the cut
@@ -1427,18 +1516,25 @@ void EndOfPhaseActions() {
              * clock (sync to waker), not at its own frozen one, so holding the DRAM
              * cut there would stall the replay for the whole sleep. */
             if (g_spCut && st != 0) continue;
+            if (st == 4) { if (rr < minWait) minWait = rr; continue; }   // WAITING: bounded below, exempt from the NoC cut
             if (rr < cutDram) cutDram = rr;
             if (st != 0) continue;       // QUIESCENT: exempt from the NoC cut only
             if (rr < cut) { cut = rr; dbgCutCore = (int)c; }
             dbgActive++;
         }
+        uint64_t wakeW = ~0ull;
+        if (minWait != ~0ull) {
+            wakeW = std::min(cutDram, cutWakeFloor());
+            cutDram = std::min(cutDram, (wakeW == ~0ull) ? minWait : std::max(minWait, wakeW));
+        }
         {   // PIMID_FOLD_DEBUG=1: which core pins the cut, and is it advancing?
             static const bool foldDbg = (getenv("PIMID_FOLD_DEBUG") != nullptr);
             static uint64_t dbgCalls = 0; static uint64_t lastCut = 0; static int lastCore = -1;
             if (foldDbg && ((dbgCalls++ % 100) == 0)) {
-                info("[CutDbg] phase=%lu cut=%lu pinnedBy=core%d active=%d cutAdvance=%ld",
+                info("[CutDbg] phase=%lu cut=%lu pinnedBy=core%d active=%d cutAdvance=%ld cutDram=%lu minWait=%lu wakeFloor=%lu",
                      (unsigned long)zinfo->numPhases, (unsigned long)cut, dbgCutCore,
-                     dbgActive, (long)((cut == ~0ull || lastCut == 0) ? 0 : (int64_t)cut - (int64_t)lastCut));
+                     dbgActive, (long)((cut == ~0ull || lastCut == 0) ? 0 : (int64_t)cut - (int64_t)lastCut),
+                     (unsigned long)cutDram, (unsigned long)minWait, (unsigned long)wakeW);
                 lastCut = (cut == ~0ull) ? lastCut : cut; lastCore = dbgCutCore;
             }
         }
@@ -3040,6 +3136,16 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
         return;
     }
 
+    if (op == ZSIM_MAGIC_OP_MPI_WAIT_PEER) {
+        /* (1.12.176): the rank blocks on a peer inside its comm bracket: QUIESCENT ->
+         * WAITING (the DRAM cut bounds it by the wake floor, EndOfPhaseActions) */
+        if (g_mpi_thread_mode && cids[tid] < MAX_THREADS) {
+            uint32_t q = 1;
+            g_coreRoiState[cids[tid]].compare_exchange_strong(q, 4);
+        }
+        return;
+    }
+
     if (op == ZSIM_MAGIC_OP_MPI_COMM_BEGIN) {
         /* 1.6 thread mode: FROZEN-CLOCK WAIT. Do NOT attach the window (a
          * frozen-attached core deadlocks the multi-core phase barrier); the
@@ -3099,7 +3205,8 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             // clobber an EXITED core (roi_end already fired): only ACTIVE<-QUIESCENT.
             if (tid < MAX_THREADS && cids[tid] < MAX_THREADS) {
                 uint32_t q = 1;
-                g_coreRoiState[cids[tid]].compare_exchange_strong(q, 0);
+                if (!g_coreRoiState[cids[tid]].compare_exchange_strong(q, 0) && q == 4)
+                    g_coreRoiState[cids[tid]].compare_exchange_strong(q, 0);   // WAITING -> ACTIVE
             }
             /* 1.9.0 epoch-frozen feedback: rank resumes injecting -> ACTIVE, so
              * the cut/epoch barrier accounts for it again. Publishing ACTIVE here
@@ -3401,6 +3508,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             if (g_barFirstBaseGen.find(k) == g_barFirstBaseGen.end())
                 g_barFirstBaseGen[k] = g_roiBaseGen.load();
             futex_unlock(&g_barGenLock);
+            if (g_mpi_thread_mode) cutWakeBarrier(tid, k, true);   // (1.12.176): the DRAM cut's wake floor
         }
         if (getenv("PIMID_DEBUG_RDV")) {   /* diagnostic: the clock axis of a barrier arrival */
             static std::atomic<int> nT{0};
@@ -3469,6 +3577,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * describes is pre-ROI, before the new origin). Also discarded: a
          * thread without a valid core, and anything after termination. */
         bool staleAxis = false;
+        if (g_mpi_thread_mode && tid < MAX_THREADS) cutWakeBarrier(tid, g_rankBarGen[tid], false);   // (1.12.176)
         if (tid < MAX_THREADS) {
             const uint64_t k = g_rankBarGen[tid];
             futex_lock(&g_barGenLock);
@@ -3480,14 +3589,25 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
         }
         const uint32_t advCid = (tid < MAX_THREADS) ? cids[tid] : tid;
         const bool noCore = (advCid >= zinfo->numCores) || zinfo->terminationConditionMet;
-        if (getenv("PIMID_DEBUG_RDV") && (staleAxis || noCore)) {
+        /* (1.12.176): the barrier whose BARRIER op synthesizes the ROI baseline (the entry barrier,
+         * mpi_roi_baselined still false) releases at a clock of the pre-ROI origin: the max
+         * arrival includes rank 0's whole data preparation. Every rank whose ADVANCE comes after
+         * the synthesis discards it as stale (above); the one rank whose ADVANCE came first (the
+         * barrier's last arrival, which does not wait) used to be charged it: its core ran up to
+         * the preparation's length ahead of the others' (25 M cycles on a smoke stream_triad), took
+         * no turn until global time caught up, and ran its kernel alone after the others had
+         * finished theirs, so their accesses were priced by the bootstrap. Discarded for every
+         * rank alike. */
+        const bool preRoiRelease = g_mpi_thread_mode && !mpi_roi_baselined;
+        if (getenv("PIMID_DEBUG_RDV") && (staleAxis || noCore || preRoiRelease)) {
             static std::atomic<int> nD{0};
             if (nD.fetch_add(1) < 64)
                 info("[rdvdbg] ADVANCE tid=%u DISCARDED (%s): release=%lu cur=%lu", tid,
-                     staleAxis ? "ROI clock re-baselined since the barrier's first arrival" : "no core / terminated",
+                     staleAxis ? "ROI clock re-baselined since the barrier's first arrival"
+                               : (noCore ? "no core / terminated" : "entry barrier: its release is on the pre-ROI origin"),
                      (unsigned long)target, (unsigned long)cur);
         }
-        if (staleAxis || noCore) return;
+        if (staleAxis || noCore || preRoiRelease) return;
         if (getenv("PIMID_DEBUG_RDV")) {   /* diagnostic: what the barrier release charges */
             static std::atomic<int> nA{0};
             if (nA.fetch_add(1) < 400) {
@@ -3545,6 +3665,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 ? 1u : 0u;
         gp->noc_lat = 0;
     }
+    if (g_mpi_thread_mode) cutWakeMessage(tid, isRecv, params.src_pe, params.dst_pe);   // (1.12.176): the DRAM cut's wake floor
 
     if (params.src_pe == params.dst_pe) return;
 
@@ -3872,7 +3993,8 @@ static void spmApplyPending(uint32_t tid) {
 }
 
 static inline bool isMpiMagicOp(uint64_t op) {
-    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */;
+    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */
+           || op == ZSIM_MAGIC_OP_MPI_WAIT_PEER;
 }
 
 /**

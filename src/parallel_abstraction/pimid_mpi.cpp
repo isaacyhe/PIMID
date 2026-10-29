@@ -59,6 +59,7 @@
 #define ZSIM_MAGIC_OP_MPI_CONTEND    2057
 #define ZSIM_MAGIC_OP_MPI_TIME       2058  /* plugin -> params.sim_now */
 #define ZSIM_MAGIC_OP_MPI_ADVANCE    2059  /* core clock -> params.sim_send_time */
+#define ZSIM_MAGIC_OP_MPI_WAIT_PEER  2068  /* thread mode: this rank blocks on a peer (inside its comm bracket) */
 
 struct __attribute__((aligned(64))) PimidMpiParams {
     uint32_t src_pe;
@@ -460,6 +461,11 @@ static size_t dtype_size(MPI_Datatype dt) {
 /* Open/close the comm window. Outside instrumentation these are NOPs. */
 static inline void mpi_comm_begin(void) { zsim_magic_op(ZSIM_MAGIC_OP_MPI_COMM_BEGIN); }
 static inline void mpi_comm_end(void)   { zsim_magic_op(ZSIM_MAGIC_OP_MPI_COMM_END); }
+/* Thread mode, inside a comm bracket: the rank is about to block until a peer
+ * posts its message or arrives at the barrier. The simulator then bounds the
+ * rank's next records by that peer's clock instead of holding its memory
+ * replay at this rank's own (see the plugin's cut). */
+static inline void mpi_wait_peer(void)  { zsim_magic_op(ZSIM_MAGIC_OP_MPI_WAIT_PEER); }
 
 /* SEND-direction timing op. The plugin charges send latency on this rank's
  * core AND writes the current simulated time back into tl_mpi_params.sim_now,
@@ -871,6 +877,7 @@ static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref) {
             continue;
         }
         MPITRACE("recv_WAIT_src=%d", want_src);
+        mpi_wait_peer();
         pthread_cond_wait(&mb->can_recv, &mb->mtx);
     }
 }
@@ -982,6 +989,7 @@ static void recv_slot(MessageSlot* out, int want_src = -1) {
                 continue;   /* re-scan: ring now has space, blocked sender can enqueue */
             }
             MPITRACE("recv_WAIT_src=%d", want_src);
+            mpi_wait_peer();
             pthread_cond_wait(&mb->can_recv, &mb->mtx);
         }
         pthread_mutex_unlock(&mb->mtx);
@@ -1359,8 +1367,10 @@ int MPI_Barrier(MPI_Comm comm) {
             pthread_cond_broadcast(&g_shared->bar_cv);
         } else {
             mpi_comm_begin();   /* frozen-clock bracket */
-            while (g_shared->barrier_gen == gen)
+            while (g_shared->barrier_gen == gen) {
+                mpi_wait_peer();
                 pthread_cond_wait(&g_shared->bar_cv, &g_shared->bar_mtx);
+            }
             mpi_comm_end();
         }
         uint64_t release = g_shared->bar_release;

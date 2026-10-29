@@ -6,6 +6,45 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.176 -- message passing: no rank is charged the entry barrier's pre-ROI wait, and a rank that waits on a peer no longer holds the DRAM replay
+
+- **The problem (entry barrier).** The barrier at kernel entry releases its ranks at the latest arrival, rank 0's,
+  which includes rank 0's whole data preparation; the ROI baseline is synthesized in that barrier, so every rank
+  whose rendezvous advance came after the synthesis discarded the release as a clock of the old origin (1.11.97).
+  The one rank whose advance came first -- the barrier's last arrival, which does not wait -- was charged it: its core
+  ran ahead of the others by the length of the preparation (24.9 M cycles on a smoke stream_triad), took no turn
+  until global time caught up, and then ran its whole kernel alone, after the others had finished theirs. Their
+  accesses were made while that rank's clock still held the DRAM cut at its kernel entry, so they were priced by the
+  analytical bootstrap (94 to 97 % of all device accesses in the 16-rank stream_triad cells).
+- **The fix (entry barrier).** The release of the barrier that synthesizes the ROI baseline is discarded by every
+  rank alike (external/zsim/src/qemu_zsim_plugin.cpp, the rendezvous advance).
+- **The problem (waits).** Under thread-MPI the device DRAM epoch replay folds an epoch only once every rank that can
+  still record into it has passed it (the consistent cut, 1.12.17). A rank parked in an MPI wait held that cut at its
+  own frozen clock for the whole wait. When the other ranks had entered their waits and one rank ran on alone (the
+  last rank into a reduce or a barrier), nothing more was folded and every access of the running rank read the price
+  of the last epoch replayed before the waits -- often the burst of all ranks at once, with full controller queues.
+- **The fix (waits)** (external/zsim/src/qemu_zsim_plugin.cpp, src/parallel_abstraction/pimid_mpi.cpp). The
+  transport announces a blocking wait on a peer -- a receive whose message has not been posted, a barrier whose last
+  rank has not arrived -- with a new timing op; the rank's core is WAITING until its wait ends. A waiting rank resumes
+  no earlier than the event that releases it: a message already sent to it (no earlier than its sender's clock at the
+  send), a barrier already released (its latest arrival), or an action of a rank that is not waiting (no earlier than
+  that rank's clock now). The DRAM cut holds a waiting rank at the larger of its own clock and the earliest of these.
+  The simulator keeps the posted sends and released barriers until they are consumed; an entry made before the last
+  ROI re-baseline makes the bound fall back to the rank's own clock. A rank in a short transport step (a send, a
+  receive's bookkeeping) holds the cut at its own clock as before; the NoC cut is unchanged.
+- **Records behind the cut.** A receive copies its payload before its clock advances to the message's arrival, and
+  rank 0 re-baselines its core at roi_begin; such records can be stamped behind the cut and join the next unfolded
+  epoch (the 1.12.17 rule; "record(s) joined a later epoch" in the run log): 0 to about 300 per cell.
+- **Data impact.** Device thread-MPI cells. Full size: 16-rank stream_triad, HBM3 CHANNEL placement: share of device
+  accesses priced by the analytical bootstrap 93.8 % -> 0.1 %, charged / replay-measured latency 0.513 -> 1.004,
+  run time 52.0 M -> 21.1 M cycles; DDR5-4800 BANK: bootstrap 93.8 % -> 0.1 %, run time -1.4 %. Smoke size, the
+  133 device MPI cells that run to their end: mean bootstrap share 59.5 % -> 25.0 % (the 113 that report it); run
+  time unchanged in 29, up in 65 (30 by more than 10 %:
+  the ranks' accesses now meet each other in the controller, e.g. HBM3 BANK stream_triad +61 %), down in 39 (12 by
+  more than 10 %: a rank that ran on alone, e.g. HBM3 CHANNEL histogram 20.6 M -> 0.48 M, stencil_2d 4.58 M ->
+  0.85 M). Co-sim MPI: histogram -41 % to -56 %, DDR5-3200 gemv -24 % (power +5.6 %); stream_triad unchanged.
+  Shared-memory (OpenMP), serial and single-process cells and co-sim OpenMP cells are identical.
+
 ## 1.12.175 -- the replayed DRAM price weighs busy epochs more, and the second epoch reads the first
 
 - **The problem.** After 1.12.153 three loaded cells still charged less latency than the replayed Ramulator2
