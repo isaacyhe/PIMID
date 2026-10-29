@@ -38,6 +38,7 @@
 #ifndef BARRIER_H_
 #define BARRIER_H_
 
+#include <algorithm>
 #include <errno.h>
 #include <linux/futex.h>
 #include <stdint.h>
@@ -142,6 +143,69 @@ class Barrier : public GlobAlloc {
         void join(uint32_t tid, lock_t* schedLock) {
             DEBUG_BARRIER("[%d] Joining, runningThreads %d, prevState %d", tid, runningThreads, threadList[tid].state);
             assert(threadList[tid].state == LEFT || threadList[tid].state == OFFLINE);
+            /* (1.12.179): with the fixed order by shuffle (message-passing runs), a thread that joins while another
+             * holds the turn takes its place in the run list when that turn settles (detFlushJoins), together with
+             * the other threads that joined meanwhile, in core order; the turn's position in the list does not move
+             * meanwhile, so each lands where it would have. One at a time, each in the order its host thread got here
+             * (the waker's own count of the threads it woke arrives with its return, after theirs), the same-phase
+             * reschedule below left the list in a host-dependent arrangement, and the next phase's shuffle, which
+             * permutes positions, then gave the ranks a host-dependent turn order (a barrier releasing all 16 ranks
+             * of a co-sim cell: the post-ROI collective tail differed between runs). With no turn held, a joiner
+             * places the queued ones and itself at once. */
+            if (g_detOrder && !g_detClockMode) {
+                if (runningThreads > 0) {
+                    detJoinQ[detJoinQn++] = tid;
+                    threadList[tid].futexWord = 1;
+                    futex_unlock(schedLock);
+                    waitForTurn(tid);
+                    if (g_detTurnStart) g_detTurnStart();
+                    return;
+                }
+                if (detJoinQn) {
+                    detJoinQ[detJoinQn++] = tid;
+                    detFlushJoinsLocked();
+                    tryWakeNext(tid); //NOTE: You can't cause a phase to end here.
+                    futex_unlock(schedLock);
+                    if (threadList[tid].state == WAITING) waitForTurn(tid);
+                    if (g_detTurnStart) g_detTurnStart();
+                    return;
+                }
+            }
+            joinInsert(tid);
+            tryWakeNext(tid); //NOTE: You can't cause a phase to end here.
+            futex_unlock(schedLock);
+
+            if (threadList[tid].state == WAITING) {
+                DEBUG_BARRIER("[%d] Waiting on join", tid);
+                waitForTurn(tid);
+            }
+            if (g_detOrder && g_detTurnStart) g_detTurnStart();   // (1.12.123)
+        }
+
+        /* (1.12.179): the queued joins of a turn take their places, in core order (schedLock held) */
+        void detFlushJoins() { if (detJoinQn) detFlushJoinsLocked(); }
+
+    private:
+        uint32_t detJoinQ[MAX_THREADS];
+        uint32_t detJoinQn = 0;
+        void detFlushJoinsLocked() {
+            std::sort(detJoinQ, detJoinQ + detJoinQn);
+            for (uint32_t i = 0; i < detJoinQn; i++) joinInsert(detJoinQ[i]);
+            detJoinQn = 0;
+        }
+        void waitForTurn(uint32_t tid) {
+            while (true) {
+                /* BOUNDED wait: lost wakes recover via predicate recheck */
+                const struct timespec _fto = {0, 50000000};
+                int futex_res = syscall(SYS_futex, &threadList[tid].futexWord, FUTEX_WAIT, 1 /*a racing thread waking us up will change value to 0, and we won't block*/, &_fto, nullptr, 0);
+                if (futex_res == 0 || threadList[tid].futexWord != 1) break;
+            }
+            //The thread that wakes us up changes this
+            assert(threadList[tid].state == RUNNING);
+        }
+        /* the run-list placement of a joining thread (schedLock held); leaves it WAITING */
+        void joinInsert(uint32_t tid) {
+            assert(threadList[tid].state == LEFT || threadList[tid].state == OFFLINE);
             if (threadList[tid].state == OFFLINE) {
                 runList[runListSize++] = tid;
             } else {
@@ -180,22 +244,9 @@ class Barrier : public GlobAlloc {
 
             threadList[tid].state = WAITING;
             threadList[tid].futexWord = 1;
-            tryWakeNext(tid); //NOTE: You can't cause a phase to end here.
-            futex_unlock(schedLock);
-
-            if (threadList[tid].state == WAITING) {
-                DEBUG_BARRIER("[%d] Waiting on join", tid);
-                while (true) {
-                    /* BOUNDED wait: lost wakes recover via predicate recheck */
-                    const struct timespec _fto = {0, 50000000};
-                    int futex_res = syscall(SYS_futex, &threadList[tid].futexWord, FUTEX_WAIT, 1 /*a racing thread waking us up will change value to 0, and we won't block*/, &_fto, nullptr, 0);
-                    if (futex_res == 0 || threadList[tid].futexWord != 1) break;
-                }
-                //The thread that wakes us up changes this
-                assert(threadList[tid].state == RUNNING);
-            }
-            if (g_detOrder && g_detTurnStart) g_detTurnStart();   // (1.12.123)
         }
+
+    public:
 
         //Must be called with schedLock held
         void leave(uint32_t tid) {
@@ -274,6 +325,7 @@ class Barrier : public GlobAlloc {
          * it (its output after the ROI lost when the run is ended). Called with
          * schedLock held. */
         void releaseAllWaiting() {
+            if (detJoinQn) detFlushJoinsLocked();   // (1.12.179): queued joins are let go too
             for (uint32_t i = 0; i < runListSize; i++) {
                 const uint32_t t = runList[i];
                 if (threadList[t].state != WAITING) continue;

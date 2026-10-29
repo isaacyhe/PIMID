@@ -249,8 +249,12 @@ by its position in the shuffle; a turn passes on only once the ranks it woke hav
 joined and the ranks it put to sleep are queued in the kernel; a mailbox wait
 leaves the core at once). The ranks' clocks stay where the transport puts them,
 so which message a receive takes first and the order of the contention
-reservations no longer come from the host. Process-mode MPI ranks keep their own
-ordering.
+reservations no longer come from the host. Since (1.12.179) the ranks one turn wakes
+together (a barrier's release) take their places in the run list when that turn
+settles, all at once and in core order; before, each took its place when its host
+thread got there, and that arrangement changed the next phase's shuffle (a co-sim
+MPI cell's post-ROI collective tail differed between runs). Process-mode MPI ranks
+keep their own ordering.
 
 **Regressions can be gated exactly.** Run the single-threaded build and
 require bit-identical output; it costs one run. The settings below keep the

@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.179 -- threads woken together take their places in core order: the rank order after a barrier repeats
+
+- **Problem.** The order of the ranks' turns after a barrier still came from the host. Before the receive-order and
+  wake-bound changes above it split copies of one co-sim MPI cell after the kernel window (run time, power and
+  checksum identical): cosim_DDR5_mpi_stream_triad_g3200 (smoke) the scheduler's occupancy histogram (2 of 16
+  copies) or rank 0's post-ROI collective tail (1806441 vs 1809703 cycles, 3 of 6 copies), cosim_HBM3_mpi_gemv
+  the tail (414612 vs 415234 cycles, 7 and 9 of 16 copies) and with it PE busy cycles, remoteLat, the NoC records
+  pending at the final write and the whole-run DQ data, NoC wire and device-controller gap counters. With those
+  changes the outputs no longer depended on it in the cells tested, but the order still did: the barrier that
+  closes the kernel window wakes 15 ranks, 13 to 15 of which have already run in the phase, and they arrived in a
+  different order in every run.
+- **Root cause.** With the fixed order by shuffle (message-passing runs) a phase's turn order is the seeded shuffle
+  of the threads' positions in the scheduler's run list. When one turn woke several threads at once (a barrier
+  releasing its ranks), each took its place in the run list when its host thread got there; a thread that had
+  already run in the phase is rescheduled by swapping it into the slot before the next to run, so several such
+  threads ended in an arrangement that followed the host's order of arrival, and the next phase's shuffle gave the
+  ranks a host-dependent turn order. The places could not wait for the waker's count of the threads it woke: that
+  count arrives with its return, after theirs.
+- **Fix (external/zsim/src/barrier.h, scheduler.h, qemu_zsim_plugin.cpp).** In the shuffle order a thread that
+  joins while another holds the turn is queued; when the turn settles (every thread it woke has joined) the queued
+  threads take their places together, in core order (`Barrier::detFlushJoins`; also before a queued rejoin gets
+  its core and before the waiting threads are let go at the run's end). A thread that joins with no turn held
+  places the queued ones and itself at once. Shared-memory runs (the order by clock) are unchanged.
+- **Data impact.** None in the cells tested; each gives the output it gave before (paths, process ids and wall timers
+  aside): 8 copies of each of the 15 co-sim MPI smoke cells, 16 copies each of cosim_HBM3_mpi_gemv and
+  cosim_DDR5_mpi_stream_triad_g3200, cosim_HBM3_mpi_histogram_4core and the parity cell 8 of 8, the 116-cell
+  validation set, the gate host smoke subset, and 148 of the 150 device and co-sim MPI smoke cells of the device list
+  (the other two refuse their data preparation and end at a phase that varies from run to run, before and after).
+
 ## 1.12.178 -- message passing: each waiting rank is bounded by what can release it, on the clock the rendezvous uses
 
 - **The problem.** 1.12.176 bounded a rank that waits on a peer by the earliest wake still possible anywhere: the

@@ -458,8 +458,14 @@ class Scheduler : public GlobAlloc, public Callee {
                 th = nx;
             }
         }
+        void detFlushJoins() {   // (1.12.179): see Barrier::join
+            futex_lock(&schedLock);
+            bar.detFlushJoins();
+            futex_unlock(&schedLock);
+        }
         void detDispatch() {
             futex_lock(&schedLock);
+            bar.detFlushJoins();   // (1.12.179): the turn has settled: its queued joins take their places
             if (!runQueue.empty()) detDispatchLocked();
             futex_unlock(&schedLock);
         }
