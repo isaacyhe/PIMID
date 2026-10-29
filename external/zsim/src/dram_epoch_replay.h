@@ -112,7 +112,7 @@ class DramEpochReplay {
      * belongs to, `slot` the bank slot inside that unit and `row` the row, both
      * from the interface's own row model (PEMemoryInterface::rowOf_). */
     void record(uint64_t epoch, uint64_t stamp, uint32_t unit, uint32_t slot, uint64_t row,
-                uint64_t lineAddr, bool isWrite, uint32_t mi, uint32_t charged = 0);   // (1.12.153): charged = the latency the access was priced at (0: bootstrap)
+                uint64_t lineAddr, bool isWrite, uint32_t mi, uint32_t charged = 0, bool tail = false);   // (1.12.153): charged = the latency the access was priced at (0: bootstrap); (1.12.181): tail = issued in a co-sim MPI rank's post-ROI tail
 
     /* The service latency (core cycles, device time including queueing) that
      * interface `mi` charges in epoch `curEpoch`: the mean measured by
@@ -191,7 +191,7 @@ class DramEpochReplay {
 
   private:
     struct Rec { uint64_t stamp; uint64_t addr; uint32_t mi; uint8_t wr; uint32_t ch; uint8_t shadow = 0; uint32_t grp = 0;
-                 uint32_t src = ~0u, chg = 0; };   // (1.12.153): src = the host core of a thread-MPI host record (~0u otherwise); chg = the latency charged   // 1.12.18 (drain the lag): ch = the controller channel; shadow = a host lock-step copy past chip 0, grp = its host request
+                 uint32_t src = ~0u, chg = 0; uint8_t tail = 0; };   // (1.12.181): tail = issued in a co-sim MPI rank's post-ROI tail (outside)   // (1.12.153): src = the host core of a thread-MPI host record (~0u otherwise); chg = the latency charged   // 1.12.18 (drain the lag): ch = the controller channel; shadow = a host lock-step copy past chip 0, grp = its host request
     struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; bool out; uint64_t epoch; uint32_t grp = 0; uint32_t chg = 0; };   // (1.12.153): chg   // (1.12.145): issueTick = the tick the request reached the controller's door   // 1.12.18: out = stamped after the ROI end (R1); grp
     /* 1.12.18 (user ruling 2026-10-24, "drain the lag"): a record that finds
      * its controller queue full waits at that queue's door (FIFO per channel

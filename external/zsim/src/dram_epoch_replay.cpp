@@ -25,6 +25,7 @@
 /* (1.12.153): the host core of the host access being recorded, and the charge of the device access being recorded */
 static thread_local uint32_t t_recSrc = ~0u;
 static thread_local uint32_t t_recChg = 0;
+static thread_local bool t_recTail = false;   // (1.12.181): the device access being recorded is in a rank's post-ROI tail
 
 #ifdef _WITH_RAMULATOR_
 
@@ -354,15 +355,17 @@ uint64_t DramEpochReplay::composeAddr(uint32_t unit, uint32_t slot, uint64_t row
 }
 
 void DramEpochReplay::record(uint64_t epoch, uint64_t stamp, uint32_t unit, uint32_t slot, uint64_t row,
-                             uint64_t lineAddr, bool isWrite, uint32_t mi, uint32_t charged) {
+                             uint64_t lineAddr, bool isWrite, uint32_t mi, uint32_t charged, bool tail) {
     /* 1.11.98: the window closes with the ROI, as every other counter does
      * (post-termination accesses are not counted anywhere). */
     if (zinfo->terminationConditionMet) return;
     uint32_t ch = 0;
     const uint64_t addr = composeAddr(unit, slot, row, lineAddr, &ch);
     t_recChg = charged;   // (1.12.153)
+    t_recTail = tail;     // (1.12.181)
     recordAddr(epoch, stamp, addr, ch, isWrite, mi);
     t_recChg = 0;
+    t_recTail = false;
 }
 
 void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, uint32_t ch, bool isWrite, uint32_t mi, uint8_t shadow, uint32_t grp) {
@@ -374,7 +377,7 @@ void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, 
      * stamp; a folded epoch is never replayed twice. */
     if (cutMode_ && anyFolded_ && epoch <= lastFolded_) { epoch = lastFolded_ + 1; late_++; }
     pending_[epoch].push_back(Rec{stamp, addr, mi, (uint8_t)(isWrite ? 1 : 0), ch, shadow, grp,
-                                  (mpiHost_ && isHostMi(mi)) ? t_recSrc : ~0u, t_recChg});   // (1.12.153): source, charge
+                                  (mpiHost_ && isHostMi(mi)) ? t_recSrc : ~0u, t_recChg, (uint8_t)(t_recTail ? 1 : 0)});   // (1.12.153): source, charge; (1.12.181): tail
     if (ch < perChan_.size()) perChan_[ch]++;
     futex_unlock(&lock_);
 }
@@ -997,8 +1000,11 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
          * ROI end is replayed (the controller's state stays correct) but is
          * outside: source_id 2 (device) / 3 (host) in the controller, and in
          * none of the ROI counts, latencies or row/ACT totals. Judged on its
-         * own stamp: a wait at the door never pushes it outside. */
-        const bool out = closeArmed_ && target > closeTick_;
+         * own stamp: a wait at the door never pushes it outside. (1.12.181): a
+         * request a co-sim MPI rank issued after its window-close marker is its
+         * post-ROI tail and outside whatever its stamp (a rank whose ROI origin
+         * is later than another's stamps the start of its tail before the end). */
+        const bool out = (closeArmed_ && target > closeTick_) || r.tail;
         if (out) pastEndRecs_++;
         tickTo(target);   // monotone: a stamp behind the clock arrives now
         Waiting w{r, epoch, target, out, 0, nextId_++, curTick_};   // (1.12.145): feed = now
@@ -1280,7 +1286,7 @@ void DramEpochReplay::replayEpochPar(uint64_t epoch) {
         const Rec& r = recs[i];
         uint64_t target = (uint64_t)((double)r.stamp * ticksPerCycle_);
         if (cutMode_) target += roiTick0_;
-        const bool out = closeArmed_ && target > closeTick_;
+        const bool out = (closeArmed_ && target > closeTick_) || r.tail;   // (1.12.181): or the tail (see replayEpoch)
         if (out) pastEndRecs_++;
         if (target > end) end = target;
         if (r.ch > 1) panic("DramEpochReplay %s: record on channel %u of a two-channel replay", name_.c_str(), r.ch);
@@ -1408,7 +1414,7 @@ void DramEpochReplay::finalize() {
                  (unsigned long)(curTick_ - t0), (unsigned long)((closeSnapped_ ? snapTicks_ : raw_.ticks) - base_.ticks));
             if (closeSnapped_ && (cutMode_ || pastEndRecs_ > 0 || closeLate_ > 0))
                 info("[mem] %s: 1.12.18: window frozen at the ROI end (DRAM tick %lu%s): ticks, idle ticks, refreshes and bank-open time are counted to it; "
-                     "%lu record(s) stamped past it replayed OUTSIDE the ROI (not priced, see outside*), %lu DRAM cycles replayed past it; "
+                     "%lu record(s) stamped past it or issued in a rank's post-ROI tail replayed OUTSIDE the ROI (not priced, see outside*), %lu DRAM cycles replayed past it; "
                      "host records stamped on the host core's own clock %lu, on the ROI-relative phase grid %lu",
                      name_.c_str(), (unsigned long)closeTick_, closeLate_ ? " -- reached late, the clock stood past it" : "",
                      (unsigned long)pastEndRecs_, (unsigned long)(curTick_ > closeTick_ ? curTick_ - closeTick_ : 0),
@@ -1553,7 +1559,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t, uint64_t, uint64_t, uint32_t, boo
 void DramEpochReplay::bindCounters(uint32_t, Counter*, Counter*, Counter*, Counter*) {}
 void DramEpochReplay::recordAddr(uint64_t, uint64_t, uint64_t, uint32_t, bool, uint32_t, uint8_t, uint32_t) {}
 DramEpochReplay::~DramEpochReplay() {}
-void DramEpochReplay::record(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t, uint64_t, bool, uint32_t, uint32_t) {}
+void DramEpochReplay::record(uint64_t, uint64_t, uint32_t, uint32_t, uint64_t, uint64_t, bool, uint32_t, uint32_t, bool) {}
 void DramEpochReplay::markRoi() {}
 void DramEpochReplay::ctrlTotals(uint64_t&, uint64_t&, uint64_t&, uint64_t&) {}
 uint64_t DramEpochReplay::composeAddr(uint32_t, uint32_t, uint64_t, uint64_t, uint32_t*, int) { return 0; }

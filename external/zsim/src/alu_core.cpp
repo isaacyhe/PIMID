@@ -35,6 +35,7 @@
 // object size stays byte-identical and device-scope runs stay bit-identical.
 uint64_t g_mpiProtocolTailCyc[MAX_THREADS] = {0};
 uint64_t g_mpiRoiCyc[MAX_THREADS] = {0};   // 1.12.3: the kernel-window receipt
+bool g_peTailRun[MAX_THREADS] = {false};   // (1.12.181): the PE runs a co-sim MPI rank's post-ROI tail
 
 // ALU Core: Pure computational core with optional PE memory interface
 

@@ -6,6 +6,47 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.181 -- co-sim message passing: each rank's kernel window ends at its own closing barrier, and the post-ROI tail it runs on its PE stays out of the activity and memory counters
+
+- **The problem.** After its kernel a co-sim MPI rank stays on its device PE and runs its post-ROI tail there (the
+  result copy, checksum, reduce, finalize and exit; 1.8.7). The tail is outside the priced window (ruling 1 (a)) and
+  its cycles leave per PE through the protocolTail receipt. Two things were wrong.
+  (1) Rank 0's roi_end puts the window into closing, and a rank was marked at the first barrier it passed on its PE
+  after that. A rank whose turn to enter the device came after rank 0 had finished a short kernel passed its ENTRY
+  barrier with the window closing and was marked there, before its kernel ran: its whole kernel was counted as tail
+  and taken out of its priced cycles (smoke 16-rank cells: stream_triad 10 or 11 of 16 ranks, gemv 9 or 10,
+  stencil_2d 2 to 5; histogram, bfs and the full-size cells were not hit). The run time was right: the ranks marked
+  at the closing barrier carry its release.
+  (2) Only the cycles left. The tail's activity stayed in the device PEs' instruction mix, instrs, FP and integer
+  census, PG active phases and stack span; in the PE memory interfaces' DQ data statistics, row hits and misses,
+  local and remote accesses and latencies and first-touch pages; in the device-MC and NoC residency markers and gap
+  histograms (the DRAM power-down residency reads the device-MC one, whose span ran to the guest's exit); and in the
+  measured NoC wire activity. The PEs are cacheless, so every load and store of the tail is a DRAM request: on the
+  smoke DDR5 stream_triad cell the tail made 381,805 requests against 13,117 in the ROI, the interfaces' DQ read
+  lines were 23x the kernel's and the device instrs 2.5x. The DRAM replay kept the tail out on its stamps (ruling
+  R1) except for rank 0: its ROI origin is its own roi_begin, later than the other ranks' entry-barrier origin, so
+  the start of its tail is stamped before the ROI end (49 to 454 requests per cell), and those were priced in the
+  window.
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, core.h, alu_core.h, alu_core.cpp, pe_memory_interface.h,
+  dram_epoch_replay.h, dram_epoch_replay.cpp). (1) Rank 0's roi_end records the generation of its next barrier, the
+  closing one (every rank passes the same barriers in the same order); a rank is marked at a barrier of that
+  generation or later, never at its entry barrier. (2) At its marker a rank's PE activity counters are taken
+  (`Core::markActivity`) and at the dump reported as they stood (`restoreActivity`; the clock and the receipts are
+  not touched). From the marker on, the PE's memory accesses are timed and replayed as before but are in none of the
+  interface's ROI counters, the DQ data statistics, the residency markers and gap histograms or the wire activity,
+  and the replay classes every one of them outside the ROI whatever its stamp (it nets rd/wr and
+  replayPriced/replayLat for them, as for any request outside). Nothing that times the run changes.
+- **Data impact.** Against 1.12.179 built and run in the same job: the run time of every co-sim MPI cell is
+  unchanged (15 smoke cells, full-size stream_triad, histogram and gemv), and so is the in-ROI DRAM replay except
+  rank 0's tail requests, now outside (smoke stream_triad 13,117 -> 13,038 requests in the ROI). The in-ROI request
+  count of a kernel is now the same on DDR5, DDR5-3200 and HBM3, and every interface's DQ lines equal its rd/wr.
+  Device power of the co-sim MPI cells: device cores -5 to -8 % (bfs, histogram, gemv), -22 to -24 % (stencil_2d),
+  -58 % (smoke stream_triad); full-size stream_triad -48 % (its tail ran 140 M instructions next to the kernel's
+  160 M), full-size gemv and histogram -0.02 %; the memory array within 0.3 %. Every other cell is unchanged
+  (output equal but for host timers): 164 device-scope MPI and OpenMP cells, 4 co-sim OpenMP cells, 16 checker
+  cells. Both determinism cells 8 of 8; a second node repeats the 35-cell set exactly; the power sanity check
+  passes as before.
+
 ## 1.12.180 -- the fixed order holds until the statistics are written: OpenMP co-sim cells repeat in every run
 
 - **Problem.** Copies of one shared-memory (OpenMP) co-sim cell on one node now and then differed in the per-process

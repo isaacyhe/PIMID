@@ -481,6 +481,20 @@ public:
         return v == 1;
     }
 
+    /* (1.12.181): a co-sim message-passing rank past its window-close marker runs its post-ROI tail on its PE
+     * (g_peTailRun, core.h). The tail is outside the priced window (ruling 1 (a)); its requests are still
+     * timed and replayed, and the DRAM replay classes them outside the ROI (it nets rd/wr and replayPriced/
+     * replayLat itself, applyOutside), but they are in none of the interface's other ROI counters, the DQ
+     * data statistics, the residency markers and gap histograms, or the measured wire activity. The flag is
+     * set for the access being served (this thread) and read where those are counted. */
+    static bool& inTail() { static thread_local bool t = false; return t; }
+    struct TailScope {
+        bool prev;
+        explicit TailScope(bool t) : prev(inTail()) { inTail() = t; }
+        ~TailScope() { inTail() = prev; }
+    };
+    static void roiInc(Counter& c, uint64_t d = 1) { if (!inTail()) c.atomicInc(d); }
+
     /* 1.12.17 (M1): see access(). */
     static bool mpiTransportAccess(const MemReq& req) {
         if (req.srcId < zinfo->numCores && zinfo->cores[req.srcId] &&
@@ -733,6 +747,7 @@ public:
             }
             return req.cycle + 1;
         }
+        TailScope tailScope(req.srcId < MAX_THREADS && g_peTailRun[req.srcId]);   // (1.12.181)
         const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
         if (isWrite) DqMix::writes.fetch_add(1, std::memory_order_relaxed);
         else         DqMix::reads.fetch_add(1, std::memory_order_relaxed);
@@ -753,7 +768,7 @@ public:
          * those accesses drove its idle residency to zero and cost it gating
          * credit it had earned. The NoC is now marked at the three sites that
          * actually generate fabric traffic; search pgres.noc.touch. */
-        { uint64_t _ph = zinfo->numPhases;
+        if (!inTail()) { uint64_t _ph = zinfo->numPhases;   // (1.12.181): not the tail
           zinfo->pgres.devMC[0].touch(_ph);
           zinfo->pgres.devMCGaps.event(req.cycle); }   // E17 measurement
         // Update coherence state
@@ -812,12 +827,12 @@ public:
             if (zinfo->hierarchy.mcStandalone) {
                 lat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
                 // E16 site 1: the ONLY fabric traffic a local access makes.
-                zinfo->pgres.noc.touch(zinfo->numPhases);
-                zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
+                if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases);   // (1.12.181): not the tail
+                zinfo->pgres.nocGaps.event(req.cycle); }   // E17 measurement
             }
 
-            profLocalAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            profLocalLatency_.atomicInc(lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profLocalAccesses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profLocalLatency_, lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
             return req.cycle + lat;
         } else {
@@ -848,19 +863,19 @@ public:
                     // path -- not by falling through to the routed-path marker.
                     if (zinfo->hierarchy.mcStandalone) {
                         lat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
-                        zinfo->pgres.noc.touch(zinfo->numPhases);
-                zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
+                        if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases);   // (1.12.181): not the tail
+                zinfo->pgres.nocGaps.event(req.cycle); }   // E17 measurement
                     }
                     noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
-            profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-                    profRemoteLatency_.atomicInc(lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profRemoteAccesses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                    roiInc(profRemoteLatency_, lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                     return req.cycle + lat;
                 }
                 // E16 site 2: past the degenerate check, every access here is a
                 // real packet on the H-tree. dst==src is 0 HOPS but still an
                 // injection at the node, so it counts as fabric activity.
-                zinfo->pgres.noc.touch(zinfo->numPhases);
-                zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
+                if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases);   // (1.12.181): not the tail
+                zinfo->pgres.nocGaps.event(req.cycle); }   // E17 measurement
                 uint32_t srcNode = (uint32_t)mcId_ % gn->getNumNodes();
                 uint32_t dstNode = (uint32_t)dstEp % gn->getNumNodes();
                 /* (user ruling 2026-10-26: control messages): the access is two messages on Garnet's
@@ -884,7 +899,7 @@ public:
                  * this access already read (localAccessLatency above; no second read) -- counted on
                  * this source port's stream. Only a traversing packet (src != dst), only before the
                  * ROI end (as the fabric replay). */
-                if (zinfo->nocWire && srcNode != dstNode && !zinfo->terminationConditionMet) {
+                if (zinfo->nocWire && srcNode != dstNode && !zinfo->terminationConditionMet && !inTail()) {   // (1.12.181): not the tail
                     const AccessLine& al = accessLine();
                     const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
                     /* the line's offset in its window (user ruling 2026-10-26: PIMID's own packet header): a declared device window
@@ -1044,12 +1059,12 @@ public:
                                     zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
                                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
                             }
-                            profPairFallback_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                            roiInc(profPairFallback_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                             /* a leg with no sample yet takes the ladder cost (user ruling 2026-10-26: control messages) */
                             if (!legReq) legReq = garnetLat;
                             if (!legResp) legResp = garnetLat;
                         } else {
-                            profPairSampled_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                            roiInc(profPairSampled_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                         }
                     }
                     if (!legReq) legReq = zinfo->hierarchy.nocAvgOneWayLatency;
@@ -1077,8 +1092,8 @@ public:
                     totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
                 }
                 noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
-            profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-                profRemoteLatency_.atomicInc(totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profRemoteAccesses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+                roiInc(profRemoteLatency_, totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                 return req.cycle + totalLat;
             }
 
@@ -1087,8 +1102,8 @@ public:
             // the finding was about -- it traverses (computeHierTraversal walks
             // the LCA path and charges hops), so it marks; its LOCAL sibling
             // above does not, and used to.
-            zinfo->pgres.noc.touch(zinfo->numPhases);
-                zinfo->pgres.nocGaps.event(req.cycle);   // E17 measurement
+            if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases);   // (1.12.181): not the tail
+                zinfo->pgres.nocGaps.event(req.cycle); }   // E17 measurement
             /* 1.11.92 (F1): COUNT the traversal the analytical model charges.
              * This path priced latency from the tier walk below and recorded
              * nothing, so the run exported zero NoC traffic and the power
@@ -1302,8 +1317,8 @@ public:
                 totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
             }
             noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
-            profRemoteAccesses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            profRemoteLatency_.atomicInc(totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profRemoteAccesses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profRemoteLatency_, totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             return req.cycle + totalLat;
         }
     }
@@ -1511,11 +1526,11 @@ protected:
         if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
             profWrites_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (user ruling 2026-10-25: measured wire activity)
-              if (al.ok) dqStats_.countBytes(al.b, al.n, true); else dqStats_.unread[1].atomicInc(); }   // the line's data on the DQ pins (user ruling 2026-10-25: measured termination duty)
+              if (!inTail()) { if (al.ok) dqStats_.countBytes(al.b, al.n, true); else dqStats_.unread[1].atomicInc(); } }   // the line's data on the DQ pins (user ruling 2026-10-25: measured termination duty); (1.12.181): not the tail
         } else {
             profReads_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (user ruling 2026-10-25: measured wire activity)
-              if (al.ok) dqStats_.countBytes(al.b, al.n, false); else dqStats_.unread[0].atomicInc(); }
+              if (!inTail()) { if (al.ok) dqStats_.countBytes(al.b, al.n, false); else dqStats_.unread[0].atomicInc(); } }   // (1.12.181): not the tail
         }
         /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
          * well"): under exec-method message passing (thread-MPI) the replay runs
@@ -1562,7 +1577,7 @@ protected:
              * of this access looks at) */
             uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, DramEpochReplay::kDramReadLagEpochs)
                                    : zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
-            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_, v);
+            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_, v, inTail());   // (1.12.181): tail
             zinfo->dramReplay->notePriced(v > 0);
             if (v > 0) {
                 profReplayPriced_.atomicInc();   // (1.12.148): the charged side of the charged vs measured latency check
@@ -1656,13 +1671,13 @@ protected:
             double start = (fr > arrive) ? fr : arrive;
             if (wr && writeSlotCycles_ > 0.0) {   // (1.12.114): the write-power budget's slot
                 const double held = (writeSlotFree_ > start) ? writeSlotFree_ - start : 0.0;
-                if (held > 0.0) { start += held; profBudgetWaits_.atomicInc(); profBudgetWaitCycles_.atomicInc((uint64_t)(held + 0.5)); }
+                if (held > 0.0) { start += held; roiInc(profBudgetWaits_); roiInc(profBudgetWaitCycles_, (uint64_t)(held + 0.5)); }
                 writeSlotFree_ = start + writeSlotCycles_;
             }
             fr = start + occ;
             futex_unlock(&bankLock_);
             const uint32_t bw = (uint32_t)(start - arrive + 0.5);
-            if (bw > 0) { profBankWaits_.atomicInc(); profBankWaitCycles_.atomicInc(bw); }
+            if (bw > 0) { roiInc(profBankWaits_); roiInc(profBankWaitCycles_, bw); }
             if (localLatency_ + bw > result) result = localLatency_ + bw;
         }
         /* (1.12.90): an SRAM/NVM array write takes the array's write time, not its
@@ -1779,9 +1794,9 @@ protected:
         const size_t slot = (size_t)unit * rowSlotsPerUnit_ + bank;
         if (slot >= lastRow_.size()) return;   // out-of-range unit: claim nothing
         if (__atomic_load_n(&lastRow_[slot], __ATOMIC_RELAXED) == row) {
-            profRowHits_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profRowHits_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
         } else {
-            profRowMisses_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profRowMisses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             __atomic_store_n(&lastRow_[slot], row, __ATOMIC_RELAXED);
         }
     }
@@ -2079,7 +2094,7 @@ protected:
             const uint64_t i = (ftSeq_.fetch_add(1, std::memory_order_relaxed) / ppu) % covN;
             const uint32_t u = nonContiguous_ ? coverageSet_[i] : coverageStart_ + (uint32_t)i;
             t.unit[h].store(u + 1, std::memory_order_release);
-            profFtPages_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            roiInc(profFtPages_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             *out = u;
             return true;
         }

@@ -218,6 +218,18 @@ class ALUCore : public Core {
             roiStkReads_ = stkReads_; roiStkWrites_ = stkWrites_;
             stkMinT_ = ~0ull; stkMaxT_ = 0;
         }
+        void markActivity(CoreActivityMark& m) const override {   // (1.12.181)
+            mixMark(m);
+            const uint64_t v[12] = {instrs, spmReads_, spmWrites_, dmaOps_, dmaLines_, dmaCycles_,
+                                    cmdReads_, cmdWrites_, stkReads_, stkWrites_, stkMinT_, stkMaxT_};
+            for (int k = 0; k < 12; k++) m.own[k] = v[k];
+        }
+        void restoreActivity(const CoreActivityMark& m) override {   // (1.12.181)
+            mixRestore(m);
+            uint64_t* v[12] = {&instrs, &spmReads_, &spmWrites_, &dmaOps_, &dmaLines_, &dmaCycles_,
+                               &cmdReads_, &cmdWrites_, &stkReads_, &stkWrites_, &stkMinT_, &stkMaxT_};
+            for (int k = 0; k < 12; k++) *v[k] = m.own[k];
+        }
         uint64_t getRoiBaseCycle() const override { return roiBaseCycle; }
         uint32_t getSrcId() const override { return srcId_; }
 

@@ -342,6 +342,10 @@ static std::atomic<uint64_t> g_roiBaseGen{0};
 static std::map<uint64_t, uint64_t> g_barFirstBaseGen;
 static lock_t g_barGenLock = 0;
 static uint64_t g_rankBarGen[MAX_THREADS] = {0};
+/* (1.12.181): the generation of the co-sim message-passing kernel's CLOSING barrier: the opener's next barrier after
+ * its roi_end (every rank passes the same barriers in the same order). A rank whose entry barrier comes after the
+ * opener's roi_end reaches it with the window already closing; that barrier is where its kernel starts, not ends. */
+static std::atomic<uint64_t> g_closeBarGen{0};
 
 /* 1.12.18 (bug B3): coherence-flush writebacks issued before the thread-MPI
  * ROI baseline existed (see chargeCoherenceFlush), sent when it is taken. */
@@ -630,6 +634,7 @@ static inline bool devScopeLastRankRule() {
 static uint64_t g_tailMarker[MAX_THREADS]   = {0};   // PE cycles at close (post-ADVANCE)
 static uint32_t g_tailDeviceCid[MAX_THREADS];         // PE cid at close
 static bool     g_tailMarked[MAX_THREADS]   = {false};
+static CoreActivityMark g_tailAct[MAX_THREADS];      // (1.12.181): the PE's activity counters at the marker
 
 /* Record a rank's post-ROI tail marker in its own thread context: the device
  * PE cycle count at the instant the window closes for this rank. No locks, no
@@ -641,6 +646,12 @@ static inline void recordTailMarker(uint32_t tid) {
         g_tailMarker[tid]    = zinfo->cores[cid]->getCycles();
         g_tailDeviceCid[tid] = cid;
         g_tailMarked[tid]    = true;
+        /* (1.12.181): the tail is outside the priced window (ruling 1 (a)). Its cycles leave through the protocolTail
+         * receipt; its activity now leaves too: the PE's counters are taken here and reported as they stood
+         * (recordProtocolTailStats), and its memory accesses from here on are in none of the interface's ROI
+         * counters (pe_memory_interface.h, g_peTailRun). */
+        zinfo->cores[cid]->markActivity(g_tailAct[tid]);
+        g_peTailRun[cid]     = true;
     }
 }
 
@@ -1875,6 +1886,7 @@ static void recordProtocolTailStats() {
         uint64_t tail = (finalDev > g_tailMarker[tid]) ? (finalDev - g_tailMarker[tid]) : 0;
         g_mpiProtocolTailCyc[dcid] = tail;   // receipt only (fixed global array), no ledger move
         g_mpiRoiCyc[dcid] = g_tailMarker[tid];   // 1.12.3 (ruling 1 (a)): the kernel-window receipt = the marker
+        zinfo->cores[dcid]->restoreActivity(g_tailAct[tid]);   // (1.12.181): the activity as it stood at the marker
         info("Protocol tail: rank %u PE(cid %u) post-ROI inter-PE collective tail %lu cyc "
              "(device-resident); kernel window %lu cyc", tid, dcid, (unsigned long)tail,
              (unsigned long)g_tailMarker[tid]);
@@ -3447,6 +3459,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                      g_roiClosing.load() && tid < MAX_THREADS &&
                      thread_domain[tid].load() == DOMAIN_DEVICE &&
                      !(lateRankPre && g_rankEntered[tid]) &&   // (1.12.170): a rank that entered at this very op has not run its kernel
+                     g_rankBarGen[tid] >= g_closeBarGen.load() &&   // (1.12.181): its closing barrier, not its entry barrier
                      !g_tailMarked[tid])) {
             /* 1.8.7 guard: skip a rank already tail-marked. The opener (rank 0)
              * marks at its roi_end and -- unlike 1.8.6, where it migrated to the
@@ -4926,6 +4939,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * branch) is UNTOUCHED: its workers are joined before roi_end, so
                  * its immediate host migration is validated. */
                 info("Thread %d: ROI offload end (co-sim MPI opener, PE-resident, marked at barrier) [1.8.7]", tid);
+                g_closeBarGen.store(tid < MAX_THREADS ? g_rankBarGen[tid] + 1 : 0);   // (1.12.181): the barrier it closes at
                 g_roiClosing.store(true);
             } else {
                 thread_domain[tid].store(DOMAIN_HOST);
@@ -5288,6 +5302,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * branch) is UNTOUCHED: its workers are joined before roi_end, so
                  * its immediate host migration is validated. */
                 info("Thread %d: ROI offload end (co-sim MPI opener, PE-resident, marked at barrier) [1.8.7]", tid);
+                g_closeBarGen.store(tid < MAX_THREADS ? g_rankBarGen[tid] + 1 : 0);   // (1.12.181): the barrier it closes at
                 g_roiClosing.store(true);
             } else {
                 thread_domain[tid].store(DOMAIN_HOST);

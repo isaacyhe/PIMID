@@ -132,6 +132,18 @@ extern uint64_t g_mpiProtocolTailCyc[];
  * 0 for a rank that was never marked (no closing barrier: bfs), whose window is
  * the whole run. Same fixed-array rule as the tail, for the same reason. */
 extern uint64_t g_mpiRoiCyc[];
+/* (1.12.181): set at a co-sim message-passing rank's window-close marker, indexed like the receipts above: the PE now
+ * runs the post-ROI tail (pe_memory_interface.h keeps its accesses out of the ROI counters). */
+extern bool g_peTailRun[];
+/* (1.12.181): a core's activity counters at an instant (the rank's marker), kept outside the core like the receipts
+ * above. mix: the instruction mix in core.h order (int, mul, fp, ld, st, br, vmovReg, vmovLd, vmovSt, synthetic);
+ * own: the core type's own counters (ALUCore: instrs, scratchpad, DMA, stack). */
+struct CoreActivityMark {
+    uint64_t mix[10];
+    uint64_t fpcIns[FP_CENSUS_CATS], fpcLanes[FP_CENSUS_CATS], intOps[INT_CENSUS_CATS];
+    uint64_t pgActive;
+    uint64_t own[12];
+};
 
 //Generic core class
 
@@ -204,6 +216,21 @@ class Core : public GlobAlloc {
             roiBaseClkWakeSyncs = clkWakeSyncs; roiBaseClkWakeSyncCycles = clkWakeSyncCycles;   // 1.12.19
         }
         uint64_t roiBasePgActive = 0;
+        /* (1.12.181): the counters above at an instant, and back (a co-sim MPI rank's window-close marker) */
+        inline void mixMark(CoreActivityMark& m) const {
+            const uint64_t v[10] = {mixInt, mixMul, mixFp, mixLd, mixSt, mixBr, mixVmR, mixVmL, mixVmS, mixSyn};
+            for (int k = 0; k < 10; k++) m.mix[k] = v[k];
+            for (int k = 0; k < FP_CENSUS_CATS; k++) { m.fpcIns[k] = fpcIns[k]; m.fpcLanes[k] = fpcLanes[k]; }
+            for (int k = 0; k < INT_CENSUS_CATS; k++) m.intOps[k] = intOps[k];
+            m.pgActive = pgAct.activePhases;
+        }
+        inline void mixRestore(const CoreActivityMark& m) {
+            uint64_t* v[10] = {&mixInt, &mixMul, &mixFp, &mixLd, &mixSt, &mixBr, &mixVmR, &mixVmL, &mixVmS, &mixSyn};
+            for (int k = 0; k < 10; k++) *v[k] = m.mix[k];
+            for (int k = 0; k < FP_CENSUS_CATS; k++) { fpcIns[k] = m.fpcIns[k]; fpcLanes[k] = m.fpcLanes[k]; }
+            for (int k = 0; k < INT_CENSUS_CATS; k++) intOps[k] = m.intOps[k];
+            pgAct.activePhases = m.pgActive;
+        }
         inline void mixInitStats(AggregateStat* coreStat) {
             struct M { const char* n; const char* d; uint64_t* v; };
             /* ROI-relative like instrs: the deltas are what the power model
@@ -376,6 +403,10 @@ class Core : public GlobAlloc {
         // Snapshot the ROI baseline so per-core cycle/instr stats report only
         // the region of interest (roi_begin..roi_end). Default no-op.
         virtual void markRoiBegin() {}
+        /* (1.12.181): the activity counters the ROI stats report, taken at an instant and put back (the clock and its
+         * receipts are not touched). Used for a co-sim MPI rank's post-ROI tail. */
+        virtual void markActivity(CoreActivityMark& m) const { mixMark(m); }
+        virtual void restoreActivity(const CoreActivityMark& m) { mixRestore(m); }
 
         // 1.9.0 deterministic thread-MPI epoch pricing: the ROI baseline cycle
         // (set at markRoiBegin) and this core's global MemReq.srcId index. The
