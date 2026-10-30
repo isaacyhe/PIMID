@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.183 -- statistics: a co-sim message-passing PE whose activity is restored to its closing barrier no longer aborts the stats write
+
+- **The problem.** A full-size co-sim message-passing bfs cell on HBM3 (16 ranks) aborted while the statistics were
+  written (`cInstrs >= lastCoreInstrs[cid]`, process_stats.cpp; exit 139), in every build since 1.12.181.
+- **Cause.** Since 1.12.181 each rank's PE restores its activity counters -- its instruction count among them -- to
+  their values at the rank's closing barrier just before the statistics are written, so the post-ROI tail is in none
+  of them. The per-process statistics sample every core's instruction count whenever a thread leaves a core, and
+  required it never to go back. A PE whose rank had left it during its post-ROI tail (here 1.75 M instructions at
+  the barrier against 2.8 M to 19.9 M sampled in the tail) then read below its last sample.
+- **The fix** (external/zsim/src/process_stats.cpp). A rollback of a core's instruction count is mirrored into the
+  process total, as a rollback of its cycle count already was; the assertion is gone.
+- **Validation** (full size; this build against 1.12.182 in one job). The bfs cell aborted on 1.12.182 and finishes
+  with the same checksum here. The other co-sim message-passing cells, the two determinism cells (8 of 8 copies each)
+  and every other output are identical; the power check reports no flag and no consistency failure.
+- **Data impact.** None beyond the cells that aborted, which now finish.
+
 ## 1.12.182 -- the guest's output buffers and its message-passing library no longer follow the host
 
 - **The problem.** Two inputs of the guest came from the machine the run was on.

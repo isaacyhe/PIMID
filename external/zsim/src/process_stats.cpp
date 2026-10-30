@@ -81,17 +81,26 @@ void ProcessStats::updateCore(uint32_t cid, uint32_t p) {
      * and the run stays deterministic (see Core::pimidRewindCycles). This only
      * surfaces in system scope, where a host domain and multi-rank MPI coexist;
      * asserting monotonic cycles here aborted every co-sim MPI run.
-     * INSTRUCTIONS remain monotonic (the rewind is cycles-only), so that
-     * invariant is still checked. Mirror a rollback in the process total rather
-     * than underflowing the unsigned subtraction. */
-    assert(cInstrs >= lastCoreInstrs[cid]);
+     * A device PE's INSTRUCTION counter can go back too: since 1.12.181 a co-sim
+     * MPI rank's PE restores its activity counters (instrs among them) to their
+     * values at the rank's closing barrier just before the stats are written
+     * (Core::restoreActivity, recordProtocolTailStats), so the post-ROI tail is
+     * in none of them. A PE sampled here during that tail (its rank descheduled
+     * in a tail wait) then reads below its last sample. Both counters mirror a
+     * rollback in the process total rather than underflowing the unsigned
+     * subtraction. */
     if (likely(cCycles >= lastCoreCycles[cid])) {
         processCycles[p] += cCycles - lastCoreCycles[cid];
     } else {
         uint64_t rewound = lastCoreCycles[cid] - cCycles;
         processCycles[p] = (processCycles[p] > rewound) ? (processCycles[p] - rewound) : 0;
     }
-    processInstrs[p]  += cInstrs - lastCoreInstrs[cid];
+    if (likely(cInstrs >= lastCoreInstrs[cid])) {
+        processInstrs[p] += cInstrs - lastCoreInstrs[cid];
+    } else {
+        uint64_t rewound = lastCoreInstrs[cid] - cInstrs;
+        processInstrs[p] = (processInstrs[p] > rewound) ? (processInstrs[p] - rewound) : 0;
+    }
 
     lastCoreCycles[cid] = cCycles;
     lastCoreInstrs[cid] = cInstrs;
