@@ -11,13 +11,18 @@ file, and multi-threaded and message-passing results differed.
 With -stdio-notty (or QEMU_STDIO_NOTTY) the guest's fds 0, 1 and 2 are never a
 terminal: terminal ioctls on them (type 'T', TCGETS and the rest) fail with
 ENOTTY, and fstat, newfstatat with AT_EMPTY_PATH and statx report a pipe
-(S_IFIFO, mode 0600, size 0). Without the option QEMU is unchanged.
+(S_IFIFO, mode 0600, size 0) owned by the process's own user and group, with
+device, inode and times 0. The host stream's owner, device, inode and times
+are not passed through: the guest's C library reads only the type and block
+size, but the rest stays in the guest's memory (the stat buffer on the
+stack), so a terminal (group tty) or a log file of another group changed the
+data a later read of that memory carried. Without the option QEMU is
+unchanged.
 
 diff --git a/linux-user/main.c b/linux-user/main.c
-index 699eeb7..a130682 100644
 --- a/linux-user/main.c
 +++ b/linux-user/main.c
-@@ -381,6 +381,12 @@ static void handle_arg_st_blksize(const char *arg)
+@@ -381,6 +381,12 @@
      qemu_st_blksize = v;
  }
  
@@ -30,7 +35,7 @@ index 699eeb7..a130682 100644
  static void handle_arg_gdb(const char *arg)
  {
      gdbstub = g_strdup(arg);
-@@ -563,6 +569,8 @@ static const struct qemu_argument arg_table[] = {
+@@ -563,6 +569,8 @@
       "number",     "the guest's time stamp counter advances by this step on every read (0: the host's)"},
      {"st-blksize", "QEMU_ST_BLKSIZE",  true,  handle_arg_st_blksize,
       "number",     "the block size the guest's stat calls report (0: the host file system's)"},
@@ -40,10 +45,9 @@ index 699eeb7..a130682 100644
       "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
  #ifdef CONFIG_PLUGIN
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index 62ec5d7..cb667d5 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
-@@ -5704,6 +5704,9 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+@@ -5704,6 +5704,9 @@
      int target_size;
      void *argptr;
  
@@ -53,7 +57,7 @@ index 62ec5d7..cb667d5 100644
      ie = ioctl_entries;
      for(;;) {
          if (ie->target_cmd == 0) {
-@@ -6931,6 +6934,23 @@ typedef struct {
+@@ -6931,6 +6934,37 @@
  abi_long qemu_pid_base;   /* PIMID patch 0003 (user-internals.h) */
  bool qemu_getrandom_seeded;   /* PIMID patch 0005 (user-internals.h) */
  abi_long qemu_st_blksize;   /* PIMID patch 0006 (user-internals.h) */
@@ -65,7 +69,11 @@ index 62ec5d7..cb667d5 100644
 +    return qemu_stdio_notty && fd >= 0 && fd <= 2;
 +}
 +
-+/* PIMID patch 0007: a standard stream reports itself as a pipe, whatever the host's is */
++/*
++ * PIMID patch 0007: a standard stream reports itself as a pipe, whatever the host's is: owned by the
++ * process's own user and group, with device, inode and times 0. The host stream's owner, device, inode
++ * and times reached the guest's memory through the stat buffer (a terminal belongs to group tty).
++ */
 +static inline void guest_stdio_notty_stat(struct stat *st)
 +{
 +    st->st_mode = S_IFIFO | 0600;
@@ -73,11 +81,21 @@ index 62ec5d7..cb667d5 100644
 +    st->st_rdev = 0;
 +    st->st_size = 0;
 +    st->st_blocks = 0;
++    st->st_dev = 0;
++    st->st_ino = 0;
++    st->st_uid = getuid();
++    st->st_gid = getgid();
++    st->st_atim.tv_sec = 0;
++    st->st_atim.tv_nsec = 0;
++    st->st_mtim.tv_sec = 0;
++    st->st_mtim.tv_nsec = 0;
++    st->st_ctim.tv_sec = 0;
++    st->st_ctim.tv_nsec = 0;
 +}
  
  /* PIMID patch 0006: the block size the guest's stat family reports */
  static inline abi_long guest_st_blksize(abi_long host_blksize)
-@@ -11731,6 +11751,9 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -11731,6 +11765,9 @@
      case TARGET_NR_fstat:
          {
              ret = get_errno(fstat(arg1, &st));
@@ -87,7 +105,7 @@ index 62ec5d7..cb667d5 100644
  #if defined(TARGET_NR_stat) || defined(TARGET_NR_lstat)
          do_stat:
  #endif
-@@ -12638,6 +12661,9 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -12638,6 +12675,9 @@
  #ifdef TARGET_NR_fstat64
      case TARGET_NR_fstat64:
          ret = get_errno(fstat(arg1, &st));
@@ -97,7 +115,7 @@ index 62ec5d7..cb667d5 100644
          if (!is_error(ret))
              ret = host_to_target_stat64(cpu_env, arg2, &st);
          return ret;
-@@ -12652,8 +12678,15 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -12652,8 +12692,15 @@
          if (!(p = lock_user_string(arg2))) {
              return -TARGET_EFAULT;
          }
@@ -115,24 +133,33 @@ index 62ec5d7..cb667d5 100644
          if (!is_error(ret))
              ret = host_to_target_stat64(cpu_env, arg3, &st);
          return ret;
-@@ -12682,6 +12715,16 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -12682,6 +12729,25 @@
                  int mask = arg4;
  
                  ret = get_errno(sys_statx(dirfd, p, flags, mask, &host_stx));
 +                if (!is_error(ret) && guest_stdio_notty_fd(dirfd) &&
 +                    (flags & AT_EMPTY_PATH) && (p == NULL || !*(const char *)p)) {
-+                    /* PIMID patch 0007: a standard stream reports itself as a pipe */
++                    /* PIMID patch 0007: a standard stream reports itself as a pipe (see guest_stdio_notty_stat) */
 +                    host_stx.stx_mode = S_IFIFO | 0600;
 +                    host_stx.stx_nlink = 1;
 +                    host_stx.stx_rdev_major = 0;
 +                    host_stx.stx_rdev_minor = 0;
 +                    host_stx.stx_size = 0;
 +                    host_stx.stx_blocks = 0;
++                    host_stx.stx_dev_major = 0;
++                    host_stx.stx_dev_minor = 0;
++                    host_stx.stx_ino = 0;
++                    host_stx.stx_uid = getuid();
++                    host_stx.stx_gid = getgid();
++                    memset(&host_stx.stx_atime, 0, sizeof(host_stx.stx_atime));
++                    memset(&host_stx.stx_btime, 0, sizeof(host_stx.stx_btime));
++                    memset(&host_stx.stx_ctime, 0, sizeof(host_stx.stx_ctime));
++                    memset(&host_stx.stx_mtime, 0, sizeof(host_stx.stx_mtime));
 +                }
                  if (!is_error(ret)) {
                      if (host_to_target_statx(&host_stx, arg5) != 0) {
                          unlock_user(p, arg2, 0);
-@@ -12695,7 +12738,14 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+@@ -12695,7 +12761,14 @@
                  }
              }
  #endif
@@ -149,20 +176,20 @@ index 62ec5d7..cb667d5 100644
  
              if (!is_error(ret)) {
 diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
-index 2f12597..893846b 100644
 --- a/linux-user/user-internals.h
 +++ b/linux-user/user-internals.h
-@@ -89,6 +89,13 @@ extern uint64_t qemu_tsc_step;
-  * host file system's. B = 0 (the default): unchanged.
+@@ -90,6 +90,14 @@
   */
  extern abi_long qemu_st_blksize;
-+/*
+ /*
 + * PIMID patch 0007: with -stdio-notty the guest's standard input, output and
 + * error (fds 0-2) are never a terminal: terminal ioctls on them fail with
-+ * ENOTTY and fstat, newfstatat (AT_EMPTY_PATH) and statx report a pipe. Off by
++ * ENOTTY and fstat, newfstatat (AT_EMPTY_PATH) and statx report a pipe owned by
++ * the process's own user and group, with device, inode and times 0. Off by
 + * default: unchanged.
 + */
 +extern bool qemu_stdio_notty;
- /*
++/*
   * PIMID patch 0005: with -seed (QEMU_RAND_SEED) the guest's getrandom() is
   * answered from QEMU's seeded generator (each thread's own sequence, seeded
+  * from its creator's at clone), as AT_RANDOM already is; without -seed the

@@ -25,6 +25,8 @@
  *   - GARNET: Network-on-chip simulation
  */
 
+#include <sys/syscall.h>
+#include <fcntl.h>
 #include <iostream>
 #include "common/debug_checks.h"
 #include <fstream>
@@ -821,6 +823,32 @@ static bool guestTtyPassthrough() {
 }
 static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
 static const size_t      kGuestStringBlock = 4096;
+/* (1.12.184): THE GUEST SEES ONE FIXED IDENTITY, WHOEVER RUNS PIMID AND WHEREVER IT IS INSTALLED.
+ * Values of the host user and of the installation reached the guest's memory, and the measured DQ
+ * data and wire activity count every byte of a line the guest reads, so they moved results:
+ *  - the user and group ids (getuid and the rest, the auxiliary vector's AT_UID..AT_EGID, the owner of every file
+ *    the guest stats: its libraries, its standard streams): a run as another user changed 8 of 12 smoke cells;
+ *  - the permissions of the installed files: the guest's dynamic linker keeps each library's stat in memory, and a
+ *    library installed group-writable (umask 002) changed the co-simulation message-passing cells;
+ *  - the program path: QEMU places the path the program was given on the guest's stack (argv[0] and AT_EXECFN),
+ *    so the same program under a longer installation path changed all 12 smoke cells (the path used to be
+ *    passed as given before this release);
+ *  - the stack limit (ulimit -s): glibc sizes every thread's stack from it, so 16 MiB or unlimited instead of
+ *    8 MiB changed every multi-threaded cell.
+ * QEMU patch 0008 fixes them: -guest-ids 1000:1000 (the guest's ids and its one group; the host user's files are
+ * owned by 1000:1000 with permissions 0755 or 0644; uname reports node "pimid", release 6.8.0),
+ * -rlimit-stack 8388608 (the limit glibc reads, 8 MiB, the usual default), and -0 / -execfn present the program
+ * as /pimid-guest/<its file name> (kGuestProgramDir). Not reached in the shipped workloads, so unchanged: the host
+ * name and kernel (no uname call), the working directory, the environment (fixed since 1.12.64), other limits,
+ * the device, inode and times of the installed files, and the node type (processor files synthesized since
+ * 1.12.107). */
+static const char* const kGuestIds        = "1000:1000";
+static const char* const kGuestStackLimit = "8388608";       // 8 MiB, the guest's RLIMIT_STACK (soft)
+static const char* const kGuestProgramDir = "/pimid-guest/";
+static std::string guestProgramName(const std::string& binary) {
+    const size_t slash = binary.rfind('/');
+    return std::string(kGuestProgramDir) + (slash == std::string::npos ? binary : binary.substr(slash + 1));
+}
 /* (1.12.107): THE GUEST FINDS ITS LIBRARIES WITHOUT THE HOST'S LOADER CACHE.
  * The guest's dynamic linker looked each library up in the host's
  * /etc/ld.so.cache, a file that lists every library installed on that machine.
@@ -974,6 +1002,11 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                                   "-tb-size", kGuestTbSizeMiB};
     o.insert(o.end(), o0.begin(), o0.end());
     if (!guestTtyPassthrough()) o.push_back("-stdio-notty");   // patch 0007
+    {   /* (1.12.184): the fixed identity, stack limit and program path (patch 0008) */
+        const std::vector<std::string> o8 = {"-guest-ids", kGuestIds, "-rlimit-stack", kGuestStackLimit,
+                                             "-0", guestProgramName(binary), "-execfn", guestProgramName(binary)};
+        o.insert(o.end(), o8.begin(), o8.end());
+    }
     std::map<std::string, std::string> genv;   // name -> NAME=VALUE, sorted by name
     std::vector<std::string> inherited;        // kept values QEMU's -E cannot carry (a comma)
     for (char** e = environ; e && *e; ++e) {
@@ -1015,10 +1048,10 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                   << " holds a comma, which QEMU's -E cannot carry: it is passed in the host's order, so the"
                      " guest's initial image follows the order of pimid's environment" << std::endl;
     }
-    size_t bytes = binary.size() + 1;   // QEMU copies the executable name (AT_EXECFN) ...
+    size_t bytes = guestProgramName(binary).size() + 1;   // QEMU copies the executable name (AT_EXECFN) ...
     for (const auto& kv : genv) bytes += kv.second.size() + 1;   // ... the environment ...
     for (const auto& kv : inherited) bytes += kv.size() + 1;
-    bytes += binary.size() + 1;   // ... and argv: argv[0] is the executable name as given
+    bytes += guestProgramName(binary).size() + 1;   // ... and argv: argv[0], the presented name (-0)
     for (const auto& a : args) bytes += a.size() + 1;
     const size_t fixed = strlen(kGuestEnvPadName) + 2;   // "NAME=" and the terminating NUL
     const size_t used = bytes + fixed;
@@ -1036,9 +1069,9 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
  * startup reads it (the program's short name), so a longer or shorter
  * spelling of the same file changes the guest's work before the ROI a little:
  * up to about 0.01% on the cells that run the OpenMP runtime on host cores,
- * nothing measured on device cells. The path is passed exactly as given
- * (user ruling 2026-10-27); the launch line prints its length so that two runs
- * can be checked for the same program path. */
+ * nothing measured on device cells. (1.12.184): the guest sees the program as
+ * /pimid-guest/<its file name> (see kGuestProgramDir); the launch line prints
+ * both. */
 static void noteGuestLaunch(size_t envVars, const std::string& binary) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
@@ -1048,9 +1081,8 @@ static void noteGuestLaunch(size_t envVars, const std::string& binary) {
               << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
               << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]; guest libraries "
               << (guestSysroot().empty() ? std::string("this host's own (no pinned sysroot)") : guestSysroot() + ", " + kGuestSysrootName)
-              << "; program path " << binary
-              << " (" << binary.size() << " characters, passed as given: runs compare exactly with the same path string)"
-              << std::endl;
+              << "; program " << binary << ", presented to the guest as " << guestProgramName(binary)
+              << " (-0, -execfn)" << std::endl;
     std::cout << "[guest] file block size " << kGuestStBlksize << " bytes in every stat result (-st-blksize), translation buffer "
               << kGuestTbSizeMiB << " MiB (-tb-size), standard streams "
               << (guestTtyPassthrough()
@@ -1058,6 +1090,8 @@ static void noteGuestLaunch(size_t envVars, const std::string& binary) {
                         " with its output in a file or a pipe)"
                       : "never a terminal (-stdio-notty)")
               << std::endl;
+    std::cout << "[guest] identity " << kGuestIds << " (-guest-ids: ids, groups, the owner and permissions of this user's"
+                 " files, uname), stack limit " << kGuestStackLimit << " bytes (-rlimit-stack)" << std::endl;
 }
 
 /* (1.12.115): the guest binary carries the ROI markers (zsim_hooks.h prints
@@ -1119,7 +1153,27 @@ static void reportGuestExit(int code, const char* scope) {
                   << std::endl;
 }
 
+/* (1.12.184): THE GUEST'S FILE DESCRIPTORS DO NOT FOLLOW THE LAUNCHING PROCESS. QEMU hands the guest host descriptors,
+ * so the numbers the guest's opens return start after every descriptor QEMU inherited, and the guest keeps them
+ * in its memory (its standard streams' FILE structures, the dynamic linker's state): three descriptors left open
+ * by the process that started pimid moved the co-simulation and MPI host-baseline cells. The launch child closes
+ * every descriptor above standard error before it starts QEMU, and gives a closed standard stream /dev/null. */
+static void closeInheritedFds() {
+    for (int fd = 0; fd <= 2; ++fd)
+        if (fcntl(fd, F_GETFD) == -1) {
+            const int n = open("/dev/null", fd == 0 ? O_RDONLY : O_WRONLY);
+            if (n >= 0 && n != fd) { dup2(n, fd); close(n); }
+        }
+#ifdef SYS_close_range
+    if (syscall(SYS_close_range, 3u, ~0u, 0u) == 0) return;
+#endif
+    long maxFd = sysconf(_SC_OPEN_MAX);
+    if (maxFd < 0 || maxFd > (1L << 20)) maxFd = 1L << 20;
+    for (long fd = 3; fd < maxFd; ++fd) close((int)fd);
+}
+
 static void execGuestQemu(const std::vector<std::string>& argvOwned) {
+    closeInheritedFds();
     std::vector<char*> a;
     a.reserve(argvOwned.size() + 1);
     for (const auto& s : argvOwned) a.push_back(const_cast<char*>(s.c_str()));

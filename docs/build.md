@@ -23,6 +23,7 @@ git apply ../qemu-patches/0004-linux-user-fixed-step-guest-time-stamp-counter.pa
 git apply ../qemu-patches/0005-linux-user-seeded-getrandom.patch
 git apply ../qemu-patches/0006-linux-user-fixed-guest-stat-block-size.patch
 git apply ../qemu-patches/0007-linux-user-guest-stdio-never-a-terminal.patch
+git apply ../qemu-patches/0008-linux-user-fixed-guest-identity.patch
 mkdir build && cd build
 ../configure --target-list=x86_64-linux-user --enable-plugins --enable-tcg \
              --disable-docs --disable-werror
@@ -36,7 +37,7 @@ ninja -j$(nproc) qemu-x86_64
 > cores. Its plugin header includes `<glib.h>`, so building PIMID's plugins needs the glib
 > development headers (found through `pkg-config glib-2.0`), which building QEMU needs anyway.
 >
-> **All seven patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
+> **All eight patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
 > string instruction (`memset`, `memcpy`) for up to 65535 iterations inside one block execution;
 > ZSim ends a phase only at a block boundary, so a long one piled its timing events into one phase
 > and overflowed ZSim's global heap. With a plugin loaded the patch runs one iteration per block
@@ -56,7 +57,7 @@ ninja -j$(nproc) qemu-x86_64
 > following the host's; a QEMU without it stops at once with `qemu: unknown option 'tsc-step'`. 0005
 > (since (1.12.157)): with `-seed` the guest's `getrandom()` is answered from QEMU's seeded generator, as
 > `AT_RANDOM` already was (without it the host answered; a QEMU without 0005 runs, but the guest's heap
-> contents then differ between runs). 0006: PIMID launches the guest with `-st-blksize 4096`: the guest's `stat` calls report a 4096-byte block size instead of the host file system's, so the guest's output buffers no longer follow the file system the run's log is written to; a QEMU without it stops at once with `qemu: unknown option 'st-blksize'`. 0007: PIMID launches the guest with `-stdio-notty`: the guest's standard input, output and error are never a terminal (terminal ioctls on them fail with `ENOTTY`, and `fstat` reports a pipe), so a run started at a terminal does the same work as one whose output goes to a file or a pipe; a QEMU without it stops at once with `qemu: unknown option 'stdio-notty'`. PIMID's `qemu-x86_64`, built from QEMU 11.1.2 with the seven patches as above, has md5 `51dd7a7a1524c8957cff78004b0c4a1e`.
+> contents then differ between runs). 0006: PIMID launches the guest with `-st-blksize 4096`: the guest's `stat` calls report a 4096-byte block size instead of the host file system's, so the guest's output buffers no longer follow the file system the run's log is written to; a QEMU without it stops at once with `qemu: unknown option 'st-blksize'`. 0007: PIMID launches the guest with `-stdio-notty`: the guest's standard input, output and error are never a terminal (terminal ioctls on them fail with `ENOTTY`, and `fstat` reports a pipe owned by the process's own user and group, with device, inode and times 0), so a run started at a terminal does the same work, and leaves the same data in the guest's memory, as one whose output goes to a file or a pipe; a QEMU without it stops at once with `qemu: unknown option 'stdio-notty'`. 0008: PIMID launches the guest with `-guest-ids 1000:1000 -rlimit-stack 8388608 -0 /pimid-guest/<program> -execfn /pimid-guest/<program>`: the guest sees one fixed identity (user and group 1000, one group; the files of the user running PIMID owned by 1000:1000 with permissions 0755 or 0644; `uname` node `pimid`, release 6.8.0), an 8 MiB stack limit and its program as `/pimid-guest/<file name>`, whoever runs PIMID, wherever it is installed and whatever `ulimit -s` says; a QEMU without it stops at once with `qemu: unknown option 'guest-ids'`. PIMID's `qemu-x86_64`, built from QEMU 11.1.2 with the eight patches as above, has md5 `a7b17fbc4dff095e18f1d8c6d6f74c01`.
 
 ## Guest libraries (since (1.12.135))
 

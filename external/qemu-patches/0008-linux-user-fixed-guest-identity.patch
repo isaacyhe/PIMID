@@ -1,0 +1,407 @@
+PIMID: a fixed guest identity, stack limit and program path (-guest-ids, -rlimit-stack, -execfn)
+
+QEMU user mode gives the guest the host user's identity and the host's
+limits: getuid and the other identity calls, the auxiliary vector's AT_UID,
+AT_EUID, AT_GID and AT_EGID, the owner and permissions of every file the
+guest stats, uname, and getrlimit/prlimit64. The guest keeps these values in
+its memory (the dynamic linker keeps each library's stat, glibc sizes every
+thread's stack from the stack limit), so the same program gave other
+simulated results for another user, for files installed with another umask,
+and for another ulimit -s. The program path QEMU places on the guest's stack
+(AT_EXECFN) is the path it was started with, so the installation path
+reached the guest too.
+
+With -guest-ids U:G (or QEMU_GUEST_IDS) the guest sees a fixed identity:
+getuid, geteuid and getresuid answer U; getgid, getegid and getresgid answer
+G; getgroups answers the one group G; the auxiliary vector carries AT_UID,
+AT_EUID = U, AT_GID, AT_EGID = G and AT_SECURE 0; a stat, fstat, newfstatat
+or statx result whose owner is the host user (its real or effective id)
+reports U, whose group is one of the host user's groups reports G, and, for
+a regular file or directory of the host user, the permissions 0755 (a
+directory or a file its owner can execute) or 0644 (any other file); files
+of other owners, root included, are reported as they are. uname reports the
+node name "pimid", the domain name "(none)", the version "#1 SMP" and, unless
+-r gives one, the release "6.8.0".
+
+With -rlimit-stack B (or QEMU_RLIMIT_STACK) getrlimit and prlimit64 report a
+stack limit of B bytes (soft; the hard limit unlimited); setting it is
+unchanged.
+
+With -execfn PATH (or QEMU_EXECFN) the auxiliary vector's AT_EXECFN string
+is PATH; QEMU still loads the program from the path it was given. -0 sets
+argv[0] the same way.
+
+Without the options QEMU is unchanged.
+
+diff --git a/linux-user/elfload.c b/linux-user/elfload.c
+--- a/linux-user/elfload.c
++++ b/linux-user/elfload.c
+@@ -703,14 +703,15 @@
+     NEW_AUX_ENT(AT_BASE, (abi_ulong)(interp_info ? interp_info->load_addr : 0));
+     NEW_AUX_ENT(AT_FLAGS, (abi_ulong)0);
+     NEW_AUX_ENT(AT_ENTRY, info->entry);
+-    NEW_AUX_ENT(AT_UID, (abi_ulong) getuid());
+-    NEW_AUX_ENT(AT_EUID, (abi_ulong) geteuid());
+-    NEW_AUX_ENT(AT_GID, (abi_ulong) getgid());
+-    NEW_AUX_ENT(AT_EGID, (abi_ulong) getegid());
++    /* PIMID patch 0008: a fixed identity with -guest-ids */
++    NEW_AUX_ENT(AT_UID, (abi_ulong) (qemu_guest_ids_set ? qemu_guest_uid : getuid()));
++    NEW_AUX_ENT(AT_EUID, (abi_ulong) (qemu_guest_ids_set ? qemu_guest_uid : geteuid()));
++    NEW_AUX_ENT(AT_GID, (abi_ulong) (qemu_guest_ids_set ? qemu_guest_gid : getgid()));
++    NEW_AUX_ENT(AT_EGID, (abi_ulong) (qemu_guest_ids_set ? qemu_guest_gid : getegid()));
+     NEW_AUX_ENT(AT_HWCAP, get_elf_hwcap(thread_cpu));
+     NEW_AUX_ENT(AT_CLKTCK, (abi_ulong) sysconf(_SC_CLK_TCK));
+     NEW_AUX_ENT(AT_RANDOM, (abi_ulong) u_rand_bytes);
+-    NEW_AUX_ENT(AT_SECURE, (abi_ulong) qemu_getauxval(AT_SECURE));
++    NEW_AUX_ENT(AT_SECURE, (abi_ulong) (qemu_guest_ids_set ? 0 : qemu_getauxval(AT_SECURE)));   /* PIMID patch 0008 */
+     NEW_AUX_ENT(AT_EXECFN, info->file_string);
+ 
+     if (HAVE_ELF_HWCAP2) {
+diff --git a/linux-user/main.c b/linux-user/main.c
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -387,6 +387,43 @@
+     qemu_stdio_notty = true;
+ }
+ 
++static void handle_arg_guest_ids(const char *arg)
++{
++    /* PIMID patch 0008: the guest's fixed user and group ids, "U:G" */
++    char *end = NULL;
++    unsigned long u = strtoul(arg, &end, 10), g;
++    if (!end || *end != ':') {
++        fprintf(stderr, "qemu: -guest-ids needs UID:GID, not '%s'\n", arg);
++        exit(EXIT_FAILURE);
++    }
++    g = strtoul(end + 1, &end, 10);
++    if (!end || *end) {
++        fprintf(stderr, "qemu: -guest-ids needs UID:GID, not '%s'\n", arg);
++        exit(EXIT_FAILURE);
++    }
++    qemu_guest_ids_set = true;
++    qemu_guest_uid = u;
++    qemu_guest_gid = g;
++}
++
++static void handle_arg_rlimit_stack(const char *arg)
++{
++    /* PIMID patch 0008: the stack limit the guest reads, in bytes */
++    char *end = NULL;
++    unsigned long long v = strtoull(arg, &end, 0);
++    if (!end || *end) {
++        fprintf(stderr, "qemu: -rlimit-stack needs a byte count, not '%s'\n", arg);
++        exit(EXIT_FAILURE);
++    }
++    qemu_rlimit_stack = v;
++}
++
++static void handle_arg_execfn(const char *arg)
++{
++    /* PIMID patch 0008: the program path the guest's auxiliary vector carries */
++    qemu_execfn = strdup(arg);
++}
++
+ static void handle_arg_gdb(const char *arg)
+ {
+     gdbstub = g_strdup(arg);
+@@ -571,6 +608,12 @@
+      "number",     "the block size the guest's stat calls report (0: the host file system's)"},
+     {"stdio-notty", "QEMU_STDIO_NOTTY", false, handle_arg_stdio_notty,
+      "",           "the guest's standard input, output and error are never a terminal (they report a pipe)"},
++    {"guest-ids",  "QEMU_GUEST_IDS",   true,  handle_arg_guest_ids,
++     "uid:gid",    "the guest's user and group ids, groups, the owner and permissions of the host user's files and its uname are fixed"},
++    {"rlimit-stack", "QEMU_RLIMIT_STACK", true, handle_arg_rlimit_stack,
++     "bytes",      "the stack limit the guest reads (0: the host's)"},
++    {"execfn",     "QEMU_EXECFN",      true,  handle_arg_execfn,
++     "path",       "the program path the guest's auxiliary vector (AT_EXECFN) carries"},
+     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
+      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
+ #ifdef CONFIG_PLUGIN
+@@ -998,7 +1041,7 @@
+ 
+     fd_trans_init();
+ 
+-    ret = loader_exec(execfd, exec_path, target_argv, target_environ,
++    ret = loader_exec(execfd, qemu_execfn ? qemu_execfn : exec_path, target_argv, target_environ,   /* PIMID patch 0008 */
+                       info, &bprm);
+     if (ret != 0) {
+         printf("Error while loading %s: %s\n", exec_path, strerror(-ret));
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -6935,6 +6935,56 @@
+ bool qemu_getrandom_seeded;   /* PIMID patch 0005 (user-internals.h) */
+ abi_long qemu_st_blksize;   /* PIMID patch 0006 (user-internals.h) */
+ bool qemu_stdio_notty;   /* PIMID patch 0007 (user-internals.h) */
++bool qemu_guest_ids_set;   /* PIMID patch 0008 (user-internals.h) */
++abi_long qemu_guest_uid, qemu_guest_gid;   /* PIMID patch 0008 */
++abi_long qemu_rlimit_stack;   /* PIMID patch 0008 */
++const char *qemu_execfn;   /* PIMID patch 0008 */
++
++/* PIMID patch 0008: the owner a stat result reports: the host user's own ids become the guest's */
++static inline uid_t guest_owner_uid(uid_t u)
++{
++    if (qemu_guest_ids_set && (u == getuid() || u == geteuid())) {
++        return qemu_guest_uid;
++    }
++    return u;
++}
++
++/*
++ * PIMID patch 0008: the permissions a stat result reports for a regular file or directory the host user owns:
++ * 0755 for a directory or a file its owner can execute, 0644 otherwise, whatever the host's group and other bits
++ * (they followed the umask the file was installed with, and the guest's dynamic linker keeps them in memory).
++ */
++static inline unsigned int guest_mode(unsigned int mode, uid_t owner)
++{
++    if (!qemu_guest_ids_set || !(owner == getuid() || owner == geteuid()) ||
++        !(S_ISREG(mode) || S_ISDIR(mode))) {
++        return mode;
++    }
++    return (mode & S_IFMT) | ((S_ISDIR(mode) || (mode & S_IXUSR)) ? 0755 : 0644);
++}
++
++static inline gid_t guest_owner_gid(gid_t g)
++{
++    static int ngroups = -1;
++    static gid_t groups[NGROUPS_MAX];
++    int i;
++
++    if (!qemu_guest_ids_set) {
++        return g;
++    }
++    if (g == getgid() || g == getegid()) {
++        return qemu_guest_gid;
++    }
++    if (ngroups < 0) {
++        ngroups = getgroups(NGROUPS_MAX, groups);
++    }
++    for (i = 0; i < ngroups; i++) {
++        if (groups[i] == g) {
++            return qemu_guest_gid;
++        }
++    }
++    return g;
++}
+ 
+ /* PIMID patch 0007: the guest's standard input, output and error (fds 0-2) */
+ static inline bool guest_stdio_notty_fd(int fd)
+@@ -8244,10 +8294,10 @@
+ #ifdef TARGET_STAT64_HAS_BROKEN_ST_INO
+         __put_user(host_st->st_ino, &target_st->__st_ino);
+ #endif
+-        __put_user(host_st->st_mode, &target_st->st_mode);
++        __put_user(guest_mode(host_st->st_mode, host_st->st_uid), &target_st->st_mode);   /* PIMID patch 0008 */
+         __put_user(host_st->st_nlink, &target_st->st_nlink);
+-        __put_user(host_st->st_uid, &target_st->st_uid);
+-        __put_user(host_st->st_gid, &target_st->st_gid);
++        __put_user(guest_owner_uid(host_st->st_uid), &target_st->st_uid);   /* PIMID patch 0008 */
++        __put_user(guest_owner_gid(host_st->st_gid), &target_st->st_gid);
+         __put_user(host_st->st_rdev, &target_st->st_rdev);
+         __put_user(host_st->st_size, &target_st->st_size);
+         __put_user(guest_st_blksize(host_st->st_blksize), &target_st->st_blksize);
+@@ -8278,10 +8328,10 @@
+ #ifdef TARGET_STAT64_HAS_BROKEN_ST_INO
+         __put_user(host_st->st_ino, &target_st->__st_ino);
+ #endif
+-        __put_user(host_st->st_mode, &target_st->st_mode);
++        __put_user(guest_mode(host_st->st_mode, host_st->st_uid), &target_st->st_mode);   /* PIMID patch 0008 */
+         __put_user(host_st->st_nlink, &target_st->st_nlink);
+-        __put_user(host_st->st_uid, &target_st->st_uid);
+-        __put_user(host_st->st_gid, &target_st->st_gid);
++        __put_user(guest_owner_uid(host_st->st_uid), &target_st->st_uid);   /* PIMID patch 0008 */
++        __put_user(guest_owner_gid(host_st->st_gid), &target_st->st_gid);
+         __put_user(host_st->st_rdev, &target_st->st_rdev);
+         /* XXX: better use of kernel struct */
+         __put_user(host_st->st_size, &target_st->st_size);
+@@ -8317,9 +8367,9 @@
+     __put_user(guest_st_blksize(host_stx->stx_blksize), &target_stx->stx_blksize);
+     __put_user(host_stx->stx_attributes, &target_stx->stx_attributes);
+     __put_user(host_stx->stx_nlink, &target_stx->stx_nlink);
+-    __put_user(host_stx->stx_uid, &target_stx->stx_uid);
+-    __put_user(host_stx->stx_gid, &target_stx->stx_gid);
+-    __put_user(host_stx->stx_mode, &target_stx->stx_mode);
++    __put_user(guest_owner_uid(host_stx->stx_uid), &target_stx->stx_uid);   /* PIMID patch 0008 */
++    __put_user(guest_owner_gid(host_stx->stx_gid), &target_stx->stx_gid);
++    __put_user(guest_mode(host_stx->stx_mode, host_stx->stx_uid), &target_stx->stx_mode);   /* PIMID patch 0008 */
+     __put_user(host_stx->stx_ino, &target_stx->stx_ino);
+     __put_user(host_stx->stx_size, &target_stx->stx_size);
+     __put_user(host_stx->stx_blocks, &target_stx->stx_blocks);
+@@ -11184,6 +11234,10 @@
+             struct rlimit rlim;
+ 
+             ret = get_errno(getrlimit(resource, &rlim));
++            if (!is_error(ret) && resource == RLIMIT_STACK && qemu_rlimit_stack) {   /* PIMID patch 0008 */
++                rlim.rlim_cur = qemu_rlimit_stack;
++                rlim.rlim_max = RLIM_INFINITY;
++            }
+             if (!is_error(ret)) {
+                 if (!lock_user_struct(VERIFY_WRITE, target_rlim, arg2, 0))
+                     return -TARGET_EFAULT;
+@@ -11779,9 +11833,9 @@
+                 memset(target_st, 0, sizeof(*target_st));
+                 __put_user(st.st_dev, &target_st->st_dev);
+                 __put_user(st.st_ino, &target_st->st_ino);
+-                __put_user(st.st_mode, &target_st->st_mode);
+-                __put_user(st.st_uid, &target_st->st_uid);
+-                __put_user(st.st_gid, &target_st->st_gid);
++                __put_user(guest_mode(st.st_mode, st.st_uid), &target_st->st_mode);   /* PIMID patch 0008 */
++                __put_user(guest_owner_uid(st.st_uid), &target_st->st_uid);   /* PIMID patch 0008 */
++                __put_user(guest_owner_gid(st.st_gid), &target_st->st_gid);
+                 __put_user(st.st_nlink, &target_st->st_nlink);
+                 __put_user(st.st_rdev, &target_st->st_rdev);
+                 __put_user(st.st_size, &target_st->st_size);
+@@ -11979,6 +12033,14 @@
+                     g_strlcpy(buf->release, qemu_uname_release,
+                               sizeof(buf->release));
+                 }
++                if (qemu_guest_ids_set) {   /* PIMID patch 0008: a fixed machine name and kernel */
++                    g_strlcpy(buf->nodename, "pimid", sizeof(buf->nodename));
++                    g_strlcpy(buf->domainname, "(none)", sizeof(buf->domainname));
++                    g_strlcpy(buf->version, "#1 SMP", sizeof(buf->version));
++                    if (!(qemu_uname_release && *qemu_uname_release)) {
++                        g_strlcpy(buf->release, "6.8.0", sizeof(buf->release));
++                    }
++                }
+             }
+             unlock_user_struct(buf, arg1, 1);
+         }
+@@ -12806,18 +12868,30 @@
+ #endif
+ #ifdef TARGET_NR_getuid
+     case TARGET_NR_getuid:
++        if (qemu_guest_ids_set) {
++            return high2lowuid(qemu_guest_uid);   /* PIMID patch 0008 */
++        }
+         return get_errno(high2lowuid(getuid()));
+ #endif
+ #ifdef TARGET_NR_getgid
+     case TARGET_NR_getgid:
++        if (qemu_guest_ids_set) {
++            return high2lowgid(qemu_guest_gid);   /* PIMID patch 0008 */
++        }
+         return get_errno(high2lowgid(getgid()));
+ #endif
+ #ifdef TARGET_NR_geteuid
+     case TARGET_NR_geteuid:
++        if (qemu_guest_ids_set) {
++            return high2lowuid(qemu_guest_uid);   /* PIMID patch 0008 */
++        }
+         return get_errno(high2lowuid(geteuid()));
+ #endif
+ #ifdef TARGET_NR_getegid
+     case TARGET_NR_getegid:
++        if (qemu_guest_ids_set) {
++            return high2lowgid(qemu_guest_gid);   /* PIMID patch 0008 */
++        }
+         return get_errno(high2lowgid(getegid()));
+ #endif
+     case TARGET_NR_setreuid:
+@@ -12834,6 +12908,18 @@
+             if (gidsetsize > NGROUPS_MAX || gidsetsize < 0) {
+                 return -TARGET_EINVAL;
+             }
++            if (qemu_guest_ids_set) {   /* PIMID patch 0008: the one group of the fixed identity */
++                if (gidsetsize == 0) {
++                    return 1;
++                }
++                target_grouplist = lock_user(VERIFY_WRITE, arg2, sizeof(target_id), 0);
++                if (!target_grouplist) {
++                    return -TARGET_EFAULT;
++                }
++                target_grouplist[0] = tswapid(high2lowgid(qemu_guest_gid));
++                unlock_user(target_grouplist, arg2, sizeof(target_id));
++                return 1;
++            }
+             if (gidsetsize > 0) {
+                 grouplist = g_try_new(gid_t, gidsetsize);
+                 if (!grouplist) {
+@@ -12905,6 +12991,9 @@
+         {
+             uid_t ruid, euid, suid;
+             ret = get_errno(getresuid(&ruid, &euid, &suid));
++            if (!is_error(ret) && qemu_guest_ids_set) {   /* PIMID patch 0008 */
++                ruid = euid = suid = qemu_guest_uid;
++            }
+             if (!is_error(ret)) {
+                 if (put_user_id(high2lowuid(ruid), arg1)
+                     || put_user_id(high2lowuid(euid), arg2)
+@@ -12925,6 +13014,9 @@
+         {
+             gid_t rgid, egid, sgid;
+             ret = get_errno(getresgid(&rgid, &egid, &sgid));
++            if (!is_error(ret) && qemu_guest_ids_set) {   /* PIMID patch 0008 */
++                rgid = egid = sgid = qemu_guest_gid;
++            }
+             if (!is_error(ret)) {
+                 if (put_user_id(high2lowgid(rgid), arg1)
+                     || put_user_id(high2lowgid(egid), arg2)
+@@ -13233,6 +13325,9 @@
+         {
+             uid_t ruid, euid, suid;
+             ret = get_errno(getresuid(&ruid, &euid, &suid));
++            if (!is_error(ret) && qemu_guest_ids_set) {   /* PIMID patch 0008 */
++                ruid = euid = suid = qemu_guest_uid;
++            }
+             if (!is_error(ret)) {
+                 if (put_user_u32(ruid, arg1)
+                     || put_user_u32(euid, arg2)
+@@ -13251,6 +13346,9 @@
+         {
+             gid_t rgid, egid, sgid;
+             ret = get_errno(getresgid(&rgid, &egid, &sgid));
++            if (!is_error(ret) && qemu_guest_ids_set) {   /* PIMID patch 0008 */
++                rgid = egid = sgid = qemu_guest_gid;
++            }
+             if (!is_error(ret)) {
+                 if (put_user_u32(rgid, arg1)
+                     || put_user_u32(egid, arg2)
+@@ -14318,6 +14416,10 @@
+         }
+ 
+         ret = get_errno(sys_prlimit64(arg1, resource, rnewp, arg4 ? &rold : 0));
++        if (!is_error(ret) && arg4 && resource == RLIMIT_STACK && qemu_rlimit_stack) {   /* PIMID patch 0008 */
++            rold.rlim_cur = qemu_rlimit_stack;
++            rold.rlim_max = RLIM_INFINITY;
++        }
+         if (!is_error(ret) && arg4) {
+             if (!lock_user_struct(VERIFY_WRITE, target_rold, arg4, 1)) {
+                 return -TARGET_EFAULT;
+diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
+--- a/linux-user/user-internals.h
++++ b/linux-user/user-internals.h
+@@ -98,6 +98,34 @@
+  */
+ extern bool qemu_stdio_notty;
+ /*
++ * PIMID patch 0008: with -guest-ids U:G the guest sees a fixed identity:
++ * getuid, geteuid, getresuid (all three) answer U; getgid, getegid,
++ * getresgid answer G; getgroups answers the one group G; the auxiliary
++ * vector carries AT_UID, AT_EUID = U, AT_GID, AT_EGID = G and AT_SECURE 0;
++ * a stat result whose owner is the host user (its real or effective user
++ * id) reports U, whose group is one of the host user's groups reports G
++ * (other owners, root included, are passed through), and a regular file or
++ * directory of the host user reports the permissions 0755 (a directory, or
++ * a file its owner can execute) or 0644 (any other file); uname reports the
++ * node name "pimid", the domain name "(none)", the version "#1 SMP" and,
++ * unless -r gives one, the release "6.8.0".
++ * Off by default: unchanged.
++ */
++extern bool qemu_guest_ids_set;
++extern abi_long qemu_guest_uid, qemu_guest_gid;
++/*
++ * PIMID patch 0008: with -rlimit-stack B the guest's getrlimit and
++ * prlimit64 read a stack limit of B bytes (soft; the hard limit unlimited)
++ * instead of the host's. B = 0 (the default): unchanged.
++ */
++extern abi_long qemu_rlimit_stack;
++/*
++ * PIMID patch 0008: with -execfn PATH the program path the guest's
++ * auxiliary vector carries (AT_EXECFN) is PATH instead of the path QEMU
++ * loaded the program from. Unset (the default): unchanged.
++ */
++extern const char *qemu_execfn;
++/*
+  * PIMID patch 0005: with -seed (QEMU_RAND_SEED) the guest's getrandom() is
+  * answered from QEMU's seeded generator (each thread's own sequence, seeded
+  * from its creator's at clone), as AT_RANDOM already is; without -seed the

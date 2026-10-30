@@ -6,6 +6,49 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.184 -- the guest sees one fixed identity: results no longer follow who runs PIMID or where it is installed
+
+- **The problem.** Values of the user running PIMID, of the installation and of the launching process reached the
+  guest's memory, and the measured DQ data and wire activity count every byte of a line the guest reads, so they moved
+  results. Changing one input at a time on 12 smoke cells (serial, OpenMP and message-passing device cells, OpenMP and
+  MPI host baselines, co-simulation):
+  - the user and group ids (getuid and the other identity calls, the auxiliary vector's AT_UID..AT_EGID, the owner of
+    every file the guest stats): another user's ids changed 8 of the 12 cells;
+  - the log file's group, or a terminal (group tty), through the standard streams' stat: the 6 message-passing and
+    co-simulation cells;
+  - the permissions of the installed libraries: the guest's dynamic linker keeps each library's stat in memory, and
+    libraries installed group-writable changed the co-simulation message-passing cells;
+  - the program path: QEMU places the path the program was started with on the guest's stack (argv[0] and
+    AT_EXECFN); the same program under a longer installation path changed all 12 cells;
+  - the stack limit (ulimit -s): glibc sizes every thread's stack from it; 16 MiB or unlimited instead of 8 MiB
+    changed the 10 multi-threaded cells;
+  - descriptors left open by the process that started pimid, or a closed standard input: QEMU hands the guest host
+    descriptors, so the numbers the guest's opens return (which it keeps in memory) shifted; 2 and 3 of the 12
+    cells changed.
+  Not reached, so unchanged: the host name and kernel (the shipped workloads do not call uname), the working
+  directory, the environment (fixed since 1.12.64), the other limits, the device, inode and times of the installed
+  files, and the node type (four node types gave one result).
+- **The fix (external/qemu-patches/0007-..., 0008-linux-user-fixed-guest-identity.patch, src/main.cpp).**
+  - Patch 0007: a standard stream's stat reports a pipe owned by the process's own user and group, with device,
+    inode and times 0.
+  - Patch 0008 and PIMID's launch: `-guest-ids 1000:1000` (the identity calls, the auxiliary vector, `AT_SECURE` 0,
+    the owner and the permissions (0755 or 0644) of the running user's files, `uname` node `pimid` release 6.8.0),
+    `-rlimit-stack 8388608`, and `-0` / `-execfn` present the program as `/pimid-guest/<file name>`. The program path
+    used to be passed as given; it is now always presented at
+    the fixed path.
+  - The launch child closes every descriptor above standard error, and gives a closed standard stream /dev/null,
+    before it starts QEMU.
+  - QEMU must be rebuilt with the eight patches (see [Building](build.md)).
+- **Data impact (one-time).** Every result is now the same for any user, installation path, log file, terminal,
+  stack limit, inherited descriptors and node type (the 12 cells under each of these changes, and two installations
+  of different path lengths, gave one output). The new program path and identity move most cells once, because the
+  guest's startup reads them: on the 116-cell validation set the run time is unchanged in 20 cells, the median
+  change is 0.07 %, and a few cells whose timing follows small differences before the ROI move more (device OpenMP
+  gemv on HBM3 53660 -> 88066 cycles, on LPDDR5 174719 -> 125177, device serial histogram on DDR3 320297 ->
+  290546); on the 150 device and co-simulation MPI smoke cells the median change is 0.10 % (co-simulation MPI
+  stream_triad on HBM3 57049 -> 110561, gemv 79370 -> 64522); the 45 OpenMP co-simulation smoke cells move by at
+  most 0.96 %.
+
 ## 1.12.183 -- statistics: a co-sim message-passing PE whose activity is restored to its closing barrier no longer aborts the stats write
 
 - **The problem.** A full-size co-sim message-passing bfs cell on HBM3 (16 ranks) aborted while the statistics were
