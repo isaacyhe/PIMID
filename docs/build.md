@@ -21,6 +21,8 @@ git apply ../qemu-patches/0002-x86_64-linux-user-reserved-va-without-vsyscall-pa
 git apply ../qemu-patches/0003-linux-user-fixed-width-guest-process-and-thread-ids.patch
 git apply ../qemu-patches/0004-linux-user-fixed-step-guest-time-stamp-counter.patch
 git apply ../qemu-patches/0005-linux-user-seeded-getrandom.patch
+git apply ../qemu-patches/0006-linux-user-fixed-guest-stat-block-size.patch
+git apply ../qemu-patches/0007-linux-user-guest-stdio-never-a-terminal.patch
 mkdir build && cd build
 ../configure --target-list=x86_64-linux-user --enable-plugins --enable-tcg \
              --disable-docs --disable-werror
@@ -34,7 +36,7 @@ ninja -j$(nproc) qemu-x86_64
 > cores. Its plugin header includes `<glib.h>`, so building PIMID's plugins needs the glib
 > development headers (found through `pkg-config glib-2.0`), which building QEMU needs anyway.
 >
-> **All five patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
+> **All seven patches in `external/qemu-patches/` are required.** 0001: QEMU 10 and later run a `REP`
 > string instruction (`memset`, `memcpy`) for up to 65535 iterations inside one block execution;
 > ZSim ends a phase only at a block boundary, so a long one piled its timing events into one phase
 > and overflowed ZSim's global heap. With a plugin loaded the patch runs one iteration per block
@@ -54,7 +56,7 @@ ninja -j$(nproc) qemu-x86_64
 > following the host's; a QEMU without it stops at once with `qemu: unknown option 'tsc-step'`. 0005
 > (since (1.12.157)): with `-seed` the guest's `getrandom()` is answered from QEMU's seeded generator, as
 > `AT_RANDOM` already was (without it the host answered; a QEMU without 0005 runs, but the guest's heap
-> contents then differ between runs). Built from QEMU 11.1.2 with the five patches, `qemu-x86_64` has md5 `59266fcf3af6ef7bea13a3d3c8884e20` (configure as above).
+> contents then differ between runs). 0006: PIMID launches the guest with `-st-blksize 4096`: the guest's `stat` calls report a 4096-byte block size instead of the host file system's, so the guest's output buffers no longer follow the file system the run's log is written to; a QEMU without it stops at once with `qemu: unknown option 'st-blksize'`. 0007: PIMID launches the guest with `-stdio-notty`: the guest's standard input, output and error are never a terminal (terminal ioctls on them fail with `ENOTTY`, and `fstat` reports a pipe), so a run started at a terminal does the same work as one whose output goes to a file or a pipe; a QEMU without it stops at once with `qemu: unknown option 'stdio-notty'`. PIMID's `qemu-x86_64`, built from QEMU 11.1.2 with the seven patches as above, has md5 `51dd7a7a1524c8957cff78004b0c4a1e`.
 
 ## Guest libraries (since (1.12.135))
 
@@ -84,6 +86,29 @@ guest libraries in use.
 - A modified sysroot: the run stops (`[guest] FATAL: ... is not PIMID's pinned copy`).
 - `PIMID_GUEST_SYSROOT=<dir>` names another copy (it must pass the same check);
   `PIMID_GUEST_SYSROOT=host` runs on the host's libraries.
+
+## Guest MPI shim
+
+`libpimid_mpi.so`, PIMID's message-passing library, runs inside the guest (the workloads load it in place of
+MPICH), so its machine code is part of the program being simulated: compiled by another compiler it gives other
+message-passing results (measured: GCC 13.4 instead of 13.3 moved the thread-MPI and co-simulation MPI cells compared).
+The tree therefore ships one prebuilt copy, `guest-shim/libpimid_mpi.so`, built with Ubuntu 24.04's g++
+`13.3.0-6ubuntu2~24.04.1` and the build's own flags, and the build installs it next to `pimid` instead of
+compiling it. Before the first launch PIMID checks the shim the guest will load against
+`guest-shim/libpimid_mpi.so.sum` (its size and FNV-1a 64 hash; the file also records its md5, the PIMID version it
+carries and the compiler); the `[mpi] guest shim` line reports it.
+
+```bash
+scripts/build_guest_shim.sh           # Ubuntu 24.04, g++ 13.3.0: rebuilds guest-shim/libpimid_mpi.so and its .sum
+scripts/build_guest_shim.sh --check   # rebuilds in a scratch directory and compares with the tracked copy
+```
+
+- The shim carries the PIMID version (its component stamp), so it is rebuilt whenever the version or
+  `src/parallel_abstraction/pimid_mpi.cpp` changes; the script refuses any other compiler.
+- A different shim: the run stops (`[mpi] FATAL: the guest's MPI shim ... is not PIMID's prebuilt copy`);
+  `PIMID_GUEST_SHIM=local` runs it with a warning.
+- `-DPIMID_BUILD_GUEST_SHIM=ON` compiles the shim from source instead (development; run with
+  `PIMID_GUEST_SHIM=local`).
 
 ## Build PIMID
 

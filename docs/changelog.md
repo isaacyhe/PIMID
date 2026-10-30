@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.182 -- the guest's output buffers and its message-passing library no longer follow the host
+
+- **The problem.** Two inputs of the guest came from the machine the run was on.
+  - QEMU passed the host file system's preferred block size to the guest's `stat` calls, and the guest's C library
+    sizes a stream's buffer from it (at most 8192 bytes). With the run's log on a parallel file system (4 MiB
+    blocks) the guest's standard output was buffered in 8192 bytes; on a local disk, in tmpfs or in a pipe, in 4096
+    bytes; on a terminal it was line-buffered. The work around the guest's writes changed, and with it the
+    interleaving of threads and ranks: one binary on one node gave 51347, 51580 and 51295 cycles (4-core OpenMP gemv
+    host baseline, smoke size) for a log on Lustre, on /tmp and on a terminal.
+  - The guest's MPI library, `libpimid_mpi.so`, was compiled on each machine by its own compiler, and its code runs
+    inside the measured region: GCC 13.4 instead of 13.3 changed every thread-MPI and co-simulation MPI result.
+- **The fix.**
+  - QEMU patch 0006 (`-st-blksize B`): every `stat`, `fstat`, `newfstatat` and `statx` the guest makes reports B;
+    PIMID passes `-st-blksize 4096` (the block size of a pipe, of tmpfs and of the common local file systems).
+  - QEMU patch 0007 (`-stdio-notty`): the guest's standard input, output and error are never a terminal (terminal
+    ioctls fail with `ENOTTY`, `fstat` reports a pipe), so a run at a terminal does the same work as a run with its
+    output in a file or a pipe; `PIMID_GUEST_TTY=1` gives the guest the host's streams for debugging.
+  - `-tb-size 1024`: QEMU sized its translation buffer from the host's memory (an eighth of it, up to 1 GiB).
+  - The guest MPI shim is shipped prebuilt (`guest-shim/libpimid_mpi.so`, Ubuntu 24.04 g++ 13.3.0, rebuilt with
+    `scripts/build_guest_shim.sh`), installed by the build and checked at launch against
+    `guest-shim/libpimid_mpi.so.sum`.
+  - A run line reports the block size, the translation buffer and the standard streams; QEMU must be rebuilt with
+    the seven patches (see [Building](build.md)).
+- **Data impact.** Results now equal those of a run whose log is on a local disk, wherever the log goes. Against runs
+  with the log on a parallel file system: serial and OpenMP device cells unchanged inside the ROI (a serial cell's ROI
+  starts one cycle earlier); multi-threaded host baselines and message-passing and co-simulation cells move, at smoke
+  size for example 16-core OpenMP gemv 15778 -> 15962 cycles, 16-rank MPI stream_triad 147790 -> 147910, 16-PE MPI
+  stream_triad on HBM3 CHANNEL 196894 -> 194586, co-simulation MPI stream_triad 57050 -> 57049. The shipped shim is
+  the one the reference build already produced, so it moves no result there.
+
 ## 1.12.181 -- co-sim message passing: each rank's kernel window ends at its own closing barrier, and the post-ROI tail it runs on its PE stays out of the activity and memory counters
 
 - **The problem.** After its kernel a co-sim MPI rank stays on its device PE and runs its post-ROI tail there (the

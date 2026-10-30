@@ -793,6 +793,32 @@ static const char* const kGuestTidBase    = "10000000";
  * counter therefore still ends; the shipped guest code reads it only in the
  * dynamic linker's startup timing and in that bounded mutex backoff. */
 static const char* const kGuestTscStep    = "1001";
+/* THE GUEST'S FILE BLOCK SIZE (QEMU -st-blksize, patch 0006) AND QEMU'S
+ * TRANSLATION BUFFER (-tb-size). QEMU passed the host file system's preferred
+ * block size to the guest's stat calls, and glibc sizes a FILE's buffer from it
+ * (the smaller of the block size and 8192 bytes): the guest's standard output
+ * was buffered in 8192 bytes when the run's log was on a parallel file system
+ * (4 MiB blocks) and in 4096 bytes on a local disk, in a pipe or in tmpfs, and
+ * the different work around its writes moved multi-threaded and
+ * message-passing results (one binary on one node: 51347 cycles with the log on
+ * Lustre, 51580 on /tmp, 51295 on a terminal; 4-core OpenMP gemv host
+ * baseline, smoke size). Every stat result now reports 4096 bytes, the block
+ * size of a pipe, of tmpfs and of the common local file systems. QEMU sized its
+ * translation buffer from the host's memory (an eighth of it, at most 1 GiB),
+ * so a host with less than 8 GiB flushed its translations at other points; the
+ * buffer is now 1 GiB on every host. A terminal as standard output also
+ * changed the guest's work (glibc tests the device and line-buffers a
+ * terminal): QEMU now reports the guest's standard input, output and error as
+ * pipes that are never a terminal (-stdio-notty, patch 0007), so a run started
+ * at a terminal, with its output in a log file or in a pipe does the same work.
+ * PIMID_GUEST_TTY=1 (debugging at a terminal) gives the guest the host's streams
+ * instead; the run line says so. */
+static const char* const kGuestStBlksize  = "4096";
+static const char* const kGuestTbSizeMiB  = "1024";
+static bool guestTtyPassthrough() {
+    const char* e = getenv("PIMID_GUEST_TTY");
+    return e && std::string(e) == "1";
+}
 static const char* const kGuestEnvPadName = "PIMID_GUEST_ENV_PAD";
 static const size_t      kGuestStringBlock = 4096;
 /* (1.12.107): THE GUEST FINDS ITS LIBRARIES WITHOUT THE HOST'S LOADER CACHE.
@@ -943,8 +969,11 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
     if (!guestSysroot().empty()) { o.push_back("-L"); o.push_back(guestSysroot()); }   // (1.12.135): pinned guest libraries
     const std::vector<std::string> o0 = {"-B", "0", "-R", kGuestReservedVa, "-s", kGuestStackSize,
                                   "-seed", kGuestSeed, "-tid-base", kGuestTidBase,
-                                  "-tsc-step", kGuestTscStep};   // (1.12.157): patch 0004
+                                  "-tsc-step", kGuestTscStep,   // (1.12.157): patch 0004
+                                  "-st-blksize", kGuestStBlksize,   // patch 0006
+                                  "-tb-size", kGuestTbSizeMiB};
     o.insert(o.end(), o0.begin(), o0.end());
+    if (!guestTtyPassthrough()) o.push_back("-stdio-notty");   // patch 0007
     std::map<std::string, std::string> genv;   // name -> NAME=VALUE, sorted by name
     std::vector<std::string> inherited;        // kept values QEMU's -E cannot carry (a comma)
     for (char** e = environ; e && *e; ++e) {
@@ -1021,6 +1050,13 @@ static void noteGuestLaunch(size_t envVars, const std::string& binary) {
               << (guestSysroot().empty() ? std::string("this host's own (no pinned sysroot)") : guestSysroot() + ", " + kGuestSysrootName)
               << "; program path " << binary
               << " (" << binary.size() << " characters, passed as given: runs compare exactly with the same path string)"
+              << std::endl;
+    std::cout << "[guest] file block size " << kGuestStBlksize << " bytes in every stat result (-st-blksize), translation buffer "
+              << kGuestTbSizeMiB << " MiB (-tb-size), standard streams "
+              << (guestTtyPassthrough()
+                      ? "the host's (PIMID_GUEST_TTY=1: a terminal is line-buffered by the guest, so the results differ from a run"
+                        " with its output in a file or a pipe)"
+                      : "never a terminal (-stdio-notty)")
               << std::endl;
 }
 
@@ -1378,7 +1414,61 @@ static std::string guestMpiLibDir(const std::string& shimPath) {
  * so a tree-dependent path changed the measured DQ data of two equal-length copies of a tree.
  * Adds LD_PRELOAD (and LD_LIBRARY_PATH when guestMpiLibDir could make its directory) to guestSet
  * and sets the host variable the plugin reads; userLibPath is guestUserLibPath's value. */
+/* THE GUEST'S MPI SHIM IS PIMID'S PREBUILT COPY. libpimid_mpi.so runs inside
+ * the guest, in the measured region, so its machine code is part of the program
+ * being simulated; compiled by each host's own compiler (GCC 13.3 on Ubuntu
+ * 24.04, 13.4 on another distribution) it gave other message-passing results
+ * for the same program. The tree ships one copy, guest-shim/libpimid_mpi.so,
+ * built by scripts/build_guest_shim.sh with Ubuntu 24.04's g++ 13.3.0, which
+ * the build installs next to pimid. Before the first launch the shim the guest
+ * will load is checked against guest-shim/libpimid_mpi.so.sum (size and
+ * FNV-1a 64): a different shim is refused, PIMID_GUEST_SHIM=local runs it with
+ * a warning (development), a tree without the sum file runs with a warning. */
+static void checkGuestShim(const std::string& shimPath) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    const std::string sumPath = getPimidRoot() + "/guest-shim/libpimid_mpi.so.sum";
+    std::ifstream sf(sumPath);
+    std::string line, md5;
+    long long wantSize = -1;
+    unsigned long long wantFnv = 0;
+    if (sf && std::getline(sf, line)) {
+        std::istringstream ls(line);
+        std::string tok;
+        while (ls >> tok) {
+            if (tok.compare(0, 5, "size=") == 0) wantSize = std::atoll(tok.c_str() + 5);
+            else if (tok.compare(0, 8, "fnv1a64=") == 0) wantFnv = std::strtoull(tok.c_str() + 8, nullptr, 16);
+            else if (tok.compare(0, 4, "md5=") == 0) md5 = tok.substr(4);
+        }
+    }
+    if (wantSize < 0) {
+        std::cerr << "[mpi] WARNING: no " << sumPath << ": the guest's MPI shim " << shimPath
+                  << " is not checked against PIMID's prebuilt copy; message-passing results then depend on the"
+                     " compiler that built it" << std::endl;
+        return;
+    }
+    long long size;
+    const unsigned long long fnv = fnv1a64File(shimPath, &size);
+    if (size == wantSize && fnv == wantFnv) {
+        std::cout << "[mpi] guest shim " << shimPath << ": PIMID's prebuilt copy (md5 " << md5 << ")" << std::endl;
+        return;
+    }
+    const char* e = getenv("PIMID_GUEST_SHIM");
+    if (e && std::string(e) == "local") {
+        std::cerr << "[mpi] WARNING: PIMID_GUEST_SHIM=local: the guest's MPI shim " << shimPath
+                  << " is not PIMID's prebuilt copy; message-passing results then depend on the compiler that built it"
+                  << std::endl;
+        return;
+    }
+    std::cerr << "[mpi] FATAL: the guest's MPI shim " << shimPath << " is not PIMID's prebuilt copy ("
+              << (size < 0 ? "missing" : "differs from " + sumPath) << "); rebuild with the tree's"
+                 " guest-shim/libpimid_mpi.so (the default build), or set PIMID_GUEST_SHIM=local to run it anyway"
+              << std::endl;
+    std::exit(2);
+}
 static void guestShimEnv(const std::string& shimPath, const std::string& userLibPath, std::vector<std::string>* guestSet) {
+    checkGuestShim(shimPath);
     const size_t slash = shimPath.rfind('/');
     setenv("PIMID_GUEST_SHIM_HOST_DIR", slash == std::string::npos ? "." : shimPath.substr(0, slash).c_str(), 1);
     guestSet->push_back("LD_PRELOAD=/pimid-shim/libpimid_mpi.so");

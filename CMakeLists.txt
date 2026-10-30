@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.12.181 LANGUAGES CXX)
+project(PIMID VERSION 1.12.182 LANGUAGES CXX)
 
 # (1.12.135): PIMID's pinned guest system libraries (src/main.cpp guestSysroot, docs/build.md "Guest libraries").
 option(PIMID_FETCH_GUEST_SYSROOT "Download PIMID's pinned guest libraries (Ubuntu 24.04 packages, sha256-checked) at configure time" ON)
@@ -305,6 +305,12 @@ endif()
 # libpimid_mpi — thread-based MPI library for unified PIM simulation
 # LD_PRELOAD this into ZSim to run N MPI ranks as threads in one process.
 # Magic ops inject NoC + hierarchy timing per MPI message.
+# It runs inside the guest (the measured region), so the build installs PIMID's
+# prebuilt copy, guest-shim/libpimid_mpi.so (scripts/build_guest_shim.sh, Ubuntu
+# 24.04 g++ 13.3.0), which pimid checks at launch; PIMID_BUILD_GUEST_SHIM=ON
+# compiles it from source instead (development; run with PIMID_GUEST_SHIM=local).
+option(PIMID_BUILD_GUEST_SHIM "Compile libpimid_mpi.so instead of installing the prebuilt guest-shim copy" OFF)
+if(PIMID_BUILD_GUEST_SHIM)
 add_library(pimid_mpi SHARED
     src/parallel_abstraction/pimid_mpi.cpp
 )
@@ -323,6 +329,19 @@ target_compile_options(pimid_mpi PRIVATE
 set_target_properties(pimid_mpi PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
+else()
+    set(PIMID_GUEST_SHIM_SRC ${PROJECT_SOURCE_DIR}/guest-shim/libpimid_mpi.so)
+    if(NOT EXISTS ${PIMID_GUEST_SHIM_SRC})
+        message(FATAL_ERROR "guest-shim/libpimid_mpi.so is missing: run scripts/build_guest_shim.sh on Ubuntu 24.04 "
+                            "(g++ 13.3.0), or configure with -DPIMID_BUILD_GUEST_SHIM=ON")
+    endif()
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/libpimid_mpi.so
+        COMMAND ${CMAKE_COMMAND} -E copy ${PIMID_GUEST_SHIM_SRC} ${CMAKE_BINARY_DIR}/libpimid_mpi.so
+        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_BINARY_DIR}/libpimid_mpi.so
+        DEPENDS ${PIMID_GUEST_SHIM_SRC}
+        COMMENT "Installing the prebuilt guest MPI shim (guest-shim/libpimid_mpi.so)")
+    add_custom_target(pimid_mpi ALL DEPENDS ${CMAKE_BINARY_DIR}/libpimid_mpi.so)
+endif()
 
 # Main PIMID binary - unified entry point for all simulation modes
 # Supports: standalone, host, device, and host/device co-simulation
@@ -352,11 +371,12 @@ if(TARGET zsim_trace)
 endif()
 
 # Install targets
-install(TARGETS pimid_lib pimid pimid_mpi
+install(TARGETS pimid_lib pimid
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
 )
+install(PROGRAMS ${CMAKE_BINARY_DIR}/libpimid_mpi.so DESTINATION lib)
 
 install(DIRECTORY include/ DESTINATION include/pimid)
 install(DIRECTORY examples/ DESTINATION share/pimid/examples)

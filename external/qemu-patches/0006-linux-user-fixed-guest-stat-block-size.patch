@@ -1,0 +1,127 @@
+PIMID: a fixed block size in the guest's stat results (-st-blksize B)
+
+QEMU user mode passes the host file system's preferred I/O block size
+(st_blksize, stx_blksize) to the guest's stat, fstat, lstat, newfstatat and
+statx. glibc sizes a FILE's buffer from it (the smaller of st_blksize and
+8192 bytes), so the guest's standard output was buffered in 8192 bytes when
+the run's log was on a parallel file system (4 MiB blocks) and in 4096 bytes
+on a local disk, in a pipe or in tmpfs. The buffer size changes the work the
+guest does before and around its writes, and with it the results of
+multi-threaded and message-passing programs (the same binary on the same node:
+51347, 51580 and 51295 cycles for a log on Lustre, on /tmp and on a terminal).
+
+With -st-blksize B (or QEMU_ST_BLKSIZE=B) every one of those calls reports B.
+B = 0 (the default) leaves QEMU unchanged.
+
+diff --git a/linux-user/main.c b/linux-user/main.c
+index d6d3c95..699eeb7 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -369,6 +369,18 @@ static void handle_arg_tsc_step(const char *arg)
+     qemu_tsc_step = v;
+ }
+ 
++static void handle_arg_st_blksize(const char *arg)
++{
++    /* PIMID patch 0006: a fixed block size in the guest's stat results */
++    char *end;
++    unsigned long long v = strtoull(arg, &end, 10);
++    if (*end || !*arg || v > 0x40000000ULL) {
++        fprintf(stderr, "qemu: -st-blksize expects a number from 0 to 1073741824\n");
++        exit(EXIT_FAILURE);
++    }
++    qemu_st_blksize = v;
++}
++
+ static void handle_arg_gdb(const char *arg)
+ {
+     gdbstub = g_strdup(arg);
+@@ -549,6 +561,8 @@ static const struct qemu_argument arg_table[] = {
+      "number",     "guest process and thread IDs are this base plus 4194304 plus their order of first sight"},
+     {"tsc-step",   "QEMU_TSC_STEP",    true,  handle_arg_tsc_step,
+      "number",     "the guest's time stamp counter advances by this step on every read (0: the host's)"},
++    {"st-blksize", "QEMU_ST_BLKSIZE",  true,  handle_arg_st_blksize,
++     "number",     "the block size the guest's stat calls report (0: the host file system's)"},
+     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
+      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
+ #ifdef CONFIG_PLUGIN
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index f7d8e35..62ec5d7 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -6930,6 +6930,13 @@ typedef struct {
+ 
+ abi_long qemu_pid_base;   /* PIMID patch 0003 (user-internals.h) */
+ bool qemu_getrandom_seeded;   /* PIMID patch 0005 (user-internals.h) */
++abi_long qemu_st_blksize;   /* PIMID patch 0006 (user-internals.h) */
++
++/* PIMID patch 0006: the block size the guest's stat family reports */
++static inline abi_long guest_st_blksize(abi_long host_blksize)
++{
++    return qemu_st_blksize ? qemu_st_blksize : host_blksize;
++}
+ 
+ /*
+  * PIMID patch 0003: the guest's IDs in order of first sight. Host IDs stay
+@@ -8209,7 +8216,7 @@ static inline abi_long host_to_target_stat64(CPUArchState *cpu_env,
+         __put_user(host_st->st_gid, &target_st->st_gid);
+         __put_user(host_st->st_rdev, &target_st->st_rdev);
+         __put_user(host_st->st_size, &target_st->st_size);
+-        __put_user(host_st->st_blksize, &target_st->st_blksize);
++        __put_user(guest_st_blksize(host_st->st_blksize), &target_st->st_blksize);
+         __put_user(host_st->st_blocks, &target_st->st_blocks);
+         __put_user(host_st->st_atime, &target_st->target_st_atime);
+         __put_user(host_st->st_mtime, &target_st->target_st_mtime);
+@@ -8244,7 +8251,7 @@ static inline abi_long host_to_target_stat64(CPUArchState *cpu_env,
+         __put_user(host_st->st_rdev, &target_st->st_rdev);
+         /* XXX: better use of kernel struct */
+         __put_user(host_st->st_size, &target_st->st_size);
+-        __put_user(host_st->st_blksize, &target_st->st_blksize);
++        __put_user(guest_st_blksize(host_st->st_blksize), &target_st->st_blksize);
+         __put_user(host_st->st_blocks, &target_st->st_blocks);
+         __put_user(host_st->st_atime, &target_st->target_st_atime);
+         __put_user(host_st->st_mtime, &target_st->target_st_mtime);
+@@ -8273,7 +8280,7 @@ static inline abi_long host_to_target_statx(struct target_statx *host_stx,
+     memset(target_stx, 0, sizeof(*target_stx));
+ 
+     __put_user(host_stx->stx_mask, &target_stx->stx_mask);
+-    __put_user(host_stx->stx_blksize, &target_stx->stx_blksize);
++    __put_user(guest_st_blksize(host_stx->stx_blksize), &target_stx->stx_blksize);
+     __put_user(host_stx->stx_attributes, &target_stx->stx_attributes);
+     __put_user(host_stx->stx_nlink, &target_stx->stx_nlink);
+     __put_user(host_stx->stx_uid, &target_stx->stx_uid);
+@@ -11741,7 +11748,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+                 __put_user(st.st_nlink, &target_st->st_nlink);
+                 __put_user(st.st_rdev, &target_st->st_rdev);
+                 __put_user(st.st_size, &target_st->st_size);
+-                __put_user(st.st_blksize, &target_st->st_blksize);
++                __put_user(guest_st_blksize(st.st_blksize), &target_st->st_blksize);
+                 __put_user(st.st_blocks, &target_st->st_blocks);
+                 __put_user(st.st_atime, &target_st->target_st_atime);
+                 __put_user(st.st_mtime, &target_st->target_st_mtime);
+@@ -12706,7 +12713,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+                 __put_user(major(st.st_rdev), &target_stx->stx_rdev_major);
+                 __put_user(minor(st.st_rdev), &target_stx->stx_rdev_minor);
+                 __put_user(st.st_size, &target_stx->stx_size);
+-                __put_user(st.st_blksize, &target_stx->stx_blksize);
++                __put_user(guest_st_blksize(st.st_blksize), &target_stx->stx_blksize);
+                 __put_user(st.st_blocks, &target_stx->stx_blocks);
+                 __put_user(st.st_atime, &target_stx->stx_atime.tv_sec);
+                 __put_user(st.st_mtime, &target_stx->stx_mtime.tv_sec);
+diff --git a/linux-user/user-internals.h b/linux-user/user-internals.h
+index ab35fe3..2f12597 100644
+--- a/linux-user/user-internals.h
++++ b/linux-user/user-internals.h
+@@ -83,6 +83,12 @@ extern abi_long qemu_pid_base;
+  * the host's time stamp counter. S = 0 (the default): unchanged.
+  */
+ extern uint64_t qemu_tsc_step;
++/*
++ * PIMID patch 0006: with -st-blksize B > 0 the guest's stat, fstat, lstat,
++ * newfstatat and statx report B as the preferred I/O block size instead of the
++ * host file system's. B = 0 (the default): unchanged.
++ */
++extern abi_long qemu_st_blksize;
+ /*
+  * PIMID patch 0005: with -seed (QEMU_RAND_SEED) the guest's getrandom() is
+  * answered from QEMU's seeded generator (each thread's own sequence, seeded
