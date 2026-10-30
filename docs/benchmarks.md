@@ -154,7 +154,11 @@ max)`, then `Run time: <W> cycles = <source>; busy max <max>`, then
 `Total: <sum> cycles (max: <W>)`: the `(max: N)` figure is the run time, no
 longer the busiest PE. A message-passing run prints `Run time:` after its
 `Total:` line; its run time is the latest rank's ROI-relative end, which
-equals its `(max: N)`. The per-PE `cycles:` lines are busy activity.
+equals its `(max: N)`. The kernels call roi_end on rank 0 just before a
+closing barrier; the ROI ends at the last rank's arrival at that barrier, so
+every rank's kernel is inside it, whether the ranks run on device PEs or on
+the host cores of a no-offload baseline. The per-PE `cycles:` lines are busy
+activity.
 
 ## The pointer chase: load-to-use latency
 

@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.185 -- message passing on the host cores: the ROI ends when the last rank finishes its kernel
+
+- **The problem.** Every message-passing kernel calls roi_end on rank 0 and then a closing barrier. A run whose
+  ranks are device PEs already ended its ROI at the last rank's arrival at that barrier (1.11.97; co-sim with offload:
+  each rank's own closing barrier, 1.12.181), but a run whose ranks all run on the host cores (a no-offload baseline)
+  wrote its statistics at rank 0's roi_end. Whatever the other ranks still had to do was left out: in the 16-rank
+  stencil_2d baselines the slowest rank had executed 51 % (DDR5) and 69 % (HBM3) of the instructions of the busiest
+  one, and the run counted 490 M of the kernel's 734 M instructions.
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp). A no-offload run with more than one rank ends its ROI the way a
+  device-scope run does: rank 0's roi_end marks the ROI as closing, and the last rank's arrival at the next barrier
+  writes the statistics. The kernels are unchanged. Runs with ranks on device PEs, one-rank runs and shared-memory runs
+  are unchanged.
+- **Validation** (full size, 1.12.183 against this build in one job). Checksums are equal in every cell. The rank
+  instruction spread (fewest / most) of every 4- and 16-rank host baseline is 0.98 to 1.00, and the 16-rank
+  stencil_2d baselines now count 734 M instructions, as the 4-rank ones do (723 M). Co-sim and device message-passing
+  cells, one-rank and shared-memory cells are identical; the determinism cells and a no-offload baseline give 8 of 8
+  identical copies; the power check reports no consistency failure.
+- **Data impact.** Thread-MPI host baselines (4 and 16 ranks): stencil_2d 16 ranks +36.3 % (DDR5) and +25.4 % (HBM3);
+  every other cell +0.0 % to +0.1 % (the closing barrier, a few thousand cycles). A baseline whose ranks progress
+  unevenly gains the rest of its slowest rank's kernel.
+
 ## 1.12.184 -- the guest sees one fixed identity: results no longer follow who runs PIMID or where it is installed
 
 - **The problem.** Values of the user running PIMID, of the installation and of the launching process reached the

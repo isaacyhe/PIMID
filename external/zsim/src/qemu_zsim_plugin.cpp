@@ -682,6 +682,15 @@ static std::atomic<uint64_t> offload_count{0};
  * OFF. This yields the host-only baseline cells (1/4/16 OOO host cores running
  * the unmodified OMP/MPI kernels) from the SAME binary. */
 static bool g_cosim_no_offload = false;
+/* A thread-MPI run whose ranks all run on the host cores (a no-offload baseline) ends its ROI the way a device-scope
+ * run does (devScopeLastRankRule): rank 0's roi_end marks the ROI as closing, and the last rank's arrival at the
+ * next barrier ends it, so every rank's kernel is inside. The kernels call roi_end on rank 0 just before their
+ * closing barrier; ending the ROI there left out whatever the other ranks still had to do (a 16-rank stream_triad
+ * baseline: ranks 1-15 had executed 86 % to 100 % of their kernel instructions). */
+static inline bool hostRankLastRankRule() {
+    return g_mpi_thread_mode && g_cosim_mode && g_cosim_no_offload && g_mpi_rank_count > 1;
+}
+static inline bool lastRankRule() { return devScopeLastRankRule() || hostRankLastRankRule(); }
 
 /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): the
  * ROI's elapsed time on the global clock (zinfo->roiWall, see zsim.h). A
@@ -3693,13 +3702,18 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * generation; the N-th arrival of the first generation completed
          * after the opener's roi_end is the last rank's roi_end, and the
          * stats freeze there (see g_devRoiClosing). */
-        if (devScopeLastRankRule()) {
+        if (lastRankRule()) {   // device scope, and host ranks of a no-offload baseline
             uint32_t n = g_devBarArrivals.fetch_add(1) + 1;
             if (n >= g_mpi_rank_count) {
                 g_devBarArrivals.store(0);   // generation complete
                 if (g_devRoiClosing.load() && !g_devRoiFrozen.exchange(true)) {
-                    info("Thread %d: device-scope ROI end at the last rank's arrival "
-                         "(%u ranks) [1.11.97]", tid, g_mpi_rank_count);
+                    if (hostRankLastRankRule()) {
+                        info("Thread %d: host-rank ROI end at the last rank's arrival at the barrier after rank 0's roi_end "
+                             "(%u ranks; no-offload baseline)", tid, g_mpi_rank_count);
+                    } else {
+                        info("Thread %d: device-scope ROI end at the last rank's arrival "
+                             "(%u ranks) [1.11.97]", tid, g_mpi_rank_count);
+                    }
                     if (tid < MAX_THREADS && cids[tid] < MAX_THREADS)
                         g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
                     in_roi.store(false);
@@ -4992,14 +5006,21 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * every other rank's compute tail. */
                 return;
             }
-            if (devScopeLastRankRule()) {
+            if (lastRankRule()) {
                 /* 1.11.97 (x01-qemu-zsim-plugin-5): device scope, same
                  * reason. The opener's roi_end only marks the ROI as
                  * closing; the N-th arrival at the next barrier (MPI_TIME
-                 * handler) freezes the stats. See g_devRoiClosing. */
+                 * handler) freezes the stats. See g_devRoiClosing. The host
+                 * ranks of a no-offload baseline end their ROI the same way
+                 * (hostRankLastRankRule). */
                 g_devRoiClosing.store(true);
-                info("Thread %d: ROI end (device-scope MPI opener): closing, "
-                     "stats freeze at the last rank's barrier arrival [1.11.97]", tid);
+                if (hostRankLastRankRule()) {
+                    info("Thread %d: ROI end (host-rank MPI opener, no-offload baseline): closing, "
+                         "stats freeze at the last rank's barrier arrival", tid);
+                } else {
+                    info("Thread %d: ROI end (device-scope MPI opener): closing, "
+                         "stats freeze at the last rank's barrier arrival [1.11.97]", tid);
+                }
                 return;
             }
             // This rank finished its ROI -> EXITED, so the epoch cut advances over
@@ -5355,14 +5376,21 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * every other rank's compute tail. */
                 return;
             }
-            if (devScopeLastRankRule()) {
+            if (lastRankRule()) {
                 /* 1.11.97 (x01-qemu-zsim-plugin-5): device scope, same
                  * reason. The opener's roi_end only marks the ROI as
                  * closing; the N-th arrival at the next barrier (MPI_TIME
-                 * handler) freezes the stats. See g_devRoiClosing. */
+                 * handler) freezes the stats. See g_devRoiClosing. The host
+                 * ranks of a no-offload baseline end their ROI the same way
+                 * (hostRankLastRankRule). */
                 g_devRoiClosing.store(true);
-                info("Thread %d: ROI end (device-scope MPI opener): closing, "
-                     "stats freeze at the last rank's barrier arrival [1.11.97]", tid);
+                if (hostRankLastRankRule()) {
+                    info("Thread %d: ROI end (host-rank MPI opener, no-offload baseline): closing, "
+                         "stats freeze at the last rank's barrier arrival", tid);
+                } else {
+                    info("Thread %d: ROI end (device-scope MPI opener): closing, "
+                         "stats freeze at the last rank's barrier arrival [1.11.97]", tid);
+                }
                 return;
             }
             // This rank finished its ROI -> EXITED, so the epoch cut advances over
