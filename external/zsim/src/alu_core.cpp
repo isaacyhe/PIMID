@@ -36,6 +36,7 @@
 uint64_t g_mpiProtocolTailCyc[MAX_THREADS] = {0};
 uint64_t g_mpiRoiCyc[MAX_THREADS] = {0};   // 1.12.3: the kernel-window receipt
 bool g_peTailRun[MAX_THREADS] = {false};   // (1.12.181): the PE runs a co-sim MPI rank's post-ROI tail
+std::atomic<uint8_t> g_peCutHold[MAX_THREADS];   // (1.12.188): the cut hold (core.h); static zero-init: nothing held
 
 // ALU Core: Pure computational core with optional PE memory interface
 
@@ -261,6 +262,12 @@ void ALUCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
         // If TakeBarrier context-switches us, the *only* safe option is to return immediately after we
         // detect this, or we can race and corrupt core state.
         uint32_t newCid = TakeBarrier(tid, cid);
+        if (newCid != cid) break; /*context-switch*/
+        /* (1.12.188): held by the cut hold: take the next barrier without running, the clock frozen */
+        while (cid < MAX_THREADS && g_peCutHold[cid].load(std::memory_order_acquire)) {
+            newCid = TakeBarrier(tid, cid);
+            if (newCid != cid) break;
+        }
         if (newCid != cid) break; /*context-switch*/
     }
 }

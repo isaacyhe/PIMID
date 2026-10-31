@@ -27,6 +27,7 @@
 #define CORE_H_
 
 #include <stdint.h>
+#include <atomic>
 #include "zsim_types.h"
 #include "decoder_simple.h"
 #include "g_std/g_string.h"
@@ -135,6 +136,10 @@ extern uint64_t g_mpiRoiCyc[];
 /* (1.12.181): set at a co-sim message-passing rank's window-close marker, indexed like the receipts above: the PE now
  * runs the post-ROI tail (pe_memory_interface.h keeps its accesses out of the ROI counters). */
 extern bool g_peTailRun[];
+/* (1.12.188): a message-passing rank's PE held at the phase barrier with its clock frozen, because it ran an epoch ahead of
+ * the DRAM replay's consistent cut (the cut hold, mpiCutHold in qemu_zsim_plugin.cpp). Set at the phase barrier, read
+ * by the cores' phase loops right after it; 0 everywhere else. */
+extern std::atomic<uint8_t> g_peCutHold[];
 /* (1.12.181): a core's activity counters at an instant (the rank's marker), kept outside the core like the receipts
  * above. mix: the instruction mix in core.h order (int, mul, fp, ld, st, br, vmovReg, vmovLd, vmovSt, synthetic);
  * own: the core type's own counters (ALUCore: instrs, scratchpad, DMA, stack). */
@@ -349,6 +354,11 @@ class Core : public GlobAlloc {
          * wakeStampable stays the ALU PE's own-timeline flag). */
         virtual bool wakeStampable() const { return false; }
         virtual uint64_t syncToWaker(uint64_t t) { (void)t; return 0; }
+        /* (1.12.188): a PE held by the cut hold (g_peCutHold) for one phase. An in-order / OOO core moves its clock to t,
+         * the end of the held phase, booked as waiting (out of the unhalted clock, as syncToWaker): the weave's core
+         * recorder needs a running core's clock at the phase end, and the ROI-relative clock (getCycles) does not
+         * move. The ALU PE keeps its clock where it is (default). */
+        virtual void cutHoldWait(uint64_t t) { (void)t; }
 
         /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): a lock
          * handed from one thread to another carries the releaser's clock --

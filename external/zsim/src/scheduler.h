@@ -649,6 +649,18 @@ class Scheduler : public GlobAlloc, public Callee {
             futex_unlock(&schedLock);
         }
 
+        /* (1.12.188): core cid holds a thread that is running (not out in a system call); the cut hold's liveness test
+         * (qemu_zsim_plugin.cpp, mpiCutHold) reads it at the phase barrier, with schedLock held */
+        bool coreRunsThread(uint32_t cid) const { return contexts[cid].state == USED && contexts[cid].curThread && contexts[cid].curThread->state == RUNNING; }
+        /* (1.12.188): a thread out of the simulator (started, or out in a system call) that is not waiting on another
+         * thread (waits: the caller's test, by thread id) comes back by itself; read like coreRunsThread */
+        template <typename W> bool anyThreadInTransit(W waits) const {
+            for (const auto& kv : gidMap) {
+                const ThreadInfo* th = kv.second;
+                if (th && (th->state == STARTED || th->state == OUT || th->state == BLOCKED) && !waits(th->gid & 0xffff)) return true;
+            }
+            return false;
+        }
         uint32_t getScheduledPid(uint32_t cid) const { return (contexts[cid].state == USED)? getPid(contexts[cid].curThread->gid) : (uint32_t)-1; }
 
     private:

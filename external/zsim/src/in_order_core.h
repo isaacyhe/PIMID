@@ -312,6 +312,7 @@ class InOrderCore : public Core {
         }
         /* 1.12.21 (user ruling 2026-10-24): the waker's release, as syncToLock
          * (the issue cursor; the pipeline was drained at join). */
+        void cutHoldWait(uint64_t t) override { if (t > curCycle) { cRec.pimidAddWait(t - curCycle); curCycle = t; } }   // (1.12.188), see core.h
         uint64_t syncToWaker(uint64_t t) override {
             if (t <= curCycle) return 0;
             const uint64_t skip = t - curCycle;

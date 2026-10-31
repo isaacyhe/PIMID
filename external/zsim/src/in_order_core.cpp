@@ -621,6 +621,14 @@ void InOrderCore::BblAndRecordFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblIn
         uint32_t cid = getCid(tid);
         uint32_t newCid = TakeBarrier(tid, cid);
         if (newCid != cid) break; /*context-switch*/
+        /* (1.12.188): held by the cut hold (core.h): the next barrier without running, the clock frozen */
+        while (cid < MAX_THREADS && g_peCutHold[cid].load(std::memory_order_acquire)) {
+            core->cutHoldWait(core->phaseEndCycle + 1);   // the held phase (past its end, as the loop above), booked as waiting (core.h)
+            core->phaseEndCycle += zinfo->phaseLength;
+            newCid = TakeBarrier(tid, cid);
+            if (newCid != cid) break;
+        }
+        if (newCid != cid) break; /*context-switch*/
     }
 }
 

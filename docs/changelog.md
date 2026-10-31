@@ -6,6 +6,53 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.188 -- Message passing on device PEs: the ranks stay within the read lag
+
+- **The problem.** A thread-MPI rank on a device PE prices its DRAM and NoC accesses from the epoch two back on its
+  own ROI-relative clock (two phases with one-phase NoC epochs), folded once the consistent cut has passed it. The
+  premise was that the ranks stay within about a phase of each other; nothing kept them there. Co-simulation ranks
+  enter their PEs one at a time through the host core, a phase or more apart, and the cut skipped a rank that had not
+  entered, so its records reached the replay behind its clock; the ROI opener (rank 0) re-bases its clock at its
+  roi_begin after the other ranks have started; a rank ahead of the cut read whichever partial or stale epoch had
+  been fed last, or the analytical bootstrap (co-simulation stream_triad: 11 404 of 13 038 DDR5 requests). The
+  waits of the accesses the DRAM replay does not price (the shared channel's bandwidth wait, an interface's M/D/1
+  wait) were keyed on the phase in which the simulator ran the access. The run time followed the order in which the
+  ranks were simulated: with the program presented under a 30-character directory, its real directory and its usual
+  path, cosim_HBM3_mpi_stream_triad took 57 925 or 106 141 cycles, cosim_HBM3_mpi_gemv 65 131 or 95 595 and
+  placement_HBM3_mpi_stream_triad_pe16_CHANNEL 139 560 to 148 264.
+- **The fix** (external/zsim/src: qemu_zsim_plugin.cpp, core.h, alu_core.cpp, in_order_core.h/.cpp, ooo_core.h/.cpp,
+  scheduler.h, pe_memory_interface.h). At each phase barrier while the ranks are in their kernels: (1) until every
+  rank has entered and run and the opener has re-based, nothing is folded and the PEs stop one epoch in; (2) a PE
+  whose clock is an epoch past the DRAM cut's epoch takes the next barrier without running, its ROI-relative clock
+  unchanged (an in-order or OOO PE books the phase as waiting), so an unheld PE reads epochs the cut has passed;
+  (3) the PE that pins the cut, and the ranks it waits for in a receive from a known source or a barrier, are not
+  held; (4) a phase with a held PE in which nothing free made progress (a wait the cut does not see) lifts the holds
+  until the cut advances. The device-time waits key on the access's own ROI-relative epoch, final at the same cut.
+  The run log prints `[cut-hold] ...`. Invariants: docs/architecture.md. Shared-memory, serial and host runs and
+  process-mode message passing are unchanged.
+- **Validation** (1.12.186 with the one-phase NoC epoch, and this build; smoke sizes unless stated):
+  - Program-path variants (usual path, a 30-character directory, the real directory, strings padded) over the 150
+    device and co-simulation message-passing cells: 43 give one result (16 with one-phase NoC epochs alone, 41 with
+    four-phase ones), 26 spread more than 1 % (70; 40), 5 more than 5 % (20; 11), median spread 0.20 % (0.81 %;
+    0.20 %). One result each: cosim_HBM3_mpi_stream_triad 69 516, cosim_HBM3_mpi_gemv 72 569,
+    placement_HBM3_mpi_stream_triad_pe16_CHANNEL 160 721 cycles. Above 5 %: the saturated bfs placements (CHANNEL,
+    LOGIC_DIE), coremodel stencil_2d on OOO PEs (9.5 %; 19.5 % before), pecount histogram pe8, placement stencil_2d
+    LOGIC_DIE.
+  - Every cell ends as before (146 complete, the 4 refused fig2 bfs cells refused), at smoke size and the 15
+    co-simulation message-passing cells at full size; the power check reports no failure on the 150 logs.
+  - Repeat runs, one output per cell: the 15 co-simulation message-passing cells x 8 (also on a second node type,
+    identical), the two determinism cells x 8, two co-simulation cells x 16 concurrent copies, the 45 co-simulation
+    OpenMP cells x 4.
+- **Data impact.** Shared-memory, serial and host cells: unchanged (the 116-cell validation set is identical; the 45
+  co-simulation OpenMP cells are unchanged). Message-passing smoke cells against the one-phase NoC epoch alone (usual
+  path): mean |shift| 6.2 %, 46 of 150 above 5 %. Most of their DRAM accesses are now priced from the replay instead
+  of the bootstrap. Co-simulation: HBM3 stream_triad 106 141 -> 69 516, histogram 357 032 -> 222 886; DDR5
+  stream_triad 69 502 -> 120 863 and gemv 73 904 -> 129 242, where the ranks now run together and the replayed
+  latency the accesses are charged (83 cycles on average) exceeds the controller's mean (46). Device scope: placement
+  stream_triad CHANNEL 139 560 -> 160 721, coremodel stencil_2d OOO 46 710 -> 55 827; the saturated bfs placements
+  move by large factors as before. Full size, the 15 co-simulation message-passing cells move by at most 2.8 %
+  (HBM3 stencil_2d 135 897 835 -> 132 032 248; bfs -2.7 % to +0.1 %; the others 0.5 % or less).
+
 ## 1.12.187 -- NoC pricing: one-phase epochs: shared-memory device runs no longer settle in one of two states
 
 - **The problem.** Under `noc.model: detailed` every NoC access is priced from the per-pair latency measured in an

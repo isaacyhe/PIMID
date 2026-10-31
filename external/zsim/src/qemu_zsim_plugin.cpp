@@ -1498,6 +1498,8 @@ static void cutWakeBarrier(uint32_t tid, uint64_t k, bool arrival) {
  * as before. 1.12.176 bounded every waiting rank by the earliest message posted anywhere, so one
  * message waiting for a receiver that was busy elsewhere held the whole replay at a waiting
  * rank's clock (smoke 16-rank bfs, CHANNEL placement: the replay stood still for most of the run). */
+static uint64_t g_cutWakeRec[MAX_THREADS];   // (1.12.188): each waiting core's bound on its record axis (the cut hold)
+static uint64_t g_cutWakePhase = ~0ull;      // the phase whose barrier computed them
 static uint64_t cutWakeBound() {
     const uint32_t nC = std::min<uint32_t>(zinfo->numCores, MAX_THREADS);
     std::lock_guard<std::mutex> g(g_cutWakeMu);
@@ -1571,7 +1573,9 @@ static uint64_t cutWakeBound() {
         if (st[c] != 4 || rr[c] == 0) continue;
         const int64_t v = (int64_t)(L[c] == ~0ull ? rr[c] : L[c]) - dl[c];
         b = std::min(b, v > 0 ? (uint64_t)v : 0);
+        g_cutWakeRec[c] = v > 0 ? (uint64_t)v : 0;
     }
+    g_cutWakePhase = zinfo->numPhases;
     return b;
 }
 static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
@@ -1582,6 +1586,162 @@ static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
 }
 
 /* ---- Phase actions (called by scheduler at end of phase) ---- */
+
+/* (1.12.188) MESSAGE PASSING ON DEVICE PEs: THE CUT HOLD.
+ * Each thread-MPI rank on a device PE stamps its DRAM and NoC records on its own ROI-relative clock. Both replays fold
+ * an epoch once the consistent cut (EndOfPhaseActions) has passed it, and an access of epoch k is priced from epoch k-2
+ * (DramEpochReplay::kDramReadLagEpochs, PEMemoryInterface::kNocReadLagEpochs), which must be folded by then: the
+ * documented premise is that the ranks stay within about a phase of each other. Nothing kept them there. A rank that
+ * waited, or (co-simulation) had not entered its PE yet -- the ranks enter one at a time through the host core, a
+ * phase or more apart -- fell behind; the cut skipped a rank that had not entered (its clock was still 0), so its
+ * records later reached the replay behind its clock and issued as a burst, and a rank running ahead read whichever
+ * partial or stale epoch had been fed last. The prices, and the run time, followed the order in which the ranks
+ * happened to run (the length of the program's path, a launch's timing). With one-phase NoC epochs the lag is two
+ * phases for both.
+ * Invariants kept here, at every phase barrier while the window is open (co-simulation: from the first rank's entry
+ * while a rank is still to enter or still in its kernel; device scope: from the ROI baseline at the entry barrier to
+ * the ROI's end):
+ *  (1) PIN: until every rank has entered its PE and run (co-simulation) and the ROI opener has run its roi_begin, both
+ *      cuts stay at 0. An entering rank records from 0 on its own clock, and the opener (rank 0, on the process's main
+ *      thread) re-bases its clock at its roi_begin, so nothing may be folded past them. The opener's PE is not held
+ *      before its roi_begin.
+ *  (2) HOLD: a running PE (ACTIVE, not in a co-simulation rank's post-ROI tail) whose clock is in an epoch past the
+ *      DRAM cut's epoch takes the next phase barrier without running (g_peCutHold, the phase loops of every PE core
+ *      type); its ROI-relative clock does not move (an in-order or OOO PE books the phase as waiting,
+ *      Core::cutHoldWait). An unheld PE is at most in the cut's epoch and advances about one phase per phase, so an
+ *      access of epoch k (k <= the cut's epoch + 1) reads epoch k-2, which the cut has passed. The DRAM epoch is one
+ *      phase; the NoC epoch is a whole number of phases (one by default) and its cut (the ACTIVE cores only) is never
+ *      below the DRAM cut, so its read epoch has been folded too, as has that of the device-time scalars keyed on the
+ *      same axis (PEMemoryInterface::cutFrozenScalar; the cut is published to them below).
+ *  (3) THE CUT ADVANCES: the PE that pins the cut is never held (it is the minimum). When the cut is pinned by a rank
+ *      waiting in a communication bracket on a receive from a known source or on a barrier, the ranks it waits for are
+ *      not held either: they may run past the cut's epoch until it resumes (their reads then take the newest folded
+ *      epoch, counted by the DRAM replay as reads before the lag). The opener's clock starts at its roi_begin, later
+ *      than the other ranks' kernel-entry clocks, so a rank that exchanges messages with it can lead it by that much.
+ *  (4) LIVENESS: a held rank may be one another rank waits for outside what the cut sees (a lock, a futex wait
+ *      outside a communication bracket, a receive from any source). A phase with a held PE made progress if the cut
+ *      advanced, a rank entered, a free PE (or, while a co-simulation rank is still to enter, the host core) advanced
+ *      or holds a running thread, or a thread is in transit (between its host core and its PE, or in a system call
+ *      that does not wait on another thread). Otherwise the holds are lifted until the cut advances or a rank enters.
+ *      Counted and printed ("liveness release"). Ranks are taken to wait for one another by blocking, as the MPI
+ *      library does: a rank that has not entered and spins on the host on a rank that has would keep the host core
+ *      advancing and the holds in place.
+ * Outside the window nothing is held. A held phase is simulated time of no core: the held clocks stamp nothing, so
+ * the ranks' timing is that of ranks started together on their ROI-relative clocks, the axis their records use. */
+static std::atomic<uint8_t> g_cutHoldAny{0};
+/* a thread that left its core for a system call that can wait on another thread (a futex wait that sleeps,
+ * futex_waitv, a read, poll or select): set at the call (syscall_cb), cleared at its return (syscall_ret_cb) */
+static std::atomic<uint8_t> g_cutInWait[MAX_THREADS];
+static uint64_t g_cutHoldPhases = 0, g_cutHoldPePhases = 0, g_cutHoldLifts = 0, g_cutHoldPinPhases = 0;
+static bool g_cutHoldUsed = false;
+static void cutHoldReport() {
+    if (!g_cutHoldUsed) return;
+    g_cutHoldUsed = false;
+    info("[cut-hold] message passing on device PEs: %lu phase(s) with a held PE (%lu PE-phases), %lu phase(s) "
+         "pinned at 0 until every rank ran, %lu liveness release(s)", (unsigned long)g_cutHoldPhases,
+         (unsigned long)g_cutHoldPePhases, (unsigned long)g_cutHoldPinPhases, (unsigned long)g_cutHoldLifts);
+}
+static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
+    static bool lifted = false; static uint64_t liftCut = 0; static uint32_t liftEnt = 0;
+    static uint64_t lastCyc[MAX_THREADS]; static uint64_t lastCutDram = 0; static uint32_t lastEnt = 0;
+    const uint32_t n = std::min<uint32_t>(zinfo->numCores, MAX_THREADS);
+    const uint32_t ent = g_cosim_mode ? g_ranksEnteredN.load() : 0;
+    /* the window. Co-simulation: a rank has entered, and a rank is still to enter or still in its kernel (rank 0's
+     * roi_end clears g_in_device_region while the other ranks are still in theirs, so that flag does not tell).
+     * Device scope: from the ROI baseline (the entry barrier) to the ROI's end (the last rank's closing-barrier
+     * arrival). */
+    const bool opened = g_cutOpenerBegun.load();
+    const bool win = g_cosim_mode ? (ent > 0 && (g_deviceWorkers.load() > 0 || ent < g_mpi_rank_count))
+                                  : (!zinfo->terminationConditionMet && (!opened || in_roi.load()));
+    if (!win) {
+        if (g_cutHoldAny.load()) for (uint32_t c = 0; c < n; c++) g_peCutHold[c].store(0, std::memory_order_release);
+        g_cutHoldAny.store(0); lifted = false;
+        cutHoldReport();
+        return;
+    }
+    g_cutHoldUsed = true;
+    /* device scope: every core is a PE; the clock axis is the one the cut uses (EndOfPhaseActions) */
+    auto isPe = [&](uint32_t c) { return zinfo->cores[c] && (!g_cosim_mode || (c < device_mask.size() && device_mask[c])); };
+    auto rrOf = [&](uint32_t c) {
+        const uint64_t base = g_cosim_mode ? zinfo->cores[c]->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
+        const uint64_t cyc = zinfo->cores[c]->getCycles();
+        return (cyc > base) ? cyc - base : 0;
+    };
+    /* (1) the pin: a PE that an entered rank runs on has a clock past its ROI baseline once it has run; until as many
+     * PEs have run as ranks have entered (at most one rank per PE), one of them has not */
+    uint32_t nPe = 0, started = 0;
+    for (uint32_t c = 0; c < n; c++) {
+        if (!isPe(c)) continue;
+        nPe++;
+        if (g_peTailRun[c] || rrOf(c) > 0) started++;
+    }
+    /* the ROI opener (rank 0, which runs on the process's main thread, thread 0) re-bases its own clock at its
+     * roi_begin (the line after the entry barrier): until then its PE is not held and the pin stays */
+    const uint32_t oc = (!opened && thread_initialized[0]) ? cids[0] : ~0u;
+    const bool pin = !opened || (g_cosim_mode && (ent < g_mpi_rank_count || started < std::min(ent, nPe)));
+    if (pin) { cut = 0; cutDram = 0; g_cutHoldPinPhases++; }
+    /* (4) liveness, judged on the phase that just ended */
+    bool progress = (cutDram != ~0ull && cutDram > lastCutDram) || ent > lastEnt;
+    for (uint32_t c = 0; c < n; c++) {
+        Core* co = zinfo->cores[c];
+        if (!co) continue;
+        const uint64_t cy = co->getCycles();
+        /* a free core that advanced, or that holds a running thread (its clock is past the phase that ended: it runs
+         * once the phase grid reaches it); the host core counts while a co-simulation rank is still to enter */
+        if (!g_peCutHold[c].load(std::memory_order_acquire) && (isPe(c) || pin) &&
+            (cy != lastCyc[c] || zinfo->sched->coreRunsThread(c))) progress = true;
+        lastCyc[c] = cy;
+    }
+    /* a thread in transit (between its host core and its PE, or in a system call that does not wait on another
+     * thread) comes back by itself */
+    if (!progress && g_cutHoldAny.load() &&
+        zinfo->sched->anyThreadInTransit([](uint32_t t) { return t >= MAX_THREADS || g_cutInWait[t].load(std::memory_order_acquire) != 0; }))
+        progress = true;
+    if (g_cutHoldAny.load() && !progress && !lifted) { lifted = true; liftCut = cutDram; liftEnt = ent; g_cutHoldLifts++; }
+    else if (lifted && ((cutDram != ~0ull && cutDram > liftCut) || ent > liftEnt)) lifted = false;
+    if (cutDram != ~0ull) lastCutDram = cutDram;
+    lastEnt = ent;
+    /* (2) the hold */
+    const uint64_t Ed = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * DramEpochReplay::epochPhases();
+    const uint64_t cutE = (cutDram == ~0ull) ? ~0ull : cutDram / Ed;
+    /* (3) the cut can advance: the core that pins it is never held (it is the minimum), and when it is a rank waiting
+     * on others -- a receive from a known source, a barrier -- the ranks it waits for are not held either */
+    static uint8_t needed[MAX_THREADS];
+    for (uint32_t c = 0; c < n; c++) needed[c] = 0;
+    if (!pin && cutDram != ~0ull && g_cutWakePhase == zinfo->numPhases) {
+        std::lock_guard<std::mutex> g(g_cutWakeMu);
+        for (uint32_t c = 0; c < n; c++) {
+            if (g_coreRoiState[c].load(std::memory_order_acquire) != 4 || g_cutWakeRec[c] != cutDram) continue;
+            const uint32_t t = g_cutWakeCoreTid[c];
+            const uint64_t v = (t < MAX_THREADS) ? g_cutWakeInfo[t] : 0;
+            const uint32_t kind = (uint32_t)(v >> 48), me = (uint32_t)v;
+            const int32_t src = (int32_t)((v >> 32) & 0xffff) - 1;
+            if (kind == 1 && src >= 0 && (uint32_t)src < MAX_THREADS) {   // a receive from src
+                const uint32_t ts = g_cutWakeRankTid[src];
+                if (ts < MAX_THREADS && cids[ts] < n) needed[cids[ts]] = 1;
+            } else if (kind == 2 && t < MAX_THREADS) {   // a barrier: the ranks that have not arrived
+                const uint64_t k = g_rankBarGen[t];
+                for (uint32_t r = 0; r < g_mpi_rank_count && r < MAX_THREADS; r++) {
+                    const uint32_t tr = g_cutWakeRankTid[r];
+                    if (r != me && tr < MAX_THREADS && g_rankBarGen[tr] < k && cids[tr] < n) needed[cids[tr]] = 1;
+                }
+            }   // a receive from any source, or no information: left to the liveness release below
+        }
+    }
+    uint32_t held = 0;
+    for (uint32_t c = 0; c < n; c++) {
+        bool h = false;
+        if (!lifted && cutE != ~0ull && isPe(c) && !g_peTailRun[c] && c != oc && !needed[c] &&
+            g_coreRoiState[c].load(std::memory_order_acquire) == 0) {
+            const uint64_t rr = rrOf(c);
+            h = rr > 0 && rr / Ed >= cutE + 1;
+        }
+        g_peCutHold[c].store(h ? 1 : 0, std::memory_order_release);
+        held += h ? 1 : 0;
+    }
+    g_cutHoldAny.store(held > 0 ? 1 : 0);
+    if (held) { g_cutHoldPhases++; g_cutHoldPePhases += held; }
+}
 
 void EndOfPhaseActions() {
     zinfo->profSimTime->transition(PROF_WEAVE);
@@ -1673,6 +1833,10 @@ void EndOfPhaseActions() {
         if (minWait != ~0ull) {   // (1.12.178): each waiting core by its own release bound (cutWakeBound)
             wakeW = cutWakeBound();
             cutDram = std::min(cutDram, wakeW);
+        }
+        if (foldDram && g_mpi_thread_mode && !(g_cosim_mode && g_cosim_no_offload)) {   // (1.12.188): the cut hold
+            mpiCutHold(cut, cutDram);
+            PEMemoryInterface::publishDeviceCut(cutDram);   // the device-time scalars' cut (pe_memory_interface.h)
         }
         {   // PIMID_FOLD_DEBUG=1: which core pins the cut, and is it advancing?
             static const bool foldDbg = (getenv("PIMID_FOLD_DEBUG") != nullptr);
@@ -2027,6 +2191,7 @@ static void dumpTerminationStats() {
     recordProtocolTailStats();   // 1.8.7: fill the protocolTail receipt BEFORE the dump
     /* 1.12.18 (ruling 2026-10-23): the run time is closed before the stats
      * and the DRAM replay's window read it. */
+    cutHoldReport();   // (1.12.188): the cut hold's counters (device scope: the window ends here)
     if (g_mpi_thread_mode) roiWallCloseMpi("termination dump");
     else roiWallEnd(MAX_THREADS, "no roi_end before the stats write: closed at the dump's phase");
     info("Dumping termination stats");
@@ -5916,6 +6081,8 @@ static void statCallReturn(unsigned int vcpu, int64_t ret) {
 
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
     statCallReturn(vcpu_index, ret);   // (1.12.157): fixed host-identity fields of a file status
+    if (vcpu_index < MAX_VCPUS && vcpuToTid[vcpu_index] < MAX_THREADS)   // (1.12.188): the call has returned (see g_cutInWait)
+        g_cutInWait[vcpuToTid[vcpu_index]].store(0, std::memory_order_release);
     if (g_detOrder && vcpu_index < MAX_VCPUS) {   // (1.12.123): a futex wait that returned is no longer watched
         const uint32_t t = vcpuToTid[vcpu_index];
         if (t < MAX_THREADS && g_detSleepWatch[t].exchange(0)) g_detSleepers.fetch_sub(1);
@@ -6339,6 +6506,11 @@ static void syscall_cb(unsigned int vcpu_index,
                     }
                 }
             }
+            /* (1.12.188): for the cut hold's liveness test (mpiCutHold): a wait on another thread, or a call that returns by
+             * itself (a futex wake, a write, a timed sleep) */
+            if (tid < MAX_THREADS)
+                g_cutInWait[tid].store((synth_pc == kFutexWaitSynthPc || (num != 202 && num != 1 && num != 35 && num != 230)) ? 1 : 0,
+                                       std::memory_order_release);
             zinfo->sched->syscallLeave(procIdx, tid, cid, synth_pc,
                                        (int)num, a1, a2);
             /* Whether fake or real leave occurred, set joinPtrs so the

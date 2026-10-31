@@ -106,6 +106,7 @@ protected:
         std::map<uint64_t, uint32_t> frozen;  // epoch -> frozen value
     };
     EpochFrozenScalar md1Epoch_;   // per-MI M/D/1 epoch-frozen device time
+    EpochFrozenScalar md1CutEpoch_;   // (1.12.188): the same on the cut axis (devCutAxis)
 
     PAD();
 
@@ -1427,6 +1428,49 @@ protected:
         return v;
     }
 
+    /* (1.12.188): under message passing on the device (thread-MPI, the cut hold active) the epoch-frozen device-time
+     * scalars -- the shared channel's bandwidth wait and an interface's M/D/1 wait, which price the accesses the DRAM
+     * replay does not -- are keyed on the access's own ROI-relative epoch (cutRoiRel), as the NoC records and the
+     * DRAM replay are, final once the consistent cut has passed the epoch (EndOfPhaseActions publishes the cut,
+     * publishDeviceCut), and read kNocReadLagEpochs back; the cut hold keeps that epoch final. They were keyed on the
+     * global phase count, i.e. on the phase in which the simulator ran the access: a rank held, or started a phase
+     * later, in one run than in another counted its accesses into another epoch, and the wait followed the order in
+     * which the ranks were simulated (placement_HBM3_mpi_stream_triad_pe16_CHANNEL: 133 128 to 151 792 cycles
+     * under three program paths with one-phase NoC epochs). Before the first publication the global key stays. */
+    static inline std::atomic<uint64_t> s_devCut{0};
+    static inline std::atomic<bool> s_devCutOn{false};
+public:
+    static void publishDeviceCut(uint64_t cut) {
+        if (cut != ~0ull) s_devCut.store(cut, std::memory_order_release);
+        s_devCutOn.store(true, std::memory_order_release);
+    }
+protected:
+    static bool devCutAxis() { return s_devCutOn.load(std::memory_order_acquire) && !singleProcCut(); }
+    template <typename Compute>
+    static uint32_t cutFrozenScalar(EpochFrozenScalar& s, uint64_t k, uint64_t epochLen, Compute compute) {
+        const uint64_t done = epochLen ? s_devCut.load(std::memory_order_acquire) / epochLen : 0;   // epochs below are final
+        futex_lock(&s.lk);
+        s.acc[k] += 1;
+        while (!s.acc.empty() && s.acc.begin()->first < done) {
+            auto it = s.acc.begin();
+            if (!s.frozen.count(it->first)) s.frozen[it->first] = compute(it->second);
+            s.acc.erase(it);
+        }
+        uint32_t v = 0;
+        if (k >= kNocReadLagEpochs) {
+            const uint64_t r = k - kNocReadLagEpochs;
+            auto it = s.frozen.find(r);
+            if (it != s.frozen.end()) v = it->second;
+            else if (r < done) v = compute(0);   // final, no access
+            else {   // not final (a liveness release of the cut hold): the latest final epoch before it
+                auto lo = s.frozen.upper_bound(r);
+                v = (lo == s.frozen.begin()) ? 0 : std::prev(lo)->second;
+            }
+        }
+        futex_unlock(&s.lk);
+        return v;
+    }
+
     // Shared M/D/c channel-BW queueing wait (cycles) for an aggregate offered rate
     // (lines/cycle across the whole device). Extracted verbatim from the original
     // channelBandwidthWait phase-update so the rolling-EWMA (OMP) path and the
@@ -1603,8 +1647,7 @@ protected:
             uint64_t curEpoch = rel / (E > 0 ? E : 1);
             double mrpc = maxRequestsPerCycle_;
             uint32_t nch = numChannels_;
-            uint32_t wait = epochFrozenScalar(md1Epoch_, curEpoch,
-                [epochLen, mrpc, nch](uint64_t cnt) -> uint32_t {
+            auto md1 = [epochLen, mrpc, nch](uint64_t cnt) -> uint32_t {
                     double load = ((double)cnt / (double)epochLen) / mrpc;
                     if (nch > 1) load /= (double)nch;
                     if (load > 0.95) load = 0.95;
@@ -1613,7 +1656,10 @@ protected:
                         ? (load * svcTime) / (2.0 * (1.0 - load))
                         : 0.0;
                     return (uint32_t)(waitTime + 0.5);
-                });
+                };
+            uint32_t wait = devCutAxis()   // (1.12.188): the cut axis (see cutFrozenScalar)
+                ? cutFrozenScalar(md1CutEpoch_, cutRoiRel(req.srcId, req.cycle) / epochLen, epochLen, md1)
+                : epochFrozenScalar(md1Epoch_, curEpoch, md1);
             result = localLatency_ + wait;
         } else {
             // OMP / non-MPI (or no BW model): original rolling-EWMA path, kept
@@ -2269,10 +2315,10 @@ protected:
         // and baked a +-1 phase into COMPUTE-COMPLETE. Instead, count the aggregate
         // accesses per numPhases-epoch and price from the PREVIOUS (barrier-final)
         // epoch's frozen M/D/c wait -- a keyed lookup of an order-free integer count.
-        (void)srcId; (void)reqCycle;
         if (cutPricing()) {   // 1.12.18: single-process cut too
             if (!zinfo->hierarchy.mpiNocBaselined) return 0;  // pre-ROI: no wait
             static EpochFrozenScalar cbwEpoch;
+            static EpochFrozenScalar cbwCutEpoch;   // (1.12.188): on the cut axis (see cutFrozenScalar)
             uint32_t E = zinfo->garnetNetwork
                 ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
             uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -2280,11 +2326,12 @@ protected:
             uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
             uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
             uint64_t curEpoch = rel / (E > 0 ? E : 1);
-            return epochFrozenScalar(cbwEpoch, curEpoch,
-                [epochLen](uint64_t cnt) -> uint32_t {
+            auto cbw = [epochLen](uint64_t cnt) -> uint32_t {
                     double rate = (double)cnt / (double)epochLen;
                     return channelWaitFromRate(rate);
-                });
+                };
+            return devCutAxis() ? cutFrozenScalar(cbwCutEpoch, cutRoiRel(srcId, reqCycle) / epochLen, epochLen, cbw)
+                                : epochFrozenScalar(cbwEpoch, curEpoch, cbw);
         }
 
         __sync_fetch_and_add(&cbwAccesses, 1);

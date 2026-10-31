@@ -791,6 +791,13 @@ void OOOCore::leave() {
     cRec.notifyLeave(curCycle);
 }
 
+void OOOCore::cutHoldWait(uint64_t t) {   /* (1.12.188), see core.h */
+    if (t <= curCycle) return;
+    const uint64_t skip = t - curCycle;
+    advance(t);   // as syncToWaker
+    cRec.pimidAddWait(skip);   // waiting, not unhalted
+}
+
 uint64_t OOOCore::syncToWaker(uint64_t t) {   /* 1.12.21 (user ruling 2026-10-24), see core.h */
     if (t <= curCycle) return 0;
     const uint64_t skip = t - curCycle;
@@ -873,6 +880,14 @@ void OOOCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
         // This is fine, since the loop looks at core values directly and there are no locals involved,
         // so we should just advance as needed and move on.
         if (newCid != cid) break;  /*context-switch, we do not own this context anymore*/
+        /* (1.12.188): held by the cut hold (core.h): the next barrier without running, the clock frozen */
+        while (cid < MAX_THREADS && g_peCutHold[cid].load(std::memory_order_acquire)) {
+            core->cutHoldWait(core->phaseEndCycle + 1);   // the held phase (past its end, as the loop above), booked as waiting (core.h)
+            core->phaseEndCycle += zinfo->phaseLength;
+            newCid = TakeBarrier(tid, cid);
+            if (newCid != cid) break;
+        }
+        if (newCid != cid) break;
     }
 }
 

@@ -266,6 +266,26 @@ thread got there, and that arrangement changed the next phase's shuffle (a co-si
 MPI cell's post-ROI collective tail differed between runs). Process-mode MPI ranks
 keep their own ordering.
 
+**Message-passing ranks on device PEs stay within the read lag.** Since (1.12.188) the ranks of a thread-MPI run on
+device PEs (co-simulation with offload, or device scope) are kept, at every phase barrier while they are in their
+kernels, where each access reads an epoch the consistent cut has passed: an access of epoch k reads epoch k-2 of the
+DRAM replay and of the NoC, two phases with one-phase epochs. (1) Until every rank has entered its PE and run, and
+the ROI opener (rank 0) has re-based its clock at its roi_begin, nothing is folded, and each PE stops one epoch in
+(the opener runs on to its roi_begin). (2) Then a PE whose ROI-relative clock is in an epoch past the DRAM cut's
+epoch takes the next phase barrier without running, its ROI-relative clock unchanged (an in-order or OOO PE books
+the phase as waiting); an unheld PE is at most in the cut's epoch and advances about a phase in a phase, so the
+epoch it reads has been folded, and the NoC cut is never below the DRAM cut. (3) The PE that pins the cut is never
+held; when the cut is pinned by a rank waiting in a receive from a known source or in a barrier, the ranks it waits
+for are not held either and may run past the lag until it resumes (the DRAM replay counts such reads as reads before
+the lag). (4) A wait the cut does not see (a lock, a futex wait outside a communication bracket, a receive from any
+source) can leave no free rank able to move: a phase with a held PE in which nothing free made progress lifts the
+holds until the cut advances. The run log's `[cut-hold]` line counts the held phases, the pinned phases and these
+releases. The device-time waits of accesses the DRAM replay does not price (the shared channel's bandwidth wait, an
+interface's M/D/1 wait) are keyed on the access's own ROI-relative epoch and are final at the same cut; they were
+keyed on the phase in which the simulator ran the access. A held phase is simulated time of no core, so the ranks
+run as if they had started together on their ROI-relative clocks, and the result no longer follows the order in
+which the ranks happened to be simulated.
+
 **Regressions can be gated exactly.** Run the single-threaded build and
 require bit-identical output; it costs one run. The settings below keep the
 parallel runtime from resizing its team and from spinning at barriers, so
