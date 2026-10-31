@@ -415,7 +415,7 @@ bool ALUCore::inStack(ADDRINT a) {
     if (x - stkLo_ >= stkHi_ - stkLo_) return false;
     if (x < stkMinT_) stkMinT_ = x;
     if (x > stkMaxT_) stkMaxT_ = x;
-    if (stkMaxT_ + 8 - stkMinT_ > stkReserve_ && roiBaseCycle && !zinfo->terminationConditionMet)
+    if (stkMaxT_ + 8 - stkMinT_ > stkReserve_ && roiBegun_ && !zinfo->terminationConditionMet)   // (1.12.199): see roiBegun_
         panic("%s: the stack spans %lu bytes in the ROI, more than its scratchpad reserve "
               "pim.pe.spm_stack_bytes = %lu (pim.pe.stack: spm): raise spm_stack_bytes, and spm_bytes with it",
               name.c_str(), (unsigned long)(stkMaxT_ + 8 - stkMinT_), (unsigned long)stkReserve_);

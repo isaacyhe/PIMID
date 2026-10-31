@@ -546,8 +546,8 @@ device window**, not a single host-driven offload:
 
 **Counting contract.** Host cores are counted across the task region around the
 kernel. Device PEs are counted within their per-rank kernel windows: the window
-opens at the rank's kernel-entry barrier and closes at its closing-barrier
-marker. The device wall clock is the maximum over PEs of `cycles -
+opens where the rank leaves its kernel-entry barrier (after the barrier's own
+cost, since (1.12.199)) and closes at its closing-barrier marker. The device wall clock is the maximum over PEs of `cycles -
 protocolTail`, and energy, the device fabric and the power-gating residency
 window are priced over it (1.12.3, ruling 1 (a)). The post-kernel collective
 tail is outside the priced window: during it the waiting ranks' clocks follow

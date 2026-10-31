@@ -683,6 +683,7 @@ a shared-memory run, and since 1.12.126 the ranks of a thread-MPI run, take
 their turns in a fixed order, so multi-threaded timing is the same in every
 run (see [architecture.md](architecture.md#reproducibility)). The run time and every time-based power term use
 the ROI's elapsed wall-clock time, the latest ROI end on the cores' own
-clocks; for message-passing ranks on the host cores (a no-offload baseline),
-the global phase clock from the first ROI barrier to the last rank's arrival at the closing barrier. See [network.md](network.md) and the YAML reference
+clocks (a message-passing rank's ROI starts where it leaves the kernel-entry barrier, since (1.12.199)); for
+message-passing ranks on the host cores (a no-offload baseline), the global phase clock from the entry barrier's
+release to the last rank's arrival at the closing barrier. See [network.md](network.md) and the YAML reference
 (`simulation.det_epoch_phases`).

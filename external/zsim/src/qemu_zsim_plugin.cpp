@@ -1455,9 +1455,23 @@ static uint32_t g_cutWakeCoreTid[MAX_THREADS];   // the thread that made the cor
  * rewinds that growth. The cut and the wake bounds read a bracketed core at this clock, not the grown one. */
 static uint64_t g_cutFrozenRr[MAX_THREADS];
 /* (1.12.178): the ROI opener's roi_begin has run. Under thread-MPI the opener (rank 0, the line after the entry
- * barrier) re-baselines its own core there, so until then its clock origin is not final: its first ROI
- * records would be stamped behind an epoch folded on the old origin. Nothing is folded before it. */
+ * barrier) re-baselined its own core there, so until then its clock origin was not final. Nothing is folded before
+ * it. (1.12.199): no clock origin moves at roi_begin any more (see g_rankRoiStart); the pin is kept. */
 static std::atomic<bool> g_cutOpenerBegun{false};
+/* (1.12.199): a thread-MPI ROI starts, for each rank, where the rank leaves the kernel-entry barrier (the barrier that
+ * took the ROI baseline, generation g_entryBarGen): after the barrier's own cost, its latency and its primitive, so
+ * the startup skew before the barrier and the barrier itself are outside every rank's ROI, as an MPI program times a
+ * region (a barrier, then the timer). Per thread, g_rankRoiStart is 0 before the rank's last operation in that
+ * barrier, 1 while it waits for the barrier primitive's charge (an RT event follows the barrier op when the runtime
+ * model applies), 2 while its core has still to time the barrier's charge (an in-order or OOO core times a block at
+ * the next one), 3 once its ROI has started (rankRoiStart). */
+static bool g_entryBarSet = false;
+static uint64_t g_entryBarGen = 0;
+static uint8_t g_rankRoiStart[MAX_THREADS];
+static bool g_coreRoiStarted[MAX_THREADS];
+static bool g_rtOn[MAX_THREADS];   // (1.12.199): the runtime model applied at this thread's last RT_QUERY (the shim's tl_rt_on)
+static std::atomic<uint32_t> g_rankRoiStartedN{0};
+static inline bool ranksRoiStarted() { return !g_entryBarSet || g_rankRoiStartedN.load() >= g_mpi_rank_count; }
 static inline uint64_t cutAxisClock(uint32_t c);
 static inline uint64_t cutCoreClock(uint32_t c, uint32_t st) {
     const uint64_t r = cutAxisClock(c);
@@ -1478,8 +1492,10 @@ static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative cl
 }
 /* (1.12.178): the rendezvous axis. Send stamps, barrier arrivals and a receive's arrival are on each rank's
  * ROI-relative clock (roiRelCycles: the core's clock minus mpi_roi_base_cyc); the cut is on the clock its
- * records carry (cutAxisClock). The two differ for the ROI opener by its own re-baseline at roi_begin. The
- * wake tables hold rendezvous-axis clocks; a bound is moved to a core's record axis by relToCut. */
+ * records carry (cutAxisClock). The two differ where a core's record origin is not its baseline snapshot
+ * (PEMemoryInterface::roiOriginOf); until (1.12.199) they also differed for the ROI opener, by its own re-baseline at
+ * roi_begin (each rank's start now sets both, rankRoiStart). The wake tables hold rendezvous-axis clocks; a bound
+ * is moved to a core's record axis by relToCut. */
 static inline int64_t cutRelDelta(uint32_t c) {   // rendezvous clock = cut clock + delta
     Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
     if (!co || c >= MAX_THREADS) return 0;
@@ -1647,10 +1663,10 @@ static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
  * Invariants kept here, at every phase barrier while the window is open (co-simulation: from the first rank's entry
  * while a rank is still to enter or still in its kernel; device scope: from the ROI baseline at the entry barrier to
  * the ROI's end):
- *  (1) PIN: until every rank has entered its PE and run (co-simulation) and the ROI opener has run its roi_begin, both
- *      cuts stay at 0. An entering rank records from 0 on its own clock, and the opener (rank 0, on the process's main
- *      thread) re-bases its clock at its roi_begin, so nothing may be folded past them. The opener's PE is not held
- *      before its roi_begin.
+ *  (1) PIN: until every rank has entered its PE and run (co-simulation), every rank has left the entry barrier (its
+ *      ROI starts there, on its own clock from 0: g_rankRoiStart) and the ROI opener has run its roi_begin, both
+ *      cuts stay at 0, so nothing may be folded past them. Neither the opener's PE before its roi_begin nor a rank
+ *      still leaving the entry barrier is held.
  *  (2) HOLD: a running PE (ACTIVE, not in a co-simulation rank's post-ROI tail) whose clock is in an epoch past the
  *      DRAM cut's epoch takes the next phase barrier without running (g_peCutHold, the phase loops of every PE core
  *      type); its ROI-relative clock does not move (an in-order or OOO PE books the phase as waiting,
@@ -1662,8 +1678,7 @@ static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
  *  (3) THE CUT ADVANCES: the PE that pins the cut is never held (it is the minimum). When the cut is pinned by a rank
  *      waiting in a communication bracket on a receive from a known source or on a barrier, the ranks it waits for are
  *      not held either: they may run past the cut's epoch until it resumes (their reads then take the newest folded
- *      epoch, counted by the DRAM replay as reads before the lag). The opener's clock starts at its roi_begin, later
- *      than the other ranks' kernel-entry clocks, so a rank that exchanges messages with it can lead it by that much.
+ *      epoch, counted by the DRAM replay as reads before the lag).
  *  (4) LIVENESS: a held rank may be one another rank waits for outside what the cut sees (a lock, a futex wait
  *      outside a communication bracket, a receive from any source). A phase with a held PE made progress if the cut
  *      advanced, a rank entered, a free PE (or, while a co-simulation rank is still to enter, the host core) advanced
@@ -1696,7 +1711,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
      * roi_end clears g_in_device_region while the other ranks are still in theirs, so that flag does not tell).
      * Device scope: from the ROI baseline (the entry barrier) to the ROI's end (the last rank's closing-barrier
      * arrival). */
-    const bool opened = g_cutOpenerBegun.load();
+    const bool opened = g_cutOpenerBegun.load() && ranksRoiStarted();   // (1.12.199): and every rank's ROI has started
     const bool win = g_cosim_mode ? (ent > 0 && (g_deviceWorkers.load() > 0 || ent < g_mpi_rank_count))
                                   : (!zinfo->terminationConditionMet && (!opened || in_roi.load()));
     if (!win) {
@@ -1722,9 +1737,15 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
         nPe++;
         if (g_peTailRun[c] || rrOf(c) > 0) started++;
     }
-    /* the ROI opener (rank 0, which runs on the process's main thread, thread 0) re-bases its own clock at its
-     * roi_begin (the line after the entry barrier): until then its PE is not held and the pin stays */
+    /* the ROI opener (rank 0, which runs on the process's main thread, thread 0) runs its roi_begin the line after
+     * the entry barrier: until then its PE is not held and the pin stays */
     const uint32_t oc = (!opened && thread_initialized[0]) ? cids[0] : ~0u;
+    /* (1.12.199): a rank still leaving the entry barrier is not held either (it has to run to start its ROI) */
+    static uint8_t entryPend[MAX_THREADS];
+    for (uint32_t c = 0; c < n; c++) entryPend[c] = 0;
+    if (!ranksRoiStarted())
+        for (uint32_t t = 0; t < MAX_THREADS; t++)
+            if (g_rankRoiStart[t] != 3 && g_rankBarGen[t] == g_entryBarGen && cids[t] < n) entryPend[cids[t]] = 1;
     const bool pin = !opened || (g_cosim_mode && (ent < g_mpi_rank_count || started < std::min(ent, nPe)));
     if (pin) { cut = 0; cutDram = 0; g_cutHoldPinPhases++; }
     /* (4) liveness, judged on the phase that just ended */
@@ -1778,7 +1799,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
     uint32_t held = 0;
     for (uint32_t c = 0; c < n; c++) {
         bool h = false;
-        if (!lifted && cutE != ~0ull && isPe(c) && !g_peTailRun[c] && c != oc && !needed[c] &&
+        if (!lifted && cutE != ~0ull && isPe(c) && !g_peTailRun[c] && c != oc && !needed[c] && !entryPend[c] &&
             g_coreRoiState[c].load(std::memory_order_acquire) == 0) {
             const uint64_t rr = rrOf(c);
             h = rr > 0 && rr / Ed >= cutE + 1;
@@ -1900,7 +1921,7 @@ void EndOfPhaseActions() {
         }
         if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
         if (foldNoc) { spNocCut = cut; spNocFolded = true; }
-        if (g_mpi_thread_mode && !g_cosim_mode && !g_cutOpenerBegun.load()) cutDram = 0;
+        if (g_mpi_thread_mode && !g_cosim_mode && (!g_cutOpenerBegun.load() || !ranksRoiStarted())) cutDram = 0;   // (1.12.199): see g_rankRoiStart
         if (g_mpi_thread_mode && g_cosim_mode && g_cosim_no_offload) {
             /* A no-offload host-rank run records only host records, stamped on the ROI-relative phase grid
              * (DramEpochReplay::hostAccess), and its host cores keep no ROI base cycle, so their clocks give no cut
@@ -2315,6 +2336,36 @@ static inline void recSyncNote(uint32_t tid) {
         if (zinfo->dramReplay) zinfo->dramReplay->noteSync(cids[tid]);   // (1.12.189): see DramEpochReplay::noteSync
         if (zinfo->hostDramReplay && zinfo->hostDramReplay != zinfo->dramReplay) zinfo->hostDramReplay->noteSync(cids[tid]);
     }
+}
+/* (1.12.199): see g_rankRoiStart. The ROI of the rank on thread tid starts now, on its core's clock: the core is
+ * re-baselined (Core::markRoiBegin: its ROI statistics and the origin of the clock its NoC and DRAM records, its cut
+ * clock and its end in the run time are on; mpi_roi_base_cyc: its rendezvous clock's, and the record origin of an
+ * in-order or OOO core). A core more than one rank shares (host ranks of a no-offload run with more ranks than host
+ * cores) keeps its first rank's start, so the clock of a rank already running on it never moves. The start is a
+ * rendezvous for the reconciliation (recSyncNote): nothing before it is rewound. */
+static void rankRoiStart(uint32_t tid) {
+    if (tid >= MAX_THREADS || g_rankRoiStart[tid] == 3) return;
+    const uint32_t c = cids[tid];
+    if (!cores[tid] || c >= zinfo->numCores || c >= MAX_THREADS || !zinfo->cores[c]) { g_rankRoiStart[tid] = 2; return; }   // not on its core: at its next block
+    g_rankRoiStart[tid] = 3;
+    if (!g_coreRoiStarted[c]) {
+        g_coreRoiStarted[c] = true;
+        zinfo->cores[c]->markRoiBegin();
+        mpi_roi_base_cyc[c] = zinfo->cores[c]->getCycles();
+        g_rankRoiBaseCache[tid] = mpi_roi_base_cyc[c];
+        recSyncNote(tid);
+    }
+    g_rankRoiStartedN.fetch_add(1);
+}
+/* the rank on thread tid has made its last operation in the entry barrier: an ALU PE has timed its charges as they
+ * were made; an in-order or OOO core times the barrier's block at its next one */
+static inline void rankRoiAtExit(uint32_t tid) {
+    if (tid < MAX_THREADS && cores[tid] && cores[tid]->wakeStampable()) rankRoiStart(tid);
+    else if (tid < MAX_THREADS) g_rankRoiStart[tid] = 2;
+}
+/* a later operation of the rank: its ROI has started by then */
+static inline void rankRoiFallback(uint32_t tid) {
+    if (tid < MAX_THREADS && (g_rankRoiStart[tid] == 1 || g_rankRoiStart[tid] == 2)) rankRoiStart(tid);
 }
 
 static void dumpTerminationStats() {
@@ -3251,17 +3302,19 @@ static void handleRtMagicOp(uint64_t op, uint32_t tid) {
     if (tid >= MAX_THREADS || !zinfo) return;
     uint64_t a = 0;
     if (op == ZSIM_MAGIC_OP_RT_QUERY) {
-        if (readRdx(&a) && a) *(volatile uint64_t*)a = rtApplies(tid) ? 1 : 0;
+        g_rtOn[tid] = rtApplies(tid);   // (1.12.199): see g_rankRoiStart
+        if (readRdx(&a) && a) *(volatile uint64_t*)a = g_rtOn[tid] ? 1 : 0;
         return;
     }
     if (!g_rt.enabled) return;
     if (pimidPostRoiFree()) return;   // 1.12.18 (2026-10-24): no runtime charges after the ROI (see handleMpiMagicOp)
-    if (op == ZSIM_MAGIC_OP_RT_BEGIN) { g_rtShim[tid] = true; return; }
+    if (op == ZSIM_MAGIC_OP_RT_BEGIN) { rankRoiFallback(tid); g_rtShim[tid] = true; return; }   // (1.12.199): rankRoiFallback
     if (op == ZSIM_MAGIC_OP_RT_END)   { g_rtShim[tid] = false; return; }
     if (!readRdx(&a) || !rtApplies(tid)) return;
     const int kind = (int)(a & 0xffffffffu);
     if (kind < RTK_MPI_P2P || kind > RTK_MPI_BARRIER) panic("[pim-runtime] RT_EVENT kind %d is not an MPI event", kind);
     rtCharge(tid, kind, (uint32_t)(a >> 32), false);
+    if (kind == RTK_MPI_BARRIER && g_rankRoiStart[tid] == 1) rankRoiAtExit(tid);   // (1.12.199): the entry barrier's primitive (g_rankRoiStart)
 }
 /* ==== end 1.12.18 PIM runtime primitives ==== */
 
@@ -3542,7 +3595,9 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             g_ctrlRet[tid] = tud->termRetAddr;
         }
     }
+    const bool roiStartAfter = tid < MAX_THREADS && g_rankRoiStart[tid] == 2 && fPtrs[tid].type != FPTR_NOP;   // (1.12.199): see g_rankRoiStart
     fPtrs[tid].bblPtr(tid, tud->tbAddr, tud->bblInfo);
+    if (unlikely(roiStartAfter)) rankRoiStart(tid);
     if (g_detQ && g_detOrder && detActive() && tid < MAX_THREADS) {   // (1.12.123): the turn ends after kDetTurnCycles
         const uint32_t cid = cids[tid];
         if (cid < zinfo->numCores && zinfo->cores[cid] && fPtrs[tid].bblPtr != JoinBbl) {
@@ -3564,6 +3619,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
  */
 static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     if (tid >= MAX_THREADS) return;
+    rankRoiFallback(tid);   // (1.12.199): see g_rankRoiStart
     /* 1.12.18 (2026-10-24, MPI checksums): after the ROI (stats written, the
      * program running to its exit) the MPI timing ops price nothing. The
      * post-ROI checksum reduce of gemv/spmv/stencil/triad/vadd otherwise drove
@@ -3854,9 +3910,13 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * plugin observes. Both bfs and stencil place a sync MPI_Barrier at
          * kernel entry, immediately before rank 0's zsim_roi_begin(), so this
          * lands at ~kernel entry (post-init: MPI_Init emits no barrier magic
-         * op, only MPI_REGISTER). rank 0 hits that same barrier first but then
-         * re-baselines at its real roi_begin (markRoiBegin is idempotent -- it
-         * just re-snapshots the current instant), so rank 0 stays exact; a
+         * op, only MPI_REGISTER). (1.12.199): this snapshot opens the run's
+         * windows (the traffic counters, the host cores' statistics); each
+         * rank's own ROI, its clock and its statistics, starts where it
+         * leaves this barrier (g_rankRoiStart), and rank 0's roi_begin no
+         * longer re-baselines its core. In co-simulation the op that takes it
+         * follows the first rank's flush and launch on its host core (the
+         * other ranks' come after it); a
          * rank that later also does SEND/RECV skips the block below (flag
          * already set), preserving the 1.3.3 stencil path. */
         if (zinfo && !mpi_roi_baselined) {
@@ -3865,6 +3925,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();
             zinfo->pgres.markRoi(zinfo->numPhases, zinfo->globPhaseCycles);   // 1.11.18: PG residency window
             snapshotRoiBaseCyc();
+            if (g_mpi_thread_mode && tid < MAX_THREADS) { g_entryBarGen = g_rankBarGen[tid]; g_entryBarSet = true; }   // (1.12.199): see g_rankRoiStart
             roiRebaseTrafficCounters("first MPI barrier (synthesized baseline)");   // 1.11.90
             flushHeldWritebacks();   // 1.12.18 (B3)
             if (getenv("PIMID_DEBUG_RDV"))
@@ -3919,6 +3980,13 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
 
             __sync_fetch_and_add(&zinfo->mpiStats.messages, 1);
             __sync_fetch_and_add(&zinfo->mpiStats.totalLatency, barrierLat);
+        }
+        /* (1.12.199): the rank's last operation in the entry barrier is this one, or the barrier primitive's RT event that
+         * follows it when the runtime model applied at the barrier's entry (a thread-MPI barrier of more than one rank; a
+         * co-simulation rank enters it on its host core, where the model does not apply): see g_rankRoiStart */
+        if (g_mpi_thread_mode && g_entryBarSet && g_rankRoiStart[tid] == 0 && g_rankBarGen[tid] == g_entryBarGen) {
+            if (g_rtOn[tid] && g_mpi_rank_count > 1) g_rankRoiStart[tid] = 1;   // the shim's own decision, at the barrier's entry
+            else rankRoiAtExit(tid);
         }
         return;
     }
@@ -5152,8 +5220,13 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (g_mpi_thread_mode) {
             int prev = g_roiRefCount.fetch_add(1);
             uint32_t cid = (tid < MAX_THREADS) ? cids[tid] : INVALID_CID;
+            /* (1.12.199): not after a baseline (the entry barrier's): every rank's ROI, rank 0's included, starts where it
+             * leaves that barrier (g_rankRoiStart). Re-baselined here, rank 0's clock (on an ALU PE also the clock
+             * its records, its cut clock and its end are on) restarted at its roi_begin, behind its own rendezvous
+             * clock and the other ranks' by the barrier's charges (12.6 k to 19 k cycles in 16-rank smoke cells). */
+            rankRoiFallback(tid);
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID &&
-                cid < zinfo->numCores && zinfo->cores[cid])
+                cid < zinfo->numCores && zinfo->cores[cid] && !mpi_roi_baselined)
                 zinfo->cores[cid]->markRoiBegin();
             g_cutOpenerBegun.store(true);   // (1.12.178): the DRAM cut may fold from here on
             if (prev == 0) {
@@ -5170,14 +5243,14 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                  * 1.015 / 1.087 / 1.199 across three runs; rank 0 exact). The
                  * sweep, the clock snapshot and the traffic rebase therefore
                  * run here only when no barrier has rebased yet (a kernel
-                 * with no entry barrier); otherwise rank 0 alone re-baselines
-                 * its own core (above). */
+                 * with no entry barrier); otherwise rank 0 alone re-baselined
+                 * its own core (above; (1.12.199): no longer, g_rankRoiStart). */
                 const bool barrierBaselined = mpi_roi_baselined;
                 in_roi.store(true);
                 mpi_roi_baselined = true;
                 if (barrierBaselined) {
-                    info("[roi] thread-MPI roi_begin after the entry barrier's baseline: rank %u re-baselined its own core; "
-                         "the other ranks keep their kernel-entry baseline (1.11.97, H10 refined)", tid);
+                    info("[roi] thread-MPI roi_begin after the entry barrier's baseline: rank %u re-baselines nothing; "
+                         "every rank's ROI starts where it leaves that barrier (1.11.97)", tid);
                     cosimRoiBeginOffload(tid);
                     return;
                 }
@@ -5544,22 +5617,23 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (g_mpi_thread_mode) {
             int prev = g_roiRefCount.fetch_add(1);
             uint32_t cid = (tid < MAX_THREADS) ? cids[tid] : INVALID_CID;
+            rankRoiFallback(tid);   // (1.12.199): see the other entry point
             if (cid != INVALID_CID && cid != UNINITIALIZED_CID &&
-                cid < zinfo->numCores && zinfo->cores[cid])
+                cid < zinfo->numCores && zinfo->cores[cid] && !mpi_roi_baselined)
                 zinfo->cores[cid]->markRoiBegin();
             g_cutOpenerBegun.store(true);   // (1.12.178): the DRAM cut may fold from here on
             if (prev == 0) {
                 /* 1.11.97 (H10 refined, gate 1207D): the same rule as the
                  * other magic-op entry point -- when the entry barrier has
-                 * already rebased every core at kernel entry, rank 0 keeps its
-                 * own re-baseline (above) and nothing else is re-snapshotted;
+                 * already rebased every core at kernel entry, nothing is
+                 * re-snapshotted (rank 0's core neither, (1.12.199));
                  * otherwise every core is baselined here (H10). */
                 const bool barrierBaselined = mpi_roi_baselined;
                 in_roi.store(true);
                 mpi_roi_baselined = true;
                 if (barrierBaselined) {
-                    info("[roi] thread-MPI roi_begin after the entry barrier's baseline: rank %u re-baselined its own core; "
-                         "the other ranks keep their kernel-entry baseline (1.11.97, H10 refined)", tid);
+                    info("[roi] thread-MPI roi_begin after the entry barrier's baseline: rank %u re-baselines nothing; "
+                         "every rank's ROI starts where it leaves that barrier (1.11.97)", tid);
                     cosimRoiBeginOffload(tid);
                     return;
                 }

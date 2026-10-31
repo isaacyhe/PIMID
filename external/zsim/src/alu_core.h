@@ -155,6 +155,10 @@ class ALUCore : public Core {
         uint64_t stkReserve_ = 0;
         uint64_t stkLo_ = 0, stkHi_ = 0;
         uint64_t stkMinT_ = ~0ull, stkMaxT_ = 0;
+        /* (1.12.199): the ROI has begun on this PE (markRoiBegin): the stack-reserve check applies. It was keyed on a
+         * nonzero roiBaseCycle, so a PE whose baseline fell at its clock 0 (every co-simulation PE: it runs nothing
+         * before its rank enters) was never checked. */
+        bool roiBegun_ = false;
         uint64_t stkReads_ = 0, stkWrites_ = 0, roiStkReads_ = 0, roiStkWrites_ = 0;
         bool inStack(ADDRINT a);
         void peekStack(ADDRINT a);
@@ -216,7 +220,7 @@ class ALUCore : public Core {
             roiDmaOps_ = dmaOps_; roiDmaLines_ = dmaLines_; roiDmaCycles_ = dmaCycles_;
             roiCmdReads_ = cmdReads_; roiCmdWrites_ = cmdWrites_;
             roiStkReads_ = stkReads_; roiStkWrites_ = stkWrites_;
-            stkMinT_ = ~0ull; stkMaxT_ = 0;
+            stkMinT_ = ~0ull; stkMaxT_ = 0; roiBegun_ = true;
         }
         void markActivity(CoreActivityMark& m) const override {   // (1.12.181)
             mixMark(m);

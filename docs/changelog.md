@@ -6,6 +6,58 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.199 -- Message passing: each rank's ROI starts where it leaves the kernel-entry barrier; the scratchpad stack check covers every PE
+
+- **The problem.** A thread-MPI run took every core's ROI baseline at the first barrier operation of the kernel-entry
+  barrier (the MPI_Barrier on the line before rank 0's zsim_roi_begin()), and rank 0, the ROI opener, re-baselined
+  its own core at its roi_begin. So the ranks' regions did not start alike: ranks 1 to N-1 counted the barrier's own
+  cost after that baseline (its latency estimate, the runtime code and the barrier primitive: 1.1 k to 3.8 k cycles
+  at 4 to 16 ranks, 13 k at 64) and rank 0 did not; and on an ALU PE rank 0's re-baseline moved the clock its NoC and
+  DRAM records are stamped on, the cut reads and its end in the run time is measured on, while its rendezvous clock
+  (send stamps, barrier arrivals, a receive's arrival) kept the barrier's origin, 12 663 to 19 261 cycles behind
+  (smoke cells, 16 ranks; most of it rank 0's ROI-begin print). On in-order and OOO PEs and host cores rank 0's
+  statistics left out the barrier the other ranks' counted, so the pricing window, the busiest PE's cycles, fell
+  short of the run time where rank 0 ended last; an OOO host core's clock could also resume below its baseline after
+  the barrier's wait and read 0 there. Separately, the scratchpad stack-reserve check (`pim.pe.stack: spm`) applied
+  only to a PE whose ROI baseline was a nonzero clock: in co-simulation every PE's baseline is its clock 0, so only
+  rank 0 (through its re-baseline) was checked.
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, alu_core.{h,cpp}). Each rank's ROI starts where it leaves the
+  entry barrier, after the barrier's own cost: at its last operation in it (the barrier op, or the barrier
+  primitive's runtime event that follows it when the runtime model applies), or, on an in-order or OOO core, once
+  its next block has timed the barrier's charge. Its core is re-baselined there (statistics, the clock its records,
+  its cut and its end are on, and its rendezvous clock), so the startup skew before the barrier and the barrier
+  itself are outside every rank's region, as an MPI program times a region (a barrier, then the timer); the region
+  ends, as before, at the last rank's arrival at the closing barrier. Rank 0's roi_begin no longer re-baselines its
+  core. A core several ranks share keeps its first rank's start. The DRAM and NoC cuts stay at 0 until every rank has
+  started, and a rank still leaving the barrier is not held. The run's statistics windows (traffic counters, the host
+  cores' statistics) still open at the barrier op that takes the baseline, in co-simulation after the first rank's
+  flush and launch on its host core, as before. A no-offload host-rank run keeps its phase-clock run time from the
+  entry barrier's release. The stack check applies on every PE from its ROI baseline on.
+- **Validation** (1.12.195 and this build; smoke sizes unless stated):
+  - Every rank starts at its exit and the cuts open once all have (dev prints); a core's rendezvous clock minus its
+    record clock is 0 on every ALU PE at every phase barrier.
+  - Every one of the 150 device and co-simulation message-passing cells ends as before (146 complete, the 4 refused
+    fig2 bfs cells refused), as do the 15 co-simulation message-passing cells at full size and 20 no-offload
+    host-rank cells; the power check reports no failure on these logs; the pricing window equals the run time in all
+    131 device-scope logs (127 before). Repeats are identical: the two determinism cells x 8, four co-simulation
+    message-passing cells x 8, the 150 cells on a second node.
+  - The saturated bfs device cells (16 ranks, HBM3) with and without an unused guest environment variable: CHANNEL
+    38.0 | 20.9 M -> 21.7 | 21.9 M cycles, LOGIC_DIE 20.9 | 21.6 M -> 20.8 | 24.6 M; at full size CHANNEL 31.3 | 29.6
+    M -> 31.9 | 32.2 M, LOGIC_DIE 31.2 | 42.0 M -> 31.0 | 32.2 M, the DRAM fold point never held (3 to 3 421 times per
+    run before) and the cut hold's liveness releases 2 to 6 per run (78 to 225).
+  - The 34 scratchpad-stack cells (8 kernels serial / OpenMP / MPI on the device, 5 kernels MPI / OpenMP in
+    co-simulation): the same 6 are refused as before, the device histogram and reduction and the co-simulation gemv,
+    histogram, stencil_2d and stream_triad message-passing runs, whose ranks' stacks span 66 to 69 KB in the ROI
+    against the 8 KB reserve (`pim.pe.spm_stack_bytes`); a co-simulation refusal now names the PE that overflows, any
+    rank's.
+- **Data impact.** Shared-memory, serial and host cells: unchanged (the 116-cell validation set is identical), and so
+  are single-rank message-passing runs. Message passing, smoke sizes: device ALU PEs median +5.3 % (gemv +16.7 %,
+  stream_triad +18.8 %: rank 0 ends last there and its ROI-begin print, which follows its barrier exit, is now inside
+  its region; histogram +6.9 %, bfs -0.2 %, stencil_2d -3.0 %); in-order and OOO PEs -9.4 % to +0.4 % (median -3.5
+  %: the barrier's cost left out); co-simulation -14.2 % to +4.8 % (median -2.4 %); no-offload host ranks -16.6 % to
+  +9.0 % (11 of 20 change: their rendezvous clocks start at each rank's exit); total power -21.4 % to +6.9 % (median
+  0). Full size, the 15 co-simulation message-passing cells move by -0.24 % to +0.36 %.
+
 ## 1.12.198 -- command spacing from the JEDEC and data-sheet tables: HBM3 and GDDR6 read-to-write, precharge-to-precharge, the all-bank precharge, write-to-read across ranks
 
 - **The problems.** (1) HBM3's read-to-write turnaround was the generic nCL + nBL + 2 - nCWL (17 nCK at 6.4 Gb/s),

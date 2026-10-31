@@ -215,10 +215,19 @@ host memory controller, and since (1.12.147) (user ruling 2026-10-28) a memory o
 type Ramulator such as the `HOST_MC` placement's -- is a replayed controller
 charged in the bound phase; no memory controller is timed in the weave phase
 (see [memory.md](memory.md)). Message-passing ranks
-use the same mechanism and also meet at their rendezvous. The run time is the
+use the same mechanism and also meet at their rendezvous. Since (1.12.199) each
+rank's ROI starts where it leaves the kernel-entry barrier (the barrier on the
+line before rank 0's roi_begin), after the barrier's own cost (its latency and
+the barrier primitive): its clock, the clock its records, its rendezvous and
+its cut are on, and its statistics all start there, so the startup skew before
+the barrier and the barrier itself are outside every rank's ROI, as an MPI
+program times a region (a barrier, then the timer); the ROI ends at the last
+rank's arrival at the closing barrier. The run time is the
 ROI's elapsed wall-clock time, the latest ROI end on the cores' own clocks;
 for message-passing ranks that run on the host cores (a no-offload baseline)
-it is the global phase clock from the first ROI barrier to the last rank's arrival at the closing barrier,
+it is the global phase clock from the entry barrier's release (the phase in
+which its last rank arrives; the clock's resolution is one phase) to the last
+rank's arrival at the closing barrier,
 the axis their DRAM records are stamped on.
 Since (1.12.76) a guest thread's identity is its QEMU vCPU index (the guest's own
 thread-creation order), its host/device domain is read by its parent at the
@@ -272,9 +281,10 @@ keep their own ordering.
 **Message-passing ranks on device PEs stay within the read lag.** Since (1.12.188) the ranks of a thread-MPI run on
 device PEs (co-simulation with offload, or device scope) are kept, at every phase barrier while they are in their
 kernels, where each access reads an epoch the consistent cut has passed: an access of epoch k reads epoch k-2 of the
-DRAM replay and of the NoC, two phases with one-phase epochs. (1) Until every rank has entered its PE and run, and
-the ROI opener (rank 0) has re-based its clock at its roi_begin, nothing is folded, and each PE stops one epoch in
-(the opener runs on to its roi_begin). (2) Then a PE whose ROI-relative clock is in an epoch past the DRAM cut's
+DRAM replay and of the NoC, two phases with one-phase epochs. (1) Until every rank has entered its PE and run, every
+rank has left the entry barrier (where its ROI starts) and the ROI opener (rank 0) has run its roi_begin, nothing is
+folded, and each PE stops one epoch in (the opener runs on to its roi_begin, a rank still leaving the barrier runs
+on to its start). (2) Then a PE whose ROI-relative clock is in an epoch past the DRAM cut's
 epoch takes the next phase barrier without running, its ROI-relative clock unchanged (an in-order or OOO PE books
 the phase as waiting); an unheld PE is at most in the cut's epoch and advances about a phase in a phase, so the
 epoch it reads has been folded, and the NoC cut is never below the DRAM cut. (3) The PE that pins the cut is never
