@@ -596,28 +596,34 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   fit's core-count-independent intercept at any core count, and the load term
   grows linearly with the host's L3 (one 1.875 MB slice per core, 0.58 W per
   core at the raised clock). A run of a larger host says so.
-- **L3 writes.** Every line written into an L3 besides its write requests is
-  priced as an L3 write (the L3's `fill` counter), so both kinds of L3 count
-  alike: an inclusive L3's fills on read misses and the dirty lines its children
-  write back; a non-inclusive L3's lines from the L2s (their evictions, clean and
-  dirty, and copies of lines shared across cores). A write miss's fill is the
-  write its request is already priced as. The host fabric carries a clean
-  eviction to a non-inclusive L3 as it carries a dirty one.
+- **L2 and L3 writes.** Every line written into an L2 or an L3 besides its
+  write requests is priced as a write of that cache (the cache's `fill`
+  counter), so the levels and both kinds of L3 count alike: an L2's or an
+  inclusive L3's fills on read misses (prefetches included) and the dirty lines
+  its children write back; a non-inclusive L3's lines from the L2s (their
+  evictions, clean and dirty, and copies of lines shared across cores). A write
+  miss's fill is the write its request is already priced as. The host fabric
+  carries a clean eviction to a non-inclusive L3 as it carries a dirty one.
 - **Host arrays outside McPAT's components** are priced with CACTI 7 at the
   node's technology, corner, temperature and metal stack, sized from what they
-  hold, and added to the cache they belong to (its line, its power gating and
-  the node total; their area is printed and not added to the die). The
+  hold, and added to the cache they belong to: their energy and leakage to its
+  line, its power gating and the node total, their area to its area and so to
+  the die's (which the die's clock trunk and the host ring's links span). The
   non-inclusive L3's snoop filter, in the L3: one slice per core, each with as
   many entries as an L2 has lines and the L2's sets and associativity; an entry
   is the tag (the 48-bit physical address above the line and set bits), 3 state
-  bits (valid, held exclusively, dirty) and one holder bit per L2; a lookup per
-  request that reaches it, an entry write per request that changes one. Each
-  core's L2 streamer, in the L2: its stream table (the configured streams, fully
-  associative on the 4 KB page number; direction, latest line, furthest
-  prefetched line and LRU rank), searched and written once per L1D request it
-  sees; its superqueue (the configured entries, a line address and 4 state bits
-  each), written when a request leaves the L2 for the L3 and read when its line
-  returns.
+  bits (valid, held exclusively, dirty) and one holder bit per L2. A lookup per
+  request that reaches it reads one set; an update writes one entry. Its size
+  grows with the square of the core count (the entries and each entry's holder
+  bits both scale with it): at 22 nm its leakage is about 35 mW per slice up to
+  4 cores, 0.56 W at 16 cores, 2.2 W at 32 and 4.4 W at 64. Each core's L2
+  streamer, in the L2: its stream table (the configured streams, a CAM on the
+  4 KB page number holding the direction, latest line, furthest prefetched line
+  and LRU rank), searched and written once per L1D request it sees; its
+  superqueue (the configured entries, a line address and 4 state bits each),
+  written when a request leaves the L2 for the L3 and read when its line returns.
+  The superqueue is the L2's outstanding-request queue, so McPAT's template miss
+  buffer of that L2 is not priced beside it.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
   conversion loss, the board and cooling are not modelled; no total includes
   them.

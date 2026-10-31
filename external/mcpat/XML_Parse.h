@@ -407,6 +407,11 @@ typedef struct{
 	 * > 0 = the children this cache's SBT directory tracks per line (the
 	 * caches below it); 0 (default) = upstream, number_of_cores. */
 	int    dir_sharers;
+	/* PIMID: arrays priced outside McPAT that belong to this cache (a snoop filter, a prefetcher's tables), their area
+	 * per instance in mm^2, so the cache's and the die's area hold them; and 1 = the L2's outstanding requests are the
+	 * superqueue priced outside McPAT, so McPAT's own miss buffer is not priced. */
+	double pimid_extra_area_mm2;
+	int    pimid_missb_off;
 	double homenode_read_accesses;
 	double homenode_write_accesses;
 	double homenode_read_hits;
@@ -454,6 +459,11 @@ typedef struct{
 	 * > 0 = the children this cache's SBT directory tracks per line (the
 	 * caches below it); 0 (default) = upstream, number_of_cores. */
 	int    dir_sharers;
+	/* PIMID: arrays priced outside McPAT that belong to this cache (a snoop filter, a prefetcher's tables), their area
+	 * per instance in mm^2, so the cache's and the die's area hold them; and 1 = the L2's outstanding requests are the
+	 * superqueue priced outside McPAT, so McPAT's own miss buffer is not priced. */
+	double pimid_extra_area_mm2;
+	int    pimid_missb_off;
 	double homenode_read_accesses;
 	double homenode_write_accesses;
 	double homenode_read_hits;

@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.194 -- the L2's fills are priced, the L2's outstanding requests once, the snoop filter's updates per entry, the stream table as a CAM, and the new arrays' area is on the die
+
+- **The problems.** (1) An L2 priced only its write requests: its fills on read misses (prefetch fills included) and
+  the dirty lines the L1s wrote back cost nothing, while both kinds of L3 priced theirs. (2) A host L2 with the streamer
+  priced its outstanding requests twice: as the superqueue and as McPAT's 16-entry template miss buffer. (3) A
+  snoop-filter update was priced as the write of a whole set (all its ways), and a stream-table search as the read of
+  every entry. (4) The area of the snoop filter, the stream tables and the superqueues was printed but left off the die.
+- **The fix** (src/main.cpp; src/memory/cacti_wrapper.cpp, include/memory/cacti_wrapper.h; src/power/mcpat_wrapper.cpp,
+  include/power/mcpat_wrapper.h; external/mcpat/sharedcache.cc, XML_Parse.{h,cc}).
+  1. The L2's `fill` counter (fills on read misses, prefetches included, and the L1s' dirty write-backs) is priced as L2
+     writes, as the L3's is.
+  2. Where the superqueue is priced, McPAT's template miss buffer of that L2 is not.
+  3. A snoop-filter update is the write of one entry (CACTI: the same entries organised one per row); a stream-table
+     search is a CAM search (CACTI's pure CAM; the CACTI wrapper gains a search port and its search energy).
+  4. The arrays' area joins their cache's area in McPAT, and so the die's: the cache's clock tree, the die's clock trunk
+     and the host ring's links span it. A last-level cache built as replicated slices (above 64 MB) carries one priced
+     slice's share, as its own area does.
+  5. The snoop filter keeps one holder bit per core; its size grows with the square of the core count, which docs/power.md
+     states with its leakage at 1 to 64 cores.
+- **Validation.** 97 cells (60 host baselines, DDR5 and HBM3, 1/4/16 cores; 30 co-sim cells; 7 device-only cells), eight
+  32- and 64-core host cells and 12 cells with an inclusive L3, this build against the same tree without the change: run
+  times, checksums, hit rates, bandwidth and device counters identical in every cell; a repeat on another node type is
+  identical; the determinism cells give 8 of 8 identical copies each; the power checks report no flag and no consistency
+  failure.
+- **Data impact** (power only). Host baselines -0.41 to +0.00 W: the snoop filter's per-entry updates take 0.001 to 0.42
+  W off the L3, the L2's fills add up to 0.024 W. Device-only cells whose elements have an L2: +0.014 W at most. Co-sim
+  cells: unchanged at two decimals. The host die grows by the arrays (16 cores: +3.2 mm^2 to 221.6 mm^2; 32 cores: +15.6 mm^2),
+  its clock trunk by up to 0.75 mW and the host ring by up to 2.3 mW.
+
 ## 1.12.193 -- the HBM power paper's published model-error figures; its appendix tables cited in the extended version; the HBM2 data-rate rule's published basis
 
 - **The problems.** (1) docs/sources.md gave the error of a simulator-derived HBM2 power model as 20.7% (all-0s data) and

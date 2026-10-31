@@ -110,6 +110,9 @@ public:
         // Suppress the init banner (for latency-only queries whose energy
         // numbers are never consumed and would only mislead in logs)
         bool quiet = false;
+        // A pure CAM (CACTI's pure_cam: associativity 0, one search port); its search energy is
+        // getDynamicSearchEnergy(). The line is the CAM word.
+        bool cam = false;
 
         // Optimization objectives (0=weight, 1=deviate, 2=ED, 3=ED2)
         int obj_func_delay;
@@ -256,6 +259,7 @@ public:
     double getReadDynamicPower() const;    // Dynamic power during read (mW)
     double getWriteDynamicPower() const;   // Dynamic power during write (mW)
     double getGateLeakagePower() const;    // Gate leakage power (mW)
+    double getDynamicSearchEnergy() const; // a CAM's search energy in nJ (SRAMConfig::cam)
 
     // Physical characteristics
     double getCacheHeight() const;     // Cache height in mm

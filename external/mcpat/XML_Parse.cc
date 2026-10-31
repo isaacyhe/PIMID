@@ -946,6 +946,8 @@ void ParseXML::parse(char* filepath)
 
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"merged_dir")==0) {sys.L2[i].merged_dir=(bool)atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"dir_sharers")==0) {sys.L2[i].dir_sharers=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.12.18 */
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"pimid_extra_area_mm2")==0) {sys.L2[i].pimid_extra_area_mm2=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"pimid_missb_off")==0) {sys.L2[i].pimid_missb_off=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"ports")==0)
 							{
 								strtmp.assign(xNode3.getChildNode("param",k).getAttribute("value"));
@@ -1088,6 +1090,7 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"power_gating_vcc")==0) {sys.L3[i].power_gating_vcc=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"merged_dir")==0) {sys.L3[i].merged_dir=(bool)atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"dir_sharers")==0) {sys.L3[i].dir_sharers=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.12.18 */
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"pimid_extra_area_mm2")==0) {sys.L3[i].pimid_extra_area_mm2=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"ports")==0)
 							{
 								strtmp.assign(xNode3.getChildNode("param",k).getAttribute("value"));
@@ -1829,6 +1832,7 @@ void ParseXML::initialize() //Initialize all
 		sys.L2[i].duty_cycle =1;
 		sys.L2[i].merged_dir=false;
 		sys.L2[i].dir_sharers=0;   /* PIMID 1.12.18: upstream (number_of_cores) */
+		sys.L2[i].pimid_extra_area_mm2=0; sys.L2[i].pimid_missb_off=0;
 		sys.L2[i].homenode_read_accesses =1;
 		sys.L2[i].homenode_write_accesses=1;
 		sys.L2[i].homenode_read_hits=1;
@@ -1870,6 +1874,7 @@ void ParseXML::initialize() //Initialize all
 		sys.L3[i].duty_cycle =1;
 		sys.L3[i].merged_dir=false;
 		sys.L3[i].dir_sharers=0;   /* PIMID 1.12.18: upstream (number_of_cores) */
+		sys.L3[i].pimid_extra_area_mm2=0; sys.L3[i].pimid_missb_off=0;
 		sys.L3[i].homenode_read_accesses =1;
 		sys.L3[i].homenode_write_accesses=1;
 		sys.L3[i].homenode_read_hits=1;

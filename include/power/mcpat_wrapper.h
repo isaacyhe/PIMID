@@ -881,8 +881,12 @@ public:
         double read_nJ = 0.0, write_nJ = 0.0;           // per access, one instance
         double leak_sub_W = 0.0, leak_gate_W = 0.0;     // all instances
         uint64_t reads = 0, writes = 0;                 // the run's accesses
+        double area_mm2 = 0.0;                          // all instances: it joins the component's (and the die's) area
     };
     void addExtraArray(ComponentType comp, const ExtraArray& a);
+    /* The L2's outstanding requests are a superqueue priced as an extra array: McPAT's template miss buffer of the L2
+     * is then not priced (it would price them a second time). */
+    void setL2MissBufferReplaced(bool on) { l2_missb_off_ = on; power_computed_ = false; }
     /* 1.12.18: coherence events (zsim INV + INVX + FWD) received by the
      * L1s and by the L2s, all cores of this node. Each is work done by the
      * directory of the level above; the XML writer maps them onto McPAT's
@@ -1104,6 +1108,12 @@ private:
     uint64_t l3_write_misses_;
     std::vector<std::pair<ComponentType, ExtraArray>> extra_arrays_;   // addExtraArray()
     double extra_peak_leak_w_ = 0.0;
+    bool l2_missb_off_ = false;   // setL2MissBufferReplaced()
+    double extraAreaMm2(ComponentType comp) const {
+        double a = 0.0;
+        for (const auto& ea : extra_arrays_) if (ea.first == comp) a += ea.second.area_mm2;
+        return a;
+    }
     uint64_t coh_l1_events_ = 0;   // 1.12.18: received by the L1s
     uint64_t coh_l2_events_ = 0;   // 1.12.18: received by the L2s
     bool coh_dir_enabled_ = true;  // 1.12.18: power.models.coherence_directory

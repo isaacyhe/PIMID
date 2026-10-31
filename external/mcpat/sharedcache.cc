@@ -198,6 +198,14 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 	  interface_ip.num_se_rd_ports = 0;
 	  interface_ip.num_search_ports    = 1;
 	  unicache.missb = new ArrayST(&interface_ip, cachep.name + "MissB", device_t, true, core_t);
+	  if (cacheL==L2 && XML->sys.L2[ithCache].pimid_missb_off)
+	  {
+		  /* PIMID: the L2's outstanding requests are the superqueue the timing model holds, priced outside McPAT with the
+		   * L2 (pimid_missb_off); this template miss buffer would price them a second time. */
+		  unicache.missb->local_result.power.reset();
+		  unicache.missb->local_result.area = 0;
+		  pimid::debugStream(std::cerr) << "[mcpat] " << cachep.name << ": miss buffer not priced (the superqueue holds the L2's outstanding requests)" << std::endl;
+	  }
 	  unicache.area.set_area(unicache.area.get_area()+ unicache.missb->local_result.area);
 	  area.set_area(area.get_area()+ unicache.missb->local_result.area);
 	  //fill buffer
@@ -272,6 +280,16 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 	  unicache.wbb = new ArrayST(&interface_ip, cachep.name + "WBB", device_t, true, core_t);
 	  unicache.area.set_area(unicache.area.get_area()+ unicache.wbb->local_result.area);
 	  area.set_area(area.get_area()+ unicache.wbb->local_result.area);
+  }
+  {   /* PIMID: arrays priced outside McPAT that belong to this cache (pimid_extra_area_mm2, per instance): their area is
+       * the cache's, so its clock tree, the die and what spans the die hold them */
+	  const double extra_um2 = 1e6 * ((cacheL==L2) ? XML->sys.L2[ithCache].pimid_extra_area_mm2
+	                                : (cacheL==L3) ? XML->sys.L3[ithCache].pimid_extra_area_mm2 : 0.0);
+	  if (extra_um2 > 0)
+	  {
+		  unicache.area.set_area(unicache.area.get_area() + extra_um2);
+		  area.set_area(area.get_area() + extra_um2);
+	  }
   }
   //  //pipeline
 //  interface_ip.pipeline_stages = int(ceil(llCache.caches.local_result.access_time/llCache.caches.local_result.cycle_time));

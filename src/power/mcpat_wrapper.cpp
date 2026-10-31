@@ -1352,7 +1352,9 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(static_cast<uint64_t>(ea.first)); f(ea.second.reads); f(ea.second.writes);
         f(static_cast<uint64_t>(std::llround(ea.second.read_nJ * 1e9))); f(static_cast<uint64_t>(std::llround(ea.second.write_nJ * 1e9)));
         f(static_cast<uint64_t>(std::llround((ea.second.leak_sub_W + ea.second.leak_gate_W) * 1e12)));
+        f(static_cast<uint64_t>(std::llround(ea.second.area_mm2 * 1e9)));
     }
+    f(l2_missb_off_ ? 1 : 0);
     /* PIMID 1.12.18 (idle halt, per-die process, per-die trunk) */
     f(config_.idle_halt ? 1 : 0); f(config_.clock_die_trunk ? 1 : 0);
     f(config_.logic_die_node_nm); f(config_.logic_die_device_type);
@@ -4106,6 +4108,12 @@ std::string McPATWrapper::generateXMLConfig() const {
                 << "," << config_.cache_line_bytes << "," << pricedWays("L2", config_.l2_ways) << "," << config_.l2_banks
                 << ",8," << config_.l2_latency_cycles << ",64,1\"/>\n";   /* 1.11.95: assoc/banks/latency from the run */
             xml << "      <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
+            /* arrays priced outside McPAT that belong to the L2 (addExtraArray): their area, per instance; and McPAT's
+             * miss buffer off where the superqueue holds the L2's outstanding requests */
+            if (extraAreaMm2(ComponentType::L2_CACHE) > 0.0)
+                xml << "      <param name=\"pimid_extra_area_mm2\" value=\"" << extraAreaMm2(ComponentType::L2_CACHE) / static_cast<double>(nl2) << "\"/>\n";
+            if (l2_missb_off_)
+                xml << "      <param name=\"pimid_missb_off\" value=\"1\"/>\n";
             xml << "      <param name=\"clockrate\" value=\"" << static_cast<int>(config_.core_clock_mhz) << "\"/>\n";
             xml << "      <param name=\"ports\" value=\"1,1,1\"/>\n";
             /* 1.11.49 (FIX-PRE-FLEET L69): the corner the system declares is
@@ -4232,6 +4240,8 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <param name=\"ports\" value=\"1,1,1\"/>\n";
         xml << "      <param name=\"device_type\" value=\"" << config_.device_type << "\"/>\n";  /* 1.11.49 (L69) */
         xml << "      <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
+        if (extraAreaMm2(ComponentType::L3_CACHE) > 0.0)   // arrays priced outside McPAT in the L3 (addExtraArray): one priced slice's share
+            xml << "      <param name=\"pimid_extra_area_mm2\" value=\"" << extraAreaMm2(ComponentType::L3_CACHE) / static_cast<double>(std::max(1, config_.l3_replicated_slices)) << "\"/>\n";
         xml << "      <stat name=\"read_accesses\" value=\"" << l3_reads_ << "\"/>\n";
         xml << "      <stat name=\"write_accesses\" value=\"" << l3_writes_ << "\"/>\n";
         xml << "      <stat name=\"read_misses\" value=\"" << l3_read_misses_ << "\"/>\n";

@@ -1966,6 +1966,7 @@ struct ZSimParsedOutput {
         uint64_t l1d_fhGETX = 0, l1d_hGETX = 0, l1d_mGETXIM = 0;
         uint64_t l2_hGETS = 0, l2_mGETS = 0, l2_hGETX = 0, l2_mGETXIM = 0;
         uint64_t l2_PUTX = 0;   // 1.12.23: this node's L2 dirty writebacks (host NoC data traffic)
+        uint64_t l2_fill = 0;   // lines written into the L2 besides write requests (zsim `fill`)
         uint64_t l3_hGETS = 0, l3_mGETS = 0, l3_hGETX = 0, l3_mGETXIM = 0;
         uint64_t l3_fill = 0;   // lines written into the L3 besides write requests (zsim `fill`)
         uint64_t l3_sf_lookups = 0, l3_sf_updates = 0;   // a non-inclusive L3's snoop filter
@@ -2005,7 +2006,7 @@ struct ZSimParsedOutput {
         uint64_t l1d_total_reads() const { return l1d_fhGETS + l1d_hGETS + l1d_mGETS; }
         uint64_t l1d_total_writes() const { return l1d_fhGETX + l1d_hGETX + l1d_mGETXIM; }
         uint64_t l2_total_reads() const { return l2_hGETS + l2_mGETS; }
-        uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM; }
+        uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM + l2_fill; }
         uint64_t l3_total_reads() const { return l3_hGETS + l3_mGETS; }
         uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM + l3_fill; }
         uint64_t l1_coh_events() const { return l1_INV + l1_INVX + l1_FWD; }   // 1.12.18
@@ -2125,6 +2126,7 @@ struct ZSimParsedOutput {
     uint64_t l2_mGETXIM = 0;
     uint64_t l2_PUTS = 0;
     uint64_t l2_PUTX = 0;
+    uint64_t l2_fill = 0;   // lines written into the L2 besides write requests (zsim `fill`)
 
     // L3: reads (hGETS+mGETS), writes (hGETX+mGETXIM), misses
     uint64_t l3_hGETS = 0;
@@ -2149,7 +2151,7 @@ struct ZSimParsedOutput {
     uint64_t l1d_total_reads() const { return l1d_fhGETS + l1d_hGETS + l1d_mGETS; }
     uint64_t l1d_total_writes() const { return l1d_fhGETX + l1d_hGETX + l1d_mGETXIM; }
     uint64_t l2_total_reads() const { return l2_hGETS + l2_mGETS; }
-    uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM; }
+    uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM + l2_fill; }
     uint64_t l3_total_reads() const { return l3_hGETS + l3_mGETS; }
     uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM + l3_fill; }
     uint64_t l1_coh_events() const { return l1_INV + l1_INVX + l1_FWD; }   // 1.12.18
@@ -2737,6 +2739,8 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "mGETXSM") { out.l2_mGETXIM += val; if (cgrp) cgrp->l2_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
                 else if (key == "PUTS") out.l2_PUTS += val;
                 else if (key == "PUTX") { out.l2_PUTX += val; if (cgrp) cgrp->l2_PUTX += val; }   // 1.12.23: per node too
+                /* as the L3's: the L2's fills on read misses (prefetches included) and its children's dirty write-backs */
+                else if (key == "fill") { out.l2_fill += val; if (cgrp) cgrp->l2_fill += val; }
                 else if (key == "INV")  { out.l2_INV  += val; if (cgrp) cgrp->l2_INV  += val; }   // 1.12.18
                 else if (key == "INVX") { out.l2_INVX += val; if (cgrp) cgrp->l2_INVX += val; }
                 else if (key == "FWD")  { out.l2_FWD  += val; if (cgrp) cgrp->l2_FWD  += val; }
@@ -13287,41 +13291,61 @@ static void setLinkModelParams(const UnifiedConfig& config, pimid::McPATWrapper:
  * own those directories and prints the mapping. */
 /* Arrays of a HOST node that McPAT has no component for, priced with CACTI 7 at the node's technology (corner,
  * temperature and metal stack of the run) and added to the McPAT component they belong to (McPATWrapper::
- * addExtraArray): the non-inclusive L3's snoop filter (into the L3) and the L2 streamers' stream tables and
- * superqueues (into the L2). Each is sized from what it holds; its accesses are the run's.
+ * addExtraArray): their energy and leakage to its power, their area to its area (and so to the die's, which the clock
+ * trunk and the host ring's links span). The non-inclusive L3's snoop filter goes into the L3, the L2 streamers' stream
+ * tables and superqueues into the L2. Each is sized from what it holds; its accesses are the run's.
  *  - Snoop filter: one slice per core, each tracking as many lines as one L2 holds, organised like the L2 (its sets,
  *    its associativity rounded up to a power of two); an entry is the tag (the address bits above the line and set
  *    index, of the 48-bit physical address the McPAT description uses), 3 state bits (valid, held exclusively,
- *    dirty) and one holder bit per L2. Priced as a RAM of one row per set (all its ways): a lookup reads the set, an
- *    update writes it (zsim sfLookup / sfUpdate); a request reaches one slice.
- *  - Stream table: per core, the configured streams, fully associative on the 4 KB page number; an entry holds the
- *    direction (2 bits), the latest line of the page (6), the furthest line prefetched (7) and its LRU rank. Every L1D
- *    request the streamer sees searches it and writes the entry it matches or allocates (zsim acc). Priced as a RAM
- *    of one entry (tag and state) per row whose search reads every row (every tag compared, as the fully associative
- *    search does) and whose update writes one.
+ *    dirty) and one holder bit per L2. A lookup reads one set (all its ways: a RAM of one set per row); an update
+ *    writes one entry (the write of the same entries organised one per row). zsim sfLookup / sfUpdate; a request
+ *    reaches one slice. Its size grows with the square of the core count (entries and holder bits both scale).
+ *  - Stream table: per core, the configured streams, a CAM on the 4 KB page number holding each entry's direction
+ *    (2 bits), latest line of the page (6), furthest line prefetched (7) and LRU rank. Every L1D request the streamer
+ *    sees searches it once and writes the entry it matches or allocates (zsim acc).
  *  - Superqueue: per core, the configured entries, each a line address (48 - 6 bits) and 4 bits of state (valid,
  *    demand load / store / prefetch, data returned); written when a request leaves the L2 for the L3 and read when
- *    its line returns (zsim demL2Miss + pfFetch).
+ *    its line returns (zsim demL2Miss + pfFetch). It is the L2's outstanding-request queue, so McPAT's template miss
+ *    buffer of the L2 is not priced beside it.
  * CACTI builds power-of-two associativities, row counts and line sizes of 8 to 1024 B; an organisation that is not
  * one is rounded up and said. */
-struct HostArrayGeom { const char* what; uint64_t entries; uint32_t ways; uint32_t tag_bits; uint32_t data_bits; bool cache; std::string shape; };
+struct HostArrayGeom {
+    const char* what; uint64_t entries; uint32_t ways; uint32_t tag_bits; uint32_t data_bits; bool cache; std::string shape;
+    bool cam = false;              // a CAM: a read is a search
+    uint32_t write_entry_bits = 0; // > 0: a write is one entry of this width (rows x ways entries, one per row)
+};
+static pimid::CACTIWrapper::SRAMConfig hostArrayCacti(const UnifiedConfig& config, const UnifiedConfig::SystemNode& node, const char* what) {
+    pimid::CACTIWrapper::SRAMConfig c;
+    c.device_corner = (config.device_corner == "lstp") ? 1 : (config.device_corner == "lop") ? 2 : 0;
+    c.ic_proj_type = config.interconnect_projection;
+    c.tech_node_nm = validateTechNodeNm(node.tech_node_nm, what);
+    c.temperature = static_cast<uint32_t>(config.temperature_k);
+    c.banks = 1;
+    return c;
+}
 static bool priceHostArray(const UnifiedConfig& config, const UnifiedConfig::SystemNode& node, const HostArrayGeom& g,
                            uint32_t instances, uint64_t reads, uint64_t writes, pimid::McPATWrapper::ComponentType comp,
                            pimid::McPATWrapper& mcpat) {
     auto pow2up = [](uint64_t v) { uint64_t p = 1; while (p < v) p <<= 1; return p; };
-    pimid::CACTIWrapper::SRAMConfig c;
-    c.device_corner = (config.device_corner == "lstp") ? 1 : (config.device_corner == "lop") ? 2 : 0;
-    c.ic_proj_type = config.interconnect_projection;
-    c.tech_node_nm = validateTechNodeNm(node.tech_node_nm, g.what);
-    c.temperature = static_cast<uint32_t>(config.temperature_k);
-    const uint32_t line = static_cast<uint32_t>(std::min<uint64_t>(1024, std::max<uint64_t>(8, pow2up((g.data_bits + 7) / 8))));
+    auto lineOf = [&](uint32_t bits) { return static_cast<uint32_t>(std::min<uint64_t>(1024, std::max<uint64_t>(8, pow2up((bits + 7) / 8)))); };
+    auto refuse = [&](const char* part, uint64_t rows, uint32_t line, int nm) {
+        std::cerr << "[power] FATAL: CACTI 7 rejected the " << node.name << " " << g.what << part << " (" << rows << " entries of "
+                  << line << " B" << (g.cache ? ", tag " + std::to_string(g.tag_bits) + " bits" : std::string()) << " at "
+                  << nm << " nm); the array cannot be priced." << std::endl;
+        std::exit(1);
+    };
+    pimid::CACTIWrapper::SRAMConfig c = hostArrayCacti(config, node, g.what);
+    const uint32_t line = lineOf(g.data_bits);
     const uint64_t rows = pow2up(g.entries);
     c.line_size = line;
     c.output_width_bits = line * 8;
-    c.banks = 1;
-    if (g.cache) {
+    if (g.cam) {
+        c.cam = true;
+        c.is_cache = false;
+        c.associativity = 0;
+    } else if (g.cache) {
         c.is_cache = true;
-        c.associativity = g.ways;   // 0: fully associative
+        c.associativity = g.ways;
         c.specific_tag = true;
         c.tag_width_bits = g.tag_bits;
     } else {
@@ -13331,28 +13355,36 @@ static bool priceHostArray(const UnifiedConfig& config, const UnifiedConfig::Sys
     c.capacity_bytes = rows * line;
     pimid::CACTIWrapper w(c);
     w.initialize();
-    if (!w.isValid()) {
-        std::cerr << "[power] FATAL: CACTI 7 rejected the " << node.name << " " << g.what << " (" << rows << " entries of "
-                  << line << " B" << (g.cache ? ", tag " + std::to_string(g.tag_bits) + " bits" : std::string()) << " at "
-                  << c.tech_node_nm << " nm); the array cannot be priced." << std::endl;
-        std::exit(1);
-    }
+    if (!w.isValid()) refuse("", rows, line, c.tech_node_nm);
     pimid::McPATWrapper::ExtraArray a;
     a.name = node.name + " " + g.what;
-    a.read_nJ = w.getDynamicReadEnergy();
+    a.read_nJ = g.cam ? w.getDynamicSearchEnergy() : w.getDynamicReadEnergy();
     a.write_nJ = w.getDynamicWriteEnergy();
+    std::string wnote;
+    if (g.write_entry_bits > 0) {   // one entry written: the same entries organised one per row
+        pimid::CACTIWrapper::SRAMConfig e = hostArrayCacti(config, node, g.what);
+        const uint32_t eline = lineOf(g.write_entry_bits);
+        const uint64_t erows = rows * std::max<uint32_t>(1, g.ways);
+        e.line_size = eline; e.output_width_bits = eline * 8; e.is_cache = false; e.associativity = 1; e.capacity_bytes = erows * eline;
+        pimid::CACTIWrapper we(e);
+        we.initialize();
+        if (!we.isValid()) refuse(" (one entry per row)", erows, eline, e.tech_node_nm);
+        a.write_nJ = we.getDynamicWriteEnergy();
+        wnote = " (one entry: RAM " + std::to_string(erows) + " x " + std::to_string(eline) + " B)";
+    }
     a.leak_sub_W = w.getLeakagePower() * 1e-3 * instances;
     a.leak_gate_W = w.getGateLeakagePower() * 1e-3 * instances;
     a.reads = reads;
     a.writes = writes;
+    a.area_mm2 = w.getArea() * instances;
     mcpat.addExtraArray(comp, a);
     pimid::fmt_scoped(std::cout) << std::setprecision(4) << "  [power] " << node.name << " " << g.what << ": " << instances << " x "
-              << g.shape << "; CACTI 7 " << (g.cache ? "cache " : "RAM ") << rows << " x " << line << " B"
-              << (g.cache ? (g.ways ? std::string(", ") + std::to_string(g.ways) + "-way" : std::string(", fully associative")) + ", tag " + std::to_string(g.tag_bits) + " bits" : std::string())
-              << " at " << c.tech_node_nm << " nm: read " << a.read_nJ * 1e3 << " pJ, write "
-              << a.write_nJ * 1e3 << " pJ per access, leakage " << (a.leak_sub_W + a.leak_gate_W) * 1e3 << " mW (all " << instances
-              << "); " << reads << " reads, " << writes << " writes; area " << w.getArea() * instances << " mm^2 (not in the die)"
-              << std::endl;
+              << g.shape << "; CACTI 7 " << (g.cam ? "CAM " : g.cache ? "cache " : "RAM ") << rows << " x " << line << " B"
+              << (g.cache && !g.cam ? std::string(", ") + std::to_string(g.ways) + "-way, tag " + std::to_string(g.tag_bits) + " bits" : std::string())
+              << " at " << c.tech_node_nm << " nm: " << (g.cam ? "search " : "read ") << a.read_nJ * 1e3 << " pJ, write "
+              << a.write_nJ * 1e3 << " pJ" << wnote << " per access, leakage " << (a.leak_sub_W + a.leak_gate_W) * 1e3 << " mW (all " << instances
+              << "); " << reads << (g.cam ? " searches, " : " reads, ") << writes << " writes; area " << a.area_mm2 << " mm^2 (in the "
+              << (comp == pimid::McPATWrapper::ComponentType::L3_CACHE ? "L3" : "L2") << "'s area)" << std::endl;
     return true;
 }
 static void priceHostArrays(const UnifiedConfig& config, const UnifiedConfig::SystemNode& node,
@@ -13368,24 +13400,27 @@ static void priceHostArrays(const UnifiedConfig& config, const UnifiedConfig::Sy
         const uint32_t ways = pow2up(static_cast<uint32_t>(std::max(1, l2 ? node.l2_ways : std::max(node.l1d_ways, node.l1i_ways))));
         const uint64_t sets = std::max<uint64_t>(1, lines / ways);
         const uint32_t tag = paBits - lineBits - log2u(sets), entry = tag + 3u + static_cast<uint32_t>(cores);
-        HostArrayGeom sf{"L3 snoop filter", sets, 1, 0, ways * entry, false,
+        HostArrayGeom sf{"L3 snoop filter", sets, ways, 0, ways * entry, false,
                          std::to_string(lines) + " entries (" + std::to_string(sets) + " sets x " + std::to_string(ways) + " ways), entry "
                          + std::to_string(tag) + " tag + 3 state + " + std::to_string(cores) + " holder bits, one set per row"};
+        sf.write_entry_bits = entry;
         priceHostArray(config, node, sf, static_cast<uint32_t>(cores), g.l3_sf_lookups, g.l3_sf_updates,
                        pimid::McPATWrapper::ComponentType::L3_CACHE, mcpat);
     }
     const auto& hpf = g_core_rec.host_prefetch;
     if (g.pf_present && node.l2_kb > 0 && hpf.streams > 0 && hpf.superqueue_entries > 0) {
         const uint32_t stBits = 2u + 6u + 7u + log2u(static_cast<uint64_t>(hpf.streams));
-        HostArrayGeom st{"L2 streamer stream table", static_cast<uint64_t>(hpf.streams), 1, 0, (paBits - 12) + stBits, false,
-                         std::to_string(hpf.streams) + " streams, fully associative on the " + std::to_string(paBits - 12)
-                         + "-bit page number + " + std::to_string(stBits) + " state bits, one per row; a search reads every row"};
-        priceHostArray(config, node, st, static_cast<uint32_t>(cores), g.pf_acc * static_cast<uint64_t>(hpf.streams), g.pf_acc,
+        HostArrayGeom st{"L2 streamer stream table", static_cast<uint64_t>(hpf.streams), 0, 0, (paBits - 12) + stBits, false,
+                         std::to_string(hpf.streams) + " streams, a CAM on the " + std::to_string(paBits - 12)
+                         + "-bit page number with " + std::to_string(stBits) + " state bits"};
+        st.cam = true;
+        priceHostArray(config, node, st, static_cast<uint32_t>(cores), g.pf_acc, g.pf_acc,
                        pimid::McPATWrapper::ComponentType::L2_CACHE, mcpat);
         HostArrayGeom sq{"L2 superqueue", static_cast<uint64_t>(hpf.superqueue_entries), 1, 0, (paBits - lineBits) + 4u, false,
                          std::to_string(hpf.superqueue_entries) + " entries of " + std::to_string(paBits - lineBits) + " address + 4 state bits"};
         priceHostArray(config, node, sq, static_cast<uint32_t>(cores), g.pf_l2miss + g.pf_fetch, g.pf_l2miss + g.pf_fetch,
                        pimid::McPATWrapper::ComponentType::L2_CACHE, mcpat);
+        mcpat.setL2MissBufferReplaced(true);   // the superqueue is the L2's outstanding-request queue: McPAT's template miss buffer is not priced
     }
 }
 

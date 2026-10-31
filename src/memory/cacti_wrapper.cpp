@@ -116,8 +116,8 @@ void CACTIWrapper::validateConfiguration() {
         return;
     }
 
-    // Validate associativity
-    if (config_.associativity < 1 || config_.associativity > 64) {
+    // Validate associativity (a pure CAM has none: 0)
+    if (config_.cam ? config_.associativity != 0 : (config_.associativity < 1 || config_.associativity > 64)) {
         valid_ = false;
         error_message_ = "Associativity out of range (1-64)";
         return;
@@ -222,7 +222,7 @@ InputParameter* CACTIWrapper::createCACTIInput(const SRAMConfig& config) {
     input->num_rd_ports = config.read_ports;
     input->num_wr_ports = config.write_ports;
     input->num_se_rd_ports = config.single_ended_read_ports;
-    input->num_search_ports = 0;  // Not a CAM
+    input->num_search_ports = config.cam ? 1 : 0;  // a pure CAM searches on one port
 
     // Technology
     input->F_sz_nm = config.tech_node_nm;
@@ -233,8 +233,8 @@ InputParameter* CACTIWrapper::createCACTIInput(const SRAMConfig& config) {
     input->is_cache = config.is_cache;
     input->is_main_mem = config.is_main_memory;
     input->is_3d_mem = false;  // Not 3D memory
-    input->pure_ram = !config.is_cache;
-    input->pure_cam = false;
+    input->pure_ram = !config.is_cache && !config.cam;
+    input->pure_cam = config.cam;
 
     // Access mode
     input->access_mode = config.access_mode;
@@ -635,6 +635,11 @@ double CACTIWrapper::getDynamicWriteEnergy() const {
     if (!valid_ || !cacti_result_) return 0.0;
     // CACTI reports energy in JOULES; this accessor returns nJ.
     return cacti_result_->power.writeOp.dynamic * 1e9;  // Convert J to nJ
+}
+
+double CACTIWrapper::getDynamicSearchEnergy() const {
+    if (!valid_ || !cacti_result_) return 0.0;
+    return cacti_result_->power.searchOp.dynamic * 1e9;  // J -> nJ
 }
 
 double CACTIWrapper::getLeakagePower() const {
