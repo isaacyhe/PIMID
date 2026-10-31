@@ -159,6 +159,13 @@ estimator as the activation share (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynami
 for the 8-high HBM3 record, 0.0856 for the 4-high HBM2 record; `power.models.dram_vpp_standby_ratio`).
 It is the `+ipp` term of the Background line. Refresh, burst and activation VPP are not affected.
 
+**HBM standby.** HBM2 prices the measured standby (Olgun et al., MICRO 2026; extended version arXiv:2610.14244,
+Appendix A, Table 3) at its 2.4 Gb/s preset (x2, standby linear in the data rate). HBM3 prices the standby of the
+measurement's authors' released HBM3E device configuration (github.com/CMU-SAFARI/HBM-Power, config/HBM3E_6400MTs):
+70.5 mA per 32-bit pseudo-channel at 6400 MT/s, 141.0 mA per channel, 2.48 W of VDD standby per 8-high stack at
+54.2 C. The configuration the authors compared against measured H200 power carries twice that standby
+(docs/derivations/hbm_gddr6_idd.md sec. 1.14).
+
 Non-DRAM technologies (SRAM, STT_MRAM, PCM, RERAM) are charged in system scope
 by the same function device scope uses (1.12.18): CACTI 7 for SRAM, NVSim for
 the NVMs, per-access energy on the measured accesses of every class plus the

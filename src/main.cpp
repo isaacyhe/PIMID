@@ -15292,7 +15292,11 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     n << ", refresh charged as counted " << ref_energy_measured_mw << " mW in place of the datasheet duty " << ref_duty_mw << " mW";
                 if (phy_static_mw > 0.0) n << ", PHY static " << phy_static_mw << " mW";
                 if (rcd_static_mw > 0.0) n << ", RDIMM register static " << rcd_static_mw << " mW";   // (user ruling 2026-10-27)
-                if (config.memory_tech.rfind("HBM", 0) == 0)
+                if (config.memory_tech == "HBM3")   // standby of the HBM power authors' released HBM3E configuration
+                    n << (pimid::debugChecks()
+                          ? "; background: published route -- the HBM power authors' released HBM3E standby, 70.5 mA per pseudo-channel at 6400 MT/s (their HBM2 data-rate line extrapolated; no HBM3 standby measurement; their 30-minute HBM2 loops give 1.46x the sweep at 1200 MT/s) (power.md)"
+                          : "; background from the HBM power authors' released HBM3E standby, 70.5 mA per pseudo-channel at 6400 MT/s (power.md)");
+                else if (config.memory_tech.rfind("HBM", 0) == 0)
                     n << (pimid::debugChecks()
                           ? "; background DERIVED (user ruling 2026-10-23): no published HBM standby current, scaled from measured HBM2 by voltage and data rate (power.md)"
                           : "; background scaled from the measured HBM2 standby by voltage and data rate (power.md)");

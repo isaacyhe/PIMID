@@ -701,6 +701,55 @@ extended to 0.502 to include the Table 3 activation (0.5018 nJ with the record's
 ratio), and the background's lower edge, XPE's 860 mW per stack, to 855 to include the
 Table 3 standby (856.0 mW per stack at the 350 K default).
 
+### 1.14 HBM3 standby from the authors' released HBM3E configuration
+
+The HBM3 standby (IDD2N = IDD3N) takes the route the measurement's authors publish for
+HBM3E: their released device configuration, github.com/CMU-SAFARI/HBM-Power (commit 318d3d1) config/HBM3E_6400MTs/power.json
+(derivation in its docs/explanation/idd-derivation.md; also shipped with Ramulator 2.1).
+It carries IDD2N = 70.5 mA per 32-bit pseudo-channel at 6400 MT/s, VDD 1.1 V:
+
+- the HBM2 IDD2N data-rate line (Olgun et al., MICRO 2026, Sec. 5.1.2, Fig. 13,
+  Finding 6: current linear in the data rate; IDD2N 0.31 mA/(MT/s), intercept 0, per
+  two-chip board) evaluated at 6400 MT/s from its 1200 MT/s point, i.e. x 6400/1200;
+- split over the 16 pseudo-channels of the measured HBM2 stack (standby flows in all
+  of them whether or not they receive commands);
+- x 36/32 for the ECC lanes of an HBM3E pseudo-channel (32 DQ + 4 ECC). The part this
+  record models carries ECC/SEV pins on every channel (JESD238B.01 p.1, Features), so the
+  factor stays although the simulator moves no ECC traffic.
+
+With the line's 1200 MT/s value per HBM2 stack, 188.1 mA (the released HBM2 configuration's
+IDD2N, 11.756 mA per pseudo-channel x 16): 188.1 x 6400/1200 / 16 x 36/32 = 70.5 mA per
+pseudo-channel. Per 64-bit HBM3
+channel (two pseudo-channels): **IDD2N = IDD3N = 141.0 mA** (was 79.8065 mA). Per
+8-high stack: 16 x 141.0 mA x 1.1 V = 2.48 W of VDD standby at 54.2 C (was 1.40 W);
+with the standby VPP (ratio 0.100723, sec. 1.12) and refresh, about 3.0 W.
+
+- **What rides on it.** IDD0, IDD4R, IDD4W and IDD5 keep their excesses over the
+  standby (sec. 1.3, 1.13): activation 7.6714, array read 1247.1128 + I/O 108.0, array
+  write 823.5012 + I/O 93.1, refresh 154.9042 mA. IDD2P = IDD2N x 28/40 = 98.7 mA.
+- **Temperature.** The IDD-vs-temperature slope stays the measured per-stack IDD2N slope
+  over 16 channels (0.401 mA/C per channel); it is not scaled with the standby.
+- **Why sec. 1.3 was lower.** Sec. 1.3 scaled the clocked standby per 64-bit channel with
+  the clock (1600/600 MHz) and the voltage ((1.1/1.2)^1.5): x 2.34. The authors scale it
+  with the data rate (x 5.33), per pseudo-channel, with the ECC lanes.
+- **Range.** The released configuration rests on the authors' data-rate sweep (extended
+  version, Appendix A, Table 5: IDD2N 374.6 mA per two-chip board at 1200 MT/s, about
+  187 mA per chip). At the same 1200 MT/s their 30-minute loops of Table 3 give 272.7 mA
+  per chip, 1.46x the sweep. The configuration the authors compared against measured
+  H200 power (Sec. 6.2, Fig. 22; case_studies/hbm3e_validation/configs/
+  HBM3_6400_power_datapattern.json in the same repository) splits the standby over 8
+  pseudo-channels instead of 16 and so carries twice this standby: about 5.9 W per
+  stack with standby VPP and refresh. The measured H200 idle memory power, which also
+  covers power outside the DRAM, is 34.75-44.95 W over six stacks (the repository's
+  case_studies/hbm3e_validation/data), 5.8-7.5 W per stack.
+- **Guard.** The record's background guard (printed, never priced) spans the published
+  sources: XPE's lower edge (1060 mW per stack) and, as the upper bound, the lowest
+  measured H200 idle memory power per stack (34.75 W / 6 = 5791.7 mW). It replaces XPE's
+  rate law extrapolated beyond its range (2170 mW).
+- **The other HBM3 currents** (IDD0, IDD4R, IDD4W, IDD5B) stay on the sec. 1.3 chain.
+  The released configuration's own values for them follow its activation equation and
+  an all-0s data reference, and are not adopted here.
+
 ## 2. Derivation 2 -- GDDR6
 
 ### 2.1 Search for a scaling base

@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.201 -- HBM3 standby from the HBM power authors' released HBM3E configuration
+
+- **The problem.** The HBM3 standby was the measured HBM2 standby scaled per 64-bit channel with the clock (1600/600 MHz)
+  and the voltage ((1.1/1.2)^1.5): 79.8 mA per channel, 1.40 W of VDD standby per stack. The measurement's authors
+  find standby linear in the data rate (Olgun et al., MICRO 2026, Sec. 5.1.2, Fig. 13), and their released HBM3E device
+  configuration carries 70.5 mA per 32-bit pseudo-channel at 6400 MT/s, 1.8x the record.
+- **The fix** (params/dram/hbm3.yaml; docs/derivations/hbm_gddr6_idd.md sec. 1.14, docs/yaml_reference.md,
+  docs/sources.md, docs/power.md; src/main.cpp: the HBM3 background note of the device power summary). The HBM3 record takes the released configuration's standby (github.com/CMU-SAFARI/HBM-Power (commit 318d3d1) config/HBM3E_6400MTs/power.json):
+  IDD2N = IDD3N = 141.0 mA per channel (two pseudo-channels x 70.5), 2.48 W of VDD standby per stack at 54.2 C. IDD0,
+  IDD4R, IDD4W and IDD5 keep their excesses over it and IDD2P stays IDD2N x 28/40, so the activation, burst and refresh
+  energies do not change. The IDD-vs-temperature slope stays the measured per-stack slope over 16 channels (the HBM3
+  row of the yaml reference's temperature table said otherwise and is corrected).
+- **Range.** The released configuration rests on the authors' data-rate sweep, which gives a lower standby at
+  1200 MT/s than their 30-minute loops of Table 3 (1.46x). The configuration the authors compared against measured H200
+  power carries twice this standby, about 5.9 W per stack with standby VPP and refresh.
+- **Validation.** HBM2 and HBM3 cells and the 97-cell portability set, this tree against the same build without the
+  change: run times, checksums, bandwidth and device counters identical in every cell; only the HBM3 background (standby,
+  standby VPP, power-down) moves; the determinism cells give identical copies; the power checks report no flag and no
+  consistency failure.
+- **Data impact** (power only, HBM3). Background per stack (standby, standby VPP and refresh at 350 K) 1966.5 ->
+  3152.0 mW; activation, burst and refresh energies unchanged. HBM3 device-scope cells +24 to +57 % total power (median
+  +51 %), co-simulation cells +5.5 %, host baselines on HBM3 +2.2 to +5.4 %. HBM2 and other technologies unchanged. The
+  record's background guard (printed, never priced) spans the published sources: XPE's lower edge and, as the upper
+  bound, the measured H200 idle memory power per stack (5791.7 mW; it includes power outside the DRAM).
+
 ## 1.12.200 -- the HBM2 IDD row from the published table; the HBM3 terms scaled from it follow
 
 - **The problem.** The HBM2 row was built from the measurement's summary file before the paper appeared: means over

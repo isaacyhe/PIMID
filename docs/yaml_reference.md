@@ -1058,7 +1058,7 @@ temperature.
 | Record | Form | Rule | Source |
 |---|---|---|---|
 | HBM2 | `LINEAR_STANDBY` | IDD2N and IDD3N +0.801, IDD2P +0.561 mA/C per channel from 54.2 C (one standby slope, IDD2N's). Held outside 48-86 C. IDD0, IDD4R, IDD4W and IDD5 move with their standby baseline, so the activate, burst and refresh excesses stay as measured. | Olgun et al., MICRO 2026; extended version arXiv:2610.14244, Appendix A, Table 4 |
-| HBM3 | `LINEAR_STANDBY` | The HBM2 slopes, scaled by this record's standby over HBM2's. | same |
+| HBM3 | `LINEAR_STANDBY` | IDD2N and IDD3N +0.401, IDD2P +0.280 mA/C per channel from 54.2 C: the measured HBM2 per-stack IDD2N slope (6.41 mA/C) over this record's 16 channels, not scaled with the record's standby. Held outside 48-86 C. | same |
 | DDR4 | `STEP_ABOVE` | Above 85 C: x1.03 on IDD0, IDD2N, IDD3N, IDD4R and IDD4W; x1.40 on IDD2P. IDD5 moves with IDD2N. | Micron MT40A 8 Gb DDR4 datasheet, IDD note 24 |
 
 The HBM rule applies at every temperature, the 350 K default included: the
