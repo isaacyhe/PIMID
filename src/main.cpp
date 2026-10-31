@@ -2947,8 +2947,9 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
  * PEs, the max over ranks of the ROI-relative end, i.e. the parsed (trimmed)
  * per-core max -- the message-passing ranks' clocks already include their
  * waits; ranks on the host cores (no device cycles), the phase clock from the
- * first ROI barrier to the last rank's arrival at the closing barrier. Without a closed stamp: the busy max,
- * said so. `src` names which. */
+ * first ROI barrier to the last rank's arrival at the closing barrier. (1.12.204): ranks on device PEs, never below
+ * the run time itself (roiWallCycles), which the busiest tree link's service time (1.12.171) and a PE's waits can
+ * put above the busy max. Without a closed stamp: the busy max, said so. `src` names which. */
 static uint64_t runWindowCycles(const ZSimParsedOutput& z, std::string* src) {
     const uint64_t busy = z.max_core_cycles;
     uint64_t w = busy;
@@ -2975,6 +2976,15 @@ static uint64_t runWindowCycles(const ZSimParsedOutput& z, std::string* src) {
           << z.roi_wall_cycles << (z.dev_tail_marked ? ", the 1.12.3 kernel-window trim applied" : "") << ")";
         if (z.roi_wall_balance)
             o << ", raised " << z.roi_wall_balance << " cycles by the DRAM balance no barrier applied";
+        /* (1.12.204): the run time itself is the floor. The plugin closes the run time (and the DRAM replay) at the
+         * latest ROI end, raised to the busiest tree link's service time when the PEs' ends lie below it (1.12.171)
+         * and by the DRAM balance; a PE's busy cycles also leave out its waits (wake and lock syncs). A window built
+         * from the busy max fell below it, and every time-based term was priced over less time than the replay and
+         * the links covered (pecount pe64 gemv: 15 593 vs 17 230 cycles, link-floor raise). */
+        if (z.roi_wall_cycles > w) {
+            w = z.roi_wall_cycles;
+            o << "; the run time itself, above the busy max (the busiest link's service time, or a PE's waits)";
+        }
     } else {
         o << "busy max: the dump carries no closed ROI wall stamp ("
           << (z.roi_wall_present ? "roiWallCycles 0" : "no roiWallCycles") << ")";
@@ -17073,8 +17083,11 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         if (roi_wall_stamped) node_wall = std::max(node_wall, zsim_stats.roi_wall_cycles);
         /* (next, ruling 2026-10-30 (3)): device ranks keep their per-PE window, raised by the DRAM balance no
          * barrier applied (roiWallCycles carries it on the other sources) */
-        if (zsim_stats.roi_wall_source == 2 && zsim_stats.dev_wall_cycles > 0 && node.role != UnifiedConfig::SystemNode::HOST)
+        if (zsim_stats.roi_wall_source == 2 && zsim_stats.dev_wall_cycles > 0 && node.role != UnifiedConfig::SystemNode::HOST) {
             node_wall += zsim_stats.roi_wall_balance;
+            /* (1.12.204): never below the run time itself (roiWallCycles, the device clock): see runWindowCycles */
+            if (zsim_stats.roi_wall_cycles > node_wall) node_wall = zsim_stats.roi_wall_cycles;
+        }
         /* 1.12.18 (user ruling R2 2026-10-24): thread-MPI ranks on the HOST
          * cores (a no-offload baseline: no device PE ran) -- the run time is
          * the first ROI barrier to the latest rank's ROI end on those cores

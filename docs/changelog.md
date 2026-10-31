@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.204 -- Message passing: the pricing window is the run time, the busiest link's service time included; the scratchpad stack a message-passing rank needs
+
+- **The problem.** A thread-MPI run's run time is the latest rank's ROI end, raised to the busiest tree link's service
+  time when the ranks' own ends lie below it (1.12.171) and by the DRAM balance no barrier applied (1.12.189); the
+  DRAM replay closes there. The pricing window of a run on device PEs was rebuilt from the busiest PE's cycles plus
+  the DRAM balance, which leaves the link-floor raise out (and any wait a PE's busy count does not hold). Where the
+  link set the run time, every time-based term (McPAT runtime, memory background and refresh, PHY static, link and
+  controller duty) was priced over less time than the run took and than the replay covered: pecount pe64 gemv
+  15 593 against a run time of 17 230 cycles, pe64 stream_triad 12 262 against 16 533; the power check reported
+  "replayed DRAM time ~ pricing window" for both, and the printed "Run time" line disagreed with roiWallCycles.
+- **The fix** (src/main.cpp: runWindowCycles, and the device node's wall in the system-scope window). The window of a
+  message-passing run on device PEs is never below the run time itself (roiWallCycles): the busy maximum plus the
+  balance, raised to the run time where that is longer. The run log's window line says when the run time set it.
+  Run times and every simulated count are unchanged.
+- **Docs** (yaml_reference.md `pim.pe.spm_stack_bytes`, benchmarks.md). With `pim.pe.stack: spm`, the 8 KB default
+  reserve holds the serial and OpenMP kernels' ROI stacks (at most 648 bytes measured) and those of message-passing
+  ranks that do not receive inside the ROI (at most 3 736 bytes). A rank that receives inside the ROI (histogram,
+  reduction: their MPI_Reduce) touches about 69 KB: the MPI library's receive reserves a 64 KB message slot in its
+  stack frame for its process-mode transport, and the compiler's stack probes touch the whole frame on entry; such a
+  run needs `spm_stack_bytes` of about 70 KB.
+- **Validation** (1.12.203 and this build, smoke sizes unless stated): the 150 device and co-simulation
+  message-passing cells end as before and give identical logs except the two pe64 cells, whose run times are
+  unchanged and whose pricing window now equals them; the power check (psan_ZRcUH) reports 0 flags and 0
+  consistency failures on the 146 complete logs (2 before, the pe64 cells). Identical: the 116-cell validation set,
+  the 15 co-simulation message-passing cells at full size, 20 no-offload host-rank cells, the 34 scratchpad-stack
+  cells; the two determinism cells x 8 repeat identically.
+- **Data impact.** Only runs whose run time the link floor (or a wait) sets above the busy maximum: priced over the
+  longer window, total power falls and energy rises by the window's time-based share (pecount pe64 gemv 0.919 ->
+  0.877 W, pe64 stream_triad 0.971 -> 0.842 W). No other cell of the validation sets changes.
+
 ## 1.12.203 -- the memory controllers have the published structure of PARE's two controllers: a host controller's per-bank FR-FCFS queues, a PIM element controller's unified queues
 
 - **The problem.** McPAT priced every memory controller's front end with one structure that no source supported: a single
