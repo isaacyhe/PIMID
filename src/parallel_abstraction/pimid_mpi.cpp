@@ -34,6 +34,7 @@
 #include <sys/stat.h>
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
 #include <cerrno>
 #include <vector>
 
@@ -239,6 +240,7 @@ static inline void mb_unlock(Mailbox* mb) {
  *                              points => more shared => more collisions). Keyed
  *                              per destination (dst_pe % points).
  *   PIMID_DEBUG_CONTEND        1=print each reservation (point/wait/busy) */
+static int      g_ext_state = 0;   /* (1.12.196) staging extension (end of this file): 0 unmapped, 1 being mapped, 2 mapped */
 static uint32_t g_contend_points = 64;
 static int      g_contend_dbg = 0;
 
@@ -562,6 +564,12 @@ static inline char* copy_buf(int r) { return g_copy_bufs + (size_t)r * PIMID_MPI
 static void*        g_stage_arena = nullptr;
 static size_t       g_stage_arena_bytes = 0;
 static uint32_t     g_stage_cap = 0;
+/* (1.12.196): staging that cannot fill, at the end of this file */
+struct RecvRef;
+static uint32_t     stage_ext_n(int r);
+static void         stage_ext_push(int r, const MessageSlot* src);
+static MessageSlot* stage_ext_find(int r, int want_src, RecvRef* ref);
+static void         stage_ext_release(int r, const RecvRef* ref);
 
 static bool stage_arena_create(int nranks) {
     g_stage_cap = (uint32_t)PIMID_MPI_RING_SLOTS * (uint32_t)nranks;
@@ -827,11 +835,7 @@ static MessageSlot* stage_slot_at(int r, uint32_t i) {
 
 static void stage_push(int r, const MessageSlot* src) {
     uint32_t n = g_stage_n[r];
-    if (n >= g_stage_cap) {
-        fprintf(stderr, "[pimid_mpi] rank %d: message staging full (%u messages evicted from a full ring and not yet "
-                "received); refusing to drop or reorder a message\n", r, n);
-        abort();
-    }
+    if (n >= g_stage_cap || stage_ext_n(r)) { stage_ext_push(r, src); return; }   /* (1.12.196): never full */
     uint32_t i = 0;
     uint8_t* used = &g_stage_used[(size_t)r * g_stage_cap];
     while (used[i]) i++;
@@ -880,6 +884,7 @@ static MessageSlot* recv_acquire_thread(int want_src, RecvRef* ref, bool more = 
                 return s;   /* mailbox mutex held */
             }
         }
+        if (MessageSlot* s = stage_ext_find(g_rank, want_src, ref)) { mpi_comm_end(); return s; }   /* (1.12.196) */
         int found = -1;
         for (uint32_t k = 0; k < mb->count; k++) {
             uint32_t idx = (mb->head + k) % PIMID_MPI_RING_SLOTS;
@@ -913,7 +918,10 @@ static void recv_release_thread(const RecvRef* ref, char* keep = nullptr, const 
     /* (1.12.177): the rendezvous parameters are written here, in the window: between the end of the wait
      * and the arrival the rank does nothing that is priced, so no access is stamped before the data */
     if (tm) set_timing_recv(tm->src, g_rank, tm->size, tm->send_time, tm->contend_wait);
-    if (ref->staged) {
+    if (ref->staged && ref->pos < 0) {   /* (1.12.196): an extension entry */
+        stage_ext_release(g_rank, ref);
+        pthread_mutex_unlock(&mb->mtx);
+    } else if (ref->staged) {
         int32_t* order = &g_stage_order[(size_t)g_rank * g_stage_cap];
         const uint32_t i = (uint32_t)order[ref->pos];
         g_stage_used[(size_t)g_rank * g_stage_cap + i] = 0;
@@ -2259,3 +2267,80 @@ extern "C" __attribute__((visibility("default"), used))
 const char pimid_mpi_component_stamp[] = "@(#)PIMID_COMPONENT libpimid_mpi.so " PIMID_VERSION;
 extern "C" __attribute__((visibility("default")))
 const char* pimid_mpi_component_version(void) { return PIMID_VERSION; }
+
+/* (1.12.196): staging that cannot fill. A sender never waits on a full ring (two ranks sending to each other would
+ * wait forever once a third rank filled their rings, 1.12.17), so the messages a receiver has not taken yet move
+ * to its staging, and how many wait there depends only on how fast the host runs the receiving thread. The arena
+ * holds PIMID_MPI_RING_SLOTS x nranks of them per rank; the extension holds the rest. It is one address range at a
+ * fixed address, below the guest mmap base under -R and below a native process's heap, so it moves no other
+ * mapping. It is mapped and registered as transport memory at the first message an arena cannot hold, and its
+ * pages are committed only where written. Each rank owns an equal share, a queue in arrival order: head, tail,
+ * count, the slots. A receive takes the earliest match and marks it taken; the head moves past taken slots and
+ * the queue restarts at slot 0 once empty. While a rank's extension holds messages its new ones go there too, so
+ * the arena, the extension and the ring stay in arrival order and a receive matches what it matched before. Only
+ * a full share stops the run, with the arena's message. */
+#define PIMID_MPI_EXT_BASE  0x1000000000ull   /* 64 GiB */
+#define PIMID_MPI_EXT_BYTES 0x1000000000ull   /* 64 GiB of address space */
+#define EXT_FN __attribute__((noinline, optimize("Os"))) static
+
+/* at the base: the share of a rank and the slots in it; a rank's queue at base + 4096 + rank x share:
+ * head, tail, count, then (64 bytes in) its slots; a taken slot's src is -1 */
+struct ExtHdr { uint64_t share; uint32_t cap; };
+struct ExtQ   { uint32_t head, tail, n; };
+static inline ExtQ* ext_q(int r) {
+    return (ExtQ*)(PIMID_MPI_EXT_BASE + 4096 + (uint64_t)r * ((const ExtHdr*)PIMID_MPI_EXT_BASE)->share);
+}
+static inline MessageSlot* ext_slot(ExtQ* q, uint32_t k) { return (MessageSlot*)((char*)q + 64) + k; }
+
+EXT_FN uint32_t stage_ext_n(int r) {
+    return __atomic_load_n(&g_ext_state, __ATOMIC_ACQUIRE) == 2 ? ext_q(r)->n : 0;
+}
+
+/* rank r's mailbox mutex held */
+EXT_FN void stage_ext_push(int r, const MessageSlot* src) {
+    int st = 0;
+    ExtHdr* h = (ExtHdr*)PIMID_MPI_EXT_BASE;
+    if (__atomic_compare_exchange_n(&g_ext_state, &st, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (mmap(h, PIMID_MPI_EXT_BYTES, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0) != (void*)h)
+            goto full;   /* no extension: the arena's limit stands */
+        h->share = ((PIMID_MPI_EXT_BYTES - 4096) / (uint64_t)g_nranks) & ~(uint64_t)4095;
+        h->cap   = (uint32_t)((h->share - 64) / sizeof(MessageSlot));
+        register_transport_range(h, PIMID_MPI_EXT_BYTES);
+        __atomic_store_n(&g_ext_state, 2, __ATOMIC_RELEASE);
+    }
+    while (__atomic_load_n(&g_ext_state, __ATOMIC_ACQUIRE) != 2) { }   /* another rank is mapping it */
+    {
+        ExtQ* q = ext_q(r);
+        if (q->tail < h->cap) {
+            memcpy((void*)ext_slot(q, q->tail), src, offsetof(MessageSlot, payload) + src->size);
+            q->tail++; q->n++;
+            return;
+        }
+    }
+full:
+    fprintf(stderr, "[pimid_mpi] rank %d: message staging full (%u messages evicted from a full ring and not yet "
+            "received); refusing to drop or reorder a message\n", r, g_stage_n[r]);
+    abort();
+}
+
+/* rank r's mailbox mutex held; r's earliest extension entry from want_src (any if < 0), position -1 - k */
+EXT_FN MessageSlot* stage_ext_find(int r, int want_src, RecvRef* ref) {
+    if (__atomic_load_n(&g_ext_state, __ATOMIC_ACQUIRE) != 2) return nullptr;
+    ExtQ* q = ext_q(r);
+    for (uint32_t k = q->head; k < q->tail; k++) {
+        MessageSlot* s = ext_slot(q, k);
+        if (s->src >= 0 && (want_src < 0 || s->src == want_src)) {
+            ref->staged = true; ref->pos = -1 - (int)k;
+            return s;
+        }
+    }
+    return nullptr;
+}
+
+EXT_FN void stage_ext_release(int r, const RecvRef* ref) {
+    ExtQ* q = ext_q(r);
+    ext_slot(q, (uint32_t)(-1 - ref->pos))->src = -1;
+    if (--q->n == 0) { q->head = q->tail = 0; return; }
+    while (ext_slot(q, q->head)->src < 0) q->head++;
+}

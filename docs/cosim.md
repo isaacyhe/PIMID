@@ -496,7 +496,10 @@ default thresholds (binomial, scatter-allgather, recursive doubling, Bruck,
 ring, Rabenseifner, pairwise; Thakur, Rabenseifner and Gropp, IJHPCA 2005), and
 reduce-style ops apply the builtin reduction operators. The shim's own transport
 memory (mailboxes, staging) is not priced: a message costs the sender's read of
-its buffer, the Garnet transfer and the receiver's write (1.12.17).
+its buffer, the Garnet transfer and the receiver's write (1.12.17). A send never
+waits for the receiver; messages the receiver has not taken yet wait in its
+staging, which grows as needed, so how fast the host runs a rank's thread
+neither stops a run nor changes its results (since (1.12.196)).
 
 Under `noc.model: detailed`, all ranks drive ONE logical Garnet network:
 message payloads and every rank's memory traffic contend on the same tree.

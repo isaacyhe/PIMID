@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.196 -- a slow receiving thread can no longer stop a message-passing run
+
+- **The problem.** A message-passing rank never waits to send: when the receiver's 16-slot ring is full, its oldest
+  message moves to the receiver's staging (1.12.17), a fixed arena of 16 messages per rank of the run for each
+  receiver (32 at 2 ranks). How many messages wait there depends only on how fast the host runs the receiving
+  thread, so on a loaded host the arena could fill, and the run then stopped with "message staging full ...
+  refusing to drop or reorder a message". The native collectives check at 2 ranks stopped in 9 of 10 runs with its
+  threads on two CPUs shared with busy processes at low priority, and once on a loaded test machine.
+- **The fix** (src/parallel_abstraction/pimid_mpi.cpp; docs/cosim.md). Staging no longer fills. Messages the arena
+  cannot hold go to an extension: one address range at a fixed address (64 GiB, below the guest's mapping base and a
+  native process's heap, so it moves no other mapping), mapped and registered as transport memory (not priced) at
+  the first such message, its pages committed only where written. Each rank owns an equal share, a queue in arrival
+  order. While a rank's extension holds messages its new ones go there too, so the arena, the extension and the ring
+  keep arrival order and a receive takes the message it took before. A send still never waits, so no new wait (and
+  no new deadlock) is added. Only a full share (about 1 GiB of messages per rank at 64 ranks, 32 GiB at 2) stops the
+  run, with the same message as before. The shim's mapped size and the addresses of its data are unchanged.
+- **Validation.**
+  - Native collectives check (every collective at 1 to 64 ranks, sizes across each threshold): outputs identical to
+    1.12.195's at all 13 rank counts, and identical again with a test build that puts every staged message in the
+    extension. On two CPUs shared with busy processes at low priority: 2 and 3 ranks pass 12 of 12 runs, 5, 8 and 16
+    ranks 6 of 6 (1.12.195 at 2 ranks: 0 of 6).
+  - 150 message-passing smoke cells (device and co-simulation), 1.12.195 and this build on one node: the same 146
+    complete and the same 4 are refused; no cell fills its arena at these sizes. This build run again on another
+    node gives the same run time in all 146.
+- **Data impact.** The shim runs inside the guest, so its machine code is part of the simulated program, and changing
+  it moves results once even where no message is staged: 39 of the 146 run times are unchanged, the median shift is
+  0.05% and the 90th percentile 1.1%; the largest is the saturated bfs on the CHANNEL placement (37.99 M -> 22.23 M
+  cycles). A test build that differs from this one only in its code, with the same behaviour, moves the same cells
+  by the same order (median 0.00%, 90th percentile 0.95%).
+
 ## 1.12.195 -- LPDDR5 row timings are measured at the second activate command
 
 - **The problem.** An LPDDR5 ACTIVATE is two commands, ACT-1 then ACT-2, and JESD209-5C measures the row timings at
