@@ -2616,10 +2616,10 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
         if (pf->act_guard.valid) {
             const auto& g = pf->act_guard;
             const bool in = (per_kb >= g.lo - 1e-9 && per_kb <= g.hi + 1e-9);
-            o << " vs guards: lower " << f3(g.lo) << " (IDD route, Chatterjee HPCA17 Table II), XPE attribution ceiling " << f3(g.ceiling)
+            o << " vs guards: lower " << f3(g.lo) << " (IDD route, Chatterjee HPCA17 Table II), attribution ceiling " << f3(g.ceiling) << " (record act_guard_nj_per_kb: XPE, or a published measurement above it)"
               << ", upper " << f3(g.hi) << " (O'Connor MICRO17 / Chatterjee HPCA17 bottom-up) -> "
               << (in ? "inside" : (per_kb < g.lo ? "BELOW the lower guard (reported, not tuned)" : "ABOVE the upper guard (reported, not tuned)"))
-              << (in ? (per_kb > g.ceiling + 1e-9 ? ", ABOVE the XPE attribution ceiling" : ", at or below the XPE attribution ceiling") : "");
+              << (in ? (per_kb > g.ceiling + 1e-9 ? ", ABOVE the attribution ceiling" : ", at or below the attribution ceiling") : "");
             const bool warn = !in || per_kb > g.ceiling + 1e-9;
             out.push_back(warn ? "[guard] WARNING: " + o.str().substr(8) : o.str());
         } else {
@@ -2643,8 +2643,8 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
         const bool in = (per_stack >= g.lo_mw - 1e-9 && per_stack <= g.hi_mw + 1e-9);
         std::ostringstream o; o.setf(std::ios::fixed); o.precision(1);
         o << "[guard] " << (in ? "" : "WARNING: ") << bt << " background per stack " << per_stack << " mW (datasheet: active standby + refresh at " << defaultEnergyTemperatureK() << " K over "
-          << ch << " channels" << (ipp_unit > 0.0 ? " + standby VPP" : "") << " + stack floor " << (fl > 0.0 ? fl / st : 0.0) << " mW) vs XPE 2023.1.2 like-for-like [" << g.lo_mw << ", " << g.hi_mw
-          << "] mW (DRAM VDD + VDDQ + VPP rails, record idd.background_guard_mw_stack) -> "
+          << ch << " channels" << (ipp_unit > 0.0 ? " + standby VPP" : "") << " + stack floor " << (fl > 0.0 ? fl / st : 0.0) << " mW) vs the record's like-for-like guard [" << g.lo_mw << ", " << g.hi_mw
+          << "] mW (DRAM VDD + VDDQ + VPP rails; record idd.background_guard_mw_stack, its source string names each edge) -> "
           << (in ? "inside" : (per_stack < g.lo_mw ? "BELOW (reported, not tuned)" : "ABOVE (reported, not tuned)"));
         out.push_back(o.str());
     }

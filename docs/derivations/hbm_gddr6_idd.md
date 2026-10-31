@@ -84,6 +84,10 @@ trefi_ns, channels, idd2p.
 
 ### 1.1 The base: what the HBM2 numbers actually are
 
+The paper has since appeared (Olgun et al., MICRO 2026; extended version arXiv:2610.14244), and the
+HBM2 row and the HBM3 terms scaled from it now take its published Table 3 (sec. 1.13). This
+section keeps the derivation's original base, the artifact's summary file.
+
 Source data: the artifact files zen_hbm2_idd_36chips_summary.csv and
 zen_hbm2_idd_per_chip.csv. These come from the CMU-SAFARI "HBM-Power"
 artifact, https://github.com/CMU-SAFARI/HBM-Power/tree/artifact (fetched
@@ -632,6 +636,70 @@ array part.
   priced): HBM2 814.9 -> 884.5 mW (now inside XPE [860, 1900]); HBM3 1776.7 -> 1930.8 mW (inside [1060, 2170]).
 
 ---------------------------------------------------------------------------
+
+### 1.13 The HBM2 row from the published Table 3
+
+The HBM2 row and the HBM3 terms scaled from it take the measurement as its authors
+publish it: Olgun et al., "Understanding the Power Consumption of Modern High Bandwidth
+Memory", MICRO 2026; extended version arXiv:2610.14244, Appendix A, Table 3, row "All
+chips". Each value is the mean over the 36 chips of each chip's last 60 one-second
+samples of a 30-minute loop (Sec. 5.1), after subtracting the board's current with the
+HBM2 chip powered off. It replaces the summary-file means of sec. 1.1, which predate
+the paper and its processing.
+
+Per stack, mA, 1.2 Gb/s, VDD 1.2 V:
+
+| loop | sec. 1.1 summary means - 821.3 | Table 3 All chips |
+|---|---|---|
+| IDD2N | 266.1 | 272.7 |
+| IDD3N1 | 246.0 | 231.8 |
+| IDD0 | 303.8 | 309.7 |
+| IDD4R | 2888.8 | 2881.0 |
+| IDD4W | 2023.3 | 1981.9 |
+| IDD5B | 693.2 | 696.8 |
+
+(The proceedings text quotes IDD0 as 309.9 mA; Table 3 gives 309.7, which the row uses.)
+
+**HBM2 row, per channel at the 2.4 Gb/s preset** (sec. 1.10 rate rule, unchanged):
+
+| field | was | now | change |
+|---|---|---|---|
+| idd2n = IDD2N / 8 x 2 | 66.525 | 68.175 | +2.5 % |
+| idd3n = IDD3N1 / 8 x 2 | 61.5 | 57.95 | -5.8 % |
+| activation excess IDD0 - (20 IDD3N1 + 9 IDD2N) / 29, / 8 | 6.445 | 8.151 | +26.5 % |
+| idd0 = standby baseline + that excess | 69.504741 | 69.274138 | |
+| read excess (IDD4R - IDD3N1) / 8 x 4 | 1321.4 | 1324.6 | +0.24 % |
+| write excess (IDD4W - IDD3N1) / 8 x 4 | 888.65 | 875.05 | -1.5 % |
+| refresh excess (IDD5B - IDD2N) / 8 | 53.3875 | 53.0125 | -0.7 % |
+| idd2p = idd2n x 28/40 | 46.5675 | 47.7225 | +2.5 % |
+
+The activation energy per 1 KB pseudo-channel activation goes from 373.7 to 472.6 pJ
+(1.2 V x 8.151 mA x 48.3 ns). The row had carried the excess of the unpaired summary
+means (6.445 mA), while sec. 1.1 and the HBM3 chain used the per-chip paired excess
+(7.65 mA, 444 pJ). Table 3 gives one value for both: the paired excess is linear in the
+chip values, so its mean equals the excess of the Table 3 means, 8.151 mA.
+
+**HBM3 terms.** Each moves by the ratio of the HBM2 quantity sec. 1.3 scales it from,
+so the scaling factors and the record's conventions are unchanged:
+
+| term (per channel) | HBM2 quantity | ratio | was | now |
+|---|---|---|---|---|
+| standby IDD2N = IDD3N | IDD2N 272.7 / 266.1 | 1.024803 | 77.875 mA | 79.8065 mA |
+| activation excess | 8.150862 / 7.65 | 1.065472 | 7.2 mA | 7.6714 mA |
+| array read | (IDD4R - IDD3N1) 2649.2 / 2642.8 | 1.002422 | 1244.1 mA | 1247.1128 mA |
+| array write | (IDD4W - IDD3N1) 1750.1 / 1777.3 | 0.984696 | 836.3 mA | 823.5012 mA |
+| refresh excess | (IDD5B - IDD2N) 424.1 / 427.1 | 0.992976 | 156.0 mA | 154.9042 mA |
+
+The I/O shares (108.0 / 93.1 mA) and the IDD-vs-temperature slopes (Table 4) do not
+change. At the preset's tRC (77 x 0.625 ns) the HBM3 activation goes from 381.2 to
+406.1 pJ (VDD only), the refresh energy per channel REF from 60.06 to 59.64 nJ, and the
+array write energy from 2.25 to 2.21 pJ/b.
+
+**Guards.** The HBM2 record's plausibility guards (printed, never priced) span the
+published sources: the activation's attribution ceiling, XPE's 0.50 nJ per 1 KB, is
+extended to 0.502 to include the Table 3 activation (0.5018 nJ with the record's VPP
+ratio), and the background's lower edge, XPE's 860 mW per stack, to 855 to include the
+Table 3 standby (856.0 mW per stack at the 350 K default).
 
 ## 2. Derivation 2 -- GDDR6
 

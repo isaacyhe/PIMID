@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.200 -- the HBM2 IDD row from the published table; the HBM3 terms scaled from it follow
+
+- **The problem.** The HBM2 row was built from the measurement's summary file before the paper appeared: means over
+  all samples of each loop, less the board's current with the stack powered off. The paper publishes the processed
+  values (Olgun et al., MICRO 2026; extended version arXiv:2610.14244, Appendix A, Table 3: each chip's last minute of
+  a 30-minute loop, averaged over the 36 chips), and they differ: IDD3N1 231.8 mA per stack, not 246.0, IDD4W 1981.9,
+  not 2023.3. The row's activation energy also rested on a different excess (the unpaired summary means, 373.7 pJ)
+  than the one the HBM3 terms were scaled from (the per-chip paired excess, 444 pJ).
+- **The fix** (params/dram/hbm2.yaml, params/dram/hbm3.yaml; external/ramulator/src/dram/pimid_energy.h: the guard
+  prints; docs/derivations/hbm_gddr6_idd.md sec. 1.13, docs/sources.md).
+  1. The HBM2 row takes Table 3's All-chips row, per channel = stack / 8 at 1.2 Gb/s, priced at the 2.4 Gb/s preset as
+     before: IDD2N 68.175, IDD3N 57.95, IDD0 69.274138, IDD4R 1382.55, IDD4W 933.0, IDD5 121.1875, IDD2P 47.7225 mA.
+     The activation excess is IDD0 - (20 IDD3N1 + 9 IDD2N) / 29 of the Table 3 means, 8.151 mA: 472.6 pJ per 1 KB
+     activation.
+  2. Each HBM3 term moves by the ratio of the HBM2 quantity it is scaled from: standby x1.0248 (77.875 -> 79.8065
+     mA), activation x1.0655, array read x1.0024, array write x0.9847, refresh x0.9930. The scaling factors, the I/O
+     shares and the temperature slopes are unchanged.
+  3. The HBM2 plausibility guards (printed, never priced) span the published sources: the activation's XPE attribution
+     ceiling 0.50 -> 0.502 nJ and the background's XPE lower edge 860 -> 855 mW per stack, just enough to include the
+     Table 3 values (0.5018 nJ, 856.0 mW); their source strings cite Table 3 next to XPE, and the guard lines name the
+     record's guard instead of XPE alone.
+- **Validation.** HBM2 and HBM3 cells and the 97-cell portability set, this tree against the same build without the
+  change: run times, checksums, bandwidth and device counters identical in every cell; only the HBM2/HBM3 DRAM energy
+  terms move; the determinism cells give identical copies; the power checks report no flag and no consistency failure.
+- **Data impact** (power only, HBM2 and HBM3). HBM2: standby +2.5 % precharged, -5.8 % with a bank open; activation
+  +26.5 % (373.7 -> 472.6 pJ); read burst +0.2 %, write burst -1.5 %, refresh -0.7 %. HBM3: standby +2.5 %, activation
+  +6.5 % (381.2 -> 406.1 pJ at the preset tRC), write burst -1.5 %, refresh -0.7 %. Cells: HBM3 device-scope +0.8 to
+  +1.8 % total power, HBM3 co-simulation and host cells +0.06 to +0.2 %, HBM2 device cells -1.3 to -2.4 %. Other
+  technologies unchanged.
+
 ## 1.12.199 -- Message passing: each rank's ROI starts where it leaves the kernel-entry barrier; the scratchpad stack check covers every PE
 
 - **The problem.** A thread-MPI run took every core's ROI baseline at the first barrier operation of the kernel-entry
