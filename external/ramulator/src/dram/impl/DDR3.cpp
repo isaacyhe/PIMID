@@ -523,10 +523,14 @@ class DDR3 : public IDRAM, public Implementation {
           {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTR")},
           /// CAS <-> CAS between sibling ranks, nCS (rank switching) is needed for new DQS
           {.level = "rank", .preceding = {"RD", "RDA"}, .following = {"RD", "RDA", "WR", "WRA"}, .latency = V("nBL") + V("nCS"), .is_sibling = true},
-          {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCL")  + V("nBL") + V("nCS") - V("nCWL"), .is_sibling = true},
+          /// WR -> RD in another rank: the read data (RL after the READ) must follow the write burst (WL + BL after the
+          /// WRITE) and the rank switch, so the READ waits WL + BL + nCS - RL (was RL + BL + nCS - WL, the sign of RL - WL
+          /// reversed). One rank per channel never reaches it.
+          {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nCS") - V("nCL"), .is_sibling = true},
           /// CAS <-> PREab
-          {.level = "rank", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTP")},
-          {.level = "rank", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
+          /// a READ or WRITE with auto precharge to PRECHARGE ALL waits as the plain READ or WRITE does (JESD79-3D 4.12 and 4.13.3)
+          {.level = "rank", .preceding = {"RD", "RDA"}, .following = {"PREA"}, .latency = V("nRTP")},
+          {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
           /// RAS <-> RAS
           {.level = "rank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRD")},          
           {.level = "rank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nFAW"), .window = 4},          

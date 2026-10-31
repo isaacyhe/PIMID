@@ -6,6 +6,48 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.198 -- command spacing from the JEDEC and data-sheet tables: HBM3 and GDDR6 read-to-write, precharge-to-precharge, the all-bank precharge, write-to-read across ranks
+
+- **The problems.** (1) HBM3's read-to-write turnaround was the generic nCL + nBL + 2 - nCWL (17 nCK at 6.4 Gb/s),
+  which assumes a one-tCK write preamble and no strobe offsets; JESD238B.01 states the rule in Table 93 NOTE 18.
+  (2) GDDR6's was nCL + nBL + 3 - nCWL + 1 (24 nCK at 14 Gb/s): one burst (BL/8) where the data sheet's tRTW counts
+  BL/4, and one tCK of bus turnaround assumed. (3) HBM3 and GDDR6 had no precharge-to-precharge delay (tPPD); DDR5 and
+  LPDDR5 have had it since 1.12.39. (4) GDDR6's all-bank precharge, issued before a refresh, waited neither tRAS after
+  the channel's last activate nor tRP before the refresh or the next activate. (5) In DDR3, DDR4, DDR5, GDDR6 and HBM3 a
+  READ or WRITE with auto precharge was not spaced from a following PRECHARGE ALL as the plain READ or WRITE is.
+  (6) The DDR3, DDR4 and DDR5 write-to-read rule between two ranks had the sign of RL - WL reversed.
+- **The fix** (external/ramulator/src/dram/impl/HBM3.cpp, GDDR6.cpp, DDR3.cpp, DDR4.cpp, DDR5.cpp).
+  1. HBM3 tRTW = (RL + BL/4 - WL + 0.5) x tCK + tWDQS2DQ_O(max) - tWDQS2DQ_I(min), rounded up to the next integer
+     (JESD238B.01 Table 93 NOTE 18; 2.5 ns and 150 ps from Table 92): 20 nCK at the 6.4 Gb/s preset.
+  2. GDDR6 tRTW = CLmrs + BL/4 - WLmrs + (bus turnaround)/tCK + 3 (Samsung K4Z80325BC Rev. 1.3 Table 92). The
+     turnaround is the published tWCK2DQO(max) - tWCK2DQI(min) = 0.8 - 0.1 = 0.7 ns (the table's PLL-off figures; no
+     PLL-on range is published), the difference its NOTE 37 (JESD250D Table 73 NOTE 38) says to consider and the same
+     term JESD238B.01 uses for HBM3: 27 nCK at 14 Gb/s.
+  3. tPPD between any two precharge commands: HBM3 2 nCK per pseudo channel (JESD238B.01 Table 93; Table 33 for
+     PRECHARGE ALL); GDDR6 0.57 ns at 1.35 V and 0.83 ns at 1.25 V (Samsung Tables 92 and 93; Table 71), 1 and 2 nCK.
+  4. GDDR6 PRECHARGE ALL waits tRAS after the channel's last ACTIVATE, and ACTIVATE and REFRESH wait tRP after it
+     (JESD250D Table 73: tRAS, ACTIVATE to PREab / PREpb; tRP, the PREab / PREpb command period).
+  5. A READ or WRITE with auto precharge before PRECHARGE ALL: tRTP, or WL + BL + tWR, as for the plain command
+     (JESD238B.01 Table 33; Samsung Table 71; JESD79-5D 4.3; JESD79-3D 4.12 and 4.13.3).
+  6. Write-to-read across ranks: WL + BL + tCS - RL, so the read data follows the write burst and the rank switch.
+     Every shipped organisation has one rank per channel, so no run reaches this rule.
+- **Validation.** 97 cells (60 host baselines, DDR5 and HBM3, 1/4/16 cores; 30 co-sim cells; 7 device-only cells) and
+  the device cells of the technology sweep on every DRAM standard, this build against the same tree without the change:
+  checksums identical in every cell. HBM2 and LPDDR5 cells are byte for byte unchanged; the DDR3, DDR4 and DDR5
+  device cells are unchanged but for the count of timing rules the replay prints; the write-to-read rule across ranks
+  alone leaves every DDR3, DDR4 and DDR5 cell byte for byte unchanged. The determinism cells give identical copies; the
+  power checks report no flag and no consistency failure.
+- **Data impact** (timing; power through bank-open time). HBM3: single-core host baselines -0.05 to 0.00 %, device
+  cells -0.02 to +0.12 %, co-sim run times unchanged. DDR5: single-core host baselines 0.00 to +0.01 % (a refresh's
+  PRECHARGE ALL now waits after a host auto-precharge access), device-only and co-sim run times unchanged. GDDR6 device
+  cells: run time 0.00 to +0.04 %. Each GDDR6 refresh now waits tRP after its PRECHARGE ALL before the REFRESH and the
+  next activate, which changes GDDR6 bank-open time and background power by a few percent in either direction,
+  depending on how the refreshes interleave with the traffic: MPI stream_triad bank-open time +15 %, cell power +1.3 %;
+  MPI histogram bank-open time -6.5 %, cell power -0.7 %. Host baselines of 4 and 16 cores move -4.2 to +6.5 % (DDR5)
+  and -2.9 to +0.7 % (HBM3); a refresh interval one clock shorter, a change with no physical meaning, moves the same
+  cells by -3.1 to +7.1 %, so their shifts measure how these cells respond to any change of DRAM command timing, not
+  the size of these rules.
+
 ## 1.12.197 -- every memory controller's traffic is priced, not one controller's share
 
 - **The problem.** A device has one element controller per region of its placement tree (16 at CHANNEL or LOGIC_DIE

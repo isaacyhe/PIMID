@@ -667,14 +667,18 @@ class DDR5 : public IDRAM, public Implementation {
           {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCCDS_WTR")},
           /// CAS <-> CAS between sibling ranks, nCS (rank switching) is needed for new DQS
           {.level = "rank", .preceding = {"RD", "RDA"}, .following = {"RD", "RDA", "WR", "WRA"}, .latency = V("nBL") + V("nCS"), .is_sibling = true},
-          {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCL")  + V("nBL") + V("nCS") - V("nCWL"), .is_sibling = true},
+          /// WR -> RD in another rank: the read data (RL after the READ) must follow the write burst (WL + BL after the
+          /// WRITE) and the rank switch, so the READ waits WL + BL + nCS - RL (was RL + BL + nCS - WL, the sign of RL - WL
+          /// reversed). One rank per channel never reaches it.
+          {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nCS") - V("nCL"), .is_sibling = true},
           /// CAS <-> PREab
-          {.level = "rank", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTP")},
+          /// a READ or WRITE with auto precharge to PRECHARGE ALL waits as the plain READ or WRITE does (JESD79-5D 4.3)
+          {.level = "rank", .preceding = {"RD", "RDA"}, .following = {"PREA"}, .latency = V("nRTP")},
           /// PRE <-> PRE. 1.12.39 (user ruling 2026-10-25): tPPD 2 nCK between any two precharge commands
           /// (PREpb/PREsb/PREab) of the rank (JESD79-5D Tables 334-336 "Precharge to Precharge command delay tPPD 2 nCK",
           /// NOTE 7). nPPD was in the row, never enforced.
           {.level = "rank", .preceding = {"PRE", "PREsb", "PREA"}, .following = {"PRE", "PREsb", "PREA"}, .latency = V("nPPD")},
-          {.level = "rank", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
+          {.level = "rank", .preceding = {"WR", "WRA"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
           /// RAS <-> RAS
           {.level = "rank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
           {.level = "rank", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nFAW"), .window = 4},          

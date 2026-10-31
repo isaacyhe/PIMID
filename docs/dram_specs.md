@@ -70,6 +70,24 @@ This was verified *not* to be reproducible by linearly scaling the old
 preset -- scaling would have propagated the wrong base timing. The values come
 from the JEDEC physical numbers directly.
 
+## Command spacing taken from the standards
+
+The impl files also carry the command-to-command rules. Where a preset value is not enough they follow the JEDEC
+tables or, for GDDR6, the public Samsung K4Z80325BC Rev. 1.3 data sheet (Tables 71, 92 and 93):
+
+| Rule | DDR3 / DDR4 / DDR5 | GDDR6 | HBM3 |
+|---|---|---|---|
+| READ to WRITE (tRTW) | RL + BL/2 + 2 - WL (DDR5: + 2 more for its two-tCK write preamble) | CLmrs + BL/4 - WLmrs + 3 + (tWCK2DQO(max) - tWCK2DQI(min))/tCK = 27 nCK | (RL + BL/4 - WL + 0.5) tCK + tWDQS2DQ_O(max) - tWDQS2DQ_I(min), rounded up = 20 nCK (JESD238B.01 Table 93 NOTE 18) |
+| PRECHARGE to PRECHARGE (tPPD) | DDR5 2 nCK (JESD79-5D) | 1 nCK at 1.35 V, 2 nCK at 1.25 V | 2 nCK per pseudo channel |
+| READ / WRITE with auto precharge to PRECHARGE ALL | tRTP / WL + BL + tWR, as the plain command | as the plain command | as the plain command |
+| ACTIVATE to PRECHARGE ALL; PRECHARGE ALL to ACTIVATE or REFRESH | tRAS; tRP | tRAS; tRP | tRAS; tRP |
+| WRITE to READ in another rank | WL + BL + tCS - RL | - | - |
+
+HBM2's read-to-write turnaround follows JESD235D Table 68 NOTE 23 (17 nCK) and LPDDR5 has a 2 nCK tPPD (JESD209-5C).
+GDDR6's bus turnaround is the published strobe-offset difference (0.7 ns; the data sheet gives the PLL-off ranges
+and no PLL-on range), the term JESD238B.01 uses for HBM3. Every shipped organisation has one rank per channel, so the
+rank-to-rank rules are not reached.
+
 ## Known gaps vs. latest silicon
 
 PIMID's presets capture one JEDEC data point per generation. Real parts have

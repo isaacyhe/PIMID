@@ -34,7 +34,7 @@ class HBM3 : public IDRAM, public Implementation {
     };
 
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
-      //   name       rate   nBL  nCL  nRCDRD  nRCDWR  nRP  nRAS  nRC  nWR  nRTPS  nRTPL  nCWL  nCCDS  nCCDL  nRRDS  nRRDL  nWTRS  nWTRL  nRTW  nFAW  nRFC  nRFCSB  nREFI  nREFISB  nRREFD  tCK_ps
+      //   name       rate   nBL  nCL  nRCDRD  nRCDWR  nRP  nRAS  nRC  nWR  nRTPS  nRTPL  nCWL  nCCDS  nCCDL  nRRDS  nRRDL  nWTRS  nWTRL  nRTW  nFAW  nPPD  nRFC  nRFCSB  nREFI  nREFISB  nRREFD  tCK_ps
       // HBM3 @ 6.4 Gb/s (JESD238 launch rate) with JEDEC spec-minimum physical
       // timings (tRCD=tRP=16ns, tRAS=33ns, tRC=49ns, tCL=16ns, tWR=16ns,
       // tFAW=16ns, tREFI=3.9us).
@@ -145,7 +145,14 @@ class HBM3 : public IDRAM, public Implementation {
        * standard's timing set for the IDD loops): tRC 48 ns, tRAS 33 ns, tRP 15 ns, NOTE 1 "nRAS = RU(tRAS/tCK),
        * nRP = RU(tRP/tCK) ... nRAS + nRP = nRC": RU(15/0.625) = 24, nRAS 53 unchanged, nRC = 53 + 24 = 77
        * (48 ns / 0.625 = 76.8). The 16 ns tRP above was not a JESD238B number. */
-      {"HBM3_6.4Gbps", {6400, 2, 26, 26, 26, 24, 53, 77, 26, 7, 13, 13, 2, 4, 5, 7, 7, 13, 13, 26, -1, -1, 6240, -1, 13, 625}},
+      /* nRTW and nPPD. JESD238B.01 Table 93 (p.164) leaves the tRTW cell blank and NOTE 18 (p.167) gives the rule:
+       * tRTW(min) = (RL + BL/4 - WL + 0.5) x tCK + tWDQS2DQ_O(max) - tWDQS2DQ_I(min), rounded up to the next integer,
+       * with tWDQS2DQ_O(max) = 2.5 ns and tWDQS2DQ_I(min) = 150 ps (Table 92, pp.160-161). At this row (RL 26, BL8 so
+       * BL/4 = 2, WL 13, tCK 0.625 ns): (15.5 x 0.625 + 2.5 - 0.15) / 0.625 = 19.26 -> 20 nCK. The column held 13 and
+       * was not read: the RD -> WR rule below was nCL + nBL + 2 - nCWL = 17, a generic form that assumes a one-tCK
+       * write preamble and no strobe offsets. tPPD, PRECHARGE to PRECHARGE in the same pseudo channel, is 2 nCK
+       * (Table 93, p.164); Table 33 (p.44) applies it to PRECHARGE ALL as well. */
+      {"HBM3_6.4Gbps", {6400, 2, 26, 26, 26, 24, 53, 77, 26, 7, 13, 13, 2, 4, 5, 7, 7, 13, 20, 26, 2, -1, -1, 6240, -1, 13, 625}},
     };
 
 
@@ -219,7 +226,7 @@ class HBM3 : public IDRAM, public Implementation {
       "nRRDS", "nRRDL",
       "nWTRS", "nWTRL",
       "nRTW",
-      "nFAW",
+      "nFAW", "nPPD",
       "nRFC", "nRFCSB", "nREFI", "nREFISB", "nRREFD",
       "tCK_ps"
     };
@@ -613,13 +620,16 @@ class HBM3 : public IDRAM, public Implementation {
           /// nCCDS is the minimal latency for column commands 
           {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"RD", "RDA"}, .latency = V("nCCDS")},
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"WR", "WRA"}, .latency = V("nCCDS")},
-          /// RD <-> WR, Minimum Read to Write, Assuming tWPRE = 1 tCK                          
-          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nCL") + V("nBL") + 2 - V("nCWL")},
+          /// RD <-> WR: the read-to-write turnaround, JESD238B.01 Table 93 NOTE 18 (the row's nRTW)
+          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nRTW")},
           /// WR <-> RD, Minimum Read after Write
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTRS")},
           /// CAS <-> PREab
-          {.level = "pseudochannel", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTPL")},   /* 1.12.42: tRTPL -- bank groups are enabled (JESD235D Table 6 p.8: tRTPL applies; JESD238B.01 one tRTP), was nRTPS */
-          {.level = "pseudochannel", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
+          /// a READ or WRITE with auto precharge to PRECHARGE ALL waits as the plain READ or WRITE does (JESD238B.01 Table 33 p.44)
+          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"PREA"}, .latency = V("nRTPL")},   /* 1.12.42: tRTPL -- bank groups are enabled (JESD235D Table 6 p.8: tRTPL applies; JESD238B.01 one tRTP), was nRTPS */
+          {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
+          /// PRE <-> PRE: tPPD between any two precharge commands of the pseudo channel (JESD238B.01 Table 93 p.164, Table 33 p.44)
+          {.level = "pseudochannel", .preceding = {"PRE", "PREA"}, .following = {"PRE", "PREA"}, .latency = V("nPPD")},
           /// RAS <-> RAS
           {.level = "pseudochannel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
           {.level = "pseudochannel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nFAW"), .window = 4},          

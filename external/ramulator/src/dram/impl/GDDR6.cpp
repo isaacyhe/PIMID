@@ -101,7 +101,7 @@ class GDDR6 : public IDRAM, public Implementation {
        * UNCHANGED -- they were right, in the clock they were written for.
        * The _quad rows are not shipped by PIMID; they receive the same clock
        * correction so the file is self-consistent. */
-      //       name                 rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nFAW  nRFC nREFI nRREFD nRFCpb tCK_ps
+      //       name                 rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nRTW nFAW nPPD  nRFC nREFI nRREFD nRFCpb tCK_ps
       /* 1.12.42: despite the "2000" in the name this row runs at 14000 MT/s: CK 1750 MHz (tCK 571 ps), WCK 4x
        * CK, 14 Gb/s per pin (Samsung K4Z80325BC Rev 1.3 Table 92, JESD250D Fig. 1). The name is Ramulator's. */
       /* 1.12.43 (user ruling 2026-10-25): the default row follows Samsung K4Z80325BC Rev. 1.3 (public) Table 92
@@ -111,13 +111,23 @@ class GDDR6 : public IDRAM, public Implementation {
        * = tRAS 30 + tRP 15; DERIVED: the rounded cycle counts must still satisfy nRC >= nRAS + nRP). Unchanged and
        * matching the sheet: tRCDWR 9 ns (16), tRAS 30 (53), tRRD max(4 ns, 2tCK) (7), tFAW 16 ns (28), tRTPL 4,
        * tWTRS 2tCK+4 ns (9), tWTRL 4tCK+4 ns (11), tRFCab 120 / tRFCpb 60 ns. */
-      {"GDDR6_2000_1350mV_double", {14000,  2,  24,    27,     16,  27,   53,   80,   27,   4,   6,   2,    3,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
+      /* nRTW and nPPD. Samsung K4Z80325BC Rev. 1.3 Table 92 (p.158; Table 93 p.161 at 1.25 V, the same terms):
+       * tRTW = CLmrs + BL/4 - WLmrs + (bus turnaround time)/tCK + 3, in tCK, and NOTE 37 (p.163; JESD250D Table 73 NOTE
+       * 38, p.165): the turnaround "is not a device limit but determined by the system bus turnaround time. The difference
+       * between tWCK2DQO and tWCK2DQI shall be considered". The tables give tWCK2DQO 0.2-0.8 ns and tWCK2DQI 0.1-0.6 ns
+       * (PLL off; no PLL-on range is published), so the turnaround is taken as tWCK2DQO(max) - tWCK2DQI(min) = 0.7 ns,
+       * the same strobe-offset term JESD238B.01 NOTE 18 uses for HBM3. BL16 is 4 tCK in this formula (BL/8 = nBL = 2
+       * is the burst on the bus, Table 71): 24 + 4 - 6 + 3 + 0.7/0.571 = 26.2 -> 27 nCK. The RD -> WR rule was
+       * nCL + nBL + 3 - nCWL + 1 = 24 (one tCK of turnaround assumed, BL/8 for BL/4). tPPD (PREpb to PREab / PREpb):
+       * 0.57 ns in Table 92 -> 1 nCK at 571 ps, 0.83 ns in Table 93 -> 2 nCK; Table 71 (p.128) applies it to every
+       * pair of precharge commands. */
+      {"GDDR6_2000_1350mV_double", {14000,  2,  24,    27,     16,  27,   53,   80,   27,   4,   6,   2,    3,    7,    7,   9,    11,  27,  28,   1,    -1,   -1,   14,   105,   571}},
       /* 1.12.43: the 1250 mV rows' nRC 89 < nRAS 60 + nRP 30. Samsung Table 93 "@ VDD&VDDQ=1.25V" p.159: tRC 51 ns
        * -> RU(51/0.571) = 90 = nRAS + nRP. (Not changed, stated: Table 93 tRCDWR 11 ns = 20 and tFAW 24 ns = 43 nCK
        * against the rows' 19 and 42.) */
-      {"GDDR6_2000_1250mV_double", {14000,  2,  24,    30,     19,  30,   60,   90,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},
-      {"GDDR6_2000_1350mV_quad",   {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,   28,    -1,   -1,   14,   105,   571}},
-      {"GDDR6_2000_1250mV_quad",   {14000,  2,  24,    30,     19,  30,   60,   90,   30,   4,   6,   2,    6,   11,   11,   9,    11,   42,    -1,   -1,   21,   105,   571}},   // 1.12.43: nRC 90
+      {"GDDR6_2000_1250mV_double", {14000,  2,  24,    30,     19,  30,   60,   90,   30,   4,   6,   2,    6,   11,   11,   9,    11,  27,  42,   2,    -1,   -1,   21,   105,   571}},
+      {"GDDR6_2000_1350mV_quad",   {14000,  2,  24,    26,     16,  26,   53,   79,   26,   4,   6,   2,    6,    7,    7,   9,    11,  27,  28,   1,    -1,   -1,   14,   105,   571}},
+      {"GDDR6_2000_1250mV_quad",   {14000,  2,  24,    30,     19,  30,   60,   90,   30,   4,   6,   2,    6,   11,   11,   9,    11,  27,  42,   2,    -1,   -1,   21,   105,   571}},   // 1.12.43: nRC 90
     };
 
 
@@ -187,7 +197,8 @@ class GDDR6 : public IDRAM, public Implementation {
       "nCCDS", "nCCDL",
       "nRRDS", "nRRDL",
       "nWTRS", "nWTRL",
-      "nFAW",
+      "nRTW",
+      "nFAW", "nPPD",
       "nRFC","nREFI", "nRREFD", "nRFCpb",
       "tCK_ps"
     };
@@ -553,13 +564,20 @@ class GDDR6 : public IDRAM, public Implementation {
           /// nCCDS is the minimal latency for column commands 
           {.level = "channel", .preceding = {"RD", "RDA"}, .following = {"RD", "RDA"}, .latency = V("nCCDS")},
           {.level = "channel", .preceding = {"WR", "WRA"}, .following = {"WR", "WRA"}, .latency = V("nCCDS")},
-          /// RD <-> WR, Minimum Read to Write, Assuming tWPRE = 1 tCK                          
-          {.level = "channel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nCL") + V("nBL") + 3 - V("nCWL") + 1}, //+ 1 is assuming bus turn around time
+          /// RD <-> WR: the read-to-write turnaround, Samsung K4Z80325BC Table 92 tRTW (the row's nRTW)
+          {.level = "channel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nRTW")},
           /// WR <-> RD, Minimum Read after Write
           {.level = "channel", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTRS")},
-          /// CAS <-> PREA
-          {.level = "channel", .preceding = {"RD"}, .following = {"PREA"}, .latency = V("nRTP")},
-          {.level = "channel", .preceding = {"WR"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
+          /// CAS <-> PREA: a READ or WRITE with auto precharge waits as the plain READ or WRITE does (Samsung K4Z80325BC
+          /// Table 71 p.128: READ w/ AP to PREab tRTP, WRITE w/ AP to PREab WLmrs + BL/8 + RU(tWR/tCK))
+          {.level = "channel", .preceding = {"RD", "RDA"}, .following = {"PREA"}, .latency = V("nRTP")},
+          {.level = "channel", .preceding = {"WR", "WRA"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL") + V("nWR")},          
+          /// PRE <-> PRE: tPPD between any two precharge commands (Table 71 p.128)
+          {.level = "channel", .preceding = {"PRE", "PREA"}, .following = {"PRE", "PREA"}, .latency = V("nPPD")},
+          /// ACT <-> PREA and PREA <-> ACT: PRECHARGE ALL closes every bank, so it waits tRAS after the last ACTIVATE
+          /// and every bank waits tRP after it (JESD250D Table 73 p.161: tRAS, ACTIVATE to PREab / PREpb; tRP, the PREab / PREpb period)
+          {.level = "channel", .preceding = {"ACT"}, .following = {"PREA"}, .latency = V("nRAS")},
+          {.level = "channel", .preceding = {"PREA"}, .following = {"ACT"}, .latency = V("nRP")},
           /// RAS <-> RAS
           {.level = "channel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
           {.level = "channel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nFAW"), .window = 4},       
@@ -570,21 +588,21 @@ class GDDR6 : public IDRAM, public Implementation {
           {.level = "bank", .preceding = {"PRE"}, .following = {"ACT"}, .latency = V("nRP")},          
           /// RAS <-> REF
           {.level = "channel", .preceding = {"ACT"}, .following = {"REFab"}, .latency = V("nRC")},          
-          {.level = "channel", .preceding = {"PRE"}, .following = {"REFab"}, .latency = V("nRP")},          
+          {.level = "channel", .preceding = {"PRE", "PREA"}, .following = {"REFab"}, .latency = V("nRP")},          
           {.level = "channel", .preceding = {"RDA"}, .following = {"REFab"}, .latency = V("nRP") + V("nRTP")},          
           {.level = "channel", .preceding = {"WRA"}, .following = {"REFab"}, .latency = V("nCWL") + V("nBL") + V("nWR") + V("nRP")},          
           {.level = "channel", .preceding = {"REFab"}, .following = {"ACT"}, .latency = V("nRFC")},          
           
           /// RAS <-> REFp2b
           {.level = "channel", .preceding = {"ACT"}, .following = {"REFp2b"}, .latency = V("nRRDL")},          
-          {.level = "channel", .preceding = {"PRE"}, .following = {"REFp2b"}, .latency = V("nRP")},          
+          {.level = "channel", .preceding = {"PRE", "PREA"}, .following = {"REFp2b"}, .latency = V("nRP")},          
           {.level = "channel", .preceding = {"RDA"}, .following = {"REFp2b"}, .latency = V("nRP") + V("nRTP")},          
           {.level = "channel", .preceding = {"WRA"}, .following = {"REFp2b"}, .latency = V("nCWL") + V("nBL") + V("nWR") + V("nRP")},          
           {.level = "channel", .preceding = {"REFp2b"}, .following = {"ACT"}, .latency = V("nRREFD")},   
 
           /// RAS <-> REFpb
           {.level = "channel", .preceding = {"ACT"}, .following = {"REFpb"}, .latency = V("nRRDL")},          
-          {.level = "channel", .preceding = {"PRE"}, .following = {"REFpb"}, .latency = V("nRP")},          
+          {.level = "channel", .preceding = {"PRE", "PREA"}, .following = {"REFpb"}, .latency = V("nRP")},          
           {.level = "channel", .preceding = {"RDA"}, .following = {"REFpb"}, .latency = V("nRP") + V("nRTP")},          
           {.level = "channel", .preceding = {"WRA"}, .following = {"REFpb"}, .latency = V("nCWL") + V("nBL") + V("nWR") + V("nRP")},          
           {.level = "channel", .preceding = {"REFpb"}, .following = {"ACT"}, .latency = V("nRREFD")},   
