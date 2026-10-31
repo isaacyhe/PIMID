@@ -100,6 +100,7 @@ class NonInclusiveCache : public Cache {
         Counter profDataHit, profPeerHit, profFill, profFillDirty, profSharedCopy;
         Counter profDataEvict, profDataWB, profRace;
         Counter profGETNextLevelLat, profGETNetLat;
+        Counter profSFLookup, profSFUpdate;
 
         uint32_t getParentId(Address lineAddr) const;
 

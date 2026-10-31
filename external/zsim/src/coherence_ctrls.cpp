@@ -100,6 +100,7 @@ uint64_t MESIBottomCC::processAccess(Address lineAddr, uint32_t lineId, AccessTy
                 *state = M;
             }
             profPUTX.inc();
+            profFill.inc();
             break;
         case GETS:
             if (*state == I) {
@@ -111,6 +112,7 @@ uint64_t MESIBottomCC::processAccess(Address lineAddr, uint32_t lineId, AccessTy
                 profGETNetLat.inc(netLat);
                 respCycle += nextLevelLat + netLat;
                 profGETSMiss.inc();
+                profFill.inc();
                 assert(*state == S || *state == E);
             } else {
                 profGETSHit.inc();

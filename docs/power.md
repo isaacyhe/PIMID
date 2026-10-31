@@ -590,12 +590,34 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   floor and includes regulator loss in its source. Under load the uncore
   clock rises (1.12.154): `<host>.uncore_load`, 0.31 W per MB of host L3 at the
   raised clock (Gholkar et al., SC19) x the busiest host core's running
-  fraction, less the uncore clock networks McPAT already prices.
-- **Host L3 writes.** A non-inclusive host L3 (the default) writes every line
-  it takes: the L2s' evictions, clean and dirty, and the copies of lines shared
-  across cores (the L3's `fill` counter). They are priced as L3 writes, with the
-  write requests, and the host fabric carries a clean eviction's line as it
-  carries a dirty one. The snoop filter (tags only) is not priced.
+  fraction, less the uncore clock networks McPAT already prices. Beyond the
+  sources (the C1E fit spans 4 to 18 cores; the uncore-clock measurement is of a
+  20 MB LLC) both terms are extrapolated from them: the static term is the
+  fit's core-count-independent intercept at any core count, and the load term
+  grows linearly with the host's L3 (one 1.875 MB slice per core, 0.58 W per
+  core at the raised clock). A run of a larger host says so.
+- **L3 writes.** Every line written into an L3 besides its write requests is
+  priced as an L3 write (the L3's `fill` counter), so both kinds of L3 count
+  alike: an inclusive L3's fills on read misses and the dirty lines its children
+  write back; a non-inclusive L3's lines from the L2s (their evictions, clean and
+  dirty, and copies of lines shared across cores). A write miss's fill is the
+  write its request is already priced as. The host fabric carries a clean
+  eviction to a non-inclusive L3 as it carries a dirty one.
+- **Host arrays outside McPAT's components** are priced with CACTI 7 at the
+  node's technology, corner, temperature and metal stack, sized from what they
+  hold, and added to the cache they belong to (its line, its power gating and
+  the node total; their area is printed and not added to the die). The
+  non-inclusive L3's snoop filter, in the L3: one slice per core, each with as
+  many entries as an L2 has lines and the L2's sets and associativity; an entry
+  is the tag (the 48-bit physical address above the line and set bits), 3 state
+  bits (valid, held exclusively, dirty) and one holder bit per L2; a lookup per
+  request that reaches it, an entry write per request that changes one. Each
+  core's L2 streamer, in the L2: its stream table (the configured streams, fully
+  associative on the 4 KB page number; direction, latest line, furthest
+  prefetched line and LRU rank), searched and written once per L1D request it
+  sees; its superqueue (the configured entries, a line address and 4 state bits
+  each), written when a request leaves the L2 for the L3 and read when its line
+  returns.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
   conversion loss, the board and cooling are not modelled; no total includes
   them.

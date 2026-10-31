@@ -6,6 +6,38 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.191 -- the L3 is priced alike whether inclusive or not; the snoop filter and the L2 streamers' arrays are priced; the host uncore beyond its sources
+
+- **The problems.** (1) A non-inclusive L3 priced every line written into it (an L2 eviction, a shared copy) as an L3
+  write, but an inclusive L3 priced only its write requests: its fills on read misses and the dirty lines the L2s wrote
+  back cost nothing, so the two kinds of L3 were not priced alike. (2) The non-inclusive L3's snoop filter, which tracks
+  every line the L2s hold, had no power of its own. (3) The host L2 streamers' stream tables and superqueues (an L2's
+  outstanding requests to the L3) were priced nowhere. (4) The host uncore model rests on a fit over 4 to 18 cores and
+  an uncore-clock measurement of a 20 MB LLC; a host above that range was priced by the same formulas without saying so.
+- **The fix** (external/zsim/src/coherence_ctrls.{h,cpp}, ninc_cache.{h,cpp}; src/power/mcpat_wrapper.cpp,
+  include/power/mcpat_wrapper.h; src/main.cpp).
+  1. Every L3 counts the lines written into it besides its write requests (the L3's `fill` counter) and they are priced
+     as L3 writes: an inclusive L3's fills on read misses and its children's dirty write-backs, a non-inclusive L3's lines
+     from the L2s. A write miss's fill stays the write its request is priced as.
+  2. Arrays McPAT has no component for are priced with CACTI 7 at the node's technology, corner, temperature and metal
+     stack, sized from what they hold, and added to the cache they belong to (its line, its power gating and the node
+     total; their area is printed and not added to the die). The snoop filter, in the L3: one slice per core with as many
+     entries as an L2 has lines, organised like the L2; an entry is the tag, 3 state bits and one holder bit per L2; a
+     lookup per request that reaches it and an entry write per request that changes one (new counters `sfLookup`,
+     `sfUpdate`). Each core's L2 streamer, in the L2: its stream table (searched in full and written once per L1D request
+     it sees) and its superqueue (written and read once per request that leaves the L2).
+  3. Beyond the uncore's sources both of its terms are extrapolated from them: the static term is the fit's
+     core-count-independent intercept at any core count, the load term grows linearly with the L3 size. A run of a host
+     of more than 18 cores or 20 MB of L3 says so.
+- **Validation.** 97 cells (60 host baselines, DDR5 and HBM3, 1/4/16 cores; 30 co-sim cells; 7 device-only cells) and
+  eight 32- and 64-core host cells, this build against the same tree without the change: run times, checksums, hit rates,
+  bandwidth and device counters identical in every cell; the determinism cells give 8 of 8 identical copies each; the
+  power checks report no flag and no consistency failure.
+- **Data impact** (power only). Default host (non-inclusive L3): host power +0.04 to +1.17 W (1 to 16 cores), the L3's
+  line rising by the snoop filter (leakage 35 mW per slice at 4 holder bits or fewer, 2.2 W at 32 cores, 4.4 W at 64 cores:
+  its entries carry one holder bit per core) and the L2's by at most 0.013 W; co-sim cells +0.03 to +0.04 W; device-only
+  cells unchanged. An inclusive L3 (`l3_inclusion: inclusive`): L3 +0.00 to +0.51 W from its fills.
+
 ## 1.12.190 -- power coverage: the host fabric's control messages, the UCIe transaction layer, a multi-cycle router's pipeline registers, the logic die's area
 
 - **The problem.** Three parts of the modelled hardware had no power model, and one die area was counted short:

@@ -318,7 +318,8 @@ cache and the L3 an overflow cache, following the three points of that slide:
 
 A snoop filter tracks every line the L2s hold: their holders, whether one holds it exclusively, and whether it is dirty. It
 holds no data and never invalidates an L2 to make room (it is sized by what the L2s hold), so coherence across the cores is
-exact. A request for a line that only another core's L2 holds is answered by that L2 (the L3's latency, then the other L2's).
+exact (it is priced as its own array, [power.md](power.md)). A request for a line that only another core's L2 holds is
+answered by that L2 (the L3's latency, then the other L2's).
 A core can keep about its L2 plus the L3 on chip (2 MB + 1.875 MB at one core). `l3_inclusion: inclusive` builds the L3 as a
 superset of the L2s instead: an L2 then holds at most what the L3 holds, which at 1.875 MB per core is less than the 2 MB L2,
 so at one core the L3 adds nothing.

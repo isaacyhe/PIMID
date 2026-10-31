@@ -130,6 +130,7 @@ class MESIBottomCC : public GlobAlloc {
         //Counter profWBIncl, profWBCoh /* writebacks due to inclusion or coherence, received from downstream, does not include PUTS */;
         // TODO: Measuring writebacks is messy, do if needed
         Counter profGETNextLevelLat, profGETNetLat;
+        Counter profFill;   // lines written into this cache's array beyond its write requests (registered by MESICC only)
 
         bool nonInclusiveHack;
 
@@ -161,6 +162,13 @@ class MESIBottomCC : public GlobAlloc {
         inline bool isExclusive(uint32_t lineId) {
             MESIState state = array[lineId];
             return (state == E) || (state == M);
+        }
+
+        /* The array writes a write request (GETX) does not stand for: the fill of a GETS miss and a child's dirty
+         * write-back (a GETX miss's fill is the write its request is priced as). A non-terminal cache's statistic. */
+        void initFillStat(AggregateStat* parentStat) {
+            profFill.init("fill", "Lines written into the array besides write requests (GETS-miss fills, dirty write-backs from lower level)");
+            parentStat->append(&profFill);
         }
 
         void initStats(AggregateStat* parentStat) {
@@ -344,6 +352,7 @@ class MESICC : public CC {
         void initStats(AggregateStat* cacheStat) {
             //no tcc stats
             bcc->initStats(cacheStat);
+            bcc->initFillStat(cacheStat);
         }
 
         //Access methods

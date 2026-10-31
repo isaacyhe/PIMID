@@ -322,6 +322,11 @@ void McPATWrapper::setL3Accesses(uint64_t reads, uint64_t writes,
     power_computed_ = false;
 }
 
+void McPATWrapper::addExtraArray(ComponentType comp, const ExtraArray& a) {
+    extra_arrays_.push_back({comp, a});
+    power_computed_ = false;
+}
+
 void McPATWrapper::setCoherenceDirectoryEvents(uint64_t from_l1_children,
                                                uint64_t from_l2_children,
                                                bool enabled) {
@@ -1343,6 +1348,11 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.itlb_entries); f(config_.dtlb_entries); f(config_.tlb_assoc); f(config_.stlb_entries);
     f(config_.fu_base_energy ? 1 : 0); f(config_.fpu_published ? 1 : 0); f(config_.frontend_from_timing ? 1 : 0);
     f(config_.sharer_bits_from_children ? 1 : 0);   // 1.12.18
+    for (const auto& ea : extra_arrays_) {   // addExtraArray()
+        f(static_cast<uint64_t>(ea.first)); f(ea.second.reads); f(ea.second.writes);
+        f(static_cast<uint64_t>(std::llround(ea.second.read_nJ * 1e9))); f(static_cast<uint64_t>(std::llround(ea.second.write_nJ * 1e9)));
+        f(static_cast<uint64_t>(std::llround((ea.second.leak_sub_W + ea.second.leak_gate_W) * 1e12)));
+    }
     /* PIMID 1.12.18 (idle halt, per-die process, per-die trunk) */
     f(config_.idle_halt ? 1 : 0); f(config_.clock_die_trunk ? 1 : 0);
     f(config_.logic_die_node_nm); f(config_.logic_die_device_type);
@@ -2033,6 +2043,28 @@ void McPATWrapper::extractResults() {
         pm.total_power = pm.total_dynamic + pm.total_leakage;   // the dynamic term is the run's accesses, each on one slice
     }
 
+    /* Arrays priced outside McPAT (addExtraArray), into their component before its power gating and the node total.
+     * The energies are per access and the run is McPAT's execution time (total cycles at the core clock); their
+     * power-gated leakage takes the component's own gated share. */
+    extra_peak_leak_w_ = 0.0;
+    for (const auto& ea : extra_arrays_) {
+        if (!componentIsDescribed(ea.first)) continue;
+        PowerMetrics& pm = component_power_[ea.first];
+        const ExtraArray& a = ea.second;
+        const double t = (config_.core_clock_mhz > 0.0) ? static_cast<double>(total_cycles_) / (config_.core_clock_mhz * 1e6) : 0.0;
+        const double dyn = (t > 0.0) ? (static_cast<double>(a.reads) * a.read_nJ + static_cast<double>(a.writes) * a.write_nJ) * 1e-9 / t : 0.0;
+        refuseNonFinite(a.name.c_str(), "runtime dynamic power", dyn);
+        const double gated_share = (pm.subthreshold_leakage > 0.0) ? pm.power_gated_leakage / pm.subthreshold_leakage : 0.0;
+        pm.runtime_dynamic += dyn;
+        pm.total_dynamic = pm.runtime_dynamic;
+        pm.subthreshold_leakage += a.leak_sub_W;
+        pm.gate_leakage += a.leak_gate_W;
+        pm.power_gated_leakage += a.leak_sub_W * gated_share;
+        pm.total_leakage = pm.subthreshold_leakage + pm.gate_leakage;
+        pm.total_power = pm.total_dynamic + pm.total_leakage;
+        extra_peak_leak_w_ += a.leak_sub_W + a.leak_gate_W;
+    }
+
     // Memory Controller
     component_power_[ComponentType::MEMORY_CONTROLLER] = extractComponent(
         mcpat_processor_->mcs, "memory controller",
@@ -2353,6 +2385,7 @@ void McPATWrapper::extractResults() {
         peak_dyn += peakDynamic(mcpat_processor_->l3, "L3");
         peak_leak += peakLeakage(mcpat_processor_->l3, "L3") * (config_.l3_replicated_slices > 1 ? config_.l3_replicated_slices : 1);   // 1.11.101
     }
+    peak_leak += extra_peak_leak_w_;   // arrays priced outside McPAT (addExtraArray): their leakage is there at peak too
     if (componentIsDescribed(ComponentType::MEMORY_CONTROLLER)) {
         peak_dyn += peakDynamic(mcpat_processor_->mcs, "memory controller");
         peak_leak += peakLeakage(mcpat_processor_->mcs, "memory controller");

@@ -94,9 +94,11 @@ void NonInclusiveCache::initStats(AggregateStat* parentStat) {
     profRace.init("race", "Child requests that raced with an invalidation");
     profGETNextLevelLat.init("latGETnl", "GET request latency on next level");
     profGETNetLat.init("latGETnet", "GET request latency on network to next level");
+    profSFLookup.init("sfLookup", "Snoop-filter lookups (every request that reached it)");
+    profSFUpdate.init("sfUpdate", "Snoop-filter entry writes (a request that added or removed a holder, or changed a line's state)");
     Counter* all[] = {&profGETSHit, &profGETXHit, &profGETSMiss, &profGETXMissIM, &profGETXMissSM, &profPUTS, &profPUTX,
                       &profDataHit, &profPeerHit, &profFill, &profFillDirty, &profSharedCopy, &profDataEvict, &profDataWB,
-                      &profRace, &profGETNextLevelLat, &profGETNetLat};
+                      &profRace, &profGETNextLevelLat, &profGETNetLat, &profSFLookup, &profSFUpdate};
     for (Counter* c : all) cacheStat->append(c);
     parentStat->append(cacheStat);
 }
@@ -246,6 +248,7 @@ uint64_t NonInclusiveCache::access(MemReq& req) {
         profRace.inc();
     } else if (req.type == PUTS || req.type == PUTX) {
         respCycle += accLat;
+        profSFLookup.inc();
         const int64_t s = sfFind(addr);
         if (s < 0 || !sfHas(s, c)) {
             // the child's copy was invalidated while its eviction was on the way: nothing to keep
@@ -253,6 +256,7 @@ uint64_t NonInclusiveCache::access(MemReq& req) {
             *req.state = I;
         } else {
             SFEntry* e = &sfTab[s];
+            profSFUpdate.inc();
             if (req.type == PUTX) { profPUTX.inc(); e->mem = M; } else { profPUTS.inc(); }
             if (req.type == PUTX && (req.flags & MemReq::PUTX_KEEPEXCL)) {
                 assert(*req.state == M);
@@ -274,6 +278,8 @@ uint64_t NonInclusiveCache::access(MemReq& req) {
          * caches, which take the prefetch flag off before a request leaves them. */
         if (req.flags & MemReq::PREFETCH) panic("[%s] prefetch request 0x%lx: a prefetch into a non-inclusive last-level cache is not modelled", name.c_str(), addr);
         respCycle += accLat;
+        profSFLookup.inc();
+        profSFUpdate.inc();   // a GET always writes its entry (a holder added, exclusivity or the memory state changed)
         int64_t s = sfFind(addr);
         int32_t did = dLookup(addr);
         const bool mine = (s >= 0) && sfHas(s, c);

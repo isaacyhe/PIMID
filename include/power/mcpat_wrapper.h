@@ -872,6 +872,17 @@ public:
                                uint64_t cmd_reads, uint64_t cmd_writes);
     void setL2Accesses(uint64_t reads, uint64_t writes, uint64_t read_misses, uint64_t write_misses);
     void setL3Accesses(uint64_t reads, uint64_t writes, uint64_t read_misses, uint64_t write_misses);
+    /* An array McPAT has no component for (a non-inclusive L3's snoop filter; an L2 prefetcher's stream table and
+     * superqueue), priced with CACTI by the caller at the node's technology and added to the component it belongs to:
+     * dynamic = (reads x read energy + writes x write energy) over the run, leakage = all instances. It joins that
+     * component's line, its power gating and the node's total. */
+    struct ExtraArray {
+        std::string name;
+        double read_nJ = 0.0, write_nJ = 0.0;           // per access, one instance
+        double leak_sub_W = 0.0, leak_gate_W = 0.0;     // all instances
+        uint64_t reads = 0, writes = 0;                 // the run's accesses
+    };
+    void addExtraArray(ComponentType comp, const ExtraArray& a);
     /* 1.12.18: coherence events (zsim INV + INVX + FWD) received by the
      * L1s and by the L2s, all cores of this node. Each is work done by the
      * directory of the level above; the XML writer maps them onto McPAT's
@@ -1091,6 +1102,8 @@ private:
     uint64_t l3_writes_;
     uint64_t l3_read_misses_;
     uint64_t l3_write_misses_;
+    std::vector<std::pair<ComponentType, ExtraArray>> extra_arrays_;   // addExtraArray()
+    double extra_peak_leak_w_ = 0.0;
     uint64_t coh_l1_events_ = 0;   // 1.12.18: received by the L1s
     uint64_t coh_l2_events_ = 0;   // 1.12.18: received by the L2s
     bool coh_dir_enabled_ = true;  // 1.12.18: power.models.coherence_directory
