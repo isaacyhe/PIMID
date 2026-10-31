@@ -6,6 +6,51 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.190 -- power coverage: the host fabric's control messages, the UCIe transaction layer, a multi-cycle router's pipeline registers, the logic die's area
+
+- **The problem.** Three parts of the modelled hardware had no power model, and one die area was counted short:
+  - the host ring and crossbar priced their data messages only; the requests, snoops and acknowledgements of the
+    coherence protocol travelled on networks nothing priced (the run called the host fabric a lower bound);
+  - a UCIe link priced its analog PHY and the digital interface below the FDI, but not the transaction layer above
+    it (the run said it was not priced);
+  - a router of more than one pipeline cycle (`noc.router_latency` or `noc.levels.<level>.router_latency` above 1)
+    clocked its arbiter flip-flops only; the registers between its stages were in no count;
+  - the logic die's area under a stacked part (the clock trunk's span) subtracted each DRAM-die fabric's links twice:
+    a fabric's area already holds its links, and they were added again, so the logic die came out at 0 mm^2 in most
+    stacked runs.
+- **The fix** (src/main.cpp; external/mcpat iocontrollers.{h,cc}, noc.cc, processor.cc, XML_Parse.{h,cc}; the McPAT
+  wrapper; docs/power.md, docs/yaml_reference.md, docs/sources.md).
+  - **Host control networks.** The ring is four physical rings, request, snoop, acknowledge and data (Paccagnella et
+    al., "Lord of the Ring(s)", USENIX Security 2021, Sec. 2; "4 protocol rings", Kottapalli and Baxter, Hot Chips 21).
+    The three control networks are priced as copies of the data network (the same stops or ports and links), 64 b
+    wide each: one 64-bit word holds the 48-bit physical address with the command and its IDs, the size of the device
+    fabric's control messages (`noc.control_message_bits`). Each fabric access
+    sends a request and an acknowledgement; each invalidation, downgrade or forward an L2 receives (zsim INV/INVX/FWD)
+    sends a snoop and its response. A control message makes the traversals of a measured data flit (the measured mean
+    hops), at random-data wire activity (0.25). The bus is unchanged: its command bus already carries every request,
+    and a snoop on a bus is that broadcast.
+  - **UCIe transaction layer.** Priced in the per-bit term at the digital interface's figure of the same node (3 nm
+    0.10, 22 nm 0.192 pJ/bit): the protocol layer above the FDI is digital logic like the interface below it. Per bit
+    crossed: 3 nm advanced 0.39 -> 0.49, 22 nm advanced 0.862 -> 1.054
+    pJ/bit. `power.link.pj_per_bit_override` still replaces the whole per-bit figure.
+  - **Router pipeline registers.** A router of S cycles holds S - 1 flit-wide registers per input port between its
+    stages, the rule the links' inserted pipeline stages already follow; they join the router's clock tree. A
+    single-cycle router (the default, and every corpus configuration) has none, and its price is unchanged.
+  - **Logic-die area.** Each fabric's links are counted once. The trunk spans the logic die's components; a die with
+    one clock root has no trunk to distribute (its length is 1.5 x span x (sqrt(roots) - 1)), so most stacked runs keep
+    0 W there and now print the die's real area.
+- **Data impact.** Power only: run times and checksums are unchanged in every cell compared (216 cells: the
+  device families, every memory technology, OpenMP / MPI / serial, co-simulation, host baselines of 1, 4 and 16 cores,
+  ring / crossbar / bus, L3 non-inclusive / inclusive / none, UCIe 22 nm and 3 nm, PCIe and CXL links).
+  - Host fabric (`<host>.noc`, 4- and 16-core hosts): +16% to +65% (+0.017 to +0.64 W), the 34-port crossbar the most;
+    control messages are about 20% of the bits the fabric moves.
+  - Host die clock trunk: +0.2% to +2.3% (the die grows by the control networks); `<host>.uncore_static`, which
+    subtracts the trunk, falls by the same amount; `<host>.uncore_load` falls by at most 0.5%.
+  - UCIe link (`link`): +22% at 22 nm, +26% at 3 nm. PCIe and CXL links are unchanged.
+  - Device fabric (`logic.noc`) at `noc.router_latency: 3`: +7% to +23%; unchanged at the default 1 cycle.
+  - Logic-die clock trunk: +5 uW where the logic die has more than one clock root (24 of 159 device cells).
+  - System totals: 0 to +1.4% (the 16-core crossbar host the most).
+
 ## 1.12.189 -- the host is a Sapphire Rapids core: its window, caches, non-inclusive L3 and L2 prefetchers; the DRAM replay is closed-loop and each core pays the latency its own accesses measure
 
 - **The problem.** The host core was the Westmere-class window the simulator was validated on (128-entry ROB, 32-entry

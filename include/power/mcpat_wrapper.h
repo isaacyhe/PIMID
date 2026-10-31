@@ -180,6 +180,12 @@ public:
          * sqrt(link_span_area_mm2 / link_parent_regions) (the array the routers
          * sit over; the processor's area when 0), the regions being the tiles. */
         int link_span_processor = 0;
+        /* the router's pipeline depth in cycles (the router latency the timing model ran); its
+         * (stages - 1) x input ports x flit bits pipeline registers clock the router tree */
+        int router_stages = 1;
+        /* 1 = this level's routers sit in another level's stops and share their clock roots
+         * (the die's clock trunk counts each stop once) */
+        int clock_root_shared = 0;
         /* (user ruling 2026-10-25): link_kind 2 = an off-package device-tree link that rides the
          * DRAM channel; priced at this energy per bit crossed (pJ/bit; < 0 = not set). */
         double link_io_pj_per_bit = -1.0;
@@ -312,6 +318,7 @@ public:
         int    node_nm = 0;
         double analog_pj = 0.0;
         double digital_pj = 0.0;
+        double tl_pj = 0.0;        // the transaction layer above the FDI
         bool   user_pj = false;
         double ref_ctrl_pj = 0.0;
     };

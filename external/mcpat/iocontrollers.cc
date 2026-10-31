@@ -377,9 +377,9 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 		   * the adapter+PHY twice, so the controller DYNAMIC is excluded and
 		   * the per-bit term stands alone. Area and leakage stay McPAT's (real
 		   * silicon that leaks; the pJ/b prices switching only).
-		   * NO PUBLISHED SOURCE FOUND: dynamic energy of the protocol layer
-		   * ABOVE the FDI (the transaction layer) separable from the Cadence
-		   * figure -- it is therefore not priced, said at runtime.
+		   * The protocol layer ABOVE the FDI (the transaction layer) is not
+		   * separable from the Cadence figure either: it is priced in the
+		   * per-bit term at the digital interface's figure (set_pcie_param).
 		   * Peak (TDP) dynamic: the link at full rate, lanes x GT/s x pJ/b,
 		   * at the pricing end only (the link is priced once). */
 		  const double peak_w = XML->sys.pcie.link_energy_end
@@ -484,7 +484,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     			rt_power.readOp.dynamic = ucie_phy_joules / execTimeSec / (units * pciep.clockRate);
     		}
     		pimid::debugStream(std::cerr) << "[link] UCIe (McPAT PIMID 1.12.18): link.phy = " << bytes
-    		          << " B x 8 x (analog " << ucie_analog_pj << " + digital " << ucie_digital_pj
+    		          << " B x 8 x (analog " << ucie_analog_pj << " + digital " << ucie_digital_pj << " + transaction layer " << ucie_tl_pj
     		          << " = " << ucie_pj_per_bit << " pJ/bit) = " << ucie_phy_joules
     		          << " J over " << execTimeSec << " s = " << ucie_phy_w << " W"
     		          << (XML->sys.pcie.link_energy_end ? "" : " [far end: the link is priced at the other end]")
@@ -493,8 +493,8 @@ void PCIeController::computeEnergy(bool is_tdp)
     		          << " MHz): the analog PHY + digital interface pJ/bit covers the PHY and the"
     		             " adapter-level logic (flow control, calibration, error correction, repair), which"
     		             " McPAT's per-lane controller term also prices; link.controller area"
-    		             " and leakage kept. NO PUBLISHED SOURCE FOUND: transaction-layer"
-    		             " dynamic above the FDI, not priced." << std::endl;
+    		             " and leakage kept; the transaction layer above the FDI is priced at the digital"
+    		             " interface's per-bit figure (DERIVED: no published split)." << std::endl;
     		return;
     	}
     	/* PIMID (user ruling 2026-10-27: serial links calibrated): THE IDLE SerDes LINK, IN ASPM L1.
@@ -1010,11 +1010,21 @@ void PCIeController::set_pcie_param()
 					            << ", " << ref_max << "] pJ/bit" << std::endl;
 			  }
 		  }
-		  ucie_pj_per_bit = ucie_analog_pj + ucie_digital_pj;
+		  /* PIMID: THE TRANSACTION LAYER, the protocol layer above the FDI (packet handling,
+		   * credits, ordering): digital logic like the interface below the FDI, so it is
+		   * priced at the digital interface's per-bit
+		   * figure of the same node (3 nm 0.10, 22 nm 0.192 pJ/bit). A user per-bit value
+		   * replaces it too. */
+		  ucie_tl_pj = ucie_user_pj ? 0.0 : ucie_digital_pj;
+		  if (!ucie_user_pj)
+		  	pimid::debugStream(std::cerr) << "[link] UCIe transaction layer: " << ucie_tl_pj
+		  	          << " pJ/bit DERIVED = the digital interface's figure (no published split of the protocol"
+		  	             " layer above the FDI)" << std::endl;
+		  ucie_pj_per_bit = ucie_analog_pj + ucie_digital_pj + ucie_tl_pj;
 		  pimid::debugStream(std::cerr) << "[link] UCIe link model (McPAT PIMID 1.12.18): " << pkg_s << " package, "
 		            << XML->sys.pcie.lanes << " lanes x " << r << " GT/s, "
 		            << (ucie_user_pj ? std::string("user value") : std::to_string(ucie_node_nm) + " nm row")
-		            << ": analog PHY " << ucie_analog_pj << " + digital interface " << ucie_digital_pj
+		            << ": analog PHY " << ucie_analog_pj << " + digital interface " << ucie_digital_pj << " + transaction layer " << ucie_tl_pj
 		            << " = " << ucie_pj_per_bit << " pJ/bit, charged once per crossing bit" << std::endl;
 	  }
 

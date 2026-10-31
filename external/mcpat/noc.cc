@@ -142,17 +142,24 @@ router_accesses(0)
 	 *   Dally, B. Towles, "Principles and Practices of Interconnection
 	 *   Networks", Morgan Kaufmann 2004, matrix arbiter; CACTI's arbiter.cc
 	 *   notes their switching is ignored, so their pins are charged nowhere
-	 *   else). The flit buffers are CACTI arrays priced per access. */
+	 *   else). The flit buffers are CACTI arrays priced per access.
+	 *   Pipeline registers: a router of S cycles (the router latency the
+	 *   timing model ran) holds S - 1 flit-wide registers per input port
+	 *   between its stages, the rule the links' inserted stages follow
+	 *   (build_link_clock); a single-cycle router has none (its flit is
+	 *   latched in the input buffer and leaves the switch onto the link). */
 	if (nocdynp.type && router)
 	{
 		const double I = nocdynp.input_ports, O = nocdynp.output_ports, V = router->vc_count;
-		const double ff = I*V*(V-1)/2 + O*I*(I-1)/2;
+		const double S = std::max(1, XML->sys.NoC[ithNoC].router_stages);
+		const double ff = I*V*(V-1)/2 + O*I*(I-1)/2 + (S-1)*I*nocdynp.flit_size;
 		std::ostringstream src;
 		src << "matrix-arbiter flip-flops " << I << "x" << V << "(" << V << "-1)/2 + " << O << "x" << I
-		    << "(" << I << "-1)/2";
-		pimid::debugStream(std::cerr) << "NO PUBLISHED SOURCE FOUND: router pipeline/output register count (CACTI's router model "
-		             "counts no pipeline register); the router clock tree is priced over its arbiter flip-flops "
-		             "only -- a lower bound." << std::endl;
+		    << "(" << I << "-1)/2 + pipeline registers (" << S << " stage(s) - 1) x " << I << " x "
+		    << nocdynp.flit_size << " bits";
+		pimid::debugStream(std::cerr) << "DERIVED: router pipeline registers (" << S << " stage(s) - 1) x " << I
+		             << " input ports x " << nocdynp.flit_size << " bits, the rule of the links' inserted stages; a"
+		             " single-cycle router has none (CACTI's router model counts no pipeline register)." << std::endl;
 		clk_router.compute(&interface_ip, name + std::to_string(ithNoC) + " router", router->area.get_area(), ff,
 		                   src.str(), -1.0, nocdynp.clockRate, XML->sys.Embedded, Uncore_device, Inorder,
 		                   XML->sys.pimid_clock_network != 0);

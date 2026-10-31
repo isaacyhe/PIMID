@@ -345,14 +345,26 @@ ring (Kottapalli and Baxter, Hot Chips 21, 2009: two counter-rotating
 rings, stops shared by core/cache, 32 B data ring per direction, one stop
 per clock), optionally the crossbar or a shared bus -- from the data
 messages and hops the timing model measured; flit 256 b. It replaces the
-leakage-only placeholder that `<host>.noc` carried through 1.12.18; control
-messages are not priced on the ring and the crossbar (a lower bound); a
+leakage-only placeholder that `<host>.noc` carried through 1.12.18; a
 1-core host has no fabric. Ring link length (user ruling 2026-10-25):
 2 x sqrt(host die area) / stops, the loop of the Nehalem-EX floorplan (two
 columns of core/LLC-slice rows, the rings through the slice columns; Rusu,
 ISSCC 2009 / JSSC 2010) on a square die (the stop spacing in mm
 computed from it; the die area counts every slice of a last-level cache priced as replicated slices, as in a host
 of more than 34 cores); McPAT's upstream 2-D mesh formula gave half of it.
+
+Host control messages (ring and crossbar). The ring is four physical rings,
+request, snoop, acknowledge and data (Paccagnella et al., "Lord of the
+Ring(s)", USENIX Security 2021, Sec. 2; "4 protocol rings", Kottapalli and
+Baxter, Hot Chips 21), so the three control networks are priced as copies of
+the data network (the same stops or ports and links), 64 b wide each: one
+64-bit word holds the 48-bit physical address with the command and its IDs,
+the size of the device fabric's control messages (`noc.control_message_bits`). Each fabric access sends a request and
+an acknowledgement; each invalidation, downgrade or forward an L2 receives
+(zsim INV/INVX/FWD) sends a snoop and its response on the acknowledge network.
+A control message makes the traversals of a measured data flit (the measured
+mean hops), at random-data wire activity (0.25). On the bus a snoop is the
+command broadcast itself, priced with the command bus.
 
 PIMID 1.12.150, device NoC routers and flat fabrics (user rulings
 2026-10-28): a device fabric Garnet built flat (an SRAM or NVM device's
@@ -429,14 +441,20 @@ and the measured crossing bytes. Sources:
 - [SB17] A. Stillmaker and B. Baas, "Scaling equations for the accurate prediction of CMOS device performance from 180 nm to 7 nm", Integration, the VLSI Journal, vol. 58, pp. 74-81, 2017, Table 2 (cross-check only).
 
 **Two process nodes (user ruling 2026-10-23).** The per-bit energy is ANALOG
-PHY + DIGITAL INTERFACE, from the row of the die's node (pJ/bit):
+PHY + DIGITAL INTERFACE + TRANSACTION LAYER, from the row of the die's node (pJ/bit):
 
-| node | package | analog PHY | digital interface | total |
-|---|---|---|---|---|
-| 3 nm | advanced | 0.29 [CDN26] | 0.10 [MS26] | 0.39 |
-| 3 nm | standard | 0.52 [CDN26] | 0.10 [MS26] | 0.62 |
-| 22 nm | standard | 1.2 [INT26] | 0.192 (lower bound) | 1.392 |
-| 22 nm | advanced | 0.669 | 0.192 (lower bound) | 0.862 |
+| node | package | analog PHY | digital interface | transaction layer | total |
+|---|---|---|---|---|---|
+| 3 nm | advanced | 0.29 [CDN26] | 0.10 [MS26] | 0.10 | 0.49 |
+| 3 nm | standard | 0.52 [CDN26] | 0.10 [MS26] | 0.10 | 0.72 |
+| 22 nm | standard | 1.2 [INT26] | 0.192 (lower bound) | 0.192 | 1.584 |
+| 22 nm | advanced | 0.669 | 0.192 (lower bound) | 0.192 | 1.054 |
+
+- transaction layer = the digital interface's figure of the same node: the
+  protocol layer above the FDI (packet handling, credits, ordering) is digital
+  logic like the interface below it. McPAT's controller figure (below) covers
+  the PHY, the data link and the transaction layer together, so it does not
+  price the layer alone.
 
 - digital, 3 nm = 0.33 - 0.23 = 0.10 [MS26]. It is a UCIe-LIKE digital
   interface (flow control, calibration, error correction, repair), not the
@@ -470,7 +488,7 @@ PHY + DIGITAL INTERFACE, from the row of the die's node (pJ/bit):
   (`power.tech_node_nm`, default 22); a die at any other node is refused,
   naming the two supported nodes. 3 nm is not a CACTI node, so the key changes
   only the link's per-bit energy. `power.link.pj_per_bit_override` replaces the
-  whole per-bit figure (analog + digital) and needs no row.
+  whole per-bit figure (analog + digital + transaction layer) and needs no row.
 
 What McPAT computes for the interposer class (UCIe advanced package, 64 lanes,
 16 GT/s):
@@ -478,8 +496,8 @@ What McPAT computes for the interposer class (UCIe advanced package, 64 lanes,
 - **Controller clock**: `power.link.controller_clock_mhz` when given;
   otherwise the D2D adapter clock, lanes x rate / (8 bits x 64 B FDI) =
   64 x 16 / 512 = 2000 MHz, derived in McPAT and printed by it.
-- **link.phy** (analog PHY + digital interface): measured bytes crossed x 8 x
-  (analog + digital) pJ/bit, charged once, at the end that prices the link, and
+- **link.phy** (analog PHY + digital interface + transaction layer): measured
+  bytes crossed x 8 x (analog + digital + transaction layer) pJ/bit, charged once, at the end that prices the link, and
   booked as the ledger's own `link` entry. Peak (TDP) dynamic is the link at
   full rate, lanes x GT/s x pJ/bit. The UCIe PHY is a parallel AFE, so no SerDes
   term is charged.
@@ -487,8 +505,8 @@ What McPAT computes for the interposer class (UCIe advanced package, 64 lanes,
   is not charged: McPAT's figure (Cadence ChipEstimate, "the PHY, the data link
   and transaction layer", modelled per lane) covers the same PHY and
   adapter-level logic the analog + digital pJ/bit prices, and the model does
-  not split it. The run prints the amount left out. The transaction-layer dynamic energy
-  above the FDI is not priced.
+  not split it. The run prints the amount left out. The transaction layer above
+  the FDI is priced in the per-bit term (above).
 
 PCIe, CXL, NVLink and UALink keep their per-bit band (the pJ/bit selected from
 the cited band, McPAT's SerDes dynamic removed), priced over the run in its

@@ -1222,6 +1222,8 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tsv_vdd")==0) {sys.NoC[i].tsv_vdd=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_activity")==0) {sys.NoC[i].link_activity=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tech_node")==0) {sys.NoC[i].tech_node=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"router_stages")==0) {sys.NoC[i].router_stages=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"clock_root_shared")==0) {sys.NoC[i].clock_root_shared=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_throughput")==0) {sys.NoC[i].link_throughput=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_latency")==0) {sys.NoC[i].link_latency=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"input_ports")==0) {sys.NoC[i].input_ports=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
@@ -1894,6 +1896,8 @@ void ParseXML::initialize() //Initialize all
 		sys.NoC[i].link_io_pj_per_bit = -1;   /* not set */
 		sys.NoC[i].tsv_vdd = -1;   /* the run's logic Vdd */
 		sys.NoC[i].link_activity = -1;   /* not given */
+		sys.NoC[i].router_stages = 1;   /* a single-cycle router */
+		sys.NoC[i].clock_root_shared = 0;
 		sys.NoC[i].tech_node = 0;
 		sys.NoC[i].link_traversals = -1;
 		sys.NoC[i].tsv_die_crossings = -1;

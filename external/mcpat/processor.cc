@@ -426,6 +426,8 @@ Processor::Processor(ParseXML *XML_interface)
 	   * Compute global links associated with each NOC, if any. This must be done at the end (even after the NOC router part) since the total chip
 	   * area must be obtain to decide the link routing
 	   */
+	  /* PIMID: the host fabric's networks (data and control) span one die: the area before any link */
+	  const double area_before_links_um2 = area.get_area();
 	  for (i = 0;i < numNOC; i++)
 	  {
 		  if (nocs[i]->nocdynp.has_global_link && XML->sys.NoC[i].type)
@@ -460,12 +462,16 @@ Processor::Processor(ParseXML *XML_interface)
 			   * arm. */
 			  /* PIMID: the host ring and crossbar links span the processor's own area; with a replicated last-level cache the
 			   * area so far holds one slice of it, the die holds l3_replicated_slices. */
-			  const double link_area_um2 = area.get_area()
+			  const double link_area_um2 = area_before_links_um2
 			      + ((XML->sys.l3_replicated_slices > 1 && !l3array.empty())
 			         ? l3array[0]->area.get_area() * (XML->sys.l3_replicated_slices - 1) : 0.0);
 			  double link_len_scale = (XML->sys.dram_periph_family == 1 &&
 			                           XML->sys.NoC[i].on_dram_die)
 			      ? sqrt(XML->sys.dram_periph_area) : 1.0;
+			  if (XML->sys.NoC[i].link_span_processor == 1 || XML->sys.NoC[i].link_span_processor == 2)
+				  pimid::debugStream(std::cerr) << "  [link] noc" << i << " span: "
+				          << link_area_um2 * XML->sys.NoC[i].chip_coverage * 1e-6
+				          << " mm^2 (the processor's area before its fabric links)" << std::endl;
 			  if (XML->sys.NoC[i].link_span_processor == 2)
 				  /* PIMID (user ruling 2026-10-25): a RING's stop-to-stop link. The ring is one loop
 				   * folded up and down the die through two columns of stops, as on Nehalem-EX (Rusu,
@@ -1163,16 +1169,15 @@ Processor::Processor(ParseXML *XML_interface)
 		  const double sets  = procdynp.homoNOC ? procdynp.numNOC : 1;
 		  const double nodes = n->nocdynp.total_nodes;
 		  const double links = n->link_bus_exist ? (double)n->nocdynp.global_linked_ports * nodes : 0.0;
-		  const double roots = ((n->clk_router.built && n->clk_router.n_sinks > 0) ? nodes : 0.0)
+		  const double roots = XML->sys.NoC[i].clock_root_shared ? 0.0   /* its stops are another level's roots */
+		                     : ((n->clk_router.built && n->clk_router.n_sinks > 0) ? nodes : 0.0)
 		                     + ((n->clk_link.built && n->clk_link.n_sinks > 0) ? links : 0.0);
 		  addLeaf(d, (n->clk_router.built && n->clk_router.clock_hz > 0) ? n->clk_router.clock_hz
 		          : (n->clk_link.built && n->clk_link.clock_hz > 0) ? n->clk_link.clock_hz : n->nocdynp.clockRate,
 		          roots * sets, n->clk_router.global_on(), "NoC router/link");
 		  if (d == 1)
 		  {
-			  dram_area_um2 += n->area.get_area() * sets;
-			  if (n->link_bus_exist && XML->sys.NoC[i].type)
-				  dram_area_um2 += n->link_bus_tot_per_Router.area.get_area() * nodes * sets;
+			  dram_area_um2 += n->area.get_area() * sets;   // its links included (NoC::init_link_bus adds them to its area)
 		  }
 	  }
 	  const double fd_d  = pimid_fam1 ? XML->sys.dram_periph_dyn : 1.0;

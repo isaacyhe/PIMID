@@ -1382,6 +1382,8 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.link_kind);       f(lvl.link_span_area_mm2);
         f(lvl.link_parent_regions); f(lvl.tech_node_nm);
         f(lvl.link_span_processor);   // 1.12.19
+        f(lvl.router_stages);
+        f(lvl.clock_root_shared);
         f(lvl.link_io_pj_per_bit);    // user ruling 2026-10-25
         f(lvl.tsv_vdd);               // user ruling 2026-10-25
         f(lvl.link_activity);         // user ruling 2026-10-25
@@ -2155,6 +2157,7 @@ void McPATWrapper::extractResults() {
         link_readback_.node_nm             = pc->ucie_node_nm;      // 1.12.18: two-node rows
         link_readback_.analog_pj           = pc->ucie_analog_pj;
         link_readback_.digital_pj          = pc->ucie_digital_pj;
+        link_readback_.tl_pj               = pc->ucie_tl_pj;
         link_readback_.user_pj             = pc->ucie_user_pj;
         link_readback_.ref_ctrl_pj         = pc->ucie_ref_ctrl_pj;
     } else {
@@ -2677,12 +2680,13 @@ void McPATWrapper::printComponentBreakdown() const {
          * McPAT's own number (bytes x 8 x pJ/bit); link.controller is the
          * rest of the McPAT link component (area, leakage; no dynamic). */
         if (link_readback_.ucie) {
-            std::cout << "    link.phy (UCIe analog PHY + digital interface, McPAT, "
+            std::cout << "    link.phy (UCIe analog PHY + digital interface + transaction layer, McPAT, "
                       << (link_readback_.user_pj ? std::string("user value")
                                                  : std::to_string(link_readback_.node_nm) + " nm row")
                       << "): "
                       << link_readback_.phy_w << " W, " << link_readback_.phy_joules
                       << " J at " << link_readback_.analog_pj << " + " << link_readback_.digital_pj
+                      << " + " << link_readback_.tl_pj
                       << " = " << link_readback_.ucie_pj_per_bit << " pJ/bit; ";
             if (pimid::debugChecks())
                 std::cout << "McPAT controller reference " << link_readback_.ref_ctrl_pj << " pJ/bit (cross-check, not charged); ";
@@ -4323,6 +4327,10 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"chip_coverage\" value=\"" << lvl.chip_coverage << "\"/>\n";
             /* 1.11.50 (L74): per-level family scope -- see NoCLevelConfig. */
             xml << "      <param name=\"on_dram_die\" value=\"" << lvl.on_dram_die << "\"/>\n";
+            if (lvl.router_stages > 1)   /* the router's pipeline depth (1 = McPAT's default) */
+                xml << "      <param name=\"router_stages\" value=\"" << lvl.router_stages << "\"/>\n";
+            if (lvl.clock_root_shared)   /* its stops' clock roots are another level's */
+                xml << "      <param name=\"clock_root_shared\" value=\"1\"/>\n";
             xml << "      <param name=\"link_routing_over_percentage\" value=\"0.5\"/>\n";
             xml << "      <stat name=\"total_accesses\" value=\"" << lvl.total_accesses << "\"/>\n";
             if (lvl.link_traversals >= 0)   /* 1.12.18: the links' own activity */

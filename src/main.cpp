@@ -11841,6 +11841,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.duty_cycle = duty;
             nc.chip_coverage = chip_cov;
             nc.vc_buffer_entries = built_bufs;   // 1.11.93
+            nc.router_stages = std::max(1, config.noc_router_latency);   // the one router latency the timing fabric runs
 
             /* 1.12.18 (user ruling "pass-through routers as wire"): a router
              * on this (surviving) level with one router child and no
@@ -12134,6 +12135,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         nc.total_accesses = accesses;
         nc.duty_cycle = duty;
         nc.vc_buffer_entries = built_bufs;   // 1.11.93
+        nc.router_stages = std::max(1, config.noc_router_latency);
         /* the measured wire activity, as on every other link and bus (user
          * ruling 2026-10-25); a router instance's own links use it */
         const double flat_wact = wireActivity(g_dev_wire, static_cast<uint32_t>(garnet_flit), nullptr);
@@ -17648,9 +17650,20 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              *     physical address width the cores are described with; a modelling
              *     choice, no published width).
              * Flit 256 b: the Nehalem-EX data ring (Westmere-EP's own width: NO
-             * PUBLISHED SOURCE FOUND). Control messages (requests, acknowledgements,
-             * invalidations, snoops) are NOT priced on the ring and the crossbar:
-             * their networks' widths are not published (a lower bound). Buffering:
+             * PUBLISHED SOURCE FOUND). Control messages, ring and crossbar: the
+             * ring runs four physical rings, request, snoop, acknowledge and data
+             * (Paccagnella et al., USENIX Security 2021, Sec. 2; "4 protocol
+             * rings", Kottapalli and Baxter, Hot Chips 21), so the three control
+             * networks are priced as copies of the data network, 64 b wide each
+             * (one 64-bit word holds the 48-bit physical address with the
+             * command and its IDs, the size of the device fabric's control
+             * messages, noc.control_message_bits).
+             * Messages: a request and an acknowledgement per fabric access; a
+             * snoop and its response (acknowledge network) per invalidation,
+             * downgrade or forward the L2s received (zsim INV/INVX/FWD). Each
+             * makes a data flit's measured traversals (the mean hops), at
+             * random-data wire activity. On the bus a snoop is the command
+             * broadcast itself, priced on the command bus. Buffering:
              * NO PUBLISHED SOURCE FOUND (the ring wins arbitration; one entry per
              * port, the least McPAT builds). Clock: the host core clock; McPAT's
              * clock network applies (global part every powered cycle of the window,
@@ -17762,14 +17775,49 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                              << " hops per data message (measured); " << rs.total_accesses << " stop traversals, "
                              << rl.link_traversals << " link traversals";
                     }
+                    /* the control networks (ring, crossbar): request, snoop and acknowledge, each a copy of
+                     * the data network 64 b wide; a message makes a data flit's measured traversals; their
+                     * stops are the data network's (one ring stop serves all four rings), so the die's
+                     * clock trunk counts each stop's clock root once */
+                    std::ostringstream ctrl_what;
+                    if (topo != "bus") {
+                        const int ctrl_bits = 64;
+                        const uint64_t snoops = zsim_stats.host.has_activity() ? zsim_stats.host.l2_coh_events()
+                                                                               : zsim_stats.l2_coh_events();
+                        const char* const cn[3] = {"request", "snoop", "ack"};
+                        const uint64_t cm[3] = {reqs, snoops, reqs + snoops};
+                        const size_t nd = lv.size();
+                        for (int k = 0; k < 3; ++k)
+                            for (size_t j = 0; j < nd; ++j) {
+                                const NoCLevel d = lv[j];
+                                const double per = flits ? static_cast<double>(d.total_accesses) / static_cast<double>(flits) : 0.0;
+                                const uint64_t a = static_cast<uint64_t>(std::llround(per * static_cast<double>(cm[k])));
+                                NoCLevel c = d;
+                                c.name = d.name + "_" + cn[k];
+                                c.flit_bits = ctrl_bits;
+                                c.total_accesses = a;
+                                c.duty_cycle = d.total_accesses ? d.duty_cycle * static_cast<double>(a) / static_cast<double>(d.total_accesses)
+                                                                : 0.0;
+                                if (d.link_traversals >= 0) c.link_traversals = static_cast<int64_t>(a);
+                                if (d.link_activity >= 0.0) c.link_activity = kRandomWireActivity;
+                                c.clock_root_shared = 1;   // the data network's stops: one clock root each
+                                lv.push_back(c);
+                            }
+                        ctrl_what << "control messages on 3 networks of " << ctrl_bits << " b, copies of the data network"
+                                  << " (request " << cm[0] << ", snoop " << cm[1] << ", acknowledge " << cm[2]
+                                  << " messages; four physical rings, Paccagnella et al. USENIX Security 2021; width "
+                                  << pimid::provLabel("DERIVED: ") << "one 64-bit word), each at a data flit's measured"
+                                     " traversals, random-data wire activity " << kRandomWireActivity;
+                    } else {
+                        ctrl_what << "commands priced on the command bus (a snoop is its broadcast)";
+                    }
                     mcpat.setNoCLevels(lv);
                     pimid::debugStream(std::cout) << "  [NoC] " << node.name << ": host " << topo << " priced [1.12.19]: " << what.str()
                               << "; " << msgs << " data messages x " << fpm << " flits of " << flit_bits
                               << " b (Nehalem-EX data ring 32 B/direction, Hot Chips 21; Westmere-EP width: NO PUBLISHED"
                                  " SOURCE FOUND) = " << (flits * static_cast<uint64_t>(flit_bits)) << " data bits over "
                               << static_cast<uint64_t>(cyc) << " cycles at " << node.frequency_mhz << " MHz; "
-                              << (topo == "bus" ? "commands priced on the command bus"
-                                                : "control messages NOT priced (protocol-network widths unpublished: a lower bound)")
+                              << ctrl_what.str()
                               << std::endl;
                 }
             }

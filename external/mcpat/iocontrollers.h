@@ -105,6 +105,8 @@ class PCIeController : public Component {
     int    ucie_node_nm = 0;
     double ucie_analog_pj = 0.0;
     double ucie_digital_pj = 0.0;
+    double ucie_tl_pj = 0.0;        /* transaction layer above the FDI, pJ/bit: the digital
+                                     * interface's figure (0 with a user per-bit value) */
     bool   ucie_user_pj = false;
     double ucie_ref_ctrl_pj = 0.0;
     PCIeController(ParseXML *XML_interface,InputParameter* interface_ip_);
