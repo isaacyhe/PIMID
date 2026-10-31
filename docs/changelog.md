@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.205 -- Co-simulation message passing: a rank's post-ROI tail is outside its scratchpad stack check
+
+- **The problem.** A co-simulation message-passing rank runs its post-ROI collective tail (the closing MPI_Reduce of
+  gemv, stencil_2d, stream_triad) on its PE after its window-close marker. The tail's activity leaves the ROI
+  statistics (the counters are put back at the marker, 1.12.181), but the scratchpad stack-reserve check
+  (`pim.pe.stack: spm`) and the stack span kept counting it until the run's termination, so a receive in the tail
+  (69 KB of stack, see `pim.pe.spm_stack_bytes`) stopped the run with "the stack spans ... in the ROI": co-simulation
+  gemv, stencil_2d and stream_triad were refused although their ROI stacks span 2 832 to 3 464 bytes.
+- **The fix** (external/zsim/src/alu_core.cpp, ALUCore::inStack and peekStack): while the PE runs a rank's post-ROI
+  tail its stack accesses are neither added to the span nor checked. Docs: yaml_reference.md.
+- **Validation** (1.12.203 with the pricing-window change, and this build; smoke sizes): the 34 scratchpad-stack cells:
+  co-simulation gemv, stencil_2d and stream_triad message passing now complete (run times 79 249, 95 102, 72 081
+  cycles); the 3 refusals left are ranks that receive inside the ROI (device histogram and reduction, co-simulation
+  histogram); every other cell gives the same run time. The 150 message-passing smoke cells give identical logs.
+- **Data impact.** None outside `stack: spm` runs; there, co-simulation message-passing runs whose only large stack use
+  is in the post-ROI tail now complete.
+
 ## 1.12.204 -- Message passing: the pricing window is the run time, the busiest link's service time included; the scratchpad stack a message-passing rank needs
 
 - **The problem.** A thread-MPI run's run time is the latest rank's ROI end, raised to the busiest tree link's service

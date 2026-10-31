@@ -413,6 +413,10 @@ bool ALUCore::inStack(ADDRINT a) {
              (unsigned long)stkLo_, (unsigned long)stkHi_);
     }
     if (x - stkLo_ >= stkHi_ - stkLo_) return false;
+    /* (1.12.205): a co-simulation rank's post-ROI tail (g_peTailRun) is outside the ROI: its stack is neither in the
+     * span the PE reports (put back at the window-close marker, restoreActivity) nor checked against the reserve.
+     * It was checked, so a collective of the tail (gemv's closing MPI_Reduce) stopped the run. */
+    if (srcId_ < MAX_THREADS && g_peTailRun[srcId_]) return true;
     if (x < stkMinT_) stkMinT_ = x;
     if (x > stkMaxT_) stkMaxT_ = x;
     if (stkMaxT_ + 8 - stkMinT_ > stkReserve_ && roiBegun_ && !zinfo->terminationConditionMet)   // (1.12.199): see roiBegun_
@@ -428,6 +432,7 @@ void ALUCore::peekStack(ADDRINT a) {
     const uint64_t x = (uint64_t)a;
     if (stkHi_ == 0 && (!mi_ || !mi_->stackOwned(x, &stkLo_, &stkHi_))) return;
     if (x - stkLo_ >= stkHi_ - stkLo_) return;
+    if (srcId_ < MAX_THREADS && g_peTailRun[srcId_]) return;   // (1.12.205): see inStack
     if (x < stkMinT_) stkMinT_ = x;
     if (x > stkMaxT_) stkMaxT_ = x;
 }
