@@ -444,7 +444,7 @@ class GDDR6 : public IDRAM, public Implementation {
        * the same 120 with that stated. */
       constexpr int tRFC_TABLE[1][3] = {
       //  4Gb   8Gb  16Gb
-        { 120,  120,  120}, // tRFCab: Samsung K4Z80325BC Tbl 92, 120 ns (16 Gb: same, vendor source not disclosable)
+        { 120,  120,  120}, // tRFCab: Samsung K4Z80325BC Tbl 92, 120 ns (16 Gb: same, a calibrated value)
       };
 
       // tREFI(base) table (unit is nanosecond!)

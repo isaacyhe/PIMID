@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.193 -- the HBM power paper's published model-error figures; its appendix tables cited in the extended version; the HBM2 data-rate rule's published basis
+
+- **The problems.** (1) docs/sources.md gave the error of a simulator-derived HBM2 power model as 20.7% (all-0s data) and
+  39.8% (random data); those figures are from an early version of the authors' artifact, and the paper reports 21.6% and
+  41.6%. (2) The HBM2 and HBM3 records and docs/yaml_reference.md cited "Table 4" of the HBM power paper for the IDD
+  temperature slopes. The MICRO 2026 proceedings carry Tables 1 and 2 only; Table 4 is in Appendix A of the extended
+  version. (3) The HBM2 record's standby is scaled linearly in data rate to its 2.4 Gb/s preset, and the derivation cited
+  no published measurement of that rule.
+- **The fix** (docs/sources.md, docs/yaml_reference.md, docs/derivations/hbm_gddr6_idd.md sec. 1.10,
+  params/dram/hbm2.yaml, params/dram/hbm3.yaml, external/ramulator/src/dram/impl/GDDR6.cpp; text only).
+  1. The model-error row quotes the paper (Olgun et al., MICRO 2026, Sec. 6): an HBM2 power model built from DRAMSim3's
+     IDD values misses measured power by 21.6% (11.0-23.8%) with all-0s data and 41.6% (21.8-48.9%) with random data on
+     average; the per-chip spread in precharge standby (IDD2N) is 1.7x.
+  2. The temperature-slope citations read "Olgun et al., MICRO 2026; extended version arXiv:2610.14244, Appendix A,
+     Table 4". The values are unchanged: the proceedings and the extended version agree on every number the records use.
+  3. The HBM2 data-rate rule cites its measurement: Olgun et al., MICRO 2026, Sec. 5.1.2, Finding 6 and Fig. 13 (HBM2
+     current rises linearly with data rate; IDD2N 0.31 mA/(MT/s) with a zero intercept; a single activate or refresh
+     costs only slightly more at a higher rate) and the extended version's Appendix A, Table 5.
+  4. A comment in the GDDR6 tRFCab table is reworded.
+- **Validation.** 287 cells (the 280 device-scope cells of the evaluation corpus at reduced working sets, 4 co-sim
+  and 3 host cells), 1.12.191 and this release side by side on one node: all 287 logs are identical once paths,
+  temporary-file names and wall-clock times are normalised (273 ran; 14 configurations were refused alike by both, a
+  retired PE type and a working set too large for the device). The power checker's results are 1.12.191's.
+- **Data impact.** None. No number in any model changes.
+
 ## 1.12.192 -- the guest's environment is a fixed image: the user's environment no longer reaches the guest beyond the variables it forwards
 
 - **The problem.** QEMU writes the guest's environment strings onto its stack one after another, and the guest's

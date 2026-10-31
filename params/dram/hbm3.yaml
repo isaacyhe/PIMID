@@ -25,8 +25,9 @@ refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-
   - { above_c: 95.0, factor: 0.25 }
 
 # (1.12.88): IDD vs temperature, from the HBM2 measurement this record's standby is scaled from (Olgun et al.,
-# MICRO 2026, arXiv:2610.14244, Table 4; see hbm2.yaml): the HBM2 per-channel slopes scaled by this record's
-# standby over HBM2's (77.875 / 66.525), the scaling the standby itself took; one standby slope as in hbm2.yaml.
+# MICRO 2026; extended version arXiv:2610.14244, Appendix A, Table 4; see hbm2.yaml): the HBM2 per-channel slopes
+# scaled by this record's standby over HBM2's (77.875 / 66.525), the scaling the standby itself took; one standby
+# slope as in hbm2.yaml.
 idd_temperature:
   form: LINEAR_STANDBY
   reference_c: 54.2
@@ -35,7 +36,7 @@ idd_temperature:
   slope_idd2n: 0.400625
   slope_idd3n: 0.400625
   slope_idd2p: 0.280438
-  source: "From Olgun et al. MICRO 2026 (arXiv:2610.14244) Table 4 HBM2 slopes x this record's standby / HBM2's"
+  source: "From Olgun et al., MICRO 2026; extended version arXiv:2610.14244, Appendix A, Table 4 HBM2 slopes x this record's standby / HBM2's"
 
 # ---- the part's measured data (1.11.104 step 1 transcribed it, cross-checked; 1.11.105 step 2: the only source) ----
 idd:

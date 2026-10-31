@@ -194,7 +194,7 @@ of the published tree; this file is.
 | Routed-core flip-flops and repair buffers (1.12.95) | 1,257 flip-flops (1,062 enable, 195 plain); enable duty non-CSR 0.349, CSR 0; repair / hold buffers 0.188 (45 nm), 0.300 + 0.198 (7 nm) of the logic energy | Same routed CV32E40P and gate-level runs | log-node interpolation 32 nm 0.245, 22 nm 0.307 |
 | HBM1/HBM2 timing structure + I/O energy class | SK hynix Hot Chips 26/28 decks: tRC 40-48 ns, tCCD 1 CK, 2 KB page, per-gen speeds, I/O energy ratios | Vendor-authored public corroboration for the HBM2 rung |
 | HBM2E PHY energy | Samsung HC32 poster p.11: measured WRITE 1.07 / READ 0.56 / IDLE 0.02 pJ/b at 0.75/1.2 V | Validation band for the interface-energy layer |
-| HBM2 measured IDD + model-error band | CMU-SAFARI HBM-Power artifact: 36-chip IDD distributions; DRAMSim3-class HBM2 power model = 20.7% MAPE (all-0s) / 39.8% (random) vs silicon | The citable error bar for simulator-derived HBM energy; per-chip spread 1.6-1.8x standby |
+| HBM2 measured IDD + model-error band | CMU-SAFARI HBM-Power artifact: 36-chip IDD distributions; an HBM2 power model built from DRAMSim3's IDD values misses measured power by 21.6% (all-0s data) and 41.6% (random data) on average (Olgun et al., MICRO 2026, Sec. 6) | The citable error bar for simulator-derived HBM energy; per-chip spread 1.7x in precharge standby (IDD2N) |
 | HBM2 measured latency/timing | Shuhai TC'21 (hit/closed/miss 106.7/122.2/137.8 ns); DSN'24 read-disturbance artifact (tRAS 29 ns, tREFI 3.9 us, tRC ~45-48 ns on real parts) | Row-buffer state machine and refresh-model validation anchors |
 
 ## Vendor silicon papers (ISSCC/JSSC, acquired 2026-09-17)

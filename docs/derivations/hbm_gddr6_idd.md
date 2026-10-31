@@ -568,6 +568,10 @@ array part.
   HBM2_2.4Gbps preset (tCK 833 ps). Its background (847 mW per stack) was below the XPE guard [860, 1900].
 - Rule, as in the HBM3 derivation (sec. 1.3): the clocked standby is linear in rate (factor 2400/1200 = 2),
   voltage unchanged (1.2 V).
+  - Published basis: HBM2 current rises linearly with data rate, the standby currents with a near-zero intercept,
+    and a single activate or refresh operation costs only slightly more at a higher rate (Olgun et al., MICRO 2026,
+    Sec. 5.1.2, Finding 6 and Fig. 13: IDD2N 0.31 mA/(MT/s) + 0 mA per board; extended version arXiv:2610.14244,
+    Appendix A, Table 5: IDD2N 186.6 / 285.5 / 374.6 mA per board at 600 / 900 / 1200 MT/s).
   - IDD2N 38.0125 -> 76.025; IDD3N 35.5 -> 71.0 mA per channel.
   - IDD0, IDD4R, IDD4W and IDD5 move with their baselines, so the activate, burst and refresh excesses are
     unchanged.
