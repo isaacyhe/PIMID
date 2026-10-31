@@ -230,35 +230,57 @@ public:
          * write; > 0 replaces McPAT's own PHY dynamic (never added to it). */
         double phy_pj_bit_rd = -1.0;
         double phy_pj_bit_wr = -1.0;
-        /* 1.11.56 (audit C008): the controller's STRUCTURE used to be five
-         * literals written straight into the XML, with no field to carry
-         * them and therefore no way for any caller to describe a controller
-         * that differs. They are fields now, so the structure is at least
-         * addressable from C++ even before a YAML surface exists; the
-         * defaults reproduce exactly what the literals emitted, so this
-         * change moves no number on its own.
-         *
-         * NONE OF THESE FIVE IS SOURCED, and generateXMLConfig() says so
-         * once per process rather than letting them pass silently:
-         *   channels_per_mc 1   every MC is priced as single-channel, so a
-         *                       multi-channel controller cannot be described
-         *                       and MC area/queue power scales only through
-         *                       number_mcs.
-         *   req_window 32       scheduler queue depth (McPAT reference XML).
-         *   io_buffer 32        front-end buffer depth (same reference).
-         *   block_size 64       cache-line granularity of an MC transaction.
-         *   addressbus_width 51 McPAT's own reference value. It contradicts
-         *                       the physical_address_width of 48 this same
-         *                       file emits; the usual explanation is that
-         *                       the MC bus carries command and bank/rank
-         *                       select beside the address, but we have not
-         *                       verified that and do not assert it. */
+        /* The controller's STRUCTURE is one of the two published per-channel
+         * controllers of Green et al., "PARE: A Power and Area-Efficient Memory
+         * Controller for High-Bandwidth DRAM", MICRO 2026, whose synthesized
+         * area and energy the paper reports (Table IV):
+         *   channels_per_mc 1            one controller per channel (Sec. II,
+         *                                Fig. 3: the controllers are replicated
+         *                                per channel).
+         *   req_window                   a HOST controller: the conventional
+         *                                sorting FR-FCFS controller (SMC, Sec.
+         *                                IV b), one read and one write queue of
+         *                                16 entries per bank (8 + 8 for its
+         *                                8-bank channel), each with its own CAM
+         *                                and age-ordered arbiter; the banks are
+         *                                those of the channel it serves (ranks x
+         *                                bank groups x banks; an 8-high HBM3
+         *                                stack's channel: 64). A PIM ELEMENT
+         *                                controller: PARE itself (Sec. V-A), one
+         *                                read and one write unified queue of 32
+         *                                entries.
+         *   req_cam_tag_bits             the SMC's CAMs compare the row address
+         *                                (Sec. VIII-B a): the row bits of the
+         *                                simulated part; PARE's compare the bank
+         *                                ID (Sec. V-A): the bits of a bank of the
+         *                                element's region. A memory without a row
+         *                                buffer compares the line address.
+         *   io_buffer 32                 the read and write buffers, at the
+         *                                32-entry depth of the controller's input
+         *                                queue (Sec. IV a); its serviced-request
+         *                                queue, which serves the returning side as
+         *                                the input queue serves the arriving one
+         *                                (Sec. IV d), is taken at the same depth.
+         *   block_size                   the transaction: the run's cache line
+         *                                (the requests the memory receives).
+         *   addressbus_width 48          the request address stored in each entry
+         *                                (the physical_address_width the cores'
+         *                                XML gives); the CAM compares the row bits
+         *                                above, so this feeds no tag here. */
         int memory_channels_per_mc = 1;
-        int req_window_size_per_channel = 32;
+        int banks_served = 8;               // banks one controller sequences (PARE's channel: 8)
+        bool unified_queues = false;        // true: PARE's unified read and write queues (a PIM element controller)
+        int req_window_size_per_channel = 256;     // the transaction queues' entries
+        int req_window_queues_per_channel = 16;    // SMC: one read + one write queue per bank
+        int req_cam_tag_bits = 0;           // 0 = McPAT's address + opcode tag
+        std::string req_cam_field;          // what the CAM compares ("row address", "line address")
         int io_buffer_size_per_channel = 32;
         int block_size_bytes = 64;
-        int addressbus_width = 51;
+        int addressbus_width = 48;
     };
+    /* The physical address width the generated XML gives the cores and the
+     * memory controller's request entries. */
+    static constexpr int kPhysicalAddressWidth = 48;
 
     /**
      * PCIe statistics for co-sim transfer power modeling.
@@ -1054,10 +1076,10 @@ private:
     /* 1.11.56 (audit C017): latch for the one-time warning that the link
      * class is unknown, so McPAT's historical 4 Gb/s SerDes rate stands. */
     mutable bool warned_link_class_ = false;
-    /* 1.11.56 (audit C008): latch for the one-time warning naming the
-     * memory-controller structural literals that have no configuration
-     * surface. */
-    mutable bool warned_mc_structure_ = false;
+    /* The memory-controller structure line last printed by this wrapper
+     * (printed again only when the structure changes, e.g. another node's
+     * memory). */
+    mutable std::string mc_structure_said_;
     /* 1.11.93 (F3): the 1.11.57 (C035) busy > total latch is gone with
      * setBusyCycles(): busy cycles are derived and bounded by the window. */
     /* 1.11.57 (latent C018): latch for the one-time warning that the legacy

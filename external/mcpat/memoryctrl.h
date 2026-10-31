@@ -83,6 +83,7 @@ class MCFrontEnd : public Component {
 	MCParam  mcp;
 	selection_logic * MC_arb;
 	ArrayST  * frontendBuffer;
+	int req_queues;   /* PIMID: independent request queues per channel; frontendBuffer and MC_arb are ONE of them */
 	ArrayST  * readBuffer;
 	ArrayST  * writeBuffer;
 

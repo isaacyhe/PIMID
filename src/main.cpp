@@ -10926,11 +10926,25 @@ static void applyHbmHostPhyEnergy(pimid::McPATWrapper::MCTechParams& p, const st
               << "), in place of McPAT's own PHY energy, not added to it" << std::endl;
 }
 
+/* The controller's request queues follow the two published controllers of
+ * Green et al., PARE, MICRO 2026. A host controller (element_banks < 0) is the
+ * conventional sorting FR-FCFS controller (Sec. IV b): one read and one write
+ * transaction queue of 16 entries per bank of the channel it serves (ranks x
+ * bank groups x banks, read from the timing preset), each a CAM on the row
+ * address. A PIM element controller (element_banks >= 0, its region's banks;
+ * deviceBanksPerController) is PARE itself (Sec. V-A): one read and one write
+ * unified queue of 32 entries, each a CAM on the bank ID. */
+static constexpr int kMcQueueEntriesPerBank = 16;   // PARE, Sec. IV b (SMC)
+static constexpr int kMcUnifiedQueueEntries = 32;   // PARE, Sec. V-A
 static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
-    const std::string& tech, int num_mcs, const UnifiedConfig& config)
+    const std::string& tech, int num_mcs, const UnifiedConfig& config, int element_banks = -1)
 {
     pimid::McPATWrapper::MCTechParams p;
     p.number_mcs = std::max(1, num_mcs);
+    int channel_banks = 0;
+    /* The controller's transaction is the run's cache line: the memory's
+     * requests carry system.cache_line_size bytes. */
+    p.block_size_bytes = (config.cache_line_size > 0) ? config.cache_line_size : 64;
     const std::string t = canonicalMemTech(tech);
     if (pimid::isDRAM(pimid::parseMemoryTechnology(t))) {
         try {
@@ -10943,14 +10957,64 @@ static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
             p.peak_transfer_rate = static_cast<int>(std::llround((double)tim.rate_mtps * bits / 8.0));   // MB/s
             p.databus_width = bits;
             p.number_ranks = std::max(1, (int)w.getRanksPerChannel());
+            /* The request queues' CAMs compare the row address (PARE, MICRO
+             * 2026, Sec. VIII-B a): the bits of a row index in this part's bank. */
+            const uint64_t rows = w.getPresetRowsPerBank();
+            if (rows > 1) {
+                p.req_cam_tag_bits = static_cast<int>(std::ceil(std::log2(static_cast<double>(rows))));
+                p.req_cam_field = "row address";
+            }
+            const auto& po = w.getPresetOrganization();
+            if (po.valid && po.bank_groups > 0 && po.banks_per_group > 0)
+                channel_banks = std::max(1, (int)w.getRanksPerChannel()) * po.bank_groups * po.banks_per_group;
         } catch (const std::exception& e) {
             refuseWithoutDramOracle(t, e.what(), "the memory controller McPAT prices");
         }
     } else {
         p.peak_transfer_rate = (config.md1_bandwidth_mbs > 0) ? config.md1_bandwidth_mbs : 1600;
         p.databus_width = 64; p.number_ranks = 1;
+        channel_banks = std::max(1, config.num_banks);   // SRAM/NVM: the configured banks
+    }
+    if (element_banks >= 0) {
+        p.unified_queues = true;
+        p.banks_served = std::max(1, element_banks > 0 ? element_banks : channel_banks);
+        p.req_window_queues_per_channel = 2;
+        p.req_window_size_per_channel = 2 * kMcUnifiedQueueEntries;
+        p.req_cam_tag_bits = std::max(1, static_cast<int>(std::ceil(std::log2(static_cast<double>(p.banks_served)))));
+        p.req_cam_field = "bank ID";
+    } else {
+        p.banks_served = std::max(1, channel_banks);
+        p.req_window_queues_per_channel = 2 * p.banks_served;
+        p.req_window_size_per_channel = kMcQueueEntriesPerBank * p.req_window_queues_per_channel;
+    }
+    if (p.req_cam_tag_bits <= 0) {
+        /* A memory without a row buffer has no row to search: the queues
+         * compare the line address (the physical address above the line). */
+        const int off = static_cast<int>(std::ceil(std::log2(static_cast<double>(std::max(1, p.block_size_bytes)))));
+        p.req_cam_tag_bits = std::max(1, pimid::McPATWrapper::kPhysicalAddressWidth - off);
+        p.req_cam_field = "line address";
     }
     return p;
+}
+
+/* The banks one element controller serves: the device's banks (the in-memory
+ * tree's: banks x bank groups x chips x ranks x channels, where an HBM stack's
+ * chip slot already is its channel; an SRAM/NVM's configured banks) over its
+ * controllers, at least one. McPAT prices one structure for all of a node's
+ * controllers, so a tree whose regions differ is priced at the mean; it sets
+ * the width of the bank ID the element controller's queues compare. 0 (no
+ * tree) leaves the channel's banks. */
+static int deviceBanksPerController(const UnifiedConfig& config, int num_mcs) {
+    if (!config.hierarchy_enabled) return 0;
+    const std::string t = canonicalMemTech(config.memory_tech);
+    long long banks;
+    if (pimid::isDRAM(pimid::parseMemoryTechnology(t)))
+        banks = 1LL * std::max(1, config.hierarchy_banks_per_bg) * std::max(1, config.hierarchy_bg_per_chip)
+              * std::max(1, config.hierarchy_chips_per_rank) * std::max(1, config.hierarchy_ranks_per_channel)
+              * (hbmHostMc(t) ? 1 : std::max(1, config.hierarchy_dram_channels));
+    else
+        banks = std::max(1, config.num_banks);
+    return static_cast<int>(std::max(1LL, std::llround(static_cast<double>(banks) / std::max(1, num_mcs))));
 }
 
 /* 1.11.96 (ruling 14 (c)): the controller clock McPAT prices = the DRAM
@@ -14477,7 +14541,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
     else mcpat.setMemControllerAccesses(zsim_stats.mem_rd, zsim_stats.mem_wr);
 
     // MC technology params
-    McPAT::MCTechParams mc_tech = getMCTechParamsForMcPAT(config.memory_tech, mcfg.num_memory_controllers, config);   // 1.11.96 (14c/H18/H32)
+    McPAT::MCTechParams mc_tech = getMCTechParamsForMcPAT(config.memory_tech, mcfg.num_memory_controllers, config,
+                                                          deviceBanksPerController(config, mcfg.num_memory_controllers));   // 1.11.96 (14c/H18/H32)
     auto it_ptr = overrides.find("mc.peak_transfer_rate");
     if (it_ptr != overrides.end()) mc_tech.peak_transfer_rate = static_cast<int>(it_ptr->second);
     auto it_dbw = overrides.find("mc.databus_width");
@@ -18375,7 +18440,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                       << "  (measured, per-node)"
                       << std::endl;
             {
-                McPAT::MCTechParams np = getMCTechParamsForMcPAT(node.memory_tech, mcfg.num_memory_controllers, config);   // 1.11.96
+                McPAT::MCTechParams np = getMCTechParamsForMcPAT(node.memory_tech, mcfg.num_memory_controllers, config,
+                    node.role == UnifiedConfig::SystemNode::DEVICE ? deviceBanksPerController(config, mcfg.num_memory_controllers) : -1);   // 1.11.96
                 if (node.role == UnifiedConfig::SystemNode::HOST)   // (1.12.132) (user ruling 2026-10-28)
                     applyHbmHostPhyEnergy(np, canonicalMemTech(node.memory_tech), node.name);
                 mcpat.setMCTechParams(np);

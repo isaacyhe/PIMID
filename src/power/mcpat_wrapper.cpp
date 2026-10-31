@@ -1380,6 +1380,8 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(mc_tech_.req_window_size_per_channel);
     f(mc_tech_.io_buffer_size_per_channel);
     f(mc_tech_.block_size_bytes);    f(mc_tech_.addressbus_width);
+    f(mc_tech_.req_window_queues_per_channel); f(mc_tech_.req_cam_tag_bits);
+    f(mc_tech_.banks_served); f(mc_tech_.unified_queues ? 1 : 0);
 
     // --- setter state: NoC levels (the live path) ---
     f(static_cast<uint64_t>(noc_levels_.size()));
@@ -3193,7 +3195,7 @@ std::string McPATWrapper::generateXMLConfig() const {
     }
     xml << "    <param name=\"machine_bits\" value=\"" << machine_bits << "\"/>\n";
     xml << "    <param name=\"virtual_address_width\" value=\"48\"/>\n";
-    xml << "    <param name=\"physical_address_width\" value=\"48\"/>\n";
+    xml << "    <param name=\"physical_address_width\" value=\"" << kPhysicalAddressWidth << "\"/>\n";
     xml << "    <param name=\"virtual_memory_page_size\" value=\"4096\"/>\n";
 
     /* 1.11.57 (latent C035): IDLE CYCLES, COMPUTED ONCE AND UNABLE TO WRAP.
@@ -4519,25 +4521,33 @@ std::string McPATWrapper::generateXMLConfig() const {
     xml << "      <param name=\"vdd\" value=\"0\"/>\n";
     xml << "      <param name=\"power_gating_vcc\" value=\"-1\"/>\n";
     xml << "      <param name=\"peak_transfer_rate\" value=\"" << mc_tech_.peak_transfer_rate << "\"/>\n";
-    /* 1.11.56 (audit C008): the five structural numbers below come from
-     * MCTechParams now instead of being literals in this stream. They still
-     * default to the values the literals held, so nothing moves; what changes
-     * is that a controller with more than one channel, a deeper queue or a
-     * different transaction granularity has somewhere to be described, and
-     * that the run SAYS the description is unsourced (see the warning below)
-     * instead of presenting single-channel/32/32/64/51 as facts. */
-    /* 1.11.60 (audit round 4, C006): diagOnce(). */
-    if (diagOnce(warned_mc_structure_)) {
-        std::cerr << "[McPATWrapper] WARNING: the memory controller's structure is "
-                  << (pimid::debugChecks() ? "UNSOURCED" : "fixed") << " and in force in every run: "
-                  << mc_tech_.memory_channels_per_mc << " channel(s) per MC, "
-                  << mc_tech_.req_window_size_per_channel << "-entry request window, "
-                  << mc_tech_.io_buffer_size_per_channel << "-entry IO buffer, "
-                  << mc_tech_.block_size_bytes << " B blocks, "
-                  << mc_tech_.addressbus_width << "-bit address bus (this last one "
-                     "disagrees with the 48-bit physical_address_width emitted for "
-                     "the cores, unreconciled). No YAML key sets any of them; they "
-                     "govern MC queue/buffer area and power." << std::endl;
+    /* The structural numbers come from MCTechParams (the published
+     * per-channel controller, see its declaration); the run says once per
+     * structure what it priced. */
+    if (diagnostics_live_) {
+        const int nq = std::max(1, mc_tech_.req_window_queues_per_channel);
+        std::ostringstream d;
+        d << "  [power] memory-controller structure (McPAT front end, per controller): "
+          << mc_tech_.memory_channels_per_mc << " channel, " << mc_tech_.banks_served << " bank(s) served; request window "
+          << nq << " queues x " << (mc_tech_.req_window_size_per_channel + nq - 1) / nq << " entries";
+        if (mc_tech_.unified_queues) d << " (one read, one write: unified)";
+        else if (nq > 1) d << " (" << nq / 2 << " read, " << nq - nq / 2 << " write: one of each per bank)";
+        d << ", each a CAM on ";
+        if (mc_tech_.req_cam_tag_bits > 0)
+            d << "the " << mc_tech_.req_cam_tag_bits << "-bit " << (mc_tech_.req_cam_field.empty() ? std::string("address") : mc_tech_.req_cam_field);
+        else d << "the " << mc_tech_.addressbus_width << "-bit address and the opcode";
+        d << " with its own arbiter; " << mc_tech_.io_buffer_size_per_channel
+          << "-entry read and write buffers; " << mc_tech_.block_size_bytes
+          << " B transactions -- " << (mc_tech_.unified_queues ? "the PARE controller of Green et al., MICRO 2026, Sec. V-A"
+                                                                : "the conventional sorting FR-FCFS controller of Green et al., PARE, MICRO 2026, Sec. IV")
+          << pimid::provLabel(" (DERIVED: the SMC's per-bank queues carried to the bank count of the channel served; the"
+                              " serviced-request queue depth taken as the input queue's 32; the buffers' entries are McPAT's bus"
+                              " words; a memory without a row buffer compares the line address; element controllers at the mean"
+                              " bank count of their regions)");
+        if (d.str() != mc_structure_said_) {
+            std::cout << d.str() << std::endl;
+            mc_structure_said_ = d.str();
+        }
     }
     xml << "      <param name=\"block_size\" value=\"" << mc_tech_.block_size_bytes << "\"/>\n";
     xml << "      <param name=\"number_mcs\" value=\"" << mc_tech_.number_mcs << "\"/>\n";
@@ -4565,6 +4575,10 @@ std::string McPATWrapper::generateXMLConfig() const {
         << mc_tech_.req_window_size_per_channel << "\"/>\n";   // 1.11.56 (C008)
     xml << "      <param name=\"IO_buffer_size_per_channel\" value=\""
         << mc_tech_.io_buffer_size_per_channel << "\"/>\n";     // 1.11.56 (C008)
+    xml << "      <param name=\"req_window_queues_per_channel\" value=\""
+        << mc_tech_.req_window_queues_per_channel << "\"/>\n";
+    xml << "      <param name=\"req_cam_tag_bits\" value=\""
+        << mc_tech_.req_cam_tag_bits << "\"/>\n";
     xml << "      <param name=\"databus_width\" value=\"" << mc_tech_.databus_width << "\"/>\n";
     xml << "      <param name=\"addressbus_width\" value=\""
         << mc_tech_.addressbus_width << "\"/>\n";               // 1.11.56 (C008)

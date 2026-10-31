@@ -369,6 +369,7 @@ MCFrontEnd::MCFrontEnd(ParseXML *XML_interface,InputParameter* interface_ip_, co
  mcp(mcp_),
  MC_arb(0),
  frontendBuffer(0),
+ req_queues(1),
  readBuffer(0),
  writeBuffer(0)
 {
@@ -385,9 +386,26 @@ MCFrontEnd::MCFrontEnd(ParseXML *XML_interface,InputParameter* interface_ip_, co
    */
 
   //memory request reorder buffer
-  tag							   = mcp.addressBusWidth  + EXTRA_TAG_BITS + mcp.opcodeW;
+  /* PIMID: the request window may be split into independent queues, as in a
+   * controller whose transaction scheduler keeps one queue per bank and
+   * request type, each with its own CAM and age-ordered arbiter (the
+   * conventional sorting FR-FCFS controller of Green et al., "PARE", MICRO
+   * 2026, Sec. IV b: 8 read + 8 write bank-aligned queues of 16 entries per
+   * channel). A request is written into, searched in and picked from ONE
+   * queue, so an access costs one queue's energy, while the area, the leakage
+   * and the clocked port registers are those of every queue. The queue's
+   * entry stores the request (its physical address and opcode, as McPAT's
+   * window does); its CAM compares req_cam_tag_bits when given (that
+   * controller's CAMs compare the row address, Sec. VIII-B a), McPAT's
+   * address + opcode tag otherwise. One queue (the default) is McPAT's single
+   * window, unchanged. */
+  req_queues                       = std::max(1, XML->sys.mc.req_window_queues_per_channel);
+  const int q_entries              = std::max(1, (int)ceil((double)XML->sys.mc.req_window_size_per_channel/req_queues));
+  tag							   = (XML->sys.mc.req_cam_tag_bits > 0)
+		  ? XML->sys.mc.req_cam_tag_bits + EXTRA_TAG_BITS
+		  : mcp.addressBusWidth  + EXTRA_TAG_BITS + mcp.opcodeW;
   data    					 	   = int(ceil((XML->sys.physical_address_width + mcp.opcodeW)/8.0));
-  interface_ip.cache_sz            = data*XML->sys.mc.req_window_size_per_channel;
+  interface_ip.cache_sz            = data*q_entries;
   interface_ip.line_sz             = data;
   interface_ip.assoc               = 0;
   interface_ip.nbanks              = 1;
@@ -410,12 +428,16 @@ MCFrontEnd::MCFrontEnd(ParseXML *XML_interface,InputParameter* interface_ip_, co
   interface_ip.num_se_rd_ports     = 0;
   interface_ip.num_search_ports     = XML->sys.mc.memory_channels_per_mc;
   frontendBuffer = new ArrayST(&interface_ip, "MC ReorderBuffer", Uncore_device);
-  frontendBuffer->area.set_area(frontendBuffer->area.get_area()+ frontendBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc);
-  area.set_area(area.get_area()+ frontendBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc);
+  frontendBuffer->area.set_area(frontendBuffer->area.get_area()+ frontendBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc*req_queues);
+  area.set_area(area.get_area()+ frontendBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc*req_queues);
 
   //selection and arbitration logic
   interface_ip.assoc               = 1; //reset to prevent unnecessary warning messages when init_interface
-  MC_arb = new selection_logic(is_default, XML->sys.mc.req_window_size_per_channel,1,&interface_ip, Uncore_device);
+  /* PIMID: one arbiter per queue, over that queue's entries (McPAT's
+   * issue-selection model, which has no area). It used to be built and never
+   * priced; computeEnergy() now prices one pick per request and the leakage
+   * of every queue's arbiter. */
+  MC_arb = new selection_logic(is_default, q_entries,1,&interface_ip, Uncore_device);
 
   //read buffers.
   data    					 	   = (int)ceil(mcp.dataBusWidth/8.0);//Support key words first operation //8 means converting bit to Byte
@@ -470,7 +492,8 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
 	if (is_tdp)
 	    {
 	    	//init stats for Peak
-	    	frontendBuffer->stats_t.readAc.access  = frontendBuffer->l_ip.num_search_ports;
+	    	/* PIMID: at peak every queue searches each cycle (the queues' CAMs work in parallel). */
+	    	frontendBuffer->stats_t.readAc.access  = frontendBuffer->l_ip.num_search_ports*req_queues;
 	    	frontendBuffer->stats_t.writeAc.access = frontendBuffer->l_ip.num_wr_ports;
 	    	frontendBuffer->tdp_stats = frontendBuffer->stats_t;
 
@@ -521,20 +544,32 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
 			writeBuffer->local_result.power.readOp.dynamic+
     		writeBuffer->stats_t.writeAc.access*writeBuffer->local_result.power.writeOp.dynamic);
 
+	/* PIMID: the leakage of every request queue and of its arbiter; the
+	 * arbiter's dynamic energy per pick (peak: every queue picks each cycle;
+	 * runtime: one pick per request the controller served). */
+	const double nq = req_queues;
+	const double pppm_lkg_q[4] = {0, nq, nq, 0};
+	powerDef arb_t;
+	arb_t.reset();
+	arb_t.readOp.dynamic = MC_arb->power.readOp.dynamic*(is_tdp
+			? nq*XML->sys.mc.memory_channels_per_mc
+			: XML->sys.mc.memory_reads + XML->sys.mc.memory_writes);
 	if (is_tdp)
     {
     	power = power + frontendBuffer->power_t + readBuffer->power_t + writeBuffer->power_t +
-    	        (frontendBuffer->local_result.power +
-    	        		readBuffer->local_result.power +
-    	        		writeBuffer->local_result.power)*pppm_lkg;
+    	        (readBuffer->local_result.power +
+    	        		writeBuffer->local_result.power)*pppm_lkg +
+    	        frontendBuffer->local_result.power*pppm_lkg_q +
+    	        arb_t + MC_arb->power*pppm_lkg_q;
 
     }
     else
     {
     	rt_power = rt_power + frontendBuffer->power_t + readBuffer->power_t + writeBuffer->power_t +
-    	        (frontendBuffer->local_result.power +
-    	        		readBuffer->local_result.power +
-    	        		writeBuffer->local_result.power)*pppm_lkg;
+    	        (readBuffer->local_result.power +
+    	        		writeBuffer->local_result.power)*pppm_lkg +
+    	        frontendBuffer->local_result.power*pppm_lkg_q +
+    	        arb_t + MC_arb->power*pppm_lkg_q;
     	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     }
 }
@@ -724,8 +759,10 @@ MemoryController::MemoryController(ParseXML *XML_interface,InputParameter* inter
 		  const double ct = arr[ai]->local_result.cycle_time;
 		  const double st = (ct > 0) ? ceil(at/ct) : 1.0;
 		  const double w  = arr[ai]->l_ip.out_w + (arr[ai]->l_ip.is_cache ? arr[ai]->l_ip.tag_w : 0);
-		  regs += st * w * nch;
+		  const double copies = (ai == 0) ? frontend->req_queues : 1;   /* PIMID: every request queue has its own ports */
+		  regs += st * w * nch * copies;
 		  src << " " << arr[ai]->name << " " << st << "x" << w;
+		  if (copies > 1) src << " x " << copies << " queues";
 	  }
 	  pimid::debugStream(std::cerr) << "NO PUBLISHED SOURCE FOUND: memory-controller logic pipeline depth and backend/PHY register count "
 	               "(McPAT's five-stage MC pipeline, memoryctrl.cc, is uncited); the clock tree is priced over the "

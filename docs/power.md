@@ -555,6 +555,22 @@ the scope must price is missing. No share-of-peak convention prices anything:
 a memory controller is McPAT leakage + its measured transactions + one
 transaction-engine pass per counted refresh command
 (`power.models.mc_command_ops`), and its idle clocking is the clock model's.
+Its front end has the published organisation of one of the two per-channel
+controllers of Green et al. (PARE, MICRO 2026), one controller per channel,
+each with a 32-entry input queue and a 32-entry serviced-request queue
+(McPAT's write and read buffers). A host memory controller is PARE's
+conventional sorting FR-FCFS controller (Sec. IV): one read and one write
+transaction queue of 16 entries per bank of the channel it serves, each a CAM
+on the row address with its own arbiter; the banks are the channel's ranks x
+bank groups x banks (16 on a DDR4 channel or an LPDDR5 or GDDR6 channel, 32 on
+a DDR5 sub-channel or an HBM2 channel, 64 on the channel of an 8-high HBM3
+stack). A PIM element controller is PARE itself (Sec. V-A): one read and one
+write unified queue of 32 entries, each a CAM on the bank ID of its region (the
+device's banks over its controllers). A request is written into, searched in
+and picked from one queue, so its energy is one queue's; the area, the leakage
+and the clocked port registers are every queue's. A transaction is the run's
+cache line. The run prints the structure it priced on a
+`memory-controller structure` line.
 Where there are several controllers (a device's element controllers, one per
 region of the placement tree), every controller's transactions are priced,
 each once, and leakage, area and the clock network count every controller.

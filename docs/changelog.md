@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.203 -- the memory controllers have the published structure of PARE's two controllers: a host controller's per-bank FR-FCFS queues, a PIM element controller's unified queues
+
+- **The problem.** McPAT priced every memory controller's front end with one structure that no source supported: a single
+  32-entry request window searched in full on every access, 32-entry read and write buffers, a 51-bit address in the
+  window's tag (the same input gives the cores a 48-bit physical address), 64 B transactions whatever the cache line, and
+  a window arbiter that McPAT built but never priced. The run printed this as a warning.
+- **The fix** (external/mcpat/memoryctrl.{h,cc}, XML_Parse.{h,cc}; include/power/mcpat_wrapper.h,
+  src/power/mcpat_wrapper.cpp; src/main.cpp). Each controller takes the organisation of one of the two per-channel
+  controllers of Green et al., "PARE: A Power and Area-Efficient Memory Controller for High-Bandwidth DRAM", MICRO 2026.
+  Every controller serves one channel and keeps a 32-entry input queue and a 32-entry serviced-request queue (McPAT's
+  write and read buffers).
+  1. A host memory controller is PARE's conventional sorting FR-FCFS controller (Sec. IV): one read and one write
+     transaction queue of 16 entries per bank of the channel it serves (8 + 8 for the paper's 8-bank channel), each a CAM
+     on the row address with its own arbiter. The banks are the channel's ranks x bank groups x banks: 16 on a DDR4,
+     LPDDR5 or GDDR6 channel, 32 on a DDR5 sub-channel or an HBM2 channel, 64 on the channel of an 8-high HBM3 stack.
+  2. A PIM element controller is PARE itself (Sec. V-A): one read and one write unified queue of 32 entries, each a CAM
+     on the bank ID of its region.
+  3. McPAT builds the request queues as separate arrays. A request is written into, searched in and picked from one
+     queue, so it costs one queue's energy, while the area, the leakage and the clocked port registers are those of every
+     queue. Each queue's arbiter is priced with McPAT's selection logic: one pick per request, and every queue's leakage.
+  4. A transaction is the run's cache line (`system.cache_line_size`).
+  The warning is replaced by a `memory-controller structure` line that says what was priced.
+- **Validation.** 1.12.195 with the entry below applied, against the same tree with this change:
+  - 97 cells (60 host-only, 30 co-sim, 7 device-only) and 54 more cells (fig3 on DDR3/4/5, LPDDR5, GDDR6, HBM2/3; the four
+    SRAM/NVM memories; HBM3 placements and PE counts; co-sim on five memories, HBM3 also at CHANNEL and LOGIC_DIE; HBM2 host baselines):
+    - run times, checksums and every statistic before the power report are identical;
+    - only the controllers' power and area, and the terms that read the area (the fabric links' span, the die clock
+      trunk), move.
+  - The determinism cells give 8 of 8 identical copies each.
+  - The power checker reports no flag.
+- **Data impact.**
+  - Host controllers, per controller:
+    - HBM3, 64 banks: area 1.28 -> 2.03 mm^2, leakage 6.3 -> 14.8 mW, clock network +0.02 to +0.09 W;
+    - DDR5, 2 ranks: area 2.48 -> 3.28 mm^2, leakage 12.0 -> 21.2 mW;
+    - HBM2: area 2.38 -> 2.74 mm^2, leakage 11.6 -> 15.8 mW;
+    - traffic energy -1% to -3% everywhere.
+    The host uncore's measured package figure already contains its controllers, so host and co-sim system totals move by
+    at most 0.1%.
+  - PIM element controllers: area -0.2% to -2%, traffic energy -3%; device totals move by 0.0% to -0.5%.
+
 ## 1.12.202 -- message-passing co-simulation: a rank's device kernel starts when its launch has completed
 
 - **The problem.** In a message-passing co-simulation every rank charges its own coherence flush and kernel launch
