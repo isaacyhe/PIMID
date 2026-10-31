@@ -6,6 +6,56 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.192 -- the guest's environment is a fixed image: the user's environment no longer reaches the guest beyond the variables it forwards
+
+- **The problem.** QEMU writes the guest's environment strings onto its stack one after another, and the guest's
+  startup reads every entry: glibc's tunables read each name up to its `=`, the dynamic loader and the OpenMP runtime
+  test each entry's prefix, getenv compares each entry's first characters. Two inputs outside the workload's
+  definition therefore still reached the results:
+  - from pimid's environment every `OMP_*` and `GOMP_*` variable was passed on, so an `OMP_` variable the OpenMP
+    runtime does not know, set in the user's shell, changed the results of the portability smoke cells;
+  - a `workload.env` variable the workload never reads moved every string QEMU wrote after it, the ones the guest
+    reads among them: a saturated device message-passing bfs on HBM3 (smoke size) took 31.2, 21.5, 22.5 or 27.1 M
+    cycles (CHANNEL placement) and 21.4 to 34.2 M (LOGIC_DIE) for a variable name of 0, 1, 30 or 90 characters.
+  The rest of the user's environment did not reach the guest and still does not.
+- **The fix (src/main.cpp).**
+  - From pimid's environment the guest gets only the OpenMP runtime's variables by name (the `OMP_*` variables of
+    OpenMP 5.2 and libgomp's `GOMP_*` ones, with their `_ALL`, `_DEV` and `_DEV_<n>` forms) and the `PIMID_*`
+    variables the shipped guest code reads. Another `OMP_` or `GOMP_` variable is not passed, and the run says so in a
+    `[guest] NOTE` line; anything else the workload needs goes in `workload.env`.
+  - The environment is a fixed image. From the top of the stack: the program's name; the variables of known names
+    (the OpenMP runtime's, the `PIMID_*` ones, the dynamic loader's) in sorted order; filler variables with empty
+    values, so that the other `workload.env` variables and the fillers are always 17 entries with the same number of
+    name characters; the padding to a multiple of 4096 bytes, as before; the other `workload.env` variables, right
+    above the arguments. The strings the guest reads keep their addresses whatever the other variables are. Up to
+    16 such variables keep the layout fixed (510 characters of names in all always do); more, or longer names, are
+    passed with a `[guest] NOTE` line.
+  - A `workload.env` variable is part of the workload's input: the guest's startup reads it, so adding one, or
+    changing its name or value, can change a result (docs: yaml_reference.md, architecture.md).
+- **Validation** (1.12.191 and this build, smoke sizes, the 12 portability cells and the two saturated bfs
+  placements):
+  - pimid's environment with one 10 000-character variable, 300 or 1000 extra variables (400 KB), an empty
+    environment, or an unknown `OMP_` variable: logs byte-identical to the plain run in all 14 cells;
+  - `OMP_NUM_THREADS=2` from the shell and from `workload.env`: one and the same changed result (device OpenMP gemv,
+    CHANNEL placement: 65 731 -> 323 453 cycles);
+  - an unused `workload.env` variable whose name is 1, 30 or 90 characters long, or whose value is 1 or 200
+    characters long or differs in one byte: logs byte-identical among themselves in every device cell (the bfs
+    placements included). Whether the variable is there still changes the message-passing device cells (the
+    saturated bfs on the CHANNEL placement by 45 %, the others by up to 3.5 %). On the cells whose threads or ranks
+    run on host cores, whose caches see the lines the startup reads, the length of such a variable still changes a
+    result by up to 5.0 %, the same order as one more character in a command-line argument (up to 3.5 % on the
+    same cells); a value that differs in one byte changes nothing;
+  - repeat runs give one output per cell: the 15 co-simulation message-passing cells x 8 copies, the 45
+    co-simulation OpenMP cells x 4, the two determinism cells x 8, two co-simulation cells x 16 concurrent copies;
+    the power check reports no consistency failure on the 150 message-passing and the 116 validation smoke cells,
+    and flags the same metrics in both builds.
+- **Data impact.** The image itself (the fillers) moves results once. Smoke shift tables, 1.12.191 -> this build:
+  116 validation cells: 14 unchanged, median 0.09 %, at most 9.0 % (host DDR3 stream_triad 19 114 -> 20 840 cycles);
+  150 device and co-simulation message-passing cells: 5 unchanged, median 0.34 %, at most 21.7 % (the saturated bfs
+  on the CHANNEL placement, 31.2 -> 38.0 M; co-simulation DDR5 gemv +18 %); 45 co-simulation OpenMP cells: 13
+  unchanged, median 0.45 %, at most 5.1 %. Runs that set an unknown `OMP_` or `GOMP_` variable in pimid's
+  environment no longer pass it to the guest.
+
 ## 1.12.191 -- the L3 is priced alike whether inclusive or not; the snoop filter and the L2 streamers' arrays are priced; the host uncore beyond its sources
 
 - **The problems.** (1) A non-inclusive L3 priced every line written into it (an L2 eviction, a shared copy) as an L3

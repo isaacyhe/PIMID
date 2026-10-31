@@ -177,10 +177,22 @@ workload:
 | `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
 | `workload.mpich_path` | string | - | Deprecated and ignored, with a warning: PIMID no longer uses `mpirun`. |
 
-**The guest's environment is set by the launch (since (1.12.64)).** The guest gets,
-in sorted order, `workload.env`, the OpenMP settings PIMID adds, and from pimid's
-own environment only `OMP_*`, `GOMP_*` and the `PIMID_*` variables the shipped
-guest code reads. `PATH`, `LD_LIBRARY_PATH`, `HOME`, `LANG` and the other
+**The guest's environment is set by the launch (since (1.12.64)).** The guest gets
+`workload.env`, the OpenMP settings PIMID adds, and from pimid's own environment
+only the OpenMP runtime's variables by name (the `OMP_*` variables of OpenMP 5.2 and
+libgomp's `GOMP_*` ones, with their device suffixes) and the `PIMID_*` variables the
+shipped guest code reads.
+Nothing else of the user's environment reaches the guest (since (1.12.192) an `OMP_` or
+`GOMP_` name that is not the OpenMP runtime's is dropped, with a note); a workload that needs
+another variable sets it in `workload.env`. Since (1.12.192) the guest's environment is a
+fixed image: the variables of known names first, filler variables with empty values
+that keep the number of entries and of name characters the same, the padding, then
+the other `workload.env` variables, so the strings the guest reads keep their
+addresses. A `workload.env` variable is part of the workload's input: the guest's
+startup reads it, so adding one, or changing its name or value, can change a result.
+Up to 16 such variables keep the layout fixed (510 characters of names in all always
+do); more, or longer names, are passed with a note. `PATH`, `LD_LIBRARY_PATH`, `HOME`,
+`LANG` and the other
 installation and user values are not passed: a workload that needs one (a guest
 library outside the system paths, say) sets it in `workload.env`. A dynamic-loader
 variable of `workload.env` (`LD_*`) reaches the guest only, never the emulator

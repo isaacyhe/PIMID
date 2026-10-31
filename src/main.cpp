@@ -962,6 +962,33 @@ static const char* const kGuestPimidVars[] = {   // the PIMID_* variables the sh
     "PIMID_MPI_CONTEND_POINTS", "PIMID_DEBUG_CONTEND", "PIMID_PIM_RUNTIME",
     "PIMID_HOST_CORES", "PIMID_DEVICE_PES", "PIMID_SPM_CHECK_BYTES",                            // benchmarks/include
     "PIMID_BARNES_POOL_FAULT", "PIMID_BARNES_COINCIDE_FAULT"};                                 // splash3 barnes
+/* (1.12.192): the OpenMP runtime's variables by name (GCC 14 libgomp: the OpenMP 5.2 variables and its GOMP_
+ * extensions). An OMP_ or GOMP_ variable of pimid's environment reaches the guest only if it is one of these
+ * (with the device suffixes _ALL, _DEV and _DEV_<n> of the variables that take them): the OpenMP runtime scans
+ * every OMP_ entry of its environment, so before, any unrelated OMP_ variable in the user's shell moved results. */
+static const char* const kGuestOmpVars[] = {
+    "OMP_AFFINITY_FORMAT", "OMP_ALLOCATOR", "OMP_CANCELLATION", "OMP_DEBUG", "OMP_DEFAULT_DEVICE",
+    "OMP_DISPLAY_AFFINITY", "OMP_DISPLAY_ENV", "OMP_DYNAMIC", "OMP_MAX_ACTIVE_LEVELS", "OMP_MAX_TASK_PRIORITY",
+    "OMP_NESTED", "OMP_NUM_TEAMS", "OMP_NUM_THREADS", "OMP_PLACES", "OMP_PROC_BIND", "OMP_SCHEDULE",
+    "OMP_STACKSIZE", "OMP_TARGET_OFFLOAD", "OMP_TEAMS_THREAD_LIMIT", "OMP_THREAD_LIMIT", "OMP_TOOL",
+    "OMP_TOOL_LIBRARIES", "OMP_TOOL_VERBOSE_INIT", "OMP_WAIT_POLICY",
+    "GOMP_CPU_AFFINITY", "GOMP_DEBUG", "GOMP_RTEMS_THREAD_POOLS", "GOMP_SPINCOUNT", "GOMP_STACKSIZE"};
+static bool guestOmpVar(const std::string& name) {
+    std::string base = name;
+    auto endsWith = [&](const char* s) { const size_t n = strlen(s); return base.size() > n && base.compare(base.size() - n, n, s) == 0; };
+    if (endsWith("_ALL")) base.resize(base.size() - 4);
+    else if (endsWith("_DEV")) base.resize(base.size() - 4);
+    else {
+        const size_t d = base.rfind("_DEV_");
+        if (d != std::string::npos && d + 5 < base.size() && base.find_first_not_of("0123456789", d + 5) == std::string::npos) base.resize(d);
+    }
+    for (const char* v : kGuestOmpVars) if (base == v) return true;
+    return false;
+}
+static bool guestPimidVar(const std::string& name) {
+    for (const char* v : kGuestPimidVars) if (name == v) return true;
+    return false;
+}
 
 /* (1.12.120): A DYNAMIC-LOADER VARIABLE OF workload.env REACHES ONLY THE GUEST.
  * The launch child copied every workload.env entry into its own environment
@@ -979,10 +1006,33 @@ static void setWorkloadEnv(const std::map<std::string, std::string>& workloadEnv
 
 static bool guestEnvKept(const std::string& name, const std::map<std::string, std::string>& workloadEnv) {
     if (workloadEnv.count(name)) return true;
-    if (name.compare(0, 4, "OMP_") == 0 || name.compare(0, 5, "GOMP_") == 0) return true;
-    for (const char* v : kGuestPimidVars) if (name == v) return true;
-    return false;
+    return guestOmpVar(name) || guestPimidVar(name);   // (1.12.192): by name (was: any OMP_* and GOMP_*)
 }
+
+/* (1.12.192): THE GUEST'S ENVIRONMENT IS A FIXED IMAGE. The guest's startup reads every entry of its environment:
+ * glibc's tunables scan each name up to its '=', the dynamic linker and the OpenMP runtime test each entry's
+ * prefix, getenv compares each entry's first characters. An entry the workload never reads still cost those
+ * instructions, and its string moved every string QEMU wrote after it on the stack (the variables the guest does
+ * read, among them), so the name of an unused workload.env variable changed the results of a saturated
+ * message-passing bfs by up to 50% (21.5 to 31.2 M cycles for names of 0 to 90 characters). The image is now,
+ * from the top of the stack:
+ *  - the program's name;
+ *  - the variables of known names (the OpenMP runtime's, the PIMID_* ones the shipped guest code reads, the
+ *    dynamic loader's) in sorted order: they sit at the same addresses whatever the other variables are;
+ *  - kGuestEnvSlots + 1 - (the number of other workload.env variables) filler variables with empty values, whose
+ *    names bring the names of the other variables and the fillers to kGuestEnvSlotNames characters in all and
+ *    begin with a character no looked-up name begins with: the number of entries and the characters the startup
+ *    scans stay the same, and the fillers sit at the same addresses for a given number of other variables;
+ *  - the padding variable, which brings the strings (the program's name, the environment, the arguments) to a
+ *    multiple of kGuestStringBlock bytes, as before;
+ *  - the other workload.env variables in sorted order, right above the arguments: their lengths move only
+ *    their own strings.
+ * Up to kGuestEnvSlots other variables keep the image fixed as long as their names leave every filler its
+ * prefix (510 characters of names in all always do); more, or longer names, are passed as they are, with a
+ * note. */
+static const size_t kGuestEnvSlots = 16;
+static const size_t kGuestEnvSlotNames = (16 + 1) * 48;
+static const char* const kGuestEnvFillName = "_PIMID_ENV_SLOT_";
 
 /* Called in the launch child after its last setenv(): the QEMU options that
  * fix the guest's initial image (see above). guestSet are the NAME=VALUE
@@ -1021,6 +1071,9 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
         }
         o.push_back("-U"); o.push_back(name);
         if (guestEnvKept(name, workloadEnv) && name != kGuestEnvPadName) genv[name] = kv;
+        else if (name.compare(0, 4, "OMP_") == 0 || name.compare(0, 5, "GOMP_") == 0)   // (1.12.192): named, not dropped in silence
+            std::cerr << "[guest] NOTE: " << name << " is set in pimid's environment but is not an OpenMP runtime variable"
+                         " PIMID passes on; the guest does not get it (set it in workload.env to pass it)" << std::endl;
     }
     for (const auto& [name, val] : workloadEnv) {   // (1.12.120): workload.env loader variables, from the configuration
         if (!loaderVar(name)) continue;
@@ -1048,19 +1101,52 @@ static std::vector<std::string> guestLaunchOptions(const std::string& binary,
                   << " holds a comma, which QEMU's -E cannot carry: it is passed in the host's order, so the"
                      " guest's initial image follows the order of pimid's environment" << std::endl;
     }
+    /* (1.12.192): the fixed image (see kGuestEnvSlots): the known variables, the other workload.env variables, the
+     * fillers, the padding */
+    std::map<std::string, std::string> known, other;
+    for (const auto& [name, kv] : genv)
+        (workloadEnv.count(name) && !guestOmpVar(name) && !guestPimidVar(name) && !loaderVar(name) ? other : known)[name] = kv;
+    size_t otherNames = 0;
+    for (const auto& [name, kv] : other) otherNames += name.size();
+    std::vector<std::string> fill;
+    {
+        const size_t n = other.size() <= kGuestEnvSlots ? kGuestEnvSlots + 1 - other.size() : 0;
+        const size_t base = strlen(kGuestEnvFillName) + 2;   // the prefix and a two-digit index
+        const size_t left = otherNames < kGuestEnvSlotNames ? kGuestEnvSlotNames - otherNames : 0;
+        const bool fits = n > 0 && left >= n * base;
+        if (!fits)
+            std::cerr << "[guest] NOTE: workload.env has " << other.size() << " variable(s) whose names PIMID does not know ("
+                      << otherNames << " characters of names); the guest's environment keeps its fixed layout only for up to "
+                      << kGuestEnvSlots << " such variables with short enough names (510 characters in all always fit),"
+                         " so its layout now depends on them" << std::endl;
+        for (size_t i = 0; i < n; i++) {
+            size_t len = base;
+            if (fits) len = left / n + (i < left % n ? 1 : 0);
+            char idx[8]; snprintf(idx, sizeof idx, "%02zu", i % 100);
+            std::string nm = std::string(kGuestEnvFillName) + idx;
+            if (nm.size() < len) nm += std::string(len - nm.size(), 'x');
+            fill.push_back(nm + "=");
+        }
+    }
     size_t bytes = guestProgramName(binary).size() + 1;   // QEMU copies the executable name (AT_EXECFN) ...
     for (const auto& kv : genv) bytes += kv.second.size() + 1;   // ... the environment ...
+    for (const auto& kv : fill) bytes += kv.size() + 1;
     for (const auto& kv : inherited) bytes += kv.size() + 1;
     bytes += guestProgramName(binary).size() + 1;   // ... and argv: argv[0], the presented name (-0)
     for (const auto& a : args) bytes += a.size() + 1;
     const size_t fixed = strlen(kGuestEnvPadName) + 2;   // "NAME=" and the terminating NUL
     const size_t used = bytes + fixed;
     const size_t pad = (kGuestStringBlock - used % kGuestStringBlock) % kGuestStringBlock;
-    /* -E inserts at the head of QEMU's list: added in descending name order, the
-     * pad last, the guest's list is the pad, then the variables in ascending order. */
-    for (auto it = genv.rbegin(); it != genv.rend(); ++it) { o.push_back("-E"); o.push_back(it->second); }
+    /* -E inserts at the head of QEMU's list, and QEMU copies the list's last string first, to the top of the
+     * stack. Added as the known variables, the fillers, the pad and the other variables (each group in
+     * descending order), the guest's list is the other variables, the pad, the fillers and the known ones: the
+     * known strings sit right below the program's name, the fillers below them, and the pad absorbs the other
+     * variables' lengths below it, right above the arguments. */
+    for (auto it = known.rbegin(); it != known.rend(); ++it) { o.push_back("-E"); o.push_back(it->second); }
+    for (auto it = fill.rbegin(); it != fill.rend(); ++it) { o.push_back("-E"); o.push_back(*it); }
     o.push_back("-E"); o.push_back(std::string(kGuestEnvPadName) + "=" + std::string(pad, 'x'));
-    if (guestVars) *guestVars = genv.size() + inherited.size() + 1;
+    for (auto it = other.rbegin(); it != other.rend(); ++it) { o.push_back("-E"); o.push_back(it->second); }
+    if (guestVars) *guestVars = genv.size() + fill.size() + inherited.size() + 1;
     return o;
 }
 
@@ -1076,8 +1162,9 @@ static void noteGuestLaunch(size_t envVars, const std::string& binary) {
     std::cout << "[guest] launch: guest address space reserved at 0.." << kGuestReservedVa
               << " (QEMU -B 0 -R), main stack " << kGuestStackSize << " (-s), AT_RANDOM/getrandom seeded (-seed "
               << kGuestSeed << "), guest thread and process IDs " << kGuestTidBase << " + 4194304 + their order of first sight (-tid-base),"
-              << " time stamp counter +" << kGuestTscStep << " per read (-tsc-step), " << envVars << " environment variables in a fixed order (workload.env, PIMID's"
-              << " own, OMP_* GOMP_* and the guest-read PIMID_* variables from pimid's environment), libraries"
+              << " time stamp counter +" << kGuestTscStep << " per read (-tsc-step), " << envVars << " environment variables in a fixed image"
+              << " (the OpenMP runtime's, the guest-read PIMID_* and the dynamic loader's variables by name, then the other"
+              << " workload.env variables in " << kGuestEnvSlots << " slots), libraries"
               << " searched in " << kGuestLibraryPath << " before the host's loader cache, strings padded"
               << " to a multiple of " << kGuestStringBlock << " bytes [(1.12.64)]; guest libraries "
               << (guestSysroot().empty() ? std::string("this host's own (no pinned sysroot)") : guestSysroot() + ", " + kGuestSysrootName)
