@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.195 -- LPDDR5 row timings are measured at the second activate command
+
+- **The problem.** An LPDDR5 ACTIVATE is two commands, ACT-1 then ACT-2, and JESD209-5C measures the row timings at
+  ACT-2: tRRD, tRCD, tRAS, tRC and tRP (Figure 94), tFAW (Figure 97) and the end of tRFCab (Figure 134 Note 3). The
+  LPDDR5 model measured all of them at ACT-1, so an access to a closed bank issued its column command one clock early
+  and an open row could be precharged one clock before tRAS had passed.
+- **The fix** (external/ramulator/src/dram/impl/LPDDR5.cpp; docs/dram_specs.md, "LPDDR5 two-step activation").
+  Every row timing starts or ends at ACT-2. ACT-2 must follow ACT-1 within tAAD = 8 clocks and come before the next
+  ACT-1 (7.3.1, Table 201 Note 4), so an ACT-1 now waits until its ACT-2 could be issued in the next clock (each
+  constraint that ends at ACT-2 has a twin one clock shorter that ends at ACT-1, the check Ramulator 2.1's LPDDR5
+  controller makes before it issues an ACT-1), and successive ACT-1 commands stay tRRD apart. Ramulator 2.1 made the
+  same correction; it keeps tFAW at ACT-1, which at this preset (tFAW = 4 x tRRD) makes no difference.
+- **Validation.** This build against the same tree without the change: the 97-cell set (60 host baselines, 30
+  co-simulation cells, 7 device-only cells; DDR5 and HBM3) and 61 device cells of the other memories (DDR3, DDR4, DDR5
+  at 3200 and 4800, GDDR6, HBM2 and HBM3; NVM, placement, PE-count and core-model cells) are identical. In the 20
+  LPDDR5 cells (five kernels, MPI and OpenMP, two working-set sizes) a counting build saw every ACT-2 issued one clock
+  after its ACT-1 and no ACT-1 issued while another bank's ACT-2 was still owed; ten of them run twice give identical
+  logs. The power checks report no flag and no consistency failure.
+- **Data impact** (LPDDR5 only). An access to a closed bank (3 to 15 % of the replayed LPDDR5 requests) issues its
+  column command one DRAM clock (1.25 ns) later and an open row is precharged one clock later. LPDDR5 run times move by
+  -0.34 to +0.49 % at the larger working sets (stream_triad, gemv, stencil_2d and histogram under MPI and OpenMP, bfs
+  under OpenMP) and by -2.4 to +5.1 % at the smallest, where a one-clock change reorders a short run's accesses;
+  LPDDR5 energy -1.6 to +3.8 %. Every other memory, the host and the co-simulation cells are unchanged.
+
 ## 1.12.194 -- the L2's fills are priced, the L2's outstanding requests once, the snoop filter's updates per entry, the stream table as a CAM, and the new arrays' area is on the die
 
 - **The problems.** (1) An L2 priced only its write requests: its fills on read misses (prefetch fills included) and

@@ -36,6 +36,20 @@ a generation; cycle counts follow from the clock period (tCK).
 | HBM2 | JESD235C | **fixed** -- see below |
 | HBM3 | JESD238 | **fixed** -- see below |
 
+### LPDDR5 two-step activation
+
+An LPDDR5 ACTIVATE is two commands, ACT-1 then ACT-2 (JESD209-5C 7.3.1), and
+the row timings are measured at ACT-2: tRRD, tRCD, tRAS, tRC and tRP
+(Figure 94), tFAW (Figure 97) and the end of tRFCab (Figure 134 Note 3).
+ACT-2 must follow ACT-1 within tAAD = 8 clocks, and once an ACT-1 is issued
+its ACT-2 comes before the next ACT-1 (Table 201 Note 4). The model measures
+every row timing at ACT-2 and holds an ACT-1 until its ACT-2 can follow in
+the next clock, as Ramulator 2.1 does; successive ACT-1 commands also keep
+tRRD apart. An access to a closed bank therefore issues its column command
+one clock (1.25 ns at LPDDR5-6400) later than when tRCD was counted from
+ACT-1, and an open row is precharged one clock later (tRAS); a row conflict
+(precharge, then activate) still costs tRP + tRCD.
+
 ### HBM2 / HBM3 correction
 
 Ramulator2's stock `HBM2_2Gbps` / `HBM3_2Gbps` presets (still upstream as of

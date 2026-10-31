@@ -554,18 +554,30 @@ class LPDDR5 : public IDRAM, public Implementation {
           {.level = "rank", .preceding = {"PRE", "PREA"}, .following = {"PRE", "PREA"}, .latency = V("nPPD")},
           {.level = "rank", .preceding = {"WR16"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR")},          
           /// RAS <-> RAS
-          {.level = "rank", .preceding = {"ACT-1"}, .following = {"ACT-1", "REFpb"}, .latency = V("nRRD")},          
-          {.level = "rank", .preceding = {"ACT-1"}, .following = {"ACT-1"}, .latency = V("nFAW"), .window = 4},          
-          {.level = "rank", .preceding = {"ACT-1"}, .following = {"PREA"}, .latency = V("nRAS")},          
-          {.level = "rank", .preceding = {"PREA"}, .following = {"ACT-1"}, .latency = V("nRPab")},          
+          /* The ACTIVATE is two commands, ACT-1 then ACT-2, and the row timings are measured at ACT-2: tRRD, tRCD,
+           * tRAS, tRC and tRP in JESD209-5C Figure 94 (p.226), tFAW in Figure 97 (p.228), the end of tRFCab in
+           * Figure 134 Note 3 (p.283). ACT-2 must follow ACT-1 within tAAD = 8 nCK, and once an ACT-1 is issued its
+           * ACT-2 comes before the next ACT-1 (7.3.1, Table 201 Note 4). An ACT-1 is therefore held until its ACT-2
+           * could be issued in the next clock (the check Ramulator 2.1's LPDDR5 controller makes): every constraint
+           * that ends at ACT-2 has a twin one clock shorter that ends at ACT-1 (marked "ACT-1 waits for ACT-2"
+           * below), and an ACT-1 also waits tRRD after the previous ACT-1. */
+          {.level = "rank", .preceding = {"ACT-2"}, .following = {"ACT-2", "REFpb"}, .latency = V("nRRD")},
+          {.level = "rank", .preceding = {"ACT-2"}, .following = {"ACT-1"}, .latency = V("nRRD") - 1},   // ACT-1 waits for ACT-2
+          {.level = "rank", .preceding = {"ACT-1"}, .following = {"ACT-1"}, .latency = V("nRRD")},
+          {.level = "rank", .preceding = {"ACT-2"}, .following = {"ACT-2"}, .latency = V("nFAW"), .window = 4},
+          {.level = "rank", .preceding = {"ACT-2"}, .following = {"ACT-1"}, .latency = V("nFAW") - 1, .window = 4},   // ACT-1 waits for ACT-2
+          {.level = "rank", .preceding = {"ACT-2"}, .following = {"PREA"}, .latency = V("nRAS")},
+          {.level = "rank", .preceding = {"PREA"}, .following = {"ACT-2"}, .latency = V("nRPab")},
+          {.level = "rank", .preceding = {"PREA"}, .following = {"ACT-1"}, .latency = V("nRPab") - 1},   // ACT-1 waits for ACT-2
           /// RAS <-> REF
-          {.level = "rank", .preceding = {"ACT-1"}, .following = {"REFab"}, .latency = V("nRC")},          
+          {.level = "rank", .preceding = {"ACT-2"}, .following = {"REFab"}, .latency = V("nRC")},
           {.level = "rank", .preceding = {"PRE"}, .following = {"REFab"}, .latency = V("nRPpb")},          
           {.level = "rank", .preceding = {"PREA"}, .following = {"REFab"}, .latency = V("nRPab")},          
           {.level = "rank", .preceding = {"RD16A"}, .following = {"REFab"}, .latency = V("nBL16") + V("nRTP") + V("nRPpb")},          
           {.level = "rank", .preceding = {"WR16A"}, .following = {"REFab"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR") + V("nRPpb")},          
-          {.level = "rank", .preceding = {"REFab"}, .following = {"REFab", "ACT-1", "REFpb"}, .latency = V("nRFCab")},          
-          {.level = "rank", .preceding = {"ACT-1"},   .following = {"REFpb"}, .latency = V("nPBR2ACT")},  
+          {.level = "rank", .preceding = {"REFab"}, .following = {"REFab", "ACT-2", "REFpb"}, .latency = V("nRFCab")},
+          {.level = "rank", .preceding = {"REFab"}, .following = {"ACT-1"}, .latency = V("nRFCab") - 1},   // ACT-1 waits for ACT-2
+          {.level = "rank", .preceding = {"ACT-2"},   .following = {"REFpb"}, .latency = V("nPBR2ACT")},
           {.level = "rank", .preceding = {"REFpb"}, .following = {"REFpb"}, .latency = V("nPBR2PBR")},  
 
           /*** Same Bank Group ***/ 
@@ -580,19 +592,25 @@ class LPDDR5 : public IDRAM, public Implementation {
            * (Table 462 p.584) -> RU(1.6/1.25) = 2: 17 + 4 + 2 - 9 = 14 nCK. The rank-level 12 above (Table 348,
            * BL/n_min) stays for different bank groups. */
           {.level = "bankgroup", .preceding = {"RD16", "RD16A"}, .following = {"WR16", "WR16A"}, .latency = V("nCL") + 2 * V("nBL16") + 2 - V("nCWL")},
-          /// RAS <-> RAS
-          {.level = "bankgroup", .preceding = {"ACT-1"}, .following = {"ACT-1"}, .latency = V("nRRD")},  
+          /// RAS <-> RAS (measured at ACT-2, see the rank level)
+          {.level = "bankgroup", .preceding = {"ACT-2"}, .following = {"ACT-2"}, .latency = V("nRRD")},
+          {.level = "bankgroup", .preceding = {"ACT-2"}, .following = {"ACT-1"}, .latency = V("nRRD") - 1},   // ACT-1 waits for ACT-2
 
           /*** Bank ***/ 
-          {.level = "bank", .preceding = {"ACT-1"}, .following = {"ACT-1"}, .latency = V("nRC")},  
-          {.level = "bank", .preceding = {"ACT-1"}, .following = {"RD16", "RD16A", "WR16", "WR16A"}, .latency = V("nRCD")},  
-          {.level = "bank", .preceding = {"ACT-1"}, .following = {"PRE"}, .latency = V("nRAS")},  
-          {.level = "bank", .preceding = {"PRE"}, .following = {"ACT-1"}, .latency = V("nRPpb")},  
+          // tRC, tRCD, tRAS and tRP are measured at ACT-2 (JESD209-5C Figure 94; see the rank level)
+          {.level = "bank", .preceding = {"ACT-2"}, .following = {"ACT-2"}, .latency = V("nRC")},
+          {.level = "bank", .preceding = {"ACT-2"}, .following = {"ACT-1"}, .latency = V("nRC") - 1},   // ACT-1 waits for ACT-2
+          {.level = "bank", .preceding = {"ACT-2"}, .following = {"RD16", "RD16A", "WR16", "WR16A"}, .latency = V("nRCD")},
+          {.level = "bank", .preceding = {"ACT-2"}, .following = {"PRE"}, .latency = V("nRAS")},
+          {.level = "bank", .preceding = {"PRE"}, .following = {"ACT-2"}, .latency = V("nRPpb")},
+          {.level = "bank", .preceding = {"PRE"}, .following = {"ACT-1"}, .latency = V("nRPpb") - 1},   // ACT-1 waits for ACT-2
           // 1.11.63: same two formulas as rank scope (JESD209-5C Tbl 340 p.483)
           {.level = "bank", .preceding = {"RD16"},  .following = {"PRE"}, .latency = V("nBL16") + V("nRTP")},  
           {.level = "bank", .preceding = {"WR16"},  .following = {"PRE"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR")},  
-          {.level = "bank", .preceding = {"RD16A"}, .following = {"ACT-1"}, .latency = V("nBL16") + V("nRTP") + V("nRPpb")},  
-          {.level = "bank", .preceding = {"WR16A"}, .following = {"ACT-1"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR") + V("nRPpb")},  
+          {.level = "bank", .preceding = {"RD16A"}, .following = {"ACT-2"}, .latency = V("nBL16") + V("nRTP") + V("nRPpb")},
+          {.level = "bank", .preceding = {"RD16A"}, .following = {"ACT-1"}, .latency = V("nBL16") + V("nRTP") + V("nRPpb") - 1},   // ACT-1 waits for ACT-2
+          {.level = "bank", .preceding = {"WR16A"}, .following = {"ACT-2"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR") + V("nRPpb")},
+          {.level = "bank", .preceding = {"WR16A"}, .following = {"ACT-1"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR") + V("nRPpb") - 1},   // ACT-1 waits for ACT-2
         }
       );
       #undef V
