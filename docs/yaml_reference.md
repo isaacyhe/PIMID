@@ -1604,7 +1604,9 @@ the DELTA dirtied since the previous walk:
 
 Offload launch cost tree, charged on the host core at the offload doorbell
 (before device migration). `total = doorbell + dispatch + bridge(cmd) +
-bridge(ack)`. DDR5 vs HBM3 differ only in the bridge component.
+bridge(ack)`. DDR5 vs HBM3 differ only in the bridge component. Under
+message-passing co-simulation each rank's device kernel starts when its launch
+completes on its host core (docs/cosim.md, the launch section).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

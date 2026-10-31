@@ -486,6 +486,14 @@ static void roiRebaseTrafficCounters(const char* where) {
  * too far into the future". Caching the last valid device baseline keeps roiRel
  * consistent across transient cid-invalid windows. */
 static uint64_t g_rankRoiBaseCache[MAX_THREADS] = {0};
+/* (1.12.202) co-simulation launch causality: a thread-MPI rank's kernel launch completes on its host core at the
+ * host's ROI-relative clock after its coherence flush and launch charges; its device kernel starts no earlier,
+ * on the same time axis in its PE's cycles. Ranks that share a host core launch one after another, so the last
+ * of them starts last. Noted at the doorbell (host clock, pending until the rank runs on its PE), then applied
+ * once; g_cosimLaunchDevRel keeps the start (PE cycles on the ROI axis). */
+static uint64_t g_cosimLaunchPendHost[MAX_THREADS] = {0};
+static uint32_t g_cosimLaunchPendMHz[MAX_THREADS] = {0};
+static uint64_t g_cosimLaunchDevRel[MAX_THREADS] = {0};
 
 static inline uint64_t roiRelCycles(uint32_t tid) {
     uint64_t now = cores[tid] ? cores[tid]->getCycles() : 0;
@@ -2337,6 +2345,36 @@ static inline void recSyncNote(uint32_t tid) {
         if (zinfo->hostDramReplay && zinfo->hostDramReplay != zinfo->dramReplay) zinfo->hostDramReplay->noteSync(cids[tid]);
     }
 }
+
+/* (1.12.202) launch causality, at the doorbell: the rank is still on its host core, its flush and launch charges are
+ * retired (drainHostCharges); its launch completes at the host's ROI-relative clock now (a launch before the ROI
+ * baseline is pre-ROI: nothing to wait for). */
+static inline void cosimLaunchNote(uint32_t tid) {
+    if (tid >= MAX_THREADS || !g_mpi_thread_mode || !mpi_roi_baselined) return;
+    g_cosimLaunchPendHost[tid] = roiRelCycles(tid);
+    g_cosimLaunchPendMHz[tid] = coreFreqMHzFor(tid);
+}
+/* (1.12.202) launch causality, on the device PE, once the rank's ROI has started (rankRoiStart: at its exit from the
+ * entry barrier, which maps to the release): the kernel starts no earlier than the launch completed, so the PE's
+ * ROI-relative clock is moved to the launch's completion. The entry barrier's own device-side charges lie before
+ * the start and stay out; the launch train is in. The PE waits (syncToWaker: waiting, not activity) and the wait
+ * is a sync point of the closed-loop DRAM replay. */
+static void cosimLaunchApply(uint32_t tid) {
+    if (tid >= MAX_THREADS || !g_cosimLaunchPendHost[tid] || thread_domain[tid].load() != DOMAIN_DEVICE) return;
+    if (g_rankRoiStart[tid] != 3) return;   // its ROI has not started yet: at its start
+    if (!thread_initialized[tid] || !cores[tid] || cids[tid] >= zinfo->numCores) return;
+    const uint64_t host = g_cosimLaunchPendHost[tid];
+    const uint32_t hMHz = g_cosimLaunchPendMHz[tid], pMHz = coreFreqMHzFor(tid);
+    g_cosimLaunchPendHost[tid] = 0;
+    const uint64_t devRel = cyclesFromDomain(host, hMHz, pMHz), cur = roiRelCycles(tid);
+    uint64_t skip = 0;
+    if (devRel > cur) skip = cores[tid]->syncToWaker(cores[tid]->pimidRawCycle() + (devRel - cur));
+    g_cosimLaunchDevRel[tid] = devRel;
+    if (skip) recSyncNote(tid);
+    info("Thread %d: device kernel starts at its launch's completion: host ROI-relative %lu cycles at %u MHz = %lu PE "
+         "cycles at %u MHz; the PE waited %lu cycles", tid, (unsigned long)host, hMHz, (unsigned long)devRel, pMHz,
+         (unsigned long)skip);
+}
 /* (1.12.199): see g_rankRoiStart. The ROI of the rank on thread tid starts now, on its core's clock: the core is
  * re-baselined (Core::markRoiBegin: its ROI statistics and the origin of the clock its NoC and DRAM records, its cut
  * clock and its end in the run time are on; mpi_roi_base_cyc: its rendezvous clock's, and the record origin of an
@@ -2356,6 +2394,7 @@ static void rankRoiStart(uint32_t tid) {
         recSyncNote(tid);
     }
     g_rankRoiStartedN.fetch_add(1);
+    cosimLaunchApply(tid);   // (1.12.202): a co-sim rank's kernel starts at its launch's completion
 }
 /* the rank on thread tid has made its last operation in the entry barrier: an ALU PE has timed its charges as they
  * were made; an in-order or OOO core times the barrier's block at its next one */
@@ -3500,6 +3539,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             chargeCoherenceFlush(tid);   // PART A (1.7.2): Case-1 coherence flush
             chargeLaunchCost(tid);       // PART B (1.7.3): kernel launch cost
             drainHostCharges(tid);       // retire flush+launch onto the host timeline
+            cosimLaunchNote(tid);        // (1.12.202): launch causality
         }
         {
             std::lock_guard<std::mutex> mig(g_migrateMutex);
@@ -3512,6 +3552,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     }
 
     ensureThreadInit(tid);
+    if (unlikely(tid < MAX_THREADS && g_cosimLaunchPendHost[tid])) cosimLaunchApply(tid);   // (1.12.202): a start not yet applied
 
     /* Inside an MPI comm window: keep the core attached but do not count the
      * transport's own instructions (the wall-clock poll stays invisible). */
@@ -3808,6 +3849,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 chargeCoherenceFlush(tid);   // PART A (1.7.2): Case-1 coherence flush
                 chargeLaunchCost(tid);       // PART B (1.7.3): kernel launch cost
                 drainHostCharges(tid);       // retire flush+launch onto the host timeline
+                cosimLaunchNote(tid);        // (1.12.202): launch causality
             }
             {
                 std::lock_guard<std::mutex> mig(g_migrateMutex);
@@ -5129,6 +5171,7 @@ static void cosimRoiBeginOffload(uint32_t tid) {
     // Retire the flush+launch synthetic BBLs onto the host timeline before
     // the migration drops the last one.
     drainHostCharges(tid);
+    cosimLaunchNote(tid);   // (1.12.202): launch causality (thread-MPI; applied when it runs on its PE)
     if (g_spCut && !g_mpi_thread_mode && tid < MAX_THREADS && cids[tid] < zinfo->numCores && zinfo->cores[cids[tid]]) {
         /* 1.12.18 (ruling 2026-10-24): the device's ROI starts at the doorbell
          * on the host's ROI-relative clock (PEMemoryInterface::spDevShift). */

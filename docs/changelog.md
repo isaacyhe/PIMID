@@ -6,6 +6,38 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.202 -- message-passing co-simulation: a rank's device kernel starts when its launch has completed
+
+- **The problem.** In a message-passing co-simulation every rank charges its own coherence flush and kernel launch
+  on its host core and then moves to its device PE. The PE started the kernel at once, at the start of the rank's
+  region, whatever the host was still doing: ranks that share a host core launch one after another (16 ranks on one
+  2 GHz host core: about 10 k host cycles each, 83 us in all), yet every rank's kernel ran from the start. The run
+  time and the DRAM replay followed the device ranks, while the priced window was the longer of the device span and
+  the host's busy time; on a short kernel the launch train was the longer, and the window and the replay disagreed
+  (smoke-size HBM3 stream_triad, one host core: 83.4 us priced, 77.5 us replayed).
+- **The fix (external/zsim/src/qemu_zsim_plugin.cpp).** At the doorbell, once the rank's flush and launch charges are
+  retired on its host core, the launch's completion is read on the host's ROI-relative clock. When the rank's region
+  starts on its PE (where it leaves the kernel-entry barrier), the PE waits until its own ROI-relative clock reaches
+  that point, converted to the PE's clock: the kernel starts no earlier than its launch completed. The wait is
+  waiting, not activity (it is not in the PE's busy cycles), and it is a sync point of the DRAM replay. The entry
+  barrier's own device-side charges stay outside the region, as before; a launch that completes before the ROI
+  baseline costs the device nothing. Docs: cosim.md (launch), yaml_reference.md (Kernel Launch).
+- **Validation** (1.12.199 and this build side by side):
+  - the 150 message-passing smoke cells: the 135 device-scope cells give byte-identical logs; the same return codes
+    and checksums everywhere;
+  - the 116 validation cells: byte-identical logs (the change touches message-passing co-simulation only);
+  - repeat runs: 8 cells x 2 copies give one output per cell;
+  - the power check: no flag and no consistency failure on any set (smoke and full size).
+- **Data impact** (message-passing co-simulation, 16 ranks; the 45 configurations of the evaluation corpus):
+  - smoke sizes, one host core: median +2.9%, short kernels up to +42% (HBM3 stream_triad 53 813 -> 76 669
+    cycles), where most ranks now wait for the launches ahead of them; four host cores: median +0.6% (up to +22%);
+    sixteen host cores: median 0.0% (-1.6% to +1.5%); bfs within 0.8% everywhere;
+  - full size (all 45 configurations): -0.84% to +0.45% (HBM3 gemv on one host core 37.62 M -> 37.65 M), except
+    DDR5-3200 bfs on sixteen host cores, +4.0% (17.37 M -> 18.06 M): one rank waited 2.7 k cycles, and the saturated
+    bfs reacts strongly to any change of its ranks' start (most of the difference is the DRAM balance applied at the
+    end, 68 k -> 375 k cycles);
+  - device-scope, host and OpenMP runs: unchanged.
+
 ## 1.12.201 -- HBM3 standby from the HBM power authors' released HBM3E configuration
 
 - **The problem.** The HBM3 standby was the measured HBM2 standby scaled per 64-bit channel with the clock (1600/600 MHz)

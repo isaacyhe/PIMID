@@ -192,6 +192,17 @@ flush + launch on its host core at its kernel-entry barrier and migrates
 **itself** into its device PE (the per-rank device window, 1.8.4/1.8.5). See
 [Co-sim MPI](#co-sim-mpi-the-per-rank-device-window).
 
+A rank's device kernel starts no earlier than its launch completes. The launch
+completes at the host core's ROI-relative clock once the rank's flush and
+launch charges are retired; the rank's PE waits until that point, converted to
+the PE's clock (the wait is waiting, not activity, and is a sync point of the
+DRAM replay). Ranks that share a host core launch one after another, so with
+fewer host cores than ranks the last rank starts after the whole launch train:
+16 ranks on one 2 GHz host core start up to about 83 us apart. A launch that
+completes before the ROI baseline is outside the region and costs the device
+nothing. The run time, the DRAM replay and the priced window therefore cover
+the launch train together.
+
 ### 2. Coherence -- address-space visibility (`system.coherence`)
 
 Coherence follows **address-space visibility**, not physical placement.
