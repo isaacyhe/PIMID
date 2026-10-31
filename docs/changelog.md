@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.186 -- logs: the workload's mapping line no longer follows the host's file system
+
+- **The problem.** The `[pim-runtime] workload (kernel) mapping` line of an OpenMP run printed the workload binary's
+  address ranges as the host kernel had mapped them, and whether the kernel merges the binary's adjacent mappings
+  follows the file system the binary is on: two ranges with the binary on Lustre or on a local ext4 disk, four inside
+  a Singularity image (an overlay over squashfs). The same run therefore logged differently on different hosts, while
+  every result was the same (the classification uses the union of the ranges).
+- **The fix (external/zsim/src/qemu_zsim_plugin.cpp).** The line prints the merged ranges (adjacent or overlapping
+  mappings joined): one range for each shipped kernel, wherever it is installed.
+- **Validation.** gemv_omp in a device and a co-simulation OpenMP cell with the binary on Lustre, on node-local ext4
+  and inside a Singularity image: one identical line everywhere, and the run times of 1.12.185 (88 066 and 64 244
+  cycles). The distribution image built by the docker tooling (emulated with Singularity, as a sandbox and as a SIF):
+  its reproduction set is identical to the native one, the mapping line included. 15 smoke cells (device,
+  co-simulation and host-baseline OpenMP and message passing): every log line equal to 1.12.185's apart from this one.
+- **Data impact.** None: log output only.
+
 ## 1.12.185 -- message passing on the host cores: the ROI ends when the last rank finishes its kernel
 
 - **The problem.** Every message-passing kernel calls roi_end on rank 0 and then a closing barrier. A run whose

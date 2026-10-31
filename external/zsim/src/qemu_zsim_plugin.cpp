@@ -2754,9 +2754,19 @@ static void rtClassifyTb(uint64_t va, uint8_t* region, uint16_t* sym) {
                     if (g_rtExe.empty())
                         panic("[pim-runtime] the guest runs libgomp but the workload binary could not be identified from "
                               "QEMU's command line: the runtime cannot be told from the kernel. Set simulation.pim_runtime.enabled: false");
-                    for (const RtMap& x : g_rtMaps)
-                        if (x.region == RTR_USER)
-                            info("[pim-runtime] workload (kernel) mapping [0x%lx, 0x%lx)", (unsigned long)x.lo, (unsigned long)x.hi);
+                    {   /* (1.12.186): the workload's address ranges, adjacent mappings merged. Whether the host kernel
+                         * keeps the binary's adjacent mappings apart or merges them follows the file system the
+                         * binary is on (one range on some, two on others), so the line printed the host's layout;
+                         * the classification uses the union either way. */
+                        std::vector<std::pair<uint64_t, uint64_t>> u;
+                        for (const RtMap& x : g_rtMaps)
+                            if (x.region == RTR_USER) {
+                                if (!u.empty() && x.lo <= u.back().second) { if (x.hi > u.back().second) u.back().second = x.hi; }
+                                else u.push_back({x.lo, x.hi});
+                            }
+                        for (const auto& r : u)
+                            info("[pim-runtime] workload (kernel) mapping [0x%lx, 0x%lx)", (unsigned long)r.first, (unsigned long)r.second);
+                    }
                     info("[pim-runtime] guest libgomp code at 0x%lx: OpenMP runtime events are recognised", (unsigned long)va);
                 }
                 if (m.region == RTR_GOMP) {
