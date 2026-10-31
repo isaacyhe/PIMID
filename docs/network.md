@@ -183,7 +183,8 @@ rather than read live:
 - Since 1.12.18 single-process runs (serial, OpenMP, co-sim OpenMP) use the
   same mechanism: per-core ROI-relative stamps, the consistent cut, and an
   epoch-frozen per-pair table read at epoch `k-2`
-  (`simulation.det_epoch_phases`; see the YAML reference).
+  (`simulation.det_epoch_phases`, one phase by default since (1.12.187); see
+  the YAML reference).
 
 **Escape hatch.** `PIMID_MPI_ANALYTICAL_PRICING=1` forces the old analytical
 override (the topology-pure, load-independent `2 * nocAvgOneWayLatency`) for

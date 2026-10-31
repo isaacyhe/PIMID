@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.187 -- NoC pricing: one-phase epochs: shared-memory device runs no longer settle in one of two states
+
+- **The problem.** Under `noc.model: detailed` every NoC access is priced from the per-pair latency measured in an
+  earlier epoch of `simulation.det_epoch_phases` phases (default 4 = 40 000 cycles). In a device OpenMP gemv the 15
+  workers read two shared lines about once per phase. The epoch that measured a burst of those reads charged it to
+  every read of the next 40 000 cycles, and the charge settled at 73 or 433 cycles per read; which of the two
+  followed from a few hundred instructions before the ROI. The same kernel then took 88 066 or 53 660 cycles on
+  HBM3 (125 177 to 174 719 on LPDDR5) with the program presented under paths of different lengths, while the DRAM
+  replay measured the same service latency (about 25 cycles) in both. The DRAM replay's own epoch was cut to one
+  phase in 1.12.145 for the same kind of lag.
+- **The fix (external/zsim/src/garnet_network.h, pe_memory_interface.h; src/main.cpp).** `simulation.det_epoch_phases`
+  defaults to 1 (the key and `PIMID_DET_EPOCH_PHASES` still set it); the epoch-frozen device-time paths of a run
+  without a NoC model use the same default. The start-up bias shrinks with it: the first 2 epochs of the ROI
+  (now 20 000 cycles, was 80 000) are priced from the bootstrap.
+- **Validation** (1.12.185 and this build, same node, smoke sizes):
+  - Path variants (the program presented under `/pimid-guest/`, a 30- and a 60-character directory, and its real
+    directory, strings padded): device OpenMP gemv HBM3 57 702 to 57 977 cycles (was 53 660 to 88 066), LPDDR5
+    136 533 to 141 533 (was 125 177 to 174 719), placement OpenMP gemv CHANNEL 103 205 to 104 801 (was 117 394 to
+    120 313).
+  - Message-passing runs read an epoch two back, now 2 phases instead of 8 for the NoC: a rank that runs further
+    than that ahead of the consistent cut reads an epoch not folded yet, and the price follows the order in which
+    the ranks were simulated. placement_HBM3_mpi_stream_triad_pe16_CHANNEL now differs between path variants
+    (139 560 to 194 208 cycles; it was 194 586 in each). Over the 150 device and co-simulation message-passing smoke
+    cells under three path variants, 14 give one result (39 with 1.12.185) and the median spread is 0.78 % (0.19 %).
+    Keeping the ranks within the lag is a separate change.
+  - Repeat runs, one output per cell: the 15 co-simulation message-passing cells x 8 copies (also on a second node
+    type, identical), the 45 co-simulation OpenMP cells x 4, the two determinism cells x 8, two co-simulation cells
+    x 16 concurrent copies; the gate smoke subset passes its checks.
+  - The power check reports no consistency failure on the 150 message-passing smoke logs of either build.
+- **Data impact.** Host-only cells are unchanged (40 host and 3 multi-core host baselines). Smoke shift tables,
+  1.12.185 -> this build:
+  - validation set (116 cells): placement sweep 18 cells at most 0.2 %; device serial kernels 48 cells, mean
+    |shift| 10 % (at most 25 %: DDR4 stream_triad 277 060 -> 346 216; spmv_csr -20 %); device OpenMP gemv 5 cells
+    9 to 36 % (HBM3 88 066 -> 57 702, DDR3 195 486 -> 124 800); co-simulation OpenMP 2 cells 6 to 13 %;
+  - 150 device and co-simulation message-passing cells: median 2.3 %, mean |shift| by family 1.7 % (core model)
+    to 7.6 % (fig2); pe64 stream_triad 26 509 -> 37 440; the saturated bfs placements (CHANNEL, LOGIC_DIE) move
+    by large factors as before;
+  - 45 co-simulation OpenMP cells: 12 unchanged, median 3.6 %, at most 29.5 % (DDR5 histogram 4-core);
+    15 co-simulation message-passing cells: at most 28 % (DDR5 stream_triad g3200 100 675 -> 72 870).
+
 ## 1.12.186 -- logs: the workload's mapping line no longer follows the host's file system
 
 - **The problem.** The `[pim-runtime] workload (kernel) mapping` line of an OpenMP run printed the workload binary's

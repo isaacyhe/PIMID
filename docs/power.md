@@ -619,7 +619,7 @@ and takes that core's origin, so threads joined by a synchronisation share
 one time axis. At each phase barrier the records are folded at the
 consistent cut, the earliest ROI-relative time over the cores still running
 or waiting (sleeping, exited and vacated cores are exempt). Epochs of
-`simulation.det_epoch_phases` phases are frozen as they are folded, and an
+`simulation.det_epoch_phases` phases (one by default) are frozen as they are folded, and an
 access is priced from an earlier epoch's frozen per-pair NoC latency table
 and DRAM service latency, read by epoch index from the access's own clock,
 never from a live value (the DRAM replay has its own one-phase epoch,

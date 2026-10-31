@@ -207,7 +207,7 @@ thread woken by another, or taking a lock word another released, moves its
 clock to max(own, the waker's or releaser's time) and takes that core's
 origin; and at each phase barrier the records are folded at the consistent
 cut (the earliest ROI-relative time over the cores still running or waiting).
-Accesses are priced from frozen epochs (`simulation.det_epoch_phases`): an
+Accesses are priced from frozen epochs (`simulation.det_epoch_phases`, one phase by default): an
 access reads an earlier epoch's per-pair NoC latency and DRAM service latency
 by epoch index from its own clock, never a live value (DRAM: its own one-phase epoch, `simulation.dram_epoch_phases`, since (1.12.145)). DRAM is timed this way
 only: every Ramulator2-timed memory -- the device's memory interfaces, the

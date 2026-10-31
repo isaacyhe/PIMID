@@ -1595,7 +1595,7 @@ protected:
             // the phase barrier, so epoch k-1's count is complete before any epoch-k
             // access reads it. Pre-ROI (not baselined) falls to the base path below.
             uint32_t E = zinfo->garnetNetwork
-                ? zinfo->garnetNetwork->detEpochPhases() : 4;
+                ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
             uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             uint64_t epochLen = (uint64_t)pl * (E > 0 ? E : 1);
             uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
@@ -2274,7 +2274,7 @@ protected:
             if (!zinfo->hierarchy.mpiNocBaselined) return 0;  // pre-ROI: no wait
             static EpochFrozenScalar cbwEpoch;
             uint32_t E = zinfo->garnetNetwork
-                ? zinfo->garnetNetwork->detEpochPhases() : 4;
+                ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
             uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             uint64_t epochLen = (uint64_t)pl * (E > 0 ? E : 1);
             uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;

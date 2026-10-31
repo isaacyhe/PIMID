@@ -885,7 +885,7 @@ private:
     struct EpochLatAcc { uint64_t sumLat = 0; uint64_t cnt = 0; };
     std::map<uint64_t, EpochLatAcc> epochAvgLat_;
     lock_t epochLock_;
-    uint32_t detEpochPhases_ = 4;   // E_phases (env PIMID_DET_EPOCH_PHASES, def 4)
+    uint32_t detEpochPhases_ = kDefaultDetEpochPhases;   // E_phases (env PIMID_DET_EPOCH_PHASES)
     // Records accumulated but not yet <= the consistent cut. Drained ONLY by
     // the single-threaded barrier fold (foldCompletePhases), never by racing access
     // threads -- so a phase's whole record set is replayed exactly once, together,
@@ -1023,6 +1023,12 @@ public:
     }
 
     // -- 1.9.0 epoch-frozen feedback API -------------------------------------
+    /* (1.12.187): the default epoch is one phase (it was 4). A burst on a few shared lines, measured in one epoch, was
+     * charged to every access of the next one; with 40 000-cycle epochs the charge swung between two states
+     * (device OpenMP gemv on HBM3: the 15 workers' reads of two shared lines at 433 or 73 cycles, a run time of
+     * 88 066 or 53 660 cycles for the same kernel after a different number of start-up instructions). One-phase
+     * epochs follow the load as the DRAM replay's one-phase epochs do (simulation.dram_epoch_phases). */
+    static constexpr uint32_t kDefaultDetEpochPhases = 1;
     uint32_t detEpochPhases() const {
         return detEpochPhases_ > 0 ? detEpochPhases_ : 1;
     }

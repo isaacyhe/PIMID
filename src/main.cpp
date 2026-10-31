@@ -23139,7 +23139,7 @@ int main(int argc, char** argv) {
                     setenv("PIMID_DRAM_PRICE_WINDOW", std::to_string(pw).c_str(), 1);
                 }
                 if (yaml_cfg["simulation"]["det_epoch_phases"]) {
-                    int ep = yamlInt(yaml_cfg["simulation"]["det_epoch_phases"], 4, "simulation.det_epoch_phases");
+                    int ep = yamlInt(yaml_cfg["simulation"]["det_epoch_phases"], 1, "simulation.det_epoch_phases");   // (1.12.187): default 1 (was 4)
                     if (ep < 1) { std::cerr << "Error: simulation.det_epoch_phases must be >= 1" << std::endl; return 1; }
                     setenv("PIMID_DET_EPOCH_PHASES", std::to_string(ep).c_str(), 1);
                 }
