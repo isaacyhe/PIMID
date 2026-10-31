@@ -398,6 +398,10 @@ class Core : public GlobAlloc {
         // Virtual type checks for use without RTTI (Pin 4.x requires -fno-rtti)
         virtual InOrderCore* asInOrderCore() { return nullptr; }
         virtual OOOCore* asOOOCore() { return nullptr; }
+        /* (1.12.189): the DRAM line requests the core can have in flight (the closed-loop DRAM replay holds the core's
+         * next request until one completes): 1 for a core that waits for each access (ALU, in-order); an
+         * out-of-order core overrides it with its core record's value */
+        virtual uint32_t memMissCapacity() const { return 1; }
 
         // Virtual contention simulation interface (returns false if not supported)
         virtual bool hasContentionSim() const { return false; }

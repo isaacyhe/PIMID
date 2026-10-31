@@ -86,7 +86,14 @@
 #define RF_READS_PER_CYCLE 3
 
 OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
-                 uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle) : Core(_name), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
+                 uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle, const Sizes& sizes) : Core(_name), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
+    if (sizes.rob < 4 || sizes.rob > 512 || sizes.lq < 1 || sizes.lq > 256 || sizes.sq < 1 || sizes.sq > 256 ||
+        sizes.window < 1 || sizes.window > 255 || sizes.fillBuffers > 64)
+        panic("%s: out-of-order window sizes outside the model's ranges (ROB 4..512, load queue 1..256, store queue 1..256, "
+              "scheduler 1..255, fill buffers 0..64): %u / %u / %u / %u / %u", _name.c_str(), sizes.rob, sizes.lq, sizes.sq, sizes.window, sizes.fillBuffers);
+    rob.setSize(sizes.rob); loadQueue.setSize(sizes.lq); storeQueue.setSize(sizes.sq); insWindow.setSize(sizes.window);
+    fillBuffers.setSize(sizes.fillBuffers ? sizes.fillBuffers : 1); fillBufferN = sizes.fillBuffers; storesDrainAfterRetire = sizes.storeBuffer;
+    lqEntries_ = sizes.lq; sqEntries_ = sizes.sq;   // (1.12.189)
     /* 1.11.97 (R2355 (b)): the wrong-path depth, derived from the core
      * record (see ooo_core.h). A zero fetch width cannot fetch; refuse. */
     if (_fetchBytesPerCycle == 0) panic("%s: fetchBytesPerCycle must be >= 1 (core record ooo.fetch_width_bytes)", _name.c_str());
@@ -460,7 +467,15 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                         else { addr = (Address)-1L; memMismatchLoads++; }
                         uint64_t reqSatisfiedCycle = dispatchCycle;
                         if (addr != ((Address)-1L)) {
-                            reqSatisfiedCycle = l1d->load(addr, dispatchCycle) + l1d->getHitLatency();
+                            const uint64_t rc0 = l1d->replaceCount();
+                            uint64_t resp = l1d->load(addr, dispatchCycle);
+                            if (fillBufferN && l1d->replaceCount() != rc0 && resp > dispatchCycle + l1d->getHitLatency()) {
+                                /* a line request to the next level takes one of the L1D fill buffers until the line arrives */
+                                const uint64_t fb = fillBuffers.minAllocCycle();
+                                if (fb > dispatchCycle) resp += fb - dispatchCycle;
+                                fillBuffers.markLeave(resp);
+                            }
+                            reqSatisfiedCycle = resp + l1d->getHitLatency();
                             cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
                         }
 
@@ -491,14 +506,24 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                         else { addr = (Address)-1L; memMismatchStores++; }
                         uint64_t reqSatisfiedCycle = dispatchCycle;
                         if (addr != ((Address)-1L)) {
-                            reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + l1d->getHitLatency();
+                            const uint64_t rc0 = l1d->replaceCount();
+                            uint64_t resp = l1d->store(addr, dispatchCycle);
+                            if (fillBufferN && l1d->replaceCount() != rc0 && resp > dispatchCycle + l1d->getHitLatency()) {
+                                const uint64_t fb = fillBuffers.minAllocCycle();
+                                if (fb > dispatchCycle) resp += fb - dispatchCycle;
+                                fillBuffers.markLeave(resp);
+                            }
+                            reqSatisfiedCycle = resp + l1d->getHitLatency();
                             cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
                             fwdArray[(addr>>2) & (FWD_ENTRIES-1)].set(addr, reqSatisfiedCycle);
                         }
 
-                        commitCycle = reqSatisfiedCycle;
+                        /* A store leaves the ROB when it commits and its line is written to the L1D from the store queue
+                         * afterwards (x86 keeps stores in program order), so the queue entry is held until the write; with
+                         * storeBuffer off the ROB entry is held too, as this model did before. */
+                        commitCycle = storesDrainAfterRetire ? dispatchCycle + 1 : reqSatisfiedCycle;
                         lastStoreCommitCycle = MAX(lastStoreCommitCycle, reqSatisfiedCycle);
-                        storeQueue.markRetire(commitCycle);
+                        storeQueue.markRetire(reqSatisfiedCycle);
                     }
                     break;
 

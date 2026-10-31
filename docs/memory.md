@@ -43,21 +43,45 @@ epoch (`simulation.dram_epoch_phases`, one phase), and an epoch still in flight 
 counted at their age, so the latency the cores pay follows what the controller measures on loaded multi-core cells as
 it already did on single-core ones.
 
-**The price is a window, and message-passing host records keep their spacing ((1.12.153), user ruling 2026-10-28).**
+**The price is a window, and message-passing host records sit on the phase grid.**
 An access is charged the request-weighted mean latency over the epoch it reads and the seven finalized epochs before
 it (`simulation.dram_price_window`, 8 epochs; 1 = the epoch read alone). A single epoch read two back let a bursty
 load lock into a cycle of period two lags -- burst epochs priced at the quiet epoch before them, quiet epochs at the
-burst. Under thread-MPI the host cores never hold the consistent cut, so every host record is folded at the next phase
-barrier; a host interface reads the newest epoch the controller has been fed, and a rank whose ROI-relative clock
-trails the others has its records shifted to the replay clock as a whole (one offset per rank, which only grows)
-instead of each issuing at the clock at one tick. An access a device interface priced at the replay and the replay
-then found outside the ROI leaves `replayPriced` / `replayLat`, as it leaves rd / wr, so the charged view counts the
-ROI's requests only.
+burst. Under thread-MPI the host cores' records are stamped on the ROI-relative phase grid, the axis the
+shared-memory replay uses (the phases since the ROI baseline, plus the core's offset in its phase): a rank's own
+clock stops while it waits, so on that clock a rank that had waited trailed the others and its records fell behind
+the replay clock; on the grid every host record lands in the epoch of the phase it was issued in, and a host read
+takes the epoch two back like every message-passing read. A run whose ranks all run on the host cores (a no-offload
+baseline) folds its epochs at the grid, phase by phase, and its run time is counted on the same grid (see
+[power.md](power.md)). An access a device interface priced at the replay and the replay then found outside the ROI
+leaves `replayPriced` / `replayLat`, as it leaves rd / wr, so the charged view counts the ROI's requests only.
 
-**Busy epochs weigh more in the window.** Each epoch of the price window weighs its mean latency by its request
-count squared, so a burst is priced at the busy epochs of the window rather than at the quiet epochs around it;
-a steady load (equal counts) is priced as before. An access of the second ROI epoch reads the first once it has
-been fed instead of the analytical bootstrap.
+**The price is per request and per kind.** Each epoch of the price window weighs its mean latency by its request
+count, and an interface's reads, writes and prefetches are priced apart: a read at its reads' latency, a store at the
+time the controller took the interface's writes into its write queue (stores are posted: a store holds its core until
+then), a host L2 prefetcher's request at the prefetches' latency (they run ahead of the demand traffic and queue behind
+it).
+A mean below one cycle is priced at one cycle. An access of the second ROI epoch reads the first once it has been
+fed instead of the analytical bootstrap.
+
+**The replay is closed-loop, and each core pays what its own accesses measured.** In cut mode a core's accesses
+reach the controller as the core can issue them. A blocking core (ALU, in-order) has one access in flight: its next
+access goes at its stamp + the balance it has not paid yet, and no earlier than its previous access's completion +
+the core's own time between the two (the first access after a message-passing wait: at its stamp + balance). An
+out-of-order core has one L1D fill buffer per line miss in flight (the host core's 16, a processing element's 10,
+`ooo.l1d_fill_buffers` in the core record). A scratchpad DMA transfer's lines go at the engine's pace from the
+transfer's first line, and the core waits for the last. Every access a core waits for adds measured - charged to its
+core's balance (an out-of-order core's divided by the overlap of its accesses in the epoch; a DMA transfer once, by
+its last line). At the phase barrier a positive balance is added to the core's clock; a negative one is refunded
+from the core's later charges, never below zero. A rank entering a message-passing operation settles its balance
+first: a delay, or its clock moved back as far as it went since its last synchronization. The run time covers what
+no barrier applied: each core ends no earlier than its end + its balance, nor than the completion of its last access
+it waited for (a blocking core: + its own time after it, unless it waited after it); `roiWallBalanceCycles` is the
+part of the run time this adds. The replay statistics report `reconciledAccesses`, `reconciledCycles`,
+`reconcileRefunds`, `reconcilePending`, `reconcilePendingMax`, `reconciledCharged`, `ctrlRoiTailTicks` (the last
+waited access past the window's close) and `ctrlRoiDrainTicks` (the last request: writebacks and posted stores drain
+after the cores). The closed loop holds a core's next access across the controller's channels, so the two-channel
+DDR5 replay runs as one instance.
 
 **So is a memory of type Ramulator ((1.12.147), user ruling 2026-10-28).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,

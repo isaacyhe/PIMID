@@ -9,7 +9,7 @@ The in-order model also runs as the scalar single-issue PE (`issue_width: 1`,
 |---|---|---|
 | `compute_unit` | ALU | A datapath, not a processor: a register file, arithmetic units, a result bus and a resident instruction store, with no caches and no speculation. Sized by `pim.pe.lanes` / `operand_width` / `floating_point` / `imem_bytes` and shaped by the scaling factors below. The default device element. Alias: `alu_core` (which the entire existing sweep corpus names, so it is permanent). |
 | `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW-dependency stalls, functional-unit latencies, and issue in program order (no reordering; `pim.pe.issue_width`, default 2), plus the cross-PE memory-contention weave (`CoreRecorder`). Branch prediction per `pim.pe.branch_predictor`: `pag` (default, from the core record) or `none`. Aliases: `InOrder`, `in-order`, `in_order`. |
-| `ooo_core` | Out-of-order | Out-of-order superscalar (Westmere-class: 128-entry ROB, 4-issue). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
+| `ooo_core` | Out-of-order | Out-of-order superscalar, 4-issue. A processing element's window is Westmere-class (128-entry ROB); a host core's window is the core record's `ooo_host` (Golden Cove: 512-entry ROB, see below). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
 | `null_core` | Null | No timing model: counts instructions (cycles == instrs, IPC = 1) and drops all memory accesses (empty load/store handlers, so no NoC traffic). An IPC = 1 control/upper-bound baseline. Aliases: `Null`, `null`. |
 
 Any other value is rejected with an error listing the valid names.
@@ -105,7 +105,7 @@ uop issued per cycle, no branch prediction. It models a programmable PE with
 no branch predictor; it is not a renamed IPC = 1 bound, since it keeps every
 stall the in-order core models.
 
-`ooo_core` adds out-of-order issue (128-entry ROB + reordering), hiding latency
+`ooo_core` adds out-of-order issue (a 128-entry ROB + reordering on a processing element; the host's window is below), hiding latency
 the in-order core must stall on, so `ooo <= in_order` holds across the kernel
 suite (typical gaps 2-3.5x, tracking each kernel's ILP/MLP). Use
 `in_order_core` for dependency/issue-accurate in-order timing (scalar or
@@ -185,9 +185,10 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   size) lines: 5 at the core record's 17 cycles x 16 B over a 64 B line), so
   wrong-path lines occupy the L1I and count in its accesses and in the
   contention weave; an indirect or return target miss fetches no wrong path.
-- **Timing microarchitecture is fixed per core model** (`ooo_core`:
-  128-entry-ROB/4-wide Westmere-class, compile-time; `in_order_core`: dual-issue
-  default). The `power.mcpat_overrides` keys (`pipeline_depth`, `issue_width`,
+- **Timing microarchitecture is fixed per core model** (`ooo_core`: 4-wide;
+  a processing element's window is the Westmere-class 128-entry ROB, compile-time
+  default, and a host core's is the core record's `ooo_host`, below;
+  `in_order_core`: dual-issue default). The `power.mcpat_overrides` keys (`pipeline_depth`, `issue_width`,
   ...) shape the McPAT power/area model only, never cycle timing -- see
   [yaml_reference.md](yaml_reference.md).
 - At large working sets, `ooo_core` can legitimately exceed `in_order_core` on
@@ -198,6 +199,147 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
   DRAM latency and then pays the full redirect, while a shallow in-order pipe,
   already stalled on the same load, adds only its 7-cycle bubble. This is
   physics, not a calibration error.
+
+
+### The host core's out-of-order window
+
+A host `ooo_core` (system scope: `hosts[]`, and the host of a co-sim run) is sized from the `ooo_host` section of the core
+record `params/core/default.yaml`, as the 4th Gen Xeon Scalable core (Intel Golden Cove) is built:
+
+| Structure | Entries | Source |
+|---|---|---|
+| Reorder buffer | 512 | 512 entries, up from 352 in Sunny Cove (Chips and Cheese, "Popping the Hood on Golden Cove"; WikiChip) |
+| Load queue | 192 | 192 measured on Sapphire Rapids (Chips and Cheese; Intel states 240) |
+| Store queue | 114 | WikiChip, Golden Cove |
+| Scheduler (instruction window) | 160 | Sunny Cove's size (WikiChip); Intel does not publish Golden Cove's, which is larger |
+| L1D fill buffers | 16 | up from 12 (AnandTech, "Golden Cove Microarchitecture (P-Core) Examined") |
+
+A load or store that sends a line request to the next level holds one fill buffer until the line arrives, so the core
+overlaps at most 16 line misses (a second access to a line still on its way shares its buffer). `store_buffer: true`
+lets a store leave the ROB when it commits and holds its store-queue entry until the line is written, in program order
+(the x86 memory model); `false` keeps the ROB entry until the write, as the model did before. The Westmere-class core
+this model began with is `rob_entries: 128`, `load_queue_entries: 32`, `store_queue_entries: 32`,
+`scheduler_entries: 36`, `l1d_fill_buffers: 0` (unlimited) and `store_buffer: false`; set those values in the record to run
+it. A processing element's out-of-order core keeps that Westmere-class window, with 10 L1D fill buffers (`ooo.l1d_fill_buffers`:
+Nehalem / Westmere, Intel 64 and IA-32 Architectures Optimization Reference Manual 248966-025, Table 2-7 and sec.
+2.3.5); the DRAM replay holds its line misses to the same count. McPAT prices the host core with the same
+reorder buffer, scheduler and load/store queue sizes.
+
+### The host core's L2 prefetchers
+
+A host `ooo_core` has the two L2 hardware prefetchers that the Intel 64 and IA-32 Architectures Optimization Reference
+Manual (248966-048, "Data Prefetch to the L2 and Last Level Cache", p. 2-17) describes, sized from the `host_prefetch`
+section of the core record. They sit between the core's L1D and its L2 (`<host>_l2pf` in the generated ZSim
+configuration) and see every L1D request that goes to the L2, loads and stores:
+
+| Parameter | Value | Source |
+|---|---|---|
+| Streams | 32 | "Detects and maintains up to 32 streams of data accesses"; one forward and one backward stream per 4 KB page |
+| Distance | 20 lines | "The streamer can run up to 20 lines ahead of the load request" |
+| Prefetches per L2 lookup | 2 | "The streamer may issue two prefetch requests on every L2 lookup" |
+| Spatial prefetcher | on | completes "every cache line fetched to the L2 cache with the pair line that completes it to a 128-byte aligned chunk" |
+| Superqueue entries | 48 | an L2 miss holds one until its line arrives; 48 on Golden Cove, up from 32 (Chips and Cheese, "Popping the Hood on Golden Cove", which also notes that superqueue entries can be held by prefetch requests) |
+
+- **Streams.** A stream is detected by two requests to one 4 KB page whose line offsets move in one direction; from then
+  on each request in that direction prefetches up to two lines beyond the furthest already prefetched, no more than 20
+  lines ahead of the request and never past the page.
+- **Superqueue.** A demand L2 miss or a prefetch that fetches its line holds one superqueue entry until the line arrives;
+  a prefetch is not issued while all 48 are held (the manual: with many outstanding requests the streamer prefetches less
+  far ahead).
+- **Timing.** A prefetch brings its line into the L2 (and, through the L2's own miss, the LLC). A request that finds the
+  line still in flight waits for its estimated arrival; a request that finds it already there pays an L2 hit. The
+  prefetch's own memory request is timed and replayed like a demand miss, and its DRAM traffic counts in the memory
+  statistics and in power, but no core waits for it: in the contention model it starts with the request that triggered
+  it and nothing depends on its end. The memory controller counts the prefetcher's reads as `pfrd` / `pfrdlat` (also
+  included in `rd` / `rdlat`), and each prefetcher reports its requests, its useful and late prefetches and the streams
+  it detected.
+- **In the replayed memory.** A prefetch's request is not one its core waits for: it is not reconciled against the core.
+  It holds one of the core's superqueue entries from its release to its completion; the replay releases it, and an access
+  the core waits for, only while an entry is free. A request that found a prefetched line is settled against the arrival
+  the replay measured. The core's stall on prefetches is the union of its waits, so per core, in the order the waits
+  began, the growth of the union of the waits the measured arrivals give less that of the waits the core was charged goes
+  to the core's balance (waits the core overlaps count once; a request that found its line already there waits if the
+  measured arrival is later). A measured arrival is placed on the consumer's timeline: the prefetch left at its own
+  time, so the corrections already settled for the waits the core began after the prefetch was issued come off it (they
+  moved the core, not the prefetch). A core whose prefetches arrive late therefore issues its next ones late as well, and
+  one whose waits shrink cannot run ahead of the lines it still needs.
+- **Not modelled.** The L1D prefetchers (next-line and instruction-pointer stride), code fetches as streamer triggers,
+  and prefetching to the LLC only when the L2 is busy (the manual gives no threshold). Golden Cove's own prefetcher
+  enhancements are described only as "enhanced data prefetchers for increased memory parallelism"; the streamer's
+  published figures are used.
+
+`l2_streamer: false` removes the prefetchers; a processing element's out-of-order core has none.
+
+
+### The host's caches
+
+A host (system scope: `hosts[]`, and the host of a co-sim run) has the caches of the same Golden Cove core, from the `host`
+section of the cache record `params/cache/default.yaml`. A host with no `cache:` block has exactly this hierarchy (the run prints
+it: `host caches (cache record, host core)`), and so does a run without a host node where it needs one. A size, associativity or
+latency the configuration gives replaces the record's for that host and the rest comes from the record: a level given a size keeps
+the record's associativity and load-to-use latency unless it also gives them. When the record's ways do not make a power-of-two
+number of sets at the size given, the nearest associativity within a factor of two that does is built and the run says so (32 KB
+L1D: 8-way instead of 12; 32768 KB L3: 16-way instead of 15); if none does, the run is refused with a message that names the size
+and the sizes that fit. `scripts/check-host-cache-defaults.py` checks the cases against the record. A processing element's caches
+are the record's `levels`.
+
+**The L3 has three forms.** Omitted: the record's, one slice per core (below). An explicit total size, `l3_kb: 32768`: that size,
+shared by all the cores, with the record's 15 ways (adapted as above) and 33 ns unless `l3_ways` or `l3_latency_ns` is given.
+`l3: none` (or `l3_kb: 0`): no last-level cache, and only that is. The L2's misses then go to the memory path, whose host-path
+adder keeps the published cache path (no L3 is timed); the power model prices no L3, so there is no L3 leakage or dynamic power,
+and the uncore-load term, which is 0.31 W per MB of last-level cache, is 0 (the uncore floor, 18.5 W per socket, stays); the run
+prints `L3: none`. Any other value of `l3` is refused. Load-to-use is what a load that hits at that
+level measures, from its issue to its data.
+
+| Level | Size | Ways | Load-to-use | Source |
+|---|---|---|---|---|
+| L1D | 48 KB | 12 | 5 cycles | Intel 64 and IA-32 Architectures Optimization Reference Manual 248966-050 (Golden Cove: 48 KB data cache; Table 2-9, first level 5 cycles); Chips and Cheese, "Going Armchair Quarterback on Golden Cove's Caches" (12-way) |
+| L1I | 32 KB | 8 | the array time (CACTI) | Wikipedia, Golden Cove |
+| L2 | 2 MB per core | 16 | 16 cycles | Intel manual (2 MB on server parts); Chips and Cheese, "Sapphire Rapids: Golden Cove Hits Servers" (2 MB, 16 cycles) |
+| L3 | one 1.875 MB slice per core, shared, non-inclusive | 15 | 33 ns | Chips and Cheese, same article (1.875 MB per core slice, "around 33 ns", non-inclusive); Wikipedia, Sapphire Rapids; Intel, Hot Chips 29 (non-inclusive L3) |
+
+The ways of the four levels are the CPUID leaf 4 values of the QEMU cache model for Sapphire Rapids (qemu commit 8d69fc21,
+"i386/cpu: Introduce cache model for SapphireRapids"): 12, 8, 16 and 15. The line is 64 B.
+
+The L3 scales with the cores the host models: an N-core host has N slices of 1.875 MB (1 core 1.875 MB, 4 cores 7.5 MB,
+16 cores 30 MB), shared by all its cores, and N stops of the host fabric. The simulator's set count is a power of two, so a core
+count that is not one builds the next power of two of slices (6 cores: 8 slices, 15 MB).
+
+**The L3 is non-inclusive** (`l3_inclusion`; the record's `non-inclusive`), as the server L3 has been since Skylake-SP (Intel,
+"The New Intel Xeon Scalable Processor (formerly Skylake-SP)", Hot Chips 29, 2017, the slide "Inclusive vs Non-Inclusive L3";
+Chips and Cheese, "Sapphire Rapids: Golden Cove Hits Servers": "SPR's L3 is clearly non-inclusive"). The L2 is the primary
+cache and the L3 an overflow cache, following the three points of that slide:
+
+1. a line read from memory fills the requesting L2 only;
+2. an L2 eviction, modified or unmodified, is written into the L3 (a dirty L3 victim that no L2 holds is written back to
+   memory, a clean one is dropped);
+3. a line one core reads while another core holds it is copied into the L3 as well. A line found in the L3 that no other core
+   holds moves to the requesting L2, and a line requested for writing leaves the L3.
+
+A snoop filter tracks every line the L2s hold: their holders, whether one holds it exclusively, and whether it is dirty. It
+holds no data and never invalidates an L2 to make room (it is sized by what the L2s hold), so coherence across the cores is
+exact. A request for a line that only another core's L2 holds is answered by that L2 (the L3's latency, then the other L2's).
+A core can keep about its L2 plus the L3 on chip (2 MB + 1.875 MB at one core). `l3_inclusion: inclusive` builds the L3 as a
+superset of the L2s instead: an L2 then holds at most what the L3 holds, which at 1.875 MB per core is less than the 2 MB L2,
+so at one core the L3 adds nothing.
+
+A latency is charged where it belongs. The L1D charges its own to every access (5 cycles), the L2 the part beyond the L1D
+(11), the L3 the part beyond the L2 (33 ns at the host clock less 16 cycles). The L3's value already contains the on-die
+network a line crosses, so the host fabric's mean round trip is taken out of it (the port takes the fabric's shortest round
+trip out of every request, the cache the difference of the mean and the shortest): a load that hits the L3 measures 33 ns at
+any number of cores. The idle host memory latency (the host-path adder of each memory technology) is reduced by the same
+33 ns, the cache path the L3 now times. The simulator's L2 and L3 have no MSHR limit of their own; the lines a core has in
+flight are limited by the L1D's fill buffers (the core's `l1d_fill_buffers`).
+
+The power model prices the same arrays. CACTI builds only power-of-two associativities, so the 12-way and 15-way arrays are
+priced as 16-way with the same capacity. The L3 is priced as one bank per slice. A last-level cache above 64 MB (more than 34
+cores) is priced as replicated 2 MB slices, and the host ring's links span a die that holds all of them. The processing elements' caches, and a host whose configuration gives its own cache block,
+keep CACTI's array time as their latency, which is far below a load-to-use (1 cycle for a 256 KB array at 22 nm and 2 GHz).
+
+The old host (32 KB 8-way L1D, 32 KB 4-way L1I, 256 KB 8-way L2, a 32 MB 16-way L3, CACTI's array times of 1, 1, 1 and 6 cycles
+as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0.5`, `l1i_kb: 32`, `l1i_ways: 4`,
+`l1i_latency_ns: 0.5`, `l2_kb: 256`, `l2_ways: 8`, `l2_latency_ns: 0.5`, `l3_kb: 32768`, `l3_ways: 16`, `l3_latency_ns: 3.0`,
+`l3_inclusion: inclusive`.
 
 ## Notes
 

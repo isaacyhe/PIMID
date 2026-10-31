@@ -449,16 +449,23 @@ public:
     static void clkAdoptRel(uint32_t c, uint64_t rel) {
         if (c >= kSpOrigins || c >= zinfo->numCores || !zinfo->cores[c]) return;
         const uint64_t wf = zinfo->cores[c]->getCycles();
-        clkOrigins()[c].store((wf > rel) ? wf - rel : 0, std::memory_order_relaxed);
+        /* (1.12.189): signed (stored as its two's complement): a core that waited longer than the releaser has a
+         * wall-free clock behind the releaser's ROI-relative clock, and its origin lies past its own clock */
+        clkOrigins()[c].store((uint64_t)((int64_t)wf - (int64_t)rel), std::memory_order_relaxed);
         clkOriginSet()[c].store(1, std::memory_order_release);
     }
-    static uint64_t roiOriginOf(uint32_t c) {
-        if (c < kSpOrigins && clkOriginSet()[c].load(std::memory_order_acquire)) return clkOrigins()[c].load(std::memory_order_relaxed);   // 1.12.19
+    static int64_t roiOriginOf(uint32_t c) {   // (1.12.189): signed, see clkAdoptRel
+        if (c < kSpOrigins && clkOriginSet()[c].load(std::memory_order_acquire)) return (int64_t)clkOrigins()[c].load(std::memory_order_relaxed);   // 1.12.19
         Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
         uint64_t base = co ? co->getRoiBaseCycle() : 0;
         if (base == 0 && zinfo->hierarchy.mpiRoiBaseCyc && c < zinfo->hierarchy.mpiRoiBaseCycN)
             base = zinfo->hierarchy.mpiRoiBaseCyc[c];
-        return base;
+        return (int64_t)base;
+    }
+    /* (1.12.189): core c's ROI-relative clock at its wall-free cycle `cyc` (0 before its origin) */
+    static uint64_t roiRelOf(uint32_t c, uint64_t cyc) {
+        const int64_t v = (int64_t)cyc - roiOriginOf(c);
+        return v > 0 ? (uint64_t)v : 0;
     }
     static uint64_t cutRoiRel(uint32_t srcId, uint64_t cycle) {
         if (!singleProcCut()) return perCoreRoiRel(srcId, cycle);
@@ -467,8 +474,7 @@ public:
             const uint64_t c = cycle + spDevShift(), o = spOriginOf(srcId);
             return (c > o) ? c - o : 0;
         }
-        const uint64_t c = wallFreeCycle(srcId, cycle), base = roiOriginOf(srcId);   // 1.12.18 (W9)
-        return (c > base) ? c - base : 0;
+        return roiRelOf(srcId, wallFreeCycle(srcId, cycle));   // 1.12.18 (W9)
     }
 
     // 1.9.0 escape hatch (A/B only). Default thread-MPI pricing is now the
@@ -678,8 +684,7 @@ public:
     static uint64_t perCoreRoiRel(uint32_t srcId, uint64_t cycle) {
         /* 1.12.18 (W9): on the wall-free clock against the core's ROI origin
          * (wallFreeCycle / roiOriginOf); an ALU core is unchanged */
-        const uint64_t c = wallFreeCycle(srcId, cycle), base = roiOriginOf(srcId);
-        return (c > base) ? c - base : 0;
+        return roiRelOf(srcId, wallFreeCycle(srcId, cycle));
     }
 
     // NoC read-lag in EPOCHS. The barrier cut folds roiRel up to min-active-roiRel;
@@ -1585,6 +1590,7 @@ protected:
          * ROI baseline nothing is recorded (as for the NoC) and the access keeps
          * the analytical service below. Shared memory is unchanged. */
         const bool replayCut = zinfo->dramReplay && zinfo->dramReplay->cutMode();
+        bool bootRec = false;   // (1.12.189): recorded at the replay and priced by the analytical service below
         if (zinfo->dramReplay && replayCut != cutPricing())   // 1.12.18: thread-MPI or single-process cut
             panic("DRAM epoch replay: cut mode %d disagrees with the pricing mode %d",
                   (int)replayCut, (int)cutPricing());
@@ -1619,11 +1625,15 @@ protected:
             }
             /* (1.12.153): priced first, so the record carries its charge (the record joins epoch curEpoch, which no read
              * of this access looks at) */
-            uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, DramEpochReplay::kDramReadLagEpochs)
-                                   : zinfo->dramReplay->serviceLatency(mcId_, curEpoch);
-            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_, v, inTail());   // (1.12.181): tail
+            uint32_t v = replayCut ? zinfo->dramReplay->serviceLatencyCut(mcId_, curEpoch, DramEpochReplay::kDramReadLagEpochs, isWrite)
+                                   : zinfo->dramReplay->serviceLatency(mcId_, curEpoch, isWrite);   // (1.12.189): a store at the writes' price
+            /* (1.12.189): the record carries its core and whether the access holds it (a writeback does not); a refund of
+             * the core's over-charges lowers the charge */
+            zinfo->dramReplay->record(curEpoch, stamp, unit, slot, row, req.lineAddr, isWrite, mcId_, v, inTail(), req.srcId, req.type != PUTX);   // (1.12.181): tail
             zinfo->dramReplay->notePriced(v > 0);
+            bootRec = (v == 0) && zinfo->dramReplay->lastRecorded();
             if (v > 0) {
+                v = zinfo->dramReplay->chargeLast(v, false);
                 profReplayPriced_.atomicInc();   // (1.12.148): the charged side of the charged vs measured latency check
                 profReplayLat_.atomicInc(v);
                 if (byReplay) *byReplay = true;
@@ -1731,6 +1741,7 @@ protected:
         if (localWriteExtra_ && ((req.type == PUTX) || (req.type == GETX && getxIsStore_)))
             result += localWriteExtra_;
 
+        if (bootRec) result = zinfo->dramReplay->chargeLast(result, true);   // (1.12.189): the bootstrap charge, reconciled
         return result;
     }
 

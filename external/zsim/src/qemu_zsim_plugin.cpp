@@ -1029,6 +1029,22 @@ static void roiWallBegin(uint32_t tid) {   // non-thread-MPI roi_begin (re-opens
     zinfo->roiWall.beginStamp = roiWallStamp(tid);
     zinfo->roiWall.source = 1;
 }
+/* (next, ruling 2026-10-30 (3)/(4)) the DRAM reconciliation at the end of the run and at message passing:
+ *  - g_rtEnd[c]: core c's end on the run time's axis when the run time is taken (g_rtEndKnown: the core is one of the
+ *    cores the run time is the latest end of); the run time is raised to max(end + the balance no barrier applied)
+ *    before the statistics are written (recExtendRunTime);
+ *  - g_recLastCut: the DRAM cut of the last fold; g_recSyncClk[c]: core c's clock after its last rendezvous (a
+ *    message-passing release or a receive). A rank entering an operation takes its balance first (recCommEntry); an
+ *    over-charge is rewound no further back than either. */
+static uint64_t g_rtEnd[MAX_THREADS];
+static bool g_rtEndKnown[MAX_THREADS];
+static uint64_t g_recLastCut = 0;
+static uint64_t g_cutDramFolded = 0, g_cutDramHeld = 0, g_cutDramHeldMax = 0;   // (1.12.189): the latest DRAM fold point; drops held at it
+static uint64_t g_recSyncClk[MAX_THREADS];
+static void recMarkRunEnd() {
+    if (zinfo->dramReplay) zinfo->dramReplay->markRunEnd();
+    if (zinfo->hostDramReplay && zinfo->hostDramReplay != zinfo->dramReplay) zinfo->hostDramReplay->markRunEnd();
+}
 static void roiWallEnd(uint32_t tid, const char* how) {
     if (zinfo->roiWall.source != 1 || zinfo->roiWall.ended) return;
     const uint64_t e = (tid < MAX_THREADS) ? roiWallStamp(tid)
@@ -1081,6 +1097,7 @@ static void roiWallEnd(uint32_t tid, const char* how) {
                 if (v == 0) continue;   // ran nothing in the ROI
                 if (endCore == ~0u || v > mx) { mx = v; endCore = c; }
                 n++;
+                if (c < MAX_THREADS) { g_rtEnd[c] = v; g_rtEndKnown[c] = true; }   // (1.12.189)
             }
         }
         uint32_t f = 0;
@@ -1091,13 +1108,18 @@ static void roiWallEnd(uint32_t tid, const char* how) {
         if (f == 0) mx = roiWallLinkFloor(mx, how);   // (1.12.171)
         zinfo->roiWall.mpiEnd = mx;
         zinfo->roiWall.source = 3;
+        recMarkRunEnd();   // (1.12.189)
         info("[roi] run time: ROI elapsed %lu cycles = the latest %s ROI end on its own clock (%lu core(s), core %d; single-process cut, %s) [1.12.18, ruling 2026-10-24 (a)]",
              (unsigned long)mx, (f == 0) ? "device PE's" : "host core's", (unsigned long)n, (int)endCore, how);
     }
 }
+/* The thread that ran the ROI's roi_end (the opener) when it ends a thread-MPI ROI and writes the stats;
+ * MAX_THREADS = none (the run time then ends at the phase of the dump). */
+static uint32_t g_mpiRoiEndTid = MAX_THREADS;
 /* Thread-MPI: the max over ranks of the ROI-relative end. Co-sim with
  * offload: each rank's closing-barrier marker (the kernel window the
- * 1.12.3 trim prices); otherwise every device core's clock at the cut. */
+ * 1.12.3 trim prices); otherwise every device core's clock at the cut.
+ * A no-offload host-rank run: the global phase clock (below). */
 static void roiWallCloseMpi(const char* how) {
     if (zinfo->roiWall.ended) return;
     uint64_t mx = 0, n = 0;
@@ -1111,6 +1133,7 @@ static void roiWallCloseMpi(const char* how) {
             uint64_t v = (g_tailMarker[t] > b) ? g_tailMarker[t] - b : 0;
             if (v > mx) mx = v;
             n++;
+            if (c < MAX_THREADS) { g_rtEnd[c] = v; g_rtEndKnown[c] = true; }   // (1.12.189)
         }
         fromMarkers = (n > 0);
     }
@@ -1129,14 +1152,15 @@ static void roiWallCloseMpi(const char* how) {
             if (!co) continue;
             const bool isHost = co->asInOrderCore() || co->asOOOCore();
             if (g_cosim_mode && isHost != hostRanks) continue;   // the rank cores only
-            uint64_t cy = co->getCycles(), b = PEMemoryInterface::roiOriginOf(c);   // 1.12.18 (W9): an ooo/in-order PE's origin
+            const uint64_t cy = co->getCycles();
+            uint64_t v = PEMemoryInterface::roiRelOf(c, cy);   // 1.12.18 (W9): an ooo/in-order PE's origin
             if (hostRanks) {
                 if (c >= MAX_THREADS || mpi_roi_base_cyc[c] == 0) continue;   // never baselined: ran no rank
-                b = mpi_roi_base_cyc[c];
+                v = (cy > mpi_roi_base_cyc[c]) ? cy - mpi_roi_base_cyc[c] : 0;
             }
-            uint64_t v = (cy > b) ? cy - b : 0;
             if (v > mx || endCore == ~0u) { mx = std::max(mx, v); endCore = c; }
             n++;
+            if (c < MAX_THREADS) { g_rtEnd[c] = v; g_rtEndKnown[c] = true; }   // (1.12.189): host ranks: replaced by the grid end below
         }
     }
     {   /* 1.12.18 (R2): the clock mpiEnd is counted in (the DRAM replay converts it) */
@@ -1151,12 +1175,33 @@ static void roiWallCloseMpi(const char* how) {
         if (zinfo->systemGarnetNetwork) zinfo->systemGarnetNetwork->setRoiEnd(mx);
     }
     if (!hostRanks) mx = roiWallLinkFloor(mx, how);   // (1.12.171)
+    if (hostRanks) {
+        /* A no-offload host-rank run: the run time is the global phase clock from the first ROI barrier (the
+         * baseline phase) to the last rank's arrival at the closing barrier -- the axis the host records are stamped on and replayed on
+         * (DramEpochReplay::hostAccess), and the definition of a shared-memory run's run time (roiWallEnd). The
+         * latest rank end on its own clock is printed for comparison. */
+        const uint64_t ownMax = mx;
+        const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        const uint64_t b = (uint64_t)zinfo->hierarchy.mpiNocRoiBasePhase * pl;
+        const uint64_t e = roiWallStamp(g_mpiRoiEndTid);
+        mx = (e > b) ? e - b : 0;
+        zinfo->roiWall.mpiEnd = mx;
+        zinfo->roiWall.source = 2;
+        zinfo->roiWall.ended = true;
+        /* (1.12.189): the ranks' ends on the grid are not kept; each rank core counts as ending at the grid end */
+        for (uint32_t c = 0; c < MAX_THREADS; c++) if (g_rtEndKnown[c]) g_rtEnd[c] = mx;
+        recMarkRunEnd();
+        info("[roi] run time: thread-MPI ROI elapsed %lu cycles on the global phase clock, the first ROI barrier to the last rank's arrival at the closing barrier "
+             "(no-offload baseline: %lu host rank core(s), %s; the latest rank end on its own clock: %lu cycles)",
+             (unsigned long)mx, (unsigned long)n, how, (unsigned long)ownMax);
+        return;
+    }
     zinfo->roiWall.mpiEnd = mx;
     zinfo->roiWall.source = 2;
     zinfo->roiWall.ended = true;
-    info("[roi] run time: thread-MPI ROI elapsed %lu cycles = max over %lu rank core(s) of the ROI-relative end (%s, %s%s) [1.12.18, ruling 2026-10-23]",
-         (unsigned long)mx, (unsigned long)n, fromMarkers ? "closing-barrier markers" : "core clocks at the cut", how,
-         hostRanks ? "; no-offload baseline: the HOST cores running the ranks, from the first ROI barrier (ruling R2 2026-10-24)" : "");
+    recMarkRunEnd();   // (1.12.189)
+    info("[roi] run time: thread-MPI ROI elapsed %lu cycles = max over %lu rank core(s) of the ROI-relative end (%s, %s) [1.12.18, ruling 2026-10-23]",
+         (unsigned long)mx, (unsigned long)n, fromMarkers ? "closing-barrier markers" : "core clocks at the cut", how);
 }
 /* Env-gated thread-lifecycle trace for the in-image startup-hang hunt
  * (PIMID_COSIM_TRACE=1): timestamps around scheduler start/join at thread
@@ -1426,8 +1471,9 @@ static inline void cutWakeNoteRank(uint32_t rank, uint32_t tid) {
 static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative clock of core c (EndOfPhaseActions)
     Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
     if (!co) return 0;
-    const uint64_t base = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
     const uint64_t cyc = co->getCycles();
+    if (!g_cosim_mode) return PEMemoryInterface::roiRelOf(c, cyc);
+    const uint64_t base = co->getRoiBaseCycle();
     return (cyc > base) ? cyc - base : 0;
 }
 /* (1.12.178): the rendezvous axis. Send stamps, barrier arrivals and a receive's arrival are on each rank's
@@ -1437,8 +1483,8 @@ static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative cl
 static inline int64_t cutRelDelta(uint32_t c) {   // rendezvous clock = cut clock + delta
     Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
     if (!co || c >= MAX_THREADS) return 0;
-    const uint64_t cutBase = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
-    return (int64_t)cutBase - (int64_t)mpi_roi_base_cyc[c];
+    const int64_t cutBase = g_cosim_mode ? (int64_t)co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
+    return cutBase - (int64_t)mpi_roi_base_cyc[c];
 }
 static inline uint64_t relAxisClock(uint32_t c) {   // the core's rendezvous-axis clock (as roiRelCycles)
     const int64_t v = (int64_t)cutAxisClock(c) + cutRelDelta(c);
@@ -1663,8 +1709,9 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
     /* device scope: every core is a PE; the clock axis is the one the cut uses (EndOfPhaseActions) */
     auto isPe = [&](uint32_t c) { return zinfo->cores[c] && (!g_cosim_mode || (c < device_mask.size() && device_mask[c])); };
     auto rrOf = [&](uint32_t c) {
-        const uint64_t base = g_cosim_mode ? zinfo->cores[c]->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
         const uint64_t cyc = zinfo->cores[c]->getCycles();
+        if (!g_cosim_mode) return PEMemoryInterface::roiRelOf(c, cyc);   // (1.12.189): a signed origin
+        const uint64_t base = zinfo->cores[c]->getRoiBaseCycle();
         return (cyc > base) ? cyc - base : 0;
     };
     /* (1) the pin: a PE that an entered rank runs on has a clock past its ROI baseline once it has run; until as many
@@ -1812,9 +1859,8 @@ void EndOfPhaseActions() {
              * ROI origin (PEMemoryInterface::roiOriginOf), the origin its records
              * are stamped against; co-sim keeps the host cores out of the cut
              * as before (roiBaseCycle 0: their clock never pins it). */
-            uint64_t base = g_cosim_mode ? co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
-            uint64_t cyc  = co->getCycles();
-            uint64_t rr   = (cyc > base) ? cyc - base : 0;
+            const uint64_t cyc = co->getCycles();
+            uint64_t rr = g_cosim_mode ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
             else if (g_mpi_thread_mode && (st == 1 || st == 4) && g_cutFrozenRr[c] < rr) rr = g_cutFrozenRr[c];   // (1.12.178): the clock it resumes at
             if (rr == 0) continue;       // baselined but no ROI traffic yet
@@ -1854,7 +1900,21 @@ void EndOfPhaseActions() {
         }
         if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
         if (foldNoc) { spNocCut = cut; spNocFolded = true; }
-        if (g_mpi_thread_mode && !g_cosim_mode && !g_cutOpenerBegun.load()) cutDram = 0;   // (1.12.178): see g_cutOpenerBegun (device scope: in co-sim the device records only from the offload at roi_begin)
+        if (g_mpi_thread_mode && !g_cosim_mode && !g_cutOpenerBegun.load()) cutDram = 0;
+        if (g_mpi_thread_mode && g_cosim_mode && g_cosim_no_offload) {
+            /* A no-offload host-rank run records only host records, stamped on the ROI-relative phase grid
+             * (DramEpochReplay::hostAccess), and its host cores keep no ROI base cycle, so their clocks give no cut
+             * on that axis. Its DRAM cut is the grid: the phase that just ended (numPhases here) is the last one
+             * complete, so every epoch up to its end folds and no later one does. */
+            const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            const uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
+            cutDram = (zinfo->numPhases >= bp) ? ((uint64_t)zinfo->numPhases - bp + 1) * pl : 0;
+        }   // (1.12.178): see g_cutOpenerBegun (device scope: in co-sim the device records only from the offload at roi_begin)
+        if ((foldDram || foldHostDram) && cutDram != ~0ull) {   // (1.12.189): monotone -- never below what has been folded
+            if (cutDram < g_cutDramFolded) { g_cutDramHeld++; g_cutDramHeldMax = std::max(g_cutDramHeldMax, g_cutDramFolded - cutDram); cutDram = g_cutDramFolded; }
+            g_cutDramFolded = cutDram;
+        }
+        if ((foldDram || foldHostDram) && cutDram != ~0ull) g_recLastCut = cutDram;   // (1.12.189): see g_recSyncClk
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
             const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -1864,6 +1924,20 @@ void EndOfPhaseActions() {
             const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->hostDramReplay->foldByCut(cutDram, (uint64_t)pl * E);
+        }
+        /* (1.12.189): the accesses the folds settled are reconciled now, while every core is synced
+         * (DramEpochReplay::reconcileAtBarrier). An active core takes its balance; so does a sleeping single-process
+         * core (its wake moves its clock to max(own, waker's)). A core parked in a thread-MPI wait keeps it until it
+         * runs again (the wait's end re-places its clock from the clock it entered with); an exited or vacated core
+         * keeps it. */
+        if (foldDram || foldHostDram) {
+            auto canTake = [](uint32_t c) -> bool {
+                if (c >= MAX_THREADS) return false;
+                const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
+                return st == 0 || (st == 1 && g_spCut);
+            };
+            if (foldDram) zinfo->dramReplay->reconcileAtBarrier(canTake);
+            if (foldHostDram && (!foldDram || zinfo->hostDramReplay != zinfo->dramReplay)) zinfo->hostDramReplay->reconcileAtBarrier(canTake);
         }
     }
 
@@ -2185,6 +2259,64 @@ static uint64_t postRoiWallSec() {
 bool pimidPostRoiFree() {
     return g_postRoiFree && g_termStatsDumped && postRoiWallSec() < g_postRoiSince + kPostRoiWaitSec;
 }
+/* (next, ruling 2026-10-30 (3)) the balance no barrier could apply (reads settled after a core's last barrier, or a
+ * core parked or exited when they settled) extends that core's end: the replays are settled (what is pending replayed,
+ * the controllers drained) and the run time raised to the latest end + balance of the cores it is taken over. The
+ * replays' windows close at the raised run time (finalize). Cut mode only (the closed-loop replay). */
+static void recExtendRunTime() {
+    if (g_cutDramHeld)   // (1.12.189): see g_cutDramFolded
+        info("[roi] DRAM fold point held at the latest point folded %lu time(s) (largest drop %lu cycles): a core's clock fell behind it",
+             (unsigned long)g_cutDramHeld, (unsigned long)g_cutDramHeldMax);
+    DramEpochReplay* reps[2] = { zinfo->dramReplay, (zinfo->hostDramReplay != zinfo->dramReplay) ? zinfo->hostDramReplay : nullptr };
+    bool any = false;
+    for (DramEpochReplay* r : reps) if (r && r->cutMode()) { r->settleFinal(); any = true; }
+    if (!any || !zinfo->roiWall.ended || (zinfo->roiWall.source != 2 && zinfo->roiWall.source != 3)) return;
+    const uint64_t run = zinfo->roiWall.mpiEnd;
+    uint64_t best = 0; int bestCore = -1; double bestOwed = 0.0; uint32_t n = 0;
+    for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++) {
+        if (!g_rtEndKnown[c]) continue;
+        double owed = 0.0, held = 0.0;
+        for (DramEpochReplay* r : reps) if (r) { owed += r->owedEnd(c); double hE = 0.0; if (r->heldEnd(c, g_rtEnd[c], hE) && hE > held) held = hE; }
+        /* (1.12.189) a core also ends no earlier than its last access it waited for completed (heldEnd) */
+        const double add = std::max(owed, held - (double)g_rtEnd[c]);
+        if (add < 1.0) continue;
+        n++;
+        const uint64_t e = g_rtEnd[c] + (uint64_t)add;
+        if (e > best) { best = e; bestCore = (int)c; bestOwed = add; }
+    }
+    if (best > run) {
+        zinfo->roiWall.mpiEnd = best;
+        zinfo->roiWall.balance = best - run;
+        info("[roi] run time raised by the DRAM balance no barrier applied: %lu -> %lu cycles (core %d: its end %lu + %.0f; %u core(s) with a balance)",
+             (unsigned long)run, (unsigned long)best, bestCore, (unsigned long)g_rtEnd[bestCore], bestOwed, n);
+    } else if (n) {
+        info("[roi] DRAM balance no barrier applied on %u core(s); none ends past the run time %lu (latest: core %d, its end %lu + %.0f = %lu cycles)",
+             n, (unsigned long)run, bestCore, (unsigned long)g_rtEnd[bestCore], bestOwed, (unsigned long)best);
+    }
+}
+
+/* (next, ruling 2026-10-30 (4)) a rank enters a message-passing operation: its DRAM balance first (see g_recSyncClk) */
+static void recCommEntry(uint32_t tid) {
+    if (tid >= MAX_THREADS || !cores[tid]) return;
+    const uint32_t c = cids[tid];
+    if (c >= MAX_THREADS) return;
+    DramEpochReplay* reps[2] = { zinfo->dramReplay, (zinfo->hostDramReplay != zinfo->dramReplay) ? zinfo->hostDramReplay : nullptr };
+    for (DramEpochReplay* r : reps) {
+        if (!r || !r->cutMode()) continue;
+        const uint64_t clk = cores[tid]->getCycles(), rr = cutAxisClock(c);
+        uint64_t room = (clk > g_recSyncClk[c]) ? clk - g_recSyncClk[c] : 0;
+        room = std::min<uint64_t>(room, (rr > g_recLastCut) ? rr - g_recLastCut : 0);
+        r->reconcileCore(c, room);
+    }
+}
+static inline void recSyncNote(uint32_t tid) {
+    if (tid < MAX_THREADS && cores[tid] && cids[tid] < MAX_THREADS) {
+        g_recSyncClk[cids[tid]] = cores[tid]->getCycles();
+        if (zinfo->dramReplay) zinfo->dramReplay->noteSync(cids[tid]);   // (1.12.189): see DramEpochReplay::noteSync
+        if (zinfo->hostDramReplay && zinfo->hostDramReplay != zinfo->dramReplay) zinfo->hostDramReplay->noteSync(cids[tid]);
+    }
+}
+
 static void dumpTerminationStats() {
     if (!__sync_bool_compare_and_swap(&g_termStatsDumped, 0, 1)) return;
 
@@ -2194,6 +2326,7 @@ static void dumpTerminationStats() {
     cutHoldReport();   // (1.12.188): the cut hold's counters (device scope: the window ends here)
     if (g_mpi_thread_mode) roiWallCloseMpi("termination dump");
     else roiWallEnd(MAX_THREADS, "no roi_end before the stats write: closed at the dump's phase");
+    recExtendRunTime();   // (next, ruling 2026-10-30 (3))
     info("Dumping termination stats");
     rtPrintStats();   // 1.12.18: PIM runtime primitives, per core
     zinfo->trigger = 20000;
@@ -3503,6 +3636,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * clock from deterministic arithmetic alone. */
         if (g_mpi_thread_mode) {
             if (tid < MAX_THREADS && cores[tid]) {
+                recCommEntry(tid);   // (next, ruling 2026-10-30 (4)): the DRAM balance before the clock is saved
                 mpi_comm_saved[tid] = cores[tid]->getCycles();
                 mpi_comm_saved_cid[tid] = cids[tid];
                 mpi_comm_saved_fb[tid] =
@@ -3550,6 +3684,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 if (exclusive && raw > mpi_comm_saved[tid])
                     cores[tid]->pimidRewindCycles(raw - mpi_comm_saved[tid]);
                 mpi_comm_saved[tid] = ~0ull;
+                recSyncNote(tid);   // (1.12.189)
             }
             // Resumed from the MPI wait -> ACTIVE (re-enters the epoch cut). Do not
             // clobber an EXITED core (roi_end already fired): only ACTIVE<-QUIESCENT.
@@ -3885,6 +4020,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                     if (hostRankLastRankRule()) {
                         info("Thread %d: host-rank ROI end at the last rank's arrival at the barrier after rank 0's roi_end "
                              "(%u ranks; no-offload baseline)", tid, g_mpi_rank_count);
+                        g_mpiRoiEndTid = tid;   // the grid end of a host-rank run is this arrival's core (roiWallCloseMpi)
                     } else {
                         info("Thread %d: device-scope ROI end at the last rank's arrival "
                              "(%u ranks) [1.11.97]", tid, g_mpi_rank_count);
@@ -3976,6 +4112,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             uint64_t delta = target - cur;
             cc->addDelay((uint32_t)std::min<uint64_t>(delta, 0xFFFFFFFFull));
         }
+        recSyncNote(tid);   // (1.12.189): the release
         return;
     }
 
@@ -4230,6 +4367,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
         }
         chargedCycles = delta;
         if (c && delta > 0) c->addDelay((uint32_t)std::min<uint64_t>(delta, 0xFFFFFFFFull));
+        recSyncNote(tid);   // (1.12.189): the message's arrival
         if (getenv("PIMID_DEBUG_RDV")) {
             info("Thread %d: MPI_RECV src=%u dst=%u size=%lu send_time=%lu cwait=%lu "
                  "cur=%lu lat=%u arrival=%lu delta=%lu raw_getCyc=%lu roi_base=%lu",
@@ -5203,6 +5341,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (tid < MAX_THREADS && cids[tid] < MAX_THREADS)
                 g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
             in_roi.store(false);
+            g_mpiRoiEndTid = tid;   // the run time of a host-rank run ends on this thread's core (roiWallCloseMpi)
             dumpTerminationStats();
             /* 1.12.18 (2026-10-24, MPI checksums): the last rank is out of its ROI, the
              * stats are written; the program now runs to its own exit
@@ -5573,6 +5712,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
             if (tid < MAX_THREADS && cids[tid] < MAX_THREADS)
                 g_coreRoiState[cids[tid]].store(2, std::memory_order_release);
             in_roi.store(false);
+            g_mpiRoiEndTid = tid;   // the run time of a host-rank run ends on this thread's core (roiWallCloseMpi)
             dumpTerminationStats();
             /* 1.12.18 (2026-10-24, MPI checksums): the last rank is out of its ROI, the
              * stats are written; the program now runs to its own exit
@@ -6641,7 +6781,10 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         if (useSharedMem) {
             gm_attach(shmId);
         } else {
-            int newShmId = gm_init(1 << 28);  /* 256 MB segment */
+            /* 1 GB (was 256 MB): the timing events of the cores in one phase live in this heap; a host core with a
+             * 512-entry window and 16 fill buffers records several times more line requests per phase than the
+             * Westmere-class window did, and 16 such cores outgrew 256 MB during the guest start-up */
+            int newShmId = gm_init((size_t)1 << 30);
             (void)newShmId;
         }
 

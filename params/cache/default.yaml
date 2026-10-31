@@ -32,3 +32,45 @@ levels:
   l1i: { ways: 4,  line_bytes: 64, banks: slice }
   l2:  { ways: 8,  line_bytes: 64, banks: slice }
   l3:  { ways: 16, line_bytes: 64, banks: slice }
+# host: the caches of a HOST core. A host stands for a recent server core, the Intel Golden Cove core of the 4th Gen Xeon
+# Scalable (Sapphire Rapids), whose out-of-order window the core record already gives (ooo_host). Every other cache -- a
+# processing element's -- is the `levels` section above. A host's size, associativity or latency in the configuration
+# replaces the field for that host.
+#   sizes and associativity (the ways of all four levels: the CPUID leaf 4 values of the QEMU cache model for Sapphire Rapids,
+#                            qemu commit 8d69fc21 "i386/cpu: Introduce cache model for SapphireRapids": L1D 48 KB 12-way, L1I 32 KB
+#                            8-way, L2 2 MB 16-way, L3 15-way)
+#     l1d  48 KB, 12-way   (Intel Optimization Reference Manual 248966-050, Golden Cove: "48KB DCU"; Chips and Cheese,
+#                           "Going Armchair Quarterback on Golden Cove's Caches": "Golden Cove's L1D is 12-way associative")
+#     l1i  32 KB, 8-way    (Wikipedia, Golden Cove: 32 KB instruction cache)
+#     l2   2 MB, 16-way    (Intel manual 248966-050: 2 MB mid-level cache on server parts; Chips and Cheese, "Sapphire Rapids:
+#                           Golden Cove Hits Servers": SPR bumps capacity to 2 MB)
+#     l3   one 1.875 MB slice per core, 15-way, shared
+#                          (Chips and Cheese, same article: "L3 capacity per slice has gone up ... to 1.875 MB on SPR", one slice
+#                           per core; Wikipedia, Sapphire Rapids: up to 112.5 MB, 1.875 MB per core). A host of N cores has N slices:
+#                           1 core 1.875 MB, 4 cores 7.5 MB, 16 cores 30 MB. The simulator's set count is a power of two, so a core
+#                           count that is not one builds the next power of two of slices.
+#     l3 inclusion: non-inclusive (Intel, "The New Intel Xeon Scalable Processor (formerly Skylake-SP)", Hot Chips 29, 2017,
+#                           slide "Inclusive vs Non-Inclusive L3": the private L2 is the primary cache and the shared L3 an overflow
+#                           cache; memory reads fill the L2 only, the L2's evictions, modified and unmodified, are written into the
+#                           L3, and data shared across cores is copied into the L3; Chips and Cheese, "Sapphire Rapids: Golden Cove
+#                           Hits Servers": "SPR's L3 is clearly non-inclusive"). The lines the L2s hold are tracked by a snoop
+#                           filter, so the L3 adds its capacity to the L2's: about 2 MB + 1.875 MB per core. `inclusive` builds
+#                           the L3 as a superset of the L2s (an L2 then holds at most what the L3 holds).
+#   load-to-use latency: what a load that hits at that level measures, from the load's issue to its data
+#     l1d  5 cycles        (Intel manual 248966-050, Table 2-9: 48 KB first-level cache, 5 cycles)
+#     l2   16 cycles       (Chips and Cheese, "Sapphire Rapids: Golden Cove Hits Servers": SPR and Raptor Lake both have the
+#                           same 16-cycle L2 latency)
+#     l3   33 ns           (same article: "an extremely high L3 latency around 33 ns"; a time, not cycles: the mesh and the L3
+#                           slices are not clocked with the core)
+# How they enter the simulation: the L1D charges its own latency to every access; the L2 the part beyond the L1D (16 - 5 = 11
+# cycles); the L3 the part beyond the L2 (33 ns at the host clock less 5 + 11 cycles), and the host fabric's mean round trip is
+# taken out of that, so that a load that hits the L3 measures the record's 33 ns whatever the number of cores. The idle
+# memory latency of the host (the host-path adder of each memory technology) is reduced by the same 33 ns, the cache path the
+# L3 lookup now times. CACTI builds only power-of-two associativities: the power model prices the 12-way and 15-way arrays at
+# 16 ways with the same capacity. The old host is the configuration's cache block: l1d_kb 32, l1i_kb 32, l2_kb 256, l3_kb 32768,
+# l1d_ways 8, l1i_ways 4, l2_ways 8, l3_ways 16, with no latencies (the array times of CACTI: 1, 1, 1 and 6 cycles at 2 GHz).
+host:
+  l1d: { kb: 48,  ways: 12, load_to_use_cycles: 5 }
+  l1i: { kb: 32,  ways: 8 }
+  l2:  { kb: 2048, ways: 16, load_to_use_cycles: 16 }
+  l3:  { slice_kb: 1920, ways: 15, load_to_use_ns: 33, inclusion: non-inclusive }   # per core

@@ -72,6 +72,7 @@ class HomeRoutedMemory : public MemObject {
         void initStats(AggregateStat* parentStat) { for (auto m : mems) m->initStats(parentStat); }
 };
 #include "network.h"
+#include "ninc_cache.h"
 #include "garnet_network.h"
 #include "null_core.h"
 #include "alu_core.h"
@@ -144,6 +145,40 @@ static int cacheGroupOwnerNode(const string& groupName) {
  * smaller. */
 static uint32_t g_flushRegistryDeviceBanks = 0;
 
+/* 1.11.40 (audit N7): register every cache so the coherence flush can MEASURE
+ * its footprint instead of using a constant. There was no global registry;
+ * caches were only reachable through the local cMap during InitSystem.
+ * Device PEs of type alu_core have no cache at all (see pe_memory_interface.h,
+ * "The ALU has no cache"), so in a co-sim run every entry here is a host
+ * cache -- which is what makes summing the whole registry the right answer
+ * for a HOST flush.
+ *
+ * 1.11.59 (audit F018): that held only because the shipped co-sim gives
+ * its device node an alu_core. The condition was never CHECKED -- the
+ * push_back was unconditional and the sentence that followed it said a
+ * cache-bearing PE type "must" make this role-aware, which is a comment,
+ * not a guard. A device node with core_type in_order/simple/ooo gets a
+ * full L1I/L1D/L2 from the same emitter (it gates on core type, not on
+ * role), and every dirty line in it was then written back on a HOST core
+ * and billed to HOST DRAM by the roi_begin flush -- silently, in exactly
+ * the placement sweeps the flush charge exists to keep honest. The
+ * registry is the HOST flush domain now, and a device-owned bank is
+ * excluded and counted rather than summed. */
+static void RegisterFlushCache(const string& prefix, Cache* cache) {
+    string groupName(prefix);
+    const string kPfx = "sys.caches.";
+    if (groupName.compare(0, kPfx.size(), kPfx) == 0) groupName.erase(0, kPfx.size());
+    if (!groupName.empty() && groupName.back() == '.') groupName.pop_back();
+    const int ownerNode = cacheGroupOwnerNode(groupName);
+    const bool deviceOwned = (ownerNode >= 0) &&
+                             (zinfo->nodeMap.nodes[ownerNode].role != 0);
+    if (deviceOwned) {
+        g_flushRegistryDeviceBanks++;
+    } else {
+        zsimAllCaches().push_back(cache);
+    }
+}
+
 BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, uint32_t bankSize, bool isTerminal, uint32_t domain) {
     string type = config.get<const char*>(prefix + "type", "Simple");
     // Shortcut for TraceDriven type
@@ -201,6 +236,19 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         } else {
             panic("%s: Invalid value %s on array.hash", name.c_str(), hashType.c_str());
         }
+    }
+
+    /* A shared last-level cache that is not inclusive of its children (ninc_cache.h): its own set-associative LRU data array
+     * and snoop filter take the place of the array, replacement policy and coherence controllers built below. */
+    if (type == "NonInclusive") {
+        const string niRepl = config.get<const char*>(prefix + "repl.type", "LRU");
+        if (isTerminal || arrayType != "SetAssoc" || hashType != "None" || niRepl != "LRU")
+            panic("%s: a NonInclusive cache is a shared cache above other caches, set-associative (array.type SetAssoc, array.hash None) with LRU replacement", name.c_str());
+        if (config.get<bool>(prefix + "nonInclusiveHack", false)) panic("%s: type NonInclusive and nonInclusiveHack are exclusive", name.c_str());
+        const uint32_t niLat = config.get<uint32_t>(prefix + "latency", 10);
+        Cache* cache = new NonInclusiveCache(numLines, ways, niLat, niLat, name);
+        RegisterFlushCache(prefix, cache);
+        return cache;
     }
 
     //Replacement policy
@@ -354,39 +402,7 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         static_cast<FilterCache*>(cache)->setHitLatency(latency);   // 1.11.97 (x05-5, gate 1207D): the configured L1 latency, for the core's load-use charge
     }
 
-    /* 1.11.40 (audit N7): register every cache so the coherence flush can MEASURE
-     * its footprint instead of using a constant. There was no global registry;
-     * caches were only reachable through the local cMap during InitSystem.
-     * Device PEs of type alu_core have no cache at all (see pe_memory_interface.h,
-     * "The ALU has no cache"), so in a co-sim run every entry here is a host
-     * cache -- which is what makes summing the whole registry the right answer
-     * for a HOST flush.
-     *
-     * 1.11.59 (audit F018): that held only because the shipped co-sim gives
-     * its device node an alu_core. The condition was never CHECKED -- the
-     * push_back was unconditional and the sentence that followed it said a
-     * cache-bearing PE type "must" make this role-aware, which is a comment,
-     * not a guard. A device node with core_type in_order/simple/ooo gets a
-     * full L1I/L1D/L2 from the same emitter (it gates on core type, not on
-     * role), and every dirty line in it was then written back on a HOST core
-     * and billed to HOST DRAM by the roi_begin flush -- silently, in exactly
-     * the placement sweeps the flush charge exists to keep honest. The
-     * registry is the HOST flush domain now, and a device-owned bank is
-     * excluded and counted rather than summed. */
-    {
-        string groupName(prefix);
-        const string kPfx = "sys.caches.";
-        if (groupName.compare(0, kPfx.size(), kPfx) == 0) groupName.erase(0, kPfx.size());
-        if (!groupName.empty() && groupName.back() == '.') groupName.pop_back();
-        const int ownerNode = cacheGroupOwnerNode(groupName);
-        const bool deviceOwned = (ownerNode >= 0) &&
-                                 (zinfo->nodeMap.nodes[ownerNode].role != 0);
-        if (deviceOwned) {
-            g_flushRegistryDeviceBanks++;
-        } else {
-            zsimAllCaches().push_back(cache);
-        }
-    }
+    RegisterFlushCache(prefix, cache);
 
 #if 0
     info("Built L%d bank, %d bytes, %d lines, %d ways (%d candidates if array is Z), %s array, %s hash, %s replacement, accLat %d, invLat %d name %s",
@@ -452,13 +468,25 @@ CacheGroup* BuildCacheGroup(Config& config, const string& name, bool isTerminal)
     bool isPrefetcher = config.get<bool>(prefix + "isPrefetcher", false);
     if (isPrefetcher) { //build a prefetcher group
         uint32_t prefetchers = config.get<uint32_t>(prefix + "prefetchers", 1);
+        /* PIMID: "L2Stream" is the host core's L2 streamer (prefetcher.h); "Stream" zsim's own stream buffers */
+        const string pfType = config.get<const char*>(prefix + "prefetcherType", "Stream");
+        if (pfType != "Stream" && pfType != "L2Stream") panic("%s: prefetcherType must be Stream or L2Stream (got %s)", name.c_str(), pfType.c_str());
+        L2StreamPrefetcher::Params pp;
+        if (pfType == "L2Stream") {
+            pp.streams = config.get<uint32_t>(prefix + "streams");
+            pp.distance = config.get<uint32_t>(prefix + "distance");
+            pp.perLookup = config.get<uint32_t>(prefix + "perLookup");
+            pp.queue = config.get<uint32_t>(prefix + "superqueue");
+            pp.spatial = config.get<bool>(prefix + "spatial");
+        }
         cg.resize(prefetchers);
         for (vector<BaseCache*>& bg : cg) bg.resize(1);
         for (uint32_t i = 0; i < prefetchers; i++) {
             stringstream ss;
             ss << name << "-" << i;
             g_string pfName(ss.str().c_str());
-            cg[i][0] = new StreamPrefetcher(pfName);
+            if (pfType == "L2Stream") cg[i][0] = new L2StreamPrefetcher(pfName, pp);
+            else cg[i][0] = new StreamPrefetcher(pfName);
         }
         return cgp;
     }
@@ -1685,13 +1713,17 @@ static void InitSystem(Config& config) {
              * latency; invalidations carry none). */
             const bool hostLLC = hostFabric && hostFabric->l3Present() && strncmp(grp, "host_l3", 7) == 0;
             const bool hostGrp = strncmp(grp, "host_", 5) == 0;   // 1.12.23: no device-network RTT for host caches (above)
+            /* a non-inclusive L3 takes every L2 eviction with its line, clean ones too (ninc_cache.h): the fabric carries them */
+            const bool hostNiLLC = hostLLC && string(config.get<const char*>(string("sys.caches.") + grp + ".type", "Simple")) == "NonInclusive";
             for (uint32_t c = p*childrenPerParent; c < (p+1)*childrenPerParent; c++) {
                 for (BaseCache* bank : childCaches[c]) {
                     if (hostLLC) {
                         g_vector<MemObject*> pv;
                         for (MemObject* pb : parentsVec) {
                             g_string pn((string("host-fabric-l2-") + std::to_string(c)).c_str());
-                            pv.push_back(new HostFabricPort(hostFabric, pb, false, c, pn.c_str()));
+                            uint32_t rtMin = 0, rtMean = 0;
+                            if (config.get<uint32_t>("sys.hostNetwork.l3Comp", 0)) hostFabric->sliceRt(rtMin, rtMean);
+                            pv.push_back(new HostFabricPort(hostFabric, pb, false, c, pn.c_str(), rtMin, hostNiLLC));
                         }
                         bank->setParents(childId++, pv, nullptr);
                     } else {
@@ -1714,8 +1746,21 @@ static void InitSystem(Config& config) {
                 info("Hierarchy: %s -> %s", Str(cacheNames).c_str(), parentName.c_str());
             }
 
+            /* nonInclusiveHack drops a line's directory entry on an eviction without invalidating the children that hold it:
+             * with more than one child that loses coherence (two children can then hold one line exclusively) */
+            if (childrenVec.size() > 1 && config.get<bool>(string("sys.caches.") + grp + ".nonInclusiveHack", false))
+                panic("%s: nonInclusiveHack with %u children loses coherence; a shared non-inclusive cache is type = \"NonInclusive\"",
+                      grp, (uint32_t)childrenVec.size());
             for (BaseCache* bank : parentCaches[p]) {
                 bank->setChildren(childrenVec, (hostLLC || hostGrp) ? nullptr : network);   // 1.12.19
+                if (hostLLC && config.get<uint32_t>("sys.hostNetwork.l3Comp", 0)) {   // the L3's latency is a load-to-use that holds the fabric's mean round trip
+                    uint32_t rtMin = 0, rtMean = 0;
+                    hostFabric->sliceRt(rtMin, rtMean);
+                    static_cast<Cache*>(bank)->reduceAccLat(rtMean - rtMin);
+                    if (bank == parentCaches[p][0])
+                        info("[ZSim] host L3 %s: the fabric's round trip to a slice is %u cycles at least and %u on average; the cache's latency is a load-to-use, so %u comes out of every response and %u out of the cache's own latency",
+                             bank->getName(), rtMin, rtMean, rtMin, rtMean - rtMin);
+                }
             }
         }
     }
@@ -1867,7 +1912,14 @@ static void InitSystem(Config& config) {
                          * core refuses one below its 9-cycle stage refill. */
                         uint32_t oooMispredPenalty = config.get<uint32_t>(prefix + "mispredPenalty");
                         uint32_t oooFetchBytes = config.get<uint32_t>(prefix + "fetchBytesPerCycle");
-                        OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, name, oooMispredPenalty, oooFetchBytes);
+                        OOOCore::Sizes oooSizes;   // the host's out-of-order window from the core record (ooo_host); absent: the model's own
+                        oooSizes.rob = config.get<uint32_t>(prefix + "robEntries", oooSizes.rob);
+                        oooSizes.lq = config.get<uint32_t>(prefix + "loadQueueEntries", oooSizes.lq);
+                        oooSizes.sq = config.get<uint32_t>(prefix + "storeQueueEntries", oooSizes.sq);
+                        oooSizes.window = config.get<uint32_t>(prefix + "windowEntries", oooSizes.window);
+                        oooSizes.fillBuffers = config.get<uint32_t>(prefix + "fillBuffers", oooSizes.fillBuffers);
+                        oooSizes.storeBuffer = config.get<bool>(prefix + "storeBuffer", oooSizes.storeBuffer);
+                        OOOCore* ocore = new (&oooCores[j]) OOOCore(ic, dc, name, oooMispredPenalty, oooFetchBytes, oooSizes);
                         ocore->setFpuCapability(grpHasFpu, grpFpEmul);   // 1.11.47 (L203)
                         zinfo->eventRecorders[coreIdx] = ocore->getEventRecorder();
                         zinfo->eventRecorders[coreIdx]->setSourceId(coreIdx);
@@ -2252,8 +2304,12 @@ static void InitGlobalStats() {
         zinfo->rootStat->append(sr);
         auto fs = []() -> uint64_t { return zinfo->roiWall.ended ? zinfo->roiWall.source : 0; };
         auto* ss = new LambdaStat<decltype(fs)>(fs);
-        ss->init("roiWallSource", "1 = roi_begin..roi_end phase-clock stamps, 2 = max over ranks of the ROI-relative end, 3 = single-process cut: the latest device PE's ROI end on its own clock");
+        ss->init("roiWallSource", "1 = roi_begin..roi_end phase-clock stamps, 2 = thread-MPI: max over device ranks of the ROI-relative end, or for host ranks (no-offload) the phase clock from the first ROI barrier to the last rank's arrival at the closing barrier, 3 = single-process cut: the latest device PE's ROI end on its own clock");
         zinfo->rootStat->append(ss);
+        auto fb = []() -> uint64_t { return zinfo->roiWall.ended ? zinfo->roiWall.balance : 0; };   // (1.12.189)
+        auto* sb = new LambdaStat<decltype(fb)>(fb);
+        sb->init("roiWallBalanceCycles", "Cycles of roiWallCycles that are the DRAM balance no barrier applied: the latest core end + its balance past the cores' ends (closed-loop DRAM replay; 0 = none)");
+        zinfo->rootStat->append(sb);
     }
     /* 1.11.51 (E17, closing the measure-first ruling): the devMC gap
      * histogram leaves the log and enters the stats stream, so the power

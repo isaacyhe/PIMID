@@ -458,6 +458,11 @@ Processor::Processor(ParseXML *XML_interface)
 			   * closed here rather than left for whoever turns global links
 			   * on. Scoped to on_dram_die for the reason given on the bus
 			   * arm. */
+			  /* PIMID: the host ring and crossbar links span the processor's own area; with a replicated last-level cache the
+			   * area so far holds one slice of it, the die holds l3_replicated_slices. */
+			  const double link_area_um2 = area.get_area()
+			      + ((XML->sys.l3_replicated_slices > 1 && !l3array.empty())
+			         ? l3array[0]->area.get_area() * (XML->sys.l3_replicated_slices - 1) : 0.0);
 			  double link_len_scale = (XML->sys.dram_periph_family == 1 &&
 			                           XML->sys.NoC[i].on_dram_die)
 			      ? sqrt(XML->sys.dram_periph_area) : 1.0;
@@ -472,7 +477,7 @@ Processor::Processor(ParseXML *XML_interface)
 				   * two-column floorplan does not have (each stop's core + slice spans half the die
 				   * width), so it is not used. McPAT's upstream 2-D mesh derivation (side / ((H+V)/2) / 2)
 				   * gave half of this for a 1 x N ring. */
-				  nocs[i]->init_link_bus(2.0 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage)
+				  nocs[i]->init_link_bus(2.0 * sqrt(link_area_um2 * XML->sys.NoC[i].chip_coverage)
 				                         / std::max(1, XML->sys.NoC[i].horizontal_nodes * XML->sys.NoC[i].vertical_nodes));
 			  else if (XML->sys.NoC[i].link_span_processor == 3)
 			  {
@@ -496,7 +501,7 @@ Processor::Processor(ParseXML *XML_interface)
 				  nocs[i]->init_link_bus(pitch);
 			  }
 			  else if (XML->sys.NoC[i].link_span_processor)   /* 1.12.23: the processor's own area, um^2 */
-				  nocs[i]->init_link_bus(0.5 * sqrt(area.get_area() * XML->sys.NoC[i].chip_coverage
+				  nocs[i]->init_link_bus(0.5 * sqrt(link_area_um2 * XML->sys.NoC[i].chip_coverage
 				                                    / std::max(1, XML->sys.NoC[i].link_parent_regions)));
 			  else if (XML->sys.NoC[i].link_span_area_mm2 > 0 && XML->sys.NoC[i].link_parent_regions > 0)
 				  nocs[i]->init_link_bus(0.5 * sqrt(XML->sys.NoC[i].link_span_area_mm2 * 1e6

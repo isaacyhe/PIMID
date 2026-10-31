@@ -639,10 +639,14 @@ struct GlobSimInfo {
      * (numPhases x phaseLength + the stamping core's offset in its phase;
      * each core advances phaseLength of its own cycles per phase).
      *   source 1: roi_begin..roi_end stamps (serial, OpenMP, co-sim OpenMP)
-     *   source 2: thread-MPI, whose ranks run on per-core ROI-relative clocks
-     *             (frozen-clock waits; the phase clock runs on wall-coupled
-     *             parks there): the max over ranks of the ROI-relative end
-     *             at the cut (co-sim: the closing-barrier markers).
+     *   source 2: thread-MPI. Ranks on device PEs run on per-core
+     *             ROI-relative clocks (frozen-clock waits; the phase clock
+     *             runs on wall-coupled parks there): the max over ranks of
+     *             the ROI-relative end at the cut (co-sim: the closing-barrier
+     *             markers). Ranks on the host cores (a no-offload baseline):
+     *             the phase clock from the first ROI barrier to the last
+     *             rank's arrival at the closing barrier, the axis their DRAM
+     *             records are stamped on.
      * One owner: the plugin sets it, the stats export it (roiWallCycles,
      * roiWallSource), the DRAM replay closes its window at its end. */
     struct {
@@ -651,6 +655,7 @@ struct GlobSimInfo {
         uint64_t beginStamp = 0, endStamp = 0;   // source 1, phase-clock cycles
         uint64_t mpiEnd = 0;                     // source 2 and 3, ROI-relative cycles
         uint32_t mpiEndFreqMHz = 0;              // 1.12.18 (R2): the clock mpiEnd is counted in (the rank cores'); 0 = the device's
+        uint64_t balance = 0;                    // (1.12.189): cycles the DRAM balance no barrier applied added to mpiEnd
         uint64_t cycles() const {
             if (!ended) return 0;
             if (source == 2 || source == 3) return mpiEnd;   // 1.12.18: 3 = single-process cut (ruling 2026-10-24 (a))

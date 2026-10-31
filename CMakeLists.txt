@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.12.188 LANGUAGES CXX)
+project(PIMID VERSION 1.12.189 LANGUAGES CXX)
 
 # (1.12.135): PIMID's pinned guest system libraries (src/main.cpp guestSysroot, docs/build.md "Guest libraries").
 option(PIMID_FETCH_GUEST_SYSROOT "Download PIMID's pinned guest libraries (Ubuntu 24.04 packages, sha256-checked) at configure time" ON)

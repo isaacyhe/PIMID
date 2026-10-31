@@ -88,6 +88,24 @@ class HostFabric : public GlobAlloc {
             wireStreams = new NocWireData::Stream[numStops];
         }
 
+        /* The round trip (cycles) of a GET between a core's stop and a slice's, over cores x slices as the hash spreads the
+         * lines: its minimum and its mean, what the fabric adds to an L3 access at the least and on average. The L3's latency is
+         * a measured load-to-use that already includes the mean (sys.hostNetwork.l3Comp): the port takes the minimum out of
+         * every access (so the response never comes back earlier than the cache's own) and the cache takes the difference
+         * between the mean and the minimum out of its latency. */
+        void sliceRt(uint32_t& mn, uint32_t& mean) const {
+            if (mode == CROSSBAR) { mn = mean = hopCycles; return; }
+            if (mode == BUS) { mn = mean = 1 + beats; return; }
+            double sum = 0.0; uint32_t m = ~0u;
+            for (uint32_t c = 0; c < cores; c++)
+                for (uint32_t s = 0; s < slices; s++) {
+                    const uint32_t d = 2 * dist(coreStop[c], coreStop[(uint64_t)s * cores / slices]);
+                    sum += d; m = std::min(m, d);
+                }
+            mn = (m == ~0u) ? 0 : m;
+            mean = (uint32_t)(sum / ((double)cores * slices) + 0.5);
+        }
+
         Mode getMode() const { return mode; }
         uint32_t stops() const { return numStops; }
 
@@ -102,11 +120,11 @@ class HostFabric : public GlobAlloc {
 
         /* Extra latency of one fabric access between two stops, and its
          * counts. PUTS (clean writeback) is not a real access. */
-        uint64_t charge(uint32_t a, uint32_t b, const MemReq& req) {
-            if (req.type == PUTS) return 0;
+        uint64_t charge(uint32_t a, uint32_t b, const MemReq& req, bool cleanCarriesLine = false) {
+            if (req.type == PUTS && !cleanCarriesLine) return 0;
             const bool get = (req.type == GETS || req.type == GETX);
             profReqMsgs.atomicInc();
-            profDataMsgs.atomicInc();   // a GET is answered with a line; a PUTX carries one
+            profDataMsgs.atomicInc();   // a GET is answered with a line; a PUTX carries one, and so does a PUTS to a non-inclusive L3
             /* the line on the data path, on the SENDER's stream (a GET's line comes
              * back from b, a PUTX's goes from a). */
             wire.countLine(wireStreams[(get ? b : a) % numStops], req.lineAddr << lineBits, 1u << lineBits);   // its own event: a fabric hop is not a DRAM access
@@ -144,7 +162,7 @@ class HostFabric : public GlobAlloc {
             statsDone = true;
             AggregateStat* s = new AggregateStat();
             s->init("hostFabric", "Host on-chip fabric (1.12.23): ring | crossbar | bus");
-            profDataMsgs.init("hostFabDataMsgs", "Fabric messages carrying one cache line (GET responses, dirty writebacks)"); s->append(&profDataMsgs);
+            profDataMsgs.init("hostFabDataMsgs", "Fabric messages carrying one cache line (GET responses, writebacks)"); s->append(&profDataMsgs);
             profDataHops.init("hostFabDataHops", "Sum of the data messages' hops (ring: stops travelled; crossbar: 1 each; bus: 0)"); s->append(&profDataHops);
             profReqMsgs.init("hostFabReqMsgs", "Fabric accesses (one command each)"); s->append(&profReqMsgs);
             profBusWait.init("hostFabBusWait", "Bus: cycles accesses waited for the bus"); s->append(&profBusWait);
@@ -164,10 +182,13 @@ class HostFabricPort : public MemObject {
         MemObject* next;
         bool memSide;
         uint32_t core;
+        uint32_t comp;   // cycles taken out of a GET's fabric latency (the shortest round trip: the L3's latency holds the mean)
+        bool cleanLines;   // an L2's port to a non-inclusive L3: a clean eviction carries its line (the L3 keeps it)
         g_string name;
     public:
-        HostFabricPort(HostFabric* _fab, MemObject* _next, bool _memSide, uint32_t _core, const char* _name)
-            : fab(_fab), next(_next), memSide(_memSide), core(_core), name(_name) {}
+        HostFabricPort(HostFabric* _fab, MemObject* _next, bool _memSide, uint32_t _core, const char* _name, uint32_t _comp = 0,
+                       bool _cleanLines = false)
+            : fab(_fab), next(_next), memSide(_memSide), core(_core), comp(_comp), cleanLines(_cleanLines), name(_name) {}
 
         uint64_t access(MemReq& req) {
             const Address line = req.lineAddr;
@@ -180,7 +201,9 @@ class HostFabricPort : public MemObject {
                 a = fab->coreStopOf(core);
                 b = fab->sliceStop(line);
             }
-            return resp + fab->charge(a, b, req);
+            const uint64_t ch = fab->charge(a, b, req, cleanLines);
+            if (comp && (req.type == GETS || req.type == GETX)) return resp + (ch > comp ? ch - comp : 0);
+            return resp + ch;
         }
 
         const char* getName() { return name.c_str(); }

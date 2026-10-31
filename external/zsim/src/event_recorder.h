@@ -41,6 +41,7 @@ struct TimingRecord {
     AccessType type;
     TimingEvent* startEvent;
     TimingEvent* endEvent;
+    bool side = false;   // a hardware prefetcher's side request: the core does not wait for it
 
     bool isValid() const { return startEvent; }
     void clear() { startEvent = nullptr; }

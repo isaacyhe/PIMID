@@ -107,10 +107,18 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
      * controller is not split. */
     const Address gLine = globalLine(req.lineAddr);
     if (hostReplay && req.type != PUTS) {
+        DramEpochReplay::setHostPrefetch(req.is(MemReq::PF_TRAFFIC));   // the record is a prefetch: no core waits for it
         const uint32_t v = hostReplay->hostAccess(hostReplayMi, gLine, req.cycle, req.srcId, req.type == PUTX);
+        DramEpochReplay::setHostPrefetch(false);
         if (v > 0) {
-            lat = hostPathCycles + v;
+            lat = hostPathCycles + hostReplay->chargeLast(v, false);   // (1.12.189): a refund lowers it
             if (byReplay) *byReplay = true;
+        } else {
+            /* (1.12.189): the analytical bootstrap's DRAM part (beyond the host-path adder) is recorded as the access's
+             * charge, so it is reconciled like a replay-priced one */
+            const uint32_t d = (lat > hostPathCycles) ? lat - hostPathCycles : 0;
+            const uint32_t base = lat - d;
+            lat = base + hostReplay->chargeLast(d, true, (refundFloor > base) ? refundFloor - base : 0);
         }
     }
 
@@ -136,6 +144,7 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
             profReads.atomicInc();
             dqStats.count(gLine, lineBits, false);
             profTotalRdLat.atomicInc(lat);   // 1.12.18: the latency charged
+            if (req.is(MemReq::PF_TRAFFIC)) { profPfReads.atomicInc(); profTotalPfLat.atomicInc(lat); }
             __sync_fetch_and_add(&curPhaseAccesses, 1);
             zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);  // 1.11.8 PG residency
             *req.state = req.is(MemReq::NOEXCL)? S : E;

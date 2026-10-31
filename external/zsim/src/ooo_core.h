@@ -205,8 +205,10 @@ class WindowStructure {
         uint32_t curPos;
 
         uint8_t lastPort;
+        uint32_t wsz = WSZ;   // entries in use (<= WSZ)
 
     public:
+        void setSize(uint32_t n) { wsz = n; }
         WindowStructure() {
             curWin = gm_calloc<WinCycle>(H);
             nextWin = gm_calloc<WinCycle>(H);
@@ -230,7 +232,7 @@ class WindowStructure {
                     extraSlotCycle++;
                 }
             }
-            assert(occupancy <= WSZ);
+            assert(occupancy <= wsz);
         }
 
         inline void advancePos(uint64_t& curCycle) {
@@ -292,7 +294,7 @@ class WindowStructure {
         template <bool touchOccupancy, bool recordPort>
         void scheduleInternal(uint64_t& curCycle, uint64_t& schedCycle, uint8_t portMask) {
             // If the window is full, advance curPos until it's not
-            while (touchOccupancy && occupancy == WSZ) {
+            while (touchOccupancy && occupancy >= wsz) {
                 advancePos(curCycle);
             }
 
@@ -380,9 +382,12 @@ class ReorderBuffer {
         uint64_t curRetireCycle;
         uint32_t curCycleRetires;
         uint32_t idx;
+        uint32_t sz;   // entries in use (<= SZ)
 
     public:
+        void setSize(uint32_t n) { sz = n; idx = 0; for (uint32_t i = 0; i < SZ; i++) buf[i] = 0; }
         ReorderBuffer() {
+            sz = SZ;
             for (uint32_t i = 0; i < SZ; i++) buf[i] = 0;
             idx = 0;
             curRetireCycle = 0;
@@ -413,7 +418,7 @@ class ReorderBuffer {
             }
 
             buf[idx++] = curRetireCycle;
-            if (idx == SZ) idx = 0;
+            if (idx == sz) idx = 0;
         }
 };
 
@@ -423,9 +428,12 @@ class CycleQueue {
     private:
         uint64_t buf[SZ];
         uint32_t idx;
+        uint32_t sz;   // entries in use (<= SZ)
 
     public:
+        void setSize(uint32_t n) { sz = n; idx = 0; for (uint32_t i = 0; i < SZ; i++) buf[i] = 0; }
         CycleQueue() {
+            sz = SZ;
             for (uint32_t i = 0; i < SZ; i++) buf[i] = 0;
             idx = 0;
         }
@@ -437,7 +445,7 @@ class CycleQueue {
         inline void markLeave(uint64_t leaveCycle) {
             //assert(buf[idx] <= leaveCycle);
             buf[idx++] = leaveCycle;
-            if (idx == SZ) idx = 0;
+            if (idx == sz) idx = 0;
         }
 };
 
@@ -481,8 +489,14 @@ class OOOCore : public Core {
         //buffers, but we split the associative component from the limited-size modeling.
         //NOTE: We do not model the 10-entry fill buffer here; the weave model should take care
         //to not overlap more than 10 misses.
-        ReorderBuffer<32, 4> loadQueue;
-        ReorderBuffer<32, 4> storeQueue;
+        ReorderBuffer<256, 4> loadQueue;    // 32 entries unless the core is sized otherwise (Sizes)
+        ReorderBuffer<256, 4> storeQueue;   // 32 entries unless the core is sized otherwise (Sizes)
+        /* the L1D fill buffers: a load or store that sends a line request to the next level holds one until the line
+         * arrives; with none configured (0) the core overlaps as many misses as its other queues allow */
+        CycleQueue<64> fillBuffers;
+        uint32_t fillBufferN;
+        uint32_t lqEntries_ = 0, sqEntries_ = 0;   // (1.12.189): the load / store queue sizes (memMissCapacity)
+        bool storesDrainAfterRetire;   // a store leaves the ROB at commit and the line is written from the store queue
 
         uint32_t curCycleRFReads; //for RF read stalls
         uint32_t curCycleIssuedUops; //for uop issue limits
@@ -491,8 +505,8 @@ class OOOCore : public Core {
         //WindowStructure<1024, 1 /*size*/, 2 /*width*/> insWindow; //this would be something like an Atom, except all the instruction pairing business...
 
         //Nehalem
-        WindowStructure<1024, 36 /*size*/> insWindow; //NOTE: IW width is implicitly determined by the decoder, which sets the port masks according to uop type
-        ReorderBuffer<128, 4> rob;
+        WindowStructure<1024, 255 /*size, at most*/> insWindow;   // 36 entries unless the core is sized otherwise (Sizes) //NOTE: IW width is implicitly determined by the decoder, which sets the port masks according to uop type
+        ReorderBuffer<512, 4> rob;   // 128 entries unless the core is sized otherwise (Sizes)
 
         // Agner's guide says it's a 2-level pred and BHSR is 18 bits, so this is the config that makes sense;
         // in practice, this is probably closer to the Pentium M's branch predictor, (see Uzelac and Milenkovic,
@@ -654,8 +668,13 @@ class OOOCore : public Core {
          * 1.12.0 (#50 (b)): _mispredPenalty is also the TOTAL mispredict
          * redirect cost (redirectGap); a value below the 9-cycle stage refill
          * is refused. */
+        /* The out-of-order window of the core (zsim keys robEntries, loadQueueEntries, storeQueueEntries, windowEntries,
+         * fillBuffers, storeBuffer): the defaults are the Westmere-class core this model began with (128 / 32 / 32 / 36,
+         * no fill-buffer limit, a store held in the ROB until its line is written); a host core is sized from the core
+         * record (ooo_host). */
+        struct Sizes { uint32_t rob = 128, lq = 32, sq = 32, window = 36, fillBuffers = 0; bool storeBuffer = false; };
         OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
-                uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle);
+                uint32_t _mispredPenalty, uint32_t _fetchBytesPerCycle, const Sizes& sizes);
 
         void initStats(AggregateStat* parentStat);
 
@@ -683,6 +702,10 @@ class OOOCore : public Core {
          * same rebase the weave end performs (advance), so the window and
          * decode cursor move together. Was the empty default. */
         void addDelay(uint32_t cycles) override;
+        /* (1.12.189): the record's L1D fill buffers, a line request holding one until the line arrives (host: Golden
+         * Cove 16; a processing element: Westmere 10); a core configured without a limit overlaps as many misses as
+         * its load and store queues hold */
+        uint32_t memMissCapacity() const override { return fillBufferN ? fillBufferN : lqEntries_ + sqEntries_; }
         /* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h:
          * the raw clock (global phase axis), advanced like addDelay. */
         uint32_t lockClockDomain() const override { return 1; }

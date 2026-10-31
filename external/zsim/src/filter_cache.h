@@ -142,7 +142,12 @@ class FilterCache : public Cache {
             }
         }
 
+        /* the accesses that missed the filter and went to the cache array: a core reads the count before and after an
+         * access to tell a line request to the next level from a hit in the filter (a line still on its way included) */
+        uint64_t nReplace = 0;
+        uint64_t replaceCount() const { return nReplace; }
         uint64_t replace(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {
+            nReplace++;
             Address pLineAddr = procMask | vLineAddr;
             MESIState dummyState = MESIState::I;
             futex_lock(&filterLock);

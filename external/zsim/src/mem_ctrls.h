@@ -58,6 +58,8 @@ class SimpleMemory : public MemObject {
         Counter profWrites;
         Counter profTotalRdLat;
         Counter profTotalWrLat;
+        Counter profPfReads;     // reads issued by a host core's L2 prefetcher (also in rd)
+        Counter profTotalPfLat;  // their latency (also in rdlat)
         Counter profLoad;
         Counter profUpdates;
         Counter profClampedLoads;
@@ -86,6 +88,9 @@ class SimpleMemory : public MemObject {
         DqDataStats dqStats;   // the data of every line this controller reads or writes back (user ruling 2026-10-25: measured termination duty)
         PAD();
 
+    protected:
+        uint32_t refundFloor = 0;   // (1.12.189): a bootstrap charge is not refunded below it (WeaveSimpleMemory: its zero-load latency)
+
     public:
         SimpleMemory(uint32_t lineSize, uint32_t megacyclesPerSecond, uint32_t megabytesPerSecond, uint32_t _zeroLoadLatency, g_string& _name);
         void setHostReplay(DramEpochReplay* r, uint32_t mi, uint32_t pathCycles) { hostReplay = r; hostReplayMi = mi; hostPathCycles = pathCycles; }
@@ -110,6 +115,8 @@ class SimpleMemory : public MemObject {
             profWrites.init("wr", "Write requests"); memStats->append(&profWrites);
             profTotalRdLat.init("rdlat", "Total latency experienced by read requests"); memStats->append(&profTotalRdLat);
             profTotalWrLat.init("wrlat", "Total latency experienced by write requests"); memStats->append(&profTotalWrLat);
+            profPfReads.init("pfrd", "Read requests issued by a hardware prefetcher (included in rd)"); memStats->append(&profPfReads);
+            profTotalPfLat.init("pfrdlat", "Total latency of the prefetcher's read requests (included in rdlat)"); memStats->append(&profTotalPfLat);
             profLoad.init("load", "Sum of load factors (0-100) per update"); memStats->append(&profLoad);
             profUpdates.init("ups", "Number of latency updates"); memStats->append(&profUpdates);
             profClampedLoads.init("clampedLoads", "Number of updates where the load was clamped to 95%"); memStats->append(&profClampedLoads);

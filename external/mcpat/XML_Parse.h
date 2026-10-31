@@ -802,6 +802,9 @@ typedef struct{
 	 * the components -- rather than by post-scaling the results outside
 	 * (model-borders rule). 0 = logic = untouched. */
 	int    dram_periph_family;      // 0 = logic (default), 1 = DRAM periphery
+	/* PIMID: the L3 described is one of this many identical slices (the last-level cache is priced as one slice and scaled by the
+	 * caller): the die a host ring's or crossbar's links span holds all of them. 1 = the L3 described is the whole cache. */
+	int    l3_replicated_slices;
 	/* PIMID 1.11.51 (N1): SUBARRAY pitch penalty independent of family --
 	 * consumed by the family-0 core-area path; the family-1 transform keeps
 	 * its dram_periph_pitch. Default 1.0. */

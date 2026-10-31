@@ -6,6 +6,110 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.189 -- the host is a Sapphire Rapids core: its window, caches, non-inclusive L3 and L2 prefetchers; the DRAM replay is closed-loop and each core pays the latency its own accesses measure
+
+- **The problem.** The host core was the Westmere-class window the simulator was validated on (128-entry ROB, 32-entry
+  load and store queues, no limit on the L1D misses in flight, a store held in the ROB until its line was written), with
+  Westmere-era caches charged CACTI's array times (a load that hit the L2 measured 2 cycles and one that hit the L3 8,
+  against about 16 and 66 on the Sapphire Rapids core the host stands for) and no hardware prefetcher. In cut mode
+  (message passing and the single-process cut) the DRAM replay fed every record at its stamp and charged each access the
+  mean latency of an epoch two back, whatever its core had paid: the records of 16 memory-bound host cores queued without
+  bound and were charged 0.17 to 0.47 of the latency the replay measured, and a device run on a saturated placement was
+  charged 0.02 to 0.16 of it. A message-passing host rank stamped its records on its own clock, which stops while it waits,
+  so a rank that had waited fell behind the replay clock.
+- **The host core** (core record `ooo_host`; external/zsim ooo_core.{h,cpp}, filter_cache.h, init.cpp; src/main.cpp; the
+  McPAT wrapper). A host `ooo_core` is sized as Intel Golden Cove, the core of the 4th Gen Xeon Scalable: 512-entry ROB
+  (Chips and Cheese, "Popping the Hood on Golden Cove"), 192-entry load queue and 114-entry store queue (Chips and Cheese;
+  WikiChip), a 160-entry scheduler (Sunny Cove's, WikiChip; Intel does not publish Golden Cove's) and 16 L1D fill buffers
+  (AnandTech, Golden Cove). A line request to the next level holds a fill buffer until the line arrives; a store commits
+  and leaves the ROB, its queue entry held until the line is written. McPAT prices the core with the same sizes. The old
+  host is the record set to 128 / 32 / 32 / 36 / 0 (no fill-buffer limit) / false and runs as before. The zsim global heap
+  is 1 GB (was 256 MB).
+- **The host caches** (cache record `params/cache/default.yaml`, `host` section; src/main.cpp; external/zsim host_fabric.h,
+  cache.h, ninc_cache.{h,cpp}, init.cpp, ooo_core_recorder.cpp; external/mcpat; the McPAT wrapper;
+  scripts/check-host-cache-defaults.py). A host takes the Golden Cove caches unless its configuration gives its own: L1D
+  48 KB 12-way, 5 cycles (Intel 64 and IA-32 Architectures Optimization Reference Manual 248966-050, Table 2-9; Chips and
+  Cheese, "Going Armchair Quarterback on Golden Cove's Caches"); L1I 32 KB 8-way; L2 2 MB 16-way, 16 cycles; L3 one
+  1.875 MB slice per core, 15-way, 33 ns, shared (Chips and Cheese, "Sapphire Rapids: Golden Cove Hits Servers"). The
+  latencies are load-to-use: each cache charges the part beyond the level above, the host fabric's mean round trip is
+  taken out of the L3's, and the memory's host-path adder falls by the same 33 ns. The L3 is non-inclusive, as on the part
+  (Intel, Hot Chips 29, 2017, "Inclusive vs Non-Inclusive L3"): a line read from memory fills the L2 only, an L2 eviction
+  is written into the L3, a line read while another core holds it is also kept there; a snoop filter sized by what the
+  L2s hold keeps the cores coherent without invalidating an L2 to make room (`system.hosts[].cache.l3_inclusion` chooses;
+  zsim's own non-inclusive mode, which stopped the weave phase on a write-back record that came without a demand record,
+  is refused on a cache with more than one child, and the core now starts such a record at its own cycle). The L3 is
+  settable: omitted (cores x 1.875 MB), an explicit total `l3_kb`, or `l3: none`. McPAT prices the same arrays (CACTI
+  builds power-of-two associativities: the 12- and 15-way arrays are priced as 16-way at the same capacity); every line
+  written into the L3 is an L3 write. The old host is the cache block of docs/cores.md with `l3_inclusion: inclusive`.
+- **The host L2 prefetchers** (core record `host_prefetch`; external/zsim). An L2 streamer and a spatial prefetcher sit
+  between a host core's L1D and its L2: 32 streams, one forward and one backward per 4 KB page, up to two prefetches per L2
+  lookup, up to 20 lines ahead (Intel 64 and IA-32 Architectures Optimization Reference Manual, 248966-048, p. 2-17), the
+  pair line of every line fetched into the L2, and a 48-entry L2 superqueue that every L2 miss, demand or prefetch, holds
+  until its line arrives (Golden Cove). A prefetch's request is timed and replayed like a demand miss and counts in the
+  memory statistics and in power (`pfrd`, `pfrdlat`), but no core waits for it; a request that finds its line still in
+  flight waits for the line and is settled against the arrival the replay measured.
+- **The closed-loop DRAM replay** (external/zsim/src/dram_epoch_replay.{h,cpp}, pe_memory_interface.h,
+  mem_ctrls.{h,cpp}, weave_md1_mem.h, core.h, ooo_core.{h,cpp}, alu_core.cpp, qemu_zsim_plugin.cpp, init.cpp, zsim.h;
+  src/main.cpp, src/params/part_records.cpp, params/core/default.yaml).
+  - A blocking core (ALU, in-order) has one access in flight: its next access reaches the controller at its stamp + the
+    balance it has not paid yet, no earlier than its previous access's completion + the core's own time between the two
+    (the first access after a message-passing wait: at its stamp + balance). An out-of-order core has one L1D fill buffer
+    per line miss in flight: the host core's 16, a processing element's 10 (new core record value `ooo.l1d_fill_buffers`:
+    Nehalem / Westmere, Intel 64 and IA-32 Architectures Optimization Reference Manual 248966-025, Table 2-7 and sec.
+    2.3.5; the timing core uses it too). A scratchpad DMA transfer's lines go at the engine's pace from its first line.
+  - Every access a core waits for (a read; a store, until the controller takes it into its write queue) adds measured -
+    charged to its core's balance (an out-of-order core's divided by the overlap of its accesses in the epoch; a DMA
+    transfer once, by its last line). At the phase barrier a positive balance is added to the core's clock; a negative one
+    is refunded from the core's later charges, never below zero. A rank entering a message-passing operation settles its
+    balance first.
+  - The price window weighs each epoch by its request count and prices three kinds apart: a read a core waits for, a write
+    (at the time the controller takes it), a prefetch's read. A mean below one cycle is priced at one cycle.
+  - The run time covers what no barrier applied: each core ends no earlier than its end + its balance, nor than the
+    completion of its last access it waited for (a blocking core: + its own time after it, unless it waited after it).
+    The replay statistics report the reconciliation (`reconciledAccesses`, `reconciledCycles`, `reconcileRefunds`,
+    `reconcilePending`, `reconcilePendingMax`, `reconciledCharged`, `ctrlRoiTailTicks`, `ctrlRoiDrainTicks`); zsim reports
+    `roiWallBalanceCycles`.
+  - The single-process fold point is monotone: an in-order or out-of-order core woken by a core whose ROI-relative clock is
+    ahead of its own wall-free clock takes that clock through a signed origin (it was clamped at zero, and the woken core
+    resumed behind the epochs already folded: 16-core DDR5 OpenMP stencil_2d, 2.5 M records into replayed epochs), and the
+    fold point is held at the latest point folded.
+- **Message passing on the host cores** (external/zsim/src/dram_epoch_replay.{h,cpp}, qemu_zsim_plugin.cpp, zsim.h,
+  init.cpp; src/main.cpp). A thread-MPI host core's records are stamped on the ROI-relative phase grid -- the phases since
+  the ROI baseline, plus the core's offset in its phase -- the axis the shared-memory replay uses; a host read takes the
+  epoch two back. A no-offload run folds its DRAM epochs at the grid, and its run time (roiWallSource 2) is the global phase
+  clock from the first ROI barrier to the last rank's arrival at the closing barrier, so the run time and the replay
+  window share one axis.
+- **Validation** (full size, this build against the previous version in one job; 45 host and co-sim baselines, 8 device
+  cells, 159 device and 45 host / co-sim smoke cells). Checksums equal in every cell; every run ends normally (the four
+  fig2 bfs smoke cells that refuse their data preparation refuse it in both builds). The determinism cells (5) are
+  identical, and so is a repeat on another node type (4 cells). The power checks report no consistency failure; with the
+  reconciliation on, the charged / measured host read latency is 0.86 to 1.06. Device-only cells do not depend on the host
+  changes (the device smoke set is identical with and without them).
+- **Data impact** (run time, full size, against the previous version).
+
+| cells | change |
+|---|---|
+| host, 1 core (DDR5 gemv, stream_triad) | -83 %, -84 % |
+| host, 4 cores (DDR5; OpenMP and MPI) | gemv -82 %, histogram -87 %, stencil_2d -82 %, stream_triad -73 % to -75 %, MPI bfs -3 %, OpenMP bfs +146 % |
+| host, 16 cores (DDR5; MPI / OpenMP) | gemv -74 % / -73 %, histogram -74 % / -77 %, stencil_2d -67 % / -71 %, stream_triad -46 % / -58 %, bfs +5 % / +112 % |
+| host, 16 cores (HBM3) | OpenMP gemv -90 %, stream_triad -89 %, MPI bfs -31 % |
+| co-simulation (host part and device) | MPI bfs -28 % to -33 %, HBM3 OpenMP bfs -37 %, HBM3 MPI stream_triad -7 %, others -3 % to +2 % |
+| device message-passing bfs | CHANNEL -52 %, LOGIC_DIE -46 %, BANK -15 %, IO +1 %, out-of-order PEs -3 % |
+| device stream_triad | -1 % to -4 % |
+| device OpenMP stencil_2d, out-of-order PEs | +37 % |
+| device smoke cells | median -10 % (-64 % to +16 %) |
+
+  The host's bfs is a chain of dependent loads that now wait 16 and 66 cycles at the L2 and L3 instead of 2 and 8. The
+  device out-of-order stencil_2d reported 72.5 M cycles against 96.7 M on its own global phase clock: its woken cores
+  resumed behind their wakers (the signed origin above); both are 99.2 M now. Host power, 16 cores: 37.8 to 52.4 W (was
+  38.1 to 40.2 W), a shorter run for a similar or larger energy; four cores 33.4 to 37.2 W (33.6 to 34.1 W). Co-simulation
+  and device power move by less than 0.3 W. Simulation time: most one-core, HBM3 and co-simulation cells and the device
+  out-of-order stencil_2d run faster (up to 3.6 times); the 4- and 16-core DDR5 cells take up to 2.0 times longer.
+- **Limits.** A one-core DDR5 stream_triad writes its dirty lines back later through the non-inclusive L3 and they meet
+  the reads in other rows. The L2 and L3 have no MSHR limit of their own: the lines a core has in flight are limited by its
+  16 fill buffers and the 48-entry superqueue. A message-passing rank that keeps an over-charge into a rendezvous still
+  sets its partners' release (the remaining spread of the saturated device bfs cells).
+
 ## 1.12.188 -- Message passing on device PEs: the ranks stay within the read lag
 
 - **The problem.** A thread-MPI rank on a device PE prices its DRAM and NoC accesses from the epoch two back on its

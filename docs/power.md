@@ -351,7 +351,8 @@ messages are not priced on the ring and the crossbar (a lower bound); a
 2 x sqrt(host die area) / stops, the loop of the Nehalem-EX floorplan (two
 columns of core/LLC-slice rows, the rings through the slice columns; Rusu,
 ISSCC 2009 / JSSC 2010) on a square die (the stop spacing in mm
-computed from it); McPAT's upstream 2-D mesh formula gave half of it.
+computed from it; the die area counts every slice of a last-level cache priced as replicated slices, as in a host
+of more than 34 cores); McPAT's upstream 2-D mesh formula gave half of it.
 
 PIMID 1.12.150, device NoC routers and flat fabrics (user rulings
 2026-10-28): a device fabric Garnet built flat (an SRAM or NVM device's
@@ -572,6 +573,11 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   clock rises (1.12.154): `<host>.uncore_load`, 0.31 W per MB of host L3 at the
   raised clock (Gholkar et al., SC19) x the busiest host core's running
   fraction, less the uncore clock networks McPAT already prices.
+- **Host L3 writes.** A non-inclusive host L3 (the default) writes every line
+  it takes: the L2s' evictions, clean and dirty, and the copies of lines shared
+  across cores (the L3's `fill` counter). They are priced as L3 writes, with the
+  write requests, and the host fabric carries a clean eviction's line as it
+  carries a dirty one. The snoop filter (tags only) is not priced.
 - **Outside the simulated chips.** Voltage-regulator and power-supply
   conversion loss, the board and cooling are not modelled; no total includes
   them.
@@ -628,5 +634,6 @@ a shared-memory run, and since 1.12.126 the ranks of a thread-MPI run, take
 their turns in a fixed order, so multi-threaded timing is the same in every
 run (see [architecture.md](architecture.md#reproducibility)). The run time and every time-based power term use
 the ROI's elapsed wall-clock time, the latest ROI end on the cores' own
-clocks. See [network.md](network.md) and the YAML reference
+clocks; for message-passing ranks on the host cores (a no-offload baseline),
+the global phase clock from the first ROI barrier to the last rank's arrival at the closing barrier. See [network.md](network.md) and the YAML reference
 (`simulation.det_epoch_phases`).

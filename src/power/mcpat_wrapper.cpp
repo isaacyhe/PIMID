@@ -28,6 +28,22 @@
 
 namespace pimid {
 
+/* CACTI builds only power-of-two associativities. A 12-way or 15-way cache (the host core's L1D and last-level slice) is
+ * priced at the next power of two with the same capacity; the run says so once per level. */
+static int pricedWays(const char* level, int ways) {
+    if (ways < 1 || (ways & (ways - 1)) == 0) return ways;
+    int p = 1; while (p < ways) p *= 2;
+    static std::vector<std::string> told;
+    const std::string key = std::string(level) + std::to_string(ways);
+    if (std::find(told.begin(), told.end(), key) == told.end()) {
+        told.push_back(key);
+        std::cout << "  [power] " << level << ": CACTI builds power-of-two associativities; the " << ways << "-way array is priced as " << p
+                  << "-way with the same capacity" << std::endl;
+    }
+    return p;
+}
+
+
 //=============================================================================
 // McPATWrapper Implementation
 //=============================================================================
@@ -1323,6 +1339,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.fu_area_published ? 1 : 0);                                          // 1.12.19
     f(config_.tlb_published_geometry ? 1 : 0);                                     // 1.12.18
     f(config_.layout_energy_overhead ? 1 : 0);                                     // 1.12.18 (ruling 2026-10-24)
+    f(config_.rob_entries); f(config_.window_entries); f(config_.load_buffer_entries); f(config_.store_buffer_entries);
     f(config_.itlb_entries); f(config_.dtlb_entries); f(config_.tlb_assoc); f(config_.stlb_entries);
     f(config_.fu_base_energy ? 1 : 0); f(config_.fpu_published ? 1 : 0); f(config_.frontend_from_timing ? 1 : 0);
     f(config_.sharer_bits_from_children ? 1 : 0);   // 1.12.18
@@ -2836,8 +2853,8 @@ std::string McPATWrapper::generateXMLConfig() const {
      *     any of the fork's reference XMLs (Xeon.xml:98 and Penryn.xml:99
      *     give 256, Alpha21364.xml:97 gives 80), so it is an unsourced
      *     stand-in, kept rather than re-chosen here. */
-    int rob_size = is_ooo ? 128 : 0;
-    int inst_window_size = is_ooo ? 36 : 0;
+    int rob_size = is_ooo ? config_.rob_entries : 0;
+    int inst_window_size = is_ooo ? config_.window_entries : 0;
     int fp_inst_window_size = is_ooo ? 32 : 0;
     int phy_regs_irf = is_ooo ? 180 : 32;
     int phy_regs_frf = is_ooo ? 180 : 32;
@@ -2854,8 +2871,8 @@ std::string McPATWrapper::generateXMLConfig() const {
     // the inorder/ALU device XML stays byte-identical (those profiles never
     // build the FP issue queue, so they neither need nor previously emitted it).
     int fp_issue_width = is_ooo ? 2 : 0;
-    int store_buffer = is_ooo ? 32 : 4;
-    int load_buffer = is_ooo ? 32 : 4;
+    int store_buffer = is_ooo ? config_.store_buffer_entries : 4;
+    int load_buffer = is_ooo ? config_.load_buffer_entries : 4;
     int num_alus = config_.num_alus;
     int num_muls = config_.num_muls;
     int num_fpus = config_.num_fpus;
@@ -2949,6 +2966,7 @@ std::string McPATWrapper::generateXMLConfig() const {
      * own line instead of inside "Cores". */
     xml << "    <param name=\"Private_L2\" value=\"0\"/>\n";
     xml << "    <param name=\"number_of_L3s\" value=\"" << num_l3s << "\"/>\n";
+    xml << "    <param name=\"l3_replicated_slices\" value=\"" << (config_.l3_replicated_slices > 1 ? config_.l3_replicated_slices : 1) << "\"/>\n";
     xml << "    <param name=\"number_of_NoCs\" value=\"" << num_nocs << "\"/>\n";
     xml << "    <param name=\"homogeneous_cores\" value=\"1\"/>\n";
     xml << "    <param name=\"homogeneous_L2s\" value=\"" << (num_l2s > 0 ? 1 : 0) << "\"/>\n";
@@ -3865,7 +3883,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             }
             xml << "      <component id=\"system.core" << i << ".icache\" name=\"icache\">\n";
             xml << "        <param name=\"icache_config\" value=\"" << config_.l1i_size_bytes
-                << "," << config_.cache_line_bytes << "," << config_.l1i_ways << "," << config_.l1i_banks
+                << "," << config_.cache_line_bytes << "," << pricedWays("L1I", config_.l1i_ways) << "," << config_.l1i_banks
                 << ",1," << config_.l1i_latency_cycles << "," << l1i_out_bytes << ",0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
             xml << "        <param name=\"buffer_sizes\" value=\"16,16,16,0\"/>\n";
             xml << "        <stat name=\"read_accesses\" value=\"" << l1i_reads_all << "\"/>\n";
@@ -3880,7 +3898,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             uint64_t l1d_wmisses_all = l1d_write_misses_;
             xml << "      <component id=\"system.core" << i << ".dcache\" name=\"dcache\">\n";
             xml << "        <param name=\"dcache_config\" value=\"" << config_.l1d_size_bytes
-                << "," << config_.cache_line_bytes << "," << config_.l1d_ways << "," << config_.l1d_banks
+                << "," << config_.cache_line_bytes << "," << pricedWays("L1D", config_.l1d_ways) << "," << config_.l1d_banks
                 << ",1," << config_.l1d_latency_cycles << "," << (config_.l1d_access_width ? 16 : 64)
                 << ",0\"/>\n";   /* 1.11.95: size,line,assoc,banks,throughput,latency,output,policy */
             /* PIMID 1.12.18: (user ruling 2026-10-23 #6) output = the
@@ -4048,7 +4066,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             uint64_t l2_wmisses_per = l2_write_misses_ / nl2;
             xml << "    <component id=\"system.L2" << i << "\" name=\"L2" << i << "\">\n";
             xml << "      <param name=\"L2_config\" value=\"" << config_.l2_size_bytes
-                << "," << config_.cache_line_bytes << "," << config_.l2_ways << "," << config_.l2_banks
+                << "," << config_.cache_line_bytes << "," << pricedWays("L2", config_.l2_ways) << "," << config_.l2_banks
                 << ",8," << config_.l2_latency_cycles << ",64,1\"/>\n";   /* 1.11.95: assoc/banks/latency from the run */
             xml << "      <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
             xml << "      <param name=\"clockrate\" value=\"" << static_cast<int>(config_.core_clock_mhz) << "\"/>\n";
@@ -4171,7 +4189,7 @@ std::string McPATWrapper::generateXMLConfig() const {
         // "32-byte" array and CACTI's ArrayST::error_checking() rejected the geometry
         // (the standalone-L3 failure that forced host LLC to be literature-anchored).
         xml << "      <param name=\"L3_config\" value=\"" << config_.l3_size_bytes
-            << "," << config_.cache_line_bytes << "," << config_.l3_ways << "," << config_.l3_banks
+            << "," << config_.cache_line_bytes << "," << pricedWays("L3", config_.l3_ways) << "," << config_.l3_banks
             << ",16," << config_.l3_latency_cycles << ",64,1\"/>\n";   /* 1.11.95: assoc/banks/latency from the run */
         xml << "      <param name=\"clockrate\" value=\"" << static_cast<int>(config_.core_clock_mhz) << "\"/>\n";
         xml << "      <param name=\"ports\" value=\"1,1,1\"/>\n";

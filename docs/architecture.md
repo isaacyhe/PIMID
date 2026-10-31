@@ -216,7 +216,10 @@ type Ramulator such as the `HOST_MC` placement's -- is a replayed controller
 charged in the bound phase; no memory controller is timed in the weave phase
 (see [memory.md](memory.md)). Message-passing ranks
 use the same mechanism and also meet at their rendezvous. The run time is the
-ROI's elapsed wall-clock time, the latest ROI end on the cores' own clocks.
+ROI's elapsed wall-clock time, the latest ROI end on the cores' own clocks;
+for message-passing ranks that run on the host cores (a no-offload baseline)
+it is the global phase clock from the first ROI barrier to the last rank's arrival at the closing barrier,
+the axis their DRAM records are stamped on.
 Since (1.12.76) a guest thread's identity is its QEMU vCPU index (the guest's own
 thread-creation order), its host/device domain is read by its parent at the
 clone, it runs on a fixed home core of its domain (core vcpu mod n, as libgomp

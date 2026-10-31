@@ -258,8 +258,16 @@ void OOOCoreRecorder::recordAccess(uint64_t curCycle, uint64_t dispatchCycle, ui
     } else {
         //info("Handling PUT: curCycle %ld", curCycle);
         assert(IsPut(tr.type));
+        // a prefetcher's side request (no demand record with it): an issue event at curCycle first, so the request
+        // starts at its own cycle and not at the core's last issue event (a write-back with no demand record gets one below)
+        if (tr.side) addIssueEvent(curCycle);
 
         //Link request
+        /* The delay below counts from curCycle, so the event it hangs from must be at curCycle. A writeback with no demand
+         * record (a non-inclusive last-level cache writing back the victim of an L2 eviction while the demand hit on chip)
+         * comes after the core's last issue event, which can be hundreds of cycles older: hung from it, the writeback's
+         * events would start before their own cycle (timing_event.h, startCycle < minStartCycle). */
+        if (lastEvProduced->zllStartCycle != curCycle - gapCycles) addIssueEvent(curCycle);
         DelayEvent* putUp = new (eventRecorder) DelayEvent(tr.reqCycle-curCycle);
         putUp->setMinStartCycle(curCycle);
         lastEvProduced->addChild(putUp, eventRecorder)->addChild(tr.startEvent, eventRecorder);

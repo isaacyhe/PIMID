@@ -97,6 +97,7 @@ struct MemReq {
         NONINCLWB     = (1<<3), //This is a non-inclusive writeback. Do not assume that the line was in the lower level. Used on NUCA (BankDir).
         PUTX_KEEPEXCL = (1<<4), //Non-relinquishing PUTX. On a PUTX, maintain the requestor's E state instead of removing the sharer (i.e., this is a pure writeback)
         PREFETCH      = (1<<5), //Prefetch GETS access. Only set at level where prefetch is issued; handled early in MESICC
+        PF_TRAFFIC    = (1<<6), //Issued by a hardware prefetcher; unlike PREFETCH it propagates to every level (the memory controller counts it)
     };
     uint32_t flags;
 
@@ -126,6 +127,7 @@ class MemObject : public GlobAlloc {
         virtual uint64_t access(MemReq& req) = 0;
         virtual void initStats(AggregateStat* parentStat) {}
         virtual const char* getName() = 0;
+        virtual uint32_t getAccessLatency() const { return 0; }   // a cache's access latency (an L2 prefetcher tells a hit from a miss by it)
 };
 
 // Forward declarations for type checking without RTTI

@@ -88,6 +88,7 @@ void ParseXML::parse(char* filepath)
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"power_gating")==0) {sys.power_gating=(bool)atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		/* PIMID 1.11.12: DRAM-periphery device family */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"dram_periph_family")==0) {sys.dram_periph_family=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"l3_replicated_slices")==0) {sys.l3_replicated_slices=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"core_pitch_factor")==0) {sys.core_pitch_factor=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.11.51 (N1) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"dram_periph_gate_leak")==0) {sys.dram_periph_gate_leak=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.11.54 (E004) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"dram_periph_area")==0) {sys.dram_periph_area=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
@@ -1987,6 +1988,7 @@ void ParseXML::initialize() //Initialize all
 	/* PIMID 1.11.12: family off by default -- an unmodified XML prices in
 	 * logic exactly as before. */
 	sys.dram_periph_family=0; sys.dram_periph_area=1.0;
+	sys.l3_replicated_slices=1;
 	sys.core_pitch_factor=1.0;   /* PIMID 1.11.51 (N1) */
 	sys.pimid_clock_network=1;   /* PIMID 1.12.18: the clock network is priced unless the input says otherwise */
 	sys.pimid_layout_energy_overhead=1; pimid_layout_energy_overhead_g=1;   /* PIMID 1.12.18 (ruling 2026-10-24): upstream unless the input says otherwise */

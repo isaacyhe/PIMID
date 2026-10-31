@@ -225,6 +225,14 @@ std::string describeDramPartRecord(const DramPartRecord& rec);
 /* 1.11.95: the cache part record (params/cache/default.yaml): the geometry
  * every cache level is built and priced with. banks < 0 = the slice rule. */
 struct CacheLevelRecord { int ways = -1; int line_bytes = -1; int banks = -1; };
+/* The caches of a HOST core (cache record section `host`): size and associativity of each level, and the load-to-use
+ * latency a load measures when it hits there (L1D, L2 in core cycles; the shared last-level cache in ns). The last-level
+ * cache is shared and has one slice of `kb` per core of the host. */
+struct HostCacheLevelRecord { int kb = -1; int ways = -1; int cycles = -1; double ns = -1.0; int slices = 1; };
+struct HostCacheRecord {
+    HostCacheLevelRecord l1d, l1i, l2, l3;
+    bool l3_non_inclusive = false;   // host.l3.inclusion: non-inclusive (the L2s' evictions fill it) or inclusive
+};
 struct CacheRecord {
     std::string file, record;
     int slice_mb = 2;
@@ -236,6 +244,7 @@ struct CacheRecord {
     int max_slices = 32;
     int home_hop_cycles = 2;
     CacheLevelRecord l1d, l1i, l2, l3;
+    HostCacheRecord host;   // the host core's caches (the levels above are every other cache: a processing element's)
     const CacheLevelRecord& level(const std::string& name) const;   // "l1d" | "l1i" | "l2" | "l3"
 };
 /* Loads params/cache/default.yaml (PIMID_PARAMS honoured); false + error on a
@@ -255,6 +264,7 @@ struct CoreTypeRecord {
     int resteer_penalty_cycles = -1;      // BTB/RAS target resteer, decode depth (in_order)
     int fetch_width_bytes = -1;           // fetch bytes per cycle: ooo wrong-path step; both: a PE's instruction-cache read width (1.12.71)
     int retire_width = -1;                // commit width McPAT prices; in_order: -1 = issue width
+    int l1d_fill_buffers = -1;            // (1.12.189) ooo: a processing element's L1D fill buffers (-1: not carried)
     /* 1.12.1 (ticket #114): the in-order element's branch predictor, "pag" |
      * "none" (in_order only; ooo always runs its PAg). A config sets it per
      * element (pim.pe.branch_predictor, devices[].pim.pe.branch_predictor,
@@ -266,9 +276,24 @@ struct CoreTypeRecord {
     int itlb_entries = -1, itlb_large_entries = -1, dtlb_entries = -1, dtlb_large_entries = -1;
     int tlb_associativity = -1, stlb_entries = -1;
 };
+/* The out-of-order window of a HOST core (ooo_host): reorder buffer, load and store queues, scheduler and L1D fill
+ * buffers of the server core the host stands for, and whether a store leaves the ROB before its line is written.
+ * A processing element's out-of-order core keeps the timing core's own window. */
+struct HostOooRecord {
+    int rob_entries = -1, load_queue_entries = -1, store_queue_entries = -1, scheduler_entries = -1, l1d_fill_buffers = -1;
+    bool store_buffer = false;
+};
+/* The L2 hardware prefetchers of a HOST out-of-order core (host_prefetch): the streamer's stream count, distance and
+ * prefetches per L2 lookup, the spatial (pair-line) prefetcher, and the L2 superqueue that bounds the misses in flight. */
+struct HostPrefetchRecord {
+    bool l2_streamer = false, spatial = false;
+    int streams = -1, distance_lines = -1, prefetches_per_lookup = -1, superqueue_entries = -1;
+};
 struct CoreRecord {
     std::string file, record;
     CoreTypeRecord in_order, ooo;
+    HostOooRecord ooo_host;
+    HostPrefetchRecord host_prefetch;
 };
 /* Loads params/core/default.yaml (PIMID_PARAMS honoured); false + error on a
  * missing file or field, a value outside its range, an in_order

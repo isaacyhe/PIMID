@@ -67,10 +67,13 @@ class Cache : public BaseCache {
 
     public:
         Cache(uint32_t _numLines, CC* _cc, CacheArray* _array, ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, const g_string& _name);
+        uint32_t getAccessLatency() const { return accLat; }
 
         const char* getName();
         void setParents(uint32_t _childId, const g_vector<MemObject*>& parents, Network* network);
         void setChildren(const g_vector<BaseCache*>& children, Network* network);
+        /* the host L3 holds the mean fabric round trip in its measured load-to-use: the part beyond the port's minimum comes out of its latency */
+        void reduceAccLat(uint32_t d) { accLat = (accLat > d + 1) ? accLat - d : 1; }
         void initStats(AggregateStat* parentStat);
 
         virtual uint64_t access(MemReq& req);

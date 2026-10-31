@@ -543,6 +543,9 @@ public:
          * the McPAT fork as itlb/dtlb param pimid_assoc. */
         bool tlb_published_geometry = mcpatTlbPublishedGeometryDefault();
         bool layout_energy_overhead = mcpatLayoutEnergyOverheadDefault();   // 1.12.18 (ruling 2026-10-24); sys param pimid_layout_energy_overhead
+        /* the out-of-order window McPAT prices (a host core: the core record's ooo_host; a processing element's out-of-order
+         * core: the timing core's own 128 / 36 / 32 / 32) */
+        int rob_entries = 128, window_entries = 36, load_buffer_entries = 32, store_buffer_entries = 32;
         int itlb_entries = 0, dtlb_entries = 0, tlb_assoc = 0;
         int stlb_entries = 0;   /* (1.12.129): the core record's second-level TLB (ooo.stlb_entries); dtlb param pimid_stlb_entries */
         /* PIMID 1.12.18 (user rulings 2026-10-23): passed to the McPAT fork

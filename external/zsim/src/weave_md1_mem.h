@@ -62,6 +62,9 @@ class WeaveSimpleMemory : public SimpleMemory {
         {
             preDelay = zeroLoadLatency/2;
             postDelay = zeroLoadLatency - preDelay;
+            /* (1.12.189): a bootstrap access is charged boundLatency in the bound phase and its excess over the zero-load
+             * latency in the weave phase, so a refund cannot take it below the zero-load latency */
+            refundFloor = _zeroLoadLatency;
         }
 
         uint64_t access(MemReq& req) {

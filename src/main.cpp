@@ -1749,6 +1749,7 @@ struct ZSimParsedOutput {
      * into the run's one window; the per-core cycles stay as busy activity. */
     uint64_t roi_wall_cycles = 0;
     uint64_t roi_wall_source = 0;
+    uint64_t roi_wall_balance = 0;   // (1.12.189): the cycles of roi_wall_cycles that are the DRAM balance no barrier applied
     bool roi_wall_present = false;
     /* 1.11.51 (E17): the devMC inter-access gap histogram, read back from
      * the stats stream (log2-cycle buckets, counts + cycles, ROI span).
@@ -1879,6 +1880,7 @@ struct ZSimParsedOutput {
         uint64_t l2_hGETS = 0, l2_mGETS = 0, l2_hGETX = 0, l2_mGETXIM = 0;
         uint64_t l2_PUTX = 0;   // 1.12.23: this node's L2 dirty writebacks (host NoC data traffic)
         uint64_t l3_hGETS = 0, l3_mGETS = 0, l3_hGETX = 0, l3_mGETXIM = 0;
+        uint64_t l3_fill = 0;   // a non-inclusive L3's line writes (the L2s' evictions, copies of shared lines)
         /* 1.12.18: coherence events each cache RECEIVED from its parent's
          * directory (zsim MESIBottomCC::processInval, coherence_ctrls.cpp:
          * INV invalidate, INVX downgrade, FWD forward). An L1's count is work
@@ -1915,7 +1917,7 @@ struct ZSimParsedOutput {
         uint64_t l2_total_reads() const { return l2_hGETS + l2_mGETS; }
         uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM; }
         uint64_t l3_total_reads() const { return l3_hGETS + l3_mGETS; }
-        uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM; }
+        uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM + l3_fill; }
         uint64_t l1_coh_events() const { return l1_INV + l1_INVX + l1_FWD; }   // 1.12.18
         uint64_t l2_coh_events() const { return l2_INV + l2_INVX + l2_FWD; }   // 1.12.18
         // True when this group carried any measured work at all. A node with no
@@ -2039,6 +2041,7 @@ struct ZSimParsedOutput {
     uint64_t l3_mGETS = 0;
     uint64_t l3_hGETX = 0;
     uint64_t l3_mGETXIM = 0;
+    uint64_t l3_fill = 0;   // a non-inclusive L3's line writes (the L2s' evictions, copies of shared lines)
     /* 1.12.18: coherence events received from the parent directory,
      * all nodes (see GroupCounters). */
     uint64_t l1_INV = 0, l1_INVX = 0, l1_FWD = 0;
@@ -2055,7 +2058,7 @@ struct ZSimParsedOutput {
     uint64_t l2_total_reads() const { return l2_hGETS + l2_mGETS; }
     uint64_t l2_total_writes() const { return l2_hGETX + l2_mGETXIM; }
     uint64_t l3_total_reads() const { return l3_hGETS + l3_mGETS; }
-    uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM; }
+    uint64_t l3_total_writes() const { return l3_hGETX + l3_mGETXIM + l3_fill; }
     uint64_t l1_coh_events() const { return l1_INV + l1_INVX + l1_FWD; }   // 1.12.18
     uint64_t l2_coh_events() const { return l2_INV + l2_INVX + l2_FWD; }   // 1.12.18
 
@@ -2531,6 +2534,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "pgPhaseWindow") { out.pg_phase_window = val; }
                 else if (key == "roiWallCycles") { out.roi_wall_cycles = val; out.roi_wall_present = true; }   // 1.12.18
                 else if (key == "roiWallSource") { out.roi_wall_source = val; }
+                else if (key == "roiWallBalanceCycles") { out.roi_wall_balance = val; }   // (1.12.189)
                 else if (key == "pgDevMCGapSpan") { out.devmc_gap_span = val; }
                 else if (key.rfind("pgDevMCGapCnt_", 0) == 0) {
                     int b = std::atoi(key.c_str() + 14);
@@ -2647,6 +2651,7 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
                 else if (key == "hGETX") { out.l3_hGETX += val; if (cgrp) cgrp->l3_hGETX += val; }
                 else if (key == "mGETXIM") { out.l3_mGETXIM += val; if (cgrp) cgrp->l3_mGETXIM += val; }
                 else if (key == "mGETXSM") { out.l3_mGETXIM += val; if (cgrp) cgrp->l3_mGETXIM += val; }   /* 1.11.97 (m01-main-1-1575-4): an UPGRADE miss (S->M) is a write miss too */
+                else if (key == "fill") { out.l3_fill += val; if (cgrp) cgrp->l3_fill += val; }   // a non-inclusive L3: every line written into it is an L3 write
             }
 
             // Memory controller scope. Both the host MC and the PE-MC export
@@ -2825,10 +2830,12 @@ static ZSimParsedOutput parseZSimOutputFile(const std::string& path) {
  * run's time, in the cycles of the dump's per-core axis. Source 1 (serial,
  * OpenMP, co-sim OpenMP): the ROI's elapsed phase-clock time, never below
  * the busy max (no PE is busy longer than the ROI; the stamps resolve the
- * phase clock to within one phase). Source 2 (thread-MPI): the max over
- * ranks of the ROI-relative end, i.e. the parsed (trimmed) per-core max --
- * the message-passing ranks' clocks already include their waits. Without a
- * closed stamp: the busy max, said so. `src` names which. */
+ * phase clock to within one phase). Source 2 (thread-MPI): ranks on device
+ * PEs, the max over ranks of the ROI-relative end, i.e. the parsed (trimmed)
+ * per-core max -- the message-passing ranks' clocks already include their
+ * waits; ranks on the host cores (no device cycles), the phase clock from the
+ * first ROI barrier to the last rank's arrival at the closing barrier. Without a closed stamp: the busy max,
+ * said so. `src` names which. */
 static uint64_t runWindowCycles(const ZSimParsedOutput& z, std::string* src) {
     const uint64_t busy = z.max_core_cycles;
     uint64_t w = busy;
@@ -2843,9 +2850,18 @@ static uint64_t runWindowCycles(const ZSimParsedOutput& z, std::string* src) {
         w = std::max(z.roi_wall_cycles, busy);
         o << "ROI elapsed wall clock, the latest ROI end on the cores' own clocks (single-process cut: the device PEs, the host cores when no PE ran; roiWallCycles "
           << z.roi_wall_cycles << ")";
+    } else if (z.roi_wall_source == 2 && z.dev_wall_cycles == 0 && z.roi_wall_cycles > 0) {
+        w = z.roi_wall_cycles;   // the system-scope window prices the host node over the same value
+        o << "ROI elapsed wall clock, the first ROI barrier to the last rank's arrival at the closing barrier on the global phase clock (thread-MPI host ranks; roiWallCycles "
+          << z.roi_wall_cycles << ")";
     } else if (z.roi_wall_source == 2) {
+        /* (next, ruling 2026-10-30 (3)): the per-PE window, raised by the DRAM balance no barrier applied (the
+         * cycles roiWallCycles carries for it) */
+        w = busy + z.roi_wall_balance;
         o << "ROI elapsed wall clock, max over ranks of the ROI-relative end (thread-MPI; roiWallCycles "
           << z.roi_wall_cycles << (z.dev_tail_marked ? ", the 1.12.3 kernel-window trim applied" : "") << ")";
+        if (z.roi_wall_balance)
+            o << ", raised " << z.roi_wall_balance << " cycles by the DRAM balance no barrier applied";
     } else {
         o << "busy max: the dump carries no closed ROI wall stamp ("
           << (z.roi_wall_present ? "roiWallCycles 0" : "no roiWallCycles") << ")";
@@ -3122,7 +3138,7 @@ static const char* kSchemaPaths[] = {
     "system.hosts[].allowed_address_ranges[].base", "system.hosts[].allowed_address_ranges[].size",
     "system.hosts[].branch_predictor", "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
     "system.hosts[].cache.l1i_kb", "system.hosts[].cache.l1i_latency_ns", "system.hosts[].cache.l1i_ways", "system.hosts[].cache.l2_banks", "system.hosts[].cache.l2_kb",
-    "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
+    "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_inclusion", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
     "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz", "system.hosts[].issue_width",
     "system.hosts[].mem.bandwidth_gbs", "system.hosts[].mem.capacity_gb", "system.hosts[].mem.channels", "system.hosts[].mem.technology", "system.hosts[].memory.bandwidth_mbs",
     "system.hosts[].memory.channels", "system.hosts[].memory.dram_replay", "system.hosts[].memory.host_path.coherence_ns", "system.hosts[].memory.host_path.fabric_ns", "system.hosts[].memory.host_path.mc_pipeline_ns",
@@ -3895,10 +3911,11 @@ struct UnifiedConfig {
     std::string host_core_type = "ooo_core";
     int host_num_cores = 4;
     double host_frequency_mhz = 3000.0;
-    int host_l1d_kb = 32;
-    int host_l1i_kb = 32;
-    int host_l2_kb = 1024;
-    int host_l3_kb = 8192;
+    // the caches a run without a host node falls back to: the cache record's host core, set by applyCacheRecord()
+    int host_l1d_kb = -1;
+    int host_l1i_kb = -1;
+    int host_l2_kb = -1;
+    int host_l3_kb = -1;
     std::string host_memory_tech = "DDR4";
     int host_tech_node_nm = -1;  // -1 = inherit device node (config.tech_node_nm); see power.host_tech_node_nm
     // 1.11.2: extra area factor for SUBARRAY-placed PEs (bitline-pitch layout
@@ -4114,6 +4131,15 @@ struct UnifiedConfig {
         int l2_ways = -1, l3_ways = -1;      // 1.11.95: -1 = the cache record's ways
         int l1d_ways = -1, l1i_ways = -1;
         int l1d_banks = -1, l1i_banks = -1, l2_banks = -1, l3_banks = -1;   // 1.11.95: cache.<level>_banks; -1 = record/slice rule
+        /* a HOST node whose last-level cache latency is the cache record's measured load-to-use: the host fabric's mean round trip
+         * is taken out of the cache's, and the host-path adder of the memory is reduced by that load-to-use (the cache path the
+         * caches now time) */
+        bool l3_fabric_comp = false;
+        int host_cache_path_cycles = 0;
+        int l3_slices = 0;   // a HOST node whose last-level cache is the cache record's: one slice per core (the fabric's slice stops)
+        bool l3_none = false;   // a HOST node whose configuration says `cache.l3: none` (or l3_kb 0): no last-level cache, on purpose
+        int l3_inclusion = -1;          // a HOST node's cache.l3_inclusion: 1 non-inclusive, 0 inclusive, -1 the cache record's
+        bool l3_non_inclusive = false;  // resolved (applyHostCacheRecord): the L3 is built non-inclusive of the L2s
 
         // Memory
         std::string memory_tech = "DDR4";
@@ -4866,10 +4892,124 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
  * with system.cache_line_size (one line everywhere); user bank counts are
  * range-checked. The record is the one coherent set the simulator builds
  * (zsim) and prices (McPAT) the hierarchy with. */
+/* A HOST node's caches: every size, associativity and latency the host did not give takes the cache record's host core
+ * (a recent server core: 48 KB 12-way L1D, 32 KB 8-way L1I, 2 MB 16-way L2, and a shared 15-way last-level cache with
+ * one 1.875 MB slice per core). The record's latencies are LOAD-TO-USE (what a load that hits there measures), so each is turned into
+ * the latency the simulator charges at that level: the L1D charges its own (the core adds it to every access), the L2 the
+ * part beyond the L1D, the last-level cache the part beyond the L2 before the host fabric (the fabric adds its own round
+ * trip, and takes its mean out of the cache: sys.hostNetwork.l3Comp). A level the host resized keeps the CACTI array time. */
+/* The associativity nearest to `want` (within a factor of two) that makes a power-of-two number of sets of `lines` lines; 0 if none. */
+static int nearestValidWays(long lines, int want) {
+    auto pow2 = [](long v) { return v > 0 && (v & (v - 1)) == 0; };
+    for (int d = 0; d <= want; ++d)
+        for (int w : {want - d, want + d})
+            if (w >= std::max(1, want / 2) && w <= 2 * want && lines % w == 0 && pow2(lines / w)) return w;
+    return 0;
+}
+static bool applyHostCacheRecord(UnifiedConfig::SystemNode& n, const UnifiedConfig& config) {
+    const auto& H = g_cache_rec.host;
+    const double f = n.frequency_mhz > 0.0 ? n.frequency_mhz : config.frequency_mhz;
+    const bool l3_sz_absent = n.l3_kb < 0;
+    /* sizes: what the configuration gives, else the record's. An explicit L3 of `none` (or l3_kb 0) is no L3, and only that is. */
+    if (n.l1d_kb < 0) n.l1d_kb = H.l1d.kb;
+    if (n.l1i_kb < 0) n.l1i_kb = H.l1i.kb;
+    if (n.l2_kb < 0) { n.l2_kb = H.l2.kb; n.enable_l2 = true; }
+    if (n.l3_kb < 0) {
+        /* the last-level cache is shared and has one slice per core: an N-core part has N x 1.875 MB. The simulator's set
+         * count is a power of two, so a core count that is not one takes the next power of two of slices. */
+        const int cores = std::max(1, n.num_cores);
+        int slices = 1;
+        while (slices < cores) slices *= 2;
+        n.l3_kb = H.l3.kb * slices;
+        n.l3_slices = cores;
+        if (n.l3_banks == -1 && slices <= 32) n.l3_banks = slices;   // CACTI prices the array as one bank per slice (its bank counts are powers of two)
+        if (slices != cores)
+            std::cout << "[params] " << n.name << " L3: " << cores << " cores x " << H.l3.kb << " KB slices do not make a power-of-two number of sets; "
+                      << slices << " slices (" << n.l3_kb << " KB) are built" << std::endl;
+    } else if (n.l3_kb > 0 && n.l3_banks == -1) {
+        int b = std::max(1, std::min(32, n.l3_kb / (g_cache_rec.slice_mb * 1024)));   // the slice rule, in a power of two (CACTI's bank counts)
+        while (b & (b - 1)) b &= b - 1;
+        n.l3_banks = b;
+    }
+    n.enable_l3 = n.l3_kb > 0;
+    /* inclusion: the configuration's, else the record's; a host without an L3 has none to give */
+    if (n.l3_inclusion >= 0 && !n.enable_l3) {
+        std::cerr << "[config] FATAL: " << n.name << ".cache.l3_inclusion is given, but this host has no L3 (l3: none or l3_kb 0): the key would"
+                     " change nothing. Remove it." << std::endl;
+        return false;
+    }
+    n.l3_non_inclusive = n.enable_l3 && (n.l3_inclusion >= 0 ? n.l3_inclusion == 1 : H.l3_non_inclusive);
+    /* associativity: the configuration's, else the record's, else (when the record's does not make a power-of-two number of sets of
+     * the size given) the nearest one that does; none within a factor of two is refused */
+    const int line = config.cache_line_size;
+    auto pow2 = [](long v) { return v > 0 && (v & (v - 1)) == 0; };
+    struct Lv { const char* what; int kb; int* ways; int rec; int plain; };
+    Lv lv[4] = {{"L1D", n.l1d_kb, &n.l1d_ways, H.l1d.ways, g_cache_rec.l1d.ways}, {"L1I", n.l1i_kb, &n.l1i_ways, H.l1i.ways, g_cache_rec.l1i.ways},
+                {"L2", n.l2_kb, &n.l2_ways, H.l2.ways, g_cache_rec.l2.ways}, {"L3", n.l3_kb, &n.l3_ways, H.l3.ways, g_cache_rec.l3.ways}};
+    for (auto& l : lv) {
+        if (l.kb <= 0) continue;
+        const long lines = static_cast<long>(l.kb) * 1024 / line;
+        if (*l.ways > 0) {
+            if (lines % *l.ways != 0 || !pow2(lines / *l.ways)) {
+                std::cerr << "[config] FATAL: " << n.name << " " << l.what << " " << l.kb << " KB " << *l.ways << "-way does not make a power-of-two number of sets of "
+                          << line << " B lines (" << lines << " lines); choose a size and associativity that do." << std::endl;
+                return false;
+            }
+            continue;
+        }
+        if (lines % l.rec == 0 && pow2(lines / l.rec)) { *l.ways = l.rec; continue; }
+        const int w = nearestValidWays(lines, l.rec);
+        if (!w) {
+            std::cerr << "[config] FATAL: " << n.name << " " << l.what << " " << l.kb << " KB cannot be built with the record's " << l.rec << " ways (" << lines
+                      << " lines do not make a power-of-two number of sets) or with any associativity from " << std::max(1, l.rec / 2) << " to " << 2 * l.rec
+                      << ". Give a size that is a power-of-two number of sets of " << l.rec << " ways (a multiple of " << l.rec << " x " << line
+                      << " B by a power of two) or a power of two, or give the associativity (cache." << (l.what[1] == '1' ? (l.what[2] == 'D' ? "l1d" : "l1i") : (l.what[1] == '2' ? "l2" : "l3"))
+                      << "_ways)." << std::endl;
+            return false;
+        }
+        *l.ways = w;
+        std::cout << "[params] " << n.name << " " << l.what << " " << l.kb << " KB: the record's " << l.rec << " ways do not make a power-of-two number of sets; "
+                  << w << "-way (" << lines / w << " sets) is built" << std::endl;
+    }
+    /* latency: a level takes the record's load-to-use unless the configuration gives its latency. The increments are the record's own
+     * (L1D: its load-to-use; L2: its less the L1D's; L3: its less the L2's), so a level does not depend on how the other levels were given. */
+    int l1_hit = 0, l2_acc = 0;
+    bool l1_rec = false, l2_rec = false;
+    if (n.l1d_latency_ns <= 0.0) { n.l1d_latency_ns = H.l1d.cycles * 1000.0 / f; l1_rec = true; }
+    l1_hit = std::max(1, static_cast<int>(std::lround(n.l1d_latency_ns * f / 1000.0)));
+    if (n.l2_kb > 0) {
+        if (n.l2_latency_ns <= 0.0) { l2_acc = std::max(1, H.l2.cycles - H.l1d.cycles); n.l2_latency_ns = l2_acc * 1000.0 / f; l2_rec = true; }
+        else l2_acc = std::max(1, static_cast<int>(std::lround(n.l2_latency_ns * f / 1000.0)));
+    }
+    if (n.enable_l3 && n.l3_latency_ns <= 0.0) {
+        const int total = std::max(1, static_cast<int>(std::lround(H.l3.ns * f / 1000.0)));
+        const int pre = std::max(1, total - H.l2.cycles);
+        n.l3_latency_ns = pre * 1000.0 / f;
+        n.l3_fabric_comp = true;
+        n.host_cache_path_cycles = total;
+    }
+    std::cout << "[params] " << n.name << " caches (cache record, host core): L1D " << n.l1d_kb << " KB " << n.l1d_ways << "-way " << l1_hit << " cycles"
+              << ", L1I " << n.l1i_kb << " KB " << n.l1i_ways << "-way, L2 " << n.l2_kb << " KB " << n.l2_ways << "-way"
+              << (l2_rec ? " " + std::to_string(H.l2.cycles) + " cycles load-to-use (" + std::to_string(l2_acc) + " beyond the L1D)" : std::string(" ") + std::to_string(l2_acc) + " cycles")
+              << (n.enable_l3 ? ", L3 " + std::to_string(n.l3_kb) + " KB " + std::to_string(n.l3_ways) + "-way" +
+                                (n.l3_slices > 0 ? " (" + std::to_string(n.l3_slices) + " core(s) x " + std::to_string(H.l3.kb) + " KB slices)" : std::string()) +
+                                (n.l3_non_inclusive ? std::string(", non-inclusive") : std::string(", inclusive")) +
+                                (n.l3_fabric_comp ? ", " + std::to_string(n.host_cache_path_cycles) + " cycles load-to-use (" + std::to_string(static_cast<int>(H.l3.ns)) + " ns), the host fabric's mean round trip included"
+                                                  : std::string(", ") + std::to_string(std::max(1, static_cast<int>(std::lround(n.l3_latency_ns * f / 1000.0)))) + " cycles")
+                              : std::string(", L3: none (the L2's misses go to memory)"))
+              << std::endl;
+    (void)l1_rec; (void)l3_sz_absent;
+    return true;
+}
 static int applyCacheRecord(UnifiedConfig& config) {
     std::string err;
     if (!pimid::params::loadCacheRecord(g_cache_rec, err)) { std::cerr << "[params] FATAL: " << err << std::endl; return 1; }
     g_cache_rec_loaded = true;
+    {   /* the caches a run without a host node falls back to are the record's host core (no built-in hierarchy of its own) */
+        const auto& H = g_cache_rec.host;
+        int slices = 1; while (slices < std::max(1, config.host_num_cores)) slices *= 2;
+        config.host_l1d_kb = H.l1d.kb; config.host_l1i_kb = H.l1i.kb; config.host_l2_kb = H.l2.kb; config.host_l3_kb = H.l3.kb * slices;
+    }
     const pimid::params::CacheLevelRecord* lv[4] = {&g_cache_rec.l1d, &g_cache_rec.l1i, &g_cache_rec.l2, &g_cache_rec.l3};
     for (int i = 0; i < 4; ++i) {
         if (lv[i]->line_bytes != config.cache_line_size) {
@@ -4892,6 +5032,7 @@ static int applyCacheRecord(UnifiedConfig& config) {
     if (!apply(config.l2_ways, config.l2_banks, g_cache_rec.l2, "cache.l2.banks")) return 1;
     if (!apply(config.l3_ways, config.l3_banks, g_cache_rec.l3, "cache.l3.banks")) return 1;
     for (auto& n : config.system_nodes) {
+        if (n.role == UnifiedConfig::SystemNode::HOST && !applyHostCacheRecord(n, config)) return 1;
         if (!apply(n.l1d_ways, n.l1d_banks, g_cache_rec.l1d, n.name + ".cache.l1d_banks")) return 1;
         if (!apply(n.l1i_ways, n.l1i_banks, g_cache_rec.l1i, n.name + ".cache.l1i_banks")) return 1;
         if (!apply(n.l2_ways, n.l2_banks, g_cache_rec.l2, n.name + ".cache.l2_banks")) return 1;
@@ -5088,6 +5229,7 @@ static int hostL3Slices(const UnifiedConfig::SystemNode& n) {   // 1.12.19
     if (!(n.enable_l3 && n.l3_kb > 0)) return 1;
     const ReplicatedLLC rl = replicatedLLCFor(n.l3_kb, "host L3");
     if (rl.slices > 1) return rl.slices;
+    if (n.l3_slices > 0) return n.l3_slices;   // the record's last-level cache: one slice, and one fabric stop, per core
     return std::max(1, resolveCacheBanks(n.l3_kb, n.l3_banks, "l3", "host L3"));
 }
 static int hostMemControllerCount(const std::string& tech, const UnifiedConfig& config) {
@@ -12702,6 +12844,13 @@ static int inorderTimingPipelineDepth(const char** src) {
  * none) and where it came from; read for in_order_core only. `who` prefixes
  * the printed lines ("" in device scope, the node name in the per-node
  * path). Returns the McPAT profile. */
+/* A host core's out-of-order window as McPAT prices it: the core record's ooo_host (the timing core is sized from the same
+ * values). A processing element's out-of-order core keeps the timing core's own window (the wrapper's defaults). */
+static void applyHostOooStructures(pimid::McPATWrapper::SystemConfig& mcfg) {
+    const auto& oh = g_core_rec.ooo_host;
+    mcfg.rob_entries = oh.rob_entries; mcfg.window_entries = oh.scheduler_entries;
+    mcfg.load_buffer_entries = oh.load_queue_entries; mcfg.store_buffer_entries = oh.store_queue_entries;
+}
 static pimid::McPATWrapper::DeviceProfile describeTimingCore(
         pimid::McPATWrapper::SystemConfig& mcfg, const std::string& type,
         int inorder_issue_width, const std::string& inorder_bp,
@@ -14263,6 +14412,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
          * has always described (OOO profile below) -- now with that core's
          * depth, structures and branch predictor (describeTimingCore). */
         (void)describeTimingCore(host_cfg, "ooo_core", 0, "", "", "host");
+        applyHostOooStructures(host_cfg);
         // 1.9.32: the host IS a server part -- stated, not left to the default.
         host_cfg.device_scope = false;
         /* 1.12.2 (ruling 5a (i), user 2026-10-07): the host's architectural
@@ -16602,6 +16752,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                 ? zsim_stats.host_wall_cycles : zsim_stats.dev_wall_cycles;
         if (node_wall == 0) continue;
         if (roi_wall_stamped) node_wall = std::max(node_wall, zsim_stats.roi_wall_cycles);
+        /* (next, ruling 2026-10-30 (3)): device ranks keep their per-PE window, raised by the DRAM balance no
+         * barrier applied (roiWallCycles carries it on the other sources) */
+        if (zsim_stats.roi_wall_source == 2 && zsim_stats.dev_wall_cycles > 0 && node.role != UnifiedConfig::SystemNode::HOST)
+            node_wall += zsim_stats.roi_wall_balance;
         /* 1.12.18 (user ruling R2 2026-10-24): thread-MPI ranks on the HOST
          * cores (a no-offload baseline: no device PE ran) -- the run time is
          * the first ROI barrier to the latest rank's ROI end on those cores
@@ -16619,9 +16773,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                                                                 : "ROI elapsed wall clock, roi_begin..roi_end on the global phase clock (roiWallCycles ")
                                      + std::to_string(zsim_stats.roi_wall_cycles) + ")"
                                    : (zsim_stats.roi_wall_source == 2
-                                          ? "ROI elapsed wall clock, max over ranks of the ROI-relative end (thread-MPI; roiWallCycles "
+                                          ? (zsim_stats.dev_wall_cycles == 0
+                                                 ? "ROI elapsed wall clock, the first ROI barrier to the last rank's arrival at the closing barrier on the global phase clock (thread-MPI host ranks; roiWallCycles "
+                                                 : "ROI elapsed wall clock, max over ranks of the ROI-relative end (thread-MPI; roiWallCycles ")
                                             + std::to_string(zsim_stats.roi_wall_cycles) + ")"
                                           : std::string("busy wall cycles: the dump carries no closed ROI wall stamp")))
+              << (zsim_stats.roi_wall_balance ? "; the DRAM balance no barrier applied: " + std::to_string(zsim_stats.roi_wall_balance) + " cycles of it" : std::string())
               << " at the " << wall_owner << " clock; busy max: host " << zsim_stats.host_wall_cycles
               << " cycles, device " << zsim_stats.dev_wall_cycles
               << " cycles; every node and the memory are priced over it [1.12.18, ruling 2026-10-23]" << std::endl;
@@ -16821,6 +16978,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         profile = describeTimingCore(mcfg, effective_type, node.inorder_issue_width,
                                      node.inorder_branch_predictor,       // 1.12.1 (#114)
                                      node.inorder_branch_predictor_src, node.name);
+        if (node.role == UnifiedConfig::SystemNode::HOST && effective_type == "ooo_core") applyHostOooStructures(mcfg);
         is_alu = (profile == McPAT::DeviceProfile::DEVICE_ALU);
         result.core_desc = coreTypeLabel(effective_type, "OOO");   // 1.12.1: null was "Simple"
         /* 1.11.51 (L214): same rule per node -- an element that declares no
@@ -19137,6 +19295,7 @@ public:
                 // 1.12.0 (#50 (b)): the penalty is also the TOTAL mispredict redirect cost.
                 cfg << "            mispredPenalty = " << config_.core_ooo_mispredict_penalty << ";\n";
                 cfg << "            fetchBytesPerCycle = " << config_.core_ooo_fetch_width_bytes << ";\n";
+                cfg << "            fillBuffers = " << g_core_rec.ooo.l1d_fill_buffers << ";\n";   // (1.12.189): the PE's L1D fill buffers (core record ooo)
             }
         }
         // Null cores: no per-core attributes beyond type + count
@@ -19484,6 +19643,9 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
         adder_ns = sp.sum();
     }
     int adder_cycles = static_cast<int>(std::round(adder_ns * host_freq / 1000.0));
+    /* the idle host memory latency is a published load-to-use that includes the path through the caches; with the caches
+     * timed at their measured load-to-use (the cache record's host core) that path is no longer part of the adder */
+    adder_cycles -= host.host_cache_path_cycles;
     if (adder_cycles < 0) adder_cycles = 0;
     int mem_latency = std::max(1, phys_latency + adder_cycles);
     // Diagnostic (stderr, ASCII, gated): host memory idle-latency composition in
@@ -20047,6 +20209,17 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                 // 1.12.0 (#50 (b)): the penalty is also the TOTAL mispredict redirect cost.
                 cfg << "            mispredPenalty = " << config.core_ooo_mispredict_penalty << ";\n";
                 cfg << "            fetchBytesPerCycle = " << config.core_ooo_fetch_width_bytes << ";\n";
+                if (node.role != UnifiedConfig::SystemNode::HOST)   // (1.12.189): a PE keeps the model's window, with the record's L1D fill buffers
+                    cfg << "            fillBuffers = " << g_core_rec.ooo.l1d_fill_buffers << ";\n";
+                if (node.role == UnifiedConfig::SystemNode::HOST) {   // the host core's window (core record ooo_host); a PE keeps the model's own
+                    const auto& oh = g_core_rec.ooo_host;
+                    cfg << "            robEntries = " << oh.rob_entries << ";\n";
+                    cfg << "            loadQueueEntries = " << oh.load_queue_entries << ";\n";
+                    cfg << "            storeQueueEntries = " << oh.store_queue_entries << ";\n";
+                    cfg << "            windowEntries = " << oh.scheduler_entries << ";\n";
+                    cfg << "            fillBuffers = " << oh.l1d_fill_buffers << ";\n";
+                    cfg << "            storeBuffer = " << (oh.store_buffer ? "true" : "false") << ";\n";
+                }
             }
         }
 
@@ -20099,6 +20272,27 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             cfg << "            latency = " << l1i_lat << ";\n";
             cfg << "        };\n";
 
+            /* a HOST out-of-order core's L2 prefetchers (core record host_prefetch): between its L1D and its L2 */
+            const auto& hpf = g_core_rec.host_prefetch;
+            const bool l2pf = node.role == UnifiedConfig::SystemNode::HOST && node.l2_kb > 0 && hpf.l2_streamer &&
+                              zsimCoreGroupType(node.core_type, node.name) == "OoO";
+            if (l2pf) {
+                cfg << "        " << node.name << "_l2pf = {\n";
+                cfg << "            isPrefetcher = true;\n";
+                cfg << "            prefetchers = " << node.num_cores << ";\n";
+                cfg << "            prefetcherType = \"L2Stream\";\n";
+                cfg << "            streams = " << hpf.streams << ";\n";
+                cfg << "            distance = " << hpf.distance_lines << ";\n";
+                cfg << "            perLookup = " << hpf.prefetches_per_lookup << ";\n";
+                cfg << "            superqueue = " << hpf.superqueue_entries << ";\n";
+                cfg << "            spatial = " << (hpf.spatial ? "true" : "false") << ";\n";
+                cfg << "            children = \"" << node.name << "_l1d\";\n";
+                cfg << "        };\n";
+                std::cout << "  [cache] " << node.name << " L2 prefetchers: streamer (" << hpf.streams << " streams, up to "
+                          << hpf.distance_lines << " lines ahead, " << hpf.prefetches_per_lookup << " per L2 lookup)"
+                          << (hpf.spatial ? " and spatial (pair line)" : "") << ", " << hpf.superqueue_entries
+                          << " superqueue entries (core record host_prefetch)" << std::endl;
+            }
             if (node.l2_kb > 0) {
                 int l2_lat = getCacheLatencyCycles(node.l2_kb, node.l2_ways, config.cache_line_size,
                                                     node_freq, node.tech_node_nm, (node.name + " L2").c_str(), (npre + "l2_latency_ns").c_str(), node.l2_latency_ns, node.l2_banks);
@@ -20107,7 +20301,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                 cfg << "            caches = " << node.num_cores << ";\n";
                 cfg << "            size = " << (node.l2_kb * 1024) << ";\n";
                 cfg << "            array = { type = \"SetAssoc\"; ways = " << node.l2_ways << "; };\n";
-                cfg << "            children = \"" << node.name << "_l1i|" << node.name << "_l1d\";\n";
+                cfg << "            children = \"" << node.name << "_l1i|" << node.name << (l2pf ? "_l2pf" : "_l1d") << "\";\n";
                 cfg << "            latency = " << l2_lat << ";\n";
                 cfg << "        };\n";
             }
@@ -20118,6 +20312,8 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                 l3_lat = std::max(1, l3_lat);
                 std::string parent = (node.l2_kb > 0) ? (node.name + "_l2") : (node.name + "_l1i|" + node.name + "_l1d");
                 cfg << "        " << node.name << "_l3 = {\n";
+                if (node.role == UnifiedConfig::SystemNode::HOST && node.l3_non_inclusive)
+                    cfg << "            type = \"NonInclusive\";\n";   // the L2s' evictions fill it; a snoop filter tracks the L2s' lines
                 cfg << "            caches = 1;\n";
                 cfg << "            size = " << (node.l3_kb * 1024) << ";\n";
                 cfg << "            array = { type = \"SetAssoc\"; ways = " << node.l3_ways << "; };\n";
@@ -20551,6 +20747,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
             cfg << "        cores = " << std::max(1, host_node->num_cores) << ";\n";
             cfg << "        hasL3 = " << (hl3 ? 1 : 0) << ";\n";
             cfg << "        l3Slices = " << (hl3 ? hostL3Slices(*host_node) : 1) << ";\n";
+            cfg << "        l3Comp = " << ((hl3 && host_node->l3_fabric_comp) ? 1 : 0) << ";\n";   // the L3 latency is a load-to-use: the fabric's mean round trip is taken out of the cache
             cfg << "        dataBeats = " << std::max(1, (std::max(8, config.cache_line_size) * 8 + 255) / 256) << ";\n";
         }
         cfg << "    };\n";
@@ -23894,6 +24091,7 @@ int main(int argc, char** argv) {
                         UnifiedConfig::SystemNode node;
                         node.name = yamlString(h["name"], "host" + std::to_string(config.system_nodes.size()), hpath + ".name");
                         node.role = UnifiedConfig::SystemNode::HOST;
+                        node.l1d_kb = node.l1i_kb = node.l2_kb = node.l3_kb = -1;   // not given: the cache record's host core (applyCacheRecord)
                         node.pg_host = yamlBool(h["pg"], node.pg_host, hpath + ".pg");  // 1.11.20 (D7)
                         node.core_type = normalizeCoreType(yamlString(h["core_type"], "ooo_core", hpath + ".core_type"),
                                                            hpath + ".core_type");   // 1.12.1: key path
@@ -23953,6 +24151,29 @@ int main(int argc, char** argv) {
                             node.l2_kb = yamlInt(h["cache"]["l2_kb"], node.l2_kb, hpath + ".cache.l2_kb");
                             node.l3_kb = yamlInt(h["cache"]["l3_kb"], node.l3_kb, hpath + ".cache.l3_kb");
                             node.enable_l3 = (node.l3_kb > 0);
+                            if (h["cache"]["l3"]) {   // `l3: none` -- the only spelling of no last-level cache besides l3_kb: 0
+                                std::string w = yamlString(h["cache"]["l3"], "", hpath + ".cache.l3");
+                                for (auto& ch : w) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                                if (w != "none") {
+                                    std::cerr << "[config] FATAL: " << hpath << ".cache.l3 is '" << w << "'; the only value is `none` (no last-level cache). Give a size with l3_kb, or omit it for the cache record's L3 (cores x 1.875 MB)." << std::endl;
+                                    std::exit(2);
+                                }
+                                if (h["cache"]["l3_kb"] && node.l3_kb != 0) {
+                                    std::cerr << "[config] FATAL: " << hpath << ".cache gives l3: none and l3_kb " << node.l3_kb << "; choose one." << std::endl;
+                                    std::exit(2);
+                                }
+                                node.l3_kb = 0; node.l3_none = true; node.enable_l3 = false;
+                            }
+                            if (h["cache"]["l3_inclusion"]) {   // inclusive | non-inclusive (the cache record's otherwise)
+                                std::string w = yamlString(h["cache"]["l3_inclusion"], "", hpath + ".cache.l3_inclusion");
+                                for (auto& ch : w) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                                if (w == "inclusive") node.l3_inclusion = 0;
+                                else if (w == "non-inclusive") node.l3_inclusion = 1;
+                                else {
+                                    std::cerr << "[config] FATAL: " << hpath << ".cache.l3_inclusion is '" << w << "'; the values are `inclusive` and `non-inclusive`." << std::endl;
+                                    std::exit(2);
+                                }
+                            }
                             node.l1d_latency_ns = yamlDouble(h["cache"]["l1d_latency_ns"], node.l1d_latency_ns, hpath + ".cache.l1d_latency_ns");
                             node.l1i_latency_ns = yamlDouble(h["cache"]["l1i_latency_ns"], node.l1i_latency_ns, hpath + ".cache.l1i_latency_ns");
                             node.l2_latency_ns = yamlDouble(h["cache"]["l2_latency_ns"], node.l2_latency_ns, hpath + ".cache.l2_latency_ns");

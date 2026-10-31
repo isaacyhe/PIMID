@@ -25,6 +25,7 @@
 
 #include "alu_core.h"
 #include "pe_memory_interface.h"
+#include "dram_epoch_replay.h"   // (1.12.189): DMA transfers in the closed-loop replay
 #include "zsim.h"
 #include "constants.h"
 #include <algorithm>
@@ -485,6 +486,7 @@ bool ALUCore::spmDma(uint64_t dst, uint64_t src, uint64_t bytes, bool toDram) {
      * (reads and writes, at the bank's own access and write time); the engine issues at
      * the interface's rate. 1.12.90 spaced writes to a unit here, at the previous
      * write's return time (bank time plus the network). */
+    DramEpochReplay::dmaBurst(true);   // (1.12.189): the lines below are one transfer
     for (Address l = first; l <= last; l++, i++) {
         MESIState state = I;
         uint64_t issue = start + (uint64_t)std::floor((double)i * gap);
@@ -492,6 +494,7 @@ bool ALUCore::spmDma(uint64_t dst, uint64_t src, uint64_t bytes, bool toDram) {
         uint64_t t = mi_->access(req);
         if (t > done) done = t;
     }
+    DramEpochReplay::dmaBurst(false);
     const uint64_t words = (bytes + 7) / 8;   // the RAM side: one access per 8-byte word
     if (toDram) spmReads_ += words; else spmWrites_ += words;
     dmaOps_++;

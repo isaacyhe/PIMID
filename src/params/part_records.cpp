@@ -725,10 +725,44 @@ bool loadCacheRecord(CacheRecord& out, std::string& error) {
     out.home_hop_cycles = n["home_hop_cycles"].as<int>(-1);
     if (out.max_slices < 1 || out.max_slices > 32) { error = "cache record " + out.file + ": max_slices " + std::to_string(out.max_slices) + " outside CACTI's bank range 1..32"; return false; }
     if (out.home_hop_cycles < 0 || out.home_hop_cycles > 64) { error = "cache record " + out.file + ": home_hop_cycles " + std::to_string(out.home_hop_cycles) + " outside 0..64"; return false; }
-    return loadCacheLevel(n["levels"]["l1d"], "l1d", out.l1d, out.file, error) &&
-           loadCacheLevel(n["levels"]["l1i"], "l1i", out.l1i, out.file, error) &&
-           loadCacheLevel(n["levels"]["l2"], "l2", out.l2, out.file, error) &&
-           loadCacheLevel(n["levels"]["l3"], "l3", out.l3, out.file, error);
+    if (!(loadCacheLevel(n["levels"]["l1d"], "l1d", out.l1d, out.file, error) &&
+          loadCacheLevel(n["levels"]["l1i"], "l1i", out.l1i, out.file, error) &&
+          loadCacheLevel(n["levels"]["l2"], "l2", out.l2, out.file, error) &&
+          loadCacheLevel(n["levels"]["l3"], "l3", out.l3, out.file, error)))
+        return false;
+    /* the host core's caches: required like every field; sizes in KB, ways, and the measured load-to-use latency */
+    const YAML::Node h = n["host"];
+    if (!h || !h.IsMap()) { error = "cache record " + out.file + " lacks 'host'"; return false; }
+    auto lvl = [&](const char* name, const char* kbKey, bool cyc, bool ns, HostCacheLevelRecord& r) {
+        const YAML::Node l = h[name];
+        if (!l || !l.IsMap() || !l[kbKey] || !l["ways"] || (cyc && !l["load_to_use_cycles"]) || (ns && !l["load_to_use_ns"])) {
+            error = std::string("cache record ") + out.file + ": host." + name + " lacks '" + kbKey + "', 'ways'" +
+                    (cyc ? " or 'load_to_use_cycles'" : "") + (ns ? " or 'load_to_use_ns'" : "");
+            return false;
+        }
+        try {
+            r.kb = l[kbKey].as<int>(); r.ways = l["ways"].as<int>();
+            if (cyc) r.cycles = l["load_to_use_cycles"].as<int>();
+            if (ns) r.ns = l["load_to_use_ns"].as<double>();
+        } catch (const std::exception&) { error = std::string("cache record ") + out.file + ": host." + name + " has a value that is not a number"; return false; }
+        if (r.kb < 1 || r.kb > 1048576 || r.ways < 1 || r.ways > 64 || (cyc && (r.cycles < 1 || r.cycles > 1000)) ||
+            (ns && !(r.ns > 0.0 && r.ns <= 10000.0))) {
+            error = std::string("cache record ") + out.file + ": host." + name + " has a value outside its range"; return false;
+        }
+        return true;
+    };
+    if (!lvl("l1d", "kb", true, false, out.host.l1d) || !lvl("l1i", "kb", false, false, out.host.l1i) ||
+        !lvl("l2", "kb", true, false, out.host.l2) || !lvl("l3", "slice_kb", false, true, out.host.l3))
+        return false;
+    if (out.host.l1d.cycles >= out.host.l2.cycles) { error = "cache record " + out.file + ": host.l2.load_to_use_cycles must exceed host.l1d.load_to_use_cycles"; return false; }
+    {   /* the host L3's inclusion: required like every field */
+        std::string v;
+        try { if (h["l3"]["inclusion"]) v = h["l3"]["inclusion"].as<std::string>(); } catch (const std::exception&) {}
+        if (v == "non-inclusive") out.host.l3_non_inclusive = true;
+        else if (v == "inclusive") out.host.l3_non_inclusive = false;
+        else { error = "cache record " + out.file + ": host.l3 lacks 'inclusion' (inclusive or non-inclusive)"; return false; }
+    }
+    return true;
 }
 
 std::string describeCacheRecord(const CacheRecord& rec) {
@@ -738,7 +772,10 @@ std::string describeCacheRecord(const CacheRecord& rec) {
     };
     o << "[params] cache record " << rec.file << ": " << rec.record << " (slice " << rec.slice_mb << " MB, replicated above "
       << rec.max_slices << " slices at " << rec.home_hop_cycles << " cycles per home-slice hop; ";
-    lv("L1D", rec.l1d); o << "; "; lv("L1I", rec.l1i); o << "; "; lv("L2", rec.l2); o << "; "; lv("L3", rec.l3); o << ")";
+    lv("L1D", rec.l1d); o << "; "; lv("L1I", rec.l1i); o << "; "; lv("L2", rec.l2); o << "; "; lv("L3", rec.l3); o << "); host core: L1D " << rec.host.l1d.kb << " KB " << rec.host.l1d.ways << "-way " << rec.host.l1d.cycles
+      << " cycles, L1I " << rec.host.l1i.kb << " KB " << rec.host.l1i.ways << "-way, L2 " << rec.host.l2.kb << " KB " << rec.host.l2.ways << "-way "
+      << rec.host.l2.cycles << " cycles, L3 " << rec.host.l3.kb << " KB per core " << rec.host.l3.ways << "-way "
+      << (rec.host.l3_non_inclusive ? "non-inclusive " : "inclusive ") << rec.host.l3.ns << " ns (load-to-use latencies)";
     return o.str();
 }
 
@@ -799,7 +836,8 @@ bool loadCoreRecord(CoreRecord& out, std::string& error) {
         !coreInt(oo, "ooo", "dtlb_entries", 1, 65536, out.ooo.dtlb_entries, out.file, error) ||
         !coreInt(oo, "ooo", "dtlb_large_entries", 0, 65536, out.ooo.dtlb_large_entries, out.file, error) ||
         !coreInt(oo, "ooo", "tlb_associativity", 1, 64, out.ooo.tlb_associativity, out.file, error) ||
-        !coreInt(oo, "ooo", "stlb_entries", 0, 1048576, out.ooo.stlb_entries, out.file, error))
+        !coreInt(oo, "ooo", "stlb_entries", 0, 1048576, out.ooo.stlb_entries, out.file, error) ||
+        !coreInt(oo, "ooo", "l1d_fill_buffers", 1, 64, out.ooo.l1d_fill_buffers, out.file, error))   // (1.12.189)
         return false;
     {
         const int a = out.ooo.tlb_associativity;
@@ -808,6 +846,33 @@ bool loadCoreRecord(CoreRecord& out, std::string& error) {
                     " must be a power of two no larger than either first-level TLB";
             return false;
         }
+    }
+    if (!n["ooo_host"] || !n["ooo_host"].IsMap()) { error = "core record " + out.file + " lacks 'ooo_host'"; return false; }
+    {
+        const YAML::Node oh = n["ooo_host"];
+        if (!coreInt(oh, "ooo_host", "rob_entries", 4, 512, out.ooo_host.rob_entries, out.file, error) ||
+            !coreInt(oh, "ooo_host", "load_queue_entries", 1, 256, out.ooo_host.load_queue_entries, out.file, error) ||
+            !coreInt(oh, "ooo_host", "store_queue_entries", 1, 256, out.ooo_host.store_queue_entries, out.file, error) ||
+            !coreInt(oh, "ooo_host", "scheduler_entries", 1, 255, out.ooo_host.scheduler_entries, out.file, error) ||
+            !coreInt(oh, "ooo_host", "l1d_fill_buffers", 0, 64, out.ooo_host.l1d_fill_buffers, out.file, error))
+            return false;
+        if (!oh["store_buffer"] || !oh["store_buffer"].IsScalar()) { error = "core record " + out.file + ": 'ooo_host' lacks 'store_buffer' (true | false)"; return false; }
+        try { out.ooo_host.store_buffer = oh["store_buffer"].as<bool>(); }
+        catch (const std::exception&) { error = "core record " + out.file + ": ooo_host.store_buffer is not true or false"; return false; }
+    }
+    if (!n["host_prefetch"] || !n["host_prefetch"].IsMap()) { error = "core record " + out.file + " lacks 'host_prefetch'"; return false; }
+    {
+        const YAML::Node hp = n["host_prefetch"];
+        for (const char* k : {"l2_streamer", "spatial"}) {
+            if (!hp[k] || !hp[k].IsScalar()) { error = "core record " + out.file + ": 'host_prefetch' lacks '" + k + "' (true | false)"; return false; }
+            try { (std::string(k) == "l2_streamer" ? out.host_prefetch.l2_streamer : out.host_prefetch.spatial) = hp[k].as<bool>(); }
+            catch (const std::exception&) { error = "core record " + out.file + ": host_prefetch." + k + " is not true or false"; return false; }
+        }
+        if (!coreInt(hp, "host_prefetch", "streams", 1, 64, out.host_prefetch.streams, out.file, error) ||
+            !coreInt(hp, "host_prefetch", "distance_lines", 1, 63, out.host_prefetch.distance_lines, out.file, error) ||
+            !coreInt(hp, "host_prefetch", "prefetches_per_lookup", 1, 8, out.host_prefetch.prefetches_per_lookup, out.file, error) ||
+            !coreInt(hp, "host_prefetch", "superqueue_entries", 1, 128, out.host_prefetch.superqueue_entries, out.file, error))
+            return false;
     }
     if (!io["retire_width"] || io["retire_width"].as<std::string>("") != "issue") {
         error = "core record " + out.file + ": in_order.retire_width must be 'issue' (InOrderCore issues and "
@@ -858,7 +923,18 @@ std::string describeCoreRecord(const CoreRecord& rec) {
       << "; TLB: ITLB " << rec.ooo.itlb_entries << "+" << rec.ooo.itlb_large_entries
       << ", DTLB " << rec.ooo.dtlb_entries << "+" << rec.ooo.dtlb_large_entries
       << " (4 KB + large), " << rec.ooo.tlb_associativity << "-way, STLB "
-      << rec.ooo.stlb_entries << ")";
+      << rec.ooo.stlb_entries << ", L1D fill buffers " << rec.ooo.l1d_fill_buffers << "; host out-of-order window: ROB " << rec.ooo_host.rob_entries << ", load queue "
+      << rec.ooo_host.load_queue_entries << ", store queue " << rec.ooo_host.store_queue_entries << ", scheduler "
+      << rec.ooo_host.scheduler_entries << ", L1D fill buffers " << rec.ooo_host.l1d_fill_buffers
+      << ", stores " << (rec.ooo_host.store_buffer ? "leave the ROB before the write" : "held in the ROB until the write")
+      << "; host L2 prefetch: ";
+    if (rec.host_prefetch.l2_streamer)
+        o << "streamer " << rec.host_prefetch.streams << " streams, " << rec.host_prefetch.distance_lines << " lines ahead, "
+          << rec.host_prefetch.prefetches_per_lookup << " per lookup, spatial " << (rec.host_prefetch.spatial ? "on" : "off")
+          << ", superqueue " << rec.host_prefetch.superqueue_entries;
+    else
+        o << "none";
+    o << ")";
     return o.str();
 }
 

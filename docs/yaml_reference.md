@@ -347,6 +347,10 @@ The timing cores' front-end penalties come from the core part record,
 derivation. A `core:` key replaces one field for the run -- every core of that
 type, host and device -- and the run prints it as the user's number.
 
+The record's `ooo_host` section sizes the HOST out-of-order core's window: `rob_entries`,
+`load_queue_entries`, `store_queue_entries`, `scheduler_entries`, `l1d_fill_buffers` (0 = unlimited) and `store_buffer`. It
+has no `core:` key; edit the record to run another window ([cores.md](cores.md)).
+
 ```yaml
 core:
   in_order:
@@ -769,7 +773,7 @@ simulation:
 | `simulation.max_instructions` | long | `1000000000000` | Runaway guard: total-instruction budget across all cores; the run terminates (rc=0, stats dumped) when reached. The default (1e12) is effectively unlimited -- if you lower it, make sure it exceeds the workload's full instruction count, or the run is silently truncated mid-kernel (watch for "Max total instructions reached" in the log / a missing BENCH_DONE). |
 | `simulation.stats_interval` | int | `100000` | Statistics collection interval. |
 | `simulation.det_epoch_phases` | int | `1` | Epoch length, in phases, of the epoch-frozen NoC feedback (and, until 1.12.145, of the DRAM epoch replay) under `detailed`: thread-MPI and, since 1.12.18, single-process runs (serial, OpenMP, co-sim OpenMP). Records are stamped on the core's ROI-relative clock (single-process: a device PE's origin starts at its own baseline at roi_begin and travels with its clock -- a PE synced to a waker or a lock releaser takes that core's origin, so PEs joined by a sync share one axis; co-sim: counted from the host's offload doorbell; host cores keep their own baseline), folded at the consistent cut at the phase barrier (sleeping, exited and vacated cores exempt), and an access in epoch k is priced from epoch k-2's frozen per-pair NoC table and DRAM service latency (the read lag absorbs the up-to-one-phase skew between cores; see [network.md](network.md)). START-UP BIAS: the first 2 x det_epoch_phases x phase_length cycles of the ROI (20k PE cycles at the defaults) are priced from the bootstrap (the NoC table frozen at the ROI baseline, the analytical DRAM service). The default is 1 since (1.12.187) (it was 4): with 4-phase epochs a burst measured in one epoch was charged to every access of the next 40 000 cycles, and on a few shared lines read by every PE the charge settled in one of two states that a few hundred start-up instructions decided (device OpenMP gemv on HBM3: 53 660 or 88 066 cycles); one-phase epochs follow the load, as the DRAM replay's do. Single-process run time (roiWallSource 3): the latest ROI end on the cores' own clocks, the axis the records carry. Larger = looser, with more lag; `1` = per phase. Must be >= 1. Handed to the timing plugin as `PIMID_DET_EPOCH_PHASES`, which the key overrides. Since (1.12.145) the DRAM epoch replay has its own epoch, `simulation.dram_epoch_phases`. |
-| `simulation.dram_price_window` | int | `8` | (1.12.153) The DRAM epoch replay's price window, in epochs: an access is charged the weighted mean service latency over the epoch it reads (see `simulation.dram_epoch_phases`) and the window - 1 finalized epochs before it, per memory interface, each epoch weighed by its request count squared. `1` = the epoch read alone (the rule before (1.12.153)). Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_PRICE_WINDOW`, which the key overrides. |
+| `simulation.dram_price_window` | int | `8` | (1.12.153) The DRAM epoch replay's price window, in epochs: an access is charged the weighted mean service latency over the epoch it reads (see `simulation.dram_epoch_phases`) and the window - 1 finalized epochs before it, per memory interface and access kind (reads; writes, at the time the controller takes them; a host prefetcher's reads), each epoch weighed by its request count. `1` = the epoch read alone (the rule before (1.12.153)). Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_PRICE_WINDOW`, which the key overrides. |
 | `simulation.dram_epoch_phases` | int | `1` | (1.12.145, user ruling 2026-10-28) Epoch length, in phases, of the DRAM epoch replay (device and host memory interfaces): an access in epoch k is priced from the newest epoch at or before k-2 the controller has been fed (its measured mean, or while it is in flight the mean with its unfinished requests counted at their age). It was `det_epoch_phases` (4) until (1.12.145). Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_EPOCH_PHASES`, which the key overrides. |
 | `simulation.pim_runtime.*` | map | see below | PIM runtime primitives (1.12.18): the parallel runtime's own code is not executed on a PE; each runtime event is charged its primitive. [Section below](#pim-runtime-primitives-simulationpim_runtime). |
 | `simulation.lock_sync` | bool | `true` | 1.12.18: model the lock word. A lock handed from one thread to another carries the releaser's clock: when a thread takes a word (an atomic read-modify-write -- `LOCK`-prefixed RMW or `XCHG` with memory -- that changes it from its free value) that another thread released (the holder wrote the free value back, by an atomic RMW or a plain store), the acquirer's clock becomes max(own, release time), on the same clock domain only (host cores with host cores, device PEs with device PEs). This makes spinning locks (taken without a futex sleep on a lightly loaded simulation host) serialize like sleeping ones; atomic counters and a thread re-taking its own lock never sync. Per-core stats `lockSyncs` / `lockSyncCycles` (device PEs: the jumps are waiting, kept out of `cycles`); the run log prints a `[lock-sync]` ROI line. Thread-MPI runs never use it (the transport places rank clocks). `false` turns it off. A timing switch, so it lives here, not under `power.models`. Handed to the timing plugin as `PIMID_LOCK_SYNC`, which the key overrides. |
@@ -1205,18 +1209,20 @@ system:
 | `system.hosts[].memory.bandwidth_mbs` | int | `-1` | Per-channel host memory bandwidth (MB/s). `-1` = auto from tech. |
 | `system.hosts[].memory.topology` | string | per technology | (1.12.65). The memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between the connector and the DRAM in the termination loop: DDR3/DDR4 DIMMs 15 ohm, DDR5 RDIMM 15 ohm, DDR5 UDIMM/SODIMM 0, soldered 0. Defaults: DDR3/DDR4/DDR5 `rdimm` (the host baselines are server class), LPDDR5/GDDR6/HBM2/HBM3 `soldered` (their only topology). Refused: any other value, a DIMM topology on LPDDR5/GDDR6/HBM, any value on a non-DRAM memory, `lrdimm` (data buffers not modelled), `camm2`/`lpcamm2`. The log prints the topology, the stub and its source. Under `is_default_mem: true` the host memory is the device's array and takes the device's topology. |
 | `system.hosts[].memory.channels` | int | `-1` | Host memory channel (MC) count. `-1` = auto from tech (DDR5 c=1, HBM3 c=16). |
-| `system.hosts[].cache.l1d_kb` | int | `32` | Host L1D size. |
-| `system.hosts[].cache.l1i_kb` | int | `32` | Host L1I size. |
-| `system.hosts[].cache.l2_kb` | int | `256` | Host L2 size. |
-| `system.hosts[].cache.l3_kb` | int | `0` | Host L3 size; `0` disables the L3. |
-| `system.hosts[].cache.l1d_latency_ns` | double | CACTI | Host L1D latency (ns); `<= 0` or absent = CACTI's. |
-| `system.hosts[].cache.l1i_latency_ns` | double | CACTI | Host L1I latency (ns); as `l1d_latency_ns`. |
-| `system.hosts[].cache.l2_latency_ns` | double | CACTI | Host L2 latency (ns); as `l1d_latency_ns`. |
-| `system.hosts[].cache.l3_latency_ns` | double | CACTI | Host L3 latency (ns); as `l1d_latency_ns`. |
-| `system.hosts[].cache.l1d_ways` | int | record (`8`) | Host L1D associativity; absent = the cache record's (as `cache.l1d.ways`). |
-| `system.hosts[].cache.l1i_ways` | int | record (`4`) | Host L1I associativity; as `l1d_ways`. |
-| `system.hosts[].cache.l2_ways` | int | record (`8`) | Host L2 associativity; as `l1d_ways`. |
-| `system.hosts[].cache.l3_ways` | int | record (`16`) | Host L3 associativity; as `l1d_ways`. |
+| `system.hosts[].cache.l1d_kb` | int | record (`48`) | Host L1D size. Absent = the cache record's host core ([cores.md](cores.md#the-hosts-caches)); a host with no `cache:` block, or with some keys of it, takes the record for every key it does not give. |
+| `system.hosts[].cache.l1i_kb` | int | record (`32`) | Host L1I size; as `l1d_kb`. |
+| `system.hosts[].cache.l2_kb` | int | record (`2048`) | Host L2 size; as `l1d_kb`. |
+| `system.hosts[].cache.l3_kb` | int | record (`1920` per core) | Host L3 size, the total, shared by the host's cores. Absent: the record's 1.875 MB slice per core (4 cores 7680, 16 cores 30720; a core count that is not a power of two builds the next power of two of slices). Given: that size with the record's associativity and 33 ns unless `l3_ways` / `l3_latency_ns` are given (the nearest associativity that makes a power-of-two number of sets is built, and said, or the run is refused; [cores.md](cores.md#the-hosts-caches)). `0` is no L3, as `l3: none`. |
+| `system.hosts[].cache.l3` | string | absent | `none`: the host has no L3 (the L2's misses go to memory; no L3 is priced; the run prints `L3: none`). The only value; any other is refused (rc 2), as is `l3: none` together with a non-zero `l3_kb`. |
+| `system.hosts[].cache.l3_inclusion` | string | record (`non-inclusive`) | `non-inclusive`: a line read from memory fills the L2 only, the L2's evictions (clean and dirty) are written into the L3, lines shared across cores are copied into it, and a snoop filter tracks the L2s' lines ([cores.md](cores.md#the-hosts-caches)). `inclusive`: the L3 holds every line an L2 holds. Any other value is refused (rc 2), as is the key on a host without an L3. |
+| `system.hosts[].cache.l1d_latency_ns` | double | record (5 cycles) | Host L1D latency (ns), the latency the cache charges; `<= 0` or absent = the record's load-to-use (whatever the size). |
+| `system.hosts[].cache.l1i_latency_ns` | double | CACTI | Host L1I latency (ns); `<= 0` or absent = CACTI's. |
+| `system.hosts[].cache.l2_latency_ns` | double | record (16 cycles load-to-use) | Host L2 latency (ns), the latency beyond the L1D the cache charges; as `l1d_latency_ns`. |
+| `system.hosts[].cache.l3_latency_ns` | double | record (33 ns load-to-use) | Host L3 latency (ns), the latency beyond the L2 and before the host fabric the cache charges; as `l1d_latency_ns`. |
+| `system.hosts[].cache.l1d_ways` | int | record (`12`) | Host L1D associativity; absent = the cache record's host core (for a size given, the nearest associativity that makes a power-of-two number of sets, or a refusal). |
+| `system.hosts[].cache.l1i_ways` | int | record (`8`) | Host L1I associativity; as `l1d_ways`. |
+| `system.hosts[].cache.l2_ways` | int | record (`16`) | Host L2 associativity; as `l1d_ways`. |
+| `system.hosts[].cache.l3_ways` | int | record (`15`) | Host L3 associativity; as `l1d_ways`. The size and the associativity must make a power-of-two number of sets of 64 B lines. |
 | `system.hosts[].cache.l1d_banks` | int | record (slice rule) | Host L1D bank count; absent = the cache record's slice rule (as `cache.l1d.banks`). |
 | `system.hosts[].cache.l1i_banks` | int | record (slice rule) | Host L1I bank count; as `l1d_banks`. |
 | `system.hosts[].cache.l2_banks` | int | record (slice rule) | Host L2 bank count; as `l1d_banks`. |
@@ -1669,10 +1675,10 @@ other keys fill the fields a run without a host node falls back to.
 | `host.num_cores` | int | `4` | Host core count (see also `workload.mpi_ranks`). |
 | `host.frequency_mhz` | double | `3000.0` | Host clock (MHz). |
 | `host.tech_node_nm` | int | inherits device | Host process node. It sets the same field as `power.host_tech_node_nm` and wins when both are given; absent both, the host inherits the device node. |
-| `host.cache.l1d_kb` | int | `32` | Host L1D size (KB). |
-| `host.cache.l1i_kb` | int | `32` | Host L1I size (KB). |
-| `host.cache.l2_kb` | int | `256` | Host L2 size (KB); the declared host node's default since 1.12.2 (the block's own default was 1024). |
-| `host.cache.l3_kb` | int | `0` | Host L3 size (KB); `0` = no L3, the declared host node's default since 1.12.2 (the block's own default was 8192). |
+| `host.cache.l1d_kb` | int | record (`48`) | Host L1D size (KB); the fallback of a run without a host node is the cache record's host core. |
+| `host.cache.l1i_kb` | int | record (`32`) | Host L1I size (KB). |
+| `host.cache.l2_kb` | int | record (`2048`) | Host L2 size (KB). |
+| `host.cache.l3_kb` | int | record (`1920` per core) | Host L3 size (KB); `0` = no L3. |
 | `host.memory.technology` | string | `"DDR4"` | Host memory technology, canonicalised as `memory.technology` is (see [Memory Technologies](#memory-technologies)). |
 | `host.issue_width` | int | `2` | An `in_order_core` host's issue width, 1-6, as `system.hosts[].issue_width` (1.12.2; read under `scope: cosim` only). |
 | `host.branch_predictor` | string | the core record (`pag`) | An `in_order_core` host's branch predictor, `pag` or `none`, as `system.hosts[].branch_predictor` (1.12.2; read under `scope: cosim` only; 1.12.1 refused the key in every scope). |

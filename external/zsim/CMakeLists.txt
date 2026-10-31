@@ -57,6 +57,7 @@ set(ZSIM_SIM_SRCS
     src/cache.cpp
     src/cache_arrays.cpp
     src/coherence_ctrls.cpp
+    src/ninc_cache.cpp
     src/config.cpp
     src/contention_sim.cpp
     src/core_recorder.cpp
@@ -190,6 +191,7 @@ set(ZSIM_SIM_SRCS_TRACE
     src/cache.cpp
     src/cache_arrays.cpp
     src/coherence_ctrls.cpp
+    src/ninc_cache.cpp
     src/config.cpp
     src/contention_sim.cpp
     src/core_recorder.cpp

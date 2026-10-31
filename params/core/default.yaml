@@ -158,6 +158,58 @@
 #     an in-order host core keeps McPAT's 1-entry floor (accesses are still
 #     its fetches and data accesses). power.models.tlb_published_geometry:
 #     false restores the 1-entry floor on every core.
+# ooo_host: the out-of-order window of a HOST core. The host stands for a recent server core, not the Westmere-class core
+# the timing model was validated on. The values are those of Intel Golden Cove, the core of the
+# 4th Gen Xeon Scalable (Sapphire Rapids) whose DDR5 host memory configuration (closed page policy, Lenovo Press LP1836) the
+# host baselines already follow:
+#   rob_entries 512            reorder buffer: 512 entries, up from Sunny Cove's 352 (Chips and Cheese, "Popping the Hood
+#                              on Golden Cove"; WikiChip, Golden Cove).
+#   load_queue_entries 192     Chips and Cheese measured 192 load queue entries on Sapphire Rapids (Intel's figure is 240).
+#   store_queue_entries 114    114 store queue entries (WikiChip; Wikipedia, Golden Cove: 192 load / 114 store).
+#   scheduler_entries 160      the instruction window the timing core schedules all micro-operation classes from. Intel
+#                              does not publish Golden Cove's scheduler size; 160 is Sunny Cove's (WikiChip, Sunny Cove),
+#                              which Golden Cove is stated to enlarge (Chips and Cheese: "a comparatively smaller boost").
+#   l1d_fill_buffers 16        L1D fill buffers: 16, up from 12 (AnandTech, "Golden Cove Microarchitecture (P-Core)
+#                              Examined"); a line request to the next level holds one until the line arrives.
+#   store_buffer true          a store leaves the reorder buffer when it commits and its line is written to the L1D from
+#                              the store queue afterwards, in program order (the x86 memory model). false holds the ROB entry
+#                              until the line is written, as this model did before.
+# The Westmere-class core this model began with is 128 / 32 / 32 / 36, no fill-buffer limit, store_buffer false: set those
+# values to run it. A processing element's out-of-order core keeps that window, with the record's ooo.l1d_fill_buffers.
+ooo_host:
+  rob_entries: 512
+  load_queue_entries: 192
+  store_queue_entries: 114
+  scheduler_entries: 160
+  l1d_fill_buffers: 16
+  store_buffer: true
+# host_prefetch: the L2 hardware prefetchers of a HOST out-of-order core (a processing element has none). Intel 64 and
+# IA-32 Architectures Optimization Reference Manual (248966-048), "Data Prefetch to the L2 and Last Level Cache", p. 2-17:
+#   l2_streamer true          the streamer watches the L1D's requests to the L2 (loads and stores) for ascending and
+#                             descending line sequences and prefetches the lines ahead into the L2 (and the LLC); the
+#                             prefetched lines stay in the 4 KB page of the request that triggered them.
+#   streams 32                "Detects and maintains up to 32 streams of data accesses. For each 4K byte page, ... one
+#                             forward and one backward stream".
+#   distance_lines 20         "The streamer can run up to 20 lines ahead of the load request."
+#   prefetches_per_lookup 2   "The streamer may issue two prefetch requests on every L2 lookup."
+#   spatial true              the spatial prefetcher "strives to complete every cache line fetched to the L2 cache with
+#                             the pair line that completes it to a 128-byte aligned chunk".
+#   superqueue_entries 48     an L2 miss (demand or prefetch) holds a superqueue entry until its line arrives; Golden
+#                             Cove: 48, up from Sunny Cove's 32 ("only applies to the first miss for a cache line"; fill
+#                             buffer and superqueue entries can also be occupied by prefetch requests -- Chips and Cheese,
+#                             "Popping the Hood on Golden Cove"). A prefetch is not issued while every entry is held (the
+#                             manual: with many outstanding requests the streamer prefetches less far ahead).
+# The manual describes Golden Cove's prefetchers as "enhanced ... for increased memory parallelism" without figures; the
+# values above are the streamer's published ones. A stream is detected by two requests to one page whose line offsets move
+# in one direction. Not modelled: the L1D prefetchers (next-line, IP stride), code-fetch requests as streamer triggers,
+# and prefetching to the LLC only (the manual gives no threshold for it). l2_streamer false: no prefetcher, as before.
+host_prefetch:
+  l2_streamer: true
+  streams: 32
+  distance_lines: 20
+  prefetches_per_lookup: 2
+  spatial: true
+  superqueue_entries: 48
 record: pimid core default
 in_order:
   mispredict_penalty_cycles: 7
@@ -175,3 +227,8 @@ ooo:
   dtlb_large_entries: 32     # DTLB0, large pages (sec. 2.5.4)
   tlb_associativity: 4       # "All entries are 4-way associative" (sec. 2.5.4)
   stlb_entries: 512          # second level, 4 KB pages (sec. 2.5.4); priced (1.12.129): leakage and area, no lookup counted
+  l1d_fill_buffers: 10       # L1D line fill buffers of the Nehalem / Westmere core: 10 (Intel 64 and IA-32 Architectures
+                             # Optimization Reference Manual, 248966-025, June 2011, Table 2-7 "L1 Data Cache Components":
+                             # line fill buffers 10 entries; sec. 2.3.5: "48 load buffers, 32 store buffers and 10 fill
+                             # buffers"). A processing element's out-of-order core: a line request to the next level holds
+                             # one until the line arrives (the host core's are ooo_host.l1d_fill_buffers).
