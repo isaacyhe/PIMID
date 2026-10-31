@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.197 -- every memory controller's traffic is priced, not one controller's share
+
+- **The problem.** A device has one element controller per region of its placement tree (16 at CHANNEL or LOGIC_DIE
+  placement on HBM3, 40 to 48 at BANK placement, 144 for 64 PEs), and their traffic energy was priced for one
+  controller's share of it. McPAT prices the controllers' traffic (front end, transaction engine, PHY, refresh
+  commands) once from the request counts it is given, for all of them, but the counts it was given were the totals
+  divided by the controller count. A device with 48 element controllers was charged 1/48 of their traffic energy:
+  0.022 pJ/bit where the same model gives about 1 pJ/bit. The host's memory controller (one in every shipped
+  configuration) was priced right.
+- **The fix** (src/power/mcpat_wrapper.cpp; external/mcpat/memoryctrl.cc; docs/power.md). McPAT is given the
+  controllers' total request and refresh-command counts. The clock network, whose activity is per controller, divides
+  them by the controller count itself (the exact mean; it was the per-controller count rounded down).
+- **Validation.** 287 cells (the 280 device-scope cells of the evaluation corpus at reduced working sets, 4 co-sim
+  and 3 host cells), the previous release and this one side by side: the only lines that change are the memory
+  controllers' and the totals and ledger entries that contain them; the 3 host-only cells and 14 configurations
+  refused alike by both are identical. The device controllers' traffic energy was 0.007-0.12 pJ/bit and is 1.07-1.87
+  pJ/bit, inside the power checker's 2.26 pJ/bit guard; the checker's other results are unchanged. Eight cells run
+  twice give identical logs. The 97-cell set at full size (60 host-only, 30 co-sim, 7 device-only cells): the host-only
+  cells are identical, and the others differ only in their device controllers' lines and the totals that contain them.
+- **Data impact** (power only). Device memory-controller dynamic power +0.003 to +0.90 W per cell: on the reduced-size
+  corpus cells the device total rises 0.1% to 28%, most on LPDDR5, GDDR6 and DDR4 cells, whose total is small beside
+  their controllers' traffic (HBM3 placement cells +1.3% to +8.3%). Co-sim cells at full size: the device's controllers
+  +10 to +220 mW. Element controllers that drive off-package DQ (CHANNEL placement on the DDR family) now carry their
+  PHY's I/O energy for every controller, about 2.5 pJ/bit beside 1.3 pJ/bit of controller logic. Host-only cells are
+  unchanged. Run time, counters and every other component are unchanged.
+
 ## 1.12.196 -- a slow receiving thread can no longer stop a message-passing run
 
 - **The problem.** A message-passing rank never waits to send: when the receiver's 16-slot ring is full, its oldest

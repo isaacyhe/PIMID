@@ -763,16 +763,21 @@ void MemoryController::computeEnergy(bool is_tdp)
 		const double e_rt = e_cyc * cycles * XML->sys.mc.number_mcs;
 		/* Gated by the controller's measured utilisation (user ruling
 		 * 2026-10-23; Wattch cc2): the measured requests one controller
-		 * served (memory_reads + memory_writes, as emitted per controller)
-		 * per controller cycle per channel -- the rule PIMID uses for the
+		 * served (memory_reads + memory_writes are the totals over every
+		 * controller, so / number_mcs: the mean per controller) per
+		 * controller cycle per channel -- the rule PIMID uses for the
 		 * cache duty_cycle (accesses / cycles). */
 		double a = 1.0;
 		if (!is_tdp)
 		{
 			const double ch = XML->sys.mc.memory_channels_per_mc > 0 ? XML->sys.mc.memory_channels_per_mc : 1;
-			const double req = XML->sys.mc.memory_reads + XML->sys.mc.memory_writes;
+			const double n_mc = XML->sys.mc.number_mcs > 0 ? XML->sys.mc.number_mcs : 1;
+			const double req_all = XML->sys.mc.memory_reads + XML->sys.mc.memory_writes;
+			const double req = req_all / n_mc;
 			std::ostringstream as;
-			as << "(memory_reads + memory_writes) " << req << " / (" << cycles << " controller cycles x " << ch << " channel(s))";
+			as << "(memory_reads + memory_writes) ";
+			if (n_mc > 1) as << req_all << " / " << n_mc << " controllers = ";
+			as << req << " / (" << cycles << " controller cycles x " << ch << " channel(s))";
 			a = clockNetwork.gate((cycles > 0) ? req / (cycles * ch) : -1.0, as.str());
 			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered cycle. */
 			clockNetwork.set_powered(XML->sys.pimid_clock_pg_mc, "1 - measured MC power-gated residency (pimid_clock_pg_mc)");
@@ -816,6 +821,13 @@ void MemoryController::computeEnergy(bool is_tdp)
 	                    * SIGSEGV in the McPAT child. */
 		{
 			rt_power = rt_power + PHY->rt_power;
+			/* The PHY's share of the controllers' runtime dynamic (every controller): the controllers' I/O
+			 * (off-package DQ, or the interposer tier), printed so the controller logic's traffic energy can be
+			 * told from the I/O's. The family transform keeps this part as computed here (processor.cc). */
+			pimid::debugStream(std::cerr) << "[mcpat mc] PHY runtime dynamic "
+				<< ((mcp.executionTime > 0) ? PHY->rt_power.readOp.dynamic / mcp.executionTime : 0.0) << " W ("
+				<< XML->sys.mc.number_mcs << " controller(s), " << (mcp.phy_class == 1 ? "interposer" : "off-package")
+				<< " tier), inside the memory controllers' dynamic" << std::endl;
 		}
 	}
 }

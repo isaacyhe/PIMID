@@ -4568,13 +4568,17 @@ std::string McPATWrapper::generateXMLConfig() const {
     xml << "      <param name=\"databus_width\" value=\"" << mc_tech_.databus_width << "\"/>\n";
     xml << "      <param name=\"addressbus_width\" value=\""
         << mc_tech_.addressbus_width << "\"/>\n";               // 1.11.56 (C008)
-    {
-        int num_mcs = std::max(1, mc_tech_.number_mcs);
-        xml << "      <stat name=\"memory_accesses\" value=\"" << (mc_reads_ + mc_writes_) / num_mcs << "\"/>\n";
-        xml << "      <stat name=\"memory_reads\" value=\"" << mc_reads_ / num_mcs << "\"/>\n";
-        xml << "      <stat name=\"memory_writes\" value=\"" << mc_writes_ / num_mcs << "\"/>\n";
-        xml << "      <stat name=\"pimid_command_ops\" value=\"" << mc_command_ops_ / num_mcs << "\"/>\n";   // 1.12.18
-    }
+    /* The counts are the TOTALS over every controller (number_mcs of them). McPAT prices the controllers'
+     * runtime dynamic (front end, transaction engine, PHY, command operations) from these counts once, for all of
+     * them: processor.cc scales the MC's runtime power by 1 / execution time and multiplies only its leakage by
+     * number_mcs, and the background term already carries number_mcs. A per-controller count (total / number_mcs,
+     * as emitted before) priced one controller's share of the traffic: a device with 48 element controllers was
+     * charged 1/48 of its controllers' traffic energy. The clock network's activity is per controller and divides
+     * by number_mcs itself (memoryctrl.cc). */
+    xml << "      <stat name=\"memory_accesses\" value=\"" << (mc_reads_ + mc_writes_) << "\"/>\n";
+    xml << "      <stat name=\"memory_reads\" value=\"" << mc_reads_ << "\"/>\n";
+    xml << "      <stat name=\"memory_writes\" value=\"" << mc_writes_ << "\"/>\n";
+    xml << "      <stat name=\"pimid_command_ops\" value=\"" << mc_command_ops_ << "\"/>\n";   // 1.12.18
     xml << "    </component>\n";
 
     // NIU -- mandatory stub

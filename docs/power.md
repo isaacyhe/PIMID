@@ -548,6 +548,9 @@ the scope must price is missing. No share-of-peak convention prices anything:
 a memory controller is McPAT leakage + its measured transactions + one
 transaction-engine pass per counted refresh command
 (`power.models.mc_command_ops`), and its idle clocking is the clock model's.
+Where there are several controllers (a device's element controllers, one per
+region of the placement tree), every controller's transactions are priced,
+each once, and leakage, area and the clock network count every controller.
 Every model added in 1.12.18 has a `power.models.*` switch (see the YAML
 reference); a model switched off is printed as not priced by user option.
 
