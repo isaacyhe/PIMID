@@ -114,7 +114,10 @@ void McPATWrapper::initialize() {
                       << (std::max(1, config_.num_cores) / pricedL2Instances())
                       << " core(s) per L2";
         std::cout << std::endl;
-        std::cout << "  L3: " << (config_.l3_size_bytes/(1024*1024)) << " MB" << std::endl;
+        std::cout << "  L3: " << (config_.l3_size_bytes * static_cast<uint64_t>(std::max(1, config_.l3_replicated_slices)) / (1024*1024)) << " MB";
+        if (config_.l3_replicated_slices > 1)
+            std::cout << " in " << config_.l3_replicated_slices << " slices of " << (config_.l3_size_bytes / 1024) << " KB (McPAT instances)";
+        std::cout << std::endl;
         std::cout << "  Technology: " << config_.tech_node_nm << " nm" << std::endl;
         if (device_profile_ == DeviceProfile::OOO)
             std::cout << "  Profile: HOST_OoO (x86 out-of-order)" << std::endl;
@@ -1295,7 +1298,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.device_scope);
     // --- caches ---
     f(config_.l1i_size_bytes);    f(config_.l1d_size_bytes);
-    f(config_.l2_size_bytes);     f(config_.l3_size_bytes);
+    f(config_.l2_size_bytes);     f(config_.l3_size_bytes);   f(config_.l3_replicated_slices);
     // --- memory controllers ---
     f(config_.num_memory_controllers);  f(config_.mc_clock_mhz);
     // --- NoC (used when noc_levels_ is empty) ---
@@ -2040,13 +2043,8 @@ void McPATWrapper::extractResults() {
     // L3
     component_power_[ComponentType::L3_CACHE] = extractComponent(
         mcpat_processor_->l3, "L3", componentIsDescribed(ComponentType::L3_CACHE));
-    if (config_.l3_replicated_slices > 1) {   // 1.11.101 (BIG-CACHE (b)): S identical slices, one priced above
-        const double S = static_cast<double>(config_.l3_replicated_slices);
-        PowerMetrics& pm = component_power_[ComponentType::L3_CACHE];
-        pm.subthreshold_leakage *= S; pm.gate_leakage *= S; pm.power_gated_leakage *= S;
-        pm.total_leakage = pm.subthreshold_leakage + pm.gate_leakage;
-        pm.total_power = pm.total_dynamic + pm.total_leakage;   // the dynamic term is the run's accesses, each on one slice
-    }
+    /* An L3 of S slices is S McPAT instances (number_of_L3s): McPAT sums their area, leakage, clock trees and the
+     * die's trunk leaves itself; each instance carries one slice's share of the accesses. */
 
     /* Arrays priced outside McPAT (addExtraArray), into their component before its power gating and the node total.
      * The energies are per access and the run is McPAT's execution time (total cycles at the core clock); their
@@ -2148,9 +2146,7 @@ void McPATWrapper::extractResults() {
         mcpat_processor_->clk_l2, "L2 clock network", componentIsDescribed(ComponentType::L2_CACHE));
     clock_power_[ComponentType::L3_CACHE] = extractComponent(
         mcpat_processor_->clk_l3, "L3 clock network", componentIsDescribed(ComponentType::L3_CACHE));
-    /* 1.12.18: with l3_replicated_slices > 1 the L3 line below is McPAT's
-     * ONE priced slice; the clock of the other slices is not added here (no
-     * clock arithmetic in PIMID, user rule 2026-10-23) -- an open item. */
+    /* An L3 of S slices: McPAT aggregates the clock trees of its S instances (processor.cc clkAgg). */
     clock_power_[ComponentType::MEMORY_CONTROLLER] = extractComponent(
         mcpat_processor_->clk_mcs, "memory controller clock network",
         componentIsDescribed(ComponentType::MEMORY_CONTROLLER));
@@ -2209,11 +2205,6 @@ void McPATWrapper::extractResults() {
     mcpat_mc_area_mm2_ = mcpat_processor_->mcs.area.get_area() * 1e-6;
     mcpat_pcie_area_mm2_ = mcpat_processor_->pcies.area.get_area() * 1e-6;  // 1.11.29
     mcpat_total_area_mm2_ = mcpat_processor_->area.get_area() * 1e-6;
-    if (config_.l3_replicated_slices > 1) {   // 1.11.101 (BIG-CACHE (b)): the other S-1 slices
-        const double extra = mcpat_l3_area_mm2_ * (config_.l3_replicated_slices - 1);
-        mcpat_l3_area_mm2_ += extra;
-        mcpat_total_area_mm2_ += extra;
-    }
 
     /* 1.11.12: the DRAM-periphery family MOVED INTO McPAT (processor.cc,
      * driven by the dram_periph_* XML params). What used to be a
@@ -2388,7 +2379,7 @@ void McPATWrapper::extractResults() {
     }
     if (componentIsDescribed(ComponentType::L3_CACHE)) {
         peak_dyn += peakDynamic(mcpat_processor_->l3, "L3");
-        peak_leak += peakLeakage(mcpat_processor_->l3, "L3") * (config_.l3_replicated_slices > 1 ? config_.l3_replicated_slices : 1);   // 1.11.101
+        peak_leak += peakLeakage(mcpat_processor_->l3, "L3");   // every slice: McPAT's instances
     }
     peak_leak += extra_peak_leak_w_;   // arrays priced outside McPAT (addExtraArray): their leakage is there at peak too
     if (componentIsDescribed(ComponentType::MEMORY_CONTROLLER)) {
@@ -2785,7 +2776,8 @@ std::string McPATWrapper::generateXMLConfig() const {
      * builds one L2 per core, and its caller says so. */
     int num_l2s = (alu_only || !has_l2) ? 0 : pricedL2Instances();
     bool has_l3 = !alu_only && (config_.l3_size_bytes > 0);
-    int num_l3s = has_l3 ? 1 : 0;
+    /* an L3 of S slices is S homogeneous instances, one slice each (config_.l3_size_bytes is the slice) */
+    const int num_l3s = has_l3 ? std::max(1, config_.l3_replicated_slices) : 0;
     int num_cache_levels = alu_only ? 0 : (has_l3 ? 3 : (has_l2 ? 2 : 1));
 
     // Determine number of NoC instances
@@ -3008,7 +3000,6 @@ std::string McPATWrapper::generateXMLConfig() const {
      * own line instead of inside "Cores". */
     xml << "    <param name=\"Private_L2\" value=\"0\"/>\n";
     xml << "    <param name=\"number_of_L3s\" value=\"" << num_l3s << "\"/>\n";
-    xml << "    <param name=\"l3_replicated_slices\" value=\"" << (config_.l3_replicated_slices > 1 ? config_.l3_replicated_slices : 1) << "\"/>\n";
     xml << "    <param name=\"number_of_NoCs\" value=\"" << num_nocs << "\"/>\n";
     xml << "    <param name=\"homogeneous_cores\" value=\"1\"/>\n";
     xml << "    <param name=\"homogeneous_L2s\" value=\"" << (num_l2s > 0 ? 1 : 0) << "\"/>\n";
@@ -4243,12 +4234,16 @@ std::string McPATWrapper::generateXMLConfig() const {
         xml << "      <param name=\"ports\" value=\"1,1,1\"/>\n";
         xml << "      <param name=\"device_type\" value=\"" << config_.device_type << "\"/>\n";  /* 1.11.49 (L69) */
         xml << "      <param name=\"buffer_sizes\" value=\"16,16,16,16\"/>\n";
-        if (extraAreaMm2(ComponentType::L3_CACHE) > 0.0)   // arrays priced outside McPAT in the L3 (addExtraArray): one priced slice's share
-            xml << "      <param name=\"pimid_extra_area_mm2\" value=\"" << extraAreaMm2(ComponentType::L3_CACHE) / static_cast<double>(std::max(1, config_.l3_replicated_slices)) << "\"/>\n";
-        xml << "      <stat name=\"read_accesses\" value=\"" << l3_reads_ << "\"/>\n";
-        xml << "      <stat name=\"write_accesses\" value=\"" << l3_writes_ << "\"/>\n";
-        xml << "      <stat name=\"read_misses\" value=\"" << l3_read_misses_ << "\"/>\n";
-        xml << "      <stat name=\"write_misses\" value=\"" << l3_write_misses_ << "\"/>\n";
+        /* one instance (slice) of num_l3s: McPAT multiplies a homogeneous set's runtime dynamic by the instance count
+         * (processor.cc), so the template carries one slice's share of the accesses (a request reaches one slice), and
+         * the area of the arrays priced outside McPAT in the L3 (addExtraArray) per slice */
+        const uint64_t nl3 = static_cast<uint64_t>(num_l3s);
+        if (extraAreaMm2(ComponentType::L3_CACHE) > 0.0)
+            xml << "      <param name=\"pimid_extra_area_mm2\" value=\"" << extraAreaMm2(ComponentType::L3_CACHE) / static_cast<double>(nl3) << "\"/>\n";
+        xml << "      <stat name=\"read_accesses\" value=\"" << l3_reads_ / nl3 << "\"/>\n";
+        xml << "      <stat name=\"write_accesses\" value=\"" << l3_writes_ / nl3 << "\"/>\n";
+        xml << "      <stat name=\"read_misses\" value=\"" << l3_read_misses_ / nl3 << "\"/>\n";
+        xml << "      <stat name=\"write_misses\" value=\"" << l3_write_misses_ / nl3 << "\"/>\n";
         xml << "      <stat name=\"conflicts\" value=\"0\"/>\n";
         /* 1.11.56 (audit C006): measured, same reasoning as the L2 above --
          * the old expression was busy_cycles_/total_cycles_ * 0.3, i.e. the
@@ -4257,7 +4252,7 @@ std::string McPATWrapper::generateXMLConfig() const {
          * not divided per core. */
         const double l3_duty =
             (total_cycles_ > 0)
-                ? std::min(1.0, static_cast<double>(l3_reads_ + l3_writes_)
+                ? std::min(1.0, static_cast<double>((l3_reads_ + l3_writes_) / nl3)
                                     / static_cast<double>(total_cycles_))
                 : 0.0;
         xml << "      <stat name=\"duty_cycle\" value=\"" << l3_duty << "\"/>\n";
@@ -4273,7 +4268,7 @@ std::string McPATWrapper::generateXMLConfig() const {
             std::cout << "  [mcpat] L3 coherence directory: NOT PRICED by user "
                          "option (power.models.coherence_directory: false)" << std::endl;
         if (l3_dir) {
-            const uint64_t l3_dir_wr = l3_kids_l2 ? coh_l2_events_ : coh_l1_events_;
+            const uint64_t l3_dir_wr = (l3_kids_l2 ? coh_l2_events_ : coh_l1_events_) / nl3;   // per slice, as the accesses
             const double l3_dir_duty =
                 (total_cycles_ > 0)
                     ? std::min(1.0, static_cast<double>(l3_dir_wr)

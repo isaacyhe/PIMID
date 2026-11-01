@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.218 -- a last-level cache above 64 MB is priced as its slices, every one of them on the die
+
+- **The problem.** A last-level cache above 64 MB (a host of more than 34 cores, or an L3 size given that large) is the
+  record's 2 MB slices. The power model priced one slice in McPAT and multiplied its leakage and area by the slice count
+  afterwards. The multiplied area reached the reported L3 area and the host ring's span, but not McPAT's die: the die's
+  clock trunk spanned one slice and had one slice as a leaf, the other slices' clock trees were not priced, and the
+  snoop filter's area entered one slice's share. At 64 cores the die held 1 of the 60 slices.
+- **The fix** (src/power/mcpat_wrapper.cpp, include/power/mcpat_wrapper.h; params/cache/default.yaml comment;
+  docs/cores.md, docs/power.md). Such a cache is S McPAT instances of one slice, the way McPAT models a set of identical
+  caches: McPAT sums their area, leakage and clock trees, each is a root of the die's clock trunk, and each carries one
+  slice's share of the accesses and directory writes (a request reaches one slice). The multiplications after McPAT are
+  removed. A last-level cache of 64 MB or less is unchanged. The run's McPAT line says
+  `L3: <MB> in <S> slices of <KB> KB (McPAT instances)`.
+- **Validation.** 96 cells (60 host baselines, DDR5 and HBM3, 1/4/16 cores; 30 co-sim cells; 6 device-only cells), 12
+  cells with an inclusive L3, and 32- and 64-core hosts and a 16-core host with a 128 MB L3, this build against the
+  previous release: run times, checksums, hit rates, bandwidth and device counters identical in every cell; every
+  cell with 64 MB of L3 or less identical in power as well; a 64-core host run eight times gives eight identical
+  copies; the power checks report no flag and no consistency failure.
+- **Data impact** (power and area of caches above 64 MB only; DDR5 OpenMP histogram, host node; before -> after):
+
+  | host | L3 | die (mm^2) | die clock trunk (mW) | ring link (um) | L3 (W) | host (W) |
+  |---|---|---|---|---|---|---|
+  | 16 cores | 30 MB | 229.6 -> 229.6 | 91.4 -> 91.4 | 1679 -> 1679 | 3.38 -> 3.38 | 46.95 -> 46.95 |
+  | 32 cores | 60 MB | 447.1 -> 447.1 | 185.8 -> 185.8 | 1241 -> 1241 | 6.59 -> 6.59 | 80.32 -> 80.32 |
+  | 64 cores | 120 MB, 60 slices | 638.4 -> 945.9 | 321.6 -> 451.0 | 931 -> 931 | 12.28 -> 12.79 | 138.62 -> 138.50 |
+  | 16 cores, `l3_kb: 131072` | 128 MB, 64 slices | 171.8 -> 444.5 | 79.0 -> 200.3 | 2337 -> 2337 | 8.51 -> 8.92 | 84.52 -> 84.34 |
+
+  The L3's leakage was already counted for every slice; its dynamic power gains the other slices' clock trees. The ring
+  already spanned every slice. The die and its clock trunk grow by the slices that were left off; the measured uncore terms,
+  which take the priced uncore clocks off, fall by about 0.6 W (load) and 0.13 W (static); the host total moves by -0.1 W.
+
 ## 1.12.217 -- random inputs over large ranges come from a 64-bit generator: a bfs graph spans all its vertices
 
 - **The problem.** The kernels drew random indices from the 15-bit output of a 32-bit LCG (bits 16 to 30). A draw over

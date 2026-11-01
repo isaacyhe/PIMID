@@ -334,7 +334,8 @@ flight are limited by the L1D's fill buffers (the core's `l1d_fill_buffers`).
 
 The power model prices the same arrays. CACTI builds only power-of-two associativities, so the 12-way and 15-way arrays are
 priced as 16-way with the same capacity. The L3 is priced as one bank per slice. A last-level cache above 64 MB (more than 34
-cores) is priced as replicated 2 MB slices, and the host ring's links span a die that holds all of them. The processing elements' caches, and a host whose configuration gives its own cache block,
+cores) is priced as its 2 MB slices, one McPAT instance each: McPAT sums their area, leakage and clock trees, and the die
+(its clock trunk, the host ring's links) holds all of them. The processing elements' caches, and a host whose configuration gives its own cache block,
 keep CACTI's array time as their latency, which is far below a load-to-use (1 cycle for a 256 KB array at 22 nm and 2 GHz).
 
 The old host (32 KB 8-way L1D, 32 KB 4-way L1I, 256 KB 8-way L2, a 32 MB 16-way L3, CACTI's array times of 1, 1, 1 and 6 cycles
