@@ -297,9 +297,8 @@ register the compiler spills in a tiled loop costs a memory access. With
 and keeps `pim.pe.spm_stack_bytes` of it (default 8192): `pimid_spm_open`
 then reports `spm_bytes - spm_stack_bytes` for the buffers. Each PE reports
 the stack span it touched in the ROI as `stackSpanBytes`, which is what the
-reserve must hold. A message-passing rank that receives inside the ROI
-(histogram, reduction) touches about 70 KB of stack, the MPI library's receive
-frame, so `stack: spm` needs a larger reserve there (see the YAML reference).
+reserve must hold. The default reserve holds the ROI stack of every shipped
+kernel (at most 3,736 bytes, a message-passing rank's).
 
 All 8 PIM kernels, in their serial, shared-memory and message-passing forms,
 go through one tiled routine per kernel (the same text in all three forms).

@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.211 -- a message-passing receive no longer enters the MPI library's 64 KB process-mode frame
+
+- **The problem.** The guest MPI library's receive (`recv_bytes`, src/parallel_abstraction/pimid_mpi.cpp) held the
+  64 KB message slot of its process-mode transport as a local, so every receive entered a frame of about 69 KB, the
+  thread-mode receive included, which never uses the slot. The compiler's stack probes write one word per 4 KB page
+  of that frame on entry: 16 stack stores per receive on the rank's PE (memory writes, with the stack in the PE's
+  DRAM by default), and a stack span of about 69 KB, so a message-passing kernel that receives inside the ROI
+  (histogram, reduction) was refused under `pim.pe.stack: spm` at the default 8 KB reserve.
+- **The fix** (src/parallel_abstraction/pimid_mpi.cpp; docs/yaml_reference.md, docs/benchmarks.md). The process-mode
+  receive is a function of its own, never inlined, so the thread-mode receive's frame is small. The guest MPI
+  library ships rebuilt.
+- **Validation** (the previous release and this build; smoke sizes):
+  - the native collectives check passes at all 13 rank counts with both builds;
+  - the 34 scratchpad-stack cells (24 device, 10 co-simulation) all run; the previous release refused 3 of them (the
+    device histogram and reduction, the co-simulation histogram, all message-passing). The largest ROI stack span
+    of any of them is now 3,736 bytes;
+  - 150 message-passing smoke cells: the same return codes; 114 run times unchanged, 36 shifted (median 1.35 %): the
+    receive's probe stores no longer reach the PE's memory, and the library's code moved;
+  - two determinism cells x 8 copies: one output each; the power check reports no flag and no consistency failure.
+- **Data impact.** At smoke sizes: on the CHANNEL and LOGIC_DIE placements and in co-simulation, where the ranks
+  share a memory controller, up to about 8 %, and the saturated bfs on the LOGIC_DIE placement from 21.9 M to 40.2 M
+  cycles; on BANK placements 12 of 115 cells move, by at most 2.2 % (mostly in-order and out-of-order cores, whose
+  receives no longer store to memory); SUBARRAY and BANK_GROUP placements keep their run times (one BANK_GROUP cell
+  +0.13 %). Serial and OpenMP runs do not change.
+
 ## 1.12.210 -- the host's idle uncore clocking is counted once
 
 - **The problem.** `<host>.uncore_static` is the Haswell-EP package C1E intercept, a measured awake-idle package power

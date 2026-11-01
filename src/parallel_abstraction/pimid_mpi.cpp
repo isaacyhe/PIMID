@@ -1253,23 +1253,13 @@ static void recv_chunk_thread(RecvState* r, char* p, size_t nbytes) {
     r->written += take;
 }
 
-/* Returns the bytes received. */
-static size_t recv_bytes(void* buf, size_t nbytes, int source) {
-    if (g_nranks <= 1) return 0;
-    /* MPI_PROC_NULL (-1) recv is a no-op in real MPI; without this guard an
-     * edge rank (e.g. stencil halo exchange) blocks forever on a mailbox no
-     * rank will ever send to. Mirrors the dest guard in MPI_Send. */
-    if (source < 0 || source >= g_nranks) return 0;
-    char* p = (char*)buf;
-    if (g_thread_mode) {   /* thread mode: honor source */
-        RtScope rs;   /* 1.12.18 */
-        RecvState r = { source, -1, 0, 0, 0, false };
-        do recv_chunk_thread(&r, p, nbytes); while (!r.done);
-        if (!r.timed) inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);   /* (1.12.177): done at the first chunk */
-        /* 1.12.18: the protocol primitive, AFTER the rendezvous (added to the ordering) */
-        rt_event(tl_coll ? RTK_MPI_COLL_STEP : RTK_MPI_P2P, 2);
-        return r.written;
-    }
+/* (1.12.211): the process-mode receive, in its own frame. Its MessageSlot (a 64 KB payload) used to be a local of
+ * recv_bytes, so every receive -- the thread-mode one, which never uses it, included -- entered a 64 KB frame whose
+ * pages the compiler's stack probes write at entry: 16 stack stores per receive on the rank's PE (DRAM writes with
+ * the stack in DRAM) and about 69 KB of stack span (a `pim.pe.stack: spm` run refused at the 8 KB reserve). The
+ * frame is the runtime library's, not the workload's: a simulator artifact. noinline keeps the compiler from
+ * folding it back into recv_bytes. */
+static __attribute__((noinline)) size_t recv_bytes_process(char* p, size_t nbytes) {
     /* Receive until we've assembled a complete message (1+ chunks). For
      * the FIFO-matching policy this implementation has always used, we
      * receive chunks of the next message in order. */
@@ -1291,6 +1281,26 @@ static size_t recv_bytes(void* buf, size_t nbytes, int source) {
 
     inject_timing_recv(last_src, g_rank, written, send_time, contend_wait);
     return written;
+}
+
+/* Returns the bytes received. */
+static size_t recv_bytes(void* buf, size_t nbytes, int source) {
+    if (g_nranks <= 1) return 0;
+    /* MPI_PROC_NULL (-1) recv is a no-op in real MPI; without this guard an
+     * edge rank (e.g. stencil halo exchange) blocks forever on a mailbox no
+     * rank will ever send to. Mirrors the dest guard in MPI_Send. */
+    if (source < 0 || source >= g_nranks) return 0;
+    char* p = (char*)buf;
+    if (g_thread_mode) {   /* thread mode: honor source */
+        RtScope rs;   /* 1.12.18 */
+        RecvState r = { source, -1, 0, 0, 0, false };
+        do recv_chunk_thread(&r, p, nbytes); while (!r.done);
+        if (!r.timed) inject_timing_recv(r.src, g_rank, r.written, r.send_time, r.contend_wait);   /* (1.12.177): done at the first chunk */
+        /* 1.12.18: the protocol primitive, AFTER the rendezvous (added to the ordering) */
+        rt_event(tl_coll ? RTK_MPI_COLL_STEP : RTK_MPI_P2P, 2);
+        return r.written;
+    }
+    return recv_bytes_process(p, nbytes);   /* (1.12.211): see recv_bytes_process */
 }
 
 /* One exchange step: send to dest and receive from source, chunk by chunk in
