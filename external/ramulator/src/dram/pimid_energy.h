@@ -2684,14 +2684,17 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
         o << "[guard] " << bt << " DQ I/O priced at the anchored io_share " << f2(s.io_anchor_rd_pj_bit) << " R / "
           << f2(s.io_anchor_wr_pj_bit) << " W pJ/b (" << f2(s.idd4r_io) << " / " << f2(s.idd4w_io) << " mA at "
           << f2(s.io_channel_gbps) << " Gb/s)";
-        if (b.valid) {
-            const bool rd_in = (s.io_anchor_rd_pj_bit >= b.lo_pj_bit - 1e-9 && s.io_anchor_rd_pj_bit <= b.hi_pj_bit + 1e-9);
-            o << "; IDDQ band " << f2(b.lo_pj_bit) << "-" << f2(b.hi_pj_bit) << " pJ/b is the guard: read "
-              << f2(s.io_anchor_rd_pj_bit) << " " << (rd_in ? "inside" : (s.io_anchor_rd_pj_bit > b.hi_pj_bit ? "ABOVE" : "BELOW"))
-              << " (" << f2(s.io_anchor_rd_pj_bit / (s.io_anchor_rd_pj_bit > b.hi_pj_bit ? b.hi_pj_bit : b.lo_pj_bit)) << "x of the "
-              << (s.io_anchor_rd_pj_bit > b.hi_pj_bit ? "top" : "bottom") << "), write " << f2(s.io_anchor_wr_pj_bit)
-              << " not covered (the band is a read-driver figure)";
-            out.push_back((rd_in ? std::string() : std::string("[guard] WARNING: ")) + (rd_in ? o.str() : o.str().substr(8)));
+        if (b.valid) {   /* the record's band (published PHY energies) guards the read AND the write share */
+            auto in_band = [&](double v) { return v >= b.lo_pj_bit - 1e-9 && v <= b.hi_pj_bit + 1e-9; };
+            auto verdict = [&](double v) {
+                if (in_band(v)) return std::string("inside");
+                const bool above = v > b.hi_pj_bit;
+                return std::string(above ? "ABOVE" : "BELOW") + " (" + f2(v / (above ? b.hi_pj_bit : b.lo_pj_bit)) + "x of the " + (above ? "top" : "bottom") + ")";
+            };
+            const bool all_in = in_band(s.io_anchor_rd_pj_bit) && in_band(s.io_anchor_wr_pj_bit);
+            o << "; the record's band " << f2(b.lo_pj_bit) << "-" << f2(b.hi_pj_bit) << " pJ/b (iddq_band_pj_bit: published PHY energies) is the guard: read "
+              << f2(s.io_anchor_rd_pj_bit) << " " << verdict(s.io_anchor_rd_pj_bit) << ", write " << f2(s.io_anchor_wr_pj_bit) << " " << verdict(s.io_anchor_wr_pj_bit);
+            out.push_back(all_in ? o.str() : std::string("[guard] WARNING: ") + o.str().substr(8));
         } else {
             out.push_back(o.str() + "; no IDDQ band in the record to guard it");
         }

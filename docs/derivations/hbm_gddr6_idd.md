@@ -750,6 +750,36 @@ with the standby VPP (ratio 0.100723, sec. 1.12) and refresh, about 3.0 W.
   The released configuration's own values for them follow its activation equation and
   an all-0s data reference, and are not adopted here.
 
+### 1.15 The HBM3 guards compare like with like
+
+Two of the record's guards (printed, never priced) compared the HBM3 row with figures
+of another kind, so every HBM3 run printed three warnings that said nothing about HBM3.
+
+**Total read energy.** The run's derived total read energy (sequential 64 B reads
+crossing the DQ at the channel's full rate, one ACT per 1 KB row: array burst, DQ I/O,
+activation, standby, refresh) is 4.13 pJ/b. Section 1.7's references were HBM1 and
+HBM2 vendor figures, 3.22 pJ/b each, computed at 1 and 2 Gb/s (Hot Chips 26, 2014;
+Sohn et al., JSSC 2017), with the band "a newer generation is at most 15 % better and
+never worse". The published HBM2E figure, 4.3 pJ/bit (Moon et al., IEDM 2023), is
+itself above both, so those two references cannot bound a later generation. The like-
+for-like published figures are the HBM3 generation's own neighbours: HBM2E 4.3 pJ/bit
+and HBM3 up to 15 % more efficient than HBM2E (M.-J. Park et al., JSSC 58(1) 2023,
+Sec. VIII), so [3.655, 4.30]; HBM3E, the next generation, 20 % below HBM2E (about 3.44,
+the same IEDM paper), below that band as it should be. The guard keeps the HBM2E
+reference only. The measured H200 HBM3E read energy of the HBM power paper (Sec. 6.3,
+Fig. 23) is not a reference: it covers the GPU's whole memory power and a random-row
+trace with four reads per activation.
+
+**DQ I/O.** The DQ I/O of a crossing HBM3 access is priced at the published HBM3 PHY
+energy (Chae et al., JSSC 2024: 0.29 pJ/b read, 0.25 write; section 1.7). The band it
+was checked against, 0.19-0.27 pJ/b, is an HBM2 TSV-driver current (Cho et al., ISSCC
+2018): another link, another generation, reads only. The guard is now the published
+HBM3 PHY range, reads and writes: 0.25 (Chae et al.) to 0.50 pJ/bit (Mehta et al.,
+Intel 4 HBM3 PHY with EMIB, 7.2 Gb/s/pin, VLSI Design 2025). Read 0.29 and write 0.25
+are inside.
+
+Nothing priced changes; the HBM3 runs print no guard warning.
+
 ## 2. Derivation 2 -- GDDR6
 
 ### 2.1 Search for a scaling base

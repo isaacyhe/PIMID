@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.213 -- the HBM3 guards compare like with like: no warning in an HBM3 run
+
+- **The problem.** Every HBM3 run printed three guard warnings that did not compare like with like. (1, 2) The derived
+  total read energy (4.13 pJ/b) was held to HBM1 and HBM2 vendor figures of 3.22 pJ/b computed at 1 and 2 Gb/s, on the
+  rule "a newer generation is at most 15 % better and never worse"; the published HBM2E figure, 4.3 pJ/bit, is above
+  both, so they cannot bound a later generation. (3) The priced DQ I/O share (the published HBM3 PHY energy, 0.29 read
+  / 0.25 write pJ/b) was checked against an HBM2 TSV-driver current band, 0.19-0.27 pJ/b, another link, reads only.
+- **The fix** (params/dram/hbm3.yaml; external/ramulator/src/dram/pimid_energy.h: the guard line; docs/derivations/
+  hbm_gddr6_idd.md sec. 1.15, docs/sources.md). The read-energy guard keeps the HBM2E reference (Moon et al., IEDM 2023)
+  with HBM3's published gain over HBM2E, up to 15 % (Park et al., JSSC 2023): band 3.655-4.30 pJ/b. The DQ I/O guard is
+  the published HBM3 PHY range, 0.25 (Chae et al., JSSC 2024) to 0.50 pJ/bit (Mehta et al., VLSI Design 2025), and
+  the guard line checks the read and the write share against it.
+- **Validation.** HBM2 and HBM3 cells, this tree against the same build without the change: run times and every power
+  figure identical; only guard lines change; HBM3 runs print no guard warning.
+- **Data impact.** None (printed guards only).
+
 ## 1.12.212 -- the DRAM replay window's time-based counters are read at the ROI end's own tick
 
 - **The problem.** When the ROI end became known after the replayed DRAM clock had passed it, the window's

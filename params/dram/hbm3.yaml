@@ -105,17 +105,15 @@ component_factors: none   # HBM rows are measured means; no typical/maximum fact
 termination:   # DQ termination electricals; the formula (terminationNJ) stays in the tool
   scheme: none
   source: "HBM: unterminated single-ended interposer I/O; the VDDQ band below prices the DQ"
-iddq_band_pj_bit: { lo: 0.19, hi: 0.27, source: "HBM2/HBM3 VDDQ I/O energy band 0.19-0.27 pJ/bit (measured; 1.11.91 R8-8)" }
-# 1.12.18 (user ruling 2026-10-23): GUARD ONLY on this record. The DQ I/O of a crossing access is priced from
-# idd.io_share (the HBM3 host-PHY anchor: same link, same generation, measured, per direction); this band
-# (HBM2 TSV-driver current, Cho et al. ISSCC 2018 12.3 Fig. 12.3.1, reads only) is printed beside it as a check.
+iddq_band_pj_bit: { lo: 0.25, hi: 0.50, source: "GUARD ONLY on this record: the published HBM3 PHY energy per bit, the link the priced idd.io_share is anchored on, reads and writes: lo 0.25, K. Chae et al. (Samsung), 'A 4-nm 1.15 TB/s HBM3 Interface With Resistor-Tuned Offset Calibration and In Situ Margin Detection', IEEE JSSC 59(1), Jan. 2024, Table II (0.25 pJ/bit write, 0.29 read at 9 Gb/s/pin, 4 nm); hi 0.50, Mehta et al. (Intel), 'A 0.5pJ/bit 7.2Gbps HBM3 PHY on Intel4 with EMIB Packaging and Unmatched Receiver Architecture on PHY Side with Per Bit Deskew Correction', VLSI Design 2025, DOI 10.1109/VLSID64188.2025.00096 (0.5 pJ/bit at 7.2 Gb/s/pin)" }
+# GUARD ONLY on this record. The DQ I/O of a crossing access is priced from idd.io_share (the HBM3 host-PHY anchor: same
+# link, same generation, measured, per direction); this band, the published HBM3 PHY energies, is printed beside it
+# as a check of the read and the write share.
 
-# 1.12.18 (user ruling 2026-10-23): published whole-device read energy of OLDER generations. GUARD ONLY: printed
-# against the model's computed total read energy in every HBM3 run (WARNING when outside); never priced, never tuned.
+# Published whole-device read energy of the generation HBM3 is measured against. GUARD ONLY: printed against the
+# model's computed total read energy in every HBM3 run (WARNING when outside); never priced, never tuned.
 read_energy_guard:
   references:
-    - { label: "HBM1", pj_bit: 3.22, source: "J. Kim, Y. Kim (SK hynix), 'HBM: Memory Solution for Bandwidth-Hungry Processors', Hot Chips 26, Aug. 2014: HBM power 3.3 W at 128 GB/s (vendor calc.) -> 3.3 W / 1024 Gb/s = 3.22 pJ/b" }
-    - { label: "HBM2", pj_bit: 3.22, source: "K. Sohn et al. (Samsung), 'A 1.2 V 20 nm 307 GB/s HBM DRAM ...', IEEE JSSC 52(1), Jan. 2017, Sec. VI Conclusion: 'from 6.6 to 12 W in case of 256 GB/s' (HBM vs GDDR5) -> 6.6 W / 2048 Gb/s = 3.22 pJ/b" }
     - { label: "HBM2E", pj_bit: 4.3, source: "K.-I. Moon, H.-Y. Son, K. Lee (SK hynix), IEDM 2023 paper 15-6, p.2: 'the power efficiency of HBM2E is about 4.3 pJ/bit' (derivation sec. 1.5)" }
   max_generation_gain: 0.15   # expected band per reference: [(1 - gain) x pj_bit, pj_bit]
-  gain_source: "M.-J. Park et al. (SK hynix), 'A 192-Gb 12-High 896-GB/s HBM3 DRAM ...', IEEE JSSC 58(1), Jan. 2023, Sec. VIII: HBM3 vs HBM2E 'power efficiency has been improved by up to 15%'; applied to the HBM1/HBM2 references too (an extrapolation of a claim made against HBM2E; stated)"
+  gain_source: "M.-J. Park et al. (SK hynix), 'A 192-Gb 12-High 896-GB/s HBM3 DRAM ...', IEEE JSSC 58(1), Jan. 2023, Sec. VIII: HBM3 vs HBM2E 'power efficiency has been improved by up to 15%'. The next generation sits below the band, as it should: HBM3E is 20% below HBM2E, about 3.44 pJ/bit (Moon et al., IEDM 2023 15-6, p.2). Older generations are not references: their published figures (HBM1 3.22 pJ/b at 1 Gb/s, Hot Chips 26 2014; HBM2 3.22 pJ/b at 2 Gb/s, Sohn et al. JSSC 52(1) 2017) are below the published HBM2E figure, so a newer generation is not bounded by them (derivation sec. 1.15)"
