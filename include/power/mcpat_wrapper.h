@@ -268,6 +268,9 @@ public:
          *                                XML gives); the CAM compares the row bits
          *                                above, so this feeds no tag here. */
         int memory_channels_per_mc = 1;
+        /* (1.12.209) the PHY's static power is charged by the caller (the measured
+         * interface idle): McPAT's PHY leakage is not added; its area stays. */
+        bool phy_static_external = false;
         int banks_served = 8;               // banks one controller sequences (PARE's channel: 8)
         bool unified_queues = false;        // true: PARE's unified read and write queues (a PIM element controller)
         int req_window_size_per_channel = 256;     // the transaction queues' entries

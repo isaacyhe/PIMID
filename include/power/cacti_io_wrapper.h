@@ -116,6 +116,9 @@ struct LinkIOResult {
      * although the CACTI-IO map is not exact (HBM3 -> WideIO), so it may be
      * charged. Per channel (num_dq DQ); the caller scales it to the channels. */
     bool   phy_static_sourced = false;
+    /* (1.12.209) the static is a measured PHY idle (the whole PHY, its transistor
+     * leakage included), not a CACTI-IO bias-only map value. */
+    bool   phy_static_measured = false;
     double phy_dynamic_power_mw = 0.0;
 
     double timing_margin_ui = 0.0;     // eye margins, reported not consumed

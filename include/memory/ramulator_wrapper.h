@@ -390,6 +390,7 @@ public:
     double getInterfaceDynamicEnergyNJ() const;
     double getInterfaceAreaMM2() const;
     std::string getInterfacePhyStaticSource() const;   // (user ruling 2026-10-27) where the PHY static figure comes from
+    bool getInterfacePhyStaticMeasured() const;         // (1.12.209) the PHY static is a measured PHY idle (leakage included)
     /* 1.11.60 (audit round 4, C009): true when the last getInterfaceAreaMM2()
      * returned 0.0 because CACTI-IO REFUSED to extrapolate its area
      * polynomial above 3162 MHz -- as distinct from returning 0.0 because the

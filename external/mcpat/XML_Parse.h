@@ -635,6 +635,7 @@ typedef struct{
 	bool LVDS;
 	int phy_class;   /* PIMID 1.11.19 (D2/D3): 0=off-package DDR, 1=interposer/TSV */
 	double phy_pj_bit_rd, phy_pj_bit_wr;   /* PIMID (1.12.132): a published PHY energy per bit; > 0 replaces the PHY dynamic */
+	bool phy_static_external;   /* PIMID (1.12.209): the PHY's static power is priced by the caller; no PHY leakage here */
 	double vdd;
 	double power_gating_vcc;
 

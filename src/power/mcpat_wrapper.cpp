@@ -1377,6 +1377,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(config_.mc_background_fraction);   // 1.11.98 (row 28)
     f(mc_tech_.number_ranks);        f(mc_tech_.number_mcs);
     f(mc_tech_.memory_channels_per_mc);
+    f(mc_tech_.phy_static_external ? 1 : 0);   // (1.12.209)
     f(mc_tech_.req_window_size_per_channel);
     f(mc_tech_.io_buffer_size_per_channel);
     f(mc_tech_.block_size_bytes);    f(mc_tech_.addressbus_width);
@@ -4560,6 +4561,8 @@ std::string McPATWrapper::generateXMLConfig() const {
     xml << "      <param name=\"background_fraction\" value=\"" << config_.mc_background_fraction << "\"/>\n";   /* 1.11.98 (row 28, ruling (c)): 0 when the controller is measured */
     xml << "      <param name=\"phy_class\" value=\""
         << (config_.mc_phy_tier == SystemConfig::MCPhyTier::INTERPOSER ? 1 : 0) << "\"/>\n";
+    if (mc_tech_.phy_static_external)   // (1.12.209): the PHY's static power is the caller's measured idle
+        xml << "      <param name=\"phy_static_external\" value=\"1\"/>\n";
     if (mc_tech_.phy_pj_bit_rd > 0.0 && mc_tech_.phy_pj_bit_wr > 0.0) {   // (1.12.132) (user ruling 2026-10-28)
         xml << "      <param name=\"phy_pj_bit_rd\" value=\"" << mc_tech_.phy_pj_bit_rd << "\"/>\n";
         xml << "      <param name=\"phy_pj_bit_wr\" value=\"" << mc_tech_.phy_pj_bit_wr << "\"/>\n";

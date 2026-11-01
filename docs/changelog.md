@@ -6,6 +6,38 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.209 -- the host's memory controllers are priced per memory type; the host PHY's static power once
+
+- **The problem.** A host node was priced as one memory controller serving one channel of its memory, whatever the
+  memory: an HBM3 stack's 16 channels, a DDR5 DIMM channel's two 32-bit sub-channels, an LPDDR5 package's four x16
+  channels and a GDDR6 device's two x16 channels each got one channel's controller structure and PHY, while the timing
+  runs a controller per channel. Separately, the host memory controller PHY static, a measured idle of the whole PHY
+  for DDR4, DDR5, HBM2 and HBM3, was charged beside McPAT's own PHY transistor leakage: the same block's static power
+  twice.
+- **The fix** (src/main.cpp, src/power/mcpat_wrapper.cpp, include/power/mcpat_wrapper.h, external/mcpat).
+  - The host's controllers follow the published organisation of its memory type: HBM2 and HBM3 one controller per
+    channel (Green et al., PARE, MICRO 2026, Sec. III, Fig. 3); DDR5 up to four 32-bit sub-channels per controller
+    (Intel, "Technical Overview of the 4th Gen Intel Xeon Scalable Processor Family"); DDR4 and DDR3 up to two 64-bit
+    channels (the same overview, 3rd Gen); LPDDR5 four x16 channels ("12th Generation Intel Core Processor Datasheet,
+    Volume 2 of 2"); GDDR6 one controller per two-channel device (NVIDIA, "NVIDIA Ampere GA102 GPU Architecture").
+    With the presets: HBM3 16 x 1, HBM2 8 x 1, DDR5 1 x 2, LPDDR5 1 x 4, GDDR6 1 x 2, DDR4 and DDR3 1 x 1. The run
+    prints the organisation. Only the priced structure changes: the controllers the timing builds, the host fabric's
+    stops and the HOST_MC placement's element interfaces are as before.
+  - Where the host memory controller PHY static is a measured PHY idle (DDR4, DDR5, HBM2, HBM3), McPAT's PHY leakage
+    is not added for that PHY; the PHY's area and its per-bit energy stay McPAT's. A CACTI-IO map's static (bias only)
+    keeps McPAT's leakage beside it.
+- **Validation.** 1.12.203 and this change side by side (the change touches only the host controllers' pricing): 97
+  cells (60 host baselines on DDR5 and HBM3, 30 co-simulation cells, 7 device-only cells) and 4 HBM2 cells (co-simulation
+  and host baseline): run times, checksums and every line before the power report identical in all 101; device-only
+  power identical. Two determinism cells, 8 copies each: one output per cell. The power checker reports no flag and no
+  consistency failure.
+- **Data impact.** Host memory controllers, before -> after: HBM3 (16 controllers) area 2.0 -> 32.4 mm^2, leakage 15 ->
+  206 mW, clock 22 -> 348 mW; HBM2 (8) 2.7 -> 21.9 mm^2, 16 -> 97 mW, 13 -> 107 mW; DDR5 (one controller of two
+  sub-channels) 3.3 -> 10.4 mm^2, 21 -> 28 mW, 42 -> 105 mW. Totals: host baselines +0.00 to +0.07% (the host uncore
+  static and load terms subtract what the run prices of the uncore, the controllers included); co-simulation HBM3 +1.40
+  to +1.46%, HBM2 +0.44 to +0.49%, DDR5 +0.19 to +0.33% (the host is nearly idle there and its uncore load term is
+  already 0, so the controllers' clock trees add); device-only cells unchanged. Run times do not change.
+
 ## 1.12.208 -- A host core's last reads of the ROI are inside it
 
 - **The problem.** An out-of-order or in-order core issues a memory request at its dispatch cycle, which can lie past

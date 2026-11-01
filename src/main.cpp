@@ -12562,6 +12562,98 @@ static bool crossesOffPackageDQ(int pe_hierarchy_level,
     return true;                                           // RANK and anything above
 }
 
+/* (1.12.209) THE HOST'S MEMORY CONTROLLERS, PRICED PER MEMORY TYPE. A host node
+ * used to be priced as ONE controller serving ONE channel of its memory,
+ * whatever the memory's organisation, while the timing runs a controller per
+ * channel: an HBM3 stack's 16 channels, a DDR5 DIMM channel's two 32-bit
+ * sub-channels, an LPDDR5 package's four x16 channels and a GDDR6 device's two
+ * x16 channels were each priced as one channel's controller structure and PHY.
+ * The priced organisation now follows each type's published controllers, over
+ * the memory's channel population C (the preset's channels; a coupled
+ * memory's hierarchy channels if it has more):
+ *   HBM2, HBM3  one controller per channel (Green et al., PARE, MICRO 2026,
+ *               Sec. III and Fig. 3);
+ *   DDR5        up to two DDR5 channels, i.e. four 32-bit sub-channels, per
+ *               controller (Intel, "Technical Overview of the 4th Gen Intel
+ *               Xeon Scalable Processor Family": four memory controllers, up to
+ *               eight DDR5 channels per CPU);
+ *   DDR4, DDR3  up to two 64-bit channels per controller (the same overview,
+ *               3rd Gen: four memory controllers, up to eight DDR4 channels;
+ *               DDR3 is given DDR4's organisation);
+ *   LPDDR5      four x16 channels per controller ("12th Generation Intel Core
+ *               Processor Datasheet, Volume 2 of 2": two memory controllers of
+ *               two channels, each channel driving two LPDDR5 sub-channels);
+ *   GDDR6       two x16 channels, one device, per controller (NVIDIA, "NVIDIA
+ *               Ampere GA102 GPU Architecture" whitepaper: twelve 32-bit memory
+ *               controllers, 384 bits in all).
+ * Controllers = ceil(C / k) for the type's k channels per controller, each
+ * serving ceil(C / controllers) channels. Only the PRICED structure follows
+ * this: the controllers the timing builds, the host fabric's stops and the
+ * HOST_MC placement's element interfaces are unchanged. A non-DRAM memory
+ * keeps its single controller. */
+struct HostMcOrganisation { int mcs = 1; int channels_per_mc = 1; int channels = 1; int per_mc_max = 1; };
+static HostMcOrganisation hostMcOrganisation(const std::string& tech_in, const UnifiedConfig& config) {
+    HostMcOrganisation o;
+    const std::string t = canonicalMemTech(tech_in);
+    if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) return o;
+    int k = 1;                                                    // HBM2, HBM3
+    if (t == "DDR5" || t == "LPDDR5") k = 4;
+    else if (t == "DDR4" || t == "DDR3" || t == "GDDR6") k = 2;
+    int c = decoupledHostChannels(t, config);
+    if (sharedMemoryCoupled(config) && config.hierarchy_dram_channels > c) c = config.hierarchy_dram_channels;
+    o.channels = std::max(1, c);
+    o.per_mc_max = k;
+    o.mcs = (o.channels + k - 1) / k;
+    o.channels_per_mc = (o.channels + o.mcs - 1) / o.mcs;
+    return o;
+}
+
+/* (1.12.209) THE HOST PHY'S STATIC POWER, PRICED ONCE. Where the run charges the
+ * host memory controller PHY static (power.models.host_mc_phy_static) and that
+ * static is a MEASURED PHY idle (DDR4 and DDR5: measured PHY idle rails; HBM2
+ * and HBM3: a measured HBM-class PHY idle; the whole PHY, its transistor
+ * leakage included), McPAT's own PHY transistor leakage is the same block's
+ * static power at a second model, so it is not added; the PHY's area and its
+ * per-bit dynamic stay McPAT's. A CACTI-IO map's static (phase rotator, RX
+ * and PLL bias only) does not include it, and McPAT's leakage stays. Same
+ * predicate as the charge itself (system scope, "host memory controller PHY
+ * static"). */
+static bool hostMcPhyStaticCharged(const std::string& tech_in, const UnifiedConfig::SystemNode* host,
+                                   const UnifiedConfig& config) {
+    if (!config.pm_host_mc_phy_static) return false;
+    const std::string t = canonicalMemTech(tech_in);
+    if (t.empty() || t == "SRAM" || t == "STT_MRAM" || t == "PCM" || t == "RERAM") return false;
+    if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) return false;
+    if (!crossesOffPackageDQ(-1, t)) return false;
+    try {
+        pimid::RamulatorWrapper q("", t);
+        q.setTemperatureK(config.temperature_k);
+        q.setDdr5SpeedGrade((sharedMemoryCoupled(config) || host == nullptr) ? config.ddr5_speed_grade
+                                                                              : hostDdr5Grade(*host, config));
+        q.initialize();
+        return q.getInterfacePhyStaticMW(config.hierarchy_dram_channels) > 0.0 && q.getInterfacePhyStaticMeasured();
+    } catch (const std::exception&) {
+        return false;   // the charge site says the PHY static is unavailable and charges none
+    }
+}
+
+static void applyHostMcOrganisation(pimid::McPATWrapper::MCTechParams& p, const std::string& tech,
+                                    const UnifiedConfig::SystemNode* host, const UnifiedConfig& config,
+                                    const std::string& who) {
+    const HostMcOrganisation o = hostMcOrganisation(tech, config);
+    p.number_mcs = o.mcs;
+    p.memory_channels_per_mc = o.channels_per_mc;
+    p.phy_static_external = hostMcPhyStaticCharged(tech, host, config);
+    static std::set<std::string> said;
+    if (said.insert(who + "|" + tech).second)
+        std::cout << "  [power] " << who << " memory controllers: " << o.mcs << " x " << o.channels_per_mc
+                  << " channel(s) of " << canonicalMemTech(tech) << " (" << o.channels << " channel(s), up to "
+                  << o.per_mc_max << " per controller)"
+                  << (p.phy_static_external ? "; PHY static from the measured interface idle, McPAT's PHY leakage not added"
+                                            : "")
+                  << std::endl;
+}
+
 /* 1.11.52 (audit 1162 A001/A002/A003/A025): ONE OWNER for the device
  * corner, the DRAM-periphery factors and the periphery clock ceiling.
  *
@@ -14782,7 +14874,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per host
          * core (`<node>_l2 { caches = node.num_cores }`). */
         host_cfg.l2_instances = std::max(1, host_cfg.num_cores);
-        host_cfg.num_memory_controllers = hostMemControllerCount(host_node ? host_node->memory_tech : config.memory_tech, config);   // 1.11.98 (H32): the built count, one per channel
+        host_cfg.num_memory_controllers = hostMcOrganisation(host_node ? host_node->memory_tech : config.memory_tech, config).mcs;   // (1.12.209): the type's organisation (was the built count, one per channel)
         /* 1.11.52 (audit A011): DERIVED, like every other MC clock in this
          * file (mcfg.mc_clock_mhz = frequency/2 at both other sites). The
          * literal 1200 had no source and no print, so a host at any clock
@@ -14901,6 +14993,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                                                : config.host_memory_tech;
             McPAT::MCTechParams hp = getMCTechParamsForMcPAT(hmt, host_cfg.num_memory_controllers, config);   // 1.11.96
             applyHbmHostPhyEnergy(hp, canonicalMemTech(hmt), "host");   // (1.12.132) (user ruling 2026-10-28)
+            applyHostMcOrganisation(hp, hmt, host_node, config, "host");   // (1.12.209)
             host_mcpat.setMCTechParams(hp);
         }
 
@@ -17413,9 +17506,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
          * REGION of the placement tree (1.10.5), not the literal 1 this path
          * used to emit. The literal made MC area and leakage differ between
          * the two scopes by the endpoint count (tens to hundreds) for one
-         * machine. A HOST node keeps a single controller: it has no PE
-         * placement tree, and its channel count is the memory-side quantity
-         * priced by the MC-tech parameters, not by this field. */
+         * machine. A HOST node's controllers follow its memory type's
+         * published organisation ((1.12.209), hostMcOrganisation): it has no PE
+         * placement tree, and the count and channels per controller are set
+         * with the MC-tech parameters below. */
         if (node.role == UnifiedConfig::SystemNode::DEVICE) {
             if (config.htree_endpoints > 0) {
                 mcfg.num_memory_controllers = config.htree_endpoints;
@@ -17431,7 +17525,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                           << " element controllers (one per placement-tree "
                              "region, as in device scope)" << std::endl;
         } else {
-            mcfg.num_memory_controllers = 1;
+            mcfg.num_memory_controllers = hostMcOrganisation(node.memory_tech, config).mcs;   // (1.12.209)
         }
         mcfg.mc_clock_mhz = mcClockMHzForMcPAT(node.memory_tech, config, node.frequency_mhz);   // 1.11.96 (14c)
 
@@ -18457,6 +18551,8 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     node.role == UnifiedConfig::SystemNode::DEVICE ? deviceBanksPerController(config, mcfg.num_memory_controllers) : -1);   // 1.11.96
                 if (node.role == UnifiedConfig::SystemNode::HOST)   // (1.12.132) (user ruling 2026-10-28)
                     applyHbmHostPhyEnergy(np, canonicalMemTech(node.memory_tech), node.name);
+                if (node.role == UnifiedConfig::SystemNode::HOST)   // (1.12.209)
+                    applyHostMcOrganisation(np, node.memory_tech, &node, config, node.name);
                 mcpat.setMCTechParams(np);
             }
 
@@ -18651,8 +18747,10 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
      * each HOST memory controller whose accesses drive the DRAM's DQ pins,
      * from the same CACTI-IO evaluation device scope charges at a crossing
      * placement (RamulatorWrapper::getInterfacePhyStaticMW: phase rotator +
-     * RX + PLL static; datapath and clock-tree static are 0 in the map, so
-     * it does not overlap McPAT's PHY transistor leakage). One entry per
+     * RX + PLL static; datapath and clock-tree static are 0 in the map).
+     * Since (1.12.209) the static is the measured interface idle where one is
+     * published, which includes the PHY's transistor leakage, so McPAT's PHY
+     * leakage is not added for that host (hostMcPhyStaticCharged). One entry per
      * host controller, registered once in the ledger under
      * <host>.memory_controllers_phy: the PHY belongs to the
      * controller that drives the pins, and the shared array's memory term

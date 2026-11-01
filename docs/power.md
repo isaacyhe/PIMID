@@ -574,6 +574,26 @@ cache line. The run prints the structure it priced on a
 Where there are several controllers (a device's element controllers, one per
 region of the placement tree), every controller's transactions are priced,
 each once, and leakage, area and the clock network count every controller.
+A host's memory controllers are priced per memory type, following the
+published controller organisation of that type over the memory's channels
+(the run prints `[power] <host> memory controllers: N x M channel(s)`):
+HBM2 and HBM3 one controller per channel (Green et al., PARE, MICRO 2026,
+Sec. III, Fig. 3); DDR5 up to two DDR5 channels, four 32-bit sub-channels, per
+controller (Intel, "Technical Overview of the 4th Gen Intel Xeon Scalable
+Processor Family": four memory controllers, up to eight DDR5 channels); DDR4
+and DDR3 up to two 64-bit channels per controller (the same overview, 3rd Gen,
+for DDR4; DDR3 is given DDR4's organisation); LPDDR5 four x16 channels per
+controller ("12th Generation Intel Core Processor Datasheet, Volume 2 of 2":
+two memory controllers of two channels, each driving two LPDDR5
+sub-channels); GDDR6 one controller per two-channel device (NVIDIA, "NVIDIA
+Ampere GA102 GPU Architecture": twelve 32-bit memory controllers). With the
+presets this is 16 controllers for an HBM3 stack, 8 for HBM2, one controller
+of two sub-channels for DDR5, one of four channels for LPDDR5, one of two
+channels for GDDR6 and one for DDR4 and DDR3. Only the priced structure
+follows it; the controllers the timing builds are unchanged. Where the host
+memory controller PHY static is a measured PHY idle (DDR4, DDR5, HBM2, HBM3:
+the whole PHY, its leakage included), McPAT's PHY leakage is not added for the
+same PHY; its area and its per-bit energy stay.
 Every model added in 1.12.18 has a `power.models.*` switch (see the YAML
 reference); a model switched off is printed as not priced by user option.
 

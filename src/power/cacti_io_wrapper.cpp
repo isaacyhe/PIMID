@@ -887,6 +887,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             const double b = sxy / sxx, a = my - b * mx;
             const double phy16 = a + b * rate_mts / 1000.0;
             r.phy_static_power_mw = phy16 * num_dq / 16.0 + iop.phy_pll_s;
+            r.phy_static_measured = true;   // (1.12.209)
             std::ostringstream o;
             o << (pimid::debugChecks() ? "DERIVED from" : "from") << " measured LPDDR4X PHY idle rails (NXP AN13917 Rev. 4.0 Tables 28/29/31: 22.9/14.1/7.8 mW per x16 at "
                  "3733/1866/625 MT/s; fit " << a << " + " << b << " mW per Gb/s per 16 DQ) x " << num_dq << "/16 DQ at "
@@ -920,6 +921,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             const double active = 0.29 * (rate_mts / 1000.0) * 1024.0;   // mW: Chae Table II read pJ/bit, 1024 DQ
             r.phy_static_power_mw = pch;
             r.phy_static_sourced = true;
+            r.phy_static_measured = true;   // (1.12.209)
             std::ostringstream o;
             o << (pimid::debugChecks() ? "DERIVED from" : "from") << " the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
                  "7 nm, 0.75/1.2 V, 1024 DQ at 3.2 Gb/s, hard macro 36 + I/O 14 mW): hard macro x " << rate_mts << "/3200 MT/s x "
@@ -941,6 +943,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             const double pch = stack_mw * num_dq / 1024.0;
             r.phy_static_power_mw = pch;
             r.phy_static_sourced = true;
+            r.phy_static_measured = true;   // (1.12.209)
             std::ostringstream o;
             o << (pimid::debugChecks() ? "DERIVED from" : "from") << " the measured HBM2E PHY idle (Hwang, Chae, Yeo et al., Samsung Foundry, Hot Chips 32 2020, slide 10: "
                  "7 nm, 0.75/1.2 V, 1024 DQ at 3.2 Gb/s, hard macro 36 + I/O 14 mW): hard macro x " << rate_mts << "/3200 MT/s = "

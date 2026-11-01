@@ -256,6 +256,7 @@ public:
 	 * withPHY=false means no driver at all (on-die element MCs). */
 	int    phy_class;
 	double phy_pj_bit_rd, phy_pj_bit_wr;   /* PIMID (1.12.132): > 0 replaces the PHY dynamic per bit */
+	bool   phy_static_external;            /* PIMID (1.12.209): the PHY's static power is priced by the caller */
 	double vdd;
 	double power_gating_vcc;
     ~MCParam(){};

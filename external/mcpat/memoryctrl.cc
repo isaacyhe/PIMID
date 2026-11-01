@@ -312,6 +312,15 @@ void MCPHY::compute()
 //  power_t.readOp.leakage *= phy_factor;
 //  power_t.readOp.gate_leakage *= phy_factor;
 
+  /* PIMID (1.12.209): the caller charges this PHY's static power (a measured
+   * interface idle, which includes the PHY's transistor leakage), so the
+   * leakage computed from the area above is not added a second time. Area and the
+   * per-bit dynamic stay. */
+  if (mcp.phy_static_external) {
+	  power_t.readOp.leakage = 0.0;
+	  power_t.readOp.gate_leakage = 0.0;
+  }
+
   double long_channel_device_reduction = longer_channel_device_reduction(Uncore_device);
   power_t.readOp.longer_channel_leakage = power_t.readOp.leakage * long_channel_device_reduction;
 
@@ -982,6 +991,7 @@ void MemoryController::set_mc_param()
 		mcp.phy_class = XML->sys.mc.phy_class;   // PIMID 1.11.19 (D2/D3)
 		mcp.phy_pj_bit_rd = XML->sys.mc.phy_pj_bit_rd;   // PIMID (1.12.132)
 		mcp.phy_pj_bit_wr = XML->sys.mc.phy_pj_bit_wr;   // PIMID (1.12.132)
+		mcp.phy_static_external = XML->sys.mc.phy_static_external;   // PIMID (1.12.209)
 
 		if ( XML->sys.mc.vdd>0)
 		{
