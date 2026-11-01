@@ -23,7 +23,10 @@
 #   (k1^2-1)/(3 k1) + (k2^2-1)/(3 k2)) x home_hop_cycles. home_hop_cycles = 2 is
 #   one router pipeline stage + one link, the Garnet defaults the detailed NoC
 #   model runs (noc.router_latency 1, noc.link_latency 1), at the core clock.
-#   Up to the bound the slice rule stays. No corpus cell needs this today.
+#   Up to the bound the slice rule stays. No corpus cell needs this today. A
+#   host's L3 is priced by system.hosts[].cache.l3_slicing (one slice per core
+#   by default) at every size; this rule prices other caches above the bound
+#   and sets the latency of any cache above it.
 record: pimid cache hierarchy default
 slice_mb: 2
 max_slices: 32

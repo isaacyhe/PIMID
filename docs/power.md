@@ -369,8 +369,9 @@ leakage-only placeholder that `<host>.noc` carried through 1.12.18; a
 2 x sqrt(host die area) / stops, the loop of the Nehalem-EX floorplan (two
 columns of core/LLC-slice rows, the rings through the slice columns; Rusu,
 ISSCC 2009 / JSSC 2010) on a square die (the stop spacing in mm
-computed from it; the die area counts every slice of a last-level cache above 64 MB, priced as its slices, one McPAT
-instance each, as in a host of more than 34 cores); McPAT's upstream 2-D mesh formula gave half of it.
+computed from it; the die area counts every slice of a last-level cache priced as its slices, one McPAT instance each:
+a host's L3 by default, one slice per core, `system.hosts[].cache.l3_slicing`); McPAT's upstream 2-D mesh formula gave half
+of it.
 
 Host control messages (ring and crossbar). The ring is four physical rings,
 request, snoop, acknowledge and data (Paccagnella et al., "Lord of the

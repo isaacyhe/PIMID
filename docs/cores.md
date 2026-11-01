@@ -333,9 +333,13 @@ any number of cores. The idle host memory latency (the host-path adder of each m
 flight are limited by the L1D's fill buffers (the core's `l1d_fill_buffers`).
 
 The power model prices the same arrays. CACTI builds only power-of-two associativities, so the 12-way and 15-way arrays are
-priced as 16-way with the same capacity. The L3 is priced as one bank per slice. A last-level cache above 64 MB (more than 34
-cores) is priced as its 2 MB slices, one McPAT instance each: McPAT sums their area, leakage and clock trees, and the die
-(its clock trunk, the host ring's links) holds all of them. The processing elements' caches, and a host whose configuration gives its own cache block,
+priced as 16-way with the same capacity. The host L3 is priced as its slices (`system.hosts[].cache.l3_slicing`, by default
+`per_core`): one slice per core, each one McPAT instance of the L3's size divided by the slice count. McPAT sums their
+area, leakage and clock trees, each slice takes its share of the accesses, misses and directory writes, and the die (its
+clock trunk, the host ring's links) holds all of them. `monolithic` prices the L3 as one array of one bank per slice; a
+slice count or `l3_slice_kb` sets the slices directly ([yaml_reference.md](yaml_reference.md)). The organisation
+changes power and area only, never the timing. Another cache above 64 MB (a processing element's) is priced the same way
+as the cache record's 2 MB slices. The processing elements' caches, and a host whose configuration gives its own cache block,
 keep CACTI's array time as their latency, which is far below a load-to-use (1 cycle for a 256 KB array at 22 nm and 2 GHz).
 
 The old host (32 KB 8-way L1D, 32 KB 4-way L1I, 256 KB 8-way L2, a 32 MB 16-way L3, CACTI's array times of 1, 1, 1 and 6 cycles

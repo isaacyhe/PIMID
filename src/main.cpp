@@ -3262,6 +3262,7 @@ static const char* kSchemaPaths[] = {
     "system.hosts[].branch_predictor", "system.hosts[].cache.l1d_banks", "system.hosts[].cache.l1d_kb", "system.hosts[].cache.l1d_latency_ns", "system.hosts[].cache.l1d_ways", "system.hosts[].cache.l1i_banks",
     "system.hosts[].cache.l1i_kb", "system.hosts[].cache.l1i_latency_ns", "system.hosts[].cache.l1i_ways", "system.hosts[].cache.l2_banks", "system.hosts[].cache.l2_kb",
     "system.hosts[].cache.l2_latency_ns", "system.hosts[].cache.l2_ways", "system.hosts[].cache.l3", "system.hosts[].cache.l3_banks", "system.hosts[].cache.l3_inclusion", "system.hosts[].cache.l3_kb", "system.hosts[].cache.l3_latency_ns",
+    "system.hosts[].cache.l3_slice_kb", "system.hosts[].cache.l3_slicing",
     "system.hosts[].cache.l3_ways", "system.hosts[].core_type", "system.hosts[].floating_point", "system.hosts[].fp_emulation_cycles", "system.hosts[].frequency_mhz", "system.hosts[].issue_width",
     "system.hosts[].mem.bandwidth_gbs", "system.hosts[].mem.capacity_gb", "system.hosts[].mem.channels", "system.hosts[].mem.technology", "system.hosts[].memory.bandwidth_mbs",
     "system.hosts[].memory.channels", "system.hosts[].memory.dram_replay", "system.hosts[].memory.host_path.coherence_ns", "system.hosts[].memory.host_path.fabric_ns", "system.hosts[].memory.host_path.mc_pipeline_ns",
@@ -4263,6 +4264,10 @@ struct UnifiedConfig {
         bool l3_none = false;   // a HOST node whose configuration says `cache.l3: none` (or l3_kb 0): no last-level cache, on purpose
         int l3_inclusion = -1;          // a HOST node's cache.l3_inclusion: 1 non-inclusive, 0 inclusive, -1 the cache record's
         bool l3_non_inclusive = false;  // resolved (applyHostCacheRecord): the L3 is built non-inclusive of the L2s
+        int l3_slicing = 0;     // a HOST node's cache.l3_slicing: 0 absent (per_core), -2 per_core, -1 monolithic, N > 0 a slice count
+        int l3_slice_kb = -1;   // a HOST node's cache.l3_slice_kb: the priced slice size in KB; -1 absent
+        bool l3_banks_given = false;   // the configuration gave cache.l3_banks (the record's bank rule otherwise)
+        int l3_price_slices = 0, l3_price_slice_kb = 0;   // resolved (applyHostCacheRecord): the L3 is priced as these slices
 
         // Memory
         std::string memory_tech = "DDR4";
@@ -5029,10 +5034,33 @@ static int nearestValidWays(long lines, int want) {
             if (w >= std::max(1, want / 2) && w <= 2 * want && lines % w == 0 && pow2(lines / w)) return w;
     return 0;
 }
+/* the priced organisation of a last-level cache: S McPAT instances of one slice of size / S, with the bank count of one
+ * slice. A host's is its resolved cache.l3_slicing / l3_slice_kb (applyHostCacheRecord). Any other L3 is one array unless
+ * it is above the cache record's single-array bound (max_slices x slice_mb): then it is the record's slices, the same
+ * mechanism with the record's slice size. */
+struct L3PriceOrg { int slices = 1; int slice_kb = 0; int banks = 1; };
+static int l3SliceBanks(int kb) {   // the slice rule in a power of two (CACTI's bank counts)
+    int b = std::max(1, std::min(32, kb / (std::max(1, g_cache_rec.slice_mb) * 1024)));
+    while (b & (b - 1)) b &= b - 1;
+    return b;
+}
+static L3PriceOrg l3PriceOrg(const UnifiedConfig::SystemNode* host, int total_kb, int array_banks) {
+    L3PriceOrg o; o.slice_kb = total_kb; o.banks = array_banks;
+    if (host && host->role == UnifiedConfig::SystemNode::HOST && host->l3_price_slices > 0) {
+        o.slices = host->l3_price_slices; o.slice_kb = host->l3_price_slice_kb;
+        if (o.slices > 1) o.banks = host->l3_banks_given ? host->l3_banks : l3SliceBanks(o.slice_kb);
+        else o.banks = host->l3_banks > 0 ? host->l3_banks : l3SliceBanks(total_kb);
+        return o;
+    }
+    const ReplicatedLLC rl = replicatedLLCFor(total_kb, "L3");
+    if (rl.slices > 1) { o.slices = rl.slices; o.slice_kb = rl.slice_kb; o.banks = 1; }
+    return o;
+}
 static bool applyHostCacheRecord(UnifiedConfig::SystemNode& n, const UnifiedConfig& config) {
     const auto& H = g_cache_rec.host;
     const double f = n.frequency_mhz > 0.0 ? n.frequency_mhz : config.frequency_mhz;
     const bool l3_sz_absent = n.l3_kb < 0;
+    n.l3_banks_given = n.l3_banks != -1;
     /* sizes: what the configuration gives, else the record's. An explicit L3 of `none` (or l3_kb 0) is no L3, and only that is. */
     if (n.l1d_kb < 0) n.l1d_kb = H.l1d.kb;
     if (n.l1i_kb < 0) n.l1i_kb = H.l1i.kb;
@@ -5062,6 +5090,51 @@ static bool applyHostCacheRecord(UnifiedConfig::SystemNode& n, const UnifiedConf
         return false;
     }
     n.l3_non_inclusive = n.enable_l3 && (n.l3_inclusion >= 0 ? n.l3_inclusion == 1 : H.l3_non_inclusive);
+    /* the L3's priced organisation (cache.l3_slicing, cache.l3_slice_kb): the cache is priced as S slices of size / S, one
+     * McPAT instance each (McPAT sums their area, leakage and clock trees; each slice takes 1/S of the accesses, misses and
+     * directory writes, and is a leaf of the die's clock trunk). per_core (the default): one slice per core -- the cache
+     * record's L3 is its built slices (one per core; a core count that is not a power of two has the next power of two of
+     * them), a given size is divided by the core count. monolithic: one array. A count: that many slices. l3_slice_kb alone:
+     * size / slice size slices; with a count or monolithic it must agree. The timing is the same under every value. */
+    if ((n.l3_slicing != 0 || n.l3_slice_kb != -1) && !n.enable_l3) {
+        std::cerr << "[config] FATAL: " << n.name << ".cache.l3_slicing or l3_slice_kb is given, but this host has no L3 (l3: none or l3_kb 0):"
+                     " the key would change nothing. Remove it." << std::endl;
+        return false;
+    }
+    if (n.l3_slice_kb != -1 && n.l3_slice_kb <= 0) {
+        std::cerr << "[config] FATAL: " << n.name << ".cache.l3_slice_kb is " << n.l3_slice_kb << "; give a positive size in KB." << std::endl;
+        return false;
+    }
+    if (n.enable_l3) {
+        int S = 1; std::string how;
+        if (n.l3_slicing == -1) { S = 1; how = "monolithic"; }
+        else if (n.l3_slicing > 0) { S = n.l3_slicing; how = std::to_string(S) + " slices"; }
+        else if (n.l3_slice_kb > 0) {
+            if (n.l3_kb % n.l3_slice_kb != 0) {
+                std::cerr << "[config] FATAL: " << n.name << ".cache.l3_slice_kb " << n.l3_slice_kb << " does not divide the L3 (" << n.l3_kb
+                          << " KB) into whole slices. Give a slice size that divides it, or a slice count (cache.l3_slicing)." << std::endl;
+                return false;
+            }
+            S = n.l3_kb / n.l3_slice_kb; how = "a " + std::to_string(n.l3_slice_kb) + " KB slice size";
+        } else {
+            S = l3_sz_absent ? std::max(1, n.l3_kb / H.l3.kb) : std::max(1, n.num_cores); how = "per_core";
+        }
+        if (S > n.l3_kb || n.l3_kb % S != 0) {
+            std::cerr << "[config] FATAL: " << n.name << " L3 (" << n.l3_kb << " KB) is not a whole number of KB in " << S << " slices (cache.l3_slicing "
+                      << how << "). Give a slice count that divides it (cache.l3_slicing), a slice size (cache.l3_slice_kb), or monolithic." << std::endl;
+            return false;
+        }
+        const int skb = n.l3_kb / S;
+        if (n.l3_slice_kb > 0 && n.l3_slice_kb != skb) {
+            std::cerr << "[config] FATAL: " << n.name << ".cache.l3_slicing (" << how << ") and l3_slice_kb (" << n.l3_slice_kb << " KB) disagree with the L3 ("
+                      << n.l3_kb << " KB): " << S << " x " << n.l3_slice_kb << " KB is not " << n.l3_kb << " KB. Give one of them, or values that agree." << std::endl;
+            return false;
+        }
+        n.l3_price_slices = S; n.l3_price_slice_kb = skb;
+        std::cout << "[params] " << n.name << " L3 priced as " << (S > 1 ? std::to_string(S) + " slices of " + std::to_string(skb) + " KB, one McPAT instance each"
+                                                                         : std::string("one array"))
+                  << " (cache.l3_slicing " << (n.l3_slicing == 0 && n.l3_slice_kb <= 0 ? std::string("per_core, the default") : how) << ")" << std::endl;
+    }
     /* associativity: the configuration's, else the record's, else (when the record's does not make a power-of-two number of sets of
      * the size given) the nearest one that does; none within a factor of two is refused */
     const int line = config.cache_line_size;
@@ -14368,7 +14441,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
         if (config.enable_l2) { mcfg.l2_banks = resolveCacheBanks(config.l2_size_kb, config.l2_banks, "l2", "L2");
             mcfg.l2_latency_cycles = getCacheLatencyCycles(config.l2_size_kb, config.l2_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L2", "cache.l2.latency_ns", config.l2_params.latency_ns, config.l2_banks); }
         if (config.enable_l3) { mcfg.l3_banks = resolveCacheBanks(config.l3_size_kb, config.l3_banks, "l3", "L3");
-            { const ReplicatedLLC rl = replicatedLLCFor(config.l3_size_kb, "L3"); if (rl.slices > 1) { mcfg.l3_size_bytes = static_cast<uint64_t>(rl.slice_kb) * 1024ULL; mcfg.l3_replicated_slices = rl.slices; } }   // 1.11.101 (BIG-CACHE (b)): McPAT prices one slice, the wrapper scales by the count
+            { const L3PriceOrg o = l3PriceOrg(nullptr, config.l3_size_kb, mcfg.l3_banks); mcfg.l3_size_bytes = static_cast<uint64_t>(o.slice_kb) * 1024ULL; mcfg.l3_replicated_slices = o.slices; mcfg.l3_banks = o.banks; }   // S McPAT instances of one slice
             mcfg.l3_latency_cycles = getCacheLatencyCycles(config.l3_size_kb, config.l3_ways, config.cache_line_size, config.frequency_mhz, config.tech_node_nm, "L3", "cache.l3.latency_ns", config.l3_params.latency_ns, config.l3_banks); }
     }
     /* 1.11.93 (F1): the L2s the device-scope zsim config BUILDS
@@ -14868,7 +14941,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             if (hl2_kb > 0) { host_cfg.l2_banks = resolveCacheBanks(hl2_kb, host_node ? host_node->l2_banks : -1, "l2", "host L2");
                 host_cfg.l2_latency_cycles = getCacheLatencyCycles(hl2_kb, host_cfg.l2_ways, config.cache_line_size, host_clk_mhz, htech, "host L2", "system.hosts[].cache.l2_latency_ns", host_node ? host_node->l2_latency_ns : -1.0, host_node ? host_node->l2_banks : -1); }
             if (hl3_kb > 0) { host_cfg.l3_banks = resolveCacheBanks(hl3_kb, host_node ? host_node->l3_banks : -1, "l3", "host L3");
-            { const ReplicatedLLC rl = replicatedLLCFor(hl3_kb, "L3"); if (rl.slices > 1) { host_cfg.l3_size_bytes = static_cast<uint64_t>(rl.slice_kb) * 1024ULL; host_cfg.l3_replicated_slices = rl.slices; } }   // 1.11.101 (BIG-CACHE (b)): McPAT prices one slice, the wrapper scales by the count
+            { const L3PriceOrg o = l3PriceOrg(host_node, hl3_kb, host_cfg.l3_banks); host_cfg.l3_size_bytes = static_cast<uint64_t>(o.slice_kb) * 1024ULL; host_cfg.l3_replicated_slices = o.slices; host_cfg.l3_banks = o.banks; }   // the host L3 priced as its slices (cache.l3_slicing)
                 host_cfg.l3_latency_cycles = getCacheLatencyCycles(hl3_kb, host_cfg.l3_ways, config.cache_line_size, host_clk_mhz, htech, "host L3", "system.hosts[].cache.l3_latency_ns", host_node ? host_node->l3_latency_ns : -1.0, host_node ? host_node->l3_banks : -1); }
         }
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per host
@@ -17494,7 +17567,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             if (node.enable_l2 && node.l2_kb > 0) { mcfg.l2_banks = resolveCacheBanks(node.l2_kb, node.l2_banks, "l2", (node.name + " L2").c_str());
                 mcfg.l2_latency_cycles = getCacheLatencyCycles(node.l2_kb, node.l2_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L2").c_str(), "cache.l2_latency_ns", node.l2_latency_ns, node.l2_banks); }
             if (node.enable_l3 && node.l3_kb > 0) { mcfg.l3_banks = resolveCacheBanks(node.l3_kb, node.l3_banks, "l3", (node.name + " L3").c_str());
-            { const ReplicatedLLC rl = replicatedLLCFor(node.l3_kb, "L3"); if (rl.slices > 1) { mcfg.l3_size_bytes = static_cast<uint64_t>(rl.slice_kb) * 1024ULL; mcfg.l3_replicated_slices = rl.slices; } }   // 1.11.101 (BIG-CACHE (b)): McPAT prices one slice, the wrapper scales by the count
+            { const L3PriceOrg o = l3PriceOrg(&node, node.l3_kb, mcfg.l3_banks); mcfg.l3_size_bytes = static_cast<uint64_t>(o.slice_kb) * 1024ULL; mcfg.l3_replicated_slices = o.slices; mcfg.l3_banks = o.banks; }   // a host L3 priced as its slices (cache.l3_slicing); any other above the record bound as the record slices
                 mcfg.l3_latency_cycles = getCacheLatencyCycles(node.l3_kb, node.l3_ways, config.cache_line_size, nfreq, node.tech_node_nm, (node.name + " L3").c_str(), "cache.l3_latency_ns", node.l3_latency_ns, node.l3_banks); }
         }
         /* 1.11.93 (F1): the system-scope cfg writer builds one L2 per core of
@@ -24677,6 +24750,19 @@ int main(int argc, char** argv) {
                                     std::exit(2);
                                 }
                             }
+                            if (h["cache"]["l3_slicing"]) {   // per_core | monolithic | a slice count (per_core otherwise)
+                                std::string w = yamlString(h["cache"]["l3_slicing"], "", hpath + ".cache.l3_slicing");
+                                for (auto& ch : w) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                                char* e = nullptr; const long v = std::strtol(w.c_str(), &e, 10);
+                                if (w == "per_core") node.l3_slicing = -2;
+                                else if (w == "monolithic") node.l3_slicing = -1;
+                                else if (!w.empty() && e && *e == '\0' && v >= 1 && v <= 4096) node.l3_slicing = static_cast<int>(v);
+                                else {
+                                    std::cerr << "[config] FATAL: " << hpath << ".cache.l3_slicing is '" << w << "'; the values are `per_core`, `monolithic` or a slice count (1 to 4096)." << std::endl;
+                                    std::exit(2);
+                                }
+                            }
+                            node.l3_slice_kb = yamlInt(h["cache"]["l3_slice_kb"], node.l3_slice_kb, hpath + ".cache.l3_slice_kb");
                             node.l1d_latency_ns = yamlDouble(h["cache"]["l1d_latency_ns"], node.l1d_latency_ns, hpath + ".cache.l1d_latency_ns");
                             node.l1i_latency_ns = yamlDouble(h["cache"]["l1i_latency_ns"], node.l1i_latency_ns, hpath + ".cache.l1i_latency_ns");
                             node.l2_latency_ns = yamlDouble(h["cache"]["l2_latency_ns"], node.l2_latency_ns, hpath + ".cache.l2_latency_ns");

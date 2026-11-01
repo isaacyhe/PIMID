@@ -6,6 +6,44 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.219 -- the host L3's slice organisation is a configuration option; by default the L3 is priced as one slice per core at every size
+
+- **The problem.** A Sapphire Rapids-class host L3 is one slice per core. The previous release priced a host L3 above 64 MB
+  as slices, the cache record's 2 MB slices (60 of them at 64 cores, not the 64 per-core slices the host's fabric has), and
+  a host L3 of 64 MB or less as one array with one bank per slice. How the L3 is priced could not be chosen.
+- **The fix** (src/main.cpp; docs/yaml_reference.md, docs/cores.md, docs/power.md; params/cache/default.yaml comment). Two
+  keys on a host, `system.hosts[].cache.l3_slicing` (`per_core`, the default; `monolithic`; or a slice count) and
+  `system.hosts[].cache.l3_slice_kb` (a slice size). The L3 is priced as S slices of its size / S, one McPAT instance each:
+  McPAT sums their area, leakage and clock trees, each slice takes its share of the accesses, misses and directory writes,
+  and each is a leaf of the die's clock trunk. `per_core`: the cache record's L3 is its built slices (one per core; a core
+  count that is not a power of two has the next power of two of them), a given `l3_kb` is divided by the core count.
+  `monolithic`: one array, the previous pricing of a 64 MB or smaller L3. A count, or `l3_slice_kb` alone, sets the
+  slices. A count and a size that disagree with the L3 size, a size or count that does not divide the L3 into whole KB
+  slices, and the keys on a host without an L3 are refused. The cache record's 2 MB slices above 64 MB are this mechanism
+  with `l3_slice_kb: 2048`, and stay the rule for a cache that is not a host's. The run prints the organisation
+  (`[params] host L3 priced as 16 slices of 1920 KB, one McPAT instance each (cache.l3_slicing per_core, the default)`).
+  The timing is the same under every value.
+- **Validation** (the previous release and this build): 96 cells (60 host baselines, DDR5 and HBM3, 1/4/16 cores; 30 co-sim
+  cells; 6 device-only cells), 12 cells with an inclusive L3, 16 co-sim cells with 4- and 16-core hosts, and 32- and
+  64-core hosts and a 16-core host with a 128 MB L3: run times, checksums, hit rates, bandwidth and device counters
+  identical in every cell, under the default and under `monolithic`, a slice count (8, 32) and a slice size (2048,
+  3840 KB). `monolithic` gives logs identical to the previous release in all 90 host and co-sim cells besides the printed
+  organisation line; `l3_slice_kb: 2048` gives the previous release's pricing of the 64-core and 128 MB L3s exactly; a
+  count of 8 and a 3840 KB slice size price a 30 MB L3 alike. A 16- and a 64-core host run eight times give eight
+  identical copies each. The power checks report no flag and no consistency failure that the previous release does not.
+- **Data impact** (the default, power and area only; host node, DDR5 OpenMP histogram; the previous release -> this one):
+
+  | host | L3 | slices | die (mm^2) | die clock trunk (mW) | L3 (W) | host (W) |
+  |---|---|---|---|---|---|---|
+  | 16 cores | 30 MB | 1 array -> 16 x 1920 KB | 229.6 -> 235.6 | 91.4 -> 107.3 | 3.38 -> 2.59 | 46.95 -> 46.07 |
+  | 32 cores | 60 MB | 1 array -> 32 x 1920 KB | 447.1 -> 473.1 | 185.8 -> 222.1 | 6.59 -> 6.23 | 80.32 -> 79.71 |
+  | 64 cores | 120 MB | 60 x 2048 KB -> 64 x 1920 KB | 945.9 -> 951.4 | 451.0 -> 456.1 | 12.79 -> 12.87 | 138.50 -> 138.55 |
+  | 16 cores, `l3_kb: 131072` | 128 MB | 64 x 2048 KB -> 16 x 8192 KB | 444.5 -> 445.6 | 200.3 -> 147.6 | 8.92 -> 8.58 | 84.34 -> 84.25 |
+
+  Host baselines: 1 core unchanged; 4 cores -0.03 to -0.15 W; 16 cores -0.36 to -1.43 W, the L3 -0.27 to -1.35 W (an
+  access reaches one 1.875 MB slice, not one 30 MB array). Co-sim hosts: 1 core unchanged; 4 cores +0.00 to +0.01 W;
+  16 cores -0.13 to -0.14 W. Device-only cells do not change.
+
 ## 1.12.218 -- a last-level cache above 64 MB is priced as its slices, every one of them on the die
 
 - **The problem.** A last-level cache above 64 MB (a host of more than 34 cores, or an L3 size given that large) is the
