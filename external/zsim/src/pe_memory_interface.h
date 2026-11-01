@@ -1363,6 +1363,7 @@ public:
     Counter* replayLatCounter() { return &profReplayLat_; }
     DqDataStats& dqData() { return dqStats_; }
     uint32_t replayMi() const { return mcId_; }
+    uint32_t localLatency() const { return localLatency_; }   // the PE's local access (a barrier flag's poll)
     void initStats(AggregateStat* parentStat) override {
         AggregateStat* s = new AggregateStat();
         s->init(name_.c_str(), "PE memory interface stats");

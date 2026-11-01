@@ -2915,13 +2915,15 @@ static uint64_t g_ctrlRet[MAX_THREADS];
  *
  * Costs (all overridable, simulation.pim_runtime.*; docs/yaml_reference.md):
  * UPMEM's measured on-chip primitives, the device's PEs treated as one sync
- * domain ("assumes DPU-style atomics across the device's PEs"):
+ * domain for locks and handshakes ("DPU-style atomics across the device's
+ * PEs"); a barrier or launch among participants on separate PEs is priced over
+ * the NoC instead (rtNetCost, after rtApplies):
  *  - lock acquire / release: 1 instruction each (UPMEM SDK syslib/mutex.h:
  *    acquire / release), latency 11 cycles per op (revolver pipeline: "same
  *    thread dispatched 11 cycles apart", Gomez-Luna et al., PrIM, IEEE Access
  *    2022, arXiv 2105.03814 Sec. 2.2; uPIMulator Table I).
- *  - barrier: DERIVED from PrIM Appendix Fig. 21 (reduction final step, 1
- *    DPU, int64): (BARRIER tree - HANDS tree) / log2 T = 224 / 504 / 1201 /
+ *  - barrier among participants sharing one PE: from PrIM Appendix
+ *    Fig. 21 (reduction final step, 1 DPU, int64): (BARRIER tree - HANDS tree) / log2 T = 224 / 504 / 1201 /
  *    2777 cycles at T = 2 / 4 / 8 / 16, interpolated linearly in the
  *    participant count P, extrapolated linearly above 16 (printed).
  *  - OpenMP parallel launch: one barrier (tasklets are resident; a fork/join
@@ -3013,6 +3015,104 @@ static inline bool rtApplies(uint32_t tid) {
     if (g_rt.allCores || !g_cosim_mode) return true;
     return thread_domain[tid].load() == DOMAIN_DEVICE;
 }
+/* Barriers and launches among participants on SEPARATE PEs are priced over the
+ * device NoC. barrier_table is PrIM's barrier of tasklets that share ONE DPU
+ * pipeline (Fig. 21): its growth with the participant count is serialisation on
+ * one core, so it prices the participants that share one PE. Among PEs, a
+ * barrier is a dissemination barrier (Hensgen, Finkel and Manber, IJPP 17(1),
+ * 1988; Mellor-Crummey and Scott, ACM TOCS 9(1), 1991): ceil(log2 D) rounds; in
+ * round k participant i writes a one-flit flag to participant (i + 2^k) mod D and
+ * spins locally on its own flag for the one from (i - 2^k) mod D. A round costs
+ * that flag's one-way NoC latency between the two PEs (the zero-load walk over
+ * the built tree, the cost an unsampled remote access is priced at; 0 between
+ * PEs behind one network interface) and the local read that observes it (the
+ * PE's local access latency); the barrier ends when the last participant has
+ * seen its last flag. A launch is a binomial broadcast of the region from the
+ * master: in round k each participant i < 2^k that has it writes participant
+ * i + 2^k. Participants (an OpenMP team's threads, the MPI ranks) occupy the
+ * device's PEs in home order: participant i on PE i mod n of the n PEs, so
+ * D = min(P, n) distinct PEs; when P > n, up to ceil(P / n) participants share a
+ * PE and that group's part is barrier_table(ceil(P / n)). Static topology only:
+ * deterministic; the flags are priced, not injected. */
+struct RtNetPe { uint32_t ep, poll; };
+static std::vector<RtNetPe> g_rtNetPes;
+static std::once_flag g_rtNetOnce;
+static std::mutex g_rtNetMu;
+static std::map<uint64_t, uint64_t> g_rtNetCache;   /* (launch << 32 | D) -> cycles */
+static void rtNetBuild() {
+    std::call_once(g_rtNetOnce, [] {
+        if (!zinfo) return;
+        std::vector<uint32_t> pes;
+        for (uint32_t c = 0; c < zinfo->numCores; c++)
+            if (zinfo->cores[c] && dynamic_cast<ALUCore*>(zinfo->cores[c])) pes.push_back(c);
+        /* a device run of in-order / out-of-order PEs: every core is a PE of the placement */
+        if (pes.empty() && !g_cosim_mode && zinfo->hierarchy.peMemMapSize > 0 && zinfo->hierarchy.placementLevel < 7)
+            for (uint32_t c = 0; c < zinfo->numCores; c++) if (zinfo->cores[c]) pes.push_back(c);
+        const uint32_t ppm = std::max(zinfo->hierarchy.pesPerMC, 1u);
+        for (uint32_t i = 0; i < pes.size(); i++) {
+            PEMemoryInterface* mi = zinfo->cores[pes[i]]->firstTouchMI();
+            g_rtNetPes.push_back({ mi ? mi->replayMi() : i / ppm, mi ? mi->localLatency() : zinfo->hierarchy.localLatency });
+        }
+    });
+}
+static uint32_t rtNetOneWay(uint32_t a, uint32_t b) {
+    if (a == b) return 0;   /* two PEs behind one network interface: no NoC traversal */
+    uint32_t pl[8] = {0}; uint64_t c = 0;
+    if (PEMemoryInterface::treeWalk((int)a, (int)b, pl, nullptr, &c)) return (uint32_t)c;
+    return zinfo->hierarchy.nocAvgOneWayLatency;   /* no tree below the element (HOST_MC placement) */
+}
+/* The NoC part of a barrier (launch = false) or a launch (true) among P participants, in PE
+ * cycles; *T = the most participants on one PE. False when the run has no PEs to place them on. */
+static bool rtNetCost(bool launch, uint32_t P, uint64_t* cyc, uint32_t* T) {
+    rtNetBuild();
+    const uint32_t n = (uint32_t)g_rtNetPes.size();
+    *cyc = 0; *T = 1;
+    if (!n) return false;
+    if (P < 2) return true;
+    const uint32_t D = std::min(P, n);
+    *T = (P + n - 1) / n;
+    const uint64_t key = ((uint64_t)launch << 32) | D;
+    {
+        std::lock_guard<std::mutex> g(g_rtNetMu);
+        auto it = g_rtNetCache.find(key);
+        if (it != g_rtNetCache.end()) { *cyc = it->second; return true; }
+    }
+    std::vector<uint64_t> t(D, 0), nt(D, 0);
+    if (!launch) {
+        for (uint32_t s = 1; s < D; s <<= 1) {
+            for (uint32_t i = 0; i < D; i++) {
+                const uint32_t j = (i + D - s) % D;
+                nt[i] = std::max(t[i], t[j] + rtNetOneWay(g_rtNetPes[j].ep, g_rtNetPes[i].ep)) + g_rtNetPes[i].poll;
+            }
+            t.swap(nt);
+        }
+    } else {
+        for (uint32_t s = 1; s < D; s <<= 1)
+            for (uint32_t i = 0; i < s && i + s < D; i++)
+                t[i + s] = t[i] + rtNetOneWay(g_rtNetPes[i].ep, g_rtNetPes[i + s].ep) + g_rtNetPes[i + s].poll;
+    }
+    uint64_t m = 0;
+    for (uint64_t v : t) m = std::max(m, v);
+    {
+        std::lock_guard<std::mutex> g(g_rtNetMu);
+        g_rtNetCache[key] = m;
+    }
+    *cyc = m;
+    return true;
+}
+/* A thread on a device PE (a device run: every core; co-sim: the device domain). */
+static inline bool rtOnPe(uint32_t tid) {
+    return tid < MAX_THREADS && (!g_cosim_mode || thread_domain[tid].load() == DOMAIN_DEVICE);
+}
+/* A barrier or launch on a PE (the table default): barrier_table for the participants sharing one PE plus the
+ * NoC part among the PEs. An MPI barrier's NoC part is charged by the MPI BARRIER op (handleMpiMagicOp). */
+static uint64_t rtCostAt(uint32_t tid, int kind, uint32_t P) {
+    if (g_rt.table[kind] != RTT_BARRIER || P < 2 || !rtOnPe(tid)) return rtCost(kind, P);
+    uint64_t net = 0; uint32_t T = 1;
+    if (!rtNetCost(kind == RTK_OMP_LAUNCH, P, &net, &T)) return rtCost(kind, P);
+    const uint64_t local = rtCost(kind, T);   /* T = 1: 0 */
+    return (kind == RTK_MPI_BARRIER) ? local : local + net;
+}
 /* The thread must be on its core to be charged: a dropped block does not go
  * through JoinBbl, so join here (the wake sync is applied by Join). */
 static inline bool rtEnsureAttached(uint32_t tid) {
@@ -3020,7 +3120,7 @@ static inline bool rtEnsureAttached(uint32_t tid) {
     return cores[tid] != nullptr && cids[tid] < zinfo->numCores && cids[tid] < MAX_THREADS;
 }
 static void rtCharge(uint32_t tid, int kind, uint32_t P, bool deferred) {
-    const uint64_t c = rtCost(kind, P);
+    const uint64_t c = rtCostAt(tid, kind, P);
     if (!rtEnsureAttached(tid)) { g_rtPend[tid] += c; return; }
     const uint32_t cid = cids[tid];
     g_rtCnt[cid][kind]++;
@@ -3289,7 +3389,7 @@ static void rtPrintStats() {
         E += tc[k]; Y += ty[k];
         if (tc[k]) { char b[96]; snprintf(b, sizeof b, " %s=%lu/%lu", kRtKey[k], (unsigned long)tc[k], (unsigned long)ty[k]); s += b; }
     }
-    info("[pim-runtime] ROI total: events=%lu charged=%lu cycles removedInstrs=%lu removedMemAccesses=%lu |%s [1.12.18, ruling 2026-10-23; assumes DPU-style atomics across the device's PEs]",
+    info("[pim-runtime] ROI total: events=%lu charged=%lu cycles removedInstrs=%lu removedMemAccesses=%lu |%s [1.12.18; locks and handshakes: DPU-style atomics across the device's PEs; barriers and launches among PEs: over the NoC]",
          (unsigned long)E, (unsigned long)Y, (unsigned long)tI, (unsigned long)tM, s.empty() ? " no events" : s.c_str());
 }
 static std::vector<std::pair<uint32_t, double>> rtParseTable(const std::string& v, const char* key) {
@@ -3339,6 +3439,26 @@ static void rtInit() {
         const uint32_t v = nt ? (uint32_t)atoi(nt) : 0;
         g_rtIcv.store(v ? v : (zinfo ? zinfo->numCores : 1));
     }
+    {
+        uint64_t b = 0, l = 0; uint32_t t = 1;
+        rtNetBuild();
+        const uint32_t n = (uint32_t)g_rtNetPes.size();
+        if (n > 1 && rtNetCost(false, n, &b, &t) && rtNetCost(true, n, &l, &t)) {
+            uint32_t r = 0, owLo = UINT32_MAX, owHi = 0, pLo = UINT32_MAX, pHi = 0;
+            for (uint32_t s = 1; s < n; s <<= 1) {
+                r++;
+                for (uint32_t i = 0; i < n; i++) {
+                    const uint32_t ow = rtNetOneWay(g_rtNetPes[(i + n - s) % n].ep, g_rtNetPes[i].ep);
+                    owLo = std::min(owLo, ow); owHi = std::max(owHi, ow);
+                }
+            }
+            for (const RtNetPe& q : g_rtNetPes) { pLo = std::min(pLo, q.poll); pHi = std::max(pHi, q.poll); }
+            info("[pim-runtime] barrier among PEs: dissemination barrier over the NoC (Hensgen, Finkel and Manber 1988; "
+                 "Mellor-Crummey and Scott 1991); launch: binomial broadcast. All %u PEs: barrier %lu, launch %lu PE cycles "
+                 "(%u rounds; a round: a one-way flag of %u-%u and a local poll of %u-%u PE cycles)",
+                 n, (unsigned long)b, (unsigned long)l, r, owLo, owHi, pLo, pHi);
+        }
+    }
     if (!g_rt.enabled) { info("[pim-runtime] disabled (simulation.pim_runtime.enabled: false): runtime code is executed and priced like kernel code"); return; }
     rtFindExe();
     std::string s;
@@ -3354,7 +3474,9 @@ static void rtInit() {
     for (auto& x : g_rt.barTab) { char b[48]; snprintf(b, sizeof b, " %u:%g", x.first, x.second); bt += b; }
     for (auto& x : g_rt.redTab) { char b[48]; snprintf(b, sizeof b, " %u:%g", x.first, x.second); rt += b; }
     info("[pim-runtime] enabled (apply_to=%s): runtime code is not executed on the PE; each runtime event is charged its PIM primitive. "
-         "Assumes DPU-style atomics across the device's PEs (UPMEM measured primitives, one sync domain).", g_rt.allCores ? "all" : "pe");
+         "Locks and handshakes assume DPU-style atomics across the device's PEs (UPMEM measured primitives); barriers and launches "
+         "among PEs are a dissemination barrier and a binomial broadcast over the NoC, barrier_table only among participants on one PE.",
+         g_rt.allCores ? "all" : "pe");
     info("[pim-runtime] costs (cycles):%s; barrier_table{%s } (%sfrom PrIM Fig. 21), reduction_table{%s } (PrIM Fig. 21 HANDS); "
          "cycle_basis=%s (%s)", s.c_str(), bt.c_str(), pimid::provLabel("DERIVED "), rt.c_str(), g_rt.timeBasis ? "time" : "pe_cycles",
          g_rt.timeBasis ? "published DPU cycles at source_clock_mhz converted through time to the PE clock"
@@ -4012,8 +4134,14 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             __sync_fetch_and_add(&zinfo->mpiStats.barrierCount, 1);
             uint32_t barrierLat = 0;
             GarnetNetwork* gn = zinfo->garnetNetwork;
+            uint64_t netLat = 0; uint32_t netT = 1;
 
-            if (gn && gn->isCycleAccurate()) {
+            if (rtOnPe(tid) && rtNetCost(false, g_mpi_rank_count, &netLat, &netT)) {
+                /* Ranks on PEs: a dissemination barrier among the ranks' PEs over the NoC
+                 * (rtNetCost); the ranks sharing one PE add barrier_table through the shim's
+                 * RT_EVENT (rtCostAt). */
+                barrierLat = (uint32_t)std::min<uint64_t>(netLat, 0xFFFFFFFFull);
+            } else if (gn && gn->isCycleAccurate()) {
                 /* One shared cycle-accurate Garnet network for all PEs/ranks. */
                 GarnetNetwork* anet = gn;
                 /* Tree-reduction barrier: log2(N) rounds.

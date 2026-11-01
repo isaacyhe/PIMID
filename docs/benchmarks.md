@@ -203,7 +203,9 @@ the memory simulator's own mean (`dramReplay` `hostLatencySum / hostRequests`,
 1.12.18 (user rulings 2026-10-23). On a device PE the OpenMP and MPI runtimes
 are priced "the PIM way": the runtime's own code is not executed on the PE,
 and each runtime event is charged the PIM primitive a PIM device would use
-(UPMEM's measured primitives: lock acquire/release, barrier, handshake). The
+(UPMEM's measured primitives: lock acquire/release, handshake, and the barrier
+of threads that share one PE; a barrier or launch among PEs is a dissemination
+barrier or a binomial broadcast over the NoC). The
 kernel's work -- including user code in a critical section, the inline atomics
 of `#pragma omp atomic` and of a scalar `reduction` clause, the reduce
 arithmetic of an MPI reduction, and every byte a message or collective moves --
@@ -229,8 +231,9 @@ How the runtime is told from the kernel:
   buffers allocated once (no `malloc`/`free` per call) and stay priced, since
   they hold message payload and reduction operands.
 
-The run prints the parameters in force ("assumes DPU-style atomics across the
-device's PEs") and, per core, `[pim-runtime] ROI core N: events
+The run prints the parameters in force ("Locks and handshakes assume
+DPU-style atomics across the device's PEs", and the NoC barrier and launch for
+all the device's PEs) and, per core, `[pim-runtime] ROI core N: events
 (count/cycles): ... | primitive cycles charged C | runtime code not executed
 on the PE: I instrs, M memory accesses`, then a `[pim-runtime] ROI total:`
 line. `simulation.pim_runtime.enabled: false` restores the earlier model (the

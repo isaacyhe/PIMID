@@ -6,6 +6,62 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.215 -- a barrier or a launch among PEs is priced over the NoC; PrIM's barrier only among threads that share one PE
+
+- **The problem.** Every OpenMP parallel-region launch and barrier among PEs (device scope and co-simulation) and every
+  MPI barrier among ranks on PEs was charged PrIM's barrier table (224 / 504 / 1201 / 2777 cycles at 2 / 4 / 8 / 16
+  participants, extrapolated linearly to 12233 at 64). PrIM measured that barrier among tasklets that share ONE DPU
+  pipeline: its growth with the participant count is serialisation on that core. Participants on separate PEs
+  synchronise over the NoC, which costs a few hundred cycles at 64 PEs, not twelve thousand. The MPI barrier was
+  charged, in addition, a network estimate whose round count came from the NoC's node count instead of the rank count,
+  whose partners were NoC nodes (thread id modulo the node count) instead of the ranks' PEs, with a round trip per
+  round and a data-sized packet for a one-flit flag, injected live into the network.
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, external/zsim/src/pe_memory_interface.h; docs/yaml_reference.md,
+  docs/benchmarks.md).
+  - A barrier among participants on separate PEs is a dissemination barrier (Hensgen, Finkel and Manber, IJPP 17(1),
+    1988; Mellor-Crummey and Scott, ACM TOCS 9(1), 1991): ceil(log2 D) rounds over the D PEs; in round k participant
+    i writes a one-flit flag to participant (i + 2^k) mod D and spins on its own flag for the one from (i - 2^k) mod D.
+    A round costs that flag's one-way NoC latency between the two PEs (the zero-load walk over the built H-tree, the
+    cost an unsampled remote access is priced at; 0 between PEs behind one network interface) and the local read that
+    observes it (the PE's local access latency). The barrier ends when the last participant has seen its last flag.
+  - A parallel-region launch is a binomial broadcast from the master over the same NoC.
+  - The participants occupy the device's PEs in home order (participant i on PE i mod n of the n PEs). When there are
+    more participants than PEs, the ones sharing a PE add PrIM's barrier for their group, barrier_table(ceil(P / n)).
+  - The MPI barrier charges the dissemination barrier among the ranks' PEs at the barrier itself; the shim's runtime
+    event charges only the same-PE part (0 when every rank has its own PE). Ranks on host cores keep the previous
+    estimate.
+  - The cost depends on the topology only, so it is deterministic; the flags are priced, not injected as traffic.
+    Each device run prints it for all its PEs, for example HBM3 at BANK placement: 4 PEs barrier and launch 100
+    cycles, 16 PEs 200, 64 PEs 295 and 290 (2 / 4 / 6 rounds of a one-way flag of 21-26 cycles and a local read of 24);
+    CHANNEL and LOGIC_DIE placement, 16 PEs: 104.
+  - Setting `simulation.pim_runtime.<event>_cycles` still replaces the whole model for that event; OpenMP reductions,
+    locks, work-sharing dispatch and the MPI handshakes are unchanged.
+- **Validation** (the previous release and this build, the same node per pair):
+  - 116 validation cells: the 111 without an OpenMP region on PEs have the same run time, among them every host
+    baseline and every serial device cell; the 5 OpenMP cells move -8.7 % to -2.5 %.
+  - Message-passing host baselines (10 cells, 4 and 16 host cores): the same run time.
+  - 150 message-passing cells (smoke sizes): the same return codes (146 complete, the same 4 refused). Median shift
+    0.0 % for gemv, stream_triad, bfs and histogram and +0.2 % for stencil_2d; since each rank's ROI starts where it
+    leaves the kernel-entry barrier, the entry barrier is outside the measured region, so the barrier priced here
+    shows mainly at 64 PEs (gemv +1.2 %, stencil_2d +2.1 %, stream_triad -2.0 %). The saturated bfs at CHANNEL and
+    LOGIC_DIE placement, which moves on any change of the ranks' timing, moves +14.9 % and -47.0 %. Co-simulation
+    cells move -6.9 % to +1.5 %.
+  - 185 OpenMP cells (140 device, 45 co-simulation; smoke sizes): the same return codes. Median shift by PE count:
+    up to 4 PEs within 0.4 %; 8 PEs -2.5 %; 16 PEs -4.3 %; 32 and 64 PEs -31 %; co-simulation -1.7 %. For scale, in
+    1.12.195 the same smoke cells move by -22.6 % to +10.4 % when every barrier_table entry is set one cycle higher
+    through `simulation.pim_runtime`.
+  - Production sizes (HBM3, BANK placement): fig3 bfs 16 PEs -0.11 %, stencil_2d 16 PEs -0.06 %, gemv 4 PEs -0.02 %,
+    bfs 64 PEs -0.13 %, stencil_2d 64 PEs +0.11 %, gemv 64 PEs +0.85 %, stream_triad 64 PEs +2.99 %. The 64-PE
+    increases come from the closed-loop DRAM pricing's response to the shorter region turnaround, not from the code
+    path: given the previous barrier and launch costs through `simulation.pim_runtime`, this model gives exactly the
+    previous run time (checked on 1.12.195, stream_triad 64 PEs: 9 096 057 cycles both).
+  - Determinism: 8 cells x 2 copies, one output per cell. The power check flags nothing in these sets that it does
+    not flag for the previous release.
+- **Data impact.** OpenMP cells on PEs and MPI cells move: smoke-size OpenMP and MPI comparisons are no longer
+  dominated by the barrier table (it was 7-67 % of their run time). At production sizes the barrier table was 0.01-1.8 %
+  of an OpenMP run; the measured shifts are -0.13 % to +3.0 %, largest at 64 PEs on one HBM3 rank. Host baselines and
+  serial cells are unchanged.
+
 ## 1.12.214 -- HBM2: the DQ I/O of an access that crosses the pins is priced at the published HBM2E PHY energy
 
 - **The problem.** An HBM2 access crossing the DQ pins paid its I/O at 0.23 pJ/b on a read, the midpoint of an HBM2

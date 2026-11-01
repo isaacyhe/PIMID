@@ -812,13 +812,37 @@ barrier and launch are charged before the release stamp, an acquire after the
 acquisition, an MPI send before its send stamp, a receive after its
 rendezvous). See [benchmarks.md](benchmarks.md#parallel-runtime-on-pes-pim-runtime-primitives).
 
-The defaults are UPMEM's **measured** on-chip primitives, the device's PEs
-treated as one synchronisation domain; every run prints "assumes DPU-style
-atomics across the device's PEs". Cycles are used as published (UPMEM DPU
-pipeline cycles; the `alu_core` PE is the analogous pipeline) unless
+The defaults for locks, work-sharing dispatch, queries and the MPI handshakes
+are UPMEM's **measured** on-chip primitives, the device's PEs treated as one
+synchronisation domain (every run prints "Locks and handshakes assume
+DPU-style atomics across the device's PEs"). Cycles are used as published
+(UPMEM DPU pipeline cycles; the `alu_core` PE is the analogous pipeline) unless
 `cycle_basis: time`. P is the number of participants (the OpenMP team size from
 the `num_threads` argument of `GOMP_parallel*` or the nthreads ICV; the MPI rank
 count).
+
+**Barriers and launches among PEs.** PrIM's barrier (`barrier_table`) is
+measured among tasklets that share one DPU pipeline: its growth with the
+participant count is serialisation on that one core. It prices only the
+participants that share one PE. Among participants on separate PEs a barrier
+is a dissemination barrier over the device NoC (Hensgen, Finkel and Manber,
+IJPP 17(1), 1988; Mellor-Crummey and Scott, ACM TOCS 9(1), 1991):
+ceil(log2 D) rounds over the D PEs; in round k participant i writes a one-flit
+flag to participant (i + 2^k) mod D and spins on its own flag for the one from
+(i - 2^k) mod D. A round costs that flag's one-way NoC latency between the two
+PEs (the zero-load walk over the built H-tree, the cost an unsampled remote
+access is priced at; 0 between PEs behind one network interface) and the local
+read that observes it (the PE's local access latency), and the barrier ends
+when the last participant has seen its last flag. A parallel-region launch is
+a binomial broadcast from the master over the same NoC: in round k each
+participant i < 2^k that has the region writes participant i + 2^k. The
+participants occupy the device's PEs in home order (participant i on PE i mod
+n of the n PEs), so D = min(P, n); when P > n, up to ceil(P / n) participants
+share a PE and their group adds `barrier_table(ceil(P / n))`. The cost is a
+function of the topology only (deterministic; the flags are priced, not
+injected as traffic). Each device run prints it for all its PEs:
+`[pim-runtime] barrier among PEs: ... All n PEs: barrier B, launch L PE
+cycles`. Setting `<event>_cycles` replaces the whole model for that event.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -826,10 +850,10 @@ count).
 | `apply_to` | `pe` \| `all` | `pe` | Which cores the model applies to. `pe`: device PEs only -- a host CPU really runs libgomp and the MPI library, so host cores (co-sim, host-only baselines) execute them. `all`: host cores too. |
 | `cycle_basis` | `pe_cycles` \| `time` | `pe_cycles` | `pe_cycles`: the published cycle counts are PE cycles. `time`: they are cycles of a `source_clock_mhz` clock, converted through time to the PE clock (x PE MHz / `source_clock_mhz`). |
 | `source_clock_mhz` | float | `350` | Clock of the published cycles (PrIM's UPMEM DPU: 350 MHz). Used by `cycle_basis: time`. |
-| `barrier_table` | map P: cycles | `{2: 224, 4: 504, 8: 1201, 16: 2777}` | Barrier cost per participant count, from PrIM (Gomez-Luna et al., IEEE Access 2022, arXiv 2105.03814) Appendix Fig. 21 (reduction final step, 1 DPU, int64): (BARRIER tree - HANDS tree) / log2 T = (528-304)/1, (1776-768)/2, (4996-1392)/3, (13760-2654)/4 at T = 2/4/8/16; consistent with the SDK's barrier.c (about 12-15 lock-serialised instructions x 11 cycles per arrival). Linear interpolation in P (P = 1: 0); above the largest P, linear extrapolation from the last two points, printed as an extrapolation. |
+| `barrier_table` | map P: cycles | `{2: 224, 4: 504, 8: 1201, 16: 2777}` | Barrier cost per participant count for participants that share one PE (see "Barriers and launches among PEs" above), from PrIM (Gomez-Luna et al., IEEE Access 2022, arXiv 2105.03814) Appendix Fig. 21 (reduction final step, 1 DPU, int64): (BARRIER tree - HANDS tree) / log2 T = (528-304)/1, (1776-768)/2, (4996-1392)/3, (13760-2654)/4 at T = 2/4/8/16; consistent with the SDK's barrier.c (about 12-15 lock-serialised instructions x 11 cycles per arrival). Linear interpolation in P (P = 1: 0); above the largest P, linear extrapolation from the last two points, printed as an extrapolation. |
 | `reduction_table` | map P: cycles | `{2: 304, 4: 768, 8: 1392, 16: 2654}` | OpenMP reduction combine per reduction: PrIM Fig. 21 HANDS tree (measured, includes the adds), interpolated like `barrier_table`. |
-| `omp_launch_cycles` | float | `barrier_table(P)` | Parallel-region launch (`GOMP_parallel*`), charged on the master before it wakes the team: one barrier (UPMEM tasklets are resident; a fork/join is a barrier_wait). |
-| `omp_barrier_cycles` | float | `barrier_table(P)` | Explicit and implicit barriers (`GOMP_barrier`, `GOMP_loop_end`, `GOMP_sections_end`, `GOMP_parallel_end`, and the end of every region body), per participant. |
+| `omp_launch_cycles` | float | binomial broadcast among PEs + `barrier_table` of a PE's group | Parallel-region launch (`GOMP_parallel*`), charged on the master before it wakes the team: among PEs a binomial broadcast over the NoC; among threads sharing one PE one barrier (UPMEM tasklets are resident; a fork/join is a barrier_wait). |
+| `omp_barrier_cycles` | float | dissemination barrier among PEs + `barrier_table` of a PE's group | Explicit and implicit barriers (`GOMP_barrier`, `GOMP_loop_end`, `GOMP_sections_end`, `GOMP_parallel_end`, and the end of every region body), per participant. |
 | `omp_lock_acquire_cycles` | float | `11` | `GOMP_critical_start`, `GOMP_atomic_start`, `GOMP_ordered_start`, `omp_set_lock` / `omp_test_lock` (and nest / name variants). UPMEM SDK syslib/mutex.h: one `acquire` instruction; latency 11 cycles (revolver pipeline: one thread's instructions dispatch 11 cycles apart, PrIM Sec. 2.2; uPIMulator Table I). Charged after the acquisition. Under contention the critical sections serialise through the lock-word / futex ordering; the primitive is per acquire. |
 | `omp_lock_release_cycles` | float | `11` | The matching `*_end` / `omp_unset_lock`. SDK `release` instruction, 11 cycles. |
 | `omp_loop_dispatch_cycles` | float | `22` | Work-sharing dispatch (`GOMP_loop_*_start/next`, `GOMP_sections_*`, `GOMP_single_*`): one lock-protected counter update = acquire + release (11 + 11). |
@@ -838,7 +862,7 @@ count).
 | `mpi_p2p_protocol_cycles` | float | `110` | Per point-to-point endpoint (`MPI_Send` / `MPI_Recv` / one `MPI_Sendrecv` exchange): one handshake notify/wait pair (UPMEM SDK handshake.c: acquire/release of a per-tasklet atomic bit plus stop/resume, about 10 instructions x 11 cycles). Beyond the priced data transfer. |
 | `mpi_collective_step_cycles` | float | `110` | Per endpoint per step of a collective (each send, receive or exchange of the tree / ring algorithm): one point-to-point handshake. |
 | `mpi_reduction_step_cycles` | float | `0` | Per combine step of `MPI_Reduce` / `MPI_Allreduce` beyond the reduce arithmetic, which is simulated (a collective is a tree of point-to-point steps; no separate primitive). |
-| `mpi_barrier_cycles` | float | `barrier_table(P)` | `MPI_Barrier`, after the max-arrival release, P = ranks. |
+| `mpi_barrier_cycles` | float | `barrier_table` of the ranks sharing one PE | `MPI_Barrier`, after the max-arrival release, P = ranks. The dissemination barrier among the ranks' PEs is charged by the barrier itself, with or without this model. |
 | `<event>_scaling` | `constant` \| `linear` \| `log2` | `constant` | With `<event>_cycles` set: cost = cycles x 1, x P or x ceil(log2 P). For the table-default events (`omp_launch`, `omp_barrier`, `omp_reduction`, `mpi_barrier`) it is refused without `<event>_cycles`. |
 
 A libgomp entry point without a PIM primitive (`GOMP_task*`, `GOMP_target*`,
