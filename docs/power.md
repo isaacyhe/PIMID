@@ -636,7 +636,14 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   floor and includes regulator loss in its source. Under load the uncore
   clock rises (1.12.154): `<host>.uncore_load`, 0.31 W per MB of host L3 at the
   raised clock (Gholkar et al., SC19) x the busiest host core's running
-  fraction, less the uncore clock networks McPAT already prices. Beyond the
+  fraction, less the uncore clock networks McPAT already prices. The floor is a
+  measured awake-idle package power, so it already holds the idle uncore's
+  clocking: the uncore clock networks McPAT prices (L3, NoC, memory controllers)
+  beyond what the load term can absorb (the load term is the rise above the
+  floor and is never below 0) are subtracted from `<host>.uncore_static`, so the
+  idle clocking is counted once. A busy host's load term absorbs them all and
+  nothing more is subtracted; a nearly idle co-simulation host's is about 0, so
+  the floor gives up the priced clocking instead. Beyond the
   sources (the C1E fit spans 4 to 18 cores; the uncore-clock measurement is of a
   20 MB LLC) both terms are extrapolated from them: the static term is the
   fit's core-count-independent intercept at any core count, and the load term

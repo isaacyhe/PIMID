@@ -6,6 +6,29 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.210 -- the host's idle uncore clocking is counted once
+
+- **The problem.** `<host>.uncore_static` is the Haswell-EP package C1E intercept, a measured awake-idle package power
+  that already holds the idle uncore's clocking. The uncore clock networks McPAT prices (L3, NoC, memory controllers)
+  were subtracted only from `<host>.uncore_load`, the rise above that floor, which is never below 0. On a nearly idle
+  host (a co-simulation host runs a fraction 1e-4 of the window) the load term is 0, so the priced clock networks
+  stood on top of a floor that already contains them: the same clocking twice. Pricing a host's memory controllers
+  per memory type made this visible (an HBM3 host's controller clock networks are 0.35 W).
+- **The fix** (src/main.cpp). The priced uncore clock networks that the load term cannot absorb (priced clocks minus
+  the load term's rise, the load per MB of L3 x L3 x running fraction, never below 0) are subtracted from the floor
+  with the memory controller's leakage, PHY static and die clock trunk, and the run prints them in that list. A busy
+  host's load term absorbs them all and nothing more is subtracted. The floor stays at 0 or above; if what the run
+  prices of it exceeds it, the run says so.
+- **Validation.** 1.12.208 and this change side by side: 33 co-simulation cells (1-, 4- and 16-core hosts;
+  DDR3, DDR4, DDR5 at two speed grades, LPDDR5, GDDR6, HBM2 and HBM3; all five kernels on DDR5 and HBM3) and 8 host
+  baselines (1 and 16 cores, DDR5 and HBM3): run times, checksums and every line before the power report identical;
+  only `<host>.uncore_static` and the totals move. Two determinism cells, 8 copies each: one output per cell. The
+  power checker reports no flag and no consistency failure.
+- **Data impact.** Co-simulation totals fall by the priced uncore clocking the floor already held: HBM3 -1.27 to
+  -1.57% (1-core host -1.52 to -1.57%, 4-core -1.49 to -1.50%, 16-core -1.27 to -1.28%), HBM2 -0.52 to -0.59%, DDR5
+  -0.28 to -0.57%, LPDDR5 -0.14 to -0.21%, GDDR6 -0.10 to -0.15%, DDR4 -0.10%, DDR3 -0.05 to -0.10%. Host baselines
+  are unchanged (their load term absorbs the clocks). Run times do not change.
+
 ## 1.12.209 -- the host's memory controllers are priced per memory type; the host PHY's static power once
 
 - **The problem.** A host node was priced as one memory controller serving one channel of its memory, whatever the

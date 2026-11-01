@@ -19395,7 +19395,13 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
      * W). The 18.5 W intercept is the socket's core-count-independent part; the per-core
      * slope is the cores, their L3 slices and ring stops, priced elsewhere. Of the
      * intercept the run already prices the memory controller's leakage, its PHY static
-     * and the die clock trunk; those are subtracted, never below 0. Caveats, printed:
+     * and the die clock trunk; those are subtracted, never below 0. (1.12.210) The floor is
+     * a measured awake-idle package power, so it also holds the idle uncore's clocking:
+     * the uncore clock networks McPAT prices (L3, NoC, memory controllers) that the
+     * load term below cannot absorb (the load term is the uncore's rise above the floor
+     * and is never below 0) are subtracted here as well, so idle clocking counts once.
+     * Where the load term absorbs them all (a busy host), nothing more is subtracted.
+     * Caveats, printed:
      * C1E is an awake-idle floor (the uncore runs faster under load); the datasheet
      * figure includes on-die regulator loss, which PIMID leaves out (user ruling
      * 2026-10-23). The host is awake for the whole window (no package sleep state). */
@@ -19406,7 +19412,14 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
             if (!r.valid || r.cores <= 0) continue;
             double phy = 0.0;
             for (const auto& p : host_mc_phy_w) if (p.first == r.name) phy += p.second;
-            const double priced = r.uncore_priced_mc_leak_w + phy + r.uncore_priced_trunk_w;
+            /* (1.12.210) the priced uncore clock networks the load term cannot absorb: the load
+             * term's raw rise (load_w_per_mb_llc x L3 MB x running fraction; 0 when that term
+             * is off) is what is above the floor, and the rest of the priced clocking is the
+             * floor's own idle clocking. */
+            const double load_rise = config.pm_host_uncore_load
+                ? config.host_uncore_load_w_per_mb * r.l3_mb * ((r.run_frac_max >= 0.0) ? r.run_frac_max : 1.0) : 0.0;
+            const double clk_idle = std::max(0.0, r.uncore_clock_priced_w - load_rise);
+            const double priced = r.uncore_priced_mc_leak_w + phy + r.uncore_priced_trunk_w + clk_idle;
             const double ref = config.host_uncore_w_per_socket;
             const double w = std::max(0.0, ref - priced);
             host_uncore_w.push_back({r.name, w});
@@ -19425,8 +19438,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                                                                       : " (Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)"))
                       << " minus what this run prices of it (MC leakage " << r.uncore_priced_mc_leak_w
                       << " W + MC PHY static " << phy << " W + die clock trunk " << r.uncore_priced_trunk_w
+                      << " W + uncore clock networks above the load term's rise " << clk_idle
                       << " W) = " << w << " W (ledger " << r.name << ".uncore_static; " << r.cores << " core(s) priced apart)"
                       << std::endl;
+            if (ref - priced < 0.0)
+                pimid::fmt_scoped(std::cout) << "    NOTE: what the run prices of the floor exceeds it by " << priced - ref
+                          << " W; the term is 0 and the excess stays in the components that price it" << std::endl;
             pimid::fmt_scoped(std::cout) << "    of which clock generation (reference, inside the term, not added): " << plls
                       << " PLLs (" << r.cores << " core + CLM/MC + PMU" << (r.link_ctrls ? " + link controller" : "")
                       << "; AgilePkgC, HPCA 2023, Sec. 3) x 7 mW = " << plls * 0.007 << " W" << std::endl;
