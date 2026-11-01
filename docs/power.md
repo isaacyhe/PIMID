@@ -172,6 +172,15 @@ the NVMs, per-access energy on the measured accesses of every class plus the
 array leakage (x banks, after any measured array gating), in watts on the run's
 wall clock. Their area was already in System Total Area and is not added twice.
 
+The replayed window's time-based counters (DRAM cycles, idle cycles, refresh commands, bank-open and power-down
+time) are read at the ROI end's own DRAM tick. Where the end becomes known after the replayed clock has passed it
+(a run time raised after the final drain under the closed loop, or a message-passing epoch replayed ahead of it),
+they come from a per-tick record of the last 131072 DRAM cycles, so the window covers exactly the ROI (since (1.12.212);
+before, they came from the last 1024-cycle snapshot at or before the end, up to 1023 DRAM cycles short). A
+co-simulation message-passing run learns its ROI end only after its ranks' post-ROI tails, often millions of DRAM
+cycles later; it keeps the last 1024-cycle snapshot at or before the end, and the run prints how many DRAM cycles
+short its window is (at most 1023).
+
 ## Node scaling of published per-op logic energies (1.12.33)
 
 The published per-operation energies (FPU, integer ALU and multiplier, the

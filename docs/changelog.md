@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.212 -- the DRAM replay window's time-based counters are read at the ROI end's own tick
+
+- **The problem.** When the ROI end became known after the replayed DRAM clock had passed it, the window's
+  time-based counters (DRAM cycles, idle cycles, refresh commands, bank-open and power-down time) came from the last
+  periodic snapshot at or before the end, taken every 1024 DRAM cycles, so the window was up to 1023 DRAM cycles short
+  and its background and refresh energy with it. Under the closed loop a run time raised after the final drain closes
+  the window behind the clock, and the window could be short even with the clock standing exactly at the end: the
+  16-core HBM3 OpenMP gemv host baseline counted 12,288 of its 13,096 DRAM cycles (6.2 % short), and the power check
+  reported its replayed DRAM time below the pricing window.
+- **The fix** (external/zsim/src/dram_epoch_replay.h, dram_epoch_replay.cpp; docs/power.md). A clock standing at the
+  end reads its counters then; one that has passed it takes them from a per-tick record of the last 131,072 DRAM
+  cycles: the counters of the end's own tick, on the single and on the two-channel replay. A co-simulation
+  message-passing run learns its ROI end only after its ranks' post-ROI tails, far more DRAM cycles later than that
+  record holds; it keeps the last periodic snapshot as before (at most 1023 DRAM cycles short), and the run now prints
+  by how many DRAM cycles its window is short.
+- **Validation** (the previous release and this build; smoke sizes):
+  - run times identical in all 60 host baselines and all 150 message-passing cells;
+  - 16 host-baseline windows grow to their end tick (by at most 6.6 %), 3 device windows by at most 0.39 %; total
+    power moves by at most 0.002 %;
+  - the 15 co-simulation message-passing runs keep their windows and print the shortfall (587 to 998 DRAM cycles in
+    the cells printed, of windows from 246,566 to 53,553,739 DRAM cycles);
+  - two determinism cells x 8 copies: one output each;
+  - the power check reports no flag and no consistency failure (the previous release: one, the 16-core HBM3 OpenMP
+    gemv host baseline).
+- **Data impact.** Runs whose ROI end became known late count their whole window: background and refresh energy grow
+  by up to 6.6 % of the window (16-core host baselines), by under 0.4 % on device cells. Run times and the other
+  counters do not change.
+
 ## 1.12.211 -- a message-passing receive no longer enters the MPI library's 64 KB process-mode frame
 
 - **The problem.** The guest MPI library's receive (`recv_bytes`, src/parallel_abstraction/pimid_mpi.cpp) held the

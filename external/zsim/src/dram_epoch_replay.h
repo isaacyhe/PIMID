@@ -398,6 +398,7 @@ class DramEpochReplay {
         bool idleAtStart = true, idleNow = true;
         std::vector<ChanSnap> snaps; bool closeTaken = false; ChanSnap closeSnap;
         bool closeSnappedIn = false;
+        std::vector<ChanSnap> ring;   // (1.12.212): this channel's counters per tick, kRing deep (merged into ring_)
         struct Cnt { uint64_t req = 0, rd = 0, wr = 0, hreq = 0, hrd = 0, hwr = 0, oreq = 0, ord = 0, owr = 0, ohreq = 0, ohrd = 0, ohwr = 0; };
         Cnt d;                        // request counters of this call
         uint64_t doorRecs = 0, doorTicks = 0, doorMax = 0;
@@ -477,6 +478,11 @@ class DramEpochReplay {
     struct Snap { uint64_t tick = 0, ticks = 0, idle = 0, refreshes = 0, bankW = 0, bankO = 0, pdC = 0, pdX = 0; };   // pd*: 1.12.19
     static constexpr uint64_t kSnapEvery = 1024;
     std::vector<Snap> hist_;
+    /* (1.12.212): the same counters at every DRAM tick of the last kRing ticks (a ring indexed by tick), filled while
+     * hist_ is; a close the clock has already passed takes the counters of its own tick from it. */
+    static constexpr uint64_t kRing = 1ull << 17;
+    std::vector<Snap> ring_;
+    bool closeFromSnap_ = false;   // (1.12.212): the close fell beyond the ring: its counters are the last periodic snapshot's
     void takeSnap(Snap& s);
     void applySnap(const Snap& s);
     /* 1.12.18: cut mode (message passing) -- the window's time-based counters

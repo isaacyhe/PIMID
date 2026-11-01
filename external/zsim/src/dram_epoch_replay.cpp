@@ -816,6 +816,7 @@ void DramEpochReplay::tickOnce() {
     if (!rel_.empty()) serveRel();     // (1.12.189): the closed-loop replay's released records
     if (closeArmed_ && !closeSnapped_ && curTick_ >= closeTick_) snapClose();   // 1.12.18: the ROI end
     else if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && (curTick_ % kSnapEvery) == 0) { Snap s; takeSnap(s); hist_.push_back(s); }   // 1.12.18 (shift by lag); (1.12.189): and past the close under the closed loop (the run time can be raised after the final drain)
+    if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && !ring_.empty()) takeSnap(ring_[curTick_ & (kRing - 1)]);   // (1.12.212): the per-tick ring
 }
 
 /* 1.12.18 (R2): DRAM ticks per cycle of the clock roiWall.mpiEnd is counted
@@ -934,9 +935,26 @@ void DramEpochReplay::armClose(bool fromFinalize) {
          * come from the last periodic snapshot at or before the close (every
          * kSnapEvery DRAM cycles), not from now. */
         closeLate_ = curTick_ - closeTick_;
-        const Snap* best = nullptr;
-        for (const Snap& s : hist_) { if (s.tick <= closeTick_) best = &s; else break; }
-        if (best) applySnap(*best); else snapClose();
+        /* (1.12.212): exact -- the clock standing at the close reads its counters now; one past it reads the close
+         * tick's own from the per-tick ring. Only a close more than kRing ticks behind falls back to the last
+         * periodic snapshot at or before it, and says so. */
+        const uint64_t ri = closeTick_ & (kRing - 1);
+        closeFromSnap_ = false;
+        if (closeLate_ == 0) snapClose();
+        else if (!ring_.empty() && closeLate_ < kRing && ring_[ri].tick == closeTick_) applySnap(ring_[ri]);
+        else {
+            const Snap* best = nullptr;
+            for (const Snap& s : hist_) { if (s.tick <= closeTick_) best = &s; else break; }
+            if (best) applySnap(*best); else snapClose();
+            closeFromSnap_ = true;
+            if (best) {
+                info("[mem] %s: the ROI end (DRAM tick %lu) became known %lu DRAM cycles after the clock passed it, beyond the per-tick history (%lu): its time-based counters are the last periodic snapshot's, %lu DRAM cycles before it (the window is that much short)",
+                     name_.c_str(), (unsigned long)closeTick_, (unsigned long)closeLate_, (unsigned long)kRing, (unsigned long)(closeTick_ - best->tick));
+            } else {
+                info("[mem] %s: the ROI end (DRAM tick %lu) became known %lu DRAM cycles after the clock passed it, beyond the per-tick history (%lu), with no snapshot at or before it: its time-based counters are the current ones",
+                     name_.c_str(), (unsigned long)closeTick_, (unsigned long)closeLate_, (unsigned long)kRing);
+            }
+        }
     }
     if (!keepHist_ && !clOn()) { hist_.clear(); hist_.shrink_to_fit(); }   // (1.12.189): kept under the closed loop
 }
@@ -1794,6 +1812,7 @@ void DramEpochReplay::chanTickOnce(Chan& K) {
     if (K.waitingN > 0) chanServeDoors(K);
     if (closeArmed_ && !K.closeSnappedIn && K.curTick >= closeTick_) { chanTakeSnap(K, K.closeSnap); K.closeTaken = true; K.closeSnappedIn = true; }
     else if (roiMarked_ && !closeArmed_ && (K.curTick % kSnapEvery) == 0) { ChanSnap s; chanTakeSnap(K, s); K.snaps.push_back(s); }
+    if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && !K.ring.empty()) chanTakeSnap(K, K.ring[K.curTick & (kRing - 1)]);   // (1.12.212)
 }
 
 void DramEpochReplay::chanTickTo(Chan& K, uint64_t tick) {
@@ -1844,6 +1863,30 @@ void DramEpochReplay::chanMerge(uint64_t startTick, uint64_t endTick) {
         if (bankTracked_) { s.bankW = A[i].bankW + B[i].bankW; s.bankO = A[i].bankO + B[i].bankO; }
         s.pdC = A[i].pdC + B[i].pdC; s.pdX = A[i].pdX + B[i].pdX;
         hist_.push_back(s);
+    }
+    /* (1.12.212): the merged per-tick ring over (startTick, endTick] (its last kRing ticks): the channels' counters at
+     * each tick, the merged idle count as idleCount gives it (both channels idle after the tick) */
+    if (!ring_.empty() && roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && endTick > startTick && !chans_[0].ring.empty() && !chans_[1].ring.empty()) {
+        const uint64_t first = (endTick - startTick > kRing) ? endTick - kRing + 1 : startTick + 1;
+        uint64_t n = idleCount(first - 1);
+        bool s0 = chans_[0].idleAtStart, s1 = chans_[1].idleAtStart;
+        const auto& F0 = chans_[0].idleFlips; const auto& F1 = chans_[1].idleFlips;
+        size_t i0 = 0, i1 = 0;
+        while (i0 < F0.size() && F0[i0] <= first - 1) { s0 = !s0; i0++; }
+        while (i1 < F1.size() && F1[i1] <= first - 1) { s1 = !s1; i1++; }
+        for (uint64_t t = first; t <= endTick; t++) {
+            while (i0 < F0.size() && F0[i0] == t) { s0 = !s0; i0++; }
+            while (i1 < F1.size() && F1[i1] == t) { s1 = !s1; i1++; }
+            if (s0 && s1) n++;
+            const ChanSnap& a = chans_[0].ring[t & (kRing - 1)]; const ChanSnap& b = chans_[1].ring[t & (kRing - 1)];
+            if (a.tick != t || b.tick != t) continue;
+            Snap& s = ring_[t & (kRing - 1)];
+            s.tick = t; s.ticks = ticks0 + (t - startTick); s.idle = idle0 + n;
+            s.refreshes = a.refreshes + b.refreshes;
+            s.bankW = raw_.bankW; s.bankO = raw_.bankO;
+            if (bankTracked_) { s.bankW = a.bankW + b.bankW; s.bankO = a.bankO + b.bankO; }
+            s.pdC = a.pdC + b.pdC; s.pdX = a.pdX + b.pdX;
+        }
     }
     if (chans_[0].closeTaken != chans_[1].closeTaken) panic("DramEpochReplay %s: channel close snapshots differ", name_.c_str());
     if (chans_[0].closeTaken) {
@@ -2015,6 +2058,8 @@ void DramEpochReplay::markRoi() {
     }
     closeArmed_ = closeSnapped_ = false; closeTick_ = closeLate_ = pastEndRecs_ = 0;   // 1.12.18 (R1): every mode
     hist_.clear();   // 1.12.18 (shift by lag)
+    ring_.assign(kRing, Snap()); for (Snap& s : ring_) s.tick = ~0ull; closeFromSnap_ = false;   // (1.12.212): the per-tick ring
+    if (par()) for (Chan& K : chans_) { K.ring.assign(kRing, ChanSnap()); for (ChanSnap& x : K.ring) x.tick = ~0ull; }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);
     bankTotals();   // 1.12.18
     base_ = raw_;
@@ -2088,6 +2133,9 @@ void DramEpochReplay::finalize() {
                      name_.c_str(), (unsigned long)closeTick_, closeLate_ ? " -- reached late, the clock stood past it" : "",
                      (unsigned long)pastEndRecs_, (unsigned long)(curTick_ > closeTick_ ? curTick_ - closeTick_ : 0),
                      (unsigned long)hostCoreStamps_.load(), (unsigned long)hostPhaseStamps_.load());
+            if (closeLate_ > 0 && !closeFromSnap_)
+                info("[mem] %s: the ROI end became known %lu DRAM cycles after the clock passed it; its time-based counters are the close tick's own (per-tick history of %lu DRAM cycles) [(1.12.212)]",
+                     name_.c_str(), (unsigned long)closeLate_, (unsigned long)kRing);
         }
     }
     if (!closedAtEnd && hostOnly_ && !cutMode_ && roiMarked_) {
