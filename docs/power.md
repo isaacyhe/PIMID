@@ -177,9 +177,12 @@ time) are read at the ROI end's own DRAM tick. Where the end becomes known after
 (a run time raised after the final drain under the closed loop, or a message-passing epoch replayed ahead of it),
 they come from a per-tick record of the last 131072 DRAM cycles, so the window covers exactly the ROI (since (1.12.212);
 before, they came from the last 1024-cycle snapshot at or before the end, up to 1023 DRAM cycles short). A
-co-simulation message-passing run learns its ROI end only after its ranks' post-ROI tails, often millions of DRAM
-cycles later; it keeps the last 1024-cycle snapshot at or before the end, and the run prints how many DRAM cycles
-short its window is (at most 1023).
+co-simulation message-passing run learns its ROI end only when its last rank leaves the kernel window, where the
+run time is also raised to the busiest link's service time if that is longer; by then the replayed clock often
+stands millions of DRAM cycles past the end (the other ranks run their post-ROI tails, and a rank waiting to settle
+at the closing barrier does not hold the controller back). Such a run keeps the last 1024-cycle snapshot at or before
+the end: its time-based counters fall short of the window by a known bound, at most 1023 DRAM cycles (at most 0.41 %
+of the window in the co-simulation smoke runs, under 0.002 % at full size), and the run prints the shortfall.
 
 ## Node scaling of published per-op logic energies (1.12.33)
 

@@ -49,6 +49,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -235,23 +236,55 @@ class DramEpochReplay {
      * the access was not recorded; a refund leaves at least `floor`. lastRecorded: the access was recorded. */
     uint32_t chargeLast(uint32_t lat, bool boot, uint32_t floor = 0);
     bool lastRecorded() const;
+    /* 1.12.216 AT THE RENDEZVOUS (thread-MPI ranks on device PEs; the plugin decides every settlement at a phase
+     * barrier, see its "settle at the rendezvous" section). A rank at a rendezvous (a barrier arrival, a send, a
+     * receive) takes a mark (settleMark): its place in its own program order -- a core's records, the delays and rewinds
+     * applied to it and its marks are numbered in one sequence -- and the latest stamp it has recorded in the ROI, at
+     * least its clock. balanceAt is the core's balance from everything before a mark: its accesses' measured -
+     * charged, the refunds its charges took, less the delays and rewinds applied to it (both signs); openBefore: one of
+     * its accesses before the mark has not completed. settleApply books the whole cycles applied to the core's clock at
+     * the rendezvous (a delay; a rewind when negative); what it leaves of an over-charge is refunded from the core's next
+     * charges, as at a phase barrier. settlePrune folds the entries before `below` once no mark before it is still to
+     * be settled. settles: the core's accesses are timed by this closed loop (from then on, see setRealTime).
+     * THE CONTROLLER'S CLOCK ON THE RANKS' REAL TIME (setRealTime): every record is fed to its core's queue as soon as
+     * it exists (an epoch is still folded, for the prices, when the cut passes it), and the controller runs only as
+     * far as the plugin lets it: settleNext runs it, no further than `until` (on the stamps' axis), until one of the
+     * sets (cores and their marks) has no access open before its marks, or one more of their cores has none, and returns
+     * the sets complete then (ran: it ran; step: a core of a set has no access open before its mark any more); runTo runs it to `until`. A settling core's access released behind the controller's clock all the same
+     * makes the core wait: the wait is added to what the access measured for the core's balance (not to the prices).
+     * shiftOf: the shift the core's next access is released at past its stamp (its balance not applied yet). */
+    struct SetMark { uint64_t seq = 0, maxS = 0; };
+    SetMark settleMark(uint32_t core, uint64_t clock);
+    void settleOrigin(uint32_t core);   // the core's ROI starts on its own clock: the stamps it recorded before are not ROI stamps
+    bool settles(uint32_t core);
+    void setRealTime(bool on);
+    std::vector<size_t> settleNext(const std::vector<std::vector<std::pair<uint32_t, uint64_t>>>& sets, uint64_t until, bool& ran, bool& step);
+    void runTo(uint64_t until);
+    double balanceAt(uint32_t core, uint64_t seq);
+    bool openBefore(uint32_t core, uint64_t seq);
+    double shiftOf(uint32_t core);
+    uint64_t clockCycles();   // the controller's clock on the stamps' axis
+    void settleApply(uint32_t core, int64_t adj);
+    void settlePrune(uint32_t core, uint64_t below);
+    void settleStats(uint64_t& calls, uint64_t& ticks, double& delayed, double& rewound, uint64_t& lateN, double& late) const;
 
     bool available() const { return sys_ != nullptr; }
     double dramTicksPerCoreCycle() const { return ticksPerCycle_; }
 
   private:
     struct Rec { uint64_t stamp; uint64_t addr; uint32_t mi; uint8_t wr; uint32_t ch; uint8_t shadow = 0; uint32_t grp = 0;
-                 uint32_t src = ~0u, chg = 0; uint8_t tail = 0; uint32_t core = ~0u, ref = 0; int32_t dly = 0; uint8_t hold = 0, boot = 0; float refT = 0.0f; uint32_t dmab = 0; uint8_t pf = 0; uint32_t pfTag = 0;   /* pf: issued by a host core's L2 prefetcher (no core waits for it); pfTag: its reconciliation tag (0: none) */ uint8_t sync = 0; };   // (1.12.189): sync = the core's first record after a synchronization   // (1.12.189): dmab = the DMA transfer the line belongs to (0: none)   // (1.12.189): core = the core that issued it, ref = the refund its charge took (refT: in the core's time, ref / its overlap), dly = the delay applied to the core before it, hold = the core waits for it, boot = charged by the analytical service; (1.12.181): tail = issued in a co-sim MPI rank's post-ROI tail (outside)   // (1.12.153): src = the host core of a thread-MPI host record (~0u otherwise); chg = the latency charged   // 1.12.18 (drain the lag): ch = the controller channel; shadow = a host lock-step copy past chip 0, grp = its host request
-    struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; bool out; uint64_t epoch; uint32_t grp = 0; uint32_t chg = 0; uint32_t core = ~0u; bool hold = false, boot = false, gated = false; uint32_t ref = 0; bool posted = false; uint32_t dmab = 0; bool pfg = false; uint32_t pfTag = 0;   /* pfg: a prefetch counted in its core's superqueue */ bool accp = false; bool pfr = false; };   // (1.12.189): pfr = a prefetch's request; accp = priced at its acceptance   // (1.12.189): core, hold, boot, ref, posted (its latency noted at acceptance); gated = counted in its core's in-flight accesses; (1.12.153): chg   // (1.12.145): issueTick = the tick the request reached the controller's door   // 1.12.18: out = stamped after the ROI end (R1); grp
+                 uint32_t src = ~0u, chg = 0; uint8_t tail = 0; uint32_t core = ~0u, ref = 0; int32_t dly = 0; uint8_t hold = 0, boot = 0; float refT = 0.0f; uint32_t dmab = 0; uint8_t pf = 0; uint32_t pfTag = 0;   /* pf: issued by a host core's L2 prefetcher (no core waits for it); pfTag: its reconciliation tag (0: none) */ uint8_t sync = 0; uint64_t seq = 0; };   // (1.12.216): seq = its place in its core's sequence (settleMark)   // (1.12.189): sync = the core's first record after a synchronization   // (1.12.189): dmab = the DMA transfer the line belongs to (0: none)   // (1.12.189): core = the core that issued it, ref = the refund its charge took (refT: in the core's time, ref / its overlap), dly = the delay applied to the core before it, hold = the core waits for it, boot = charged by the analytical service; (1.12.181): tail = issued in a co-sim MPI rank's post-ROI tail (outside)   // (1.12.153): src = the host core of a thread-MPI host record (~0u otherwise); chg = the latency charged   // 1.12.18 (drain the lag): ch = the controller channel; shadow = a host lock-step copy past chip 0, grp = its host request
+    struct Inflight { uint32_t remaining; uint64_t issueTick; uint32_t mi; bool wr; bool out; uint64_t epoch; uint32_t grp = 0; uint32_t chg = 0; uint32_t core = ~0u; bool hold = false, boot = false, gated = false; uint32_t ref = 0; bool posted = false; uint32_t dmab = 0; bool pfg = false; uint32_t pfTag = 0;   /* pfg: a prefetch counted in its core's superqueue */ bool accp = false; bool pfr = false; uint64_t seq = 0, late = 0; };   // (1.12.216): seq, late, as its record's   // (1.12.189): pfr = a prefetch's request; accp = priced at its acceptance   // (1.12.189): core, hold, boot, ref, posted (its latency noted at acceptance); gated = counted in its core's in-flight accesses; (1.12.153): chg   // (1.12.145): issueTick = the tick the request reached the controller's door   // 1.12.18: out = stamped after the ROI end (R1); grp
     /* 1.12.18 (user ruling 2026-10-24, "drain the lag"): a record that finds
      * its controller queue full waits at that queue's door (FIFO per channel
      * and direction) and enters the instant the controller can take it; an
      * epoch's requests stay in flight across the epoch boundary, and its
      * measured service latency is final when its last request completes. */
-    struct Waiting { Rec r; uint64_t epoch; uint64_t target; bool out; uint32_t b; uint64_t id; uint64_t feed = 0; bool gated = false; bool pfg = false; };   // (1.12.145): feed = the tick the record reached the door
+    struct Waiting { Rec r; uint64_t epoch; uint64_t target; bool out; uint32_t b; uint64_t id; uint64_t feed = 0; bool gated = false; bool pfg = false; uint64_t late = 0; };   // (1.12.216): late = released behind the controller's clock by (ticks; see clRelease)   // (1.12.145): feed = the tick the record reached the door
     /* (1.12.189): per core, an epoch's accesses it waits for: the sum of their charges and the length of the union of their
      * charged intervals [stamp, stamp + charge] on the core's clock (their overlap) */
-    struct RecAcc { double chg = 0.0, uni = 0.0; bool host = false; };
+    struct RecAcc { double chg = 0.0, uni = 0.0; bool host = false; double rs = 0.0, re = 0.0; bool ropen = false; };   // (1.12.216): rs, re = the interval still open (an epoch fed in parts)
+    static double uniOf(const RecAcc& a) { return a.uni + (a.ropen ? a.re - a.rs : 0.0); }
     struct EpochAcc { std::vector<uint64_t> sum, cnt; uint64_t pend = 0; bool fed = false; std::map<uint32_t, RecAcc> rec; };
     std::map<uint32_t, std::deque<Waiting>> doors_;
     uint64_t waitingN_ = 0, nextId_ = 0;
@@ -275,6 +308,11 @@ class DramEpochReplay {
         double lastChgEndS = 0.0, pendChgEndS = 0.0;   // that access's charged end on its own clock, and the one in flight's
         double dmaT0 = 0.0; uint64_t dmaS0 = 0;        // (1.12.189) the DMA transfer's first line: its release tick, its stamp
         uint64_t roiDoneT = 0; double roiChgEndS = 0.0; int64_t pendAtEnd = 0;   // (1.12.189) the same for its last ROI access; delays not carried at the run end
+        std::multiset<uint64_t> live;         // (1.12.216) the sequence numbers of its accesses it waits for, fed and not completed
+        std::map<uint64_t, double> led;       // (1.12.216) its balance by sequence number (settleMark): what each event added
+        double ledBase = 0.0; uint64_t ledCut = 0;   //   the entries folded (before ledCut)
+        uint64_t dmaSeq = 0;                  // (1.12.216) the open DMA transfer's latest line (its sequence number)
+        bool rt = false;                      // (1.12.216) a settling core: an access released behind the clock makes it wait
     };
     std::map<uint32_t, CoreCL> cl_;
     std::multimap<std::pair<uint64_t, uint64_t>, Waiting> rel_;   // (tick, order) -> a released record, fed at that tick
@@ -290,7 +328,14 @@ class DramEpochReplay {
     void serveRel();
     void recFeed(EpochAcc& acc, const std::vector<Rec>& recs);
     void recDone(std::map<uint64_t, EpochAcc>::iterator a, uint32_t core, uint32_t mi, bool wr, bool hold, bool out, bool boot,
-                 uint64_t meas, uint32_t chg, uint64_t doneTick = 0, uint32_t dmab = 0);
+                 uint64_t meas, uint32_t chg, uint64_t doneTick = 0, uint32_t dmab = 0, uint64_t seq = 0);   // (1.12.216): seq, the record's
+    void ledAdd(CoreCL& k, uint64_t key, double v) { if (key < k.ledCut) k.ledBase += v; else k.led[key] += v; }   // (1.12.216)
+    void liveDone(uint32_t core, uint64_t seq);   // (1.12.216): an access its core waited for completed
+    void feedAll();                               // (1.12.216): every pending record to its core's queue (setRealTime)
+    std::unique_ptr<uint64_t[]> seqA_, maxS_;     // (1.12.216) per core: its sequence (settleMark), its latest ROI stamp recorded
+    bool realTime_ = false;                       // (1.12.216): see setRealTime
+    uint64_t setCalls_ = 0, setTicks_ = 0, lateN_ = 0, lateT_ = 0;   // (1.12.216): settleNext / runTo; ROI accesses a core issued behind the clock
+    double setDelayed_ = 0.0, setRewound_ = 0.0;
     void recDmaClose(CoreCL& k);   // (1.12.189)
     void pfApply(uint32_t core, int64_t corr);   // consumed prefetches' settled waits into the consumer's balance (under lock_)
     double recDma_ = 0.0; uint64_t recDmaN_ = 0;

@@ -74,7 +74,8 @@ transfer's first line, and the core waits for the last. Every access a core wait
 core's balance (an out-of-order core's divided by the overlap of its accesses in the epoch; a DMA transfer once, by
 its last line). At the phase barrier a positive balance is added to the core's clock; a negative one is refunded
 from the core's later charges, never below zero. A rank entering a message-passing operation settles its balance
-first: a delay, or its clock moved back as far as it went since its last synchronization. The run time covers what
+first: a delay, or its clock moved back as far as it went since its last synchronization (a rank on a device PE
+settles at its rendezvous instead, below). The run time covers what
 no barrier applied: each core ends no earlier than its end + its balance, nor than the completion of its last access
 it waited for (a blocking core: + its own time after it, unless it waited after it); `roiWallBalanceCycles` is the
 part of the run time this adds. The replay statistics report `reconciledAccesses`, `reconciledCycles`,
@@ -82,6 +83,27 @@ part of the run time this adds. The replay statistics report `reconciledAccesses
 waited access past the window's close) and `ctrlRoiDrainTicks` (the last request: writebacks and posted stores drain
 after the cores). The closed loop holds a core's next access across the controller's channels, so the two-channel
 DDR5 replay runs as one instance.
+
+**Message-passing ranks on device PEs settle at the rendezvous ((1.12.216)).** The controller's clock follows the ranks'
+real time: a rank's real time is its clock plus the balance it has not paid yet (the shift its accesses are released
+at); every record reaches its core's queue as soon as it exists, and at each phase barrier the controller runs to the
+earliest time a PE can still release an access at -- a running PE's clock plus its shift, a rank waiting on a peer by
+its wake bound on that axis -- so no access is released behind its clock; the epochs are still folded at the cut, for
+the prices. An access a rank issues behind the controller's clock all the same (its balance shrank, a rewind) makes
+the rank wait for the clock: the wait is added to what the access measured, for the rank's balance (not to the
+prices). At a rendezvous the rank waits, taking the phase barriers without running, until the controller has
+completed the accesses its settlement needs: at a barrier, every rank's accesses before its arrival, and the release
+is the latest settled arrival; at a receive, the sender's accesses before its send and the receiver's before its
+receive, and the message arrives at the send time plus the sender's balance then (both ways, an over-charge no
+further back than the sender's last rendezvous), plus the contention wait and the latency, while the receiver's own
+balance moves its clock both ways (no further back than its last rendezvous: a receive or a release) and it goes on
+at the later of the two. A rank waiting for its settlement does not bound the controller (the accesses it waits for
+complete after the controller's clock); once settled it goes on no earlier than the controller's clock. When no rank
+could move in a phase and the controller could not run, it runs without the bound to the next completion of a
+waiting rendezvous' accesses. The run log's `[settle]` line counts the settled barriers and messages, these
+unbounded runs, the held PE-phases, the balance applied at the rendezvous, how far the senders' balances moved the
+arrivals, and the accesses issued behind the controller's clock. A rank on a host core, and a rendezvous outside the
+ROI, keep the settling at message-passing entry.
 
 **So is a memory of type Ramulator ((1.12.147), user ruling 2026-10-28).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,

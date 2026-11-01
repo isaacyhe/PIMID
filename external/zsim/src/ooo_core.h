@@ -713,6 +713,8 @@ class OOOCore : public Core {
         uint64_t syncToLock(uint64_t t) override;   // ooo_core.cpp
         uint64_t syncToWaker(uint64_t t) override;  // 1.12.19, ooo_core.cpp
         void cutHoldWait(uint64_t t) override;   // (1.12.188), ooo_core.cpp
+        void heldPhase() override;               // (1.12.216), ooo_core.cpp
+        bool behindPhase() const override { return curCycle > phaseEndCycle; }   // (1.12.216), see core.h
 
         InstrFuncPtrs GetFuncPtrs();
 

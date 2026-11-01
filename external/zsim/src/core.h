@@ -359,6 +359,13 @@ class Core : public GlobAlloc {
          * recorder needs a running core's clock at the phase end, and the ROI-relative clock (getCycles) does not
          * move. The ALU PE keeps its clock where it is (default). */
         virtual void cutHoldWait(uint64_t t) { (void)t; }
+        /* (1.12.216): the rank on this PE waits at a rendezvous for its settlement (the plugin's settle at the rendezvous)
+         * and takes the next phase barrier without running: an in-order / OOO PE books the rest of its phase as
+         * waiting, as under the cut hold; the ALU PE keeps its clock where it is (default). */
+        virtual void heldPhase() {}
+        /* (1.12.216): the clock is past the phase's end (a delay, a rendezvous moved it): the core takes the phase barriers
+         * without running until the phases reach it */
+        virtual bool behindPhase() const { return false; }
 
         /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): a lock
          * handed from one thread to another carries the releaser's clock --

@@ -106,6 +106,7 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     pool_.reset(new std::atomic<int64_t>[kRecCores]()); used_.reset(new std::atomic<int64_t>[kRecCores]());   // (1.12.189)
     ovA_.reset(new std::atomic<double>[kRecCores]); for (uint32_t k = 0; k < kRecCores; k++) ovA_[k].store(1.0);
     syncP_.reset(new std::atomic<uint8_t>[kRecCores]); for (uint32_t k = 0; k < kRecCores; k++) syncP_[k].store(0);   // (1.12.189)
+    seqA_.reset(new uint64_t[kRecCores]()); maxS_.reset(new uint64_t[kRecCores]());   // (1.12.216): see settleMark
     hostOnly_ = hostOnly;   // 1.12.18 (R0605)
     {   /* 1.12.17: message passing (thread-MPI) replays in cut mode */
         const char* r = getenv("PIMID_MPI_RANKS");
@@ -474,6 +475,10 @@ void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, 
         }
     }
     if (rc.core < kRecCores && syncP_ && syncP_[rc.core].exchange(0, std::memory_order_relaxed)) rc.sync = 1;   // (1.12.189)
+    if (rc.core < kRecCores && seqA_) {   // (1.12.216): see settleMark
+        rc.seq = ++seqA_[rc.core];
+        if (roiMarked_ && stamp > maxS_[rc.core]) maxS_[rc.core] = stamp;
+    }
     if (clOn() && roiMarked_ && rc.core != ~0u && rc.core < kRecCores) {
         /* (1.12.189): the delay applied to the core since its last record (its records from here on carry it), and a
          * refund of the core's over-charges, which lowers this access's charge */
@@ -486,6 +491,7 @@ void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, 
                 const double tu = (double)take / ovA_[rc.core].load(std::memory_order_relaxed);
                 pool_[rc.core].fetch_sub(take, std::memory_order_relaxed); used_[rc.core].fetch_add((int64_t)std::llround(tu * 1024.0), std::memory_order_relaxed);
                 rc.ref = take; rc.refT = (float)tu; recRefund_ += take;
+                if (k != cl_.end()) ledAdd(k->second, rc.seq, (double)std::llround(tu * 1024.0) / 1024.0);   // (1.12.216)
             }
         }
     }
@@ -531,6 +537,7 @@ void DramEpochReplay::pfApply(uint32_t core, int64_t corr) {
     auto k = cl_.find(core);
     if (k == cl_.end() || !k->second.on) return;
     k->second.diff += (double)corr;
+    k->second.ledBase += (double)corr;   // (1.12.216): a host core's prefetch; counted in every balance (see settleMark)
 }
 
 uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cycle, uint32_t srcId, bool isWrite, bool adjustedClock) {
@@ -929,6 +936,17 @@ void DramEpochReplay::armClose(bool fromFinalize) {
         }
     }
     closeArmed_ = true;
+    if (realTime_) {   // (1.12.216): a record fed before the close was known (setRealTime) and stamped past it is outside
+        auto past = [&](Waiting& w) {
+            if (w.out) return;
+            uint64_t t = (uint64_t)((double)w.r.stamp * ticksPerCycle_);
+            if (cutMode_) t += roiTick0_;
+            if (t > closeTick_) { w.out = true; pastEndRecs_++; }
+        };
+        for (auto& kv : cl_) for (Waiting& w : kv.second.fifo) past(w);
+        for (auto& kv : rel_) past(kv.second);
+        for (auto& kv : doors_) for (Waiting& w : kv.second) past(w);
+    }
     if (curTick_ >= closeTick_) {
         /* 1.12.18 (shift by lag): the clock can stand well past the close when
          * it becomes known (a shifted epoch runs late). The window counters
@@ -1035,7 +1053,8 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
             if (account) {
             if (!f.posted && !f.accp) { const uint32_t sl = priceSlot(f.mi, f.wr, f.pfr);   // (1.12.189): the request's kind (a write with posted stores: noted at acceptance)
               if (a != acc_.end() && sl < a->second.sum.size()) { a->second.sum[sl] += latCyc; a->second.cnt[sl] += 1; } }
-            recDone(a, f.core, f.mi, f.wr, f.hold, f.out, f.boot, latCyc, f.chg, curTick_ + 1, f.gated ? f.dmab : 0);   // (1.12.189)
+            recDone(a, f.core, f.mi, f.wr, f.hold, f.out, f.boot, latCyc + (uint64_t)((double)f.late / tpc + 0.5), f.chg, curTick_ + 1,
+                    f.gated ? f.dmab : 0, f.seq);   // (1.12.189); (1.12.216): seq, and the wait behind the clock (late)
             if (!f.out && !f.posted && !f.accp) compNote(priceSlot(f.mi, f.wr, f.pfr), latCyc);   // (1.12.189)
             if (f.out && f.chg && !f.boot && f.mi < outPriced_.size()) { outPriced_[f.mi]++; outChgLat_[f.mi] += f.chg - std::min(f.chg, f.ref); }   // (1.12.153); (1.12.189): not a bootstrap charge; the charge after its refund
             if (f.out) raw_.olat += latCyc;   // 1.12.18 (R1)
@@ -1050,7 +1069,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
             if (!f.out && roiMarked_) lastRoiDone_ = curTick_;   // (1.12.189)
             if (!f.out && f.hold && roiMarked_ && curTick_ + 1 > lastHeldDone_) { lastHeldDone_ = curTick_ + 1; }   // (1.12.189): a core waited for it
             const bool gated = f.gated; const uint32_t fcore = f.core; const bool fdma = f.dmab != 0, fhold = f.hold, fout = f.out;   // (1.12.189)
-            const bool fpfg = f.pfg; const uint32_t fpfTag = f.pfTag;
+            const bool fpfg = f.pfg; const uint32_t fpfTag = f.pfTag; const uint64_t fseq = f.seq;   // (1.12.216): fseq
             if (fpfTag && fcore < kPfCores) {   // a prefetch's replayed completion: its consumer's wait settles once the earlier ones have
                 const int64_t delta = (int64_t)latCyc - (int64_t)f.chg;
                 int64_t corr = 0;
@@ -1077,6 +1096,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
                 auto k = cl_.find(fcore);
                 if (k != cl_.end()) {
                     if (k->second.out) k->second.out--;
+                    if (fhold) liveDone(fcore, fseq);   // (1.12.216)
                     if (fhold && !fdma) { k->second.lastDoneT = curTick_ + 1; k->second.lastChgEndS = k->second.pendChgEndS;
                                           if (!fout && roiMarked_) { k->second.roiDoneT = curTick_ + 1; k->second.roiChgEndS = k->second.pendChgEndS; } }
                     clRelease(k->second);
@@ -1094,6 +1114,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
              * entered the queue, so the wait was charged to no core. */
             inflight_[w.id] = Inflight{burstsPerLine_, std::min<uint64_t>(w.feed, curTick_), r.mi, r.wr != 0, w.out, w.epoch, r.grp, r.chg, r.core, r.hold != 0, r.boot != 0, w.gated, r.ref};
             inflight_[w.id].dmab = r.dmab;   // (1.12.189)
+            inflight_[w.id].seq = r.seq; inflight_[w.id].late = w.late;   // (1.12.216)
             inflight_[w.id].pfg = w.pfg; inflight_[w.id].pfTag = r.pfTag; inflight_[w.id].pfr = r.pf != 0;
             if (w.gated && r.wr) {   // (1.12.189): a store holds its core until the controller takes it into its write queue (posted)
                 Inflight& f = inflight_[w.id];
@@ -1101,7 +1122,8 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
                 const uint64_t lat = (curTick_ + 1 > f.issueTick) ? (curTick_ + 1 - f.issueTick) : 1;
                 const uint64_t latCyc = (uint64_t)((double)lat / tpc + 0.5);
                 auto a = acc_.find(w.epoch);
-                recDone(a, r.core, r.mi, true, true, w.out, r.boot != 0, latCyc, r.chg, curTick_ + 1, r.dmab);
+                recDone(a, r.core, r.mi, true, true, w.out, r.boot != 0, latCyc + (uint64_t)((double)w.late / tpc + 0.5), r.chg, curTick_ + 1,
+                        r.dmab, r.seq);   // (1.12.216): seq, late
                 if (!w.out && roiMarked_ && curTick_ + 1 > lastHeldDone_) { lastHeldDone_ = curTick_ + 1; }   // (1.12.189): its core goes on now
                 /* the price of the interface's writes is what a store holds its core for, as for the reconciliation */
                 if (!w.out) {
@@ -1113,6 +1135,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
                 auto k = cl_.find(r.core);
                 if (k != cl_.end()) {
                     if (k->second.out) k->second.out--;
+                    liveDone(r.core, r.seq);   // (1.12.216)
                     if (!r.dmab) { k->second.lastDoneT = curTick_ + 1; k->second.lastChgEndS = k->second.pendChgEndS;   // (1.12.189)
                                    if (!w.out && roiMarked_) { k->second.roiDoneT = curTick_ + 1; k->second.roiChgEndS = k->second.pendChgEndS; } }
                     clRelease(k->second);
@@ -1215,6 +1238,7 @@ void DramEpochReplay::recDmaClose(CoreCL& k) {
     if (k.dmaOpen && k.dmaComp && roiMarked_) {
         const double d = ((double)k.dmaComp - k.dmaChgEnd) / k.dmaTpc;
         k.diff += d; recDma_ += d; recDmaN_++;
+        ledAdd(k, k.dmaSeq, d);   // (1.12.216): at the transfer's latest line
     }
     if (k.dmaComp) { k.lastDoneT = k.dmaComp; k.lastChgEndS = k.pendChgEndS; k.roiDoneT = k.dmaComp; k.roiChgEndS = k.pendChgEndS; }   // (1.12.189): the core goes on after its last line (dmaComp: ROI lines only)
     k.dmaOpen = 0; k.dmaComp = 0; k.dmaChgEnd = 0.0;
@@ -1278,7 +1302,10 @@ void DramEpochReplay::clRelease(CoreCL& k) {
         if (inDma && h.r.hold)   // a later line of the transfer: the engine's pace from the transfer's start
             t = k.dmaT0 + (double)(h.r.stamp > k.dmaS0 ? h.r.stamp - k.dmaS0 : 0) * ticksPerCycle_;
         uint64_t tgt = (t > 0.0) ? (uint64_t)t : 0;
-        if (tgt < curTick_) tgt = curTick_;
+        if (tgt < curTick_) {   // (1.12.216): behind the controller's clock; a settling core waits for it (setRealTime)
+            if (roiMarked_ && !h.out) { lateN_++; lateT_ += curTick_ - tgt; if (k.rt && h.r.hold) h.late = curTick_ - tgt; }
+            tgt = curTick_;
+        }
         clShiftSum_ += (double)tgt - (double)h.target; clShiftN_++;
         h.target = tgt;
         k.refSeen += (double)h.r.refT;
@@ -1292,6 +1319,7 @@ void DramEpochReplay::clRelease(CoreCL& k) {
             const double tpc = (h.r.mi < miTicksPerCycle_.size()) ? miTicksPerCycle_[h.r.mi] : ticksPerCycle_;
             if (!inDma) { k.dmaOpen = h.r.dmab; k.dmaComp = 0; k.dmaChgEnd = 0.0; k.dmaT0 = (double)tgt; k.dmaS0 = h.r.stamp; }
             k.dmaTpc = tpc;
+            k.dmaSeq = inDma ? std::max(k.dmaSeq, h.r.seq) : h.r.seq;   // (1.12.216)
             if (!h.out && roiMarked_) k.dmaChgEnd = std::max(k.dmaChgEnd, t + (double)(h.r.chg - std::min(h.r.chg, h.r.ref)) * tpc);
         }
         clQueue(h, tgt);
@@ -1315,8 +1343,6 @@ void DramEpochReplay::serveRel() {
 /* at the feed, each core's accesses it waits for in the epoch (in the ROI; stamps in order): the sum of their charges
  * and the length of the union of [stamp, stamp + charge] on the core's clock. Under lock_. */
 void DramEpochReplay::recFeed(EpochAcc& acc, const std::vector<Rec>& recs) {
-    struct Run { uint64_t s = 0, e = 0; bool open = false; };
-    std::map<uint32_t, Run> run;
     for (const Rec& r : recs) {
         if (!r.hold || !r.chg || r.core == ~0u || r.shadow) continue;
         uint64_t target = (uint64_t)((double)r.stamp * ticksPerCycle_);
@@ -1324,19 +1350,18 @@ void DramEpochReplay::recFeed(EpochAcc& acc, const std::vector<Rec>& recs) {
         if ((closeArmed_ && target > closeTick_) || r.tail) continue;   // outside the ROI
         RecAcc& a = acc.rec[r.core];
         a.chg += (double)r.chg; a.host = isHostMi(r.mi);
-        Run& u = run[r.core];
-        const uint64_t s = r.stamp, e = r.stamp + r.chg;
-        if (!u.open || s > u.e) { if (u.open) a.uni += (double)(u.e - u.s); u.s = s; u.e = e; u.open = true; }
-        else if (e > u.e) u.e = e;
+        /* (1.12.216): the interval still open is kept with the epoch (uniOf), so an epoch fed in parts unites as one */
+        const double s = (double)r.stamp, e = (double)(r.stamp + r.chg);
+        if (!a.ropen || s > a.re) { if (a.ropen) a.uni += a.re - a.rs; a.rs = s; a.re = e; a.ropen = true; }
+        else if (e > a.re) a.re = e;
     }
-    for (const auto& kv : run) if (kv.second.open) acc.rec[kv.first].uni += (double)(kv.second.e - kv.second.s);
 }
 
 /* an access completed (measured `meas`, charged `chg`, in its interface's cycles): the error statistics, and for an
  * access a closed-loop core waited for, measured - charged (divided by the core's overlap in the epoch, an
  * out-of-order core) into the core's balance. Under lock_. */
 void DramEpochReplay::recDone(std::map<uint64_t, EpochAcc>::iterator a, uint32_t core, uint32_t mi, bool wr, bool hold, bool out,
-                              bool boot, uint64_t meas, uint32_t chg, uint64_t doneTick, uint32_t dmab) {
+                              bool boot, uint64_t meas, uint32_t chg, uint64_t doneTick, uint32_t dmab, uint64_t seq) {
     if (dmab && hold && !out && core != ~0u && clOn() && roiMarked_) {   // (1.12.189): a DMA line: its transfer reconciles once, at its last line (recDmaClose)
         auto kd = cl_.find(core);
         if (kd != cl_.end() && dmab == kd->second.dmaOpen && doneTick > kd->second.dmaComp) kd->second.dmaComp = doneTick;
@@ -1358,9 +1383,10 @@ void DramEpochReplay::recDone(std::map<uint64_t, EpochAcc>::iterator a, uint32_t
     double ov = 1.0;
     if (k->second.ooo && a != acc_.end()) {
         auto ra = a->second.rec.find(core);
-        if (ra != a->second.rec.end() && ra->second.uni > 0.0) ov = std::max(1.0, ra->second.chg / ra->second.uni);
+        if (ra != a->second.rec.end() && uniOf(ra->second) > 0.0) ov = std::max(1.0, ra->second.chg / uniOf(ra->second));   // (1.12.216): uniOf
     }
     k->second.diff += (double)d / ov;
+    ledAdd(k->second, seq, (double)d / ov);   // (1.12.216)
     k->second.host = host;
     recCredit_[cls] += (double)d / ov;
 }
@@ -1384,9 +1410,9 @@ void DramEpochReplay::compNote(uint32_t mi, uint64_t latCyc) {   // mi = a price
 void DramEpochReplay::recSettle(EpochAcc& acc) {
     for (const auto& kv : acc.rec) {
         const int h = kv.second.host ? 1 : 0;
-        recOvChg_[h] += kv.second.chg; recOvUni_[h] += kv.second.uni;
+        recOvChg_[h] += kv.second.chg; recOvUni_[h] += uniOf(kv.second);   // (1.12.216): uniOf
         auto k = cl_.find(kv.first);
-        if (k != cl_.end() && k->second.ooo && kv.second.uni > 0.0) k->second.ovC = std::max(1.0, kv.second.chg / kv.second.uni);
+        if (k != cl_.end() && k->second.ooo && uniOf(kv.second) > 0.0) k->second.ovC = std::max(1.0, kv.second.chg / uniOf(kv.second));
     }
 }
 
@@ -1405,6 +1431,7 @@ void DramEpochReplay::reconcileAtBarrier(const std::function<bool(uint32_t)>& ca
                 const uint32_t d = (uint32_t)std::min(owed, 4294967295.0);   // whole cycles; the fraction stays
                 zinfo->cores[c]->addDelay(d);
                 k.dlyTot += d; k.pendDly += d;
+                ledAdd(k, ++seqA_[c], -(double)d);   // (1.12.216): in the core's sequence (settleMark)
                 recApplied_ += d; recDelays_++; recAppliedCls_[k.host ? 1 : 0] += d;
                 owed -= (double)d;
             }
@@ -1431,6 +1458,7 @@ int64_t DramEpochReplay::reconcileCore(uint32_t core, uint64_t maxRewind) {
             const uint32_t d = (uint32_t)std::min(owed, 4294967295.0);
             co->addDelay(d);
             k.dlyTot += d; k.pendDly += d; recApplied_ += d; recDelays_++; recAppliedCls_[k.host ? 1 : 0] += d; recCommDelay_ += d;
+            ledAdd(k, ++seqA_[core], -(double)d);   // (1.12.216)
             applied = d; owed -= (double)d;
         } else if (owed <= -1.0 && maxRewind > 0) {
             /* the core's clock moves back by the over-charge (Core::pimidRewindCycles: the ALU element's clock, an
@@ -1441,12 +1469,232 @@ int64_t DramEpochReplay::reconcileCore(uint32_t core, uint64_t maxRewind) {
             const uint64_t c1 = co->getCycles();
             const int64_t r = (c0 > c1) ? (int64_t)(c0 - c1) : 0;
             k.dlyTot -= r; k.pendDly -= r; recCommRewind_ += (uint64_t)r;
+            ledAdd(k, ++seqA_[core], (double)r);   // (1.12.216)
             applied = -r; owed += (double)r;
         }
         pool_[core].store(owed < 0.0 ? (int64_t)(-owed * k.ovC) : 0, std::memory_order_relaxed);
     }
     futex_unlock(&lock_);
     return applied;
+}
+
+/* (1.12.216) settle at the rendezvous; the controller's clock on the ranks' real time (see the header) */
+void DramEpochReplay::liveDone(uint32_t core, uint64_t seq) {   // under lock_
+    auto k = cl_.find(core);
+    if (k == cl_.end()) return;
+    auto lv = k->second.live.find(seq);
+    if (lv != k->second.live.end()) k->second.live.erase(lv);
+}
+
+DramEpochReplay::SetMark DramEpochReplay::settleMark(uint32_t core, uint64_t clock) {
+    SetMark m;
+    if (!sys_ || core >= kRecCores || !seqA_) return m;
+    futex_lock(&lock_);
+    m.seq = ++seqA_[core]; m.maxS = std::max(maxS_[core], clock);
+    futex_unlock(&lock_);
+    return m;
+}
+
+void DramEpochReplay::settleOrigin(uint32_t core) {
+    if (!sys_ || core >= kRecCores || !maxS_) return;
+    futex_lock(&lock_);
+    maxS_[core] = 0;
+    futex_unlock(&lock_);
+}
+
+bool DramEpochReplay::settles(uint32_t core) {
+    if (!sys_ || !clOn() || core >= kRecCores) return false;
+    futex_lock(&lock_);
+    CoreCL* k = (roiMarked_ && !runEndMarked_ && !settled_) ? clCore(core) : nullptr;
+    if (k) k->rt = true;
+    futex_unlock(&lock_);
+    return k != nullptr;
+}
+
+void DramEpochReplay::setRealTime(bool on) {
+    if (!sys_ || !clOn()) return;
+    futex_lock(&lock_);
+    realTime_ = on;
+    futex_unlock(&lock_);
+}
+
+/* under lock_: every pending record goes to its core's queue (as replayEpoch feeds an epoch; the epoch stays open, and
+ * is folded when the cut passes it) */
+void DramEpochReplay::feedAll() {
+    armClose(false);
+    for (auto& kv : pending_) {
+        std::vector<Rec>& now = kv.second;
+        if (now.empty()) continue;
+        std::sort(now.begin(), now.end(), [](const Rec& a, const Rec& b) {   // as replayEpoch
+            if (a.stamp != b.stamp) return a.stamp < b.stamp;
+            if (a.mi != b.mi) return a.mi < b.mi;
+            if (a.addr != b.addr) return a.addr < b.addr;
+            return a.wr < b.wr;
+        });
+        const uint64_t epoch = kv.first;
+        EpochAcc& acc = acc_[epoch];
+        if (acc.sum.empty()) { acc.sum.assign(kPriceKinds * (size_t)numMIs_, 0); acc.cnt.assign(kPriceKinds * (size_t)numMIs_, 0); }
+        acc.pend += now.size();
+        recFeed(acc, now);
+        for (const Rec& r : now) {
+            uint64_t target = (uint64_t)((double)r.stamp * ticksPerCycle_);
+            if (cutMode_) target += roiTick0_;
+            const bool out = (closeArmed_ && target > closeTick_) || r.tail;
+            if (out) pastEndRecs_++;
+            Waiting w{r, epoch, target, out, 0, 0, 0};
+            CoreCL* k = clCore(r.core);
+            if (k) { k->fifo.push_back(w); clHeld_++; if (r.hold) k->live.insert(r.seq); clRelease(*k); }
+            else clQueue(w, target);
+        }
+        now.clear();
+    }
+    serveRel();
+}
+
+std::vector<size_t> DramEpochReplay::settleNext(const std::vector<std::vector<std::pair<uint32_t, uint64_t>>>& sets, uint64_t until, bool& ran,
+                                                bool& step) {
+    std::vector<size_t> out;
+    ran = false; step = false;
+    if (!sys_ || !clOn()) { for (size_t i = 0; i < sets.size(); i++) out.push_back(i); return out; }
+    futex_lock(&lock_);
+    if (roiMarked_ && !settled_) {
+        setCalls_++;
+        const uint64_t t0 = curTick_;
+        feedAll();
+        auto openOf = [&](const std::pair<uint32_t, uint64_t>& u) {
+            auto it = cl_.find(u.first);
+            if (it == cl_.end()) return false;
+            if (!it->second.live.empty() && *it->second.live.begin() < u.second) return true;
+            return it->second.dmaOpen && it->second.dmaSeq < u.second && it->second.out > 0;
+        };
+        auto openIn = [&](size_t i) { for (const auto& u : sets[i]) if (openOf(u)) return true; return false; };
+        size_t nOpen0 = 0;   // the cores of the sets with an access still open, at the start
+        for (const auto& s : sets) for (const auto& u : s) if (openOf(u)) nOpen0++;
+        auto scan = [&]() {
+            out.clear();
+            size_t nOpen = 0;
+            for (size_t i = 0; i < sets.size(); i++) {
+                size_t o = 0;
+                for (const auto& u : sets[i]) if (openOf(u)) o++;
+                if (!o) out.push_back(i);
+                nOpen += o;
+            }
+            if (nOpen < nOpen0) step = true;
+            return !out.empty() || step;
+        };
+        const double ut = (double)roiTick0_ + (double)until * ticksPerCycle_;
+        const uint64_t uTick = (until == ~0ull || ut >= 1.8e19) ? ~0ull : (uint64_t)ut;
+        uint64_t guard = 0;
+        while (!scan() && curTick_ < uTick && (outstanding_ > 0 || waitingN_ > 0 || !rel_.empty() || clHeld_ > 0) && guard < 50000000ull) { tickOnce(); guard++; }
+        for (size_t i : out)
+            for (const auto& u : sets[i]) {
+                auto it = cl_.find(u.first);
+                if (it != cl_.end() && it->second.dmaOpen && it->second.out == 0) recDmaClose(it->second);
+            }
+        ran = curTick_ > t0;
+        setTicks_ += curTick_ - t0;
+    } else for (size_t i = 0; i < sets.size(); i++) out.push_back(i);
+    futex_unlock(&lock_);
+    return out;
+}
+
+void DramEpochReplay::runTo(uint64_t until) {
+    if (!sys_ || !clOn() || until == ~0ull) return;
+    futex_lock(&lock_);
+    if (roiMarked_ && !settled_ && realTime_) {
+        feedAll();
+        const double ut = (double)roiTick0_ + (double)until * ticksPerCycle_;
+        if (ut < 1.8e19) tickTo((uint64_t)ut);
+    }
+    futex_unlock(&lock_);
+}
+
+double DramEpochReplay::balanceAt(uint32_t core, uint64_t seq) {
+    if (!sys_ || !clOn()) return 0.0;
+    futex_lock(&lock_);
+    double b = 0.0;
+    auto it = cl_.find(core);
+    if (it != cl_.end()) {
+        b = it->second.ledBase;
+        for (auto e = it->second.led.begin(); e != it->second.led.end() && e->first < seq; ++e) b += e->second;
+    }
+    futex_unlock(&lock_);
+    return b;
+}
+
+bool DramEpochReplay::openBefore(uint32_t core, uint64_t seq) {
+    if (!sys_ || !clOn()) return false;
+    futex_lock(&lock_);
+    auto it = cl_.find(core);
+    bool o = false;
+    if (it != cl_.end()) {
+        CoreCL& k = it->second;
+        o = !k.live.empty() && *k.live.begin() < seq;
+        if (!o && k.dmaOpen && k.dmaSeq < seq && k.out == 0) recDmaClose(k);   // a DMA transfer done before the mark: its balance
+    }
+    futex_unlock(&lock_);
+    return o;
+}
+
+double DramEpochReplay::shiftOf(uint32_t core) {
+    if (!sys_ || !clOn()) return 0.0;
+    futex_lock(&lock_);
+    double s = 0.0;
+    auto it = cl_.find(core);
+    if (it != cl_.end()) {
+        const CoreCL& k = it->second;
+        s = k.diff + k.refSeen - k.dlySeen;   // as clRelease
+        if (k.ooo && s < 0.0) s = 0.0;
+    }
+    futex_unlock(&lock_);
+    return s;
+}
+
+uint64_t DramEpochReplay::clockCycles() {
+    if (!sys_ || !cutMode_ || ticksPerCycle_ <= 0.0) return 0;
+    futex_lock(&lock_);
+    const uint64_t c = (curTick_ > roiTick0_) ? (uint64_t)((double)(curTick_ - roiTick0_) / ticksPerCycle_) : 0;
+    futex_unlock(&lock_);
+    return c;
+}
+
+void DramEpochReplay::settleApply(uint32_t core, int64_t adj) {
+    if (!sys_ || !clOn() || core >= kRecCores) return;
+    futex_lock(&lock_);
+    auto it = cl_.find(core);
+    if (it != cl_.end()) {
+        CoreCL& k = it->second;
+        if (adj) {
+            k.dlyTot += adj; k.pendDly += adj;
+            ledAdd(k, ++seqA_[core], -(double)adj);
+            if (adj > 0) { recApplied_ += (uint64_t)adj; recDelays_++; recAppliedCls_[k.host ? 1 : 0] += (uint64_t)adj; setDelayed_ += (double)adj; }
+            else setRewound_ += (double)(-adj);
+        }
+        const double owed = k.diff + (double)used_[core].load(std::memory_order_relaxed) / 1024.0 - (double)k.dlyTot;
+        pool_[core].store(owed < 0.0 ? (int64_t)(-owed * k.ovC) : 0, std::memory_order_relaxed);   // as at a phase barrier
+    }
+    futex_unlock(&lock_);
+}
+
+void DramEpochReplay::settlePrune(uint32_t core, uint64_t below) {
+    if (!sys_ || !clOn() || core >= kRecCores) return;
+    futex_lock(&lock_);
+    if (seqA_) below = std::min<uint64_t>(below, seqA_[core] + 1);   // nothing past the core's latest event
+    auto it = cl_.find(core);
+    if (it != cl_.end() && below > it->second.ledCut) {
+        CoreCL& k = it->second;
+        auto e = k.led.begin();
+        for (; e != k.led.end() && e->first < below; ++e) k.ledBase += e->second;
+        k.led.erase(k.led.begin(), e);
+        k.ledCut = below;
+    }
+    futex_unlock(&lock_);
+}
+
+void DramEpochReplay::settleStats(uint64_t& calls, uint64_t& ticks, double& delayed, double& rewound, uint64_t& lateN, double& late) const {
+    const double tpc = ticksPerCycle_ > 0.0 ? ticksPerCycle_ : 1.0;
+    calls = setCalls_; ticks = (uint64_t)((double)setTicks_ / tpc);
+    delayed = setDelayed_; rewound = setRewound_; lateN = lateN_; late = (double)lateT_ / tpc;
 }
 
 void DramEpochReplay::markRunEnd() {
@@ -1526,6 +1774,7 @@ uint32_t DramEpochReplay::chargeLast(uint32_t lat, bool boot, uint32_t floor) {
                 const double tu = (double)take / ovA_[r.core].load(std::memory_order_relaxed);
                 pool_[r.core].fetch_sub(take, std::memory_order_relaxed); used_[r.core].fetch_add((int64_t)std::llround(tu * 1024.0), std::memory_order_relaxed);
                 r.ref = take; r.refT = (float)tu; recRefund_ += take; lat -= take;
+                { auto kc = cl_.find(r.core); if (kc != cl_.end()) ledAdd(kc->second, r.seq, (double)std::llround(tu * 1024.0) / 1024.0); }   // (1.12.216)
             }
         }
     }
@@ -1616,7 +1865,7 @@ void DramEpochReplay::drainAll() {
     if (outstanding_ > 0 || waitingN_ > 0 || !rel_.empty() || clHeld_ > 0) {
         raw_.unserved += outstanding_ + waitingN_ + rel_.size() + clHeld_;
         outstanding_ = 0; waitingN_ = 0; doors_.clear(); inflight_.clear();
-        rel_.clear(); clHeld_ = 0; for (auto& kv : cl_) { kv.second.fifo.clear(); kv.second.out = 0; }
+        rel_.clear(); clHeld_ = 0; for (auto& kv : cl_) { kv.second.fifo.clear(); kv.second.out = 0; kv.second.live.clear(); }   // (1.12.216): live
     }
     while (!acc_.empty()) finalizeEpoch(acc_.begin()->first);
 }
@@ -1649,12 +1898,12 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
             if (target > endT) endT = target;
             Waiting w{r, epoch, target, out, 0, 0, 0};
             CoreCL* k = clCore(r.core);
-            if (k) { k->fifo.push_back(w); clHeld_++; clRelease(*k); }
+            if (k) { k->fifo.push_back(w); clHeld_++; if (r.hold) k->live.insert(r.seq); clRelease(*k); }   // (1.12.216): live
             else clQueue(w, target);
         }
         acc.fed = true;
         serveRel();
-        tickTo(endT);
+        if (!realTime_) tickTo(endT);   // (1.12.216): on the ranks' real time the plugin runs the clock (setRealTime)
         auto ai = acc_.find(epoch);
         if (ai != acc_.end() && ai->second.fed && ai->second.pend == 0) finalizeEpoch(epoch);
         if (cutMode_) { lastFolded_ = epoch; anyFolded_ = true; }
@@ -2032,6 +2281,7 @@ void DramEpochReplay::markRoi() {
      * frozen pre-ROI epochs are on the old axis and must not be found, or
      * pruned instead of the new ones (gate 1208B) */
     frozen_.clear();
+    if (maxS_) for (uint32_t k = 0; k < kRecCores; k++) maxS_[k] = 0;   // (1.12.216): ROI stamps only (settleMark)
     pcache_.clear();   // (1.12.145, ruling 2026-10-28)
     winSum_.clear(); winCnt_.clear();   // (1.12.153)
     if (cutMode_) {   // 1.12.17: the ROI-relative axis starts here
@@ -2283,6 +2533,23 @@ void DramEpochReplay::reconcileAtBarrier(const std::function<bool(uint32_t)>&) {
 void DramEpochReplay::dmaBurst(bool) {}
 void DramEpochReplay::noteSync(uint32_t) {}
 int64_t DramEpochReplay::reconcileCore(uint32_t, uint64_t) { return 0; }
+DramEpochReplay::SetMark DramEpochReplay::settleMark(uint32_t, uint64_t) { return SetMark(); }   // (1.12.216)
+void DramEpochReplay::settleOrigin(uint32_t) {}
+bool DramEpochReplay::settles(uint32_t) { return false; }
+void DramEpochReplay::setRealTime(bool) {}
+std::vector<size_t> DramEpochReplay::settleNext(const std::vector<std::vector<std::pair<uint32_t, uint64_t>>>& s, uint64_t, bool& ran, bool& step) {
+    ran = false; step = false; std::vector<size_t> o; for (size_t i = 0; i < s.size(); i++) o.push_back(i); return o;
+}
+void DramEpochReplay::runTo(uint64_t) {}
+double DramEpochReplay::balanceAt(uint32_t, uint64_t) { return 0.0; }
+bool DramEpochReplay::openBefore(uint32_t, uint64_t) { return false; }
+double DramEpochReplay::shiftOf(uint32_t) { return 0.0; }
+uint64_t DramEpochReplay::clockCycles() { return 0; }
+void DramEpochReplay::settleApply(uint32_t, int64_t) {}
+void DramEpochReplay::settlePrune(uint32_t, uint64_t) {}
+void DramEpochReplay::settleStats(uint64_t& calls, uint64_t& ticks, double& delayed, double& rewound, uint64_t& lateN, double& late) const {
+    calls = ticks = lateN = 0; delayed = rewound = late = 0.0;
+}
 void DramEpochReplay::markRunEnd() {}
 void DramEpochReplay::settleFinal() {}
 double DramEpochReplay::owedEnd(uint32_t) { return 0.0; }

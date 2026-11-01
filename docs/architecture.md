@@ -215,7 +215,8 @@ host memory controller, and since (1.12.147) (user ruling 2026-10-28) a memory o
 type Ramulator such as the `HOST_MC` placement's -- is a replayed controller
 charged in the bound phase; no memory controller is timed in the weave phase
 (see [memory.md](memory.md)). Message-passing ranks
-use the same mechanism and also meet at their rendezvous. Since (1.12.199) each
+use the same mechanism and also meet at their rendezvous; on device PEs each rendezvous is settled against the DRAM
+replay first ((1.12.216), memory.md). Since (1.12.199) each
 rank's ROI starts where it leaves the kernel-entry barrier (the barrier on the
 line before rank 0's roi_begin), after the barrier's own cost (its latency and
 the barrier primitive): its clock, the clock its records, its rendezvous and

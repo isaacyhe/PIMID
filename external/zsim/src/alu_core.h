@@ -181,6 +181,7 @@ class ALUCore : public Core {
         uint64_t getInstrs() const {return instrs;}
         uint64_t getPhaseCycles() const;
         uint64_t getCycles() const {return curCycle;}
+        bool behindPhase() const override { return curCycle > phaseEndCycle; }   // (1.12.216), see core.h
 
         void contextSwitch(int32_t gid);
         virtual void join();

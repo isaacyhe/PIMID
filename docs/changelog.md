@@ -6,6 +6,79 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.216 -- message passing on device PEs: the DRAM controller's clock follows the ranks' real time, and each rendezvous is settled first
+
+- **The problem.** Under the closed-loop DRAM replay a rank's clock is reconciled with what its accesses measured once
+  the replay has completed them, and the replay trailed the ranks: it ran to the cut, the earliest clock of a running
+  rank, while a rank's accesses reach the controller at its clock plus the balance it has not paid yet. At a
+  rendezvous that trail decided the timing: a barrier released at the latest arrival as the ranks' clocks stood, a
+  receive advanced to the send time as the sender's clock stood, and an over-charge not replayed yet could not be given
+  back (the rewind at message-passing entry went no further back than the last fold's cut). The rank that arrived with
+  the most over-charge still unreplayed set its partners' release at every step of a collective, and a run could stay
+  in that state: on the saturated 16-rank device bfs (HBM3, ALU PEs), nine variants of the program's startup (an unused
+  `workload.env` variable or none; the degree argument written with 1 to 7 leading zeros) gave 21.0 to 23.6 M cycles
+  (CHANNEL placement) and 20.8 to 40.2 M (LOGIC_DIE) at smoke size, and at 838 859 vertices six of them gave 30.9 to
+  47.1 M and 30.5 to 42.0 M.
+- **The controller's clock follows the ranks' real time** (external/zsim/src/dram_epoch_replay.{h,cpp},
+  qemu_zsim_plugin.cpp). A rank's real time is its clock plus the shift its accesses are released at (its balance not
+  applied yet). Every record reaches its core's queue as soon as it exists (the epochs are still folded at the cut,
+  for the prices), and at each phase barrier the controller runs to the earliest time a PE can still release an access
+  at: a running PE's clock plus its shift, a rank waiting on a peer by its wake bound on that axis. An access released
+  behind the controller's clock all the same (its rank's balance shrank after the controller passed) makes the rank
+  wait for the clock: the wait is added to what the access measured, for the rank's balance, not to the prices. A
+  record that reached its queue before the replay window's close was known and is stamped past it counts as outside
+  the window, as when its epoch is replayed after the close.
+- **Settle at the rendezvous.** A rank at a rendezvous waits, taking the phase barriers without running, until the
+  controller has completed the accesses its settlement needs. A barrier: every rank's accesses before its arrival;
+  each rank's balance moves its arrival in both directions, and the release is the latest settled arrival. A receive:
+  the sender's accesses before its send and the receiver's before its receive; the message arrives at the send time
+  plus the sender's balance then plus the contention wait and the latency, the receiver's own balance moves its clock,
+  and it goes on at the later of the two. An over-charge is given back no further than the rank's last rendezvous (a
+  receive or a release; its ROI start before the first). A rank waiting for its settlement does not bound the
+  controller (the accesses it waits for complete after its clock); once settled it goes on no earlier than the
+  controller's clock. Its balance waits for the settlement: the phase barriers apply none to it, and its
+  message-passing entries leave it to the rendezvous. The replay numbers each core's records, delays and marks in one
+  sequence and keeps the core's balance by that sequence, so the balance before a send is known after the rank has
+  gone on. A rank on a host core, a rendezvous outside the ROI and a no-offload host-rank run keep the settling at
+  message-passing entry.
+- **The waiting rank** (external/zsim/src/core.h, alu_core.h, ooo_core.{h,cpp}, in_order_core.{h,cpp}). It takes each
+  phase barrier from its rendezvous (Core::heldPhase: an in-order or out-of-order PE books the phase as waiting, as
+  under the cut hold). When no PE ran or is still to run (held by the cut hold, or behind the phases after its clock
+  moved: Core::behindPhase) and the controller could not run, the controller runs without its bound to the next
+  completion of a waiting rendezvous' accesses (counted). The cut hold's liveness release does not count a rank
+  waiting for its settlement as one that makes progress, and while the cut hold pins the cuts at 0 the controller does
+  not run.
+- **The run log** prints a `[settle]` line: the settled barriers and messages, those unbounded runs, the held
+  PE-phases, the balance applied at the rendezvous (delayed, rewound), how far the senders' balances moved the
+  arrivals, and the accesses issued behind the controller's clock.
+- **Validation** (the previous release and this build; smoke sizes unless stated; device bfs at full size 838 859
+  vertices):
+  - The saturated bfs, the same nine startup variants: CHANNEL 19.3 to 22.0 M cycles, LOGIC_DIE 19.5 to 20.8 M; at full
+    size (six of them) CHANNEL 29.9 to 31.7 M, LOGIC_DIE 29.9 to 33.1 M. The variants run the same ROI program (the same
+    instructions and accesses); only the state at the ROI start differs.
+  - Checksums equal in every cell; the same 4 fig2 bfs cells refused. Shared-memory, serial and no-offload host-rank
+    cells are unchanged: 24 device smoke cells, 34 host and co-simulation smoke cells, 38 such cells at full size and
+    a device OpenMP stencil_2d at full size and the five 64-PE OpenMP cells at production size.
+  - Repeats are identical: a startup variant run twice at smoke and at full size, and the 135 device message-passing
+    smoke cells on a second node (run time, power, checksum).
+  - The power checks report no flag and no consistency failure on any of these runs.
+- **Data impact** (message passing; run time). Device PEs, 131 smoke cells: median +0.3 %, middle half 0.0 to +1.2 %,
+  82 within 1 %, extremes -51.5 % (the saturated bfs on the LOGIC_DIE placement, out of the over-charge) and +10.6 %
+  (stencil_2d, SUBARRAY placement). Device cells at full size: bfs +1.9 % (CHANNEL placement), -3.6 % (LOGIC_DIE),
+  +0.4 %, +0.9 % and +0.3 % (ALU, in-order and OOO PEs); stream_triad -6.2 % (CHANNEL placement) and -0.2 % (DDR5).
+  64-PE cells at production size (HBM3, BANK placement): bfs +3.6 %, stencil_2d -4.8 %, gemv, histogram and
+  stream_triad -0.04 %. Co-simulation: smoke -0.9 % to +16.3 % (gemv, stream_triad and histogram runs of 77 k to 237 k cycles; bfs
+  +0.6 % to +1.5 %), full size -0.6 % to +1.6 %.
+- **Limits.** The saturated bfs still spans 13.6 % (CHANNEL) and 6.5 % (LOGIC_DIE) across its startup variants at
+  smoke size and 6.2 % and 10.9 % at full size (standard deviation 1.9 to 4.0 %; the previous release: 12.4 % and
+  93.2 %, 52.4 % and 37.6 %): the over-charge regime is gone, and the variants differ only in the state the ROI starts
+  from. Per saturated run 1 900 to 3 300 ROI accesses (posted stores included) are released behind the controller's
+  clock, 5.7 to 16.9 M cycles in all, after their rank's balance shrank or an over-charge outlived its last rendezvous.
+  The cut hold's liveness release fires 120 to 270 times per such run, largely when the rank the cut hold keeps is the
+  one whose real time holds the controller back. The controller ran without its bound up to 3 times per full-size run
+  (of 1 024 settled messages), never at smoke size. A co-simulation run's replay window keeps its time-based counters
+  short of the window by at most 1 023 DRAM cycles (docs/power.md).
+
 ## 1.12.215 -- a barrier or a launch among PEs is priced over the NoC; PrIM's barrier only among threads that share one PE
 
 - **The problem.** Every OpenMP parallel-region launch and barrier among PEs (device scope and co-simulation) and every

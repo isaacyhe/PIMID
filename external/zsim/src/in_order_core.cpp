@@ -600,6 +600,11 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
 }
 
 
+void InOrderCore::heldPhase() {   /* (1.12.216), see core.h */
+    cutHoldWait(phaseEndCycle + 1);
+    phaseEndCycle += zinfo->phaseLength;
+}
+
 InstrFuncPtrs InOrderCore::GetFuncPtrs() {
     return {LoadAndRecordFunc, StoreAndRecordFunc, BblAndRecordFunc, BranchFunc, PredLoadAndRecordFunc, PredStoreAndRecordFunc, FPTR_ANALYSIS, {0}};
 }

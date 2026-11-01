@@ -823,6 +823,11 @@ void OOOCore::cutHoldWait(uint64_t t) {   /* (1.12.188), see core.h */
     cRec.pimidAddWait(skip);   // waiting, not unhalted
 }
 
+void OOOCore::heldPhase() {   /* (1.12.216), see core.h */
+    cutHoldWait(phaseEndCycle + 1);
+    phaseEndCycle += zinfo->phaseLength;
+}
+
 uint64_t OOOCore::syncToWaker(uint64_t t) {   /* 1.12.21 (user ruling 2026-10-24), see core.h */
     if (t <= curCycle) return 0;
     const uint64_t skip = t - curCycle;

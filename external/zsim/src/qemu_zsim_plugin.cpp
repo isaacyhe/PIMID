@@ -1492,6 +1492,9 @@ static uint32_t g_cutWakeCoreTid[MAX_THREADS];   // the thread that made the cor
  * of where the rank resumes: a thread that rejoins its core is moved to the current phase, and COMM_END
  * rewinds that growth. The cut and the wake bounds read a bracketed core at this clock, not the grown one. */
 static uint64_t g_cutFrozenRr[MAX_THREADS];
+static std::atomic<uint8_t> g_setFrozen[MAX_THREADS];   // (1.12.216): the core's rank waits at a rendezvous for its settlement
+static uint64_t g_setFloor = 0;   // (1.12.216): the DRAM replay's clock (stamps' axis) at this phase barrier: such a rank goes on no earlier
+static bool g_setPinned = false;  // (1.12.216): the cut hold's pin is on (mpiCutHold): the controller does not run on the ranks' real time yet
 /* (1.12.178): the ROI opener's roi_begin has run. Under thread-MPI the opener (rank 0, the line after the entry
  * barrier) re-baselined its own core there, so until then its clock origin was not final. Nothing is folded before
  * it. (1.12.199): no clock origin moves at roi_begin any more (see g_rankRoiStart); the pin is kept. */
@@ -1513,7 +1516,8 @@ static inline bool ranksRoiStarted() { return !g_entryBarSet || g_rankRoiStarted
 static inline uint64_t cutAxisClock(uint32_t c);
 static inline uint64_t cutCoreClock(uint32_t c, uint32_t st) {
     const uint64_t r = cutAxisClock(c);
-    return ((st == 1 || st == 4) && c < MAX_THREADS && g_cutFrozenRr[c] < r) ? g_cutFrozenRr[c] : r;
+    const uint64_t v = ((st == 1 || st == 4) && c < MAX_THREADS && g_cutFrozenRr[c] < r) ? g_cutFrozenRr[c] : r;
+    return (c < MAX_THREADS && g_setFrozen[c].load(std::memory_order_acquire) && g_setFloor > v) ? g_setFloor : v;   // (1.12.216)
 }
 static std::once_flag g_cutWakeRankInit;
 static inline void cutWakeNoteRank(uint32_t rank, uint32_t tid) {
@@ -1600,7 +1604,11 @@ static void cutWakeBarrier(uint32_t tid, uint64_t k, bool arrival) {
  * rank's clock (smoke 16-rank bfs, CHANNEL placement: the replay stood still for most of the run). */
 static uint64_t g_cutWakeRec[MAX_THREADS];   // (1.12.188): each waiting core's bound on its record axis (the cut hold)
 static uint64_t g_cutWakePhase = ~0ull;      // the phase whose barrier computed them
-static uint64_t cutWakeBound() {
+/* (1.12.216) with lift (per core, cycles, signed): each core's clock is taken that much later (the shift its accesses are
+ * released at: the release axis, setProcess) and ex (per core) marks a core that bounds nothing (a rank waiting for its
+ * settlement, as an exited one); the waiting cores' bounds then go to out (record axis; ~0: none) and the cut's own
+ * (g_cutWakeRec) are left as they are */
+static uint64_t cutWakeBound(const int64_t* lift = nullptr, const uint8_t* ex = nullptr, uint64_t* out = nullptr) {
     const uint32_t nC = std::min<uint32_t>(zinfo->numCores, MAX_THREADS);
     std::lock_guard<std::mutex> g(g_cutWakeMu);
     cutWakeRebase();
@@ -1617,6 +1625,7 @@ static uint64_t cutWakeBound() {
         dl[c] = cutRelDelta(c);
         { const int64_t v = (int64_t)cutCoreClock(c, st[c]) + dl[c]; rr[c] = v > 0 ? (uint64_t)v : 0; }
         L[c] = (st[c] == 0 || st[c] == 1) ? rr[c] : ~0ull;
+        if (lift && L[c] != ~0ull) { const int64_t v = (int64_t)rr[c] + lift[c]; L[c] = (ex && ex[c]) ? ~0ull : (v > 0 ? (uint64_t)v : 0); }   // (1.12.216)
         if (st[c] == 4) anyWait = true;
     }
     if (!anyWait) return ~0ull;
@@ -1663,7 +1672,9 @@ static uint64_t cutWakeBound() {
                     cand = (late == ~0ull) ? sofar : std::max(sofar, late);
                 }
             }
-            const uint64_t nl = (cand == ~0ull) ? ~0ull : std::max(rr[c], cand);
+            if (ex && ex[c]) continue;   // (1.12.216)
+            const int64_t own = lift ? std::max<int64_t>((int64_t)rr[c] + lift[c], 0) : (int64_t)rr[c];   // (1.12.216): lift
+            const uint64_t nl = (cand == ~0ull) ? ~0ull : std::max((uint64_t)own, cand);
             if (nl < L[c]) { L[c] = nl; changed = true; }
         }
         if (!changed) break;
@@ -1671,11 +1682,12 @@ static uint64_t cutWakeBound() {
     uint64_t b = ~0ull;   // on the record axis: each waiting core's bound moved back by its own dl
     for (uint32_t c = 0; c < nC; c++) {
         if (st[c] != 4 || rr[c] == 0) continue;
+        if (out) { const int64_t w = (int64_t)L[c] - dl[c]; out[c] = (L[c] == ~0ull) ? ~0ull : (w > 0 ? (uint64_t)w : 0); continue; }   // (1.12.216)
         const int64_t v = (int64_t)(L[c] == ~0ull ? rr[c] : L[c]) - dl[c];
         b = std::min(b, v > 0 ? (uint64_t)v : 0);
         g_cutWakeRec[c] = v > 0 ? (uint64_t)v : 0;
     }
-    g_cutWakePhase = zinfo->numPhases;
+    if (!out) g_cutWakePhase = zinfo->numPhases;
     return b;
 }
 static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
@@ -1683,6 +1695,139 @@ static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
     cutWakeRebase();
     if (g_cutWakeStale) return 0;
     return g_cutWakeFloor.empty() ? ~0ull : *g_cutWakeFloor.begin();
+}
+
+/* 1.12.216 AT THE RENDEZVOUS (thread-MPI ranks on device PEs, inside the ROI, under the DRAM replay's closed loop).
+ * The closed loop times a rank's accesses as the rank issues them and reconciles the rank's clock with what they
+ * measured. The reconciliation trailed the rank: an access was replayed once the cut had folded its epoch, and it
+ * completed later still. At a rendezvous that trail decided the timing: a barrier released at the latest arrival as the
+ * ranks' clocks stood, a receive advanced to the send time as the sender's clock stood, and an over-charge not replayed
+ * yet could not be given back (the rewind at message-passing entry went no further back than the last fold's cut), so
+ * the rank that arrived last with the most over-charge still unreplayed set every rank's release, once per step of
+ * every collective. Now:
+ *  - THE CONTROLLER'S CLOCK FOLLOWS THE RANKS' REAL TIME (DramEpochReplay::setRealTime; setProcess). A rank's real
+ *    time is its clock plus its balance not applied yet: the shift its accesses are released at. Every record goes to
+ *    its core's queue as soon as it exists, and the controller runs to the earliest time any PE can still release an
+ *    access at -- a running PE's clock plus its shift; a rank waiting on a peer by its wake bound on that axis
+ *    (cutWakeBound); a rank waiting for its settlement as below -- so no access is released behind the controller's
+ *    clock. One that is all the same (its core's balance shrank after it was recorded, a rewind) makes its rank wait
+ *    for the clock, charged to that rank. The epochs are still folded at the cut, for the prices. While the cut hold
+ *    pins the cut at 0 (a rank still to enter or run, the ROI opener before its roi_begin) the controller does not run.
+ *  - A BARRIER: once its last rank has arrived, every rank is frozen at its arrival and nothing stamped before the
+ *    arrivals is still to be recorded. The controller runs until each rank's accesses before its arrival have
+ *    completed; each rank's balance then moves its arrival in both directions (an over-charge no further back than the
+ *    rank's last rendezvous -- a receive or a release, g_setSyncClk), and the release is the latest settled arrival.
+ *    The ranks wait for it at MPI_ADVANCE.
+ *  - A MESSAGE: the receiver waits at MPI_RECV until the controller has completed the sender's accesses before its
+ *    send and the receiver's before its receive. The arrival is the send time plus the sender's balance before its
+ *    send (both ways, bounded by the sender's last rendezvous before it) plus the contention wait and the latency; the
+ *    receiver's own balance moves its clock both ways, and it goes on at the later of the two.
+ *  A settled rank goes on no earlier than the controller's clock at its settlement: it waits for it.
+ *  The controller runs, no further than its bound, until the next waiting rendezvous completes; that one is settled,
+ *  and so on. A rank waiting for its settlement goes on no earlier than the accesses its settlement waits for (its own
+ *  before its rendezvous, the sender's before its send, the other ranks' before a barrier) complete, after the
+ *  controller's clock, so until it is settled it bounds nothing; once settled, it bounds it at the clock it goes on at.
+ *  When no PE's clock moved in the phase that ended, none is still to move (held by the cut hold, whose liveness release
+ *  no longer counts a rank waiting for its settlement as one that moves, or behind the phases, Core::behindPhase), and
+ *  the controller could not run, it runs without the bound to the next completion of a waiting rendezvous' accesses
+ *  (counted).
+ * A waiting rank takes the phase barriers without running (Core::heldPhase), its clock frozen; for the cut it stands
+ * no earlier than the controller's clock. Its balance waits for the settlement: the phase barriers apply none to it,
+ * and its message-passing entries leave it to its next rendezvous. A rank on a host core, and any rendezvous outside
+ * the ROI, keeps the reconciliation at message-passing entry (recCommEntry). */
+bool pimidPostRoiFree();
+struct SetArr { uint32_t tid = 0, core = 0; uint64_t arr = 0, room = 0; DramEpochReplay::SetMark m; int64_t adj = 0; bool advanced = false; };
+struct SetBar { std::vector<SetArr> a; bool ok = true, done = false; uint64_t rel = 0; uint32_t advanced = 0; };
+struct SetSend { uint64_t t = 0; uint32_t core = ~0u; uint64_t room = 0; DramEpochReplay::SetMark m; bool ok = false; };
+struct SetMsg { uint64_t id = 0, room = 0, sRoom = 0, lim = 0, arr = 0, cur = 0, floor = 0; uint32_t tid = 0, core = 0, sCore = ~0u, sFreq = 0; DramEpochReplay::SetMark m, sm;
+                bool hasS = false, done = false; double balS = 0.0, balR = 0.0; };
+static std::mutex g_setMu;                                       // the tables below
+static std::map<uint64_t, SetBar> g_setBars;                    // barrier generation -> its arrivals
+static std::map<std::pair<uint32_t, uint32_t>, std::deque<SetSend>> g_setSends;   // (source, destination rank) -> its sends
+static std::map<uint64_t, SetMsg> g_setMsgs;                    // the receives waiting for their settlement, in their order
+static std::multiset<uint64_t> g_setOpenSends[MAX_THREADS];     // per core: the marks of its sends not received yet
+static uint64_t g_setMsgSeq = 0;
+static bool g_setSkipped[MAX_THREADS];                          // the rank left its entry reconciliation to its next rendezvous
+static uint64_t g_setSyncClk[MAX_THREADS];                      // the core's clock as its last rendezvous placed it (a receive, a release)
+static uint64_t g_setBarN = 0, g_setMsgN = 0, g_setForced = 0, g_setUnsettled = 0;
+static std::atomic<uint64_t> g_setHeldN{0};
+static double g_setMoveLater = 0.0, g_setMoveEarlier = 0.0;
+static bool g_setUsed = false;
+static inline bool setPe(uint32_t c) {   // a device PE (device scope: every core)
+    return c < zinfo->numCores && zinfo->cores[c] && (!g_cosim_mode || (c < device_mask.size() && device_mask[c]));
+}
+static bool setEligible(uint32_t tid) {   // the rank's rendezvous here is settled
+    if (!g_mpi_thread_mode || tid >= MAX_THREADS || !cores[tid]) return false;
+    const uint32_t c = cids[tid];
+    if (c >= MAX_THREADS || !setPe(c) || cores[tid] != zinfo->cores[c]) return false;
+    if (zinfo->terminationConditionMet || pimidPostRoiFree() || !in_roi.load() || !mpi_roi_baselined) return false;
+    DramEpochReplay* r = zinfo->dramReplay;
+    if (!r || !zinfo->hierarchy.dramEpochReplay || !r->cutMode()) return false;
+    if (g_cosim_mode ? (g_cosim_no_offload || g_ranksEnteredN.load() < g_mpi_rank_count) : !g_cutOpenerBegun.load()) return false;
+    return r->settles(c);
+}
+static inline int64_t setAdj(double bal, uint64_t room) {   // whole cycles; an over-charge no further back than `room`
+    if (bal >= 1.0) return (int64_t)std::min(bal, 4294967295.0);
+    if (bal <= -1.0) return -(int64_t)std::min(-bal, (double)room);
+    return 0;
+}
+static inline uint64_t setRoom(uint32_t tid) {   // the core's clock since its last rendezvous (g_setSyncClk; at most the ROI's)
+    const uint32_t c = cids[tid];
+    const uint64_t clk = cores[tid]->getCycles();
+    const uint64_t r = (c < MAX_THREADS && clk > g_setSyncClk[c]) ? clk - g_setSyncClk[c] : 0;
+    return (c < MAX_THREADS) ? std::min(r, cutAxisClock(c)) : 0;
+}
+static inline void setSyncNote(uint32_t tid) {   // a rendezvous placed the rank's clock
+    if (tid < MAX_THREADS && cores[tid] && cids[tid] < MAX_THREADS) g_setSyncClk[cids[tid]] = cores[tid]->getCycles();
+}
+static void setArrive(uint32_t tid, uint64_t k) {   // MPI_TIME: a barrier arrival
+    SetArr a; a.tid = tid;
+    const bool ok = setEligible(tid);
+    if (ok) {
+        a.core = cids[tid]; a.arr = roiRelCycles(tid); a.room = setRoom(tid);
+        a.m = zinfo->dramReplay->settleMark(a.core, cutAxisClock(a.core));
+        g_setFrozen[a.core].store(1, std::memory_order_release);
+    }
+    std::lock_guard<std::mutex> g(g_setMu);
+    SetBar& b = g_setBars[k];
+    if (!ok) b.ok = false;
+    b.a.push_back(a);
+}
+static void setSend(uint32_t tid, uint32_t src, uint32_t dst, uint64_t t) {   // MPI_SEND: the sender's mark
+    SetSend s; s.t = t;
+    if (setEligible(tid)) {
+        s.ok = true; s.core = cids[tid]; s.room = setRoom(tid);
+        s.m = zinfo->dramReplay->settleMark(s.core, cutAxisClock(s.core));
+    }
+    std::lock_guard<std::mutex> g(g_setMu);
+    g_setSends[std::make_pair(src, dst)].push_back(s);
+    if (s.ok) g_setOpenSends[s.core].insert(s.m.seq);
+}
+/* a settled receive: the sender's and the receiver's adjustments, and the clock the receiver goes on at (rendezvous axis) */
+static int64_t setRecvAt(const SetMsg& x, int64_t& adjS, int64_t& adjR) {
+    adjS = x.hasS ? setAdj(x.balS, x.sRoom) : 0;
+    const uint32_t rf = coreFreqMHzFor(x.tid);
+    if (adjS && x.sFreq && rf && x.sFreq != rf) adjS = (int64_t)std::llround((double)adjS * (double)rf / (double)x.sFreq);   // as the send time
+    adjR = setAdj(x.balR, x.room);
+    return std::max(std::max((int64_t)x.arr + adjS, (int64_t)x.cur + adjR), (int64_t)x.floor);   // no earlier than the controller's clock
+}
+static void setCloseSend(uint32_t core, uint64_t seq) {   // under g_setMu: the send's receive is settled (or not settled)
+    if (core >= MAX_THREADS) return;
+    auto e = g_setOpenSends[core].find(seq);
+    if (e != g_setOpenSends[core].end()) g_setOpenSends[core].erase(e);
+}
+static void setReport() {
+    if (!g_setUsed) return;
+    g_setUsed = false;
+    uint64_t calls = 0, ticks = 0, lateN = 0; double dl = 0.0, rw = 0.0, late = 0.0;
+    if (zinfo->dramReplay) zinfo->dramReplay->settleStats(calls, ticks, dl, rw, lateN, late);
+    info("[settle] rendezvous settled on the DRAM replay: %lu barrier(s), %lu message(s) (%lu with no PE moving), %lu "
+         "rendezvous not settled; %lu held PE-phase(s); %lu replay(s) to a rendezvous (%lu cycles of controller time); "
+         "applied at the rendezvous: delayed %.0f, rewound %.0f cycles; arrivals moved by the senders' balances: later "
+         "%.0f, earlier %.0f cycles; ROI accesses a core issued behind the controller's clock: %lu (%.0f cycles)",
+         (unsigned long)g_setBarN, (unsigned long)g_setMsgN, (unsigned long)g_setForced, (unsigned long)g_setUnsettled,
+         (unsigned long)g_setHeldN.load(), (unsigned long)calls, (unsigned long)ticks, dl, rw, g_setMoveLater, g_setMoveEarlier,
+         (unsigned long)lateN, late);
 }
 
 /* ---- Phase actions (called by scheduler at end of phase) ---- */
@@ -1734,6 +1879,7 @@ static std::atomic<uint8_t> g_cutInWait[MAX_THREADS];
 static uint64_t g_cutHoldPhases = 0, g_cutHoldPePhases = 0, g_cutHoldLifts = 0, g_cutHoldPinPhases = 0;
 static bool g_cutHoldUsed = false;
 static void cutHoldReport() {
+    setReport();   // (1.12.216)
     if (!g_cutHoldUsed) return;
     g_cutHoldUsed = false;
     info("[cut-hold] message passing on device PEs: %lu phase(s) with a held PE (%lu PE-phases), %lu phase(s) "
@@ -1755,6 +1901,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
     if (!win) {
         if (g_cutHoldAny.load()) for (uint32_t c = 0; c < n; c++) g_peCutHold[c].store(0, std::memory_order_release);
         g_cutHoldAny.store(0); lifted = false;
+        g_setPinned = false;   // (1.12.216)
         cutHoldReport();
         return;
     }
@@ -1786,6 +1933,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
             if (g_rankRoiStart[t] != 3 && g_rankBarGen[t] == g_entryBarGen && cids[t] < n) entryPend[cids[t]] = 1;
     const bool pin = !opened || (g_cosim_mode && (ent < g_mpi_rank_count || started < std::min(ent, nPe)));
     if (pin) { cut = 0; cutDram = 0; g_cutHoldPinPhases++; }
+    g_setPinned = pin;   // (1.12.216): see setProcess
     /* (4) liveness, judged on the phase that just ended */
     bool progress = (cutDram != ~0ull && cutDram > lastCutDram) || ent > lastEnt;
     for (uint32_t c = 0; c < n; c++) {
@@ -1794,7 +1942,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
         const uint64_t cy = co->getCycles();
         /* a free core that advanced, or that holds a running thread (its clock is past the phase that ended: it runs
          * once the phase grid reaches it); the host core counts while a co-simulation rank is still to enter */
-        if (!g_peCutHold[c].load(std::memory_order_acquire) && (isPe(c) || pin) &&
+        if (!g_peCutHold[c].load(std::memory_order_acquire) && !g_setFrozen[c].load(std::memory_order_acquire) && (isPe(c) || pin) &&   // (1.12.216): g_setFrozen
             (cy != lastCyc[c] || zinfo->sched->coreRunsThread(c))) progress = true;
         lastCyc[c] = cy;
     }
@@ -1847,6 +1995,155 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
     }
     g_cutHoldAny.store(held > 0 ? 1 : 0);
     if (held) { g_cutHoldPhases++; g_cutHoldPePhases += held; }
+}
+
+/* (1.12.216) at the phase barrier, after the folds: the controller runs on the ranks' real time, and settles the rendezvous
+ * whose accesses complete on the way (see "settle at the rendezvous" above) */
+static void setProcess() {
+    DramEpochReplay* r = zinfo->dramReplay;
+    if (!r || zinfo->terminationConditionMet) return;
+    const bool rt = !(g_cosim_mode && g_cosim_no_offload);   // a no-offload run's records are on the phase grid
+    r->setRealTime(rt);
+    if (!rt || g_setPinned) return;   // until every rank has entered and run (the cut hold's pin), as the cut stays at 0
+    std::lock_guard<std::mutex> g(g_setMu);
+    const uint32_t n = std::min<uint32_t>(zinfo->numCores, MAX_THREADS);
+    static int64_t lift[MAX_THREADS]; static uint8_t ex[MAX_THREADS]; static uint64_t wout[MAX_THREADS], lastClk[MAX_THREADS];
+    std::vector<uint64_t> goes(n, ~0ull), bnd(n, ~0ull);   // a rank settled here goes on at; each PE's bound (stamps' axis)
+    auto clockOf = [&](uint32_t c) -> uint64_t {   // the clock the PE records from (as the cut)
+        const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
+        const uint64_t rr = cutAxisClock(c);
+        return ((st == 1 || st == 4) && g_cutFrozenRr[c] < rr) ? g_cutFrozenRr[c] : rr;
+    };
+    bool moved = false;   // a PE runs, or is still to (held by the cut hold, behind the phases), or its clock moved
+    for (uint32_t c = 0; c < n; c++) {
+        if (!setPe(c)) continue;
+        const uint64_t v = clockOf(c);
+        const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
+        if (v != lastClk[c] || g_peCutHold[c].load(std::memory_order_acquire) || zinfo->cores[c]->behindPhase() ||
+            (st == 0 && !g_setFrozen[c].load(std::memory_order_acquire) && zinfo->sched->coreRunsThread(c))) moved = true;
+        lastClk[c] = v;
+    }
+    /* per PE, the earliest controller time (stamps' axis) its next access can be released at: its clock plus the shift
+     * its accesses are released at (signed: an over-charged blocking core's go early); a rank waiting on a peer by its
+     * wake bound on that axis (cutWakeBound). A rank waiting for its settlement bounds nothing until it is settled: it
+     * goes on no earlier than the accesses its settlement waits for complete (its own before its rendezvous, the
+     * sender's before its send: the arrival carries the sender's balance; the other ranks' at a barrier: the release
+     * is the latest settled arrival), which is after the controller's clock; once settled, it bounds the controller
+     * at the clock it goes on at. An exited PE, or one that has not run in the ROI, bounds nothing. */
+    auto bounds = [&]() {
+        for (uint32_t c = 0; c < n; c++) {
+            lift[c] = 0; ex[c] = 0; wout[c] = ~0ull;
+            if (!setPe(c)) continue;
+            lift[c] = (int64_t)std::llround(r->shiftOf(c));
+            if (g_setFrozen[c].load(std::memory_order_acquire) && goes[c] == ~0ull) ex[c] = 1;
+        }
+        cutWakeBound(lift, ex, wout);
+        for (uint32_t c = 0; c < n; c++) {
+            bnd[c] = ~0ull;
+            if (!setPe(c)) continue;
+            if (goes[c] != ~0ull) { bnd[c] = goes[c]; continue; }
+            const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
+            const uint64_t ck = clockOf(c);
+            if (st == 2 || st == 3 || ck == 0 || ex[c]) continue;
+            if (st == 4) { bnd[c] = wout[c]; continue; }
+            const int64_t v = (int64_t)ck + lift[c];
+            bnd[c] = v > 0 ? (uint64_t)v : 0;
+        }
+    };
+    /* the rendezvous waiting for their settlement: a barrier whose last rank has arrived, then the receives by the
+     * latest stamp their two ranks had recorded (then by core) */
+    struct Item { SetBar* b; SetMsg* m; std::vector<std::pair<uint32_t, uint64_t>> set; uint64_t lim; uint32_t core; };
+    auto items = [&]() {
+        std::vector<Item> v, ms;
+        for (auto& kv : g_setBars) {
+            SetBar& b = kv.second;
+            if (b.done || !b.ok || b.a.size() < g_mpi_rank_count) continue;
+            Item it{&b, nullptr, {}, 0, 0};
+            for (const SetArr& a : b.a) it.set.push_back(std::make_pair(a.core, a.m.seq));
+            v.push_back(it);
+        }
+        for (auto& kv : g_setMsgs) {
+            SetMsg& m = kv.second;
+            if (m.done) continue;
+            Item it{nullptr, &m, {std::make_pair(m.core, m.m.seq)}, m.lim, m.core};
+            if (m.hasS) it.set.push_back(std::make_pair(m.sCore, m.sm.seq));
+            ms.push_back(it);
+        }
+        std::sort(ms.begin(), ms.end(), [](const Item& a, const Item& b) { return a.lim != b.lim ? a.lim < b.lim : a.core < b.core; });
+        v.insert(v.end(), ms.begin(), ms.end());
+        return v;
+    };
+    auto finish = [&](Item& it) {
+        if (it.b) {   // the release: the latest settled arrival
+            SetBar& b = *it.b;
+            uint64_t rel = 0;
+            for (SetArr& a : b.a) {
+                a.adj = setAdj(r->balanceAt(a.core, a.m.seq), a.room);
+                const int64_t s = (int64_t)a.arr + a.adj;
+                if (s > 0 && (uint64_t)s > rel) rel = (uint64_t)s;
+            }
+            const uint64_t now = r->clockCycles();   // no rank goes on before the controller's clock: it waits for it
+            for (const SetArr& a : b.a) { const int64_t f = (int64_t)now + cutRelDelta(a.core); if (f > 0 && (uint64_t)f > rel) rel = (uint64_t)f; }
+            b.rel = rel; b.done = true; g_setBarN++; g_setUsed = true;
+            for (const SetArr& a : b.a)
+                if (a.core < n) { const int64_t v = (int64_t)rel - cutRelDelta(a.core); goes[a.core] = v > 0 ? (uint64_t)v : 0; }
+            return;
+        }
+        SetMsg& m = *it.m;
+        m.balR = r->balanceAt(m.core, m.m.seq);
+        m.balS = m.hasS ? r->balanceAt(m.sCore, m.sm.seq) : 0.0;
+        m.done = true; g_setMsgN++; g_setUsed = true;
+        { const int64_t f = (int64_t)r->clockCycles() + cutRelDelta(m.core); m.floor = f > 0 ? (uint64_t)f : 0; }   // see setRecvAt
+        if (m.core < n) {   // it goes on at its settled clock
+            int64_t aS = 0, aR = 0;
+            const int64_t v = (m.arr ? setRecvAt(m, aS, aR) : (int64_t)relAxisClock(m.core)) - cutRelDelta(m.core);
+            goes[m.core] = v > 0 ? (uint64_t)v : 0;
+        }
+    };
+    /* the controller runs, no further than any PE's next access, until the next rendezvous whose ranks' accesses before
+     * their marks have all completed (it is settled, and its ranks bound the next ones by the clocks they go on at), or
+     * until one more of those ranks has none open (it bounds the controller from then on) */
+    bool ran = false, any = false;
+    for (;;) {
+        std::vector<Item> v = items();
+        if (v.empty()) break;
+        bounds();
+        uint64_t until = ~0ull;
+        for (uint32_t c = 0; c < n; c++) until = std::min(until, bnd[c]);
+        std::vector<std::vector<std::pair<uint32_t, uint64_t>>> sets;
+        for (const Item& it : v) sets.push_back(it.set);
+        bool rn = false, st = false;
+        const std::vector<size_t> done = r->settleNext(sets, until, rn, st);
+        if (rn) ran = true;
+        if (done.empty() && !st) break;
+        for (size_t k : done) finish(v[k]);
+        if (!done.empty()) any = true;
+    }
+    if (!any && !ran && !moved) {   // nothing moved and the controller could not run: it runs to the next completion unbounded
+        std::vector<Item> v = items();
+        if (!v.empty()) {
+            std::vector<std::vector<std::pair<uint32_t, uint64_t>>> sets;
+            for (const Item& it : v) sets.push_back(it.set);
+            bool rn = false, st = false;
+            const std::vector<size_t> done = r->settleNext(sets, ~0ull, rn, st);
+            for (size_t k : done) finish(v[k]);
+            g_setForced++;
+        }
+    }
+    /* the controller's clock to the ranks' real time: the earliest time any PE can still release an access at */
+    bounds();
+    {
+        uint64_t until = ~0ull;
+        for (uint32_t c = 0; c < n; c++) until = std::min(until, bnd[c]);
+        r->runTo(until);
+    }
+    /* each PE's balance entries before its earliest mark still to be settled are folded */
+    std::vector<uint64_t> below(n, ~0ull);
+    for (uint32_t c = 0; c < n; c++) if (!g_setOpenSends[c].empty()) below[c] = *g_setOpenSends[c].begin();
+    for (const auto& kv : g_setBars)
+        if (!kv.second.done) for (const SetArr& a : kv.second.a) if (a.m.seq && a.core < n) below[a.core] = std::min(below[a.core], a.m.seq);
+    for (const auto& kv : g_setMsgs) if (!kv.second.done && kv.second.core < n) below[kv.second.core] = std::min(below[kv.second.core], kv.second.m.seq);
+    for (uint32_t c = 0; c < n; c++) if (setPe(c)) r->settlePrune(c, below[c]);
 }
 
 void EndOfPhaseActions() {
@@ -1908,6 +2205,7 @@ void EndOfPhaseActions() {
          * max(min rr_q, W). With no posted wake and no running core the cut holds
          * at the waiting cores, as before. */
         uint64_t cutDram = ~0ull, minWait = ~0ull;
+        if (foldDram && g_mpi_thread_mode) g_setFloor = zinfo->dramReplay->clockCycles();   // (1.12.216): see g_setFrozen
         int dbgCutCore = -1, dbgActive = 0;
         for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++) {
             Core* co = zinfo->cores[c];
@@ -1922,6 +2220,7 @@ void EndOfPhaseActions() {
             uint64_t rr = g_cosim_mode ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
             else if (g_mpi_thread_mode && (st == 1 || st == 4) && g_cutFrozenRr[c] < rr) rr = g_cutFrozenRr[c];   // (1.12.178): the clock it resumes at
+            if (g_mpi_thread_mode && g_setFrozen[c].load(std::memory_order_acquire) && g_setFloor > rr) rr = g_setFloor;   // (1.12.216): it waits for its settlement
             if (rr == 0) continue;       // baselined but no ROI traffic yet
             /* 1.12.18 (ruling 2026-10-24): a SLEEPING single-process core (futex
              * wait, QUIESCENT) is exempt from BOTH cuts: it resumes at its waker's
@@ -1989,9 +2288,11 @@ void EndOfPhaseActions() {
          * core (its wake moves its clock to max(own, waker's)). A core parked in a thread-MPI wait keeps it until it
          * runs again (the wait's end re-places its clock from the clock it entered with); an exited or vacated core
          * keeps it. */
+        if (foldDram && g_mpi_thread_mode) setProcess();   // (1.12.216): settle at the rendezvous
         if (foldDram || foldHostDram) {
             auto canTake = [](uint32_t c) -> bool {
                 if (c >= MAX_THREADS) return false;
+                if (g_setFrozen[c].load(std::memory_order_acquire)) return false;   // (1.12.216): its rendezvous settles it
                 const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
                 return st == 0 || (st == 1 && g_spCut);
             };
@@ -2400,7 +2701,7 @@ static void cosimLaunchApply(uint32_t tid) {
     uint64_t skip = 0;
     if (devRel > cur) skip = cores[tid]->syncToWaker(cores[tid]->pimidRawCycle() + (devRel - cur));
     g_cosimLaunchDevRel[tid] = devRel;
-    if (skip) recSyncNote(tid);
+    if (skip) { recSyncNote(tid); setSyncNote(tid); }   // (1.12.216): setSyncNote, the launch's completion placed its clock
     info("Thread %d: device kernel starts at its launch's completion: host ROI-relative %lu cycles at %u MHz = %lu PE "
          "cycles at %u MHz; the PE waited %lu cycles", tid, (unsigned long)host, hMHz, (unsigned long)devRel, pMHz,
          (unsigned long)skip);
@@ -2422,6 +2723,7 @@ static void rankRoiStart(uint32_t tid) {
         mpi_roi_base_cyc[c] = zinfo->cores[c]->getCycles();
         g_rankRoiBaseCache[tid] = mpi_roi_base_cyc[c];
         recSyncNote(tid);
+        if (zinfo->dramReplay) zinfo->dramReplay->settleOrigin(c);   // (1.12.216): see settleMark
     }
     g_rankRoiStartedN.fetch_add(1);
     cosimLaunchApply(tid);   // (1.12.202): a co-sim rank's kernel starts at its launch's completion
@@ -3806,6 +4108,108 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = false;
 }
 
+/* (1.12.216) settle at the rendezvous: a rank waits for its settlement, taking the phase barriers without running */
+static bool setHold(uint32_t tid, const std::function<bool()>& done) {
+    if (done()) return true;
+    if (tid >= MAX_THREADS || !thread_initialized[tid]) return false;
+    if (fPtrs[tid].bblPtr == JoinBbl) Join(tid);   // back from a system call: on its core first
+    const uint32_t cid = cids[tid];
+    if (cid >= zinfo->numCores || !zinfo->cores[cid]) return false;
+    while (!done()) {
+        if (zinfo->terminationConditionMet || pimidPostRoiFree()) return false;
+        zinfo->cores[cid]->heldPhase();
+        g_setHeldN.fetch_add(1, std::memory_order_relaxed);
+        if (TakeBarrier(tid, cid) != cid) return false;
+    }
+    return true;
+}
+static void setUnskip(uint32_t tid) {   // a rendezvous not settled: the entry reconciliation the rank left to it
+    if (tid < MAX_THREADS && g_setSkipped[tid]) { g_setSkipped[tid] = false; recCommEntry(tid); }
+}
+/* MPI_ADVANCE of a barrier: 1 = settled (mv: the move to the settled release), 0 = the shim's release, -1 = nothing
+ * (drop: the release is not used) */
+static int setAdvance(uint32_t tid, int64_t& mv, bool drop) {
+    const uint64_t k = g_rankBarGen[tid];
+    SetBar* b = nullptr; size_t i = 0;
+    {
+        std::lock_guard<std::mutex> g(g_setMu);
+        auto it = g_setBars.find(k);
+        if (it != g_setBars.end())
+            for (size_t j = 0; j < it->second.a.size(); j++)
+                if (it->second.a[j].tid == tid && !it->second.a[j].advanced) { b = &it->second; i = j; break; }
+    }
+    auto leave = [&]() {   // this rank is done with the generation (b is not used after)
+        std::lock_guard<std::mutex> g(g_setMu);
+        SetArr& a = b->a[i];
+        a.advanced = true;
+        if (a.m.seq) g_setFrozen[a.core].store(0, std::memory_order_release);
+        if (++b->advanced >= b->a.size()) g_setBars.erase(k);
+    };
+    if (!b) { if (!drop) setUnskip(tid); return drop ? -1 : 0; }
+    if (drop) { leave(); g_setSkipped[tid] = false; return -1; }
+    if (!b->ok) { leave(); setUnskip(tid); g_setUnsettled++; return 0; }
+    const bool ok = setHold(tid, [&]() { std::lock_guard<std::mutex> g(g_setMu); return b->done; });
+    SetArr a; uint64_t rel = 0;
+    { std::lock_guard<std::mutex> g(g_setMu); a = b->a[i]; rel = b->rel; }
+    leave();
+    if (!ok) return -1;
+    zinfo->dramReplay->settleApply(a.core, a.adj);
+    g_setSkipped[tid] = false;
+    mv = (int64_t)rel - (int64_t)roiRelCycles(tid);
+    return 1;
+}
+/* MPI_RECV: the sender's mark, and the receive's own; nullptr = not settled (the entry reconciliation it left is taken
+ * now) */
+static SetMsg* setRecvOpen(uint32_t tid, uint32_t src, uint32_t dst, uint64_t sendTime) {
+    SetSend s; bool found = false;
+    std::unique_lock<std::mutex> g(g_setMu);
+    auto it = g_setSends.find(std::make_pair(src, dst));
+    if (it != g_setSends.end()) {
+        for (auto e = it->second.begin(); e != it->second.end(); ++e)
+            if (e->t == sendTime) { s = *e; it->second.erase(e); found = true; break; }
+        if (it->second.empty()) g_setSends.erase(it);
+    }
+    if (!setEligible(tid)) {
+        if (found && s.ok) setCloseSend(s.core, s.m.seq);
+        g.unlock();
+        setUnskip(tid);
+        return nullptr;
+    }
+    const uint32_t c = cids[tid];
+    SetMsg& m = g_setMsgs[++g_setMsgSeq];
+    m.id = g_setMsgSeq; m.tid = tid; m.core = c; m.room = setRoom(tid);
+    m.m = zinfo->dramReplay->settleMark(c, cutAxisClock(c));
+    if (found && s.ok) { m.hasS = true; m.sCore = s.core; m.sRoom = s.room; m.sm = s.m; }
+    m.lim = std::max(m.m.maxS, m.hasS ? m.sm.maxS : 0);
+    g_setFrozen[c].store(1, std::memory_order_release);
+    return &m;
+}
+/* the receive waits for its settlement: 1 = settled (mv: the move to the later of the settled arrival and the rank's
+ * own settled clock), -1 = nothing */
+static int setRecvWait(uint32_t tid, SetMsg* m, uint64_t arrival, uint64_t cur, uint32_t sFreq, int64_t& mv) {
+    { std::lock_guard<std::mutex> g(g_setMu); m->arr = arrival; m->cur = cur; m->sFreq = sFreq; }
+    const bool ok = setHold(tid, [&]() { std::lock_guard<std::mutex> g(g_setMu); return m->done; });
+    SetMsg x;
+    {
+        std::lock_guard<std::mutex> g(g_setMu);
+        x = *m;
+        if (x.hasS) setCloseSend(x.sCore, x.sm.seq);
+        g_setFrozen[x.core].store(0, std::memory_order_release);
+        g_setMsgs.erase(x.id);
+    }
+    if (!ok) return -1;
+    int64_t adjS = 0, adjR = 0;
+    const int64_t res = setRecvAt(x, adjS, adjR);
+    zinfo->dramReplay->settleApply(x.core, adjR);
+    g_setSkipped[tid] = false;
+    {
+        std::lock_guard<std::mutex> g(g_setMu);
+        if (adjS > 0) g_setMoveLater += (double)adjS; else g_setMoveEarlier += (double)(-adjS);
+    }
+    mv = res - (int64_t)roiRelCycles(tid);
+    return 1;
+}
+
 /**
  * Handle an MPI magic op for the given thread.
  * Computes NoC + hierarchy latency and injects it as a synthetic BBL.
@@ -3885,7 +4289,8 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * clock from deterministic arithmetic alone. */
         if (g_mpi_thread_mode) {
             if (tid < MAX_THREADS && cores[tid]) {
-                recCommEntry(tid);   // (next, ruling 2026-10-30 (4)): the DRAM balance before the clock is saved
+                if (setEligible(tid)) g_setSkipped[tid] = true;   // (1.12.216): its next rendezvous settles it
+                else recCommEntry(tid);   // (1.12.189): the DRAM balance before the clock is saved
                 mpi_comm_saved[tid] = cores[tid]->getCycles();
                 mpi_comm_saved_cid[tid] = cids[tid];
                 mpi_comm_saved_fb[tid] =
@@ -4263,6 +4668,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                 g_barFirstBaseGen[k] = g_roiBaseGen.load();
             futex_unlock(&g_barGenLock);
             if (g_mpi_thread_mode) cutWakeBarrier(tid, k, true);   // (1.12.176): the DRAM cut's wake floor
+            if (g_mpi_thread_mode) setArrive(tid, k);   // (1.12.216): settle at the rendezvous
         }
         if (getenv("PIMID_DEBUG_RDV")) {   /* diagnostic: the clock axis of a barrier arrival */
             static std::atomic<int> nT{0};
@@ -4367,7 +4773,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                                : (noCore ? "no core / terminated" : "entry barrier: its release is on the pre-ROI origin"),
                      (unsigned long)target, (unsigned long)cur);
         }
-        if (staleAxis || noCore || preRoiRelease) return;
+        if (staleAxis || noCore || preRoiRelease) { int64_t mz = 0; setAdvance(tid, mz, true); return; }   // (1.12.216): nor its settlement
         if (getenv("PIMID_DEBUG_RDV")) {   /* diagnostic: what the barrier release charges */
             static std::atomic<int> nA{0};
             if (nA.fetch_add(1) < 400) {
@@ -4376,11 +4782,23 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                      tid, cid, (unsigned long)target, (unsigned long)cur, (long)(target - cur));
             }
         }
+        {   // (1.12.216): settle at the rendezvous -- the settled release
+            int64_t mv = 0;
+            const int st = setAdvance(tid, mv, false);
+            if (st != 0) {
+                if (st > 0 && cc && mv > 0) cc->addDelay((uint32_t)std::min<int64_t>(mv, 0xFFFFFFFFll));
+                else if (st > 0 && cc && mv < 0) cc->pimidRewindCycles((uint64_t)(-mv));
+                if (st > 0) { recSyncNote(tid); setSyncNote(tid); }
+                return;
+            }
+            cur = roiRelCycles(tid);   // the entry reconciliation it left may have moved it
+        }
         if (cc && target > cur) {
             uint64_t delta = target - cur;
             cc->addDelay((uint32_t)std::min<uint64_t>(delta, 0xFFFFFFFFull));
         }
         recSyncNote(tid);   // (1.12.189): the release
+        setSyncNote(tid);   // (1.12.216)
         return;
     }
 
@@ -4429,6 +4847,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     if (g_mpi_thread_mode) cutWakeMessage(tid, isRecv, params.src_pe, params.dst_pe);   // (1.12.176): the DRAM cut's wake floor
 
     if (params.src_pe == params.dst_pe) return;
+    if (g_mpi_thread_mode && !isRecv) setSend(tid, params.src_pe, params.dst_pe, gp->sim_now);   // (1.12.216): settle at the rendezvous
 
     /* 1. Hierarchy latency (PE-to-PE LCA routing with M:N mapping) */
     uint32_t hierLat = 0;
@@ -4598,6 +5017,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
          * carries no stamp (e.g. legacy path). curCyc is the receiver's ROI-
          * baseline-RELATIVE work clock so it compares like-for-like against the
          * sender's baseline-relative send-time stamp (both floor-free). */
+        SetMsg* setM = g_mpi_thread_mode ? setRecvOpen(tid, params.src_pe, params.dst_pe, params.sim_send_time) : nullptr;   // (1.12.216)
         uint64_t curCyc = roiRelCycles(tid);
         /* Phase-2: the receiver's rendezvous arrival includes the cross-rank
          * contention wait stamped by the sender:
@@ -4633,9 +5053,19 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                  (unsigned long)mpi_roi_base_cyc[bcid]);
             delta = roiSpan;
         }
+        int setSt = 0;
+        if (setM) {   // (1.12.216): settle at the rendezvous
+            int64_t mv = 0;
+            setSt = setRecvWait(tid, setM, arrival, curCyc, params.sim_now_freq_mhz, mv);
+            if (setSt > 0) {
+                delta = mv > 0 ? (uint64_t)mv : 0;
+                if (c && mv > 0) c->addDelay((uint32_t)std::min<int64_t>(mv, 0xFFFFFFFFll));
+                else if (c && mv < 0) c->pimidRewindCycles((uint64_t)(-mv));
+            }
+        }
         chargedCycles = delta;
-        if (c && delta > 0) c->addDelay((uint32_t)std::min<uint64_t>(delta, 0xFFFFFFFFull));
-        recSyncNote(tid);   // (1.12.189): the message's arrival
+        if (setSt == 0 && c && delta > 0) c->addDelay((uint32_t)std::min<uint64_t>(delta, 0xFFFFFFFFull));
+        if (setSt >= 0) { recSyncNote(tid); setSyncNote(tid); }   // (1.12.189): the message's arrival; (1.12.216): a rendezvous
         if (getenv("PIMID_DEBUG_RDV")) {
             info("Thread %d: MPI_RECV src=%u dst=%u size=%lu send_time=%lu cwait=%lu "
                  "cur=%lu lat=%u arrival=%lu delta=%lu raw_getCyc=%lu roi_base=%lu",
