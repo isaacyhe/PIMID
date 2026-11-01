@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.206 -- a synchronisation released just before the ROI baseline and taken after it keeps the ROI's time axis
+
+- **The problem.** In a single-process run (device-scope OpenMP or serial, co-simulation OpenMP), a thread woken
+  by another, or taking a lock word another released, moves its clock to the releaser's time and takes the
+  releaser's ROI origin, so the two share one time axis. The releaser's origin was read when the release was
+  made. A release made just before `roi_begin` carries the origin from before the ROI (0, as no ROI has started),
+  and a waiter that takes it after `roi_begin` took that origin: its ROI-relative clock became its absolute clock.
+  In the OpenMP reduction and vector_add kernels the ROI opens right after an initialisation region, whose last
+  wake of the team precedes `roi_begin` by a few cycles while the workers resume after it; every worker then
+  ended its ROI at about 30 M cycles, and the run time and the priced window spanned the whole run.
+- **The fix (external/zsim/src/qemu_zsim_plugin.cpp).** Each `roi_begin` that sets the cores' origins starts a new
+  generation. A futex wake stamp, a lock word's release and an in-order or OOO core's stamp record the releasing
+  core and the generation; a waiter that takes a release of an earlier generation takes the releasing core's
+  present origin (its origin in this ROI) instead of the one recorded. Releases made within the ROI are taken as
+  before. Docs: power.md (the synchronisation paragraph).
+- **Validation** (1.12.205 and this build side by side): the gate's check set (8 kernels x serial, OpenMP and
+  message passing x with and without the scratchpad, and three placement cells), the 150 message-passing smoke
+  cells and the 116 validation cells give byte-identical logs; repeat runs of 8 cells x 2 copies give one output
+  per cell; the power check reports no flag.
+- **Data impact.** None on these cells: in each of them every release is taken in the ROI it was made in. It
+  matters where the last wake before `roi_begin` lands only cycles before it -- for example once nothing runs
+  between an OpenMP initialisation region and `roi_begin` (the smoke-size OpenMP reduction and vector_add then
+  ended at about 30 M cycles; with this release at 14 155 and 12 917 cycles).
+
 ## 1.12.205 -- Co-simulation message passing: a rank's post-ROI tail is outside its scratchpad stack check
 
 - **The problem.** A co-simulation message-passing rank runs its post-ROI collective tail (the closing MPI_Reduce of

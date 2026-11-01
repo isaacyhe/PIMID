@@ -694,7 +694,8 @@ baseline, and every NoC record and DRAM request is stamped on that
 ROI-relative clock. A thread woken by another, or taking a lock word another
 released, first moves its clock to max(own, the waker's or releaser's time)
 and takes that core's origin, so threads joined by a synchronisation share
-one time axis. At each phase barrier the records are folded at the
+one time axis. A release made before the ROI baseline and taken after it
+carries the releaser's origin of this ROI, not the one it had before it. At each phase barrier the records are folded at the
 consistent cut, the earliest ROI-relative time over the cores still running
 or waiting (sleeping, exited and vacated cores are exempt). Epochs of
 `simulation.det_epoch_phases` phases (one by default) are frozen as they are folded, and an
