@@ -24,9 +24,14 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     return def;
 }
 
-static uint32_t lcg_rand(uint32_t* s) {
-    *s = *s * 1103515245u + 12345u;
-    return (*s >> 16) & 0x7FFF;
+/* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
+ * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
+ * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
+static uint64_t splitmix64(uint64_t* s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
 }
 
 /* Build a sparse SPD matrix in CSR format with ~NNZ_PER_ROW entries per row.
@@ -37,7 +42,7 @@ static void build_spd_csr(int N, int** out_row_ptr, int** out_col_idx,
                            double** out_values, int* out_nnz) {
     /* First pass: count nonzeros per row */
     int* row_nnz = (int*)calloc(N, sizeof(int));
-    uint32_t seed = 271828u;
+    uint64_t gs = 271828u;   /* the generator state, seeded as before */
     int total_nnz = 0;
 
     /* Diagonal always present */
@@ -48,7 +53,7 @@ static void build_spd_csr(int N, int** out_row_ptr, int** out_col_idx,
     int off_per_row = NNZ_PER_ROW - 1;
     for (int i = 0; i < N; i++) {
         for (int k = 0; k < off_per_row; k++) {
-            int j = (int)(lcg_rand(&seed) % (uint32_t)N);
+            int j = (int)(splitmix64(&gs) % (uint64_t)N);
             if (j == i) continue;
             row_nnz[i]++;
             row_nnz[j]++;  /* symmetric */
@@ -78,10 +83,10 @@ static void build_spd_csr(int N, int** out_row_ptr, int** out_col_idx,
     }
 
     /* Off-diagonal entries (re-seed for reproducibility) */
-    seed = 271828u;
+    gs = 271828u;
     for (int i = 0; i < N; i++) {
         for (int k = 0; k < off_per_row; k++) {
-            int j = (int)(lcg_rand(&seed) % (uint32_t)N);
+            int j = (int)(splitmix64(&gs) % (uint64_t)N);
             if (j == i) continue;
             double v = 1.0 / (double)(1 + (k % 4));  /* small off-diag values */
 

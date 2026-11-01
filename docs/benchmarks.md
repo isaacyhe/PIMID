@@ -114,6 +114,18 @@ forked ranks.
 > build with `g++`. The `cosim` variants need no MPI toolchain -- all build
 > with `g++` alone (in-process pthreads + DMA).
 
+## Random inputs
+
+Every kernel that draws an index, a key, a column or a value over a range larger than 32,767 takes it from splitmix64
+(Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014), a 64-bit generator seeded as the
+kernel documents (42 for bfs, radix and quicksort; 271828 for cg; 42 and 42 + 1000 t per thread for canneal). A draw
+over a range R is the output reduced modulo R; the bias is at most R / 2^64 and is ignored. The affected draws are the
+bfs edge targets (all PIM and host variants), the cg column indices, the canneal element choices, the radix keys (the
+high 32 bits of one output) and the quicksort values (uniform over [0, 2^31)). Draws over small ranges (histogram bins,
+net sizes, grid positions, acceptance tests) keep the 32-bit LCG. The bfs graph is a random graph of V vertices with
+`--degree` out-edges each; from vertex 0 it reaches 209,646 of 209,715 vertices in 10 levels and 838,567 of 838,859 in
+11.
+
 ## Running
 
 - **pim_kernels** / **host**: a device-only configuration (no hosts), select the data model with

@@ -31,11 +31,16 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Deterministic LCG                                                  */
+/*  Deterministic generator (splitmix64)                               */
 /* ------------------------------------------------------------------ */
-static uint32_t bench_rand(uint32_t* s) {
-    *s = *s * 1103515245 + 12345;
-    return (*s >> 16) & 0x7FFF;
+/* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
+ * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
+ * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
+static uint64_t splitmix64(uint64_t* s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,9 +151,9 @@ int main(int argc, char** argv) {
     }
 
     /* Initialize with deterministic data */
-    uint32_t seed = 42;
+    uint64_t gs = 42;   /* the generator state, seeded as before */
     for (int i = 0; i < N; i++)
-        keys_src[i] = ((uint32_t)bench_rand(&seed) << 16) | bench_rand(&seed);
+        keys_src[i] = (uint32_t)(splitmix64(&gs) >> 32);
 
     /* Setup barrier */
     pthread_barrier_init(&barrier, NULL, (unsigned)num_threads);

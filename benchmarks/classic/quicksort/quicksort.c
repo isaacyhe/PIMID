@@ -21,11 +21,16 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  LCG                                                               */
+/*  Generator (splitmix64)                                            */
 /* ------------------------------------------------------------------ */
-static uint32_t bench_rand(uint32_t* s) {
-    *s = *s * 1103515245 + 12345;
-    return (*s >> 16) & 0x7FFF;
+/* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
+ * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
+ * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
+static uint64_t splitmix64(uint64_t* s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
 }
 
 /* ------------------------------------------------------------------ */
@@ -51,7 +56,7 @@ static void quicksort(int* arr, int n) {
     if (n <= 1) return;
 
     /* Stack of (lo, hi) pairs.  log2(N) * 2 is sufficient for
-       balanced partitions; worst-case N but that's rare with LCG data. */
+       balanced partitions; worst-case N but that is rare with random data. */
     int stack_size = 64;  /* enough for N up to ~2^63 balanced */
     int* stack = (int*)malloc((size_t)stack_size * 2 * sizeof(int));
     int top = -1;
@@ -103,12 +108,12 @@ int main(int argc, char** argv) {
 
     printf("Quicksort (iterative Lomuto) — size=%d\n", size);
 
-    /* Init array from LCG */
+    /* Init array from the generator */
     int* arr = (int*)malloc((size_t)size * sizeof(int));
     if (!arr) { fprintf(stderr, "malloc failed\n"); return 1; }
-    uint32_t seed = 42;
+    uint64_t gs = 42;   /* the generator state, seeded as before */
     for (int i = 0; i < size; i++)
-        arr[i] = (int)bench_rand(&seed);
+        arr[i] = (int)(splitmix64(&gs) >> 33);
 
     /* ---- ROI begin ---- */
     zsim_roi_begin();

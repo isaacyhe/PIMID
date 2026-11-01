@@ -9,9 +9,14 @@
 #define DEFAULT_VERTICES 512
 #define DEFAULT_DEGREE   8
 
-static uint32_t bench_rand(uint32_t* s) {
-    *s = *s * 1103515245 + 12345;
-    return (*s >> 16) & 0x7FFF;
+/* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
+ * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
+ * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
+static uint64_t splitmix64(uint64_t* s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
 }
 
 static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
@@ -38,9 +43,10 @@ int main(int argc, char* argv[]) {
 
     /* Build random graph (CSR) */
     for (int i = 0; i <= V; i++) row_ptr[i] = i * deg;
+    uint64_t gs = (uint64_t)seed;   /* the generator state, seeded as before */
     for (int i = 0; i < V; i++) {
         for (int d = 0; d < deg; d++)
-            col_idx[i * deg + d] = bench_rand(&seed) % V;
+            col_idx[i * deg + d] = (int)(splitmix64(&gs) % (uint64_t)V);
     }
 
     /* Init distances */

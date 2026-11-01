@@ -24,8 +24,18 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  LCG                                                               */
+/*  Generators: splitmix64 (element draws) and an LCG (the rest)      */
 /* ------------------------------------------------------------------ */
+/* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
+ * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
+ * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
+static uint64_t splitmix64(uint64_t* s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
 static uint32_t bench_rand(uint32_t* s) {
     *s = *s * 1103515245 + 12345;
     return (*s >> 16) & 0x7FFF;
@@ -117,6 +127,7 @@ typedef struct {
     int num_threads;
     int accepted;
     uint32_t seed;
+    uint64_t eseed;   /* element draws (64-bit generator), seeded like seed */
 } ThreadCtx;
 
 static void* worker(void* arg) {
@@ -129,8 +140,8 @@ static void* worker(void* arg) {
     for (int step = 0; step < temp_steps; step++) {
         int local_accepted = 0;
         for (int s = 0; s < my_swaps; s++) {
-            int a = (int)(bench_rand(&ctx->seed) % (uint32_t)g_num_elems);
-            int b = (int)(bench_rand(&ctx->seed) % (uint32_t)g_num_elems);
+            int a = (int)(splitmix64(&ctx->eseed) % (uint64_t)g_num_elems);
+            int b = (int)(splitmix64(&ctx->eseed) % (uint64_t)g_num_elems);
             if (a == b) continue;
 
             int delta = swap_delta(a, b);
@@ -181,6 +192,7 @@ int main(int argc, char** argv) {
 
     /* Initialize elements: random positions */
     uint32_t seed = 42;
+    uint64_t eseed = 42;   /* element draws (64-bit generator) */
     for (int i = 0; i < g_num_elems; i++) {
         g_elems[i].x = (int)(bench_rand(&seed) % (uint32_t)g_grid_side);
         g_elems[i].y = (int)(bench_rand(&seed) % (uint32_t)g_grid_side);
@@ -195,7 +207,7 @@ int main(int argc, char** argv) {
         if (ne > 4) ne = 4;
         g_nets[i].num_elems = ne;
         for (int j = 0; j < ne; j++) {
-            int eid = (int)(bench_rand(&seed) % (uint32_t)g_num_elems);
+            int eid = (int)(splitmix64(&eseed) % (uint64_t)g_num_elems);
             g_nets[i].elems[j] = eid;
             /* Add net to element (if room) */
             if (g_elems[eid].num_nets < MAX_NETS_PER_ELEM) {
@@ -220,6 +232,7 @@ int main(int argc, char** argv) {
         ctxs[t].num_threads = num_threads;
         ctxs[t].accepted    = 0;
         ctxs[t].seed        = (uint32_t)(42 + t * 1000);
+        ctxs[t].eseed       = (uint64_t)(42 + t * 1000);
         pthread_create(&threads[t], NULL, worker, &ctxs[t]);
     }
     for (int t = 0; t < num_threads; t++)

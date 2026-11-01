@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.217 -- random inputs over large ranges come from a 64-bit generator: a bfs graph spans all its vertices
+
+- **The problem.** The kernels drew random indices from the 15-bit output of a 32-bit LCG (bits 16 to 30). A draw over
+  a range above 32,767 therefore never reached the upper part of the range. Every bfs edge target was below 32,768, so
+  for any graph larger than that the search visited the same 32,758 vertices in 7 levels (about 262,000 edges, about
+  1.2 MB) whatever `--vertices` was. The same defect capped the cg column indices and the canneal element choices above
+  32,768, left bits 15 and 31 of every radix key at 0, and gave a quicksort array of 65,536 elements each value about
+  twice.
+- **The fix** (benchmarks/pim_kernels/bfs, benchmarks/host/bfs, npb/cg, parsec/canneal, splash3/radix,
+  classic/quicksort; docs/benchmarks.md, "Random inputs"). Those draws take splitmix64 (Steele, Lea and Flood, OOPSLA
+  2014), a 64-bit generator with the same seeds; the modulo bias is at most R / 2^64. Draws over small ranges keep the
+  LCG. The six bfs binaries are rebuilt (GCC 13.3, MPICH); the other 36 tracked PIM and host binaries rebuild
+  byte-identical.
+- **Data impact.** Every bfs result changes, at every size. From vertex 0 the graph of 209,715 vertices now reaches
+  209,646 vertices in 10 levels (1.68 M edges), the graph of 838,859 vertices 838,567 in 11 levels (6.71 M edges, 25.6x
+  the old traversal), and the 20,000-vertex smoke graph 19,990 in 8. cg, canneal, radix and quicksort results change at
+  every size; their default sizes were not capped before, but the draws are now different numbers.
+
 ## 1.12.216 -- message passing on device PEs: the DRAM controller's clock follows the ranks' real time, and each rendezvous is settled first
 
 - **The problem.** Under the closed-loop DRAM replay a rank's clock is reconciled with what its accesses measured once
