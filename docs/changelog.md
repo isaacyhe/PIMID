@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.214 -- HBM2: the DQ I/O of an access that crosses the pins is priced at the published HBM2E PHY energy
+
+- **The problem.** An HBM2 access crossing the DQ pins paid its I/O at 0.23 pJ/b on a read, the midpoint of an HBM2
+  TSV-driver current (Cho et al., ISSCC 2018), which measures another link, and nothing on a write. Published HBM2-class
+  interposer DQ I/O and PHY energies are 0.30 to 1.07 pJ/bit.
+- **The fix** (params/dram/hbm2.yaml; docs/derivations/hbm_gddr6_idd.md sec. 1.16, docs/sources.md,
+  docs/yaml_reference.md). The method of the HBM3 record: the DQ I/O share is anchored on the published PHY energy of
+  the same link, per direction, unscaled for the DRAM side, here the Samsung HBM2E PHY (Hwang et al., Hot Chips 32): 0.56
+  pJ/bit read, 1.07 write, 143.36 / 273.92 mA per channel at 307.2 Gb/s. The array part of the burst is kept, so an
+  access from a PE on the DRAM die pays what it paid; IDD4R 1382.55 -> 1467.03, IDD4W 933.0 -> 1206.92 mA. The record's
+  band is the share's guard, the published HBM2-class range 0.30-1.07 pJ/bit.
+- **Validation.** HBM2 and HBM3 cells, this tree against the same build without the change: run times identical;
+  HBM2 device cells (PEs on the DRAM die) and every HBM3 cell identical; only HBM2 accesses crossing the pins change.
+- **Data impact** (power only, HBM2 as host memory). A crossing read pays 5.50 pJ/b (was 5.17), a crossing write 4.49
+  (was 3.42). Host baselines on HBM2 +0.0 to +1.2 % total power (the most on 16-core streams), co-simulation cells on
+  HBM2 at most +0.05 %; HBM2 device cells (PEs on the DRAM die) and every other technology unchanged.
+
 ## 1.12.213 -- the HBM3 guards compare like with like: no warning in an HBM3 run
 
 - **The problem.** Every HBM3 run printed three guard warnings that did not compare like with like. (1, 2) The derived

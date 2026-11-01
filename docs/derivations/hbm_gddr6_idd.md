@@ -780,6 +780,37 @@ are inside.
 
 Nothing priced changes; the HBM3 runs print no guard warning.
 
+### 1.16 HBM2 DQ I/O at the published HBM2E PHY energy
+
+The HBM2 row priced the DQ read I/O of an access crossing the pins at 0.23 pJ/b, the
+midpoint of an HBM2 TSV-driver current (Cho et al., ISSCC 2018; section 1.7 explains why
+that band measures another link), and a crossing write at none. It now uses the method
+the HBM3 row uses (section 1.7): the published PHY energy of the same link, in the same
+direction, used unscaled for the DRAM side. For HBM2 that is the Samsung HBM2E PHY
+(Hwang, Chae, Yeo et al., Hot Chips 32, 2020, poster slide 10): 0.56 pJ/bit read, 1.07
+pJ/bit write, the figures the host PHY of an HBM2 host already uses.
+
+| per channel at 2.4 Gb/s (128 bits) | was | now |
+|---|---|---|
+| io_share read (anchor x 307.2 Gb/s / 1.2 V) | 58.88 mA (0.23 pJ/b) | 143.36 mA (0.56 pJ/b) |
+| io_share write | 0 | 273.92 mA (1.07 pJ/b) |
+| array read part (idd4r - io - idd3n) | 1265.72 mA | 1265.72 mA |
+| array write part (idd4w - io - idd3n) | 875.05 mA | 875.05 mA |
+| idd4r | 1382.55 | 1467.03 |
+| idd4w | 933.0 | 1206.92 |
+
+The array parts are kept: the measured loop's own DQ read I/O stays taken as 0.23 pJ/b,
+so an access from a PE on the DRAM die (no crossing) pays exactly what it paid. A
+crossing read pays 4.94 + 0.56 = 5.50 pJ/b (was 5.17); a crossing write 3.42 + 1.07 =
+4.49 (was 3.42). Mapping by direction (the read figure for reads), as for HBM3; the
+DRAM drives the DQ on a read, so a mapping by driver role would put the PHY's write
+figure on reads, stated and not applied.
+
+The record's band becomes the guard of the anchored share, like-for-like: published
+HBM2-class interposer DQ I/O and PHY energies, 0.30 (O'Connor et al., MICRO 2017, Fig.
+1b) to 1.07 pJ/bit (the HBM2E PHY write), with Chatterjee et al. (0.54), O'Connor et al.
+Table 3 (0.80 at 50 % activity) and the HBM2E PHY read (0.56) inside.
+
 ## 2. Derivation 2 -- GDDR6
 
 ### 2.1 Search for a scaling base
