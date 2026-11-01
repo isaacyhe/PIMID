@@ -40,14 +40,20 @@ static inline void zsim_magic_op(uint64_t op) {
 }
 #endif
 
+/* The ROI markers print nothing. A print here runs on the core being measured: under
+ * thread-MPI the region starts at the entry barrier's release and ends at the last rank's
+ * arrival at the closing barrier, so rank 0's print before ROI_BEGIN and after ROI_END was
+ * timed (about 10 k cycles each on a PE). The simulator reports every ROI transition itself.
+ * The marker string stays in the binary: the simulator looks for it to know that the
+ * program has an ROI. */
+static const char zsim_roi_marker[] __attribute__((used)) = "[" HOOKS_STR "] ROI begin";
+
 static inline void zsim_roi_begin() {
-    printf("[" HOOKS_STR "] ROI begin\n");
     zsim_magic_op(ZSIM_MAGIC_OP_ROI_BEGIN);
 }
 
 static inline void zsim_roi_end() {
     zsim_magic_op(ZSIM_MAGIC_OP_ROI_END);
-    printf("[" HOOKS_STR  "] ROI end\n");
 }
 
 static inline void zsim_heartbeat() {

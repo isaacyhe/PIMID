@@ -6,6 +6,44 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.207 -- the ROI hooks print nothing, so no print runs inside a message-passing run's measured region
+
+- **The problem.** `zsim_roi_begin()` printed "[HOOKS] ROI begin" before its ROI_BEGIN magic op, and
+  `zsim_roi_end()` printed "[HOOKS] ROI end" after its ROI_END op. A print is guest code and runs on the core being
+  measured. In a thread-MPI run the measured region is bounded by barriers, not by the hooks: the kernels call
+  `MPI_Barrier` then `zsim_roi_begin()` (rank 0), and `zsim_roi_end()` (rank 0) then `MPI_Barrier`. Each rank's
+  region starts where it leaves the entry barrier, so rank 0's begin print (9.5 k cycles at CHANNEL or LOGIC_DIE
+  placement, 12.8 k at BANK) was inside its region, and its end print ran between its ROI_END and its arrival at
+  the closing barrier (12 k to 13.5 k cycles), where rank 0's arrival can set the end. In the other models both
+  prints were outside the region but still touched the caches just before it.
+- **The fix (external/zsim/misc/hooks/zsim_hooks.h).** The two hooks only issue their magic op; the simulator
+  reports every ROI transition itself. The string "[HOOKS] ROI begin" stays in the binary as a constant: the
+  simulator looks for it to know that a program has an ROI. The tracked kernel binaries (benchmarks/pim_kernels,
+  benchmarks/host, benchmarks/hostphase/bfs_hostphase) are rebuilt with GCC 13.3 and MPICH; rebuilt from the
+  previous sources they reproduce the previous binaries byte for byte, so the header is their only change.
+- **Validation** (the previous release and this build side by side, smoke sizes):
+  - the 150 message-passing cells (device scope at every placement, PE type and technology, and co-simulation): the
+    same return codes (four fig2 non-DRAM bfs cells refuse their data preparation in both builds) and the same
+    checksums everywhere;
+  - the 116 validation cells (device and host serial and OpenMP, PE types, co-simulation OpenMP): all complete, the
+    same checksums, run times within 0.5% in 70 cells and within 2% in 96 (median 0.36%; extremes -9.9% and +7.0% on
+    cells of 20 k to 300 k cycles);
+  - the gate's check set (8 kernels x serial, OpenMP and message passing x with and without the scratchpad):
+    the same return codes and checksums; OpenMP reduction and vector_add, whose ROI now opens right after their
+    initialisation region, 15 028 -> 14 155 and 19 752 -> 12 917 cycles (scratchpad); this relies on the previous
+    release (a release made just before `roi_begin` keeps the ROI's time axis);
+  - repeat runs: 8 cells (device and co-simulation message passing, device OpenMP, host OpenMP) x 2 copies give one
+    output per cell;
+  - the 43 tracked kernel binaries: GCC 13.3, message-passing ones linked to MPICH, newer than their sources and
+    headers; the 24 PIM kernels rebuild to the same bytes.
+- **Data impact** (smoke sizes; a fixed cost per run, so production sizes move by the same few thousand cycles):
+  - device message passing (131 cells): median -11.6 k cycles (-5.7%), the begin print no longer inside rank 0's
+    region; short cells most (64-PE gemv 45 907 -> 17 230 cycles, DDR5 stream_triad 75 022 -> 41 783); the
+    saturated bfs at CHANNEL placement 21.17 M -> 23.21 M, within the range any change to its startup gives;
+  - co-simulation message passing: one host core (15 cells) median +0.2% (-6.3% to +3.1%), where the launch train
+    ends after rank 0's prints; four and sixteen host cores median -7.3% and -5.8%;
+  - serial, OpenMP and host cells: the prints no longer touch the caches just before the region (see above).
+
 ## 1.12.206 -- a synchronisation released just before the ROI baseline and taken after it keeps the ROI's time axis
 
 - **The problem.** In a single-process run (device-scope OpenMP or serial, co-simulation OpenMP), a thread woken

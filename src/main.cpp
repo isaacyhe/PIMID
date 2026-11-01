@@ -1181,13 +1181,13 @@ static void noteGuestLaunch(size_t envVars, const std::string& binary) {
                  " files, uname), stack limit " << kGuestStackLimit << " bytes (-rlimit-stack)" << std::endl;
 }
 
-/* (1.12.115): the guest binary carries the ROI markers (zsim_hooks.h prints
+/* (1.12.115): the guest binary carries the ROI markers (zsim_hooks.h embeds the string
  * "[HOOKS] ROI begin"); the timing and trace plugins then refuse a run whose
  * ROI never opened (PIMID_ROI_EXPECTED, host environment only). */
 static bool binaryHasRoiMarkers(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
-    static const std::string kMark = "[HOOKS] ROI begin";   // the NOP build prints [NOP-HOOKS]
+    static const std::string kMark = "[HOOKS] ROI begin";   // the NOP build embeds [NOP-HOOKS]
     std::string buf(1 << 20, '\0'), carry;
     while (f) {
         f.read(&buf[0], (std::streamsize)buf.size());
