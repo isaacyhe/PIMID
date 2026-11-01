@@ -594,6 +594,13 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
             const uint64_t c = adjustedClock ? cycle : PEMemoryInterface::wallFreeCycle(srcId, cycle);
             stamp = PEMemoryInterface::roiRelOf(srcId, c);   // (1.12.189): a signed origin
             hostCoreStamps_.fetch_add(1, std::memory_order_relaxed);
+            /* (1.12.208): a host core issues a request at its dispatch cycle, which can lie past its clock at the ROI
+             * end (an out-of-order core reaches roi_end with its last reads still in flight). Its latest stamp joins
+             * its ROI end, the run time of a no-offload single-process run (source 3), as at a device interface
+             * (1.12.21); the run time already read it for a host core, but no host record wrote it. A read the core
+             * waits for, issued before roi_end and stamped 53 cycles past its clock there, fell outside the window
+             * (baseline_DDR5_omp_gemv_16core). */
+            if (PEMemoryInterface::singleProcCut()) PEMemoryInterface::clkNoteRec(srcId, stamp);
         } else {
             /* The ROI-relative phase grid: phases since the ROI baseline, plus the core's offset in its phase -- the
              * axis the shared-memory replay stamps host records on. A thread-MPI host core is stamped here: its own

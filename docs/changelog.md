@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.208 -- A host core's last reads of the ROI are inside it
+
+- **The problem.** An out-of-order or in-order core issues a memory request at its dispatch cycle, which can lie past
+  its clock when it reaches `roi_end`: its last reads are still in flight. Since 1.12.21 such a core's latest request
+  stamp joins its ROI end, so the run time of a single-process run covers it. The run time read that note for a host
+  core too, but no host request wrote it: in a run without offload (a host baseline) a read the core issued before
+  `roi_end`, and waits for, could be stamped past the run time and replayed outside the ROI, unpriced.
+  baseline_DDR5_omp_gemv_16core: core 0 reaches `roi_end` at 15,462 cycles with a demand read stamped at 15,515; the
+  run time (15,479 with the DRAM balance) left it outside (1 host read, 4 ACT commands). The kernels rebuilt with
+  1.12.207 moved that read; with the earlier binary a balance of 111 cycles happened to cover it.
+- **The fix** (external/zsim/src/dram_epoch_replay.cpp, DramEpochReplay::hostAccess). In a single-process run a host
+  core's request notes its stamp as the core's latest, as a device interface does. The core's ROI end is the later of
+  its clock and that stamp, and the closed loop's end balance (a core ends no earlier than the last read it waits for
+  completes) applies from there.
+- **Validation** (the previous release and this build; smoke sizes; host baselines with the fleet's settings). The 60 host
+  baseline cells (DDR5 and HBM3; OpenMP and message passing; 1, 4 and 16 cores): 45 identical in every line; the 15
+  that had a host request outside the ROI (13 OpenMP, 2 single-rank message-passing) now have none, and only their
+  run time and what follows from it move; the multi-rank host cells are unchanged (their requests are stamped on the
+  phase grid). The 150 device and co-simulation cells: identical in every line. baseline_DDR5_omp_gemv_16core: 8
+  copies, one output.
+- **Data impact.** Host baselines whose last read was outside the ROI: run time +0.002% (bfs) to +1.0% (stencil_2d,
+  16 cores); baseline_HBM3_omp_gemv_16core +4.8% (the read took 677 cycles in the replayed controller and the core
+  waits for it); baseline_DDR5_omp_gemv_16core 15,479 -> 15,603 cycles (+0.8%). Device and co-simulation runs do not
+  change.
+
 ## 1.12.207 -- the ROI hooks print nothing, so no print runs inside a message-passing run's measured region
 
 - **The problem.** `zsim_roi_begin()` printed "[HOOKS] ROI begin" before its ROI_BEGIN magic op, and
