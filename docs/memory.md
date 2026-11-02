@@ -39,7 +39,8 @@ bank-open time) feed the energy model; see [power.md](power.md).
 
 **Under load the price follows the controller ((1.12.145), user ruling 2026-10-28).** A request's latency
 counts from the moment it reached the controller's door, so a wait at a full queue is latency. The replay has its own
-epoch (`simulation.dram_epoch_phases`, one phase), and an epoch still in flight is priced with its unfinished requests
+epoch (`simulation.dram_epoch_cycles`, 10 000 cycles, one phase at the default phase length; since (1.12.227) a shorter
+`simulation.phase_length` no longer shortens it), and an epoch still in flight is priced with its unfinished requests
 counted at their age, so the latency the cores pay follows what the controller measures on loaded multi-core cells as
 it already did on single-core ones.
 

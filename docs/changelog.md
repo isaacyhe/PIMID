@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.227 -- the DRAM epoch replay's epoch is set in cycles: a shorter phase length no longer shortens it
+
+- **The problem.** The DRAM epoch replay's epoch was a number of phases, `simulation.dram_epoch_phases` (default 1).
+  Lowering `simulation.phase_length` therefore shortened the DRAM pricing epoch with it: at 1 000 and 2 000 cycles
+  the 16-core OpenMP gemv and histogram host baselines took 14% to 19% longer. With the epoch held at 10 000 cycles,
+  the same host baselines (and stencil_2d 16 cores, stream_triad 4 cores) stayed within -2.4% to +4.3% of the
+  default at every phase length from 5 000 down to 250 cycles.
+- **The fix (src/main.cpp).** A new key, `simulation.dram_epoch_cycles` (default 10 000), sets the epoch in cycles. It
+  becomes a whole number of phases: the nearest, at least 1; the run prints the epoch it uses whenever it is not one
+  default phase or the cycle count is not a multiple of the phase length. An explicit `simulation.dram_epoch_phases`
+  still sets the epoch in phases, with a note (and `simulation.dram_epoch_cycles` is then ignored).
+- **Validation.** At the defaults every log is identical to the previous release. With `simulation.phase_length:
+  1000` the new default gives the same results as `simulation.dram_epoch_phases: 10`.
+- **Data impact.** None at the default phase length. A configuration with a shorter `simulation.phase_length` and no
+  `simulation.dram_epoch_phases` now keeps a 10 000-cycle DRAM epoch instead of a one-phase one.
+
 ## 1.12.226 -- the message-passing bfs finds a vertex's owner rank by an exact reciprocal multiply, not a division per edge
 
 - **The problem.** The message-passing bfs (the PIM kernel `bfs_mpi` and the host `bfs_message_passing`) found the

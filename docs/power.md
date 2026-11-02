@@ -747,8 +747,8 @@ or waiting (sleeping, exited and vacated cores are exempt). Epochs of
 `simulation.det_epoch_phases` phases (one by default) are frozen as they are folded, and an
 access is priced from an earlier epoch's frozen per-pair NoC latency table
 and DRAM service latency, read by epoch index from the access's own clock,
-never from a live value (the DRAM replay has its own one-phase epoch,
-`simulation.dram_epoch_phases`, since 1.12.145). Since 1.12.123 the threads of
+never from a live value (the DRAM replay has its own epoch, since 1.12.145; since (1.12.227) it is
+set in cycles, `simulation.dram_epoch_cycles`, 10 000 by default). Since 1.12.123 the threads of
 a shared-memory run, and since 1.12.126 the ranks of a thread-MPI run, take
 their turns in a fixed order, so multi-threaded timing is the same in every
 run (see [architecture.md](architecture.md#reproducibility)). The run time and every time-based power term use

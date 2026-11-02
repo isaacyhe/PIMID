@@ -209,7 +209,7 @@ origin; and at each phase barrier the records are folded at the consistent
 cut (the earliest ROI-relative time over the cores still running or waiting).
 Accesses are priced from frozen epochs (`simulation.det_epoch_phases`, one phase by default): an
 access reads an earlier epoch's per-pair NoC latency and DRAM service latency
-by epoch index from its own clock, never a live value (DRAM: its own one-phase epoch, `simulation.dram_epoch_phases`, since (1.12.145)). DRAM is timed this way
+by epoch index from its own clock, never a live value (DRAM: its own epoch, since (1.12.145); since (1.12.227) set in cycles, `simulation.dram_epoch_cycles`, 10 000 by default). DRAM is timed this way
 only: every Ramulator2-timed memory -- the device's memory interfaces, the
 host memory controller, and since (1.12.147) (user ruling 2026-10-28) a memory of
 type Ramulator such as the `HOST_MC` placement's -- is a replayed controller

@@ -158,7 +158,8 @@ class DramEpochReplay {
     uint32_t serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_t lag, bool write = false, bool pf = false);   // (1.12.189): write = a store's price
 
     /* (1.12.145, user ruling 2026-10-28: the multi-core latency gap) the replay's own epoch length in phases,
-     * simulation.dram_epoch_phases (handed over as PIMID_DRAM_EPOCH_PHASES; default kDramEpochPhases),
+     * simulation.dram_epoch_cycles turned into whole phases, or simulation.dram_epoch_phases when set
+     * (handed over as PIMID_DRAM_EPOCH_PHASES; default kDramEpochPhases),
      * separate from the NoC's det_epoch_phases. It was det_epoch_phases (4 phases = 40 000 cycles): a
      * price two such epochs old let the cores of a loaded controller issue in bursts the controller took
      * several epochs to serve. The read lag stays two epochs (kDramReadLagEpochs). */

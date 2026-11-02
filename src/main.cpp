@@ -3222,7 +3222,7 @@ static const char* kSchemaPaths[] = {
     "power.pcie.process_node_nm", "power.link.process_node_nm",   // 1.12.18: two-node UCIe rows
     "power.link.bandwidth_GBs", "power.link.base_latency_ns", "power.link.coherence_extra_ns", "power.link.duty_cycle", "power.link.enabled", "power.link.header_bytes", "power.link.link_type",
     "power.link.model", "power.link.num_channels", "power.link.num_lanes", "power.link.num_units", "power.link.pj_per_bit_override", "power.link.total_load_perc",
-    "simulation.det_epoch_phases", "simulation.dram_epoch_phases", "simulation.dram_price_window", "simulation.lock_sync", "simulation.max_instructions", "simulation.mpi_contention_points", "simulation.parallel", "simulation.phase_length", "simulation.stats_interval",
+    "simulation.det_epoch_phases", "simulation.dram_epoch_cycles", "simulation.dram_epoch_phases", "simulation.dram_price_window", "simulation.lock_sync", "simulation.max_instructions", "simulation.mpi_contention_points", "simulation.parallel", "simulation.phase_length", "simulation.stats_interval",
     /* 1.12.18 (user rulings 2026-10-23): PIM runtime primitives */
     "simulation.pim_runtime.enabled", "simulation.pim_runtime.apply_to", "simulation.pim_runtime.cycle_basis", "simulation.pim_runtime.source_clock_mhz",
     "simulation.pim_runtime.omp_launch_cycles", "simulation.pim_runtime.omp_launch_scaling", "simulation.pim_runtime.omp_barrier_cycles", "simulation.pim_runtime.omp_barrier_scaling",
@@ -23901,10 +23901,36 @@ int main(int argc, char** argv) {
                 /* 1.11.94 (sweep-94 rows 26/28): run settings that lived only in
                  * environment variables become config keys; the value is handed
                  * to the timing plugin / MPI shim through the same variable. */
-                if (yaml_cfg["simulation"]["dram_epoch_phases"]) {   // (1.12.145, user ruling 2026-10-28)
-                    int ep = yamlInt(yaml_cfg["simulation"]["dram_epoch_phases"], 1, "simulation.dram_epoch_phases");
-                    if (ep < 1) { std::cerr << "Error: simulation.dram_epoch_phases must be >= 1" << std::endl; return 1; }
-                    setenv("PIMID_DRAM_EPOCH_PHASES", std::to_string(ep).c_str(), 1);
+                /* (1.12.227) The DRAM epoch replay's epoch is set in cycles, simulation.dram_epoch_cycles (default
+                 * 10 000, one phase at the default phase_length), and becomes a whole number of phases: the
+                 * nearest, at least 1. So a shorter simulation.phase_length no longer shortens the DRAM epoch
+                 * with it. An explicit simulation.dram_epoch_phases still sets the epoch in phases (a NOTE says
+                 * so and simulation.dram_epoch_cycles is then ignored). The replay reads the phase count from
+                 * PIMID_DRAM_EPOCH_PHASES; with neither key set and the epoch one phase, that variable is left as
+                 * it is. */
+                {
+                    const bool hasPh = (bool)yaml_cfg["simulation"]["dram_epoch_phases"];
+                    const bool hasCy = (bool)yaml_cfg["simulation"]["dram_epoch_cycles"];
+                    const long long pl = config.phase_length > 0 ? config.phase_length : 10000;
+                    int ep = 1;
+                    if (hasPh) {
+                        ep = yamlInt(yaml_cfg["simulation"]["dram_epoch_phases"], 1, "simulation.dram_epoch_phases");
+                        if (ep < 1) { std::cerr << "Error: simulation.dram_epoch_phases must be >= 1" << std::endl; return 1; }
+                        std::cout << "[config] NOTE: simulation.dram_epoch_phases = " << ep << " sets the DRAM epoch in phases: "
+                                  << ep << " x " << pl << " = " << (long long)ep * pl << " cycles"
+                                  << (hasCy ? " (simulation.dram_epoch_cycles is ignored)" : "") << std::endl;
+                    } else {
+                        const int cy = hasCy ? yamlInt(yaml_cfg["simulation"]["dram_epoch_cycles"], 10000, "simulation.dram_epoch_cycles") : 10000;
+                        if (cy < 1) { std::cerr << "Error: simulation.dram_epoch_cycles must be >= 1" << std::endl; return 1; }
+                        long long n = ((long long)cy + pl / 2) / pl;
+                        if (n < 1) n = 1;
+                        ep = (int)n;
+                        if (hasCy || ep != 1 || cy % pl != 0)
+                            std::cout << "[config] DRAM epoch: simulation.dram_epoch_cycles = " << cy << " -> " << ep
+                                      << " phase(s) of " << pl << " cycles = " << (long long)ep * pl << " cycles"
+                                      << (cy % pl != 0 ? " (the nearest whole number of phases, at least 1)" : "") << std::endl;
+                    }
+                    if (hasPh || hasCy || ep != 1) setenv("PIMID_DRAM_EPOCH_PHASES", std::to_string(ep).c_str(), 1);
                 }
                 if (yaml_cfg["simulation"]["dram_price_window"]) {   // (1.12.153, user ruling 2026-10-28)
                     int pw = yamlInt(yaml_cfg["simulation"]["dram_price_window"], 8, "simulation.dram_price_window");
