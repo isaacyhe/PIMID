@@ -224,12 +224,17 @@ NetworkInterface::incrementStats(flit *t_flit)
 void
 NetworkInterface::wakeup()
 {
+#ifdef GARNET_DEBUG
+    // The description of the attached routers exists for this trace only:
+    // without GARNET_DEBUG the trace is empty, and building the string on
+    // every wakeup was host time spent on nothing.
     std::ostringstream oss;
     for (auto &oPort: outPorts) {
         oss << oPort->routerID() << "[" << oPort->printVnets() << "] ";
     }
     DPRINTF(RubyNetwork, "Network Interface %d connected to router:%s "
             "woke up. Period: %ld\n", m_id, oss.str(), clockPeriod());
+#endif
 
     assert(curTick() == clockEdge());
     MsgPtr msg_ptr;

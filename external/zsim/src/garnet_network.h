@@ -1344,6 +1344,25 @@ private:
         // batch needs proportionally more ticks to fully clear. Generous + safety.
         uint64_t maxTick = lastInjectTime + (uint64_t)validCount * 256 + 1000000;
 
+        // The destinations' arrival buffers, in the order the drain visits
+        // them (the iteration order of dstSet, which no longer changes).
+        // minReady is a lower bound on the ready time of every buffer's front
+        // message: each enqueue lowers it through the buffer's ready hook, and
+        // each visit recomputes it. While the current tick is below it no
+        // buffer holds a ready message, so the visit, which would dequeue
+        // nothing, is skipped. A visit that can dequeue runs as before, over
+        // the same buffers in the same order: the deliveries, their ticks and
+        // their order are unchanged. (A visit after every event was about a
+        // third of the drain's host time with 48 destinations.)
+        std::vector<gem5::ruby::MessageBuffer*> dstBufs;
+        dstBufs.reserve(dstSet.size());
+        for (uint32_t d : dstSet) dstBufs.push_back(fromNetBufs_[d][0]);
+        gem5::Tick minReady = gem5::MaxTick;
+        for (auto* b : dstBufs) {
+            b->setReadyHook(&minReady);
+            if (b->readyTime() < minReady) minReady = b->readyTime();
+        }
+
         // NO artificial in-flight cap. The network's OWN flow control -- bounded
         // VC buffers + credit backpressure -- is the physical limiter on
         // outstanding packets. Under heavy offered load the channel saturates
@@ -1377,14 +1396,16 @@ private:
                 nextInjectIdx++;
             }
 
-            // -- Drain: check destinations for arrivals --
-            for (uint32_t d : dstSet) {
-                while (fromNetBufs_[d][0]->isReady(gem5::curTickRef())) {
+            // -- Drain: check destinations for arrivals (only when one can be ready) --
+            if (gem5::curTickRef() >= minReady) {
+              minReady = gem5::MaxTick;
+              for (gem5::ruby::MessageBuffer* buf : dstBufs) {
+                while (buf->isReady(gem5::curTickRef())) {
                     auto peekMsg = std::dynamic_pointer_cast<
                         gem5::ruby::SimpleMessage>(
-                        fromNetBufs_[d][0]->peekMsgPtr());
+                        buf->peekMsgPtr());
                     uint64_t pktTag = peekMsg ? peekMsg->getTag() : 0;
-                    fromNetBufs_[d][0]->dequeue(gem5::curTickRef());
+                    buf->dequeue(gem5::curTickRef());
 
                     auto it = tagToInjectTick.find(pktTag);
                     if (it != tagToInjectTick.end()) {
@@ -1405,6 +1426,8 @@ private:
                         }
                     }
                 }
+                if (buf->readyTime() < minReady) minReady = buf->readyTime();
+              }
             }
 
             if (delivered >= validCount) break;
@@ -1414,6 +1437,7 @@ private:
                 gem5::curTickRef()++;
             }
         }
+        for (auto* b : dstBufs) b->setReadyHook(nullptr);
 
         // Update smoothed average latency (atomic publish: PE threads read it
         // lock-free via getBatchAvgLatency()).

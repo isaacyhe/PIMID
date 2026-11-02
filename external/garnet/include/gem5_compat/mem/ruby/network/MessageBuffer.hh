@@ -46,6 +46,12 @@ public:
     // Register consumer for wakeups
     void setConsumer(Consumer* consumer) { consumer_ = consumer; }
 
+    // Ready hook: while set, every enqueue lowers *hook to the new message's
+    // ready time if that is earlier. A reader that polls several buffers keeps
+    // a lower bound on their front ready times this way and polls only once
+    // the current tick reaches it. Null (the default) leaves enqueue as it was.
+    void setReadyHook(Tick* hook) { readyHook_ = hook; }
+
     // Set virtual network ID
     void setVnet(int vnet) { vnet_ = vnet; }
     int getVnet() const { return vnet_; }
@@ -118,6 +124,7 @@ public:
         }
 
         enqueues_++;
+        if (readyHook_ && ready_time < *readyHook_) *readyHook_ = ready_time;
 
         // Schedule consumer wakeup
         if (consumer_) {
@@ -169,6 +176,7 @@ private:
     Consumer* consumer_;
     int vnet_;
     std::function<void()> dequeueCallback_;
+    Tick* readyHook_ = nullptr;
 
     // Statistics
     uint64_t enqueues_ = 0;

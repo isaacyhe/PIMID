@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.228 -- the detailed NoC replay no longer spends host time on work that changes no result
+
+- **The problem.** With `noc.model: detailed`, each phase's network messages are replayed through the Garnet network
+  at the phase barrier. In the message-passing bfs on HBM3 with the PEs at the bank (16 ranks, 3,355,436 vertices)
+  that replay was about four fifths of the host time: about 5,500 messages per phase on the 51-router tree, about 6
+  phases per second. Two parts of it changed nothing. After every network event the replay looked for arrivals in the
+  arrival buffer of every destination (48 in that run) and almost always found none (`GarnetNetwork::runBatchDrain_`,
+  about a third of the replay). Every network-interface wakeup built a text description of its routers for a trace
+  that exists only in a `GARNET_DEBUG` build (`NetworkInterface::wakeup`, about a fifth).
+- **The fix** (external/zsim/src/garnet_network.h; external/garnet: MessageBuffer.hh, NetworkInterface.cc). The
+  replay keeps a lower bound on the ready time of the messages waiting in the destination buffers: an enqueue lowers
+  it (the buffer's new ready hook), and each visit of the buffers recomputes it. The buffers are visited only once the
+  network clock reaches the bound, and then as before: all of them, in the same order, so every message is delivered
+  at the same tick and in the same order. The description string is built only in a `GARNET_DEBUG` build, next to the
+  trace that prints it. No simulated quantity changes.
+- **Validation** (the previous release and this build on the same nodes; logs compared with the tree paths masked):
+  135 device message-passing smoke cells, 11 co-simulation message-passing smoke cells, the 116-cell validation set,
+  30 bfs smoke variants on the bank, channel and logic-die placements, the co-simulation message-passing full set
+  (bfs at 838,859 vertices), and the HBM3 message-passing bfs at 209,715 vertices on the same three placements: every
+  log identical. The HBM3 bfs at 3,355,436 vertices on the three placements: identical up to where the slower run was
+  stopped. Two cells run 8 times each give one output per cell.
+- **Host time.** HBM3 message-passing bfs at 3,355,436 vertices, bank placement, the two builds side by side over the
+  same phases: about 1.25 to 1.3 times as many phases per host second. Where the network carries few messages per
+  phase (the channel and logic-die placements, and the same bfs at 209,715 vertices) the host time is unchanged.
+
 ## 1.12.227 -- the DRAM epoch replay's epoch is set in cycles: a shorter phase length no longer shortens it
 
 - **The problem.** The DRAM epoch replay's epoch was a number of phases, `simulation.dram_epoch_phases` (default 1).
