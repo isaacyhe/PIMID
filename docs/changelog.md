@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.222 -- message passing on device PEs: a rank parked in message passing no longer keeps the controller from running either
+
+- **The problem.** The previous release left the ranks waiting for their settlement out of the test that decides
+  whether no PE could move, so the unbounded run to the next completion of a waiting rendezvous starts. A rank parked
+  in message passing (quiescent, or waiting for a peer) still counted as a PE still to move when it was behind the
+  phases. Such a rank takes no phase barrier while it is parked, and an ALU PE keeps its clock, so one parked with its
+  clock past its phase end stayed behind the phases until its wait ended; its wait waited for the frozen ranks, and
+  the unbounded run never started. A co-simulation message-passing bfs on HBM3 (16 ranks, 838,859 vertices) stood still
+  that way, with 6 ranks waiting on a chain of receives and the others parked.
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, setProcess; docs/memory.md). Being behind the phases counts only
+  for an active rank: a parked rank moves when its wait ends, when it becomes active again, which counts.
+- **Validation** (the previous release and this build). See the data-impact note.
+- **Data impact.** Runs that stood still now complete. Elsewhere none.
+
 ## 1.12.221 -- message passing on device PEs: a rank waiting for its settlement no longer keeps the controller from running
 
 - **The problem.** Settling at the rendezvous (1.12.216) runs the DRAM controller no further than the earliest time

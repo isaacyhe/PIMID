@@ -1731,7 +1731,8 @@ static uint64_t cutWakeFloor() {   // the earliest posted wake; ~0 when none
  *  no longer counts a rank waiting for its settlement as one that moves, or behind the phases, Core::behindPhase), and
  *  the controller could not run, it runs without the bound to the next completion of a waiting rendezvous' accesses
  *  (counted). A rank waiting for its settlement is not counted as moving, nor as still to move: it moves only once the
- *  controller has run for it (an ALU PE frozen behind the phases stays so until it is settled).
+ *  controller has run for it; nor is a rank parked in message passing still to move by its phase state (an ALU PE
+ *  parked or frozen behind the phases stays so until it runs again).
  * A waiting rank takes the phase barriers without running (Core::heldPhase), its clock frozen; for the cut it stands
  * no earlier than the controller's clock. Its balance waits for the settlement: the phase barriers apply none to it,
  * and its message-passing entries leave it to its next rendezvous. A rank on a host core, and any rendezvous outside
@@ -2015,19 +2016,21 @@ static void setProcess() {
         const uint64_t rr = cutAxisClock(c);
         return ((st == 1 || st == 4) && g_cutFrozenRr[c] < rr) ? g_cutFrozenRr[c] : rr;
     };
-    /* a PE runs, or is still to (held by the cut hold, behind the phases), or its clock moved. A rank waiting for its
-     * settlement counts as none of these: it moves only once the controller has completed what its settlement waits
-     * for (that the controller ran is `ran` below). Its clock is the controller's while it waits (cutAxisClock), and an
-     * ALU PE keeps its clock through the held phases, so one frozen past its phase end stays behind the phases until it
-     * is settled (Core::heldPhase): counted, that rank kept the unbounded run below from ever starting. */
+    /* a PE runs, or is still to (held by the cut hold, or active and behind the phases), or its clock moved. A rank
+     * waiting for its settlement counts as none of these: it moves only once the controller has completed what its
+     * settlement waits for (that the controller ran is `ran` below); its clock is the controller's while it waits
+     * (cutAxisClock). A rank parked in message passing (quiescent, waiting or vacated) is not still to move by its
+     * phase state either: it takes no phase barrier and moves when its wait ends. An ALU PE keeps its clock through the
+     * phases it does not run in, so one parked or frozen past its phase end stays behind the phases until it runs again
+     * (Core::heldPhase): counted, such a rank kept the unbounded run below from ever starting. */
     bool moved = false;
     for (uint32_t c = 0; c < n; c++) {
         if (!setPe(c)) continue;
         const uint64_t v = clockOf(c);
         const uint32_t st = g_coreRoiState[c].load(std::memory_order_acquire);
         const bool frz = g_setFrozen[c].load(std::memory_order_acquire);
-        if (!frz && (v != lastClk[c] || g_peCutHold[c].load(std::memory_order_acquire) || zinfo->cores[c]->behindPhase() ||
-                     (st == 0 && zinfo->sched->coreRunsThread(c)))) moved = true;
+        if (!frz && (v != lastClk[c] || g_peCutHold[c].load(std::memory_order_acquire) ||
+                     (st == 0 && (zinfo->cores[c]->behindPhase() || zinfo->sched->coreRunsThread(c))))) moved = true;
         lastClk[c] = v;
     }
     /* per PE, the earliest controller time (stamps' axis) its next access can be released at: its clock plus the shift
