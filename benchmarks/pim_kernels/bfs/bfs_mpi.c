@@ -1,23 +1,20 @@
-/* bfs_mpi.c -- Breadth-First Search on random graph (adjacency list via CSR)
- * MPI parallelization. All ranks share full graph and dist[]. Frontier
- * expansion is split across ranks; Allgatherv collects candidates, then
- * all ranks perform identical dedup to maintain consistent state.
+/* bfs_mpi.c -- Breadth-First Search on a random graph (CSR), message passing, partitioned graph.
+ * 1D vertex partitioning: with B = ceil(V / P), rank r owns the contiguous vertex block [r*B, min(V, (r+1)*B)). It
+ * holds the CSR rows of its own vertices and their dist entries, and nothing of the other blocks, so a rank's memory
+ * and work are proportional to V / P. The graph is the one the serial and OpenMP versions build: edge (i, d) is draw
+ * number i*deg + d of the splitmix64 stream seeded 42, and a rank starts the stream at its first row (the generator
+ * is a counter, so draw k has state seed + k * gamma), so the graph does not depend on the number of ranks.
+ * Level-synchronous search: in each level a rank expands its frontier (its vertices found in the previous level). A
+ * neighbour in its own block it marks at once (dist test-and-set, next frontier); every other neighbour it sends to
+ * the neighbour's owner -- the per-owner counts by one MPI_Alltoall, the vertices by one MPI_Sendrecv per rank pair.
+ * The owner keeps the received vertices it has not visited yet, and an MPI_Allreduce of the frontier sizes ends the
+ * search.
  *
- * Device-organization aware (PIMID), mirroring bfs_omp.c's choice of WHICH
- * arrays get slotted: the CSR (row_ptr, col_idx) and dist go in the PE slot.
- * 1.12.17: unlike bfs_omp, where the frontier IS the shared structure, every
- * rank here has its OWN private frontier, candidates, all_candidates (the
- * Allgatherv receive buffer), recvcounts and displs, so they go in the rank's
- * PE slot too (they used to stay in the shared heap, which put all ranks'
- * copies on a few heap units). D1 identity mapping -- rank r owns PE r's slot (enforced ranks ==
- * num_pes). STRUCTURAL NOTE: unlike bfs_omp (which owner-partitions the CSR by
- * vertex range because OMP threads share one address space), bfs_mpi replicates
- * the FULL graph + dist on every rank (its Allgatherv model), so each rank
- * SPMD-relocates its OWN full replicated row_ptr/col_idx/dist into its OWN PE
- * slot -- analogous to gemv_mpi slotting its replicated x. The ROI's frontier
- * expansion + dedup then read/write the CSR and dist LOCAL; the cross-PE traffic
- * is the Allgatherv (priced by the NoC model). Arithmetic is identical. Coarse
- * placement runs the host-layout path. */
+ * Device-organization aware (PIMID): a rank's rows, dist, frontiers and send and receive buffers go in its PE slot
+ * (rank r owns PE r's slot; ranks <= PEs). With a PE scratchpad (pimid_spm.h) the frontier, the adjacency rows and
+ * the received vertices are read a tile at a time and the next frontier is written a tile at a time; the appends to
+ * the per-owner send buckets and the dist test-and-set are irregular and stay direct accesses. Coarse placement runs
+ * the host-layout path. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,12 +25,13 @@
 
 #define DEFAULT_VERTICES 512
 #define DEFAULT_DEGREE   8
+#define SM64_GAMMA 0x9E3779B97F4A7C15ull
 
 /* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
  * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
  * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
 static uint64_t splitmix64(uint64_t* s) {
-    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    uint64_t z = (*s += SM64_GAMMA);
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
     return z ^ (z >> 31);
@@ -45,87 +43,70 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     return def;
 }
 
-/* 1.12.18: the message-passing claim rule for bfs_expand: test dist[v] only
- * and append every unvisited neighbour to this rank's candidate list (the
- * ranks deduplicate after the Allgatherv, in bfs_dedup). */
-typedef struct { const int* row_ptr; const int* col_idx; int* dist; int level; } bfs_ctx_t;
+static long bfs_block(long v, int nprocs) { return (v + nprocs - 1) / nprocs; }
 
-static inline const int* bfs_adj(const bfs_ctx_t* c, int u, size_t* n) {
-    const int e0 = c->row_ptr[u], e1 = c->row_ptr[u + 1];
-    *n = (size_t)(e1 - e0);
-    return c->col_idx + e0;
+/* A rank's slot need, in ints: its rows [B+1], its columns [B*deg], its dist [B], two frontiers [B each], the send
+ * buckets [B*deg], the receive buffer [the edges into its block; B*deg, their mean, when not known] and five
+ * per-rank count arrays [n each]. (The own block's edges never use the buckets or the receive buffer; they are
+ * counted for a simple, safe bound.) */
+typedef struct { int deg, nprocs; long in_edges; } bfs_mpi_geom_t;
+static size_t bfs_mpi_need(long v, const void* c) {
+    const bfs_mpi_geom_t* g = (const bfs_mpi_geom_t*)c;
+    const size_t b = (size_t)bfs_block(v, g->nprocs), d = (size_t)g->deg;
+    const size_t in = g->in_edges >= 0 ? (size_t)g->in_edges : b * d;
+    return ((b + 1) + b * d + 3 * b + b * d + in + 5 * (size_t)g->nprocs) * sizeof(int);
 }
 
-static inline int bfs_visit(const bfs_ctx_t* c, int v) {
-    return c->dist[v] == -1;
-}
-
-/* 1.12.18: expand frontier[0..nf) by one level through the PE scratchpad
- * (pimid_spm.h). The RAM holds three equal buffers: a tile of the frontier, a
- * tile of one vertex's adjacency row (col_idx) and a tile of the output list
- * (the vertices bfs_visit asks to append). Each frontier entry and each
- * adjacency row is fetched once; the output list is written back a full tile
- * at a time and at the end. The row_ptr[u] lookup and the dist[v] test are
- * irregular and stay direct DRAM accesses (bfs_adj / bfs_visit, the part each
- * variant defines for its own claim rule and layout). With no scratchpad the
- * tiles are the whole range and this is the plain frontier loop. Returns the
- * number of vertices appended to out. */
-static size_t bfs_expand(pimid_spm_t* s0, const bfs_ctx_t* c0, const int* frontier, size_t nf,
-                         int* out) {
-    const bfs_ctx_t cl = *c0, *c = &cl;   /* local copies: no store below can alias them */
-    pimid_spm_t sl = *s0, *s = &sl;
-    const size_t T = pimid_spm_tile(s, 3, sizeof(int));
-    const size_t of = 0, oa = s->cap ? T * sizeof(int) : 0, oo = s->cap ? 2 * T * sizeof(int) : 0;
-    size_t nout = 0, no = 0;
-    int* ob = (int*)pimid_spm_out(s, oo, out);
+/* Expand frontier[0..nf) (global ids, all in [lo, lo+nloc)): a neighbour in this rank's block (owner me) not yet
+ * visited gets dist = level and goes to the next frontier out[]; every other neighbour is appended to its owner's
+ * bucket, sb[so[p] + sc[p]++]. With a scratchpad the RAM holds two equal buffers, a tile of the frontier and a tile
+ * of one adjacency row; each is fetched once. Returns the number of vertices appended to out. */
+static size_t bfs_route(pimid_spm_t* s0, const int* rp, const int* ci, int* dist, const int* frontier, size_t nf,
+                        long lo, long B, int me, int level, int* out, int* sb, const int* so, int* sc) {
+    pimid_spm_t sl = *s0, *s = &sl;   /* a local copy of the handle */
+    const size_t T = pimid_spm_tile(s, 2, sizeof(int));
+    const size_t of = 0, oa = s->cap ? T * sizeof(int) : 0;
+    size_t nout = 0;
     for (size_t fb = 0; fb < nf; fb += T) {
         const size_t nb = (nf - fb < T) ? nf - fb : T;
         const int* fl = (const int*)pimid_spm_in(s, of, frontier + fb, nb * sizeof(int));
         for (size_t f = 0; f < nb; f++) {
-            size_t ne;
-            const int* adj = bfs_adj(c, fl[f], &ne);
-            for (size_t eb = 0; eb < ne; eb += T) {
-                const size_t na = (ne - eb < T) ? ne - eb : T;
-                const int* ab = (const int*)pimid_spm_in(s, oa, adj + eb, na * sizeof(int));
-                for (size_t e = 0; e < na; e++) {
+            const int u = (int)(fl[f] - lo);
+            const int e0 = rp[u], ne = rp[u + 1] - e0;
+            for (int eb = 0; eb < ne; eb += (int)T) {
+                const int na = (ne - eb < (int)T) ? ne - eb : (int)T;
+                const int* ab = (const int*)pimid_spm_in(s, oa, ci + e0 + eb, (size_t)na * sizeof(int));
+                for (int e = 0; e < na; e++) {
                     const int v = ab[e];
-                    if (bfs_visit(c, v)) {
-                        ob[no++] = v;
-                        if (no == T) {   /* out tile full (only with a scratchpad) */
-                            pimid_spm_flush(s, out + nout, ob, no * sizeof(int));
-                            nout += no; no = 0;
-                            ob = (int*)pimid_spm_out(s, oo, out + nout);
-                        }
+                    const int p = (int)(v / B);
+                    if (p == me) {
+                        if (dist[v - lo] == -1) { dist[v - lo] = level; out[nout++] = v; }
+                    } else {
+                        sb[so[p] + sc[p]++] = v;
                     }
                 }
             }
         }
     }
-    pimid_spm_flush(s, out + nout, ob, no * sizeof(int));
-    return nout + no;
+    return nout;
 }
 
-/* 1.12.18 (message passing only): the identical dedup every rank runs over
- * the gathered candidates cand[0..ncand), through the PE scratchpad. The RAM
- * holds two equal buffers: a tile of the candidates (each fetched once) and a
- * tile of the new frontier (written back a full tile at a time and at the
- * end). The dist[v] test-and-set is irregular and stays a direct DRAM access.
- * cand and out are ordinary memory (cand is the Allgatherv receive buffer;
- * nothing in the RAM is handed to MPI). Returns the new frontier size. */
-static size_t bfs_dedup(pimid_spm_t* s0, int* dist, const int* cand, size_t ncand, int* out,
-                        int level) {
+/* Keep the received vertices rb[0..n) not yet visited: dist[v - lo] = level and append v to out. With a scratchpad
+ * the RAM holds a tile of the received vertices (each fetched once) and a tile of the next frontier (written back a
+ * full tile at a time and at the end). Returns the next frontier's size. */
+static size_t bfs_keep(pimid_spm_t* s0, int* dist, long lo, const int* rb, size_t n, int* out, int level) {
     pimid_spm_t sl = *s0, *s = &sl;   /* a local copy of the handle */
     const size_t T = pimid_spm_tile(s, 2, sizeof(int));
     const size_t oc = 0, oo = s->cap ? T * sizeof(int) : 0;
     size_t nout = 0, no = 0;
     int* ob = (int*)pimid_spm_out(s, oo, out);
-    for (size_t cb = 0; cb < ncand; cb += T) {
-        const size_t nc = (ncand - cb < T) ? ncand - cb : T;
-        const int* cl = (const int*)pimid_spm_in(s, oc, cand + cb, nc * sizeof(int));
+    for (size_t cb = 0; cb < n; cb += T) {
+        const size_t nc = (n - cb < T) ? n - cb : T;
+        const int* cl = (const int*)pimid_spm_in(s, oc, rb + cb, nc * sizeof(int));
         for (size_t i = 0; i < nc; i++) {
-            int v = cl[i];
-            if (dist[v] == -1) {
-                dist[v] = level;
+            const int v = cl[i];
+            if (dist[v - lo] == -1) {
+                dist[v - lo] = level;
                 ob[no++] = v;
                 if (no == T) {   /* out tile full (only with a scratchpad) */
                     pimid_spm_flush(s, out + nout, ob, no * sizeof(int));
@@ -139,23 +120,6 @@ static size_t bfs_dedup(pimid_spm_t* s0, int* dist, const int* cand, size_t ncan
     return nout + no;
 }
 
-/* Candidate buffer bound (1.11.94, ruling H43): ceil(V/nprocs)*deg, never below V. */
-static size_t bfs_mpi_cand_cap(long v, int deg, int nprocs) {
-    size_t cap = (size_t)((v + nprocs - 1) / nprocs) * (size_t)deg;
-    return cap < (size_t)v ? (size_t)v : cap;
-}
-
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the full replicated
- * [row_ptr V+1][col_idx V*deg][dist V] every rank slots; 1.12.17: plus the rank's
- * private [frontier V][candidates cap][all_candidates V*deg][recvcounts n][displs n]. */
-typedef struct { int deg, nprocs; } bfs_mpi_geom_t;
-static size_t bfs_mpi_need(long v, const void* c) {
-    const bfs_mpi_geom_t* g = (const bfs_mpi_geom_t*)c;
-    return ((size_t)(v + 1) + (size_t)v * (size_t)g->deg + (size_t)v
-            + (size_t)v + bfs_mpi_cand_cap(v, g->deg, g->nprocs) + (size_t)v * (size_t)g->deg
-            + 2 * (size_t)g->nprocs) * sizeof(int);
-}
-
 int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
 
@@ -167,7 +131,7 @@ int main(int argc, char* argv[]) {
     int deg = parse_int_arg(argc, argv, "--degree", DEFAULT_DEGREE);
     int source = parse_int_arg(argc, argv, "--source", 0);
 
-    /* Device organization + D1 identity-mapping guard: ranks must == num_pes. */
+    /* Device organization + D1 identity-mapping guard: ranks must be <= num_pes. */
     pimid_devorg_t dev = pimid_devorg_from_args(argc, argv);
     if (nprocs > dev.num_pes) {
         if (rank == 0)
@@ -177,73 +141,74 @@ int main(int argc, char* argv[]) {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    /* All ranks generate the same graph with the same seed */
-    uint32_t seed = 42;
-    int total_edges = V * deg;
-    int* row_ptr = (int*)malloc((V + 1) * sizeof(int));
-    int* col_idx = (int*)malloc(total_edges * sizeof(int));
-    int* dist = (int*)malloc(V * sizeof(int));
-    int* frontier = (int*)malloc(V * sizeof(int));
-    /* 1.11.94 (b01-pim-kernels-3, ruling H43): a rank appends every unvisited
-     * neighbour of its frontier share without deduplicating, so ncand reaches
-     * my_count*deg <= ceil(V/nprocs)*deg, which exceeds V when nprocs < deg
-     * (1 rank at 512/8 peaked at 788 > 512: heap overflow). Sized by that
-     * bound, never below the old V, so runs with nprocs >= deg keep the same
-     * allocation and the ROI is unchanged (a local visited-bitmap dedup would
-     * add work to the ROI of every cell). */
-    size_t cand_cap = bfs_mpi_cand_cap(V, deg, nprocs);
-    int* candidates = (int*)malloc(cand_cap * sizeof(int));
-    int* all_candidates = (int*)malloc(V * deg * sizeof(int));
-    int* recvcounts = (int*)malloc(nprocs * sizeof(int));
-    int* displs = (int*)malloc(nprocs * sizeof(int));
-    if (!row_ptr || !col_idx || !dist || !frontier || !candidates ||
-        !all_candidates || !recvcounts || !displs) {
+    /* This rank's block of the graph: rows [lo, hi). */
+    const uint32_t seed = 42;
+    const long B = bfs_block(V, nprocs);
+    const long lo = ((long)rank * B < V) ? (long)rank * B : V;
+    const long hi = (lo + B < V) ? lo + B : V;
+    const int nloc = (int)(hi - lo);
+    const size_t nedge = (size_t)nloc * (size_t)deg;
+
+    int* row_ptr = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* col_idx = (int*)malloc((nedge + 1) * sizeof(int));
+    int* outtot = (int*)malloc((size_t)nprocs * sizeof(int));
+    int* intot = (int*)malloc((size_t)nprocs * sizeof(int));
+    if (!row_ptr || !col_idx || !outtot || !intot) {
         fprintf(stderr, "rank %d: malloc failed\n", rank);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
+    for (int i = 0; i <= nloc; i++) row_ptr[i] = i * deg;
+    uint64_t gs = (uint64_t)seed + (uint64_t)lo * (uint64_t)deg * SM64_GAMMA;   /* the stream at row lo */
+    for (size_t e = 0; e < nedge; e++)
+        col_idx[e] = (int)(splitmix64(&gs) % (uint64_t)V);
 
-    for (int i = 0; i <= V; i++) row_ptr[i] = i * deg;
-    uint64_t gs = (uint64_t)seed;   /* the generator state, seeded as before */
-    for (int i = 0; i < V; i++)
-        for (int d = 0; d < deg; d++)
-            col_idx[i * deg + d] = (int)(splitmix64(&gs) % (uint64_t)V);
+    /* Edges from this block to each owner, and (by one exchange) into this block from each rank: they size the
+     * send buckets and the receive buffer, which no level can exceed. */
+    for (int p = 0; p < nprocs; p++) outtot[p] = 0;
+    for (size_t e = 0; e < nedge; e++) outtot[col_idx[e] / B]++;
+    MPI_Alltoall(outtot, 1, MPI_INT, intot, 1, MPI_INT, MPI_COMM_WORLD);
+    long in_edges = 0;
+    for (int p = 0; p < nprocs; p++) in_edges += intot[p];
 
-    for (int i = 0; i < V; i++) dist[i] = -1;
-    dist[source] = 0;
-    frontier[0] = source;
-    int fsize = 1;
+    int* dist = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* frontier = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* next = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* sendbuf = (int*)malloc((nedge + 1) * sizeof(int));
+    int* recvbuf = (int*)malloc(((size_t)in_edges + 1) * sizeof(int));
+    int* counts = (int*)malloc(5 * (size_t)nprocs * sizeof(int));
+    if (!dist || !frontier || !next || !sendbuf || !recvbuf || !counts) {
+        fprintf(stderr, "rank %d: malloc failed\n", rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    for (int i = 0; i < nloc; i++) dist[i] = -1;
+    int fsize = 0;
+    if (source >= lo && source < hi) {
+        dist[source - lo] = 0;
+        frontier[0] = source;
+        fsize = 1;
+    }
 
-    /* ---- DATA PREP (before ROI, not timed): this rank's full replicated CSR +
-     * dist -> its PE slot, followed by its private work buffers (1.12.17). Slot
-     * layout: [row_ptr V+1][col_idx V*deg][dist V][frontier V][candidates cap]
-     * [all_candidates V*deg][recvcounts n][displs n]. rp/ci/ds/fr/cd/ac/rc/dp are
-     * the working pointers (slot-resident when prepped).
-     * Assumes thread-MPI (the default/only supported mode): slot r maps to PE
-     * r's units directly. Under the retired PIMID_MPI_PROCESS=1 legacy mode the
-     * simulator's per-rank unit rotation (pe_memory_interface.h) would
-     * double-shift these prepped slots. */
+    /* ---- DATA PREP (before ROI, not timed): this rank's block and buffers -> its PE slot. Slot layout:
+     * [row_ptr nloc+1][col_idx nloc*deg][dist nloc][frontier nloc][next nloc][sendbuf nloc*deg][recvbuf in_edges]
+     * [sc n][rc n][so n][ro n][outtot n]. Assumes thread-MPI: slot r maps to PE r's units directly. */
     int prep = pimid_devorg_needs_prep(&dev);
-    bfs_mpi_geom_t geom = { deg, nprocs };
+    bfs_mpi_geom_t geom = { deg, nprocs, in_edges };
     size_t need = bfs_mpi_need(V, &geom);
     size_t slot_bytes = 0;
     int* dbuf = NULL;
-    int* rp = row_ptr;
-    int* ci = col_idx;
-    int* ds = dist;
-    int* fr = frontier;
-    int* cd = candidates;
-    int* ac = all_candidates;
-    int* rc = recvcounts;
-    int* dp = displs;
+    int *rp = row_ptr, *ci = col_idx, *ds = dist, *fr = frontier, *nx = next, *sb = sendbuf, *rb = recvbuf;
+    int *sc = counts, *rc = counts + nprocs, *so = counts + 2 * nprocs, *ro = counts + 3 * nprocs,
+        *ot = counts + 4 * nprocs;
+    memcpy(ot, outtot, (size_t)nprocs * sizeof(int));
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
-         * is refused; it used to fall back to host layout in silence. */
+        /* A need larger than the slot is refused. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {
             char who[32];
+            bfs_mpi_geom_t mean = { deg, nprocs, -1 };
             snprintf(who, sizeof who, "rank %d: ", rank);
             pimid_devorg_report_slot_refusal(who, "bfs", &dev, need, slot_bytes, "--vertices",
-                pimid_devorg_largest_fit(bfs_mpi_need, &geom, V, slot_bytes));
+                pimid_devorg_largest_fit(bfs_mpi_need, &mean, V, slot_bytes));
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
         dbuf = (int*)pimid_devorg_alloc(&dev, &slot_bytes);
@@ -256,133 +221,110 @@ int main(int argc, char* argv[]) {
     if (prep) {
         int* slot = (int*)pimid_devorg_pe_slot(dbuf, rank, slot_bytes);
         rp = slot;
-        ci = slot + (V + 1);
-        ds = slot + (V + 1) + (size_t)V * deg;
-        fr = ds + V;
-        cd = fr + V;
-        ac = cd + cand_cap;
-        rc = ac + (size_t)V * deg;
-        dp = rc + nprocs;
-        memcpy(rp, row_ptr, (size_t)(V + 1) * sizeof(int));
-        memcpy(ci, col_idx, (size_t)V * deg * sizeof(int));
-        memcpy(ds, dist, (size_t)V * sizeof(int));
-        fr[0] = frontier[0];
+        ci = rp + (nloc + 1);
+        ds = ci + nedge;
+        fr = ds + nloc;
+        nx = fr + nloc;
+        sb = nx + nloc;
+        rb = sb + nedge;
+        sc = rb + in_edges;
+        rc = sc + nprocs;
+        so = rc + nprocs;
+        ro = so + nprocs;
+        ot = ro + nprocs;
+        memcpy(rp, row_ptr, (size_t)(nloc + 1) * sizeof(int));
+        memcpy(ci, col_idx, nedge * sizeof(int));
+        memcpy(ds, dist, (size_t)nloc * sizeof(int));
+        memcpy(ot, outtot, (size_t)nprocs * sizeof(int));
+        if (fsize) fr[0] = frontier[0];
     }
+    so[0] = 0;
+    for (int p = 1; p < nprocs; p++) so[p] = so[p - 1] + ot[p - 1];
 
     if (prep)
         fprintf(stderr, "[devorg] PREP ACTIVE: kernel=bfs level=%s pes=%d "
                 "rank=%d slot_bytes=%zu\n",
                 pimid_devorg_level_name(dev.level), dev.num_pes, rank, slot_bytes);
 
-    pimid_spm_t spm;   /* 1.12.18: this rank's PE scratchpad */
+    pimid_spm_t spm;   /* this rank's PE scratchpad */
     pimid_spm_open(&spm);
 
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) zsim_roi_begin();
 
     int level = 0;
-    /* 1.12.18: no scratchpad -- the 1.12.17 code, unchanged */
-    if (!spm.cap) {
-        while (fsize > 0) {
-            level++;
+    int gsize = 1;   /* the frontier, summed over the ranks: the source */
+    while (gsize > 0) {
+        level++;
 
-            /* Split frontier across ranks */
-            int base = fsize / nprocs;
-            int rem  = fsize % nprocs;
-            int my_start = rank * base + (rank < rem ? rank : rem);
-            int my_count = base + (rank < rem ? 1 : 0);
-
-            /* Expand: collect candidate neighbors (may have duplicates) */
-            int ncand = 0;
-            for (int f = my_start; f < my_start + my_count; f++) {
-                int u = fr[f];
+        /* Expand: a neighbour in this rank's block is marked here; every other one goes to its owner's bucket */
+        for (int p = 0; p < nprocs; p++) sc[p] = 0;
+        int n = 0;
+        if (!spm.cap) {
+            for (int f = 0; f < fsize; f++) {
+                const int u = (int)(fr[f] - lo);
                 for (int e = rp[u]; e < rp[u + 1]; e++) {
-                    int v = ci[e];
-                    if (ds[v] == -1)
-                        cd[ncand++] = v;
+                    const int v = ci[e];
+                    const int p = (int)(v / B);
+                    if (p == rank) {
+                        if (ds[v - lo] == -1) { ds[v - lo] = level; nx[n++] = v; }
+                    } else {
+                        sb[so[p] + sc[p]++] = v;
+                    }
                 }
             }
+        } else {
+            n = (int)bfs_route(&spm, rp, ci, ds, fr, (size_t)fsize, lo, B, rank, level, nx, sb, so, sc);
+        }
 
-            /* Gather all candidates */
-            MPI_Allgather(&ncand, 1, MPI_INT, rc, 1, MPI_INT, MPI_COMM_WORLD);
-            dp[0] = 0;
-            for (int i = 1; i < nprocs; i++)
-                dp[i] = dp[i - 1] + rc[i - 1];
-            int total_cand = dp[nprocs - 1] + rc[nprocs - 1];
+        /* Route: the counts, then the vertices, to their owners */
+        MPI_Alltoall(sc, 1, MPI_INT, rc, 1, MPI_INT, MPI_COMM_WORLD);
+        ro[0] = 0;
+        for (int p = 1; p < nprocs; p++) ro[p] = ro[p - 1] + rc[p - 1];
+        const int nrecv = ro[nprocs - 1] + rc[nprocs - 1];
+        for (int i = 1; i < nprocs; i++) {
+            const int dst = (rank + i) % nprocs, src = (rank - i + nprocs) % nprocs;
+            MPI_Sendrecv(sb + so[dst], sc[dst], MPI_INT, dst, 0,
+                         rb + ro[src], rc[src], MPI_INT, src, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
 
-            MPI_Allgatherv(cd, ncand, MPI_INT,
-                           ac, rc, dp, MPI_INT,
-                           MPI_COMM_WORLD);
-
-            /* All ranks deduplicate identically */
-            int new_fsize = 0;
-            for (int i = 0; i < total_cand; i++) {
-                int v = ac[i];
-                if (ds[v] == -1) {
-                    ds[v] = level;
-                    fr[new_fsize++] = v;
+        /* Keep the received vertices not visited yet: the rest of the next frontier */
+        if (!spm.cap) {
+            for (int i = 0; i < nrecv; i++) {
+                const int v = rb[i];
+                if (ds[v - lo] == -1) {
+                    ds[v - lo] = level;
+                    nx[n++] = v;
                 }
             }
-            fsize = new_fsize;
+        } else {
+            n += (int)bfs_keep(&spm, ds, lo, rb, (size_t)nrecv, nx + n, level);
         }
-    } else {
-        while (fsize > 0) {
-            level++;
-
-            /* Split frontier across ranks */
-            int base = fsize / nprocs;
-            int rem  = fsize % nprocs;
-            int my_start = rank * base + (rank < rem ? rank : rem);
-            int my_count = base + (rank < rem ? 1 : 0);
-
-            /* Expand: collect candidate neighbors (may have duplicates); they are
-             * flushed to cd (ordinary memory) before the Allgatherv below */
-            const bfs_ctx_t ctx = { rp, ci, ds, level };
-            int ncand = (int)bfs_expand(&spm, &ctx, fr + my_start, (size_t)my_count, cd);
-
-            /* Gather all candidates */
-            MPI_Allgather(&ncand, 1, MPI_INT, rc, 1, MPI_INT, MPI_COMM_WORLD);
-            dp[0] = 0;
-            for (int i = 1; i < nprocs; i++)
-                dp[i] = dp[i - 1] + rc[i - 1];
-            int total_cand = dp[nprocs - 1] + rc[nprocs - 1];
-
-            MPI_Allgatherv(cd, ncand, MPI_INT,
-                           ac, rc, dp, MPI_INT,
-                           MPI_COMM_WORLD);
-
-            /* All ranks deduplicate identically */
-            int new_fsize = (int)bfs_dedup(&spm, ds, ac, (size_t)total_cand, fr, level);
-            fsize = new_fsize;
-        }
+        int* t = fr; fr = nx; nx = t;
+        fsize = n;
+        MPI_Allreduce(&fsize, &gsize, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     }
 
     if (rank == 0) zsim_roi_end();
-    /* 1.11.98 (user ruling 2026-10-03): the closing barrier every other MPI
-     * kernel has. The device-scope ROI ends when the LAST rank arrives here
-     * (the last-rank rule of 1.11.97); without it bfs froze its statistics
-     * at guest exit, inside rank 0's post-ROI visited-count loop. */
+    /* The closing barrier every MPI kernel has: the device-scope ROI ends when the last rank arrives here. */
     MPI_Barrier(MPI_COMM_WORLD);
     pimid_spm_close(&spm);
 
-    /* Gather this rank's dist back to host layout for the (untimed) check. */
-    if (prep)
-        memcpy(dist, ds, (size_t)V * sizeof(int));
+    /* The (untimed) check: the vertices reached, summed over the ranks. */
+    long visited_local = 0, visited = 0;
+    for (int i = 0; i < nloc; i++)
+        if (ds[i] >= 0) visited_local++;
+    MPI_Reduce(&visited_local, &visited, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        long visited = 0;
-        for (int i = 0; i < V; i++)
-            if (dist[i] >= 0) visited++;
-
         printf("BENCH_LEVELS: %d\n", level);
         printf("BENCH_VISITED: %ld\n", visited);
         printf("BENCH_CHECKSUM: %ld\n", visited);
         printf("BENCH_DONE\n");
     }
 
-    free(row_ptr); free(col_idx); free(dist);
-    free(frontier); free(candidates); free(all_candidates);
-    free(recvcounts); free(displs);
+    free(row_ptr); free(col_idx); free(outtot); free(intot);
+    free(dist); free(frontier); free(next); free(sendbuf); free(recvbuf); free(counts);
     MPI_Finalize();
     return 0;
 }

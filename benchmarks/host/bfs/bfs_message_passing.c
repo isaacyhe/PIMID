@@ -1,21 +1,28 @@
-/* bfs_mpi.c — Breadth-First Search on random graph (adjacency list via CSR)
- * MPI parallelization. All ranks share full graph and dist[]. Frontier
- * expansion is split across ranks; Allgatherv collects candidates, then
- * all ranks perform identical dedup to maintain consistent state. */
+/* bfs_message_passing.c -- Breadth-First Search on a random graph (CSR), message passing, partitioned graph.
+ * 1D vertex partitioning: with B = ceil(V / P), rank r owns the contiguous vertex block [r*B, min(V, (r+1)*B)) and
+ * holds only the CSR rows and dist entries of its own vertices, so a rank's memory and work are proportional to
+ * V / P. The graph is the one the serial and shared-memory versions build: edge (i, d) is draw number i*deg + d of the
+ * splitmix64 stream seeded 42, and a rank starts the stream at its first row, so the graph does not depend on the
+ * number of ranks. Level-synchronous search: in each level a rank expands its frontier; a neighbour in its own block
+ * it marks at once, every other neighbour it sends to the neighbour's owner (the per-owner counts by MPI_Alltoall, the
+ * vertices by one MPI_Sendrecv per rank pair). The owner keeps the received vertices it has not visited yet, and an
+ * MPI_Allreduce of the frontier sizes ends the search. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <mpi.h>
 #include "zsim_hooks.h"
 
 #define DEFAULT_VERTICES 512
 #define DEFAULT_DEGREE   8
+#define SM64_GAMMA 0x9E3779B97F4A7C15ull
 
 /* splitmix64 (Steele, Lea and Flood, "Fast splittable pseudorandom number generators", OOPSLA 2014): one 64-bit
  * output per call from a 64-bit counter state, seeded as before. A draw over a range R is the output reduced modulo R;
  * the modulo bias is at most R / 2^64 (below 2^-40 for R < 2^24) and is ignored. */
 static uint64_t splitmix64(uint64_t* s) {
-    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    uint64_t z = (*s += SM64_GAMMA);
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
     return z ^ (z >> 31);
@@ -38,101 +45,121 @@ int main(int argc, char* argv[]) {
     int deg = parse_int_arg(argc, argv, "--degree", DEFAULT_DEGREE);
     int source = parse_int_arg(argc, argv, "--source", 0);
 
-    /* All ranks generate the same graph with the same seed */
-    uint32_t seed = 42;
-    int total_edges = V * deg;
-    int* row_ptr = (int*)malloc((V + 1) * sizeof(int));
-    int* col_idx = (int*)malloc(total_edges * sizeof(int));
-    int* dist = (int*)malloc(V * sizeof(int));
-    int* frontier = (int*)malloc(V * sizeof(int));
-    int* candidates = (int*)malloc(V * sizeof(int));
-    int* all_candidates = (int*)malloc(V * deg * sizeof(int));
-    int* recvcounts = (int*)malloc(nprocs * sizeof(int));
-    int* displs = (int*)malloc(nprocs * sizeof(int));
-    if (!row_ptr || !col_idx || !dist || !frontier || !candidates ||
-        !all_candidates || !recvcounts || !displs) {
+    /* This rank's block of the graph: rows [lo, hi). */
+    const uint32_t seed = 42;
+    const long B = (V + nprocs - 1) / nprocs;
+    const long lo = ((long)rank * B < V) ? (long)rank * B : V;
+    const long hi = (lo + B < V) ? lo + B : V;
+    const int nloc = (int)(hi - lo);
+    const size_t nedge = (size_t)nloc * (size_t)deg;
+
+    int* row_ptr = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* col_idx = (int*)malloc((nedge + 1) * sizeof(int));
+    int* counts = (int*)malloc(6 * (size_t)nprocs * sizeof(int));
+    if (!row_ptr || !col_idx || !counts) {
         fprintf(stderr, "rank %d: malloc failed\n", rank);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
+    int *sc = counts, *rc = counts + nprocs, *so = counts + 2 * nprocs, *ro = counts + 3 * nprocs,
+        *ot = counts + 4 * nprocs, *it = counts + 5 * nprocs;
+    for (int i = 0; i <= nloc; i++) row_ptr[i] = i * deg;
+    uint64_t gs = (uint64_t)seed + (uint64_t)lo * (uint64_t)deg * SM64_GAMMA;   /* the stream at row lo */
+    for (size_t e = 0; e < nedge; e++)
+        col_idx[e] = (int)(splitmix64(&gs) % (uint64_t)V);
 
-    for (int i = 0; i <= V; i++) row_ptr[i] = i * deg;
-    uint64_t gs = (uint64_t)seed;   /* the generator state, seeded as before */
-    for (int i = 0; i < V; i++)
-        for (int d = 0; d < deg; d++)
-            col_idx[i * deg + d] = (int)(splitmix64(&gs) % (uint64_t)V);
+    /* Edges from this block to each owner and (by one exchange) into this block: they size the send buckets and the
+     * receive buffer, which no level can exceed. */
+    for (int p = 0; p < nprocs; p++) ot[p] = 0;
+    for (size_t e = 0; e < nedge; e++) ot[col_idx[e] / B]++;
+    MPI_Alltoall(ot, 1, MPI_INT, it, 1, MPI_INT, MPI_COMM_WORLD);
+    long in_edges = 0;
+    for (int p = 0; p < nprocs; p++) in_edges += it[p];
+    so[0] = 0;
+    for (int p = 1; p < nprocs; p++) so[p] = so[p - 1] + ot[p - 1];
 
-    for (int i = 0; i < V; i++) dist[i] = -1;
-    dist[source] = 0;
-    frontier[0] = source;
-    int fsize = 1;
+    int* dist = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* frontier = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* next = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* sendbuf = (int*)malloc((nedge + 1) * sizeof(int));
+    int* recvbuf = (int*)malloc(((size_t)in_edges + 1) * sizeof(int));
+    if (!dist || !frontier || !next || !sendbuf || !recvbuf) {
+        fprintf(stderr, "rank %d: malloc failed\n", rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    for (int i = 0; i < nloc; i++) dist[i] = -1;
+    int fsize = 0;
+    if (source >= lo && source < hi) {
+        dist[source - lo] = 0;
+        frontier[0] = source;
+        fsize = 1;
+    }
 
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank == 0) zsim_roi_begin();
 
     int level = 0;
-    while (fsize > 0) {
+    int gsize = 1;   /* the frontier, summed over the ranks: the source */
+    while (gsize > 0) {
         level++;
 
-        /* Split frontier across ranks */
-        int base = fsize / nprocs;
-        int rem  = fsize % nprocs;
-        int my_start = rank * base + (rank < rem ? rank : rem);
-        int my_count = base + (rank < rem ? 1 : 0);
-
-        /* Expand: collect candidate neighbors (may have duplicates) */
-        int ncand = 0;
-        for (int f = my_start; f < my_start + my_count; f++) {
-            int u = frontier[f];
+        /* Expand: a neighbour in this rank's block is marked here; every other one goes to its owner's bucket */
+        for (int p = 0; p < nprocs; p++) sc[p] = 0;
+        int n = 0;
+        for (int f = 0; f < fsize; f++) {
+            const int u = (int)(frontier[f] - lo);
             for (int e = row_ptr[u]; e < row_ptr[u + 1]; e++) {
-                int v = col_idx[e];
-                if (dist[v] == -1)
-                    candidates[ncand++] = v;
+                const int v = col_idx[e];
+                const int p = (int)(v / B);
+                if (p == rank) {
+                    if (dist[v - lo] == -1) { dist[v - lo] = level; next[n++] = v; }
+                } else {
+                    sendbuf[so[p] + sc[p]++] = v;
+                }
             }
         }
 
-        /* Gather all candidates */
-        MPI_Allgather(&ncand, 1, MPI_INT, recvcounts, 1, MPI_INT, MPI_COMM_WORLD);
-        displs[0] = 0;
-        for (int i = 1; i < nprocs; i++)
-            displs[i] = displs[i - 1] + recvcounts[i - 1];
-        int total_cand = displs[nprocs - 1] + recvcounts[nprocs - 1];
+        /* Route: the counts, then the vertices, to their owners */
+        MPI_Alltoall(sc, 1, MPI_INT, rc, 1, MPI_INT, MPI_COMM_WORLD);
+        ro[0] = 0;
+        for (int p = 1; p < nprocs; p++) ro[p] = ro[p - 1] + rc[p - 1];
+        const int nrecv = ro[nprocs - 1] + rc[nprocs - 1];
+        for (int i = 1; i < nprocs; i++) {
+            const int dst = (rank + i) % nprocs, src = (rank - i + nprocs) % nprocs;
+            MPI_Sendrecv(sendbuf + so[dst], sc[dst], MPI_INT, dst, 0,
+                         recvbuf + ro[src], rc[src], MPI_INT, src, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
 
-        MPI_Allgatherv(candidates, ncand, MPI_INT,
-                       all_candidates, recvcounts, displs, MPI_INT,
-                       MPI_COMM_WORLD);
-
-        /* All ranks deduplicate identically */
-        int new_fsize = 0;
-        for (int i = 0; i < total_cand; i++) {
-            int v = all_candidates[i];
-            if (dist[v] == -1) {
-                dist[v] = level;
-                frontier[new_fsize++] = v;
+        /* Keep the received vertices not visited yet: the rest of the next frontier */
+        for (int i = 0; i < nrecv; i++) {
+            const int v = recvbuf[i];
+            if (dist[v - lo] == -1) {
+                dist[v - lo] = level;
+                next[n++] = v;
             }
         }
-        fsize = new_fsize;
+        int* t = frontier; frontier = next; next = t;
+        fsize = n;
+        MPI_Allreduce(&fsize, &gsize, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     }
 
     if (rank == 0) zsim_roi_end();
-    /* 1.11.98 (user ruling 2026-10-03): the closing barrier every other MPI
-     * kernel has, so the device-scope ROI ends at the last rank's arrival
-     * (1.11.97 last-rank rule) instead of at guest exit. */
+    /* The closing barrier every MPI kernel has: the device-scope ROI ends at the last rank's arrival. */
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (rank == 0) {
-        long visited = 0;
-        for (int i = 0; i < V; i++)
-            if (dist[i] >= 0) visited++;
+    long visited_local = 0, visited = 0;
+    for (int i = 0; i < nloc; i++)
+        if (dist[i] >= 0) visited_local++;
+    MPI_Reduce(&visited_local, &visited, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
+    if (rank == 0) {
         printf("BENCH_LEVELS: %d\n", level);
         printf("BENCH_VISITED: %ld\n", visited);
         printf("BENCH_CHECKSUM: %ld\n", visited);
         printf("BENCH_DONE\n");
     }
 
-    free(row_ptr); free(col_idx); free(dist);
-    free(frontier); free(candidates); free(all_candidates);
-    free(recvcounts); free(displs);
+    free(row_ptr); free(col_idx); free(counts);
+    free(dist); free(frontier); free(next); free(sendbuf); free(recvbuf);
     MPI_Finalize();
     return 0;
 }

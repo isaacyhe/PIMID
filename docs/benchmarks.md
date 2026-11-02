@@ -126,6 +126,17 @@ net sizes, grid positions, acceptance tests) keep the 32-bit LCG. The bfs graph 
 `--degree` out-edges each; from vertex 0 it reaches 209,646 of 209,715 vertices in 10 levels and 838,567 of 838,859 in
 11.
 
+The message-passing bfs (PIM kernel `bfs_mpi` and host `bfs_message_passing`) partitions the graph by vertex blocks:
+with B = ceil(V / P), rank r owns the vertices [r*B, min(V, (r+1)*B)) and holds only their CSR rows and dist entries,
+so a rank's memory and work are proportional to V / P. The graph is the one the serial and OpenMP versions build: a
+rank starts the generator stream at its first row (draw k of splitmix64 has state seed + k * gamma), so the graph does
+not depend on the number of ranks. The search is level-synchronous: in each level a rank expands its frontier,
+marks a neighbour in its own block at once and sends every other neighbour to the neighbour's owner (the
+per-owner counts by `MPI_Alltoall`, the vertices by one `MPI_Sendrecv` per rank pair); the owner keeps the
+vertices it has not visited yet, and an `MPI_Allreduce` of the frontier sizes ends the search. A rank needs about 28 ints per owned
+vertex at degree 8 (its rows, its dist, two frontiers, the send buckets and a receive buffer sized by the edges into
+its block); on a device the whole set goes in the rank's PE slot.
+
 ## Running
 
 - **pim_kernels** / **host**: a device-only configuration (no hosts), select the data model with

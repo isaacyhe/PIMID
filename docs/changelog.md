@@ -6,6 +6,41 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.224 -- the message-passing bfs partitions its graph: a rank holds only its own block of vertices
+
+- **The problem.** The message-passing bfs (the PIM kernel `bfs_mpi` and the host `bfs_message_passing`) gave every
+  rank a full copy of the CSR graph and of dist, gathered every rank's candidates on every rank (`MPI_Allgatherv`) and
+  had every rank deduplicate all of them. A rank's memory and work grew with V instead of V / P (80 bytes per vertex
+  per rank), so the search did P times the work of one traversal. That kept message-passing bfs graphs small: the
+  64 MiB PE slot of a 16-PE GDDR6 bank placement held at most 838,859 vertices, the non-DRAM 16-PE bank placements
+  could not hold the smoke graph and were refused, and a co-simulated 16-rank search on a graph larger than the host's
+  caches was out of reach.
+- **The fix** (benchmarks/pim_kernels/bfs/bfs_mpi.c, benchmarks/host/bfs/bfs_message_passing.c; docs/benchmarks.md).
+  1D vertex partitioning: with B = ceil(V / P), rank r owns the vertices [r*B, min(V, (r+1)*B)) and holds only their
+  CSR rows and dist entries. The graph is the one the serial and OpenMP versions build: a rank starts the splitmix64
+  stream at its first row (draw k has state seed + k * gamma), so the graph does not depend on the number of ranks.
+  Each level, a rank expands its frontier, marks a neighbour in its own block at once, and sends every other
+  neighbour to its owner (the per-owner counts by `MPI_Alltoall`, the vertices by one `MPI_Sendrecv` per rank pair);
+  the owner keeps the vertices it has not visited yet, and an `MPI_Allreduce` of the frontier sizes ends the search.
+  The send buckets and the receive buffer are sized, before the ROI, by the exact edge counts from the rank's block to
+  each owner and into its block. A rank needs about 28 ints per owned vertex at degree 8; on a device the whole set
+  goes in the rank's PE slot, and the scratchpad path tiles the frontier, the adjacency rows and the received
+  vertices. The output lines (levels, reached vertices) are unchanged.
+- **Validation** (the previous release and this build).
+  - Natively, with MPICH at 1, 2, 3, 4, 16 and 64 ranks and 512 to 3,355,436 vertices: the levels and the reached
+    vertices equal the serial bfs for both kernels, and a weighted checksum of every vertex's distance equals the
+    serial bfs at 1, 2, 3, 16 and 64 ranks for 20,000, 209,715 and 838,859 vertices.
+  - In simulation, smoke sizes: of the 135 device message-passing cells, the 108 that do not run bfs give identical
+    logs; all 27 bfs cells give the serial checksum and level count. Of the 11 co-simulation message-passing cells,
+    the 8 that do not run bfs are identical, and the 3 bfs cells give the serial checksum. The four non-DRAM 16-PE
+    bank placements of bfs, refused before, now run. Two bfs cells run 8 times each give one output each. The power
+    check reports no flag and no consistency failure on every set.
+- **Data impact.** Every message-passing bfs result changes; no other kernel and no simulator code change. Smoke
+  sizes, run time in cycles: HBM3 16-PE bank placement 9,419,353 -> 3,395,565; CHANNEL 20,405,000 -> 12,325,666;
+  1 PE 25,449,048 -> 28,282,169; 64 PEs 8,612,588 -> 8,591,197; co-simulated HBM3, 16 ranks 9,365,466 -> 3,217,355.
+  With one rank the search does the serial work plus the routing bookkeeping; with more ranks it no longer repeats
+  the deduplication on every rank.
+
 ## 1.12.223 -- the DRAM replay's per-access lookups no longer slow down while ranks wait to settle
 
 - **The problem.** While message-passing ranks wait for their settlement at a rendezvous and the shared controller cannot
