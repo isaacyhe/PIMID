@@ -21,6 +21,7 @@
 #include <mutex>
 #include <condition_variable>
 #include "log.h"
+#include "common/debug_checks.h"   // (1.12.225): the exact-close check lines
 #include "zsim.h"
 #include "prefetcher.h"
 #include <cstdint>
@@ -824,7 +825,10 @@ void DramEpochReplay::tickOnce() {
     if (!rel_.empty()) serveRel();     // (1.12.189): the closed-loop replay's released records
     if (closeArmed_ && !closeSnapped_ && curTick_ >= closeTick_) snapClose();   // 1.12.18: the ROI end
     else if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && (curTick_ % kSnapEvery) == 0) { Snap s; takeSnap(s); hist_.push_back(s); }   // 1.12.18 (shift by lag); (1.12.189): and past the close under the closed loop (the run time can be raised after the final drain)
-    if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && !ring_.empty()) takeSnap(ring_[curTick_ & (kRing - 1)]);   // (1.12.212): the per-tick ring
+    if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && !ring_.empty()) {   // (1.12.212): the per-tick ring; (1.12.225): and its increments
+        takeSnap(ring_[curTick_ & (kRing - 1)]);
+        if (pinSet_) pinFillSingle();
+    }
 }
 
 /* 1.12.18 (R2): DRAM ticks per cycle of the clock roiWall.mpiEnd is counted
@@ -958,14 +962,31 @@ void DramEpochReplay::armClose(bool fromFinalize) {
          * tick's own from the per-tick ring. Only a close more than kRing ticks behind falls back to the last
          * periodic snapshot at or before it, and says so. */
         const uint64_t ri = closeTick_ & (kRing - 1);
-        closeFromSnap_ = false;
+        closeFromSnap_ = false; closeFromPin_ = false;
         if (closeLate_ == 0) snapClose();
         else if (!ring_.empty() && closeLate_ < kRing && ring_[ri].tick == closeTick_) applySnap(ring_[ri]);
+        else if (Snap ps; pinRead(closeTick_, ps)) {   // (1.12.225): the close tick's own, from the increments kept since a rank's closing-barrier arrival
+            applySnap(ps);
+            closeFromPin_ = true;
+            if (pimid::debugChecks()) {
+                const Snap* nx = nullptr;
+                for (const Snap& h : hist_) if (h.tick > closeTick_) { nx = &h; break; }
+                Snap q; const bool have = nx && pinSum(ps, nx->tick, q);
+                const bool same = have && q.ticks == nx->ticks && q.idle == nx->idle && q.refreshes == nx->refreshes && q.bankW == nx->bankW &&
+                                  q.bankO == nx->bankO && q.pdC == nx->pdC && q.pdX == nx->pdX;
+                info("[mem] %s: [check] the ROI end (DRAM tick %lu, %lu DRAM cycles behind the clock) read from the increments kept from DRAM tick %lu: window short by 0 DRAM cycles; carried on to the next periodic snapshot (DRAM tick %lu): %s",
+                     name_.c_str(), (unsigned long)closeTick_, (unsigned long)closeLate_, (unsigned long)pinStart_, (unsigned long)(nx ? nx->tick : 0),
+                     !have ? "not covered" : (same ? "agrees" : "DIFFERS"));
+            }
+        }
         else {
             const Snap* best = nullptr;
             for (const Snap& s : hist_) { if (s.tick <= closeTick_) best = &s; else break; }
             if (best) applySnap(*best); else snapClose();
             closeFromSnap_ = true;
+            if (pimid::debugChecks())
+                info("[mem] %s: [check] no exact history for the ROI end (DRAM tick %lu): increments %s from DRAM tick %lu to %lu%s", name_.c_str(), (unsigned long)closeTick_,
+                     pinSet_ ? "kept" : "not kept", (unsigned long)pinStart_, (unsigned long)pinHi_, pinBad_ ? " (broken)" : "");
             if (best) {
                 info("[mem] %s: the ROI end (DRAM tick %lu) became known %lu DRAM cycles after the clock passed it, beyond the per-tick history (%lu): its time-based counters are the last periodic snapshot's, %lu DRAM cycles before it (the window is that much short)",
                      name_.c_str(), (unsigned long)closeTick_, (unsigned long)closeLate_, (unsigned long)kRing, (unsigned long)(closeTick_ - best->tick));
@@ -1494,6 +1515,140 @@ DramEpochReplay::SetMark DramEpochReplay::settleMark(uint32_t core, uint64_t clo
     m.seq = ++seqA_[core]; m.maxS = std::max(maxS_[core], clock);
     futex_unlock(&lock_);
     return m;
+}
+
+/* (1.12.225): the per-tick increments of the window counters, 8 bytes: idle (1 bit), refresh commands (7), bank-open
+ * sampled and open unit-cycles (16 + 16), power-down unit-cycles (16) and exits (8). An increment that does not fit
+ * (or a counter that went back) marks the record broken; the close then takes the periodic snapshot and says so. */
+bool DramEpochReplay::pinPack(uint64_t& v, uint64_t idle, uint64_t ref, uint64_t bw, uint64_t bo, uint64_t pc, uint64_t px) {
+    if (idle > 1 || ref > 0x7f || bw > 0xffff || bo > 0xffff || pc > 0xffff || px > 0xff) return false;
+    v = idle | (ref << 1) | (bw << 8) | (bo << 24) | (pc << 40) | (px << 56);
+    return true;
+}
+
+void DramEpochReplay::pinFree() {
+    pinD_.clear(); pinD_.shrink_to_fit();
+    for (Chan& K : chans_) { K.pinD.clear(); K.pinD.shrink_to_fit(); K.pinHi = 0; K.pinBad = false; }
+    pinSet_ = pinBad_ = false; pinStart_ = pinHi_ = 0;
+}
+
+/* single instance, after the per-tick ring entry of curTick_ was taken */
+void DramEpochReplay::pinFillSingle() {
+    if (pinBad_ || pinD_.empty() || curTick_ <= pinStart_ || curTick_ - pinStart_ >= kPin) return;
+    if (curTick_ != pinHi_ + 1) { pinBad_ = true; return; }
+    const Snap& a = ring_[(curTick_ - 1) & (kRing - 1)];
+    const Snap& b = ring_[curTick_ & (kRing - 1)];
+    uint64_t v = 0;
+    if (a.tick != curTick_ - 1 || b.tick != curTick_ || b.ticks != a.ticks + 1 || b.idle < a.idle || b.refreshes < a.refreshes ||
+        b.bankW < a.bankW || b.bankO < a.bankO || b.pdC < a.pdC || b.pdX < a.pdX ||
+        !pinPack(v, b.idle - a.idle, b.refreshes - a.refreshes, b.bankW - a.bankW, b.bankO - a.bankO, b.pdC - a.pdC, b.pdX - a.pdX)) { pinBad_ = true; return; }
+    pinD_[curTick_ - pinStart_] = v; pinHi_ = curTick_;
+}
+
+/* a channel of the two-channel replay, after its per-tick ring entry was taken (runs on the channel's helper; only
+ * this channel's fields are written) */
+void DramEpochReplay::pinFillChan(Chan& K) {
+    if (K.pinBad || K.pinD.empty() || K.curTick <= pinStart_ || K.curTick - pinStart_ >= kPin) return;
+    if (K.curTick != K.pinHi + 1) { K.pinBad = true; return; }
+    const ChanSnap& a = K.ring[(K.curTick - 1) & (kRing - 1)];
+    const ChanSnap& b = K.ring[K.curTick & (kRing - 1)];
+    uint64_t v = 0;
+    if (a.tick != K.curTick - 1 || b.tick != K.curTick || b.refreshes < a.refreshes || b.bankW < a.bankW || b.bankO < a.bankO ||
+        b.pdC < a.pdC || b.pdX < a.pdX ||
+        !pinPack(v, K.idleNow ? 1 : 0, b.refreshes - a.refreshes, b.bankW - a.bankW, b.bankO - a.bankO, b.pdC - a.pdC, b.pdX - a.pdX)) { K.pinBad = true; return; }
+    K.pinD[K.curTick - pinStart_] = v; K.pinHi = K.curTick;
+}
+
+/* the window counters at `tick` from the kept increments: the last periodic snapshot at or before it, plus every
+ * tick's increments since */
+bool DramEpochReplay::pinRead(uint64_t tick, Snap& s) const {
+    const Snap* best = nullptr;
+    for (const Snap& h : hist_) { if (h.tick <= tick) best = &h; else break; }
+    return best && pinSum(*best, tick, s);
+}
+
+/* `base` (a snapshot at a tick the increments cover) plus the increments of the ticks after it up to `tick` (the
+ * two-channel replay: both channels' sums, idle when both channels are) */
+bool DramEpochReplay::pinSum(const Snap& base, uint64_t tick, Snap& s) const {
+    if (!pinSet_ || pinBad_ || base.tick < pinStart_ || tick < base.tick || tick - pinStart_ >= kPin) return false;
+    if (par()) { for (const Chan& K : chans_) if (K.pinBad || K.pinD.empty() || K.pinHi < tick) return false; }
+    else if (pinD_.empty() || pinHi_ < tick) return false;
+    s = base;
+    auto add = [&](uint64_t v) {
+        s.refreshes += (v >> 1) & 0x7f;
+        if (bankTracked_) { s.bankW += (v >> 8) & 0xffff; s.bankO += (v >> 24) & 0xffff; }
+        s.pdC += (v >> 40) & 0xffff; s.pdX += (v >> 56) & 0xff;
+    };
+    for (uint64_t u = base.tick + 1; u <= tick; u++) {
+        const uint64_t i = u - pinStart_;
+        s.ticks++;
+        if (par()) {
+            const uint64_t v0 = chans_[0].pinD[i], v1 = chans_[1].pinD[i];
+            if ((v0 & 1) && (v1 & 1)) s.idle++;
+            add(v0); add(v1);
+        } else {
+            const uint64_t v = pinD_[i];
+            s.idle += v & 1;
+            add(v);
+        }
+    }
+    s.tick = tick;
+    return true;
+}
+
+/* (1.12.225): a co-sim message-passing rank reached its closing barrier at ROI-relative device cycle v, a lower bound of
+ * the ROI end. The kept increments move to the highest bound they can still cover from the kSnapEvery multiple at
+ * or below it: filled from the per-tick records when the clock has already passed it (they must still hold every
+ * tick since), otherwise tick by tick as the clock crosses them. A higher bound they no longer cover keeps the
+ * earlier record, which may still hold the end. Under lock_, between replay calls. */
+void DramEpochReplay::noteCloseCandidate(uint64_t v) {
+    if (!sys_) return;
+    futex_lock(&lock_);
+    if (roiMarked_ && !closeArmed_ && !ring_.empty()) {
+        const uint64_t t = roiTick0_ + (uint64_t)((double)v * runTicksPerCycle());
+        const uint64_t st = t - (t % kSnapEvery);
+        if (!pinSet_ || st > pinStart_) {
+            bool ok = curTick_ < st + kRing - 1;   // every tick (st, curTick_] still in the per-tick records
+            if (ok && curTick_ > st) {
+                for (uint64_t u = st; u <= curTick_ && ok; u++) {
+                    if (ring_[u & (kRing - 1)].tick != u) ok = false;
+                    if (par()) for (const Chan& K : chans_) if (K.ring.empty() || K.ring[u & (kRing - 1)].tick != u) ok = false;
+                }
+            }
+            if (ok) {
+                pinFree();
+                pinSet_ = true; pinStart_ = st;
+                if (par()) for (Chan& K : chans_) { K.pinD.assign(kPin, 0); K.pinHi = st; }
+                else { pinD_.assign(kPin, 0); pinHi_ = st; }
+                /* the ticks the clock has already passed, from the per-tick records (the two-channel replay: the
+                 * merged idle increment goes with channel 0, channel 1 marked idle, so both read as the array) */
+                for (uint64_t u = st + 1; u <= curTick_ && !pinBad_; u++) {
+                    const Snap& a = ring_[(u - 1) & (kRing - 1)]; const Snap& b = ring_[u & (kRing - 1)];
+                    if (b.idle < a.idle) { pinBad_ = true; break; }
+                    if (!par()) {
+                        uint64_t w = 0;
+                        if (b.ticks != a.ticks + 1 || b.refreshes < a.refreshes || b.bankW < a.bankW || b.bankO < a.bankO || b.pdC < a.pdC || b.pdX < a.pdX ||
+                            !pinPack(w, b.idle - a.idle, b.refreshes - a.refreshes, b.bankW - a.bankW, b.bankO - a.bankO, b.pdC - a.pdC, b.pdX - a.pdX)) { pinBad_ = true; break; }
+                        pinD_[u - st] = w; pinHi_ = u;
+                    } else {
+                        for (size_t c = 0; c < chans_.size(); c++) {
+                            Chan& K = chans_[c];
+                            const ChanSnap& x = K.ring[(u - 1) & (kRing - 1)]; const ChanSnap& y = K.ring[u & (kRing - 1)];
+                            uint64_t w = 0;
+                            const uint64_t ib = (c == 0) ? (b.idle - a.idle) : 1;
+                            if (y.refreshes < x.refreshes || y.bankW < x.bankW || y.bankO < x.bankO || y.pdC < x.pdC || y.pdX < x.pdX ||
+                                !pinPack(w, ib, y.refreshes - x.refreshes, y.bankW - x.bankW, y.bankO - x.bankO, y.pdC - x.pdC, y.pdX - x.pdX)) { pinBad_ = true; break; }
+                            K.pinD[u - st] = w; K.pinHi = u;
+                        }
+                    }
+                }
+            }
+            if (pimid::debugChecks())
+                info("[mem] %s: [check] closing-barrier arrival at DRAM tick %lu, clock %lu: %s", name_.c_str(), (unsigned long)t, (unsigned long)curTick_,
+                     ok ? (pinBad_ ? "increments kept from it are broken" : "increments kept from it") : "the per-tick records no longer hold it; the earlier record is kept");
+        }
+    }
+    futex_unlock(&lock_);
 }
 
 void DramEpochReplay::settleOrigin(uint32_t core) {
@@ -2067,7 +2222,10 @@ void DramEpochReplay::chanTickOnce(Chan& K) {
     if (K.waitingN > 0) chanServeDoors(K);
     if (closeArmed_ && !K.closeSnappedIn && K.curTick >= closeTick_) { chanTakeSnap(K, K.closeSnap); K.closeTaken = true; K.closeSnappedIn = true; }
     else if (roiMarked_ && !closeArmed_ && (K.curTick % kSnapEvery) == 0) { ChanSnap s; chanTakeSnap(K, s); K.snaps.push_back(s); }
-    if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && !K.ring.empty()) chanTakeSnap(K, K.ring[K.curTick & (kRing - 1)]);   // (1.12.212)
+    if (roiMarked_ && (!closeArmed_ || keepHist_ || clOn()) && !K.ring.empty()) {   // (1.12.212); (1.12.225): and its increments
+        chanTakeSnap(K, K.ring[K.curTick & (kRing - 1)]);
+        if (pinSet_) pinFillChan(K);
+    }
 }
 
 void DramEpochReplay::chanTickTo(Chan& K, uint64_t tick) {
@@ -2315,6 +2473,7 @@ void DramEpochReplay::markRoi() {
     closeArmed_ = closeSnapped_ = false; closeTick_ = closeLate_ = pastEndRecs_ = 0;   // 1.12.18 (R1): every mode
     hist_.clear();   // 1.12.18 (shift by lag)
     ring_.assign(kRing, Snap()); for (Snap& s : ring_) s.tick = ~0ull; closeFromSnap_ = false;   // (1.12.212): the per-tick ring
+    pinFree(); closeFromPin_ = false;   // (1.12.225)
     if (par()) for (Chan& K : chans_) { K.ring.assign(kRing, ChanSnap()); for (ChanSnap& x : K.ring) x.tick = ~0ull; }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);
     bankTotals();   // 1.12.18
@@ -2354,6 +2513,7 @@ void DramEpochReplay::finalize() {
         closeArmed_ = closeSnapped_ = false; closeLate_ = 0; settleRun_ = zinfo->roiWall.cycles();
         armClose(true);
     }
+    pinFree();   // (1.12.225): the close is final
     /* replay whatever is still pending so the controller totals cover the window */
     while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); pendNe_.erase(ep); }
     drainAll();   // 1.12.18 (drain the lag): every fed request served before the counters are read
@@ -2389,7 +2549,11 @@ void DramEpochReplay::finalize() {
                      name_.c_str(), (unsigned long)closeTick_, closeLate_ ? " -- reached late, the clock stood past it" : "",
                      (unsigned long)pastEndRecs_, (unsigned long)(curTick_ > closeTick_ ? curTick_ - closeTick_ : 0),
                      (unsigned long)hostCoreStamps_.load(), (unsigned long)hostPhaseStamps_.load());
-            if (closeLate_ > 0 && !closeFromSnap_)
+            if (closeLate_ > 0 && closeFromPin_) {
+                info("[mem] %s: the ROI end became known %lu DRAM cycles after the clock passed it; its time-based counters are the close tick's own (kept from a rank's closing-barrier arrival on)",
+                     name_.c_str(), (unsigned long)closeLate_);
+            }
+            if (closeLate_ > 0 && !closeFromSnap_ && !closeFromPin_)
                 info("[mem] %s: the ROI end became known %lu DRAM cycles after the clock passed it; its time-based counters are the close tick's own (per-tick history of %lu DRAM cycles) [(1.12.212)]",
                      name_.c_str(), (unsigned long)closeLate_, (unsigned long)kRing);
         }
@@ -2541,6 +2705,7 @@ void DramEpochReplay::noteSync(uint32_t) {}
 int64_t DramEpochReplay::reconcileCore(uint32_t, uint64_t) { return 0; }
 DramEpochReplay::SetMark DramEpochReplay::settleMark(uint32_t, uint64_t) { return SetMark(); }   // (1.12.216)
 void DramEpochReplay::settleOrigin(uint32_t) {}
+void DramEpochReplay::noteCloseCandidate(uint64_t) {}
 bool DramEpochReplay::settles(uint32_t) { return false; }
 void DramEpochReplay::setRealTime(bool) {}
 std::vector<size_t> DramEpochReplay::settleNext(const std::vector<std::vector<std::pair<uint32_t, uint64_t>>>& s, uint64_t, bool& ran, bool& step) {

@@ -6,6 +6,41 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.225 -- co-simulation message passing: the DRAM replay window ends at the ROI end's own tick
+
+- **The problem.** A co-simulation message-passing run learns its ROI end only when its last rank leaves the kernel
+  window; the run time is then raised to the busiest link's service time if that is longer, and afterwards by the DRAM
+  balance no barrier applied. By then the other ranks' post-ROI tails have run the replayed clock 0.8 to 26 million
+  DRAM cycles past the end in the smoke runs (up to 435 million at full size), far beyond the per-tick record of the
+  last 131,072 DRAM cycles (1.12.212). The window's time-based counters (DRAM cycles, idle cycles, refresh commands,
+  bank-open and power-down time) came from the last 1024-cycle snapshot at or before the end, and the run printed the
+  shortfall: 83 to 851 DRAM cycles in the 11 smoke cells (up to 0.27 % of the window), 108 to 947 at full size.
+- **The fix** (external/zsim/src/dram_epoch_replay.h, dram_epoch_replay.cpp; external/zsim/src/qemu_zsim_plugin.cpp,
+  recordTailMarker; docs/power.md). Every rank's arrival at its closing barrier is a lower bound of the ROI end; the
+  plugin hands each arrival to the replays (`DramEpochReplay::noteCloseCandidate`). From the highest arrival a replay
+  can still cover, starting at the 1024-cycle snapshot at or below it, the replay keeps every DRAM cycle's increments
+  of those counters, packed into 8 bytes (each channel its own on the two-channel DDR5 replay), for up to 4,194,304
+  DRAM cycles: filled from the per-tick record when the clock has already passed the arrival, otherwise as the clock
+  crosses it. A close behind the clock reads its own tick as the last snapshot at or before it plus the increments
+  since. The record is freed once the close is final (after a raise at the end of the run re-arms it). The record
+  takes 32 MB per controller instance, 64 MB on the two-channel replay; an increment that does not fit, or an end
+  beyond the record, keeps the snapshot and the shortfall message as before. With debug checks on, the run prints the
+  exact read and whether the increments carried on to the next snapshot reproduce it.
+- **Validation** (the previous release and this build on the same nodes; logs compared with tree paths masked):
+  - the 11 co-simulation message-passing cells, at smoke size and at full size (bfs 838,859 vertices), now close
+    their windows at the ROI end's tick; in each the increments carried on to the next snapshot reproduce that
+    snapshot. The longest stretch from the record's start to the end is 199,541 DRAM cycles (DDR5 stream_triad, full
+    size, where the DRAM balance raised the run time by 41,308 cycles after the last arrival);
+  - 135 device message-passing smoke cells, the 116-cell validation set (with its two co-simulation OpenMP cells) and
+    20 saturated-bfs smoke variants: every log identical;
+  - two cells run 8 times each give one output per cell; the power check reports no flag and no consistency failure;
+  - peak resident memory: about 15 MB more at smoke size (+0.4 % to +1.1 % of 1.52 GB); at full size -1.7 % to
+    +1.3 % with no systematic rise (the largest cell, HBM3 bfs: 8.34 -> 8.20 GB).
+- **Data impact.** Co-simulation message-passing cells only: the window grows by its former shortfall (+0.0003 % to
+  +0.27 % at smoke size, at most +0.0009 % at full size); memory-array power moves by -0.016 % to +0.17 % at
+  smoke size (HBM3 gemv: 16 more refresh commands in the window) and by at most +0.001 % at full size; total power is
+  unchanged at the printed precision. Run times in cycles are unchanged everywhere.
+
 ## 1.12.224 -- the message-passing bfs partitions its graph: a rank holds only its own block of vertices
 
 - **The problem.** The message-passing bfs (the PIM kernel `bfs_mpi` and the host `bfs_message_passing`) gave every

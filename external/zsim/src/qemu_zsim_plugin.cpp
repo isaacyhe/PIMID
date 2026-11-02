@@ -659,6 +659,12 @@ static inline void recordTailMarker(uint32_t tid) {
          * (recordProtocolTailStats), and its memory accesses from here on are in none of the interface's ROI
          * counters (pe_memory_interface.h, g_peTailRun). */
         zinfo->cores[cid]->markActivity(g_tailAct[tid]);
+        if (g_cosim_mode) {   // (1.12.225): the arrival is a lower bound of the ROI end; the replays keep the window counters' increments from it
+            const uint64_t b = zinfo->cores[cid]->getRoiBaseCycle();
+            const uint64_t v = (g_tailMarker[tid] > b) ? g_tailMarker[tid] - b : 0;
+            if (zinfo->dramReplay) zinfo->dramReplay->noteCloseCandidate(v);
+            if (zinfo->hostDramReplay) zinfo->hostDramReplay->noteCloseCandidate(v);
+        }
         g_peTailRun[cid]     = true;
     }
 }

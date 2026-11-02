@@ -178,11 +178,17 @@ time) are read at the ROI end's own DRAM tick. Where the end becomes known after
 they come from a per-tick record of the last 131072 DRAM cycles, so the window covers exactly the ROI (since (1.12.212);
 before, they came from the last 1024-cycle snapshot at or before the end, up to 1023 DRAM cycles short). A
 co-simulation message-passing run learns its ROI end only when its last rank leaves the kernel window, where the
-run time is also raised to the busiest link's service time if that is longer; by then the replayed clock often
-stands millions of DRAM cycles past the end (the other ranks run their post-ROI tails, and a rank waiting to settle
-at the closing barrier does not hold the controller back). Such a run keeps the last 1024-cycle snapshot at or before
-the end: its time-based counters fall short of the window by a known bound, at most 1023 DRAM cycles (at most 0.41 %
-of the window in the co-simulation smoke runs, under 0.002 % at full size), and the run prints the shortfall.
+run time is also raised to the busiest link's service time if that is longer, and afterwards by the DRAM balance no
+barrier applied; by then the replayed clock often stands millions of DRAM cycles past the end (the other ranks run
+their post-ROI tails, and a rank waiting to settle at the closing barrier does not hold the controller back). Every
+rank's arrival at the closing barrier is a lower bound of that end. From the highest arrival the replay can still
+cover, starting at the 1024-cycle snapshot at or below it (filled from the per-tick record when the clock has already
+passed it, otherwise as the clock crosses it), the replay keeps every DRAM cycle's increments of those counters, 8
+bytes a cycle for up to 4194304 cycles, until the end is final. The end's counters are the last 1024-cycle snapshot
+at or before it plus the increments since, so the window covers exactly the ROI here too (since (1.12.225); before, these
+runs kept the last 1024-cycle snapshot, up to 1023 DRAM cycles short). The record takes 32 MB per controller
+instance (64 MB for the two-channel DDR5 replay) while the end is pending. An end beyond it would take the last
+1024-cycle snapshot, and the run would print the shortfall.
 
 ## Node scaling of published per-op logic energies (1.12.33)
 

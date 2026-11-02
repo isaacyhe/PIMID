@@ -256,6 +256,7 @@ class DramEpochReplay {
     struct SetMark { uint64_t seq = 0, maxS = 0; };
     SetMark settleMark(uint32_t core, uint64_t clock);
     void settleOrigin(uint32_t core);   // the core's ROI starts on its own clock: the stamps it recorded before are not ROI stamps
+    void noteCloseCandidate(uint64_t roiRelCycles);   // (1.12.225): a co-sim rank reached its closing barrier at this ROI-relative device cycle (a lower bound of the ROI end)
     bool settles(uint32_t core);
     void setRealTime(bool on);
     std::vector<size_t> settleNext(const std::vector<std::vector<std::pair<uint32_t, uint64_t>>>& sets, uint64_t until, bool& ran, bool& step);
@@ -445,6 +446,8 @@ class DramEpochReplay {
         std::vector<ChanSnap> snaps; bool closeTaken = false; ChanSnap closeSnap;
         bool closeSnappedIn = false;
         std::vector<ChanSnap> ring;   // (1.12.212): this channel's counters per tick, kRing deep (merged into ring_)
+        std::vector<uint64_t> pinD;   // (1.12.225): this channel's per-tick increments from pinStart_ (pinPack), and the channel's idle bit
+        uint64_t pinHi = 0; bool pinBad = false;
         struct Cnt { uint64_t req = 0, rd = 0, wr = 0, hreq = 0, hrd = 0, hwr = 0, oreq = 0, ord = 0, owr = 0, ohreq = 0, ohrd = 0, ohwr = 0; };
         Cnt d;                        // request counters of this call
         uint64_t doorRecs = 0, doorTicks = 0, doorMax = 0;
@@ -530,6 +533,24 @@ class DramEpochReplay {
     static constexpr uint64_t kRing = 1ull << 17;
     std::vector<Snap> ring_;
     bool closeFromSnap_ = false;   // (1.12.212): the close fell beyond the ring: its counters are the last periodic snapshot's
+    /* (1.12.225): co-sim message passing -- the ROI end is the latest rank's closing-barrier arrival, raised by the
+     * busiest-link floor and by the DRAM balance no barrier applied; it is known only when the last rank leaves its
+     * window, after the other ranks' post-ROI tails have run the clock far past it. Every arrival is a lower bound of
+     * the end. From the highest one the replay can still cover (pinStart_, a kSnapEvery multiple at or below it),
+     * the increments of the window counters are kept per tick, packed into 8 bytes (pinPack), for kPin ticks: the
+     * single instance in pinD_, each channel of the two-channel replay in its own Chan::pinD (with its idle bit; the
+     * array is idle when both channels are). A close behind the clock reads its own tick as the last periodic
+     * snapshot at or before it plus the increments since (pinRead). */
+    static constexpr uint64_t kPin = 1ull << 22;
+    std::vector<uint64_t> pinD_;
+    uint64_t pinStart_ = 0, pinHi_ = 0;
+    bool pinSet_ = false, pinBad_ = false, closeFromPin_ = false;
+    static bool pinPack(uint64_t& v, uint64_t idle, uint64_t ref, uint64_t bw, uint64_t bo, uint64_t pc, uint64_t px);
+    void pinFillSingle();
+    void pinFillChan(Chan& K);
+    void pinFree();
+    bool pinRead(uint64_t tick, Snap& s) const;
+    bool pinSum(const Snap& base, uint64_t tick, Snap& s) const;
     void takeSnap(Snap& s);
     void applySnap(const Snap& s);
     /* 1.12.18: cut mode (message passing) -- the window's time-based counters
