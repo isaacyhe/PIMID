@@ -289,6 +289,7 @@ class DramEpochReplay {
     std::map<uint32_t, std::deque<Waiting>> doors_;
     uint64_t waitingN_ = 0, nextId_ = 0;
     std::map<uint64_t, EpochAcc> acc_;
+    std::set<uint64_t> fedEp_;   // the epochs of acc_ whose fed is set (the newest fed epoch at or before r: one lookup)
     /* (1.12.189): the closed-loop replay and the reconciliation, see reconcileAtBarrier */
     struct CoreCL {
         bool on = false, ooo = false, host = false;
@@ -479,6 +480,7 @@ class DramEpochReplay {
     uint32_t lineBits_ = 6;
 
     lock_t lock_;
+    std::set<uint64_t> pendNe_;   // the epochs of pending_ holding records to feed (feedAll visits only these)
     std::map<uint64_t, std::vector<Rec>> pending_;           // epoch -> records
     std::map<uint64_t, std::vector<uint32_t>> frozen_;      // epoch -> per-MI mean latency (core cycles)
     uint64_t lastReplayed_ = 0; bool anyReplayed_ = false;

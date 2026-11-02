@@ -497,6 +497,7 @@ void DramEpochReplay::recordAddr(uint64_t epoch, uint64_t stamp, uint64_t addr, 
     }
     std::vector<Rec>& pv = pending_[epoch];
     pv.push_back(rc);
+    if (pv.size() == 1) pendNe_.insert(epoch);
     t_lastOk = true; t_lastEp = epoch; t_lastIdx = pv.size() - 1; t_lastCore = rc.core; t_lastRef = rc.ref; t_lastStamp = stamp;   // (1.12.189)
     if (ch < perChan_.size()) perChan_[ch]++;
     futex_unlock(&lock_);
@@ -682,7 +683,7 @@ uint32_t DramEpochReplay::serviceLatency(uint32_t mi, uint64_t curEpoch, bool wr
     while (!pending_.empty() && pending_.begin()->first < curEpoch) {
         uint64_t ep = pending_.begin()->first;
         replayEpoch(ep);
-        pending_.erase(ep);
+        pending_.erase(ep); pendNe_.erase(ep);
     }
     uint32_t v = 0;
     auto it = frozen_.find(curEpoch - 1);
@@ -710,7 +711,7 @@ void DramEpochReplay::foldByCut(uint64_t cut, uint64_t epochLen) {
         const uint64_t ep = pending_.begin()->first;
         if (cut != ~0ull && (ep + 1) * epochLen > cut) break;
         replayEpoch(ep);
-        pending_.erase(ep);
+        pending_.erase(ep); pendNe_.erase(ep);
     }
     futex_unlock(&lock_);
 }
@@ -737,7 +738,7 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
      * none had finished, to the analytical bootstrap (16-core DDR5 pointer chase: 84 022 of 87 893 priced
      * reads), so the cores issued far faster than the controller served. */
     uint64_t fedE = ~0ull;
-    for (auto a = acc_.begin(); a != acc_.end() && a->first <= r; ++a) if (a->second.fed) fedE = a->first;
+    { auto f = fedEp_.upper_bound(r); if (f != fedEp_.begin()) fedE = *std::prev(f); }   // the newest fed epoch at or before r
     const bool newerFed = fedE != ~0ull && (it == carried_.begin() || std::prev(it)->first < fedE);
     uint64_t e0 = ~0ull, n0 = 0;   // (1.12.153): the epoch read and its request count, for the price window
     if (newerFed && (v = partialMean(fedE, sl)) > 0) {
@@ -1522,7 +1523,10 @@ void DramEpochReplay::setRealTime(bool on) {
  * is folded when the cut passes it) */
 void DramEpochReplay::feedAll() {
     armClose(false);
-    for (auto& kv : pending_) {
+    for (const uint64_t ep : pendNe_) {   // in epoch order, as the map; the epochs without records are skipped there too
+        auto pk = pending_.find(ep);
+        if (pk == pending_.end()) continue;
+        auto& kv = *pk;
         std::vector<Rec>& now = kv.second;
         if (now.empty()) continue;
         std::sort(now.begin(), now.end(), [](const Rec& a, const Rec& b) {   // as replayEpoch
@@ -1548,6 +1552,7 @@ void DramEpochReplay::feedAll() {
         }
         now.clear();
     }
+    pendNe_.clear();
     serveRel();
 }
 
@@ -1716,7 +1721,7 @@ void DramEpochReplay::settleFinal() {
     futex_lock(&lock_);
     keepHist_ = true;
     armClose(true);
-    while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); }
+    while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); pendNe_.erase(ep); }
     drainAll();
     for (auto& kv : cl_) if (kv.second.dmaOpen && kv.second.out == 0) recDmaClose(kv.second);   // (1.12.189)
     keepHist_ = false;
@@ -1846,6 +1851,7 @@ void DramEpochReplay::finalizeEpoch(uint64_t epoch) {
         winSum_[epoch] = a->second.sum; winCnt_[epoch] = a->second.cnt;
         while (winSum_.size() > 4 * (size_t)priceWindow() + 8) { winSum_.erase(winSum_.begin()); winCnt_.erase(winCnt_.begin()); }
     }
+    fedEp_.erase(epoch);
     acc_.erase(a);
     frozen_[epoch] = perMi;
     if (cutMode_) {   // 1.12.17: an interface idle in this epoch keeps its last measured value
@@ -1882,7 +1888,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
     });
     EpochAcc& acc = acc_[epoch];
     if (acc.sum.empty()) { acc.sum.assign(kPriceKinds * (size_t)numMIs_, 0); acc.cnt.assign(kPriceKinds * (size_t)numMIs_, 0); }   // (1.12.189): price slots
-    acc.pend += recs.size(); acc.fed = false;
+    acc.pend += recs.size(); acc.fed = false; fedEp_.erase(epoch);
     recFeed(acc, recs);   // (1.12.189)
     if (clOn() && roiMarked_) {
         /* (1.12.189): the closed-loop replay (see reconcileAtBarrier). Each record goes to its core's queue and reaches
@@ -1901,7 +1907,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
             if (k) { k->fifo.push_back(w); clHeld_++; if (r.hold) k->live.insert(r.seq); clRelease(*k); }   // (1.12.216): live
             else clQueue(w, target);
         }
-        acc.fed = true;
+        acc.fed = true; fedEp_.insert(epoch);
         serveRel();
         if (!realTime_) tickTo(endT);   // (1.12.216): on the ranks' real time the plugin runs the clock (setRealTime)
         auto ai = acc_.find(epoch);
@@ -1931,7 +1937,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
         std::deque<Waiting>& q = doors_[key];
         if (!q.empty() || !acceptOne(w)) { q.push_back(w); waitingN_++; }   // FIFO behind its queue's door
     }
-    acc.fed = true;
+    acc.fed = true; fedEp_.insert(epoch);
     if (acc.pend == 0) finalizeEpoch(epoch);
     if (cutMode_) { lastFolded_ = epoch; anyFolded_ = true; }
     lastReplayed_ = epoch; anyReplayed_ = true;
@@ -2227,7 +2233,7 @@ void DramEpochReplay::replayEpochPar(uint64_t epoch) {
     });
     EpochAcc& acc = acc_[epoch];
     if (acc.sum.empty()) { acc.sum.assign(kPriceKinds * (size_t)numMIs_, 0); acc.cnt.assign(kPriceKinds * (size_t)numMIs_, 0); }   // (1.12.189): price slots
-    acc.pend += recs.size(); acc.fed = false;
+    acc.pend += recs.size(); acc.fed = false; fedEp_.erase(epoch);
     recFeed(acc, recs);   // (1.12.189)
     std::vector<ChanWork> work[2];
     uint64_t end = curTick_;
@@ -2256,7 +2262,7 @@ void DramEpochReplay::replayEpochPar(uint64_t epoch) {
     };
     parRun(f);
     chanMerge(t0, end);
-    acc.fed = true;
+    acc.fed = true; fedEp_.insert(epoch);
     if (acc.pend == 0) finalizeEpoch(epoch);
     if (cutMode_) { lastFolded_ = epoch; anyFolded_ = true; }
     lastReplayed_ = epoch; anyReplayed_ = true;
@@ -2275,7 +2281,7 @@ void DramEpochReplay::markRoi() {
     futex_lock(&lock_);
     /* everything recorded so far is pre-ROI: replay it now so the bank state
      * carries into the ROI, then snapshot */
-    while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); }
+    while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); pendNe_.erase(ep); }
     drainAll();   // 1.12.18 (drain the lag): the pre-ROI requests are served before the window opens
     /* the ROI snapshot restarts epoch numbering (mpiNocRoiBasePhase): the
      * frozen pre-ROI epochs are on the old axis and must not be found, or
@@ -2349,7 +2355,7 @@ void DramEpochReplay::finalize() {
         armClose(true);
     }
     /* replay whatever is still pending so the controller totals cover the window */
-    while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); }
+    while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); pendNe_.erase(ep); }
     drainAll();   // 1.12.18 (drain the lag): every fed request served before the counters are read
     /* 1.12.18 (ruling 17 / R0605): a host-only instance closes its window at
      * the current phase clock, as markRoi opens it there: a decoupled host

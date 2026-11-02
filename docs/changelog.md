@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.223 -- the DRAM replay's per-access lookups no longer slow down while ranks wait to settle
+
+- **The problem.** While message-passing ranks wait for their settlement at a rendezvous and the shared controller cannot
+  run, the closed-loop replay keeps one accumulating epoch per phase (the epochs fold once the controller runs again).
+  Every priced access looked for the newest fed epoch by walking those epochs from the oldest
+  (`DramEpochReplay::serviceLatencyCut`), and every settle visited every pending epoch, most of them already fed
+  (`feedAll`). The host time of such a stretch therefore grew with the square of its length: in the saturated bfs on
+  the CHANNEL placement (209,715 vertices, 16 ranks, HBM3) one stretch reached more than 50,000 epochs, and the phase
+  rate fell from about 7,300 to about 1,250 per minute while one rank worked and the others waited.
+- **The fix** (`dram_epoch_replay.h/.cpp`). The epochs whose records were fed are kept in an ordered set, so the newest
+  one at or before an access's epoch is one lookup; the epochs holding records still to feed are kept in a second set,
+  which the settle visits in the same epoch order. Both sets hold only keys of the maps they index and shrink with them.
+  No simulated quantity changes.
+- **Validation** (the previous release and this build on the same nodes; logs compared with tree paths masked): 135
+  device message-passing smoke cells, 11 co-simulation message-passing smoke cells, the 116-cell validation set, 20
+  saturated-bfs smoke variants, the co-simulation message-passing full set, and the saturated-bfs variants at 209,715
+  vertices: every log identical; two cells run 8 times each give one output per cell.
+- **Host time.** Saturated bfs at 209,715 vertices, CHANNEL placement: 5,708 -> 2,420 s (the variant with the long
+  settle wait), 2,851 -> 2,380 s and 2,811 -> 2,366 s (two others). Run times in cycles are unchanged.
+
 ## 1.12.222 -- message passing on device PEs: a rank parked in message passing no longer keeps the controller from running either
 
 - **The problem.** The previous release left the ranks waiting for their settlement out of the test that decides
