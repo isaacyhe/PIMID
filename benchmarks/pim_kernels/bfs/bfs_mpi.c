@@ -43,7 +43,23 @@ static int parse_int_arg(int argc, char** argv, const char* flag, int def) {
     return def;
 }
 
+static long long parse_ll_arg(int argc, char** argv, const char* flag, long long def) {
+    for (int i = 1; i < argc - 1; i++)
+        if (strcmp(argv[i], flag) == 0) return strtoll(argv[i + 1], NULL, 10);
+    return def;
+}
+
 static long bfs_block(long v, int nprocs) { return (v + nprocs - 1) / nprocs; }
+
+/* The owner of vertex v is v / B, computed without a division. With M = floor((2^64 - 1) / B) + 1 (B >= 2),
+ * M * B = 2^64 + e with 0 <= e < B, and the high 64 bits of v * M are floor(v / B + v * e / (B * 2^64)); that is
+ * floor(v / B) whenever v * e < 2^64, so it is exact for every v < 2^31 (with B < 2^31). The vertex count is checked
+ * against that bound at start (BFS_VERTICES_MAX). B = 1 (V <= P): the owner is v itself (M = 0 marks it). */
+#define BFS_VERTICES_MAX 2147483647LL   /* vertex ids 0 .. V - 1 below 2^31 */
+static uint64_t bfs_owner_mult(long b) { return b < 2 ? 0 : ~(uint64_t)0 / (uint64_t)b + 1; }
+static inline int bfs_owner(int v, uint64_t m) {
+    return m ? (int)(((unsigned __int128)(uint32_t)v * m) >> 64) : v;
+}
 
 /* A rank's slot need, in ints: its rows [B+1], its columns [B*deg], its dist [B], two frontiers [B each], the send
  * buckets [B*deg], the receive buffer [the edges into its block; B*deg, their mean, when not known] and five
@@ -59,10 +75,11 @@ static size_t bfs_mpi_need(long v, const void* c) {
 
 /* Expand frontier[0..nf) (global ids, all in [lo, lo+nloc)): a neighbour in this rank's block (owner me) not yet
  * visited gets dist = level and goes to the next frontier out[]; every other neighbour is appended to its owner's
- * bucket, sb[so[p] + sc[p]++]. With a scratchpad the RAM holds two equal buffers, a tile of the frontier and a tile
- * of one adjacency row; each is fetched once. Returns the number of vertices appended to out. */
+ * bucket, sb[so[p] + sc[p]++] (p = bfs_owner(v, bm)). With a scratchpad the RAM holds two equal buffers, a tile of
+ * the frontier and a tile of one adjacency row; each is fetched once. Returns the number of vertices appended to
+ * out. */
 static size_t bfs_route(pimid_spm_t* s0, const int* rp, const int* ci, int* dist, const int* frontier, size_t nf,
-                        long lo, long B, int me, int level, int* out, int* sb, const int* so, int* sc) {
+                        long lo, uint64_t bm, int me, int level, int* out, int* sb, const int* so, int* sc) {
     pimid_spm_t sl = *s0, *s = &sl;   /* a local copy of the handle */
     const size_t T = pimid_spm_tile(s, 2, sizeof(int));
     const size_t of = 0, oa = s->cap ? T * sizeof(int) : 0;
@@ -78,7 +95,7 @@ static size_t bfs_route(pimid_spm_t* s0, const int* rp, const int* ci, int* dist
                 const int* ab = (const int*)pimid_spm_in(s, oa, ci + e0 + eb, (size_t)na * sizeof(int));
                 for (int e = 0; e < na; e++) {
                     const int v = ab[e];
-                    const int p = (int)(v / B);
+                    const int p = bfs_owner(v, bm);
                     if (p == me) {
                         if (dist[v - lo] == -1) { dist[v - lo] = level; out[nout++] = v; }
                     } else {
@@ -127,7 +144,19 @@ int main(int argc, char* argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-    int V = parse_int_arg(argc, argv, "--vertices", DEFAULT_VERTICES);
+    /* The owner computation (bfs_owner) is exact for vertex ids below 2^31: a vertex count outside 1 .. 2^31 - 1 is
+     * refused rather than run with wrong owners. */
+    const long long Vreq = parse_ll_arg(argc, argv, "--vertices", DEFAULT_VERTICES);
+    if (Vreq < 1 || Vreq > BFS_VERTICES_MAX) {
+        if (rank == 0)
+            fprintf(stderr, "bfs: --vertices %lld refused: a vertex's owner rank is computed by an exact reciprocal "
+                    "multiply, exact for vertex ids below 2^31; the vertex count must be 1 .. %lld\n",
+                    Vreq, BFS_VERTICES_MAX);
+        fflush(stderr);
+        MPI_Barrier(MPI_COMM_WORLD);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    int V = (int)Vreq;
     int deg = parse_int_arg(argc, argv, "--degree", DEFAULT_DEGREE);
     int source = parse_int_arg(argc, argv, "--source", 0);
 
@@ -144,6 +173,7 @@ int main(int argc, char* argv[]) {
     /* This rank's block of the graph: rows [lo, hi). */
     const uint32_t seed = 42;
     const long B = bfs_block(V, nprocs);
+    const uint64_t BM = bfs_owner_mult(B);   /* owner of v: bfs_owner(v, BM) = v / B */
     const long lo = ((long)rank * B < V) ? (long)rank * B : V;
     const long hi = (lo + B < V) ? lo + B : V;
     const int nloc = (int)(hi - lo);
@@ -165,7 +195,7 @@ int main(int argc, char* argv[]) {
     /* Edges from this block to each owner, and (by one exchange) into this block from each rank: they size the
      * send buckets and the receive buffer, which no level can exceed. */
     for (int p = 0; p < nprocs; p++) outtot[p] = 0;
-    for (size_t e = 0; e < nedge; e++) outtot[col_idx[e] / B]++;
+    for (size_t e = 0; e < nedge; e++) outtot[bfs_owner(col_idx[e], BM)]++;
     MPI_Alltoall(outtot, 1, MPI_INT, intot, 1, MPI_INT, MPI_COMM_WORLD);
     long in_edges = 0;
     for (int p = 0; p < nprocs; p++) in_edges += intot[p];
@@ -265,7 +295,7 @@ int main(int argc, char* argv[]) {
                 const int u = (int)(fr[f] - lo);
                 for (int e = rp[u]; e < rp[u + 1]; e++) {
                     const int v = ci[e];
-                    const int p = (int)(v / B);
+                    const int p = bfs_owner(v, BM);
                     if (p == rank) {
                         if (ds[v - lo] == -1) { ds[v - lo] = level; nx[n++] = v; }
                     } else {
@@ -274,7 +304,7 @@ int main(int argc, char* argv[]) {
                 }
             }
         } else {
-            n = (int)bfs_route(&spm, rp, ci, ds, fr, (size_t)fsize, lo, B, rank, level, nx, sb, so, sc);
+            n = (int)bfs_route(&spm, rp, ci, ds, fr, (size_t)fsize, lo, BM, rank, level, nx, sb, so, sc);
         }
 
         /* Route: the counts, then the vertices, to their owners */

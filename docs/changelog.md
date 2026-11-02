@@ -6,6 +6,44 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.226 -- the message-passing bfs finds a vertex's owner rank by an exact reciprocal multiply, not a division per edge
+
+- **The problem.** The message-passing bfs (the PIM kernel `bfs_mpi` and the host `bfs_message_passing`) found the
+  owner rank of every neighbour as v / B with a 64-bit integer division per edge, then branched on whether that owner
+  is the rank itself. With more than one rank the branch is taken for about one edge in P and cannot be predicted, and
+  on an out-of-order core a mispredicted branch waits for the division. On the 16-core host at 838,859 vertices the
+  search took 40,055,248 cycles, against 30,927,102 for a build that routes every neighbour through the send buckets
+  without that branch; the in-order and out-of-order device core models paid the same way.
+- **The fix** (benchmarks/pim_kernels/bfs/bfs_mpi.c, benchmarks/host/bfs/bfs_message_passing.c; both binaries
+  rebuilt). The owner is computed with an exact reciprocal multiply instead of a per-edge division: the high 64 bits
+  of v x M, with M = floor((2^64 - 1) / B) + 1 computed once per run (with B = 1 the owner is v). M x B = 2^64 + e
+  with 0 <= e < B, so the high word is floor(v / B + v e / (B 2^64)), which equals floor(v / B) whenever v e < 2^64:
+  the result is exact for every vertex id v < 2^31. The vertex count is now read as a 64-bit number, and a count
+  outside 1 .. 2^31 - 1 is refused before anything is allocated, with the message "bfs: --vertices N refused: a
+  vertex's owner rank is computed by an exact reciprocal multiply, exact for vertex ids below 2^31; the vertex count
+  must be 1 .. 2147483647" (before, a larger count wrapped around in the conversion to int, and 0 divided by zero).
+  The graph, the search and every result (levels, reached vertices) are unchanged.
+- **Validation** (the previous release and this build).
+  - Natively, both kernels at every rank count from 1 to 64 (20,000 and 209,715 vertices; the PIM kernel with the
+    in-process message-passing library, with and without a bank placement, and with MPICH; the host kernel with
+    MPICH) and at 1, 2, 3, 4, 7, 16, 31 and 64 ranks (512, 838,859 and 3,355,436 vertices): 584 runs, levels and
+    reached vertices equal the serial bfs in every one. Vertex counts 0, -5, a non-number, 2,147,483,648,
+    4,294,967,301 and a 22-digit count are refused by both kernels; 268,435,456 passes the check and reaches the
+    slot fit check, which names 153,390,912 as the largest that fits a 64-PE bank placement of 256 MiB slots.
+  - In simulation, smoke sizes: of the 135 device message-passing cells, the 108 that do not run bfs give identical
+    logs; of the 11 co-simulation message-passing cells, the 8 that do not run bfs are identical; all 30 bfs cells
+    give the serial checksum and level count. Two bfs cells run 8 times each give one output each. The power check
+    reports no flag and no consistency failure on every set. A rebuild of every benchmark from its sources
+    reproduces the 43 binaries in the tree.
+  - Full size, 3,355,436 vertices: the 16-core host search 211,727,577 -> 183,580,998 cycles; co-simulated HBM3, 16
+    ranks, 555,877,456 -> 547,048,202 cycles; levels and reached vertices equal the serial bfs.
+- **Data impact.** Message-passing bfs run times change; results are unchanged; no other kernel and no simulator code
+  changes. Smoke sizes, run time in cycles: HBM3 16-PE bank placement 3,395,565 -> 3,244,430 (in-order core
+  1,493,098 -> 1,282,488; out-of-order core 848,989 -> 717,223); the non-DRAM bank placements -8 % to -10 %; the
+  DRAM technologies -2 % to +2 %; CHANNEL 12,325,666 -> 12,283,425; 1 PE 28,282,169 -> 26,759,312; 64 PEs
+  8,591,197 -> 8,586,180; co-simulated HBM3 3,217,355 -> 3,191,621; co-simulated DDR5 at the 3200 grade 5,246,217 ->
+  5,470,232.
+
 ## 1.12.225 -- co-simulation message passing: the DRAM replay window ends at the ROI end's own tick
 
 - **The problem.** A co-simulation message-passing run learns its ROI end only when its last rank leaves the kernel
