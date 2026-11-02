@@ -2623,6 +2623,9 @@ bool pimidPostRoiFree() {
  * core parked or exited when they settled) extends that core's end: the replays are settled (what is pending replayed,
  * the controllers drained) and the run time raised to the latest end + balance of the cores it is taken over. The
  * replays' windows close at the raised run time (finalize). Cut mode only (the closed-loop replay). */
+/* (1.12.220) single-process co-simulation: the host core that rang the latest doorbell, whose ROI-relative clock at the
+ * doorbell is the device's axis origin (PEMemoryInterface::spDevShift); ~0u = none */
+static uint32_t g_spDoorbellCore = ~0u;
 static void recExtendRunTime() {
     if (g_cutDramHeld)   // (1.12.189): see g_cutDramFolded
         info("[roi] DRAM fold point held at the latest point folded %lu time(s) (largest drop %lu cycles): a core's clock fell behind it",
@@ -2633,17 +2636,38 @@ static void recExtendRunTime() {
     if (!any || !zinfo->roiWall.ended || (zinfo->roiWall.source != 2 && zinfo->roiWall.source != 3)) return;
     const uint64_t run = zinfo->roiWall.mpiEnd;
     uint64_t best = 0; int bestCore = -1; double bestOwed = 0.0; uint32_t n = 0;
+    /* (1.12.220) single-process co-simulation: the device's axis starts at the doorbell, on the clock of the host core
+     * that rang it, after its flush and launch. That core waited for its accesses before ringing; their balance,
+     * or a waited access completing past the doorbell, delays the doorbell, and so the start and the end of every
+     * device PE by the same amount (the core does no ROI work after it: its thread runs on the device). */
+    double devStart = 0.0, hostOwed = 0.0, hostPast = 0.0;
+    const uint32_t dc = g_spDoorbellCore;
+    if (g_spCut && !g_mpi_thread_mode && zinfo->roiWall.source == 3 && zinfo->roiWall.mpiEndFreqMHz == 0 && dc < MAX_THREADS && dc < zinfo->numCores) {
+        uint32_t hMHz = 0, dMHz = zinfo->hierarchy.nocBandwidthFreqMHz;
+        for (uint32_t nd = 0; nd < zinfo->nodeMap.numNodes && nd < 16; nd++)
+            if (dc >= zinfo->nodeMap.nodes[nd].coreStart && dc < zinfo->nodeMap.nodes[nd].coreEnd) hMHz = zinfo->nodeMap.nodes[nd].freqMHz;
+        if (hMHz == 0) hMHz = zinfo->freqMHz;
+        double held = 0.0;
+        for (DramEpochReplay* r : reps) if (r) { hostOwed += r->owedEnd(dc); double hE = 0.0; if (r->heldEnd(dc, 0, hE) && hE > held) held = hE; }
+        const double owedRun = (dMHz && hMHz) ? hostOwed * (double)dMHz / (double)hMHz : hostOwed;   // host cycles -> the run time's clock
+        hostPast = std::max(0.0, held - (double)PEMemoryInterface::spDevShift());
+        devStart = std::max(owedRun, hostPast);
+        if (devStart < 1.0) devStart = 0.0;
+    }
     for (uint32_t c = 0; c < zinfo->numCores && c < MAX_THREADS; c++) {
         if (!g_rtEndKnown[c]) continue;
         double owed = 0.0, held = 0.0;
         for (DramEpochReplay* r : reps) if (r) { owed += r->owedEnd(c); double hE = 0.0; if (r->heldEnd(c, g_rtEnd[c], hE) && hE > held) held = hE; }
         /* (1.12.189) a core also ends no earlier than its last access it waited for completed (heldEnd) */
-        const double add = std::max(owed, held - (double)g_rtEnd[c]);
+        const double add = std::max(0.0, std::max(owed, held - (double)g_rtEnd[c])) + devStart;   // (1.12.220): + the move of the device start
         if (add < 1.0) continue;
         n++;
         const uint64_t e = g_rtEnd[c] + (uint64_t)add;
         if (e > best) { best = e; bestCore = (int)c; bestOwed = add; }
     }
+    if (devStart > 0.0)
+        info("[roi] the DRAM balance of doorbell host core %u moves the device's start by %.0f cycles (its balance %.0f host cycles; its last waited access completes %.0f cycles past the doorbell)",
+             dc, devStart, hostOwed, hostPast);
     if (best > run) {
         zinfo->roiWall.mpiEnd = best;
         zinfo->roiWall.balance = best - run;
@@ -5765,6 +5789,7 @@ static void cosimRoiBeginOffload(uint32_t tid) {
          * on the host's ROI-relative clock (PEMemoryInterface::spDevShift). */
         const uint32_t hc = cids[tid];
         PEMemoryInterface::spDevShift() = PEMemoryInterface::cutRoiRel(hc, zinfo->cores[hc]->pimidRawCycle());   // 1.12.18 (W9): the raw clock (cutRoiRel converts)
+        g_spDoorbellCore = hc;   // (1.12.220): see recExtendRunTime
     }
     thread_domain[tid].store(DOMAIN_DEVICE);
     // 1.8.4 ROI window: first opener initializes the population; any later

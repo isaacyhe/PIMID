@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.220 -- single-process co-simulation: the launcher's DRAM balance moves the device's start
+
+- **The problem.** In a single-launcher co-simulation run (OpenMP or serial offload), the device's time axis starts at
+  the doorbell, on the launcher's host-core clock, after its flush and launch. The launcher waits for those accesses,
+  but the closed-loop DRAM replay prices them after the doorbell, so their balance (measured minus charged latency)
+  was still unapplied when the statistics were written. The run time is the latest device PE's end raised by the PE's
+  own balance; the launcher's balance moved no end, and the power check reported that the run time did not cover
+  the end balance on 7 of the 45 co-simulation OpenMP smoke cells (4- and 16-core hosts; largest 7,268 cycles, 5.8 %
+  of the run time, DDR5 gemv 16 cores).
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp; docs/cosim.md). The launcher's balance, converted to the
+  device clock, or the time its last waited access completes past the doorbell, whichever is larger, moves the
+  device's start; every device PE's end moves by it before its own balance is added. The run prints the move.
+- **Validation** (the previous release and this build). 45 co-simulation OpenMP cells at smoke size and at full size
+  (1-, 4- and 16-core hosts; DDR5, DDR5-3200 and HBM3; five kernels): every cell prints the move; the power check
+  reports no consistency failure on either size (7 before, at smoke size). The 150 message-passing smoke cells and
+  the 114 validation cells without a single-launcher co-simulation give logs identical to the previous release;
+  8 cells x 2 copies give one output each.
+- **Data impact.** Single-launcher co-simulation run times rise by the launcher's balance where the device PEs' ends
+  set the run time: at smoke size 31 of 45 cells, median +0.08 %, at most +1.35 % (DDR5 gemv, 4-core host); at full
+  size at most +0.0005 % (a few hundred cycles of runs of 20-50 M cycles). Where the busiest link sets the run time,
+  it does not change. Device-scope, host-only and message-passing runs do not change.
+
 ## 1.12.219 -- the host L3's slice organisation is a configuration option; by default the L3 is priced as one slice per core at every size
 
 - **The problem.** A Sapphire Rapids-class host L3 is one slice per core. The previous release priced a host L3 above 64 MB

@@ -187,6 +187,15 @@ host or on the device PE, never two places at once and never racing ahead to
 do other host work during the device compute (there is none). The host is
 therefore self-penalized for the wait exactly as a CUDA busy-wait would be.
 
+In the single-launcher offload the device's time axis starts at the doorbell, on
+the launcher's host-core clock. The flush and launch accesses the launcher waits
+for are priced by the closed-loop DRAM replay after the doorbell. When the replay
+finds them slower than charged (the core's DRAM balance), or one of them completes
+past the doorbell, the doorbell is late by that amount, and so are the start and
+the end of every device PE: the run time takes the move, together with the device
+PEs' own balances, and the run prints it (`[roi] the DRAM balance of doorbell host
+core ... moves the device's start by ... cycles`).
+
 Under **co-sim MPI** there is no single launcher: every rank charges its own
 flush + launch on its host core at its kernel-entry barrier and migrates
 **itself** into its device PE (the per-rank device window, 1.8.4/1.8.5). See
