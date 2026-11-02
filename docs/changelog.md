@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.221 -- message passing on device PEs: a rank waiting for its settlement no longer keeps the controller from running
+
+- **The problem.** Settling at the rendezvous (1.12.216) runs the DRAM controller no further than the earliest time
+  a PE can still release an access at. When no PE could move in a phase and the controller could not run, it runs
+  without that bound to the next completion of a waiting rendezvous. Whether a PE could move was asked of every PE,
+  the ranks waiting for their settlement included. An ALU PE keeps its clock through the phases it waits in, so one
+  frozen with its clock past its phase end stayed behind the phases until it was settled, and counted as a PE still
+  to move. Once the other ranks were parked in message passing, waiting for the frozen ones, and a parked rank's
+  clock bounded the controller at its own clock, no PE could move, the controller could not run, and the unbounded
+  run never started: the simulation stopped advancing. With the bfs graphs of 1.12.217 this happened in a device
+  message-passing bfs (16 ranks on HBM3, CHANNEL placement, 209,715 vertices, the degree argument written as
+  "00008"), which stood still with 14 ranks waiting on a ring of 14 receives, and in a co-simulation
+  message-passing bfs on HBM3 (838,859 vertices).
+- **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, setProcess; docs/memory.md). A rank waiting for its
+  settlement counts neither as moving nor as still to move: it moves only once the controller has run for it, which
+  the test already counts. The unbounded run then starts as designed and settles the next rendezvous; a parked
+  rank's access released behind the controller's clock makes its rank wait, charged, as before.
+- **Validation** (the previous release and this build).
+  - The device bfs that stood still completes: 198,182,338 cycles (CHANNEL) and 200,386,738 (LOGIC_DIE), 159 and
+    169 unbounded runs.
+  - The saturated bfs at 209,715 vertices, six other argument and environment variants on each placement: run
+    times identical, except one variant (and its repeat) 653 cycles shorter (CHANNEL, 195,437,453 -> 195,436,800);
+    the unbounded runs are as many as before in every variant, and the held PE-phases 0.03-0.07 % fewer (an
+    unbounded run no longer waits for a frozen rank's clock or phase state).
+  - At smoke size: the 135 device message-passing cells, the 11 co-simulation message-passing cells and 20 saturated
+    bfs variants give logs identical to the previous release; two cells run 8 times each give one output.
+  - The co-simulation message-passing cells at full size (bfs at 838,859 vertices): logs identical to the previous
+    release.
+  - The power check reports no flag and no consistency failure on every set.
+- **Data impact.** Runs that stood still now complete. Elsewhere none, apart from the one bfs variant above.
+
 ## 1.12.220 -- single-process co-simulation: the launcher's DRAM balance moves the device's start
 
 - **The problem.** In a single-launcher co-simulation run (OpenMP or serial offload), the device's time axis starts at

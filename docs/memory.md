@@ -100,7 +100,8 @@ balance moves its clock both ways (no further back than its last rendezvous: a r
 at the later of the two. A rank waiting for its settlement does not bound the controller (the accesses it waits for
 complete after the controller's clock); once settled it goes on no earlier than the controller's clock. When no rank
 could move in a phase and the controller could not run, it runs without the bound to the next completion of a
-waiting rendezvous' accesses. The run log's `[settle]` line counts the settled barriers and messages, these
+waiting rendezvous' accesses. A rank waiting for its settlement does not count as one that could move: it moves only
+once the controller has run for it. The run log's `[settle]` line counts the settled barriers and messages, these
 unbounded runs, the held PE-phases, the balance applied at the rendezvous, how far the senders' balances moved the
 arrivals, and the accesses issued behind the controller's clock. A rank on a host core, and a rendezvous outside the
 ROI, keep the settling at message-passing entry.
