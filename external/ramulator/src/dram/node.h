@@ -43,6 +43,11 @@ struct DRAMNodeBase {
     int m_size = -1;       // The size of the node (e.g., how many rows in a bank)
 
     int m_state = -1;      // The state of the node
+    /* PIMID (1.12.229): the updates of this channel's nodes, counted at the channel (the root): every state and timing
+     * change of a node goes through update_states / update_timing called at the channel, so while the count is
+     * unchanged no node of the channel has changed (FRFCFS keeps each request's prerequisite command and ready clock
+     * with it while the count holds) */
+    uint64_t m_pimid_ver = 0;
 
     std::vector<Clk_t> m_cmd_ready_clk;             // The next cycle that each command can be issued again at this level
     std::vector<std::deque<Clk_t>> m_cmd_history;   // Issue-history of each command at this level
@@ -89,6 +94,7 @@ struct DRAMNodeBase {
     };
 
     void update_states(int command, const AddrVec_t& addr_vec, Clk_t clk) {
+      if (!m_parent_node) m_pimid_ver++;   // PIMID (1.12.229)
       int child_id = addr_vec[m_level+1];
       if (m_spec->m_actions[m_level][command]) {
         // update the state machine at this level
@@ -132,6 +138,7 @@ struct DRAMNodeBase {
     };
 
     void update_timing(int command, const AddrVec_t& addr_vec, Clk_t clk) {
+      if (!m_parent_node) m_pimid_ver++;   // PIMID (1.12.229)
       /************************************************
        *         Update Sibling Node Timing
        ***********************************************/

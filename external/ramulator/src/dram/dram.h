@@ -119,6 +119,10 @@ class IDRAM : public Clocked<IDRAM> {
     /* PIMID (1.12.127): the earliest clock at which check_ready(command, addr_vec) can pass while no further command is
      * issued (-1: no timing constraint); -2: the standard does not provide it. */
     virtual Clk_t pimid_ready_at(int command, const AddrVec_t& addr_vec) { return -2; }
+    /* PIMID (1.12.229): the update count of a channel's nodes (DRAMNodeBase::m_pimid_ver); nullptr: the standard does not
+     * provide it (it is provided with pimid_ready_at) */
+    virtual const uint64_t* pimid_chan_ver(int channel) { return nullptr; }
+    Clk_t pimid_dram_clk() const { return m_clk; }   // PIMID (1.12.229): the clock check_ready compares with
 
     /**
      * @brief     Checks whether the command will result in a rowbuffer hit

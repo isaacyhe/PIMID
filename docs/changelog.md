@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.229 -- the DRAM controller's FR-FCFS pick takes one pass and re-derives a queued request only after its channel changed
+
+- **The problem.** The device placements above the bank (RANK, CHANNEL, LOGIC_DIE) and every host memory replay their
+  requests through Ramulator2's generic controller. Its FR-FCFS scheduler (`FRFCFS::get_best_request`) re-derived the
+  prerequisite command of every queued request in every DRAM cycle, then folded the queue pairwise, asking the DRAM
+  for the readiness of both the running candidate and the next request at every step: about three walks of the
+  channel's node tree per queued request per cycle. The message-passing bfs keeps one channel's queues full, and in
+  its long DRAM-bound stretches (HBM3, 16 ranks, 3,355,436 vertices) this scan took 25 of 28 stack samples on the
+  LOGIC_DIE placement and 18 of 20 on CHANNEL.
+- **The fix** (Ramulator2: `generic_scheduler.cpp`, `node.h`, `dram.h`, `request.h`, and the DDR3, DDR4, DDR5, HBM2
+  and HBM3 standards). The pick is taken in one pass that asks each request's readiness once. Each channel counts
+  the updates of its nodes (every state and timing change goes through the channel's update calls), and a request
+  keeps its prerequisite command and the clock its readiness waits for (`pimid_ready_at`: `check_ready` passes
+  exactly when the clock reaches it) while that count and its final command are unchanged. The same commands are
+  written to the queue and the same request is picked: a ready request before one that is not, then the earlier
+  arrival, then queue order. With `PIMID_DEBUG_CHECKS=1` every pick is also compared with the pairwise fold. The
+  standards without `pimid_ready_at` (LPDDR5, GDDR6) take the one-pass pick with the readiness asked of the DRAM.
+- **Validation** (the previous release and this build on the same nodes; logs compared with tree paths masked): 135
+  device message-passing smoke cells, 11 co-simulation message-passing smoke cells, the 116-cell validation set, 52
+  smoke cells on the CHANNEL placement (and HBM2 on LOGIC_DIE) for DDR3, DDR4, DDR5, LPDDR5, GDDR6 and HBM2, 30
+  saturated-bfs smoke variants, the co-simulation message-passing full set, and the HBM3 message-passing bfs at
+  209,715 vertices on BANK, CHANNEL and LOGIC_DIE: every log identical; two cells run 8 times each give one output
+  per cell.
+- **Host time.** HBM3 message-passing bfs, 16 ranks, 209,715 vertices: CHANNEL 987 -> 774 s, LOGIC_DIE 999 -> 774 s;
+  BANK 390 -> 390 s (the bank-parallel controller does not use this scheduler). At 3,355,436 vertices the
+  DRAM-bound stretches of CHANNEL and LOGIC_DIE run about 1.4 times as fast. The 16-core host baselines spend little
+  host time in this scheduler: DDR5 OpenMP gemv, DDR5 message-passing stream_triad and HBM3 OpenMP bfs (3,355,436
+  vertices) take the same time as before. Run times in cycles are unchanged.
+
 ## 1.12.228 -- the detailed NoC replay no longer spends host time on work that changes no result
 
 - **The problem.** With `noc.model: detailed`, each phase's network messages are replayed through the Garnet network

@@ -34,6 +34,13 @@ struct Request {
 
   std::array<int, 4> scratchpad = { 0 };    // A scratchpad for the request
 
+  /* PIMID (1.12.229): FRFCFS's cache -- the prerequisite command of final_command (pimid_pfc) and its ready clock, taken
+   * at update count pimid_pv of the request's channel; valid while both are unchanged */
+  uint64_t pimid_pv = ~0ull;
+  Clk_t pimid_pra = -1;
+  int pimid_pcmd = -1;
+  int pimid_pfc = -1;
+
   std::function<void(Request&)> callback;
 
   void* m_payload = nullptr;    // Point to a generic payload
