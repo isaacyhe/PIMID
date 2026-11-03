@@ -522,6 +522,8 @@ public:
     uint32_t getNumNodes()    const { return numNodes_; }
     bool isRingUnidirectional() const { return ringUnidirectional_; }
     bool isCycleAccurate()    const { return cycleAccurate_; }
+    /* (1.12.246): a flat fabric (MESH_2D, TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS): not the tree */
+    bool isFlatTopology()     const { return topology_ != NoCTopology::H_TREE && topology_ != NoCTopology::CUSTOM; }
 
 #ifdef HAVE_GARNET
     /**

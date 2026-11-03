@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.246 -- a flat fabric named on an SRAM or NVM device sends each access to the node of the unit it reads
+
+- **The problem.** With a flat `noc.topology` (`MESH_2D`, `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE` or `BUS`) on an
+  SRAM or NVM device, the detailed model sent an access to the hierarchy tree's endpoint for its unit, not to that
+  unit's node, and placed element i at node i, not at its home unit's node. With 16 elements on 256 banks every access
+  to a bank that hosts no element went to one node (the tree's one aggregated endpoint, node 16): the mean NoC latency
+  of the histogram cells was 24-256 cycles.
+- **The fix** (external/zsim: pe_memory_interface.h, qemu_zsim_plugin.cpp, garnet_network.h). On a flat fabric with
+  shared I/O the network's nodes are the device's units: an element's packets leave from its home unit's node and go to
+  the node of the unit they read, and a message between elements runs between their home nodes. The tree's endpoints
+  stay the tree's (its own walk); the analytical model, which routes no packets, is unchanged.
+- **Effect** (the fig2 cells, 16 elements on 256 banks, smoke sizes; a device with no topology named builds the same
+  flat `MESH_2D` at this release, so its cells change alike). In message passing, detailed run time falls by up to 41%
+  (stream_triad 1.1-41%, bfs 2.8-39%, gemv 6.5-27%, histogram 2.7-17%; stencil_2d -21% to +1.6%); mean NoC latency is
+  17-39 cycles, against 24-118. With shared memory, the 40 cells move -41.1% to +1.9%.
+- **Validation.** DRAM cells are byte-identical to the release before: 115 device message-passing smoke cells (the other
+  20 of the 135 are these SRAM and NVM cells) and the 116-cell set.
+
 ## 1.12.245 -- the NVM device write-power budget: defaults for STT_MRAM and RERAM, and PCM's on one efficiency
 
 - **The problem.** `memory.nvm_write_budget` (off by default) limits a device's time-averaged write power. Only PCM

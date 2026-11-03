@@ -894,8 +894,12 @@ public:
                 // injection at the node, so it counts as fabric activity.
                 if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases);   // (1.12.181): not the tail
                 zinfo->pgres.nocGaps.event(req.cycle); }   // E17 measurement
-                uint32_t srcNode = (uint32_t)mcId_ % gn->getNumNodes();
-                uint32_t dstNode = (uint32_t)dstEp % gn->getNumNodes();
+                /* (1.12.246): a flat fabric's nodes are the device's units (shared I/O): the element sits at its home
+                 * unit's node and an access goes to the node of the unit it reads; the tree's endpoint ids are the
+                 * tree's, not the flat fabric's. */
+                const bool flatNodes = gn->isFlatTopology() && zinfo->hierarchy.connectionMode == 0;
+                uint32_t srcNode = (flatNodes ? representativeUnit() : (uint32_t)mcId_) % gn->getNumNodes();
+                uint32_t dstNode = (flatNodes ? targetUnit : (uint32_t)dstEp) % gn->getNumNodes();
                 /* (user ruling 2026-10-26: control messages): the access is two messages on Garnet's
                  * own classes -- a read: a CONTROL request (the 64-bit header word,
                  * src -> dst) + a DATA response (header + line, dst -> src); a write: a

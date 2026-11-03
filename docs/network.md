@@ -170,7 +170,11 @@ credit-based flow control, deadlock-free routing.
   fabric Garnet built (an SRAM/NVM device's `MESH_2D`, say) is priced as that
   fabric -- every router it built, from its measured crossbar flits, and on a
   `MESH_2D` its links -- and the router model is calibrated per shape on
-  published routers (see [power.md](power.md)).
+  published routers (see [power.md](power.md)). Such a fabric's nodes are the
+  device's units (shared I/O): an element sits at its home unit's node, an
+  access goes to the node of the unit it reads, and a message between elements
+  runs between their home nodes ((1.12.246); they used to take the hierarchy
+  tree's endpoint ids, which put every bank without an element on one node).
 
 ## `analytical` -- closed form
 

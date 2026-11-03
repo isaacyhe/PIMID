@@ -4956,8 +4956,17 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     uint32_t nocLat = 0;
     if (zinfo->garnetNetwork) {
         GarnetNetwork* gn = zinfo->garnetNetwork;
-        uint32_t srcNode = params.src_pe % gn->getNumNodes();
-        uint32_t dstNode = params.dst_pe % gn->getNumNodes();
+        /* (1.12.246): on a flat fabric (shared I/O) an element sits at its home unit's node */
+        const bool flatNodes = gn->isFlatTopology() && zinfo->hierarchy.connectionMode == 0;
+        auto homeNode = [&](uint32_t pe) -> uint32_t {
+            if (flatNodes && pe < zinfo->hierarchy.peMemMapSize) {
+                const uint32_t off = zinfo->hierarchy.peMemMapOffsets[pe];
+                if (off < 4096) return zinfo->hierarchy.peMemMapData[off];
+            }
+            return pe;
+        };
+        uint32_t srcNode = homeNode(params.src_pe) % gn->getNumNodes();
+        uint32_t dstNode = homeNode(params.dst_pe) % gn->getNumNodes();
 
         if (gn->isCycleAccurate() && g_mpi_thread_mode) {
             /* 1.6 thread mode: DETERMINISTIC message path. Live accessNetwork
@@ -4983,8 +4992,8 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
              * getRTT otherwise (the 1.11.93 default). */
             /* 1.11.97 (plugin-6): the receiver's probe is always uncounted. */
             uint32_t rtt = gn->getRTTProbe(
-                std::to_string(params.src_pe).c_str(),
-                std::to_string(params.dst_pe).c_str(),
+                std::to_string(flatNodes ? srcNode : params.src_pe).c_str(),
+                std::to_string(flatNodes ? dstNode : params.dst_pe).c_str(),
                 /*uncounted=*/isRecv);
             nocLat = rtt + (uint32_t)((params.msg_size / 64) * 2);
         } else if (gn->isCycleAccurate()) {
