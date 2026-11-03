@@ -85,6 +85,9 @@ protected:
     Counter profBudgetWaits_, profBudgetWaitCycles_;
     std::unordered_map<uint32_t, double> bankFree_;   // unit -> cycle its bank is next free
     lock_t bankLock_ = {0};
+    /* (1.12.242): this interface's own use of each bank, per epoch: unit -> (occupancy in
+     * thousandths of a cycle, accesses). Under bankLock_. See sharedBankWait(). */
+    std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> bankOwn_;
     Counter profBankWaits_, profBankWaitCycles_;
     uint64_t lastPhase_;
     double smoothedPhaseAccesses_;
@@ -1523,6 +1526,99 @@ protected:
         return v;
     }
 
+    /* (1.12.242): the SRAM/NVM bank is the DEVICE's, not the interface's. Each interface's bank table
+     * (bankFree_) is exact for its own requests, but an element reaching a bank another element
+     * also uses never saw that use: cross-slot traffic (bfs, histogram) never waited for a bank
+     * busy with another element's access, a PCM or ReRAM write included. The other elements' use
+     * is priced here the way the device-time waits above are, order-free:
+     *  - every access adds its bank occupancy (array access time, a write's extra time included)
+     *    to a device-wide per-bank count of its epoch (thousandths of a cycle, integer);
+     *  - an epoch is final once the consistent cut (or, without the cut, the phase barrier) has
+     *    passed it; an access reads the epoch kNocReadLagEpochs back on the cut axis, the previous
+     *    epoch otherwise (the md1 wait's keys), and the latest final epoch before it when that
+     *    one is not final yet;
+     *  - from that epoch the OTHER elements' use of the bank is the device total minus this
+     *    interface's own (bankOwn_), as occupancy O over n accesses; the wait is the M/D/1 wait
+     *    of a server busy O / epochLen of the time with service O / n: rho S / (2 (1 - rho)),
+     *    rho capped at 0.95 as the interface queue's.
+     * Without cut pricing, or before the ROI baseline, the term is 0 (the bank table alone, as
+     * before). One device per simulator process, as the channel wait's shared state. */
+    struct BankShare {
+        lock_t lk = {0};
+        std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> acc;
+        std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> frozen;
+    };
+    static BankShare& bankShare() { static BankShare s; return s; }
+    /* Called under bankLock_. Returns the wait (cycles) for the other elements' use of bank u. */
+    double sharedBankWait(uint32_t u, double occ, const MemReq& req) {
+        if (!cutPricing() || !zinfo->hierarchy.mpiNocBaselined) return 0.0;
+        const uint32_t E = zinfo->garnetNetwork
+            ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
+        const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        const uint64_t epochLen = (uint64_t)pl * (E > 0 ? E : 1);
+        uint64_t k, done, lag;
+        if (devCutAxis()) {
+            k = cutRoiRel(req.srcId, req.cycle) / epochLen;
+            done = s_devCut.load(std::memory_order_acquire) / epochLen;
+            lag = kNocReadLagEpochs;
+        } else {
+            const uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
+            const uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
+            k = rel / (E > 0 ? E : 1);
+            done = k;   // every epoch below the current one is complete (phase barrier)
+            lag = 1;
+        }
+        const uint64_t om = (uint64_t)(occ * 1000.0 + 0.5);
+        uint64_t to = 0, tn = 0;
+        bool have = false;
+        uint64_t r = 0;
+        BankShare& sh = bankShare();
+        futex_lock(&sh.lk);
+        { auto& a = sh.acc[k][u]; a.first += om; a.second += 1; }
+        while (!sh.acc.empty() && sh.acc.begin()->first < done) {
+            auto it = sh.acc.begin();
+            if (!sh.frozen.count(it->first)) sh.frozen[it->first] = std::move(it->second);
+            sh.acc.erase(it);
+        }
+        if (k >= lag) {
+            const uint64_t want = k - lag;
+            if (want < done) {   // final: its count, or no use at all
+                r = want; have = true;
+                auto it = sh.frozen.find(want);
+                if (it != sh.frozen.end()) {
+                    auto f = it->second.find(u);
+                    if (f != it->second.end()) { to = f->second.first; tn = f->second.second; }
+                }
+            } else {   // not final yet (a liveness release of the cut hold): the latest final epoch before it
+                auto it = sh.frozen.upper_bound(want);
+                if (it != sh.frozen.begin()) {
+                    --it; r = it->first; have = true;
+                    auto f = it->second.find(u);
+                    if (f != it->second.end()) { to = f->second.first; tn = f->second.second; }
+                }
+            }
+        }
+        while (sh.frozen.size() > 64) sh.frozen.erase(sh.frozen.begin());
+        futex_unlock(&sh.lk);
+        uint64_t oo = 0, on = 0;
+        { auto& b = bankOwn_[k][u]; b.first += om; b.second += 1; }
+        if (have) {
+            auto e = bankOwn_.find(r);
+            if (e != bankOwn_.end()) {
+                auto f = e->second.find(u);
+                if (f != e->second.end()) { oo = f->second.first; on = f->second.second; }
+            }
+        }
+        while (bankOwn_.size() > 72) bankOwn_.erase(bankOwn_.begin());
+        if (!have || tn <= on || to <= oo) return 0.0;
+        const double O = (double)(to - oo) / 1000.0;
+        const double n = (double)(tn - on);
+        double rho = O / (double)epochLen;
+        if (rho > 0.95) rho = 0.95;
+        const double S = O / n;
+        return rho * S / (2.0 * (1.0 - rho));
+    }
+
     // Shared M/D/c channel-BW queueing wait (cycles) for an aggregate offered rate
     // (lines/cycle across the whole device). Extracted verbatim from the original
     // channelBandwidthWait phase-update so the rolling-EWMA (OMP) path and the
@@ -1763,7 +1859,8 @@ protected:
          * to a busy bank waits until it is free. The interface's queue above runs at the
          * banks' aggregate rate, so it cannot see several requests at ONE bank; the bank
          * wait replaces the queue wait when it is the larger. Exact for one requester per
-         * interface (its own back-to-back requests and DMA bursts to one bank). */
+         * interface (its own back-to-back requests and DMA bursts to one bank); the other
+         * elements' use of the same bank adds sharedBankWait() (1.12.242). */
         if (bankSvcCycles_ > 0.0) {
             const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
             const double occ = bankSvcCycles_ + (wr ? (double)localWriteExtra_ : 0.0);
@@ -1772,6 +1869,7 @@ protected:
             futex_lock(&bankLock_);
             double& fr = bankFree_[u];
             double start = (fr > arrive) ? fr : arrive;
+            start += sharedBankWait(u, occ, req);   // (1.12.242): the other elements' use of the bank
             if (wr && writeSlotCycles_ > 0.0) {   // (1.12.114): the write-power budget's slot
                 const double held = (writeSlotFree_ > start) ? writeSlotFree_ - start : 0.0;
                 if (held > 0.0) { start += held; roiInc(profBudgetWaits_); roiInc(profBudgetWaitCycles_, (uint64_t)(held + 0.5)); }

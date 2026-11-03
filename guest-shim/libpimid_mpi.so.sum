@@ -1,1 +1,1 @@
-libpimid_mpi.so size=80968 fnv1a64=0x33225859fe6b2b4c md5=ca2d22d31c9a734d2191f2a33710f9e3 version=1.12.241 compiler=g++-13.3.0-6ubuntu2~24.04.1
+libpimid_mpi.so size=80968 fnv1a64=0xe929dbf613664761 md5=2e9bea9cae1c40fbb08d22b849896b76 version=1.12.242 compiler=g++-13.3.0-6ubuntu2~24.04.1

@@ -6,6 +6,31 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.242 -- an SRAM or NVM bank is the device's: a request also waits for the other elements' use of it
+
+- **The problem.** On an SRAM or NVM device each processing element's memory interface kept its own record of when each
+  bank is next free. That record is exact for the element's own requests, but two elements reaching the same bank never
+  saw each other: traffic across slots (bfs and histogram over shared data) never waited for a bank another element was
+  using, a PCM or ReRAM write (about 75 and 91 cycles beyond a read at 500 MHz) included.
+- **The fix** (external/zsim/src/pe_memory_interface.h). The interface's own record stays exact for its own requests.
+  Every access also adds its bank occupancy (the array access time, plus a write's extra time) to a device-wide count
+  per bank and epoch. From the latest final epoch, read the way the interface queue's device-time wait reads its epochs,
+  the other elements' use of the bank is the device count minus the interface's own, as occupancy O over n accesses. A
+  request waits the M/D/1 wait of that use before it takes the bank: rho S / (2 (1 - rho)), with rho = O / epoch length
+  (capped at 0.95, as the interface queue) and S = O / n. The counts are integers keyed by epoch, so the wait does not
+  depend on the order in which the elements are simulated. Before the ROI baseline, or without the epoch-keyed pricing,
+  the term is 0 and the bank record alone applies, as before. DRAM devices have no bank record here and are unchanged.
+- **Validation** (the previous release against this build, logs compared with the tree paths masked):
+  - The 40 SRAM / NVM device cells (PCM, ReRAM, STT-MRAM and SRAM, 16 elements at the bank, message passing and shared
+    memory, smoke sizes): 24 change run time, -0.90% to +5.52%; the 10 SRAM cells are identical (an SRAM bank is busy
+    0.11 cycles per access, so the other elements' wait rounds to nothing). The shared-memory bfs cells, whose elements
+    read one shared graph, show the term: PCM 11,218 -> 451,589 bank waits, ReRAM 11,219 -> 456,535. The message-passing
+    bfs keeps each rank's data in its own slot and barely changes (21,616 -> 21,676 waits on PCM).
+  - The 135 device message-passing smoke cells: every DRAM cell identical; 10 of the 20 SRAM / NVM cells move.
+  - The 11 co-simulation message-passing smoke cells, the 40 host baseline smoke cells, the 116-cell validation set and
+    the 30 bfs smoke variants: identical.
+  - Two cells run 8 times each (PCM message-passing histogram, ReRAM message-passing bfs) give one output per cell.
+
 ## 1.12.241 -- SRAM periphery gating takes CACTI's own split between the cells and the periphery
 
 - **The problem.** With `memory.array_pg` on an SRAM device, the share of the leakage that gates came from a second
