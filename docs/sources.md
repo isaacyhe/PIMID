@@ -136,6 +136,7 @@ comments and in the changelog.
 | Quantity | Value in use | Source | Consumed at |
 |---|---|---|---|
 | PCM cell read energy (1.12.92) | 2 pJ per cell read (40 uW for 48 ns) | Lee et al., ISCA 2009, Table 1 | `external/nvsim/sample_PCRAM.cell` (-ReadEnergy) |
+| PCM cell read time (1.12.243) | 48 ns per cell read, bitline precharge and current sensing included (40 uA at 1.0 V) | Lee et al., ISCA 2009, Sec. 2.4 (after Bedeschi et al.) | `external/nvsim/sample_PCRAM.cell` (-CellReadLatency) |
 | PCM cell SET / RESET energy (1.12.93) | SET 13.5 pJ (90 uW for 150 ns), RESET 19.2 pJ (480 uW for 40 ns at 1.6 V) | Lee et al., ISCA 2009, Table 1 | same |
 | PCM write supply efficiency (1.12.94) | 0.388 (average pumping efficiency of a PCM charge pump; replaces NVSim's 0.2) | Luo, Hu, Shi, Xue, Zhuge, ASP-DAC 2016 | `external/nvsim/constant.h` PCM_WRITE_SUPPLY_EFFICIENCY |
 | PCM write energy per bit (1.12.108) | the mean of the SET and RESET energies | Lee et al., ISCA 2009, Sec. 3 | `external/nvsim/SubArray.cpp` |

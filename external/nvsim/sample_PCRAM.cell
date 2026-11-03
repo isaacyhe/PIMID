@@ -15,6 +15,9 @@
 -ReadMode: voltage
 -ReadCurrent (uA): 40
 -ReadEnergy (pJ): 2
+# PIMID (1.12.243): Lee et al., ISCA 2009, Section 2.4: a cell read takes 48 ns (Bedeschi et al.), bitline precharge and
+# current sensing included, at 40 uA and 1.0 V; the 2 pJ ReadEnergy above is that read (40 uW for 48 ns).
+-CellReadLatency (ns): 48
 
 -ResetMode: current
 -ResetCurrent (uA): 300

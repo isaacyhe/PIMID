@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.243 -- a PCM read takes the cell's published read time
+
+- **The problem.** A PCM bank read in 2.83 ns at the 64 KB / 512 b / 22 nm unit, well below any published PCM read
+  (about 10 ns for an embedded macro; 48 to 70 ns for the prototypes Lee et al. survey). NVSim senses a PCM cell by
+  forcing the cell's read current (40 uA) into the bitline whatever voltage that takes: through the 1 MOhm RESET state
+  that is a 40 V swing, so the bitline resolves in picoseconds. A real read clamps the bitline below the cell's
+  threshold voltage, and the low current of the RESET state then sets the sense time. The cell file's own source gives
+  that time: Lee et al., ISCA 2009, Sec. 2.4, derive a 48 ns cell read (bitline precharge and current sensing, 40 uA at
+  1.0 V), and the 2 pJ read energy PIMID already prices is that read, 40 uW for 48 ns.
+- **The fix (external/nvsim: MemCell, SubArray, sample_PCRAM.cell; src/memory/nvsim_wrapper.cpp).** A cell file may give
+  `-CellReadLatency (ns)`, the cell's published read time. A subarray's bitline and sense path is never shorter than it;
+  the decoders and the output muxes are added as before. sample_PCRAM.cell gives 48 ns. A PCM characterization made
+  before this change is not reused. No other cell file gives the key, so ReRAM, STT-MRAM, SRAM and every DRAM path are
+  unchanged.
+- **Data impact.** At the 64 KB / 512 b / 22 nm unit a PCM read takes 50.79 ns (was 2.83 ns); its energy (2.0 pJ/bit),
+  the write (152.8 ns, 42.2 pJ/bit) and the leakage are unchanged. The bank's mat link carries 1.26 GB/s (was 22.6).
+  Smoke-size fig2 PCM cells run 4.4% to 31.6% longer (shared memory: histogram +31.6%, stencil_2d +23.2%, gemv +21.4%,
+  bfs +19.9%, stream_triad +9.5%; message passing: histogram +13.4%, gemv +12.2%, bfs +11.0%, stencil_2d +9.1%,
+  stream_triad +4.4%); the other technologies' results are identical.
+
 ## 1.12.242 -- an SRAM or NVM bank is the device's: a request also waits for the other elements' use of it
 
 - **The problem.** On an SRAM or NVM device each processing element's memory interface kept its own record of when each

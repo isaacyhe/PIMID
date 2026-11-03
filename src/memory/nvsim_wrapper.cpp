@@ -234,6 +234,8 @@ std::string NVSimWrapper::writeOptionsKey() const {
     } else if (config_.nvm_type == NVMType::STTRAM) {
         os << (o.stt_cumulative ? "wvcum" : "wvind");
     }
+    /* (1.12.243): the PCM cell's published read time bounds the sense path; entries made before it are not reused. */
+    if (config_.nvm_type == NVMType::PCRAM) os << "crl";
     if (config_.nvm_type == NVMType::RERAM || config_.nvm_type == NVMType::STTRAM) {
         if (o.pump_ideal) os << "_peideal";
         else if (o.pump_eff > 0) os << "_pe" << o.pump_eff;

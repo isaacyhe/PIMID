@@ -593,6 +593,16 @@ void SubArray::CalculateLatency(double _rampInput) {
 			}
 			readLatency = decoderLatency + bitlineDelay + bitlineMux.readLatency + senseAmp.readLatency
 					+ senseAmpMuxLev1.readLatency + senseAmpMuxLev2.readLatency;
+			/* PIMID (1.12.243): a cell with a published read time is never sensed faster than that time.
+			 * The bitline model above charges the bitline through the cell at the cell's read current
+			 * whatever the voltage that takes (current-in sensing of a 1 MOhm RESET cell at 40 uA is a
+			 * 40 V swing), so a small array resolves in picoseconds; the published read time is the
+			 * measured precharge + sense of the same cell. It replaces the bitline + sense path, not the
+			 * decoders or the output muxes. */
+			if (cell->readLatencyCell > 0) {
+				const double sensePath = bitlineDelay + bitlineMux.readLatency + senseAmp.readLatency;
+				if (sensePath < cell->readLatencyCell) readLatency += cell->readLatencyCell - sensePath;
+			}
 
 			if (cell->memCellType == PCRAM) {
 				if (inputParameter->writeScheme == write_and_verify) {

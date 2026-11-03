@@ -87,6 +87,8 @@ public:
 	double writeVerifyRoundsAlt; /* PIMID (1.12.162): rounds under the cell's alternative retry model (0 = none given) */
 	double writePulsesPerBitAlt; /* PIMID (1.12.162): pulses per bit under the alternative retry model (0 = none given) */
 	double readEnergy;      /* PIMID (1.12.92): published energy of one cell read (pJ in the file, J here); 0 = not given */
+	double readLatencyCell; /* PIMID (1.12.243): published time of one cell read, bitline precharge and sensing included
+	                         * (ns in the file, s here); 0 = not given. It bounds the subarray's bitline + sense path from below. */
 	bool   resetMode;		/* true = voltage-mode, false = current-mode */
 	double resetVoltage;	/* Reset voltage */
 	double resetCurrent;	/* Reset current */
