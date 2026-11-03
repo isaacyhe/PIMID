@@ -193,6 +193,10 @@ static uint64_t g_bank_unit_bytes = 64ULL * 1024ULL;
  * array's power was characterised at the corner since 1.11.49, its timing always at HP, so one
  * array had two peripheries. Set once at config load. */
 static int g_array_device_corner = 0;
+/* (1.12.253): memory.sram_cell_type, the SRAM data-array cell flavor in CACTI's numbering (0 hp, 1 lstp, 2 lop),
+ * for the SRAM array's timing AND power queries (one array). Default hp. Set at config load. */
+static int g_sram_cell_type = 0;
+static const char* sramCellTypeName(int c) { return c == 1 ? "lstp" : c == 2 ? "lop" : "hp"; }
 /* (1.12.114): memory.nvm_write_budget. The device's write-power budget in mW and where it comes
  * from: the user's mw, or the technology's default (PCM, STT_MRAM, RERAM); -1 = none (no default
  * for the technology). PCM: Jiang, Zhao, Yang, Zhang, "A Low Power and Reliable Charge Pump
@@ -302,6 +306,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
                                                         "tier latency query"));
                 model->setTemperatureK(array_temperature_k);   // 1.11.52 (D055)
                 model->setDeviceCorner(g_array_device_corner);   // (1.12.112)
+                model->setSramCellType(g_sram_cell_type);        // (1.12.253): memory.sram_cell_type
                 if (auto* dm = dynamic_cast<pimid::DRAMModel*>(model.get()))
                     dm->setDramPartKnobs(device_width, ddr5_speed_grade);   // 1.11.66 (B4)
                 model->initialize();
@@ -348,6 +353,7 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             cfg.tech_node_nm = validateTechNodeNm(array_tech_node_nm, "SRAM latency query");
             cfg.temperature = static_cast<uint32_t>(array_temperature_k);   // 1.11.52 (D055)
             cfg.device_corner = g_array_device_corner;   // (1.12.112)
+            cfg.cell_type = static_cast<pimid::CACTIWrapper::CellType>(g_sram_cell_type);   // (1.12.253): memory.sram_cell_type
             cfg.output_width_bits = access_width_bits;   // 1.11.56 (B018)
             cfg.is_cache = false;  // SRAM as memory, not cache
             /* (1.12.240): one CACTI bank, direct-mapped, as the power model characterises the
@@ -3195,7 +3201,7 @@ static const char* kSchemaPaths[] = {
     "core.in_order.branch_predictor", "core.in_order.mispredict_penalty_cycles", "core.in_order.resteer_penalty_cycles", "core.ooo.fetch_width_bytes", "core.ooo.mispredict_penalty_cycles",
     "description", "method", "name", "scope",
     "host.branch_predictor", "host.cache.l1d_kb", "host.cache.l1i_kb", "host.cache.l2_kb", "host.cache.l3_kb", "host.core_type", "host.frequency_mhz", "host.issue_width", "host.memory.technology", "host.num_cores", "host.tech_node_nm",
-    "memory.array_pg", "memory.bank_kb", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.nvm_write_verify.reram_rounds", "memory.nvm_write_verify.stt_retries", "memory.nvm_write_pump.efficiency", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
+    "memory.array_pg", "memory.bank_kb", "memory.sram_cell_type", "memory.nvm_write_budget.enabled", "memory.nvm_write_budget.mw", "memory.nvm_write_verify.reram_rounds", "memory.nvm_write_verify.stt_retries", "memory.nvm_write_pump.efficiency", "memory.banks", "memory.dq_turnaround", "memory.latency", "memory.mats_per_bank", "memory.ports_per_bank", "memory.power_down", "memory.power_down_idle_clocks",
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology", "memory.topology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
@@ -3489,6 +3495,7 @@ struct UnifiedConfig {
     double write_low_watermark  = pimid::RamulatorWrapper::kWriteLowWatermark;
     std::string row_policy_host_closed_mode = "auto_precharge";
     int mem_bank_kb = 0;           // 1.11.107: memory.bank_kb as given (0 = not given: 64 KB); the run's bank unit is g_bank_unit_bytes
+    int sram_cell_type = 0;        // (1.12.253): memory.sram_cell_type (0 hp, 1 lstp, 2 lop); the run's is g_sram_cell_type
 
     // Comprehensive memory characteristics (for YAML override of external models)
     // If use_yaml_memory_params is true, user provided complete params in YAML
@@ -14289,6 +14296,7 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
         sram_cfg.temperature = static_cast<uint32_t>(config.temperature_k);  // 1.11.52 (D055)
         sram_cfg.is_cache = false;  // RAM mode
         sram_cfg.read_write_ports = config.ports_per_bank;
+        sram_cfg.cell_type = static_cast<pimid::CACTIWrapper::CellType>(g_sram_cell_type);   // (1.12.253): the timing query's cell
 
         pimid::CACTIWrapper cacti(sram_cfg);
         cacti.initialize();
@@ -14300,11 +14308,20 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
         {   // (1.12.91): the per-bit figures at full precision, as for the NVM arrays
             const double bits = static_cast<double>(config.cache_line_size) * 8.0;
             pimid::fmt_scoped(std::cout) << std::setprecision(6)
-                << "  [sram] SRAM array, CACTI 7: one " << (sram_cfg.capacity_bytes / 1024ULL) << " KB bank, "
+                << "  [sram] SRAM array, CACTI 7, cell type " << sramCellTypeName(g_sram_cell_type)
+                << " (memory.sram_cell_type): one " << (sram_cfg.capacity_bytes / 1024ULL) << " KB bank, "
                 << bits << "-bit access, " << sram_cfg.tech_node_nm << " nm: read " << rd_energy * 1e3
                 << " pJ/access (" << rd_energy * 1e3 / bits << " pJ/bit), write " << wr_energy * 1e3
                 << " pJ/access (" << wr_energy * 1e3 / bits << " pJ/bit), leakage "
                 << cacti.getLeakagePower() << " mW per bank" << std::endl;
+            /* (1.12.253): CACTI's own split of the bank's leakage, the cells (array_leakage) and the rest
+             * (row and column logic, drivers): each priced at its own flavor, so the cells can be judged
+             * against cell-only points. The corner shares the cell flavors' numbering (0 hp, 1 lstp, 2 lop). */
+            const double cell_mw = cacti.getArrayLeakage();
+            pimid::fmt_scoped(std::cout) << std::setprecision(6)
+                << "  [sram] leakage split: cells " << cell_mw << " mW (cell type " << sramCellTypeName(g_sram_cell_type)
+                << "), periphery " << (cacti.getLeakagePower() - cell_mw) << " mW ("
+                << sramCellTypeName(sram_cfg.device_corner) << ") per bank" << std::endl;
         }
 
         /* 1.11.18 (audit go-through): pim.mc.pg reached the DRAM branch
@@ -23149,6 +23166,17 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
             if (!sc.node) g_bank_unit_bytes = static_cast<uint64_t>(bkb) * 1024ULL;
             std::cout << "  [memory] SRAM/NVM bank size " << bkb << " KB (" << sc.pfx << "memory.bank_kb, user's choice); device capacity = banks x bank size" << std::endl;
         }
+        if (root["memory"]["sram_cell_type"]) {   // (1.12.253): the SRAM data-array cell flavor
+            const std::string ct = yamlString(root["memory"]["sram_cell_type"], std::string("hp"), sc.pfx + "memory.sram_cell_type");
+            if (ct != "hp" && ct != "lop" && ct != "lstp") {
+                std::cerr << "Error: " << sc.pfx << "memory.sram_cell_type '" << ct
+                          << "' is not an SRAM cell flavor CACTI's tables carry. Valid: hp, lop, lstp" << std::endl;
+                return 1;
+            }
+            config.sram_cell_type = (ct == "lstp") ? 1 : (ct == "lop") ? 2 : 0;
+            if (!sc.node) g_sram_cell_type = config.sram_cell_type;
+            std::cout << "  [memory] SRAM cell type " << ct << " (" << sc.pfx << "memory.sram_cell_type, user's choice)" << std::endl;
+        }
         /* 1.9.35: ranks_per_channel was plumbed END TO END -- declared
          * here, emitted into the zsim configuration, and read by the
          * plugin, the trace driver and the analytical hierarchy model --
@@ -23948,6 +23976,8 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
             config.mem_bank_kb = d.mem_bank_kb;
             g_bank_unit_bytes = static_cast<uint64_t>(d.mem_bank_kb > 0 ? d.mem_bank_kb : 64) * 1024ULL;
         }
+        config.sram_cell_type = d.sram_cell_type;   // (1.12.253): the built device's SRAM cell flavor
+        g_sram_cell_type = d.sram_cell_type;
     }
     for (size_t i : devs) {
         const auto& n = config.system_nodes[i];

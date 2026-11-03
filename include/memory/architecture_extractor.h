@@ -221,6 +221,16 @@ inline std::unique_ptr<SRAMArchitecture> extractSRAMArchitecture(
     arch->timing.inner_bank.global_io_ns = remaining * 0.4;
     arch->timing.inner_bank.bank_output_drv_ns = remaining * 0.2;
 
+    /* (1.12.253): CACTI times the sense-amp mux decode in parallel with the data path (the longer of the
+     * two, cacti_interface.cc), so when the serial sum exceeds the access time the decode is taken as
+     * overlapped; a residual then within 1e-9 of the access time is the rounding of the sum. */
+    if (remaining < 0.0) {
+        remaining += arch->timing.inner_bank.column_mux_ns;
+        if (remaining < 0.0 && remaining > -1e-9 * arch->timing.bank_access_ns) remaining = 0.0;
+        arch->timing.inner_bank.local_io_ns = remaining * 0.4;
+        arch->timing.inner_bank.global_io_ns = remaining * 0.4;
+        arch->timing.inner_bank.bank_output_drv_ns = remaining * 0.2;
+    }
     /* A negative residual means the extracted components exceed CACTI's own
      * total: an inconsistent extraction, refused rather than patched. */
     if (remaining < 0.0)

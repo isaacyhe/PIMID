@@ -126,6 +126,8 @@ private:
     void setTemperatureK(int k) override;  // 1.11.52 (D055)
     void setDeviceCorner(int c) override { device_corner_ = c; }   // (1.12.112)
     int device_corner_ = 0;               // (1.12.112): 0 hp, 1 lstp, 2 lop
+    void setSramCellType(int c) override { cell_type_ = c; }   // (1.12.253)
+    int cell_type_ = 0;                   // (1.12.253): memory.sram_cell_type, 0 hp, 1 lstp, 2 lop
     uint32_t access_width_bits_ = 0;   // 0 = model default
 };
 

@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.253 -- an SRAM device's array cells can be low-power or low-standby-power cells
+
+- **The problem.** An SRAM device array was always characterised with CACTI's high-performance cells. At 22 nm and
+  350 K they leak 19.1 mW/Mb, above a last-level cache's 12.5 mW/Mb (Horowitz, ISSCC 2014). Large SRAM arrays,
+  such as the LLC arrays Neural Cache computes in (Eckert et al., ISCA 2018), are built from low-leakage cells with
+  fast periphery, and that choice had no key.
+- **The fix (src/main.cpp, src/memory/sram_model.cpp, include/memory/memory_model.h, include/memory/sram_model.h,
+  include/memory/architecture_extractor.h).**
+  - New key `memory.sram_cell_type`: `hp` (default), `lop` or `lstp`, CACTI's data-array cell flavors. It reaches
+    the array's timing queries and its power query, so the array is one array; the periphery stays on
+    `power.device_corner`. Any other value is refused. The `[sram]` array line prints the flavor, and a
+    following `[sram] leakage split` line gives CACTI's split of the bank's leakage into cells and periphery.
+  - The SRAM tier extraction took CACTI's sense-amp mux decode as serial with the data path. CACTI overlaps the two
+    (it takes the longer), so an `lstp` bank was refused as inconsistent. When the serial sum exceeds the access
+    time, the decode is now taken as overlapped. The default 64 KB `hp` bank does not reach this case.
+- **Data impact.** The default is unchanged; only the `[sram]` line names the flavor.
+  - On the 64 KB bank (HP periphery):
+    - `lop` leaks 11.9 mW (was 9.53), reads at 15.8 pJ and writes at 20.1 pJ per access, 0.305 ns;
+    - `lstp` leaks 1.09 mW, reads at 22.1 pJ and writes at 27.0 pJ, 0.356 ns, in 2.8 times the area.
+  - Smoke-size fig2 SRAM cells (MPI gemv, OpenMP stream_triad): run time within 1.6% of `hp` with either flavor.
+    Device power goes from 3.34 W to 3.94 W with `lop` and to 1.22 W with `lstp`.
+
 ## 1.12.252 -- a memory controller of several channels leaks for every channel's queues and buffers
 
 - **The problem.** A host memory controller that serves several channels (a DDR5 controller's two sub-channels, an

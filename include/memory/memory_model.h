@@ -154,6 +154,8 @@ public:
     /* (1.12.112): the array periphery's device corner (0 hp, 1 lstp, 2 lop), power.device_corner,
      * so the array's timing is characterised at the corner its power is. */
     virtual void setDeviceCorner(int /*corner*/) {}
+    /* (1.12.253): the SRAM data-array cell flavor (0 hp, 1 lstp, 2 lop), memory.sram_cell_type; SRAM only. */
+    virtual void setSramCellType(int /*cell*/) {}
 
     enum class Tier { SUBARRAY, BANK, BANKGROUP, CHIP, RANK, CHANNEL };
     enum class Op   { READ, WRITE, SET, RESET };
