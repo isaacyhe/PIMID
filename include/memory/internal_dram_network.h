@@ -552,6 +552,8 @@ public:
      * The detailed DRAM tree takes its routers' pipe time from these, so both models charge the same. */
     int levelRouterStages(int level) const;
     double levelClockGHz(int level) const;
+    /* (1.12.236): the fixed link latency of one crossing of a level, in ns: its latency_cycles at its clock. */
+    double levelLinkLatencyNs(int level) const;
 
     /**
      * @brief Get the simulation model for a specific hierarchy level

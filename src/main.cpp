@@ -3216,6 +3216,7 @@ static const char* kSchemaPaths[] = {
     "power.models.host_uncore_load", "power.host_uncore.load_w_per_mb_llc",   // (1.12.154): host uncore rise under load
     "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
     "noc.single_path_as_link",   // (1.12.231): the detailed DRAM tree's two-attachment nodes as links
+    "noc.fabric_clock_mhz",      // (1.12.236): the clock domain of the detailed DRAM tree's network
     "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
     "power.pcie.model", "power.pcie.num_channels", "power.pcie.num_lanes", "power.pcie.num_units", "power.pcie.pj_per_bit_override", "power.pcie.total_load_perc",
@@ -3765,6 +3766,9 @@ struct UnifiedConfig {
      * links is built as part of a link, not as a router; false builds every
      * node of the tree as a router. */
     bool noc_single_path_as_link = true;
+    /* (1.12.236): noc.fabric_clock_mhz. The clock the detailed DRAM tree's network runs at, its own clock domain;
+     * 0 = the fastest inner level clock (subarray, bank, bank group) of the technology's hierarchy. */
+    double noc_fabric_clock_mhz = 0.0;
     std::string noc_topology_file;        // required for CUSTOM topology
     std::string noc_routing_table_file;   // optional for TABLE routing
     int noc_control_msg_bits;             // 0 = default (64 bits)
@@ -3963,6 +3967,12 @@ struct UnifiedConfig {
     int htree_level_pipe_cycles[7] = {0, 0, 0, 0, 0, 0, 0};
     int htree_level_pipe_stages[7] = {0, 0, 0, 0, 0, 0, 0};             // the tier walk's stages (after bypass)
     double htree_level_clock_ghz[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};  // the level clock they tick at
+    /* (1.12.236): the clock the detailed DRAM tree's network was built at, in kHz (0 = no tree: the device clock),
+     * and each level's fixed link latency in cycles of that clock: the tier walk's per-level latency at the
+     * level clock, rounded up, at least 1 (0 = not computed). */
+    long noc_fabric_clock_khz = 0;
+    int htree_level_link_cycles[7] = {0, 0, 0, 0, 0, 0, 0};
+    double htree_level_link_ns[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};   // the tier walk's fixed link latency
     /* 1.12.18: ALL routers built at each level (branch and pass-through),
      * and the level of the ROOT router (router 0, the one with no parent).
      * A level's up-links number its routers, less the root if it sits there;
@@ -6482,7 +6492,9 @@ static bool dramHTreeBuilder(const std::string& tech,
     /* 1.11.97 (ruling 7 (c)): a link's latency in Garnet cycles is the device
      * clock over the layer clock -- one layer cycle, counted in the clock the
      * fabric is simulated at -- not a 2.4 GHz reference nobody could derive. */
-    const double DEV_GHZ = deviceCycleClockMHz(config) / 1000.0;
+    /* (1.12.236): the clock the network runs at: the fabric clock when the tree is built in its own domain. */
+    const double DEV_GHZ = (config.noc_fabric_clock_khz > 0) ? static_cast<double>(config.noc_fabric_clock_khz) / 1.0e6
+                                                             : deviceCycleClockMHz(config) / 1000.0;
 
     // Per-layer emitted link width (bits) and latency (cycles).
     // CONCURRENCY WEIGHTING: a bank-placed PE accesses exactly ONE channel, so
@@ -6576,6 +6588,14 @@ static bool dramHTreeBuilder(const std::string& tech,
         config.hierarchy_ranks_per_channel, layer_w, layer_lat,
         config.indie_fabric.empty() ? nullptr : &fab);
     pimid_htree::assignStackDies(tree, stackChannelsPerDie(config, true));   // 1.12.18 (TSV layout)
+    /* (1.12.236): a link's fixed latency is the tier walk's for the level of the router it enters going up -- an
+     * endpoint's link its router's level, a router's up-link its parent's level -- in fabric cycles. */
+    if (config.noc_fabric_clock_khz > 0) {
+        auto lvAt = [&](int r) { return (r >= 0 && r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[(size_t)r] : -1; };
+        auto cyc = [&](int lv) { return (lv >= 0 && lv < 7) ? config.htree_level_link_cycles[lv] : 0; };
+        for (auto& e : tree.intLinks) { const int c = cyc(lvAt(e.a)); if (c > 0) e.lat = c; }
+        for (auto& e : tree.extLinks) { const int c = cyc(lvAt(e.b)); if (c > 0) e.lat = c; }
+    }
     SinglePathLinks fold;   // (1.12.231): set with the census below
 
     /* 1.10: the tree must cover the memory exactly. Every organisation at the
@@ -6641,6 +6661,16 @@ static bool dramHTreeBuilder(const std::string& tech,
       << " pe_level=" << pe_level << " routers=" << tree.numRouters
       << " endpoints=" << tree.totalEndpoints()
       << " (PE=" << tree.numPEs << " abstract=" << tree.numAbstract << ")\n";
+    if (config.noc_fabric_clock_khz > 0) {   // (1.12.236)
+        f << "# fabric clock " << static_cast<double>(config.noc_fabric_clock_khz) / 1000.0
+          << " MHz; per-level link latency in fabric cycles (level 0..6):";
+        for (int lv = 0; lv < 7; ++lv) f << " " << config.htree_level_link_cycles[lv];
+        f << "\n# the tier walk per level (level clock GHz, link ns, router stages, router fabric cycles):";
+        for (int lv = 0; lv < 7; ++lv)
+            f << " (" << config.htree_level_clock_ghz[lv] << ", " << config.htree_level_link_ns[lv] << ", "
+              << config.htree_level_pipe_stages[lv] << ", " << config.htree_level_pipe_cycles[lv] << ")";
+        f << "\n";
+    }
     f << "# per-layer (width_bits, latency_cyc): L0=(" << layer_w[0] << "," << layer_lat[0]
       << ") L1=(" << layer_w[1] << "," << layer_lat[1] << ") L2=(" << layer_w[2] << ","
       << layer_lat[2] << ") L3=(" << layer_w[3] << "," << layer_lat[3] << ")\n";
@@ -6734,7 +6764,7 @@ static bool dramHTreeBuilder(const std::string& tech,
                      << config.htree_level_clock_ghz[lv] << " GHz = " << c << ";";
             }
             if (!said.str().empty())
-                std::cout << "  [NoC] router pipe in network cycles at " << deviceCycleClockMHz(config) / 1000.0
+                std::cout << "  [NoC] router pipe in network cycles at " << DEV_GHZ
                           << " GHz (stages at the level clock, with the tier walk's bypass):" << said.str()
                           << " every other level " << config.noc_router_latency << " (noc.router_pipe_stages)"
                           << std::endl;
@@ -8743,15 +8773,31 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                                       + "_" + std::to_string((long)getpid()) + ".topo";
                 std::string topo_path = "/tmp/pimid_" + topo_name;
                 registerGeneratedTopologyFile(topo_path);   // before the write: a partial file goes too
-                /* (1.12.235): a router stage lasts one cycle of its level's clock, and the detailed network
-                 * runs at the device clock: stages x (device clock / level clock), rounded up, and never
-                 * less than one network cycle per stage. The stages and the bypass rule are the tier
-                 * walk's (levelRouterStages), so the two models charge a router the same time wherever the
-                 * device clock is a whole multiple of the level clock. Elsewhere the detailed network rounds
-                 * up: by less than one network cycle per router at a level slower than the device clock, and
-                 * to one network cycle per stage at a level faster than it. */
+                /* (1.12.236): the detailed network runs in its own clock domain, the fabric clock: by default
+                 * the fastest inner level clock (subarray, bank, bank group) of the hierarchy, or
+                 * noc.fabric_clock_mhz. A link costs the tier walk's fixed latency of the level it enters going
+                 * up, and a router stage one cycle of its level's clock, both converted to fabric cycles and
+                 * rounded up (at least one cycle per link and per stage). The stages and the bypass rule are
+                 * the tier walk's (levelRouterStages), so the two models charge a link and a router the same
+                 * time to within one fabric cycle. */
                 {
-                    const double net_ghz = deviceCycleClockMHz(config) / 1000.0;
+                    double fab_mhz = config.noc_fabric_clock_mhz;
+                    if (!(fab_mhz > 0.0)) {
+                        double f = 0.0;
+                        for (int lv = 0; lv <= 2; ++lv) {
+                            if (lv == 2 && config.hierarchy_bg_per_chip <= 1) continue;   // no bank groups
+                            f = std::max(f, hierarchy->levelClockGHz(lv));
+                        }
+                        fab_mhz = f * 1000.0;
+                    }
+                    config.noc_fabric_clock_khz = std::lround(fab_mhz * 1000.0);
+                    if (config.noc_fabric_clock_khz < 1) config.noc_fabric_clock_khz = std::lround(deviceCycleClockMHz(config) * 1000.0);
+                    const double net_ghz = static_cast<double>(config.noc_fabric_clock_khz) / 1.0e6;
+                    for (int lv = 0; lv < 7; ++lv) {
+                        config.htree_level_link_ns[lv] = hierarchy->levelLinkLatencyNs(lv);
+                        const long lc = static_cast<long>(std::ceil(config.htree_level_link_ns[lv] * net_ghz - 1e-9));
+                        config.htree_level_link_cycles[lv] = static_cast<int>(lc < 1 ? 1 : lc);
+                    }
                     for (int lv = 0; lv < 7; ++lv) {
                         const int s = hierarchy->levelRouterStages(lv);
                         const double ratio = net_ghz > 0.0 ? net_ghz / hierarchy->levelClockGHz(lv) : 1.0;
@@ -8843,6 +8889,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                     std::cerr << "WARNING: failed to emit DRAM CUSTOM topology "
                               << "for tech " << tech << " at " << topo_path
                               << "; falling back to scalar link latency.\n";
+                    config.noc_fabric_clock_khz = 0;   // (1.12.236): no tree, no fabric clock domain
                 }
             }
 
@@ -10911,6 +10958,8 @@ static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config)
     out << "        vcsPerVnet = " << config.noc_vcs_per_vnet << ";\n";
     out << "        flitSizeBits = " << config.noc_flit_size_bits_cfg << ";\n";   // 1.11.97 (row 18): the fork's flit, every topology
     out << "        buffersPerVc = " << config.noc_buffers_per_vc << ";\n";
+    if (config.noc_cycle_accurate && config.noc_fabric_clock_khz > 0)   // (1.12.236): the tree's own clock domain
+        out << "        fabricClockKHz = " << config.noc_fabric_clock_khz << ";\n";
     /* (1.12.233): every detailed fabric sizes each link's receiving buffer at its credit round trip unless
      * noc.buffers_per_vc is given; noc.levels.<level>.input_buffer_depth / output_buffer_depth set the routers of
      * a level (a CUSTOM file's rlevel levels, the generated DRAM tree's levels) as given */
@@ -22452,6 +22501,14 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
         config.noc_buffers_per_vc = yamlInt(root["noc"]["buffers_per_vc"], config.noc_buffers_per_vc, sc.pfx + "noc.buffers_per_vc");
         config.noc_single_path_as_link = yamlBool(root["noc"]["single_path_as_link"], config.noc_single_path_as_link,
                                                   sc.pfx + "noc.single_path_as_link");   // (1.12.231)
+        if (root["noc"]["fabric_clock_mhz"]) {   // (1.12.236)
+            config.noc_fabric_clock_mhz = yamlDouble(root["noc"]["fabric_clock_mhz"], 0.0, sc.pfx + "noc.fabric_clock_mhz");
+            if (!(config.noc_fabric_clock_mhz > 0.0)) {
+                std::cerr << "[config] FATAL: " << sc.pfx << "noc.fabric_clock_mhz must be a clock above 0 MHz"
+                             " (absent = the fastest inner level clock of the memory's hierarchy)" << std::endl;
+                std::exit(2);
+            }
+        }
         /* 1.11.56 (audit B049): say what this key actually does.
          *
          * noc.clock_mhz reads as a NoC-fabric frequency override; it
@@ -22472,9 +22529,10 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
             if (!sc.node) {
                 std::cout << "[config] NOTE: noc.clock_mhz = " << noc_clk
                           << " sets the WHOLE device clock (sys.frequency), "
-                             "not a separate NoC domain -- this tree models "
-                             "one clock for the element, its caches and its "
-                             "fabric. It was " << config.frequency_mhz
+                             "not a separate NoC domain -- the element, its "
+                             "caches and every fabric at the device clock; the "
+                             "generated DRAM tree's network has its own clock "
+                             "(noc.fabric_clock_mhz). It was " << config.frequency_mhz
                           << " MHz";
                 if (root["system"] && root["system"]["frequency_mhz"])
                     std::cout << ", set explicitly by system.frequency_mhz, "
@@ -23590,6 +23648,7 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.noc_buffers_per_vc = d.noc_buffers_per_vc;
         config.noc_buffers_user_set = d.noc_buffers_user_set;
         config.noc_single_path_as_link = d.noc_single_path_as_link;   // (1.12.231)
+        config.noc_fabric_clock_mhz = d.noc_fabric_clock_mhz;         // (1.12.236)
         config.noc_flit_size_bits_cfg = d.noc_flit_size_bits_cfg;
         config.noc_topology_file = d.noc_topology_file;
         config.noc_routing_table_file = d.noc_routing_table_file;

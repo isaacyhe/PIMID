@@ -366,19 +366,16 @@ spends in it (Garnet's router latency, `Router::get_pipe_stages()`).
   `noc.levels.<level>.frequency_ghz`, else the memory technology's clock. With
   `router_bypass` on (the default), a router at a single-hop level (a bus or
   crossbar, or a single node) takes one stage fewer when it has more than one.
-  The analytical hierarchy has always charged a router this way. The detailed
-  network runs at the device clock, so the generated DRAM tree gives each
-  level's routers their stages times the device clock over the level's clock,
-  rounded up, and never less than one network cycle per stage. The two models
-  then charge a router the same time wherever the device clock is a whole
-  multiple of the level clock. Elsewhere the detailed network rounds up: by
-  less than one network cycle per router at a level slower than the device
-  clock, and to one network cycle per stage at a level faster than it.
+  The analytical hierarchy has always charged a router this way. The
+  generated DRAM tree runs at the fabric clock (below), so it gives each
+  level's routers their stages times the fabric clock over the level's clock,
+  rounded up, and never less than one fabric cycle per stage. The two models
+  then charge a router the same time to within one fabric cycle.
 - Per level, a topology file can set a level's routers with a
   `pipe <level> <stages>` line (below), in network cycles. The generated DRAM
   tree writes one for each level whose routers come out at a number other than
-  `noc.router_pipe_stages` (none when every level is at least as fast as the
-  device clock and no stage is bypassed), and prints the levels it set. A
+  `noc.router_pipe_stages` (none when no level is slower than half the fabric
+  clock and no stage is bypassed), and prints the levels it set. A
   hand-written file runs as written: every stage one network cycle, no bypass.
 - `system.network.router_pipe_stages` (default 1) is the same setting for
   the host system network, which has no topology file.
@@ -395,6 +392,42 @@ that is now the level's `pipe` line on the detailed network, and the global
 stage count on the analytical one. A bridge's crossing keeps its own
 `latency_ns` / `latency_cycles`: in the tree a bridge is the link between a
 level's router and its parent, which has no pipeline.
+
+### Fabric clock (`noc.fabric_clock_mhz`)
+
+The generated DRAM tree's network runs in its own clock domain, the fabric
+clock. A DRAM datapath runs at the memory's clocks (about 0.8 to 14 GHz), much
+faster than a PE clock, and a link or router stage charged as one PE cycle
+would cost several times its real time.
+
+- The default fabric clock is the fastest inner level clock of the memory's
+  hierarchy (subarray, bank, and bank group where the part has bank groups):
+  DDR3 0.8 GHz, DDR4 1.2 GHz,
+  DDR5-3200 1.6 GHz, LPDDR5 0.8 GHz, GDDR6 1.75 GHz, HBM2 1.2 GHz, HBM3
+  1.6 GHz. `noc.fabric_clock_mhz` sets it.
+- A link costs the fixed latency the analytical hierarchy charges one crossing
+  of a level (the level's `latency_cycles` at its clock), for the level of the
+  router it enters going up: an endpoint's link its router's level, a
+  router's up-link its parent's level. A link standing in for nodes that are
+  not routers costs the sum of the links it replaces. The time is converted to
+  fabric cycles and rounded up, at least one cycle per link. The file's header
+  prints the fabric clock and the per-level link cycles.
+- A router stage lasts one cycle of its level's clock, converted to fabric
+  cycles the same way (above).
+- The records the network replays are stamped in device cycles. An injection
+  goes to the first fabric edge at or after its time, and a measured latency
+  goes back to device cycles rounded up. Both conversions are exact integer
+  arithmetic, made per record and per packet, so nothing drifts across
+  phases.
+- Bandwidth is unchanged: the link service the run time is floored at (each
+  packet occupies a tree link for its bits over the link's width) stays in
+  device cycles. The network itself carries one flit per fabric cycle per
+  link.
+- The power model prices the network at the fabric clock, and its link and
+  router duty are counted against fabric cycles.
+- Every other detailed topology (`MESH_2D`, `H_TREE`, a hand-written `CUSTOM`
+  file and the rest) and the host system network run at the device clock, as
+  before.
 
 ### Topology file (`noc.topology_file`)
 

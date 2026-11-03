@@ -6,6 +6,44 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.236 -- the detailed DRAM tree runs at its own fabric clock, with the analytical model's per-level link latencies
+
+- **The problem.** The generated DRAM tree's detailed network ran at the device clock (500 MHz in the shipped
+  configurations), one flit of the link width per device cycle, and every link of the tree cost one device cycle
+  whatever its level. The analytical model times the same links from the hierarchy: each level's fixed latency at that
+  level's own clock, with the inner levels clocked at 0.8 to 2.4 GHz. So the detailed network moved a narrow DDR port's
+  72-flit message several times slower than the part's datapath does, and on HBM it charged a 2 ns cycle for an inner
+  link of 4 to 7 ns.
+- **The fix** (`src/main.cpp`, `src/memory/internal_dram_network.cpp/.h`, `external/zsim/src`: garnet_network.h,
+  init.cpp, qemu_zsim_plugin.cpp).
+  - The generated DRAM tree's network runs at its own fabric clock, `noc.fabric_clock_mhz` (default: the fastest inner
+    level clock of the hierarchy: the subarray, bank and, where the part has them, bank-group levels). The device clock
+    key `noc.clock_mhz` is unchanged.
+  - Each link costs the analytical model's fixed latency of the level it enters going up, and each router stage one
+    cycle of its level's clock, both converted to fabric cycles and rounded up (at least one). A link standing in for
+    several nodes sums its segments.
+  - Injection times and latencies convert exactly between device and fabric cycles, re-based every phase, so nothing
+    drifts. Link bandwidth is the width times the fabric clock in the network and in the run-time link floor alike, and
+    the power model prices the network and its duty at the fabric clock. The full-rate buffers follow the round trip in
+    fabric cycles.
+  - The topology file's header names the fabric clock and the per-level link cycles; Garnet ignores those comments.
+  - A hand-written `CUSTOM` file, the other detailed topologies and the host network run at the device clock as before.
+- **Data impact.** Simulated time falls in every DRAM-tree cell whose network carries traffic, most on the narrow-port
+  DDR parts, whose 72-flit messages now move at the fabric clock (DDR4 1.2 GHz instead of 0.5 GHz). On the 116-cell
+  validation set 66 cells change, from -62.5% to 0.0% (median -21.3%): the device OpenMP cells on DDR5 -51.1%, GDDR6
+  -43.6%, LPDDR5 -25.3%, DDR3 -22.4% and HBM3 -1.3%, the co-simulation DDR5 cell -31.5% and the HBM3 one -1.6%. On HBM
+  the inner links now carry their 3 to 8 fabric cycles, so a single packet on HBM2 gets slower. The network's dynamic
+  power rises with the clock it is priced at, and its leakage and area with the round-trip buffers sized in fabric
+  cycles (a 13-port DDR5 router at the rank holds 12 entries per virtual channel at 2.4 GHz). The link rule has no
+  setting that restores the earlier one: compare DRAM-tree timing against the release before this one.
+- **Validation** (the previous release and this build on the same node; logs compared with tree paths masked). Every
+  cell of the 116-cell validation set exits 0 and the power check reports no flag. A check build with the fabric clock
+  set to each device's own clock and the earlier link rule reproduces every log of the 135 device message-passing smoke
+  cells and the 11 co-simulation smoke cells. With the defaults, the 40 host baselines keep their cycles, every cell of
+  the 135 and 11 cell sets and of 30 bfs smoke variants exits 0 with no deadlock or delivery timeout, two cells run 8
+  times each give one output per cell, and a single packet through each generated bank tree from the first PE to the
+  last matches the analytical model within one fabric cycle per link or router crossing.
+
 ## 1.12.235 -- a router's pipeline stage lasts one cycle of its own level's clock in both network models, and router_bypass acts in both
 
 - **The problem.** The two network models agreed on a router's stage count but not on its time. The analytical hierarchy

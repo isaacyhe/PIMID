@@ -1047,7 +1047,8 @@ static uint64_t g_roiTlBegin = 0;
  * busiest tree link has had to give the traffic it carried (the network counts it per up-link, at the width the
  * power model prices the link at). The run time closes at that service time when the PEs' own ends lie below it:
  * the link was the bottleneck, and the link duty the report prints stays within 1. The records of the phase not
- * yet drained are included (read only). Network cycles are device cycles. */
+ * yet drained are included (read only). The service is counted in network cycles and returned in device cycles
+ * (the same cycles unless the network runs in a clock domain of its own, noc.fabric_clock_mhz). */
 static uint64_t roiWallLinkFloor(uint64_t cur, const char* what) {
     uint64_t fl = 0;
     if (zinfo->garnetNetwork) fl = std::max(fl, zinfo->garnetNetwork->linkBusyMaxCyclesProjected());

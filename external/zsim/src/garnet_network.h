@@ -330,6 +330,19 @@ private:
     std::vector<int> routerDepth_;
     bool customIsTree_ = false;
 
+    /* (1.12.236): the network's own clock domain. Garnet ticks fabric cycles; the records it replays, the latencies
+     * it returns and publishes, and the link service are device cycles. fabNum_ / fabDen_ = fabric clock /
+     * device clock, reduced. An injection time goes to the first fabric edge at or after it, and a latency
+     * (a duration) back to device cycles rounded up; both conversions are exact integers, made per record and
+     * per packet, so nothing accumulates across phases. 1/1 = one clock: no conversion. */
+    uint64_t fabNum_ = 1, fabDen_ = 1;
+    uint64_t devToFab_(uint64_t c) const {
+        return fabNum_ == fabDen_ ? c : (uint64_t)(((unsigned __int128)c * fabNum_ + fabDen_ - 1) / fabDen_);
+    }
+    uint64_t fabToDev_(uint64_t t) const {
+        return fabNum_ == fabDen_ ? t : (uint64_t)(((unsigned __int128)t * fabDen_ + fabNum_ - 1) / fabNum_);
+    }
+
     // -- Statistics -------------------------------------------
     GarnetStats stats_;
     bool roi_rebased_ = false;   // 1.11.90
@@ -494,6 +507,16 @@ public:
     NoCTopology getTopology() const { return topology_; }
     NoCRouting  getRouting()  const { return routing_; }
     void setDeadlockThreshold(uint32_t t) { deadlockThreshold_ = t; }
+    /* (1.12.236): run the network at its own clock (kHz) against the device clock the records are stamped in. */
+    void setFabricClock(uint64_t fabKHz, uint64_t devKHz) {
+        if (fabKHz == 0 || devKHz == 0 || fabKHz == devKHz) return;
+        uint64_t a = fabKHz, b = devKHz;
+        while (b) { const uint64_t t = a % b; a = b; b = t; }
+        fabNum_ = fabKHz / a; fabDen_ = devKHz / a;
+        stats_.clock_mhz = static_cast<double>(fabKHz) / 1000.0;
+        info("  Fabric clock: %.3f MHz against the %.3f MHz device clock (Garnet ticks fabric cycles; %lu:%lu)",
+             fabKHz / 1000.0, devKHz / 1000.0, (unsigned long)fabNum_, (unsigned long)fabDen_);
+    }
     uint32_t getVcsPerVnet()  const { return vcsPerVnet_; }
     uint32_t getBuffersPerVc() const { return buffersPerVc_; }
     uint32_t getNumNodes()    const { return numNodes_; }
@@ -821,7 +844,7 @@ public:
         }
 
         gem5::curTickRef() = garnetTick_;
-        uint64_t injectTime = std::max(issueTime, garnetTick_);
+        uint64_t injectTime = std::max(devToFab_(issueTime), garnetTick_);   // (1.12.236): fabric cycles
 
         // Advance to injection time (processes events for in-flight packets)
         while (gem5::curTickRef() < injectTime) {
@@ -839,7 +862,7 @@ public:
         toNetBufs_[src][0]->enqueue(msg, gem5::curTickRef(), uint64_t(1));
 
         // -- Tick until our tagged packet arrives -----------------
-        uint64_t maxTick = gem5::curTickRef() + 100000;
+        uint64_t maxTick = gem5::curTickRef() + devToFab_(100000);
         uint32_t latCycles = 0;
 
         while (gem5::curTickRef() < maxTick) {
@@ -854,7 +877,7 @@ public:
                 if (pktTag == tag) {
                     // Our packet arrived
                     latCycles = static_cast<uint32_t>(
-                        gem5::curTickRef() - injectTime);
+                        fabToDev_(gem5::curTickRef() - injectTime));   // (1.12.236): device cycles
                     break;
                 }
                 // Older real packet still draining -- discard and keep ticking
@@ -1392,11 +1415,11 @@ private:
 
         uint64_t totalLat = 0;
         uint32_t delivered = 0;
-        uint64_t lastInjectTime = batch.back().cycle - baseTime;
+        uint64_t lastInjectTime = devToFab_(batch.back().cycle - baseTime);   // (1.12.236): fabric cycles
         // Drain window scaled to the batch: with the in-flight cap below, the
         // network drains gracefully even for slow/narrow-link techs, but a large
         // batch needs proportionally more ticks to fully clear. Generous + safety.
-        uint64_t maxTick = lastInjectTime + (uint64_t)validCount * 256 + 1000000;
+        uint64_t maxTick = lastInjectTime + devToFab_((uint64_t)validCount * 256 + 1000000);
 
         // The destinations' arrival buffers, in the order the drain visits
         // them (the iteration order of dstSet, which no longer changes).
@@ -1428,7 +1451,7 @@ private:
             // -- Inject: enqueue packets whose recorded time has come --
             while (nextInjectIdx < batch.size()) {
                 auto& acc = batch[nextInjectIdx];
-                uint64_t injectTick = acc.cycle - baseTime;
+                uint64_t injectTick = devToFab_(acc.cycle - baseTime);   // (1.12.236): the first fabric edge at or after it
                 if (injectTick > gem5::curTickRef()) break;  // not yet
 
                 if (acc.src != acc.dst && acc.src < numNodes_ &&
@@ -1463,7 +1486,7 @@ private:
 
                     auto it = tagToInjectTick.find(pktTag);
                     if (it != tagToInjectTick.end()) {
-                        uint64_t lat = gem5::curTickRef() - it->second;
+                        uint64_t lat = fabToDev_(gem5::curTickRef() - it->second);   // (1.12.236): device cycles
                         totalLat += lat;
                         tagToInjectTick.erase(it);
                         delivered++;
@@ -1634,7 +1657,7 @@ public:
         return m;
     }
     /* (1.12.171): the same, with the records still waiting for their drain (read only, nothing is counted): the
-     * floor the run time takes when it closes, before the last phase is drained. */
+     * floor the run time takes when it closes, before the last phase is drained; in device cycles. */
     uint64_t linkBusyMaxCyclesProjected() {
         if (routerUpBits_.empty() && !segCount_) return 0;
         std::vector<uint64_t> busy = edgeBusy_;
@@ -1652,7 +1675,7 @@ public:
         uint64_t m = 0;
         for (uint64_t v : busy) m = std::max(m, v);
         for (uint64_t v : sbusy) m = std::max(m, v);   // (1.12.231)
-        return m;
+        return fabToDev_(m);   // (1.12.236): network cycles to the device cycles the run time is counted in
     }
 
     /* 1.11.90: drop the pre-ROI traffic. The network is driven by the memory
@@ -3116,7 +3139,7 @@ private:
         toNetBufs_[src][0]->enqueue(msg, injectTime, uint64_t(1));
 
         // Process events until message arrives at destination
-        uint64_t maxTime = injectTime + 100000;  // Safety: 100k cycles max
+        uint64_t maxTime = injectTime + devToFab_(100000);  // Safety: 100k device cycles max
         while (gem5::curTickRef() < maxTime) {
             if (fromNetBufs_[dst][0]->isReady(gem5::curTickRef())) {
                 break;
@@ -3129,7 +3152,7 @@ private:
         uint32_t latCycles;
         if (fromNetBufs_[dst][0]->isReady(gem5::curTickRef())) {
             fromNetBufs_[dst][0]->dequeue(gem5::curTickRef());
-            latCycles = static_cast<uint32_t>(gem5::curTickRef() - injectTime);
+            latCycles = static_cast<uint32_t>(fabToDev_(gem5::curTickRef() - injectTime));   // (1.12.236): device cycles
         } else {
             warn("[GarnetNetwork] Drain timeout src=%d dst=%d",
                  src, dst);

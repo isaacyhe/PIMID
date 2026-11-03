@@ -2475,6 +2475,11 @@ int InternalDRAMNetwork::levelRouterStages(int level) const {
     return per_hop_router;
 }
 
+double InternalDRAMNetwork::levelLinkLatencyNs(int level) const {
+    if (level < 0 || level >= NUM_HIERARCHY_LEVELS) return 0.0;
+    return static_cast<double>(network_configs_[level].latency_cycles) / levelClockGHz(level);
+}
+
 double InternalDRAMNetwork::levelClockGHz(int level) const {
     if (level < 0 || level >= NUM_HIERARCHY_LEVELS) return 1.0;
     const double f = network_configs_[level].frequency_GHz;

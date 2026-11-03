@@ -613,6 +613,10 @@ static void InitSystem(Config& config) {
         // the network is just saturated. processBatch is already bounded by its
         // own maxTick drain window, so this only suppresses the false positive.
         garnet->setDeadlockThreshold(100000000u);
+        {   /* (1.12.236): the detailed DRAM tree's own clock domain (0 = the device clock) */
+            const uint32_t fk = config.get<uint32_t>("sys.network.fabricClockKHz", 0);
+            if (fk > 0) garnet->setFabricClock(fk, (uint64_t)std::llround(clockMhz * 1000.0));
+        }
         {   /* (1.12.233): full-rate buffers unless the configuration gives a depth, and the per-level depths
              * ("d0,d1,...,d6", -1 = none) for a CUSTOM file's rlevel levels */
             int li[7], lo[7];
