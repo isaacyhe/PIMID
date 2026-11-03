@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.240 -- an SRAM bank is timed as the array the power model prices
+
+- **The problem.** The access time of an SRAM bank came from a CACTI query left at CACTI's default of four banks, while
+  the power model characterises the bank as one CACTI bank, direct-mapped, one bank per unit. At the 64 KB / 512-bit /
+  22 nm unit timing used 0.219 ns, power 0.293 ns. The bank model and the device's bandwidth cap took the four-bank
+  time.
+- **The fix** (src/main.cpp, the SRAM latency query): one bank, direct-mapped, as the power model.
+- **Validation** (the previous release against this build, logs compared with the tree paths masked):
+  - The 10 SRAM device cells (16 elements at the bank, message passing and shared memory, smoke sizes): 8 change run
+    time, -0.10% to +1.58% (shared-memory stream_triad); the bank waits rise with the longer bank time (message-passing
+    bfs 9,524 -> 10,025). The PCM, ReRAM and STT-MRAM cells are identical.
+  - The 135 device message-passing smoke cells: every non-SRAM cell identical. The 11 co-simulation message-passing
+    smoke cells, the 40 host baseline smoke cells, the 116-cell validation set and the 30 bfs smoke variants: identical.
+
 ## 1.12.239 -- the NVM model prints say what the run uses
 
 - **The problem.** Three kinds of print told the reader something the run does not do.

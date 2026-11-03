@@ -330,6 +330,11 @@ static int getMemoryLatencyCycles(const std::string& memory_tech, double frequen
             cfg.device_corner = g_array_device_corner;   // (1.12.112)
             cfg.output_width_bits = access_width_bits;   // 1.11.56 (B018)
             cfg.is_cache = false;  // SRAM as memory, not cache
+            /* (1.12.240): one CACTI bank, direct-mapped, as the power model characterises the
+             * unit (SRAMModel, one bank per unit). The query used CACTI's default of four
+             * banks, so timing and power described different arrays. */
+            cfg.banks = 1;
+            cfg.associativity = 1;
             pimid::CACTIWrapper wrapper(cfg);
             wrapper.initialize();
             latency_ns = wrapper.getAccessTime() * 1e9;  // seconds -> ns
