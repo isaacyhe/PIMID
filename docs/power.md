@@ -648,7 +648,9 @@ Ampere GA102 GPU Architecture": twelve 32-bit memory controllers). With the
 presets this is 16 controllers for an HBM3 stack, 8 for HBM2, one controller
 of two sub-channels for DDR5, one of four channels for LPDDR5, one of two
 channels for GDDR6 and one for DDR4 and DDR3. Only the priced structure
-follows it; the controllers the timing builds are unchanged. Where the host
+follows it; the controllers the timing builds are unchanged. A controller of
+several channels has each channel's request queues, arbiters and read and
+write buffers, in its area and its leakage alike. Where the host
 memory controller PHY static is a measured PHY idle (DDR4, DDR5, HBM2, HBM3:
 the whole PHY, its leakage included), McPAT's PHY leakage is not added for the
 same PHY; its area and its per-bit energy stay.

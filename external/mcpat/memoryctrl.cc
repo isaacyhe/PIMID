@@ -574,7 +574,11 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
 	 * arbiter's dynamic energy per pick (peak: every queue picks each cycle;
 	 * runtime: one pick per request the controller served). */
 	const double nq = req_queues;
-	const double pppm_lkg_q[4] = {0, nq, nq, 0};
+	/* PIMID (1.12.252): every channel the controller serves has its own queues, arbiters and buffers (their area counts
+	 * each channel), so their leakage does too. */
+	const double nch = std::max(1, XML->sys.mc.memory_channels_per_mc);
+	const double pppm_lkg_q[4] = {0, nq*nch, nq*nch, 0};
+	const double pppm_lkg_c[4] = {0, nch, nch, 0};
 	powerDef arb_t;
 	arb_t.reset();
 	arb_t.readOp.dynamic = MC_arb->power.readOp.dynamic*(is_tdp
@@ -584,8 +588,8 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
     {
     	power = power + frontendBuffer->power_t + readBuffer->power_t + writeBuffer->power_t +
     	        (readBuffer->local_result.power +
-    	        		writeBuffer->local_result.power)*pppm_lkg +
-    	        (frontendBank ? frontendBank->local_result.power*pppm_lkg : frontendBuffer->local_result.power*pppm_lkg_q) +
+    	        		writeBuffer->local_result.power)*pppm_lkg_c +
+    	        (frontendBank ? frontendBank->local_result.power*pppm_lkg_c : frontendBuffer->local_result.power*pppm_lkg_q) +
     	        arb_t + MC_arb->power*pppm_lkg_q;
 
     }
@@ -593,8 +597,8 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
     {
     	rt_power = rt_power + frontendBuffer->power_t + readBuffer->power_t + writeBuffer->power_t +
     	        (readBuffer->local_result.power +
-    	        		writeBuffer->local_result.power)*pppm_lkg +
-    	        (frontendBank ? frontendBank->local_result.power*pppm_lkg : frontendBuffer->local_result.power*pppm_lkg_q) +
+    	        		writeBuffer->local_result.power)*pppm_lkg_c +
+    	        (frontendBank ? frontendBank->local_result.power*pppm_lkg_c : frontendBuffer->local_result.power*pppm_lkg_q) +
     	        arb_t + MC_arb->power*pppm_lkg_q;
     	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     }

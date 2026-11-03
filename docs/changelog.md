@@ -6,6 +6,16 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.252 -- a memory controller of several channels leaks for every channel's queues and buffers
+
+- **The problem.** A host memory controller that serves several channels (a DDR5 controller's two sub-channels, an
+  LPDDR5 controller's four channels) has each channel's request queues, arbiters and read and write buffers. McPAT
+  counted them per channel in the controller's area but once in its leakage.
+- **The fix** (`external/mcpat/memoryctrl.cc`). Their leakage counts every channel, as their area does.
+- **Effect.** Power only, on host controllers of more than one channel: at 22 nm the DDR5 host controller's leakage
+  28 -> 47 mW (two sub-channels), the LPDDR5 host controller's 23 -> 63 mW (four channels). One-channel controllers
+  (HBM, every PIM element controller) are unchanged.
+
 ## 1.12.251 -- a device has one memory controller per PE and one per channel for the banks with no PE
 
 - **The problem.** A device's memory controllers were counted as the endpoints of its placement tree: one per PE and
