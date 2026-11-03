@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.250 -- a memory controller's backend area scales with the square of the feature size
+
+- **The problem.** McPAT's fit for a high-performance memory controller's backend (its type 0, the one every PIMID
+  controller uses) carried the area from 90 nm to the run's node with the feature size once, (F / 90 nm), where the
+  area of a given logic design scales with its square, as McPAT's own low-power controller fit does. At 22 nm that is
+  4.1 times the area, and the leakage, computed from the area, followed it.
+- **The fix** (`external/mcpat/memoryctrl.cc`). The backend's area scales with (F / 90 nm)^2, and its leakage follows the
+  area. The PHY's area keeps McPAT's single F: its I/O drivers and ESD do not shrink with the logic.
+- **Effect.** Power and area only. At 22 nm a controller without a PHY falls to about a quarter of its area (an HBM3
+  element controller at the bank 0.87 -> 0.22 mm^2, an SRAM/NVM element controller 1.7-2.3 -> 0.43-0.57); one with a
+  PHY keeps the PHY's share (an HBM3 channel- or logic-die-placement controller 1.27 -> 0.63 mm^2, an HBM3 host
+  controller 2.03 -> 1.38, the DDR5 host controller 10.4 -> 9.2).
+
 ## 1.12.249 -- a host memory controller's per-bank queues are priced as one array of all their entries
 
 - **The problem.** A host memory controller keeps one read and one write queue of 16 entries per bank of its channel

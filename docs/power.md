@@ -650,6 +650,11 @@ follows it; the controllers the timing builds are unchanged. Where the host
 memory controller PHY static is a measured PHY idle (DDR4, DDR5, HBM2, HBM3:
 the whole PHY, its leakage included), McPAT's PHY leakage is not added for the
 same PHY; its area and its per-bit energy stay.
+A controller's backend area is McPAT's fit for a high-performance controller
+(its type 0), carried to the run's node with the square of the feature size,
+the transistor-area scaling McPAT's own low-power controller fit uses; its
+leakage follows the area. The PHY's area keeps McPAT's single power of the
+feature size: its I/O drivers and ESD do not shrink with the logic.
 Every model added in 1.12.18 has a `power.models.*` switch (see the YAML
 reference); a model switched off is printed as not priced by user option.
 

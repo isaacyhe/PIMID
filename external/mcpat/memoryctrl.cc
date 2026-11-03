@@ -94,7 +94,10 @@ void MCBackend::compute()
 	  if (mcp.type == 0)
 	  {
 		  //area = (2.2927*log(peakDataTransferRate)-14.504)*memDataWidth/144.0*(l_ip.F_sz_um/0.09);
-		  area.set_area((2.7927*log(mcp.peakDataTransferRate*2)-19.862)/2.0*mcp.dataBusWidth/128.0*(l_ip.F_sz_um/0.09)*mcp.num_channels*1e6);//um^2
+		  /* PIMID (1.12.250): the backend's area scales with the square of the feature size (transistor area), as the
+		   * type=1 fit below does; the fit as published scaled it with F once. The leakage below follows the area.
+		   * The PHY's area (MCPHY) keeps McPAT's single F: its I/O drivers and ESD do not shrink with the logic. */
+		  area.set_area((2.7927*log(mcp.peakDataTransferRate*2)-19.862)/2.0*mcp.dataBusWidth/128.0*(l_ip.F_sz_um/0.09)*(l_ip.F_sz_um/0.09)*mcp.num_channels*1e6);//um^2
 		  //assuming the approximately same scaling factor as seen in processors.
 		  //C_MCB=0.2/1.3/1.3/266/64/0.09*g_ip.F_sz_um;//based on AMD Geode processor which has a very basic mc on chip.
 		  //C_MCB = 1.6/200/1e6/144/1.2/1.2*g_ip.F_sz_um/0.19;//Based on Niagara power numbers.The base power (W) is divided by device frequency and vdd and scale to target process.
