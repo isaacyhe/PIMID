@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.232 -- every router the detailed DRAM tree builds is priced as a router at its own port count, from the flits it measured
+
+- **The problem.** The NoC power census priced as router nodes only the routers with two or more router children, plus
+  the network interfaces. A router with one router child and endpoints (on HBM3 with the PEs at the bank, the 16
+  bank-group and 16 chip routers, each with an aggregated endpoint), a two-attachment converter and the root got no
+  leakage or area of their own: their flits were priced on the branch routers' instances. A level's measured accesses
+  were split over its router classes by node count, not by what each class's routers measured. The routers a tree builds
+  below the placement level with a PE beneath them (a LOGIC_DIE placement's channel routers) and their up-links were not
+  priced at all.
+- **The fix** (`src/main.cpp`, `external/zsim/src/garnet_network.h`).
+  - Every router that is built is a priced node at its own port count: its parent, its router children and its endpoint
+    NIs. Routers of one level with the same port count are one McPAT instance times their count.
+  - Each class is priced from the flits its own routers measured (Garnet's crossbar counters by router, summed by level
+    and port count); the NIs of a level from the flits through them.
+  - The routers below the placement level with an endpoint beneath them are priced as routers too, and their up-links as
+    the links of their level. A router there with no endpoint beneath it (the chip routers a folded RANK placement
+    builds to cover the memory) carries no flit and is the memory's, as its channel TSVs are, and is not priced.
+- **Data impact.** Power only; no simulated time changes. NoC leakage and area rise in every detailed DRAM-tree cell
+  whose tree has routers with fewer than two router children: on the 116-cell validation set the HBM3 cells with the PEs
+  at the bank go from 8.73 to 9.11 mW of NoC leakage, and on the device cells with the PEs at the rank from 1.41 to 7.79
+  mW on DDR3 and DDR4 and from 1.50 to 6.95 mW on DDR5. The largest NoC change is 1.3% of a cell's system power (DDR3
+  reduction at the rank).
+- **Validation** (the previous release and this build on the same node; logs compared with tree paths masked). Every
+  cell of the 116-cell validation set exits 0 with the same simulated time as the previous release, only power lines
+  differ, and the power checks report no flag.
+
 ## 1.12.231 -- a node of the detailed DRAM tree that only passes flits along is built as a link, and power prices the routers and links that are built
 
 - **The problem.** The detailed DRAM tree built a router at every node of the hierarchy, including the nodes with

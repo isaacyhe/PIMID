@@ -418,8 +418,24 @@ built as part of a link ([network.md](network.md)), so there is no router to
 price there. Its flits are priced once, as the links it replaces, each at its
 own level, width and die (a stacked part's die crossings stay TSVs); the
 routers that are built are priced from their own measured crossbar counters.
-Earlier releases built every node as a router and took the flits of the nodes
-with one router child and no endpoint out of the level's router accesses
+Every router that is built is a priced node at its own port count -- its
+parent, its router children and its endpoint NIs: a branch router, a merge router with one router child and
+endpoints, a converter (a two-attachment node where the width or the clock
+changes), the root, an in-die node. Routers of one level with the same port
+count are one McPAT instance times their count, and each class is priced from
+the flits its own routers measured (Garnet's crossbar counters by router, summed
+by level and port count); the NIs of a level from the flits through them. The
+routers a tree builds below the placement level (a LOGIC_DIE placement's channel
+routers, the chip routers under a folded RANK placement's leaves) are priced as
+routers too, and their up-links as the links of their level, when an endpoint
+sits beneath them; a router there with no endpoint beneath it (the chip routers
+a folded RANK placement builds to cover the memory) carries no flit and is the
+memory's, as its channel TSVs are, and is not priced.
+Earlier releases priced as nodes only the routers with two or more router
+children (the others' flits were priced on those; a level's accesses were split
+over its classes by node count), built every node as a
+router, and took the flits of the nodes with one router child and no
+endpoint out of the level's router accesses
 (`power.models.passthrough_as_wire`). That key is refused now;
 `noc.single_path_as_link: false` builds every node as a router and prices it
 as one.
