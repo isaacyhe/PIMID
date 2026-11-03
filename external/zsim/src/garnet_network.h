@@ -204,7 +204,8 @@ struct GarnetStats {
      * count (input ports: parent, router children, endpoint interfaces), and
      * the flits through the network interfaces of each level ("elevel"),
      * injected + ejected -- the per-class activity the power model prices. */
-    uint64_t level_class_flits[7][17] = {};
+    static constexpr uint32_t kClassPortsMax = 256;   // (1.12.262): every port count (the power model's bound)
+    uint64_t level_class_flits[7][kClassPortsMax + 1] = {};
     uint64_t level_ni_flits[7] = {0,0,0,0,0,0,0};
     /* (1.12.143): flit traversals of the in-die fabric's node links (MESH_2D / RING
      * node <-> node, CROSSBAR node <-> hub), counted by the analytical tier
@@ -317,6 +318,7 @@ private:
     double meanVcDepth_ = -1;
     std::vector<int> epLevel_;        // (1.12.232): "elevel" lines, -1 = none
     std::vector<uint32_t> rtrPorts_;  // (1.12.232): input ports of each router as built
+    std::vector<uint32_t> rtrPortsPriced_;   // (1.12.262): "rports" lines, the port count each router is priced at
     bool segDieKnown_ = false;   // a replaced link carries a stack die: the layout is known
     std::vector<int> routerParent_;
     /* (1.12.171): "rlinkw <router> <bits>": the width of the router's up-link to its parent (0 / absent = unbounded).
@@ -1964,13 +1966,13 @@ public:
                 stats_.level_routers[l] = 0;
                 stats_.level_branch_routers[l] = 0;
             }
-            for (int l = 0; l < 7; l++) for (int pp = 0; pp < 17; pp++) stats_.level_class_flits[l][pp] = 0;   // (1.12.232)
+            for (int l = 0; l < 7; l++) for (uint32_t pp = 0; pp <= GarnetStats::kClassPortsMax; pp++) stats_.level_class_flits[l][pp] = 0;   // (1.12.232); (1.12.262): every port count
             for (size_t r = 0; r < rtrXbarTot_.size(); r++) {
                 stats_.measured_crossbar_flits += rtrXbarTot_[r];
                 {   // (1.12.232): by level and port count
                     const int lvc = (r < routerLevel_.size()) ? routerLevel_[r] : -1;
                     const uint32_t pp = (r < rtrPorts_.size()) ? rtrPorts_[r] : 0;
-                    if (lvc >= 0 && lvc <= 6 && pp > 0) stats_.level_class_flits[lvc][std::min<uint32_t>(16, pp)] += rtrXbarTot_[r];
+                    if (lvc >= 0 && lvc <= 6 && pp > 0) stats_.level_class_flits[lvc][std::min<uint32_t>(GarnetStats::kClassPortsMax, pp)] += rtrXbarTot_[r];   // (1.12.262)
                 }
                 stats_.measured_buffer_reads   += rtrBufRdTot_[r];
                 stats_.measured_buffer_writes  += rtrBufWrTot_[r];
@@ -2130,7 +2132,7 @@ public:
                 if (levelVcDepth_[l] > 0)   // (1.12.233)
                     fprintf(f, "garnet.level%d.vc_depth = %.4f\n", l, levelVcDepth_[l]);
                 if (stats_.level_source == "measured_crossbar") {   // (1.12.232)
-                    for (int pp = 1; pp <= 16; pp++)
+                    for (uint32_t pp = 1; pp <= GarnetStats::kClassPortsMax; pp++)   // (1.12.262)
                         if (stats_.level_class_flits[l][pp])
                             fprintf(f, "garnet.level%d.class_flits_%d = %lu\n", l, pp, stats_.level_class_flits[l][pp]);
                     if (!epLevel_.empty())
@@ -2837,7 +2839,8 @@ private:
             harvestOne_(r->getBufferReadCount(),  rtrBufRdSeen_[i], rtrBufRdTot_[i]);
             harvestOne_(r->getBufferWriteCount(), rtrBufWrSeen_[i], rtrBufWrTot_[i]);
             if ((int)rtrPorts_.size() != n) rtrPorts_.assign(n, 0);   // (1.12.232)
-            rtrPorts_[i] = (uint32_t)r->get_num_inports();
+            rtrPorts_[i] = ((size_t)i < rtrPortsPriced_.size() && rtrPortsPriced_[i] > 0)   // (1.12.262): the priced count when the writer gives it
+                         ? rtrPortsPriced_[i] : (uint32_t)r->get_num_inports();
         }
     }
     /* 1.11.94 (H25 support): the routers' cumulative crossbar activity
@@ -3068,6 +3071,12 @@ private:
                 }
                 routerLevel_[r] = lv;
                 routerBranch_[r] = (uint8_t)(br ? 1 : 0);
+            } else if (token == "rports") {   // (1.12.262): "rports <router> <ports>", the port count it is priced at
+                uint32_t r = 0, pp = 0;
+                if (iss >> r >> pp) {
+                    if (rtrPortsPriced_.size() <= r) rtrPortsPriced_.resize(r + 1, 0);
+                    rtrPortsPriced_[r] = pp;
+                }
             } else if (token == "elevel") {   // (1.12.232): "elevel <endpoint> <level>"
                 uint32_t e = 0; int lv = -1;
                 if (iss >> e >> lv) {

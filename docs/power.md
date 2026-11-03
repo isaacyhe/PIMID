@@ -410,7 +410,9 @@ published / model ratio of the ~1 GHz routers (Celerity, Piton, MIT SWIFT, the
 MIT 16-node chip, the DSENT validation router) and of the 3.6-4 GHz ones
 (Kumar et al., the Intel 80-tile router), log-log interpolated in clock x node
 between the two groups; at 16 ports and more the crossbar is scaled
-by the geometric mean over four published crossbars. 9 to 15 ports, and
+by the geometric mean over four published crossbars (16 to 64 ports; a larger
+router keeps the model's own crossbar growth with the port count at that
+factor). 9 to 15 ports, and
 2-port datapaths wider than 128 b, take the low-radix rule (the run says
 so). Leakage follows area; the dynamic energy per flit is not scaled. The anchors are in
 [sources.md](sources.md).
@@ -425,7 +427,10 @@ Every router that is built is a priced node at its own port count -- its
 parent, its router children and its endpoint NIs: a branch router, a merge router with one router child and
 endpoints, a converter (a two-attachment node where the width or the clock
 changes), the root, an in-die node. Routers of one level with the same port
-count are one McPAT instance times their count, and each class is priced from
+count are one McPAT instance times their count (at its own port count, however
+many: the classes stopped at 16 ports until (1.12.262), which priced a 17- or 18-port
+router as a 16-port one; a port toward a router that is the memory's, below the
+placement level with no endpoint beneath it, is not counted), and each class is priced from
 the flits its own routers measured (Garnet's crossbar counters by router, summed
 by level and port count); the NIs of a level from the flits through them. The
 routers a tree builds below the placement level (a LOGIC_DIE placement's channel

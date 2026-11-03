@@ -6,6 +6,39 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.262 -- every router is priced at its own port count, past 16 ports too
+
+- **The problem.** The power model's router classes stopped at 16 ports: the census of the routers by port count
+  and the measured flits per class had 16 slots, so a 17-port router (the HBM3 rank router with its 16 chip routers
+  and its parent; the DDR3 and DDR4 rank routers of a RANK placement) or an 18-port group router
+  (`memory.local_path: garnet`) was priced as a 16-port one. A router also counted its ports toward routers that are
+  the memory's (the chip routers a folded RANK placement builds below its leaves, which front no endpoint and carry
+  no flit), which would price the HBM3 RANK hub at 33 ports.
+- **The fix** (src/main.cpp, external/zsim/src/garnet_network.h, docs/power.md). The classes take every port count
+  (up to 256, far above any tree built; a router past it is reported). A port toward a router below the placement
+  level with no endpoint beneath it is the memory's and is not counted. The topology file's `rports <router>
+  <ports>` lines (accounting only; Garnet skips them) give the network each router's priced port count, so the
+  measured flits of a class key on the same count. McPAT's router model has no port limit of its own: at 16 ports
+  and more its crossbar is scaled by the factor fitted on published 16- to 64-port crossbars, and a router past 64
+  ports keeps the model's own crossbar growth with the port count at that factor. No timing changes.
+- **Validation** (the release below and this build on the same nodes; logs compared with the tree paths masked):
+  135 device message-passing smoke cells, 11 co-simulation message-passing smoke cells, the 116-cell validation set
+  and 30 bfs smoke variants, plus two cells on the `garnet` local path: every run time identical; only power lines
+  and router-count prints differ. Two cells run 8 times each give one output per cell. The power checker: no new
+  FLAG; the crossbar area per crosspoint bit at 65 nm now spans 6.183 to 6.334 (inside its band).
+- **Data impact** (NoC power against the release below; 113 of the 292 cells of the four sets change):
+  - HBM3 with the PEs at BANK, BANK_GROUP or SUBARRAY (every PE count) and the HBM3 co-simulation cells: the rank
+    router at 17 ports instead of 16. pe16 BANK: NoC leakage 10.24 -> 11.52 mW, NoC dynamic 7.55 -> 7.76 mW, logic
+    area +0.004 mm^2; +0.04% of the system total.
+  - HBM3 at RANK: the hub at 17 ports (its 16 PE interfaces and its parent): leakage 13.85 -> 15.14 mW, +0.04%.
+  - DDR3 and DDR4 at RANK: the rank router at 17 ports: leakage 13.42 -> 14.77 and 13.43 -> 14.78 mW, +0.12% to
+    +0.28%.
+  - SRAM and NVM on the `garnet` local path: the 16 group routers at 18 ports. PCM bfs: NoC leakage 39.9 -> 52.8 mW,
+    dynamic 63.1 -> 72.3 mW, logic area +3.66 mm^2, +1.6% of the total; STT-MRAM gemv: NoC leakage 2872 -> 3815 mW,
+    +27% of the total (its NoC leakage already dominates that cell).
+  - Every other cell (DDR5, LPDDR5, GDDR6 and HBM2 BANK placements, HBM3 CHANNEL and LOGIC_DIE, SRAM and NVM on the
+    bus path, the host baselines): unchanged.
+
 ## 1.12.261 -- an SRAM or NVM die's detailed network carries a line in one flit, at the bank's access width
 
 - **The problem.** The local buses and links of an SRAM or NVM die carry the bank's access width (512 bits for a 64 B

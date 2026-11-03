@@ -4055,7 +4055,16 @@ struct UnifiedConfig {
      * mesh router, not the HBM3 hub (17 ports) or a 3-port bank-group node.
      * -1 = no tree was built (or no router at that level). */
     int htree_level_max_ports[7] = {-1,-1,-1,-1,-1,-1,-1};
-    int htree_level_port_hist[7][17] = {};   // 1.11.97 (H19): routers per level by port count (ports 1..16; index 0 unused); (1.12.232): every router built
+    /* (1.12.262): each tree router's port count as priced (0 = not a priced
+     * router), written to the network's topology file ("rports") so the
+     * measured per-class flits key on the same count. */
+    std::vector<int> htree_router_ports;
+    /* (1.12.262): a router class is priced at its own port count; the histogram
+     * stopped at 16, so a 17-, 18- or 33-port router was priced as 16. 256 is
+     * a bound on the array, far above any tree built (a router past it is
+     * reported and priced at 256). */
+    static constexpr int kRouterPortsMax = 256;
+    int htree_level_port_hist[7][kRouterPortsMax + 1] = {};   // 1.11.97 (H19): routers per level by port count (index 0 unused); (1.12.232): every router built
     /* (1.12.232): the routers built at each level --
      * every one is a priced node at its own port count (a branch router, a
      * merge router with one router child and endpoints, a converter, the root,
@@ -6084,6 +6093,10 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
         std::map<int,int> epAt;
         for (const auto& e : tree.extLinks) epAt[e.b]++;
         int treeMax[7] = {-1,-1,-1,-1,-1,-1,-1};   // (1.12.232): over every tree node, the stand-in where no router is built
+        std::vector<int> memKids((size_t)tree.numRouters, 0);   // (1.12.262): router children on the memory side
+        for (const auto& l : tree.intLinks)
+            if (l.a >= 0 && l.a < tree.numRouters && l.b >= 0 && l.b < tree.numRouters && memorySide(l.b)) memKids[(size_t)l.a]++;
+        config.htree_router_ports.assign((size_t)tree.numRouters, 0);
         for (int r = 0; r < tree.numRouters; ++r) {
             int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
             if (lv < 0 || lv > 6) continue;
@@ -6092,6 +6105,8 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
                       + (gridDegree.count(r) ? gridDegree[r] : 0);   // 1.11.103: the fabric's node links; a parent port only where the tree gives one
             if (ports > treeMax[lv]) treeMax[lv] = ports;
             if (isLink(r) || memorySide(r)) continue;   // (1.12.232): a link node or a memory-side router is not a priced router
+            ports -= memKids[(size_t)r];   // (1.12.262): a port toward a memory-side router is the memory's, not the fabric's
+            if ((size_t)r < config.htree_router_ports.size()) config.htree_router_ports[(size_t)r] = ports;
             if (ports > config.htree_level_max_ports[lv])
                 config.htree_level_max_ports[lv] = ports;
             /* 1.11.97 (review H19): the histogram the per-class pricing reads.
@@ -6100,7 +6115,10 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
              * and endpoint NIs (a child built as a link counts as the one
              * port it is) -- not only the routers with >= 2 router children.
              * 1.11.103: a grid node or hub arbitrates its fabric links. */
-            config.htree_level_port_hist[lv][std::min(16, std::max(1, ports))]++;
+            if (ports > UnifiedConfig::kRouterPortsMax)   // (1.12.262)
+                std::cerr << "[htree] WARNING: a router with " << ports << " ports is priced at "
+                          << UnifiedConfig::kRouterPortsMax << " ports (the histogram's bound)" << std::endl;
+            config.htree_level_port_hist[lv][std::min(UnifiedConfig::kRouterPortsMax, std::max(1, ports))]++;
         }
         for (int l = 0; l < 7; ++l)
             if (config.htree_level_max_ports[l] <= 0 && treeMax[l] > 0) config.htree_level_max_ports[l] = treeMax[l];
@@ -6890,6 +6908,12 @@ static bool dramHTreeBuilder(const std::string& tech,
             if (tree.stackDie[(size_t)r] > 0 && nid(r) >= 0)
                 f << "rdie " << nid(r) << " " << tree.stackDie[(size_t)r] << "\n";
         f << segs.str();
+        /* (1.12.262): "rports <router> <ports>", each priced router's port count as
+         * the power model prices it (its ports toward the memory side left
+         * out); the network keys its measured per-class flits on it. */
+        for (int r = 0; r < tree.numRouters && r < (int)config.htree_router_ports.size(); ++r)
+            if (nid(r) >= 0 && config.htree_router_ports[(size_t)r] > 0)
+                f << "rports " << nid(r) << " " << config.htree_router_ports[(size_t)r] << "\n";
         /* (1.12.232): "elevel <endpoint> <level>", the level the census prices each
          * endpoint's network interface at (a PE at the placement level, an
          * aggregated region at the level it fronts); the network counts the
@@ -11313,7 +11337,7 @@ struct GarnetParsedStats {
     /* (1.12.232): the flits MEASURED by the routers of each level, by their port
      * count (the census's router classes), and the flits through the level's
      * network interfaces (injected + ejected); class_present = the file has them. */
-    uint64_t level_class_flits[7][17] = {};
+    uint64_t level_class_flits[7][UnifiedConfig::kRouterPortsMax + 1] = {};   // (1.12.262): every port count
     uint64_t level_ni_flits[7] = {0,0,0,0,0,0,0};
     bool level_class_present = false;
     uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
@@ -11398,7 +11422,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
                         else if (fld == "vc_depth") stats.level_vc_depth[k] = std::stod(val);   // (1.12.233)
                         else if (fld.rfind("class_flits_", 0) == 0) {   // (1.12.232)
                             const int pp = std::stoi(fld.substr(12));
-                            if (pp >= 1 && pp <= 16) { stats.level_class_flits[k][pp] = std::stoull(val); stats.level_class_present = true; }
+                            if (pp >= 1 && pp <= UnifiedConfig::kRouterPortsMax) { stats.level_class_flits[k][pp] = std::stoull(val); stats.level_class_present = true; }   // (1.12.262)
                         }
                         else if (fld == "ni_flits") stats.level_ni_flits[k] = std::stoull(val);   // (1.12.232)
                         else if (fld == "routers") stats.level_routers[k] = std::stoul(val);
@@ -12884,7 +12908,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
              * level stays one instance at the widest router's port count. */
             {
                 int total_hist = 0;
-                if (lvl < 7) for (int pp = 1; pp <= 16; ++pp) total_hist += config.htree_level_port_hist[lvl][pp];
+                if (lvl < 7) for (int pp = 1; pp <= UnifiedConfig::kRouterPortsMax; ++pp) total_hist += config.htree_level_port_hist[lvl][pp];   // (1.12.262)
                 const int eps_here = (lvl < 7 && config.htree_level_branch[0] >= 0) ? config.htree_level_endpoints[lvl] : 0;
                 if (nc.type != 0 && total_hist + eps_here > 0 && config.htree_level_branch[0] >= 0) {
                     const int class_nodes_total = total_hist + eps_here;
@@ -12905,7 +12929,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                         const bool meas = garnet.level_class_present && fpp > 0.0;
                         if (meas) {
                             const uint64_t fl = (tag == "_ni") ? garnet.level_ni_flits[lvl]
-                                              : garnet.level_class_flits[lvl][std::min(16, std::max(1, ports))];
+                                              : garnet.level_class_flits[lvl][std::min(UnifiedConfig::kRouterPortsMax, std::max(1, ports))];
                             c.total_accesses = static_cast<uint64_t>(std::llround(static_cast<double>(fl) / fpp * fW));
                         } else
                         c.total_accesses = last ? (acc_total - acc_given)
@@ -12937,8 +12961,8 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                         emitted++;
                     };
                     int classes_left = (eps_here > 0 ? 1 : 0);
-                    for (int pp = 1; pp <= 16; ++pp) if (config.htree_level_port_hist[lvl][pp] > 0) classes_left++;
-                    for (int pp = 1; pp <= 16; ++pp) {
+                    for (int pp = 1; pp <= UnifiedConfig::kRouterPortsMax; ++pp) if (config.htree_level_port_hist[lvl][pp] > 0) classes_left++;   // (1.12.262)
+                    for (int pp = 1; pp <= UnifiedConfig::kRouterPortsMax; ++pp) {
                         const int cnt = config.htree_level_port_hist[lvl][pp];
                         if (cnt <= 0) continue;
                         classes_left--;
@@ -12947,7 +12971,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     if (eps_here > 0) { classes_left--; emitClass(2, eps_here, "_ni", true); }
                     if (garnet.level_class_present) {   // (1.12.232): measured flits at a port count the census has no class for
                         uint64_t orphan = 0;
-                        for (int pp = 1; pp <= 16; ++pp)
+                        for (int pp = 1; pp <= UnifiedConfig::kRouterPortsMax; ++pp)   // (1.12.262)
                             if (config.htree_level_port_hist[lvl][pp] <= 0) orphan += garnet.level_class_flits[lvl][pp];
                         if (orphan > 0)
                             std::cerr << "[NoC] WARNING: " << lbl << "level " << (lvl - pe_level) << " (" << nc.name << "): "
