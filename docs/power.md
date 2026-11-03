@@ -50,7 +50,10 @@ factors -- area x2.44 (22nm class; x2.46 at the 32nm DDR3 class), dynamic
 x0.82/x0.66 and the comm-dram leakage rebase -- computed from CACTI's own
 hp vs comm-dram device columns at 350K. Rank/channel placements on DDR-class
 parts and the HBM base die keep the logic family (their logic sits on a
-buffer or base die), as do all SRAM/NVM technologies (BEOL over logic CMOS).
+buffer or base die), as do STT_MRAM, RERAM and SRAM (embedded over logic
+CMOS). PCM is a standalone memory process: at subarray..chip placements its
+on-die logic (PEs, their caches, the element controllers and the on-die
+fabric) takes the same DRAM-periphery family, factors and node pin.
 The applied factor and its uncertainty band are printed by every run.
 
 ## The element

@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.238 -- the logic on a PCM die is priced in the memory process, as the logic on a DRAM die is
+
+- **The problem.** A device's PEs, their caches, the element memory controllers and the on-die network were priced in
+  the memory-periphery process family only on DRAM technologies. On every SRAM and NVM technology they were priced as
+  logic at the PE node (22 nm high-performance in the shipped configurations). STT_MRAM, RERAM and SRAM are embedded over
+  a logic wafer, so that is right for them; PCM is not: it is built in a standalone memory process, as DRAM is. The
+  logic beside a PCM array therefore leaked like high-performance logic. In the PCM gemv cell at BANK placement the PE,
+  controller and network leakage was 0.65 W against 0.30 W for the PCM array itself, and one element controller leaked
+  8.6 mW against 0.056 mW for an HBM3 one.
+- **The fix** (`src/main.cpp`). PCM joins the DRAM technologies in the placement x technology process matrix. At the
+  subarray..chip placements the logic on a PCM die takes the DRAM-periphery family: the same CACTI 22 nm comm-dram
+  factors (area x2.44, dynamic x0.82, the leakage rebase x0.0036 at the default `lstp` column), the same node pin, the
+  same `lp-dram` mapping of a low-power corner, in the device scope, the system scope and the in-memory network probe
+  alike. The on-die network levels and a flat fabric of a PCM device are marked as on the memory die. The facts that
+  belong to a DRAM part (the part record, the generation label, the calibrated die, the subarray pitch band) stay
+  DRAM-only: a PCM device's mesh links keep the PCM array as the span of their tile pitch, and its die-level clock
+  trunk takes the area of the memory-die components. STT_MRAM, RERAM and SRAM keep the logic family. The run prints
+  the PCM family on its own line, and `docs/power.md` describes the matrix.
+- **Data impact.** Power and area of PCM devices only. Simulated time is unchanged in every cell, and every non-PCM
+  cell is identical: 135 device message-passing smoke cells (the STT_MRAM, RERAM and SRAM fig2 cells among them), 11
+  co-simulation message-passing smoke cells, 40 host baselines, the 116-cell validation set, 30 bfs smoke variants and
+  the STT_MRAM, RERAM and SRAM fig2 OpenMP cells. On the 10 fig2 PCM cells (smoke size, 16 PEs at BANK):
+  - PE, controller and network leakage 0.65 W -> 0.009 W (a PE 3.02 -> 0.037 mW, an element controller 8.65 -> 0.112
+    mW), their dynamic power -18%;
+  - device logic power 0.74 .. 0.80 W -> 0.09 .. 0.14 W, device total -38% (bfs) to -50% (gemv);
+  - logic area 41.9 -> 84.4 mm^2 (the periphery area factor on the PE, controller and router logic); the die-level
+    clock trunk now spans the PCM die (0.026 -> 0.030 W dynamic).
+
 ## 1.12.237 -- thread-MPI prices each remote access at its own pair's measured latency, so a cell's run time no longer depends on its memory layout
 
 - **The problem.** Under thread-MPI with the detailed network, every remote PE access was priced at one epoch's mean

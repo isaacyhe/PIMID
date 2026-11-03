@@ -11259,6 +11259,19 @@ static DRAMGenClass getDRAMGenClass(const std::string& tech) {
              pimid::CACTIWrapper::generationTableNm(tech) };
 }
 
+/* (1.12.238): the MEMORY-PROCESS technologies -- every DRAM technology and PCM.
+ * PCM is a standalone memory process like DRAM (its periphery is built in the
+ * memory fab, not on a logic wafer), so the logic on a PCM die -- PEs, their
+ * caches, the element controllers and the on-die fabric -- takes the same
+ * memory-periphery family, factors and generation pin as a DRAM die.
+ * STT_MRAM, RERAM and SRAM are embedded on a logic process and stay LOGIC.
+ * DRAM-only facts (the part record, the generation label, the calibrated die,
+ * the subarray pitch band) keep their own DRAM test. */
+static inline bool memoryProcessTech(const std::string& t) {
+    return !(t == "SRAM" || t == "STT_MRAM" || t == "RERAM");
+}
+static inline bool isPcmTech(const std::string& t) { return t == "PCM"; }
+
 /* 1.11.28 (user ruling E3): ONE owner for the placement x technology process
  * family. It was decided in the device path and NOWHERE else, so the synthetic
  * in-memory NoC probe -- which builds its own McPAT config and declares
@@ -11294,9 +11307,7 @@ static bool applyProcessFamily(pimid::McPATWrapper::SystemConfig& mcfg,
                                const UnifiedConfig& config,
                                int pe_hierarchy_level,
                                bool quiet) {
-    const bool dram_family_tech =
-        !(config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
-          config.memory_tech == "PCM"  || config.memory_tech == "RERAM");
+    const bool dram_family_tech = memoryProcessTech(config.memory_tech);   // (1.12.238): DRAM and PCM
     const bool channel_centric =
         config.memory_tech.rfind("LPDDR", 0) == 0 ||
         config.memory_tech.rfind("GDDR", 0) == 0 ||
@@ -11314,16 +11325,27 @@ static bool applyProcessFamily(pimid::McPATWrapper::SystemConfig& mcfg,
          * this the probe kept config.tech_node_nm: one die, two processes,
          * the exact defect the probe's own E3 comment says was fixed. */
         if (mcfg.tech_node_nm != gc.cacti_table_nm) {
-            if (!quiet)
+            if (!quiet) {
+                if (isPcmTech(config.memory_tech))
+                    std::cout << "  [tech] on-die fabric: process pinned to the PCM die's "
+                                 "memory process (CACTI " << gc.cacti_table_nm << "nm table)." << std::endl;
+                else
                 std::cout << "  [tech] on-die fabric: process pinned to "
                              "generation " << gc.cls << " (CACTI "
                           << gc.cacti_table_nm << "nm table)." << std::endl;
+            }
             mcfg.tech_node_nm = gc.cacti_table_nm;
         }
-        if (!quiet)
+        if (!quiet) {
+            if (isPcmTech(config.memory_tech))
+                std::cout << "  [tech] process family: memory-periphery (placement "
+                          << pe_hierarchy_level << " on PCM, a standalone memory process: the DRAM-periphery"
+                             " factors)" << std::endl;
+            else
             std::cout << "  [tech] process family: DRAM-periphery (placement "
                       << pe_hierarchy_level << " on " << config.memory_tech
                       << ", class " << gc.cls << ")" << std::endl;
+        }
     } else {
         mcfg.process_family = 0;
     }
@@ -12287,9 +12309,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
              * decoupled system prices a node whose technology differs from
              * the global one. Whoever adds that case must pass the node's
              * technology in here too. */
-            const bool noc_dram_family_tech =
-                !(config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
-                  config.memory_tech == "PCM"  || config.memory_tech == "RERAM");
+            const bool noc_dram_family_tech = memoryProcessTech(config.memory_tech);   // (1.12.238): DRAM and PCM
             nc.on_dram_die = (noc_dram_family_tech &&
                               ((lvl <= 3) ||
                                (lvl == 5 && noc_channel_centric))) ? 1 : 0;
@@ -12697,8 +12717,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                 flat_ports = 3; flat_ports_src = "a ring stop: 2 neighbour ports + the local port";
             }
             nc.vcs_per_port = std::max(1, config.noc_vnets) * std::max(1, config.noc_vcs_per_vnet);
-            const bool dram_fam = !(config.memory_tech == "SRAM" || config.memory_tech == "STT_MRAM" ||
-                                    config.memory_tech == "PCM"  || config.memory_tech == "RERAM");
+            const bool dram_fam = memoryProcessTech(config.memory_tech);   // (1.12.238): DRAM and PCM
             nc.on_dram_die = dram_fam ? 1 : 0;
         }
         nc.input_ports = flat_ports;
@@ -12785,7 +12804,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                          " (power.models.noc_links: false)" << std::endl;
         } else if (nc.type != 0 && mesh_links > 0) {
             double span_mm2 = 0.0;
-            if (nc.on_dram_die == 0)
+            if (nc.on_dram_die == 0 || isPcmTech(config.memory_tech))   // (1.12.238): PCM keeps its array span
                 span_mm2 = computeNonDramMemAreaMM2(config.memory_tech, config.num_banks,
                                                     config.tech_node_nm, config.cache_line_size, config);
             NoCLevel lk;
@@ -12821,7 +12840,8 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                       << config.memory_tech << " array / " << flat_nodes
                       << " tiles)" << (span_mm2 > 0.0 ? "" : " -- no array area: McPAT's own area stands in")
                       << " (DSENT tile-pitch convention; DERIVED, NO PUBLISHED SOURCE FOUND for the floorplan)"
-                      << "; node " << lk.tech_node_nm << " nm (" << (nc.on_dram_die ? "DRAM array process" : "the run's logic node")
+                      << "; node " << lk.tech_node_nm << " nm (" << (nc.on_dram_die ? (isPcmTech(config.memory_tech) ? "the PCM die's memory process"
+                                                                                       : "DRAM array process") : "the run's logic node")
                       << "); duty " << lk.duty_cycle << " = traversals/(" << flat_net_cycles << " net cycles x "
                       << mesh_links << " links)" << std::endl;
             if (!(lk.duty_cycle >= 0.0 && lk.duty_cycle <= 1.0))
@@ -13156,7 +13176,11 @@ static void applyDieProcessDevice(pimid::McPATWrapper::SystemConfig& mcfg, const
     if (mcfg.process_family == 1) {
         mcfg.dram_die_count = (config.htree_dram_dies > 0) ? config.htree_dram_dies : 1;
         mcfg.dram_die_area_mm2 = computeDramDieAreaMM2(memory_tech, false, 0);
-        if (mcfg.clock_network && mcfg.clock_die_trunk)
+        if (mcfg.clock_network && mcfg.clock_die_trunk && isPcmTech(memory_tech))
+            std::cout << "  [power] " << label << "per-die clock trunk structure: " << mcfg.dram_die_count
+                      << " PCM die(s) hold the device's memory-side components; their area is McPAT's area of"
+                         " those components (no calibrated PCM die)" << std::endl;
+        else if (mcfg.clock_network && mcfg.clock_die_trunk)
             std::cout << "  [power] " << label << "per-die clock trunk structure: " << mcfg.dram_die_count
                       << " DRAM die(s) hold the device's DRAM-side components ("
                       << (config.htree_dram_dies > 0 ? "the built fabric's stack core dies / chips"
@@ -13222,8 +13246,11 @@ static void applyCornerAndPeripheryPricing(
             }
             corner = baseline;
             if (!config.device_corner_given)   // 1.12.18: user ruling 2026-10-24 (final): logic die stays hp
-                std::cout << "  [tech] " << label << "PEs on the DRAM die (DRAM-periphery pricing); the "
-                             "logic die's NoC routers and link controller use " << config.device_corner
+                std::cout << "  [tech] " << label << (isPcmTech(config.memory_tech)
+                                 ? "PEs on the PCM die (memory-periphery pricing); the "
+                                   "logic die's NoC routers and link controller use "
+                                 : "PEs on the DRAM die (DRAM-periphery pricing); the "
+                                   "logic die's NoC routers and link controller use ") << config.device_corner
                           << " (power.device_corner) [1.12.18]" << std::endl;
             /* 1.11.17 (audit go-through): report the factor actually APPLIED
              * -- the emitted XML carries fa x subarray_pitch_factor, and the
@@ -14530,9 +14557,9 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      *   SUBARRAY..CHIP on a DRAM tech  -> DRAM_PERIPHERY (UPMEM DPU; DRISA)
      *   RANK/CHANNEL on a DRAM tech    -> LOGIC (DIMM/base-die buffer, AxDIMM)
      *   LOGIC_DIE                      -> LOGIC (HBM base die)
-     *   any level on SRAM/NVM techs    -> LOGIC (bitcell density is the
-     *       array model's problem; the PE beside the array is ordinary CMOS,
-     *       eMRAM/ePCM being BEOL over a logic wafer)
+     *   SUBARRAY..CHIP on PCM          -> DRAM_PERIPHERY factors ((1.12.238): a
+     *       standalone memory process); STT_MRAM/RERAM/SRAM at any level ->
+     *       LOGIC (embedded BEOL over a logic wafer: ordinary CMOS)
      * HOST_MC PEs sit in the host controller: LOGIC by definition. */
     {
         bool dram_family_tech =
@@ -14549,6 +14576,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
             config.memory_tech.rfind("GDDR", 0) == 0 ||
             config.memory_tech.rfind("HBM", 0) == 0;
         bool on_dram_silicon = dram_family_tech &&
+            ((config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level <= 3) ||
+             (config.pe_hierarchy_level == 5 && channel_centric));
+        /* (1.12.238): the PROCESS FAMILY reads the memory-process test (DRAM and
+         * PCM); on_dram_silicon stays the DRAM-only test for the DRAM facts
+         * below (the subarray pitch band reads the DRAM part record). */
+        const bool on_memory_silicon = memoryProcessTech(config.memory_tech) &&
             ((config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level <= 3) ||
              (config.pe_hierarchy_level == 5 && channel_centric));
         /* 1.11.16 (verification audit): the MCPHY question is PLACEMENT, not
@@ -14659,7 +14692,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                              "(SUBARRAY). Priced at 1.0." << std::endl;
             }
         }
-        if (on_dram_silicon) {
+        if (on_memory_silicon) {
             mcfg.process_family = 1;  // DRAM_PERIPHERY (per-class factors)
             DRAMGenClass gc = getDRAMGenClass(config.memory_tech);
             mcfg.dram_periph_table_nm = gc.cacti_table_nm;
@@ -14670,6 +14703,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
              * 45 nm because the factor design only partially cancels it.
              * The knob remains the real process choice for OFF-die PEs
              * (buffer chip, MC die, HBM base die, host). */
+            if (mcfg.tech_node_nm != gc.cacti_table_nm && isPcmTech(config.memory_tech)) {
+                std::cout << "  [tech] on-PCM-die PE: process pinned to the die's memory process (CACTI "
+                          << gc.cacti_table_nm << "nm table); technology.node_nm=" << mcfg.tech_node_nm
+                          << " is a logic-die knob and is IGNORED at this placement." << std::endl;
+                mcfg.tech_node_nm = gc.cacti_table_nm;
+            }
             if (mcfg.tech_node_nm != gc.cacti_table_nm) {
                 std::cout << "  [tech] on-DRAM-die PE: process pinned to the "
                              "die's generation (class " << gc.cls
@@ -14680,6 +14719,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                              "placement." << std::endl;
                 mcfg.tech_node_nm = gc.cacti_table_nm;
             }
+            if (isPcmTech(config.memory_tech))
+                std::cout << "  [tech] PE process family: memory-periphery (placement "
+                          << config.placement_level << " on PCM, a standalone memory process: the"
+                             " DRAM-periphery factors); factors from CACTI "
+                          << gc.cacti_table_nm << "nm hp/comm-dram columns" << std::endl;
+            else
             std::cout << "  [tech] PE process family: DRAM-periphery (placement "
                       << config.placement_level << " on " << config.memory_tech
                       << ", class " << gc.cls << "); factors from CACTI "
@@ -17752,7 +17797,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                               << " placement (pitch penalty is SUBARRAY-only)."
                               << std::endl;
             }
-            if (dram_family_tech &&
+            if (memoryProcessTech(node.memory_tech) &&   // (1.12.238): DRAM and PCM
                 ((config.pe_hierarchy_level >= 0 && config.pe_hierarchy_level <= 3) ||
                  (config.pe_hierarchy_level == 5 && channel_centric))) {
                 mcfg.process_family = 1;
@@ -17769,6 +17814,13 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                               << std::endl;
                     mcfg.tech_node_nm = ngc.cacti_table_nm;
                 }
+                if (isPcmTech(node.memory_tech))
+                    std::cout << "  [tech] " << node.name
+                              << ": PE process family memory-periphery (placement "
+                              << config.placement_level << " on PCM, a standalone memory process: the"
+                                 " DRAM-periphery factors; factors from CACTI "
+                              << ngc.cacti_table_nm << "nm hp/comm-dram columns)" << std::endl;
+                else
                 std::cout << "  [tech] " << node.name
                           << ": PE process family DRAM-periphery (placement "
                           << config.placement_level << " on " << node.memory_tech
@@ -26206,8 +26258,7 @@ int main(int argc, char** argv) {
         validateTechNodeNm(config.tech_node_nm, "config load: technology.node_nm");
         const std::string& mt = config.memory_tech;
         const std::string& pl = config.placement_level;
-        bool dft = !(mt == "SRAM" || mt == "STT_MRAM" || mt == "PCM" ||
-                     mt == "RERAM");
+        bool dft = memoryProcessTech(mt);   // (1.12.238): DRAM and PCM
         bool cc = mt.rfind("LPDDR", 0) == 0 || mt.rfind("GDDR", 0) == 0 ||
                   mt.rfind("HBM", 0) == 0;
         bool on_die = dft &&
