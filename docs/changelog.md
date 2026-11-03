@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.255 -- the calibrated router line names the steps that follow it, and the memory-periphery family prints each level's values after them
+
+- **The problem.** With `PIMID_DEBUG_CHECKS=1` the McPAT fork prints each router as calibrated against the published
+  routers (`[noc] nocN router (...)`: area and leakage of ONE router). On a memory die (DRAM, and PCM) that is the
+  router before McPAT's long-channel and power-gating steps and before the memory-periphery family transform of its
+  level, but the line did not say so. A PCM mesh router read 3.9 mW of leakage, while its 256-router level enters the
+  totals at 6.07 mW (0.024 mW per router); the reader could not tell from the log which number was priced.
+- **The fix** (`external/mcpat`: noc.cc, processor.cc). The router line now ends by naming the steps that follow it and
+  pointing at the NoC breakdown's level totals as the values that enter the totals. On the memory die the family
+  transform prints one `[fam] nocN` line per level: the factors (leakage, gate leakage, router dynamic; link dynamic at
+  its metal price) and the level's leakage and runtime dynamic before -> after the transform, equal to the level's line
+  in the NoC breakdown.
+- **Data impact.** None. Debug prints only; every number in every log is unchanged, and the router line keeps the
+  fields the power checker reads.
+
 ## 1.12.254 -- the CHANNEL and LOGIC_DIE placements replay their DRAM requests on every channel, not all on channel 0
 
 - **The problem.** The DRAM epoch replay composes each request's address from the placement unit it belongs to. On HBM

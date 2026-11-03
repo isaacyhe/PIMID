@@ -448,7 +448,12 @@ void NoC::init_router()
 		          << (shape_sourced ? std::string("; shape scaled by the published radix/width sweep: ") + shape_src
 		                              + ", s " + std::to_string(s_shape) : std::string())
 		          << (unsourced ? "; NO PUBLISHED SOURCE FOUND for a router of this shape (priced by the low-radix rule)" : "")
-		          << ". Per-flit dynamic not scaled." << std::endl;
+		          << ". Per-flit dynamic not scaled. These are ONE router as calibrated, before McPAT's long-channel and"
+		             " power-gating steps"
+		          << ((XML->sys.dram_periph_family == 1 && XML->sys.NoC[ithNoC].on_dram_die)
+		              ? " and before the memory-periphery family transform of its level (on the memory die; the [fam]"
+		                " line gives the level's values after it)" : "")
+		          << "; the NoC breakdown's level totals are the values that enter the totals." << std::endl;
 	}
 	area.set_area(area.get_area()+ router->area.get_area()*nocdynp.total_nodes);
 

@@ -914,10 +914,23 @@ Processor::Processor(ParseXML *XML_interface)
                                * n->nocdynp.total_nodes;
                   link_rt_dyn  = n->link_bus->rt_power.readOp.dynamic;
               }
+              const double fam_lk0 = n->rt_power.readOp.leakage, fam_gl0 = n->rt_power.readOp.gate_leakage,
+                           fam_dy0 = n->rt_power.readOp.dynamic;   /* (1.12.255): for the print below */
               applyFam(*n, false, "noc");
               applyFam(n->clk, false, "noc clock");   /* PIMID 1.12.18: its share, same transform */
               n->power.readOp.dynamic    += link_tdp_dyn * (1.0 - fd);
               n->rt_power.readOp.dynamic += link_rt_dyn  * (1.0 - fd);
+              /* (1.12.255): the transform's effect on this level, in the run's own units (runtime energy over the
+               * level's execution time): the values the NoC breakdown and the totals carry. */
+              {
+                  const double et = (n->nocdynp.executionTime > 0) ? n->nocdynp.executionTime : 1.0;
+                  pimid::debugStream(std::cerr) << "  [fam] noc" << ni << ": on the memory die, memory-periphery"
+                            << " family: leakage x" << fl << " (gate leakage x" << fg << "), router dynamic x" << fd
+                            << ", link dynamic at its metal price; level leakage " << fam_lk0 + fam_gl0 << " -> "
+                            << n->rt_power.readOp.leakage + n->rt_power.readOp.gate_leakage << " W, runtime dynamic "
+                            << fam_dy0 / et << " -> " << n->rt_power.readOp.dynamic / et << " W (these enter the totals)"
+                            << std::endl;
+              }
           }
           (void)any_on_die;
           /* Rebuild the aggregate from the (now mixed-family) levels with
