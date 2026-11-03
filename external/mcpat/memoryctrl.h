@@ -84,6 +84,7 @@ class MCFrontEnd : public Component {
 	selection_logic * MC_arb;
 	ArrayST  * frontendBuffer;
 	int req_queues;   /* PIMID: independent request queues per channel; frontendBuffer and MC_arb are ONE of them */
+	ArrayST  * frontendBank;   /* PIMID: the queues' storage as one array of all their entries (area, leakage), or 0: one array per queue */
 	ArrayST  * readBuffer;
 	ArrayST  * writeBuffer;
 

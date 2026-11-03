@@ -4528,7 +4528,10 @@ std::string McPATWrapper::generateXMLConfig() const {
         if (mc_tech_.req_cam_tag_bits > 0)
             d << "the " << mc_tech_.req_cam_tag_bits << "-bit " << (mc_tech_.req_cam_field.empty() ? std::string("address") : mc_tech_.req_cam_field);
         else d << "the " << mc_tech_.addressbus_width << "-bit address and the opcode";
-        d << " with its own arbiter; " << mc_tech_.io_buffer_size_per_channel
+        d << " with its own arbiter";
+        if (!mc_tech_.unified_queues && nq > 1)
+            d << " (the queues' storage priced as one array of " << mc_tech_.req_window_size_per_channel << " entries)";
+        d << "; " << mc_tech_.io_buffer_size_per_channel
           << "-entry read and write buffers; " << mc_tech_.block_size_bytes
           << " B transactions -- " << (mc_tech_.unified_queues ? "the PARE controller of Green et al., MICRO 2026, Sec. V-A"
                                                                 : "the conventional sorting FR-FCFS controller of Green et al., PARE, MICRO 2026, Sec. IV")
@@ -4571,6 +4574,9 @@ std::string McPATWrapper::generateXMLConfig() const {
         << mc_tech_.io_buffer_size_per_channel << "\"/>\n";     // 1.11.56 (C008)
     xml << "      <param name=\"req_window_queues_per_channel\" value=\""
         << mc_tech_.req_window_queues_per_channel << "\"/>\n";
+    /* (1.12.249): a host controller's per-bank queues are one array of all their entries (their area and leakage). */
+    xml << "      <param name=\"req_window_shared\" value=\""
+        << ((!mc_tech_.unified_queues && mc_tech_.req_window_queues_per_channel > 1) ? 1 : 0) << "\"/>\n";
     xml << "      <param name=\"req_cam_tag_bits\" value=\""
         << mc_tech_.req_cam_tag_bits << "\"/>\n";
     xml << "      <param name=\"databus_width\" value=\"" << mc_tech_.databus_width << "\"/>\n";

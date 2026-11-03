@@ -621,6 +621,7 @@ typedef struct{
 	int req_window_size_per_channel;
 	int IO_buffer_size_per_channel;
 	int req_window_queues_per_channel;   /* PIMID: the request window as this many independent queues (one CAM and one arbiter each); 1 = one window */
+	int req_window_shared;   /* PIMID: 1 = those queues' storage is one array of all their entries (its area and leakage); 0 = one array per queue */
 	int req_cam_tag_bits;                /* PIMID: > 0 = the bits each queue's CAM compares; 0 = McPAT's address + opcode tag */
 	int databus_width;
 	int addressbus_width;

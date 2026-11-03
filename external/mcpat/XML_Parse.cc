@@ -1378,6 +1378,7 @@ void ParseXML::parse(char* filepath)
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_window_size_per_channel")==0) {sys.mc.req_window_size_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"IO_buffer_size_per_channel")==0) {sys.mc.IO_buffer_size_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_window_queues_per_channel")==0) {sys.mc.req_window_queues_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_window_shared")==0) {sys.mc.req_window_shared=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_cam_tag_bits")==0) {sys.mc.req_cam_tag_bits=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"databus_width")==0) {sys.mc.databus_width=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"addressbus_width")==0) {sys.mc.addressbus_width=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
@@ -1955,6 +1956,7 @@ void ParseXML::initialize() //Initialize all
 	sys.mc.req_window_size_per_channel=1;
 	sys.mc.IO_buffer_size_per_channel=1;
 	sys.mc.req_window_queues_per_channel=1;   /* PIMID: McPAT's single request window */
+	sys.mc.req_window_shared=0;   /* PIMID: one array per queue */
 	sys.mc.req_cam_tag_bits=0;                /* PIMID: McPAT's address + opcode tag */
 	sys.mc.databus_width=1;
 	sys.mc.addressbus_width=1;

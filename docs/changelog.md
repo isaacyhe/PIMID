@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.249 -- a host memory controller's per-bank queues are priced as one array of all their entries
+
+- **The problem.** A host memory controller keeps one read and one write queue of 16 entries per bank of its channel
+  (128 queues on a DDR5 controller's channel and on an HBM3 channel). McPAT priced each queue as its own array, with
+  its own decoders, sense amplifiers and wiring, so 128 sixteen-entry queues cost 128 arrays' periphery: the DDR5
+  host controller's front end was about 6 mm^2 at 22 nm for about 38 KB of request storage.
+- **The fix** (`external/mcpat`: memoryctrl.cc/.h, XML_Parse.cc/.h; `src/power/mcpat_wrapper.cpp`). The queues' storage
+  is one array holding every queue's entries, and it gives the front end's area and leakage.
+  A request still writes, searches and picks in one queue, so its energy is unchanged, and so are the queues' clocked
+  port registers. A PIM element controller's two unified queues are unchanged. The run's `memory-controller structure`
+  line says so.
+- **Effect.** Power and area only, on host memory controllers (system scope and the host baselines): at 22 nm the
+  DDR5 host controller 10.4 -> 8.1 mm^2 (its leakage 28 -> 20 mW), an HBM3 host controller 2.03 -> 1.72 mm^2.
+
 ## 1.12.248 -- an SRAM or NVM element memory controller is priced at its own banks' bandwidth
 
 - **The problem.** McPAT's memory-controller backend area grows with the controller's peak transfer rate. An SRAM or

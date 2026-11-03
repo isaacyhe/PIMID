@@ -623,7 +623,8 @@ write unified queue of 32 entries, each a CAM on the bank ID of its region (the
 device's banks over its controllers); an SRAM or NVM element controller's peak
 rate is its banks' share of the array's bank-parallel rate. A request is written into, searched in
 and picked from one queue, so its energy is one queue's; the area, the leakage
-and the clocked port registers are every queue's. A transaction is the run's
+and the clocked port registers are every queue's (a host controller's per-bank
+queues are priced as one array of all their entries). A transaction is the run's
 cache line. The run prints the structure it priced on a
 `memory-controller structure` line.
 Where there are several controllers (a device's element controllers, one per

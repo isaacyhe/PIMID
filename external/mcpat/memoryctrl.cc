@@ -379,6 +379,7 @@ MCFrontEnd::MCFrontEnd(ParseXML *XML_interface,InputParameter* interface_ip_, co
  MC_arb(0),
  frontendBuffer(0),
  req_queues(1),
+ frontendBank(0),
  readBuffer(0),
  writeBuffer(0)
 {
@@ -437,8 +438,21 @@ MCFrontEnd::MCFrontEnd(ParseXML *XML_interface,InputParameter* interface_ip_, co
   interface_ip.num_se_rd_ports     = 0;
   interface_ip.num_search_ports     = XML->sys.mc.memory_channels_per_mc;
   frontendBuffer = new ArrayST(&interface_ip, "MC ReorderBuffer", Uncore_device);
+  /* PIMID (1.12.249): per-bank queues (a host controller's) are one array holding every queue's entries, its mats
+   * partitioned as CACTI finds best: its area and leakage are the queues', while a request still writes, searches
+   * and picks in one queue (frontendBuffer, one queue's array, prices that energy). Separate arrays charged each
+   * 16-entry queue a whole array's periphery; CACTI banks of one queue each are separately ported and cost more. */
+  if (XML->sys.mc.req_window_shared && req_queues > 1) {
+	  InputParameter bank_ip = interface_ip;
+	  bank_ip.cache_sz = data*q_entries*req_queues;
+	  bank_ip.nbanks   = 1;
+	  frontendBank = new ArrayST(&bank_ip, "MC ReorderBuffer banks", Uncore_device);
+	  frontendBuffer->area.set_area(frontendBuffer->area.get_area()+ frontendBank->local_result.area*XML->sys.mc.memory_channels_per_mc);
+	  area.set_area(area.get_area()+ frontendBank->local_result.area*XML->sys.mc.memory_channels_per_mc);
+  } else {
   frontendBuffer->area.set_area(frontendBuffer->area.get_area()+ frontendBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc*req_queues);
   area.set_area(area.get_area()+ frontendBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc*req_queues);
+  }
 
   //selection and arbitration logic
   interface_ip.assoc               = 1; //reset to prevent unnecessary warning messages when init_interface
@@ -568,7 +582,7 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
     	power = power + frontendBuffer->power_t + readBuffer->power_t + writeBuffer->power_t +
     	        (readBuffer->local_result.power +
     	        		writeBuffer->local_result.power)*pppm_lkg +
-    	        frontendBuffer->local_result.power*pppm_lkg_q +
+    	        (frontendBank ? frontendBank->local_result.power*pppm_lkg : frontendBuffer->local_result.power*pppm_lkg_q) +
     	        arb_t + MC_arb->power*pppm_lkg_q;
 
     }
@@ -577,7 +591,7 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
     	rt_power = rt_power + frontendBuffer->power_t + readBuffer->power_t + writeBuffer->power_t +
     	        (readBuffer->local_result.power +
     	        		writeBuffer->local_result.power)*pppm_lkg +
-    	        frontendBuffer->local_result.power*pppm_lkg_q +
+    	        (frontendBank ? frontendBank->local_result.power*pppm_lkg : frontendBuffer->local_result.power*pppm_lkg_q) +
     	        arb_t + MC_arb->power*pppm_lkg_q;
     	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
     }
@@ -1044,6 +1058,7 @@ MCFrontEnd ::~MCFrontEnd(){
 
 	if(MC_arb) 	               {delete MC_arb; MC_arb = 0;}
 	if(frontendBuffer) 	       {delete frontendBuffer; frontendBuffer = 0;}
+	if(frontendBank) 	       {delete frontendBank; frontendBank = 0;}   /* PIMID */
 	if(readBuffer) 	           {delete readBuffer; readBuffer = 0;}
 	if(writeBuffer) 	       {delete writeBuffer; writeBuffer = 0;}
 }
