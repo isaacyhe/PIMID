@@ -3836,6 +3836,12 @@ struct UnifiedConfig {
     // Pre-computed hierarchy latencies (populated by computeHierarchyLatencies)
     std::array<int, 7> hierarchy_level_latency = {0,0,0,0,0,0,0};
     std::array<int, 6> hierarchy_bridge_latency = {0,0,0,0,0,0};
+    /* (1.12.234): a level crossed at a node the tree builds as a link -- the
+     * level's fixed latency and serialisation, no router stages. */
+    std::array<int, 7> hierarchy_level_link_latency = {0,0,0,0,0,0,0};
+    /* (1.12.234): a tier-boundary bridge with the same width and clock on both
+     * sides is a link (no router stage); 1 = built as a link. */
+    std::array<int, 6> hierarchy_bridge_link = {0,0,0,0,0,0};
     std::array<std::string, 6> hierarchy_bridge_model = {"auto","auto","auto","auto","auto","auto"};
     int pe_hierarchy_level = 1;  // 0=SUBARRAY, 1=BANK, 2=BANK_GROUP, 3=CHIP, 4=RANK, 5=CHANNEL, 6=LOGIC_DIE/SYSTEM, 7=HOST_MC (1.11.94 H17)
     int hierarchy_hostmc_latency = 0;   // 1.11.94 (H17): rung 7, the host-path split at the device clock (cycles)
@@ -3992,6 +3998,7 @@ struct UnifiedConfig {
     int htree_hotspot_100 = 0;   // 1.11.97 (12c): max/mean link load of the built tree under uniform PE->endpoint traffic, x100; 0 = no tree
     int htree_mean_one_way_latency = 0;   // 1.11.97 (7c): mean one-way tier-walk cost (PE cycles: levels + bridges) over uniform PE->endpoint pairs; 0 = no tree
     int htree_mean_hops_100 = 0;          // 1.11.97 (7c): mean links per one-way walk x100
+    std::vector<int> htree_walk_link_nodes;   // (1.12.234): tree nodes the tier walk charges as links (built as links)
     int htree_endpoints      = -1;   // PE endpoints + aggregated-region endpoints
     int htree_abstract       = -1;   // of those, the aggregated regions
     // Derived: topology-aware NoC average one-way latency (cycles)
@@ -5856,7 +5863,8 @@ static int stackChannelsPerDie(const UnifiedConfig& config, bool print) {
 }
 
 static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig& config, long covered, int pe_level,
-                             const std::vector<char>* as_link = nullptr) {   // (1.12.231): the nodes built as links (none = every node a router)
+                             const std::vector<char>* as_link = nullptr,
+                             const std::vector<char>* walk_link = nullptr) {   // (1.12.234): the nodes the tier walk charges as links (none = as_link)   // (1.12.234): the nodes built as links (none = every node a router)
     /* 1.11.103 (ruling 9): the in-die fabric's node links count as ports and
      * every grid node (and a CROSSBAR hub) is a priced switch; the walk census
      * below takes the walker's own paths, so the hop counts, the hotspot and
@@ -6003,6 +6011,16 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
          * replaced, as TreeWalker::walk does. On a plain tree the path is
          * the parent-pointer walk this census took before. */
         pimid_htree::TreeWalker walker; walker.build(tree);
+        /* (1.12.234): a node built as a link is no router: the walk charges its
+         * level the link latency only (no router stages), it is not a hop
+         * (the two links beside it are one link), and the link loads are
+         * those of the links as built. The analytical path passes the same
+         * plan the detailed builder uses (walk_link); the detailed path's
+         * as_link is that plan. */
+        const std::vector<char>* wl = walk_link ? walk_link : as_link;
+        auto walkLink = [&](int r) { return wl && r >= 0 && r < (int)wl->size() && (*wl)[(size_t)r]; };
+        config.htree_walk_link_nodes.clear();
+        for (int r = 0; r < tree.numRouters; ++r) if (walkLink(r)) config.htree_walk_link_nodes.push_back(r);
         std::map<std::pair<int,int>, long> load;   // (from,to) router pair, per direction
         std::vector<int> rt;
         const int nEp = tree.totalEndpoints();
@@ -6023,11 +6041,14 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
                 if (rs->second == rd->second) continue;
                 if (!walker.path(tree, pe, ep, rt) || rt.size() < 2) continue;
                 double cost = 0.0; long links = 0;
+                int lastBuilt = -1;   // (1.12.234): the last router as built on the walk (a link's load is the built link's)
                 for (size_t i = 0; i < rt.size(); ++i) {
                     const int lv = lvlOf(rt[i]);
-                    if (lv >= 0 && lv <= 6) cost += config.hierarchy_level_latency[lv];
+                    const bool asLk = walkLink(rt[i]);   // (1.12.234)
+                    if (lv >= 0 && lv <= 6) cost += asLk ? config.hierarchy_level_link_latency[lv] : config.hierarchy_level_latency[lv];
+                    if (asLk) links--;   // (1.12.234): the two links beside it are one link (at a leaf: its endpoint's link)
+                    else { if (lastBuilt >= 0) load[{lastBuilt, rt[i]}]++; lastBuilt = rt[i]; }
                     if (i + 1 < rt.size()) {
-                        load[{rt[i], rt[i + 1]}]++;
                         const int la = lvlOf(rt[i]), lb = lvlOf(rt[i + 1]);
                         const bool exitLink = (isDieNode(rt[i]) != isDieNode(rt[i + 1])) && (std::max(la, lb) >= 3);
                         if (exitLink) {
@@ -6050,10 +6071,15 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
         if (nPairs > 0) {
             config.htree_mean_one_way_latency = (int)std::lround(sumCost / (double)nPairs);
             config.htree_mean_hops_100 = (int)std::lround(100.0 * (double)sumLinks / (double)nPairs);
+            if (!config.htree_walk_link_nodes.empty())   // (1.12.234)
+                std::cout << "[htree] tier walk: " << config.htree_walk_link_nodes.size() << " node(s) built as links are charged"
+                             " their link latency only (no router stages) and are not hops" << std::endl;
             std::cout << "[htree] tier walk over " << nPairs << " PE->endpoint pairs: mean one-way cost " << config.htree_mean_one_way_latency
                       << " PE cycles (levels + bridges), mean " << config.htree_mean_hops_100 / 100.0 << " links (ruling 7 (c): the analytical base latency and hop count)" << std::endl;
         }
-        long maxL = 0, sumL = 0; const long nLinks = 2L * (long)(tree.intLinks.size() + tree.gridLinks.size());   // 1.11.103: + the fabric's links
+        /* (1.12.234): the links as built: each node built as a link joins its two
+         * links into one (a leaf's up-link joins its endpoint's link). */
+        long maxL = 0, sumL = 0; const long nLinks = 2L * (long)(tree.intLinks.size() - config.htree_walk_link_nodes.size() + tree.gridLinks.size());   // 1.11.103: + the fabric's links
         for (const auto& kv : load) { if (kv.second > maxL) maxL = kv.second; sumL += kv.second; }
         config.htree_hotspot_100 = (nLinks > 0 && sumL > 0) ? (int)std::lround(100.0 * (double)maxL / ((double)sumL / (double)nLinks)) : 100;
         std::cout << "[htree] hotspot: max link load " << maxL << " vs mean " << ((nLinks > 0) ? (double)sumL / (double)nLinks : 0.0)
@@ -6219,15 +6245,14 @@ static SinglePathLinks planSinglePathLinks(const pimid_htree::SparseHTree& t, co
     return p;
 }
 
-static bool dramHTreeBuilder(const std::string& tech,
-                             const std::string& outPath,
-                             UnifiedConfig& config) {
-    int num_pes = config.num_pes;
-    int pe_level = config.pe_hierarchy_level;
-    // Per-tech per-layer (link_width_bits, freq_GHz), layers leaf->root: L0,L1,L2,L3; plus channel count N.
-    struct Layer { double width_bits; double freq_ghz; };
-    Layer L[4];          // L[0]=L0 (the leaf tier below the bank) ... L[3]=L3 (channel)
-    int N = 1;           // parallel DRAM channels
+/* (1.12.234): the tree's four link layers (true ladder width, clock) and channel
+ * count, as the detailed DRAM-tree builder builds them: the per-technology
+ * table, the sourced-ladder projection, the noc.levels overrides. One source
+ * for the builder and the analytical census, so both decide alike which nodes
+ * are links. emit = the builder's prints and its gate-only test hook. */
+struct DramTreeLayer { double width_bits; double freq_ghz; };
+static bool dramTreeLayers(const std::string& tech, UnifiedConfig& config,
+                           DramTreeLayer L[4], int& N, bool emit) {
 
     if (tech == "DDR3") {
         L[0]={512,0.8}; L[1]={256,0.8}; L[2]={256,0.8}; L[3]={192,0.8}; N=1;
@@ -6333,7 +6358,7 @@ static bool dramHTreeBuilder(const std::string& tech,
         /* Test hook, gate-only: PIMID_FABRIC_BREAK corrupts one layer so the
          * gate can prove the invariant FIRES. Five vacuous passes this cycle
          * came from checks whose firing was never demonstrated. */
-        if (getenv("PIMID_FABRIC_BREAK")) L[3].width_bits *= 2;
+        if (emit && getenv("PIMID_FABRIC_BREAK")) L[3].width_bits *= 2;
 
         /* THE INVARIANT (design section 5): each 1:1 layer must carry exactly
          * its source rung's bandwidth; L0 the stated fold. Violation is FATAL
@@ -6384,14 +6409,14 @@ static bool dramHTreeBuilder(const std::string& tech,
                 std::exit(2);
             }
         }
-        std::cout << "  [htree] Garnet topology PROJECTED from the sourced"
+        if (emit) std::cout << "  [htree] Garnet topology PROJECTED from the sourced"
                      " ladder, channel-anchored (bits/layer "
                   << L[0].width_bits << "/" << L[1].width_bits
                   << "/" << L[2].width_bits << "/" << L[3].width_bits
                   << ", " << N << " channel(s); L0 = bottleneck fold of the"
                      " inner rungs) -- invariant checked\n";
     } else {
-        std::cout << "  [htree] Garnet topology from the per-technology TABLE:"
+        if (emit) std::cout << "  [htree] Garnet topology from the per-technology TABLE:"
                      " no sourced ladder was adopted for " << tech
                   << ", so these widths are placeholders, not tool-sourced\n";
     }
@@ -6421,13 +6446,25 @@ static bool dramHTreeBuilder(const std::string& tech,
             int li = pimid_htree::layerForLevel(lvl, chanLevel);
             if (ov.link_width_bits > 0) L[li].width_bits = ov.link_width_bits;
             if (ov.frequency_ghz > 0.0) L[li].freq_ghz  = ov.frequency_ghz;
-            std::cerr << "[config] in-memory fabric: tier " << lvl
+            if (emit) std::cerr << "[config] in-memory fabric: tier " << lvl
                       << " overridden by noc.levels -> layer L" << li
                       << " width=" << L[li].width_bits << "b freq="
                       << L[li].freq_ghz << "GHz (hypothetical fabric, not "
                       << tech << " as built)\n";
         }
     }
+    return true;
+}
+
+static bool dramHTreeBuilder(const std::string& tech,
+                             const std::string& outPath,
+                             UnifiedConfig& config) {
+    int num_pes = config.num_pes;
+    int pe_level = config.pe_hierarchy_level;
+    // Per-tech per-layer (link_width_bits, freq_GHz), layers leaf->root: L0,L1,L2,L3; plus channel count N.
+    DramTreeLayer L[4];  // L[0]=L0 (the leaf tier below the bank) ... L[3]=L3 (channel)
+    int N = 1;           // parallel DRAM channels
+    if (!dramTreeLayers(tech, config, L, N, true)) return false;  // not a modeled DRAM tech
 
     /* 1.11.56 (audit B012) derived REF_BW from the HBM3 architecture object
      * and declared REF_FREQ a stated constant. 1.11.97 (ruling 7(c)) retired
@@ -6760,7 +6797,19 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
         std::exit(2);
     }
     std::cout << "  [htree] census for the ANALYTICAL fabric model (" << tech << "): the same tree the detailed path builds, priced, not routed" << std::endl;
-    censusSparseTree(tree, config, covered, pe_level);
+    /* (1.12.234): the nodes the detailed builder would build as links (the same
+     * layers, the same plan) are charged as links by the tier walk. */
+    SinglePathLinks fold;
+    {
+        DramTreeLayer Ly[4]; int Nl = 1;
+        if (dramTreeLayers(tech, config, Ly, Nl, false)) {
+            double lBits[4], lGHz[4];
+            for (int i = 0; i < 4; ++i) { lBits[i] = Ly[i].width_bits; lGHz[i] = Ly[i].freq_ghz; }
+            fold = planSinglePathLinks(tree, lBits, lGHz, config.noc_single_path_as_link);
+        }
+    }
+    /* (1.12.234): and the census prices them as what is built: links, not routers */
+    censusSparseTree(tree, config, covered, pe_level, fold.asLink.empty() ? nullptr : &fold.asLink);
     return true;
 }
 
@@ -8068,6 +8117,11 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             static_cast<pimid::NetworkLevel>(i), 0, 1, 64);
         int cyc = static_cast<int>(std::ceil(ns * pe_ghz));
         config.hierarchy_level_latency[i] = cyc > 0 ? cyc : 1;
+        /* (1.12.234): the same level crossed at a node built as a link: no router stages */
+        double ns_lk = hierarchy->getTransferLatencyNs(
+            static_cast<pimid::NetworkLevel>(i), 0, 1, 64, false);
+        int cyc_lk = static_cast<int>(std::ceil(ns_lk * pe_ghz));
+        config.hierarchy_level_link_latency[i] = cyc_lk > 0 ? cyc_lk : 1;
     }
     // Query per-bridge crossing latency (64B)
     // Bridge latency now computed by the bridge model (SIMPLE/MD1/DETAILED/AUTO)
@@ -8093,9 +8147,18 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
          * then this converts once, at the PE clock, like every level does.
          * The router-latency and bypass resolution moved INTO that call so
          * one place owns it. */
+        /* (1.12.234): a bridge whose two sides have the same width and the same
+         * clock changes nothing in the datapath: it is a link, its fixed
+         * crossing without a router stage. Where the width or the clock
+         * changes it is a converter and keeps its router.
+         * noc.single_path_as_link: false keeps every bridge a router. */
+        const double fl = br.lower_frequency_mhz, fu = br.upper_frequency_mhz;
+        const bool br_link = config.noc_single_path_as_link && lower_w == upper_w &&
+                             std::fabs(fl - fu) <= 1e-9 * std::max(std::fabs(fl), std::fabs(fu));
+        config.hierarchy_bridge_link[i] = br_link ? 1 : 0;
         double br_ns = hierarchy->getBridgeLatencyNs(
             i, 64, lower_w, upper_w, base_ns,
-            (ov.router_latency >= 0) ? ov.router_latency : -1,
+            br_link ? 0 : ((ov.router_latency >= 0) ? ov.router_latency : -1),
             (ov.router_bypass  >= 0) ? ov.router_bypass  : -1);
         int br_cyc = static_cast<int>(std::ceil(br_ns * pe_ghz));
         config.hierarchy_bridge_latency[i] = br_cyc > 0 ? br_cyc : 1;
@@ -8143,6 +8206,13 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     std::cout << " at " << hier_clk_mhz << " MHz"
                  " (one per tier boundary; a traversal charges the levels it"
                  " crosses AND the bridges between them)\n";
+    {   /* (1.12.234): the bridges built as links */
+        std::ostringstream bl; int nbl = 0;
+        for (int i = 0; i < 6; ++i) if (config.hierarchy_bridge_link[i]) bl << (nbl++ ? ", " : "") << i << "|" << (i + 1);
+        if (nbl)
+            std::cout << "  Hierarchy bridges built as links (the same width and clock on both sides, no router stage): "
+                      << bl.str() << "\n";
+    }
 
     config.hierarchy_enabled = true;
 
@@ -8772,9 +8842,11 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                  * (censusSparseTree: mean one-way levels + bridges, mean links),
                  * set below where the topology parameters are computed. The
                  * per-link scalar stays 1: no hop in this model costs a
-                 * reference-clock quantity. */
+                 * reference-clock quantity. (1.12.234): the router keeps its
+                 * pipeline stages (noc.router_pipe_stages, every router alike);
+                 * it was forced to 1 here, so the analytical tree priced and
+                 * timed 1-stage routers whatever the setting. */
                 config.noc_link_latency = 1;
-                config.noc_router_latency = 1;
 
                     // Remove the old per-tier analytical model: each tier hop costs
                     // the SAME physics-derived link latency (the H-tree edge
@@ -9184,6 +9256,13 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     for (int i = 0; i < 6; ++i)
         out << "        bridgeModel" << i << " = \"" << config.hierarchy_bridge_model[i] << "\";\n";
     out << "        bridgeModel6 = \"auto\";\n";
+    if (!config.htree_walk_link_nodes.empty()) {   // (1.12.234): the nodes the tier walk charges as links
+        for (int i = 0; i < 7; ++i)
+            out << "        levelLinkLatency" << i << " = " << config.hierarchy_level_link_latency[i] << ";\n";
+        std::ostringstream ln;
+        for (size_t i = 0; i < config.htree_walk_link_nodes.size(); ++i) ln << (i ? " " : "") << config.htree_walk_link_nodes[i];
+        out << "        linkNodes = \"" << ln.str() << "\";\n";
+    }
 
     // M:N PE-to-memory-org mapping
     out << "        connectionMode = " << static_cast<int>(config.pe_mem_connection) << ";\n";

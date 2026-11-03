@@ -1391,7 +1391,8 @@ uint64_t InternalDRAMNetwork::getTransferLatency(NetworkLevel level,
 
 double InternalDRAMNetwork::getTransferLatencyNs(NetworkLevel level,
                                                  int source_id, int dest_id,
-                                                 uint64_t data_bytes) {
+                                                 uint64_t data_bytes,
+                                                 bool with_router) {
     /* 1.11.56 (audit B051): the cycles version above, divided by the clock
      * those cycles belong to. Both terms are per-level: the router pipeline
      * and the fixed link latency tick at frequency_GHz, and a serialisation
@@ -1404,6 +1405,9 @@ double InternalDRAMNetwork::getTransferLatencyNs(NetworkLevel level,
     int per_hop_router = link.router_latency;
     if (hops <= 1.0 && link.router_bypass && per_hop_router > 1)
         per_hop_router = std::max(1, per_hop_router - 1);
+    /* (1.12.234): a node built as a link has no router: the crossing keeps its
+     * fixed latency and its serialisation, and charges no pipeline stages. */
+    if (!with_router) per_hop_router = 0;
 
     /* 1.11.59 (audit round 3, B014): a traversal costs its fixed latency ONCE
      * even when the routing hop count is zero.

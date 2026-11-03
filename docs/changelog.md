@@ -6,6 +6,40 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.234 -- the analytical network model treats a node that only passes flits along as a link, as the detailed model does
+
+- **The problem.** The analytical model's tier walk charged router stages at every node of the DRAM tree, including the
+  nodes with exactly two attachments and the same width and clock on both links that the detailed model builds as links,
+  so the two models timed a different number of routers on the same path, and the analytical power path priced those
+  nodes as routers. A tier bridge whose two sides have the same width and clock was charged a router stage. The H-tree
+  branch also set the router term to one stage whatever `noc.router_pipe_stages` said.
+- **The fix** (`src/main.cpp`, `src/memory/internal_dram_network.cpp/.h`, `external/zsim/src`: zsim.h, init.cpp,
+  sparse_htree.h, pe_memory_interface.h, garnet_network.h, qemu_zsim_plugin.cpp).
+  - The tier walk applies the detailed tree writer's rule, with the same test on the ladder's own widths and clocks:
+    such a node adds the latency of the links it replaces and no router stages; converters, merges, branch routers and
+    the root keep theirs. On the 16-PE BANK placements the walk counts the same nodes as links as the detailed tree:
+    DDR4 17, DDR5 18, LPDDR5 24, HBM3 SUBARRAY 17.
+  - The analytical power path prices such a node as a link too, and a tier bridge whose two sides have the same width
+    and clock is a link (its fixed crossing only); a bridge where the width or the clock changes keeps its router stage.
+  - Every analytical message-passing message is counted and priced at the tree levels it crosses, as a memory access is,
+    with all of its cache-line packets. Before, only the first message of each sender-receiver pair was counted, as one
+    packet, and its links were left unpriced. The timing and the latency cache are unchanged; the router-traversal line
+    now says it counts the routers as built.
+  - `noc.single_path_as_link: false` restores the earlier walk and pricing.
+  - The H-tree branch keeps `noc.router_pipe_stages`.
+  - docs/network.md says the analytical model follows the same rule.
+- **Data impact.** Only cells whose analytical path crosses such a node can change, and only where the dropped stage
+  survives the rounding to PE cycles: the mean one-way cost goes from 166 to 164 PE cycles on DDR3 and from 67 to 66 on
+  GDDR6, and is unchanged on DDR4, DDR5, LPDDR5 and HBM3 SUBARRAY. On the 116-cell validation set two cells change: the
+  device OpenMP cells on DDR3 (-0.27%) and GDDR6 (-0.12%). The analytical NoC power of the cells with such nodes moves
+  by -0.4% to -3.9% (+0.1% to +0.3% on HBM at the bank). On the bfs smoke cells the analytical message-passing link
+  traversals rise 18.5% and their NoC power 19%. At one pipeline stage the H-tree change is exact.
+- **Validation** (the previous release and this build on the same node; logs compared with tree paths masked). With
+  `noc.single_path_as_link: false` every log is identical on 182 cells: the 135 device message-passing smoke cells, 22
+  corpus cells run on the analytical model and 25 analytical DRAM examples. With the default, every cell of the 116-cell
+  validation set exits 0, the two cells above are the only ones whose run time changes, cells without such a node are
+  identical, and the power checks report no flag.
+
 ## 1.12.233 -- every detailed network's links run at full rate: each buffer holds its link's credit round trip
 
 - **The problem.** Garnet's credit flow control made the buffer depth set the link rate. A flit leaves only when the

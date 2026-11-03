@@ -90,7 +90,10 @@ credit-based flow control, deadlock-free routing.
   stays a router, and so do the root and every in-die fabric node; the
   `[htree] two-attachment nodes` line gives the counts per level.
   `noc.single_path_as_link: false` builds every node as a router. A `CUSTOM`
-  file the user writes is built as written.
+  file the user writes is built as written. The analytical model's tier walk
+  applies the same rule: such a node adds the latency of the links it
+  replaces and no router stages; converters, merges and branch routers keep
+  theirs.
 - **Links at full rate ((1.12.233)).** On the tree the writer emits, every link
   carries one flit per cycle at its width when nothing contends for it: the
   buffer each link feeds holds the link's credit round trip per VC -- link

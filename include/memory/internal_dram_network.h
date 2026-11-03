@@ -380,7 +380,8 @@ public:
      */
     double getTransferLatencyNs(NetworkLevel level,
                                 int source_id, int dest_id,
-                                uint64_t data_bytes);
+                                uint64_t data_bytes,
+                                bool with_router = true);   // (1.12.234): false = the level crossed at a node built as a link (no router stages)
 
     /**
      * @brief Bridge crossing time in NANOSECONDS (audit B051).

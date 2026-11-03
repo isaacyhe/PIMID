@@ -3403,6 +3403,24 @@ static uint32_t rtNetOneWay(uint32_t a, uint32_t b) {
     if (PEMemoryInterface::treeWalk((int)a, (int)b, pl, nullptr, &c)) return (uint32_t)c;
     return zinfo->hierarchy.nocAvgOneWayLatency;   /* no tree below the element (HOST_MC placement) */
 }
+/* (1.12.234): the tree walk of an MPI message between PE ranks on the analytical network: the same
+ * network interfaces and walk as the runtime's PE-to-PE costs above. GarnetNetwork prices the
+ * message's packets at the levels it crosses (false = no tree: priced as before). */
+static bool msgTierWalk(uint32_t srcPe, uint32_t dstPe, uint32_t perLevel[8], uint32_t perLevelLink[8],
+                        uint32_t* links, uint32_t* tsvDies, bool* stackLayout, uint32_t* gridEdges, int* gridLevel) {
+    rtNetBuild();
+    const uint32_t n = (uint32_t)g_rtNetPes.size();
+    if (!n) return false;
+    const uint32_t a = g_rtNetPes[srcPe % n].ep, b = g_rtNetPes[dstPe % n].ep;
+    for (int l = 0; l < 8; l++) { perLevel[l] = 0; perLevelLink[l] = 0; }
+    *links = 0; *tsvDies = 0; *gridEdges = 0; *stackLayout = false;
+    *gridLevel = (int)zinfo->hierarchy.placementLevel;
+    if (a == b) return true;   /* two PEs behind one network interface: no NoC traversal */
+    uint64_t c = 0;
+    if (!PEMemoryInterface::treeWalk((int)a, (int)b, perLevel, links, &c, tsvDies, gridEdges, perLevelLink)) return false;
+    *stackLayout = zinfo->hierarchy.stackChannelsPerDie > 0;
+    return true;
+}
 /* The NoC part of a barrier (launch = false) or a launch (true) among P participants, in PE
  * cycles; *T = the most participants on one PE. False when the run has no PEs to place them on. */
 static bool rtNetCost(bool launch, uint32_t P, uint64_t* cyc, uint32_t* T) {
@@ -4990,13 +5008,18 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             /* Simple mode: analytical RTT with message size scaling.
              * 1.11.97 (plugin-6): getRTT counts one packet per call, so the
              * receiver reads the sender-cached RTT uncounted instead. */
+            {   /* (1.12.234): the message's packets are priced at the tree levels they cross */
+                static std::once_flag msgWalkOnce;
+                std::call_once(msgWalkOnce, [gn] { gn->setMsgTierWalk(&msgTierWalk); });
+            }
             nocLat = isRecv
                 ? gn->getRTTAnalyticUncounted(
                       std::to_string(params.src_pe).c_str(),
                       std::to_string(params.dst_pe).c_str())
-                : gn->getRTT(
+                : gn->getRTTMessage(   /* (1.12.234): every message's packets counted; the RTT is getRTT's */
                       std::to_string(params.src_pe).c_str(),
-                      std::to_string(params.dst_pe).c_str());
+                      std::to_string(params.dst_pe).c_str(),
+                      std::max(1u, (uint32_t)((params.msg_size + 63) / 64)));
             if (params.msg_size > 64) {
                 nocLat += (uint32_t)((params.msg_size / 64) * 2);
             }

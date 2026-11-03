@@ -293,6 +293,12 @@ public:
                 (int)zinfo->hierarchy.ranksPerChannel, W, Lt, fab.kind > 0 ? &fab : nullptr);
             /* 1.12.18: the stated stack layout, as main.cpp placed it */
             pimid_htree::assignStackDies(t, (int)zinfo->hierarchy.stackChannelsPerDie);
+            /* (1.12.234): the nodes main.cpp's plan builds as links */
+            if (zinfo->hierarchy.linkNodeCount > 0) {
+                t.walkLink.assign((size_t)t.numRouters, 0);
+                for (int r = 0; r < t.numRouters && r < (int)sizeof(zinfo->hierarchy.linkNode); ++r)
+                    t.walkLink[(size_t)r] = (char)zinfo->hierarchy.linkNode[r];
+            }
         });
         return t;
     }
@@ -316,7 +322,8 @@ public:
     }
     static bool treeWalk(int srcEp, int dstEp, uint32_t perLevel[8], uint32_t* links, uint64_t* cost,
                          uint32_t* tsvDies = nullptr,     // 1.12.18: die boundaries crossed
-                         uint32_t* gridEdges = nullptr) {   // (1.12.143): in-die node links crossed
+                         uint32_t* gridEdges = nullptr,   // (1.12.143): in-die node links crossed
+                         uint32_t* perLevelLink = nullptr) {   // (1.12.234): the nodes built as links, per tier (not in perLevel)
         if (zinfo->hierarchy.placementLevel >= 7) return false;   // HOST_MC: no tree below the element
         const pimid_htree::SparseHTree& t = tree();
         if (t.numPEs <= 0 || srcEp < 0 || dstEp < 0) return false;
@@ -324,9 +331,11 @@ public:
         if (!w.built) return false;
         uint64_t c = 0;
         uint32_t l = w.walk(t, srcEp, dstEp, perLevel, zinfo->hierarchy.levelLatency,
-                            zinfo->hierarchy.bridgeLatency, &c, tsvDies, gridEdges);
+                            zinfo->hierarchy.bridgeLatency, &c, tsvDies, gridEdges,
+                            t.walkLink.empty() ? nullptr : zinfo->hierarchy.levelLinkLatency,   // (1.12.234)
+                            perLevelLink);
         bool visited = false;
-        for (int i = 0; i < 7; i++) if (perLevel[i]) { visited = true; break; }
+        for (int i = 0; i < 7; i++) if (perLevel[i] || (perLevelLink && perLevelLink[i])) { visited = true; break; }
         if (!visited) return false;
         if (links) *links = l;
         if (cost) *cost = c;
@@ -1133,7 +1142,8 @@ public:
             uint32_t links = 0; uint64_t walkCost = 0;
             uint32_t tsvDies = 0;   // 1.12.18
             uint32_t gridEdges = 0;   // (1.12.143): in-die node links this walk crossed
-            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost, &tsvDies, &gridEdges);
+            uint32_t perLevelLink[8] = {0,0,0,0,0,0,0,0};   // (1.12.234): nodes built as links: link traversals, not router accesses
+            const bool fromTree = treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &walkCost, &tsvDies, &gridEdges, perLevelLink);
             if (!fromTree)
                 links = hierTraversalLevels(
                     myUnit, targetUnit, perLevel,
@@ -1144,13 +1154,15 @@ public:
                 if (myUnit != targetUnit) {
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links, false, tsvDies,
                         fromTree && zinfo->hierarchy.stackChannelsPerDie > 0,   // 1.12.18
-                        gridEdges, (int)zinfo->hierarchy.placementLevel);   // (1.12.143)
+                        gridEdges, (int)zinfo->hierarchy.placementLevel,   // (1.12.143)
+                        perLevelLink);   // (1.12.234)
                     /* the access's control message (a read's request, a write's ack) over
                      * the same tiers (user ruling 2026-10-26: control messages); the analytical ladder
                      * charges the round trip as before */
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links, true, tsvDies,
                         fromTree && zinfo->hierarchy.stackChannelsPerDie > 0,
-                        gridEdges, (int)zinfo->hierarchy.placementLevel);   // (1.12.143)
+                        gridEdges, (int)zinfo->hierarchy.placementLevel,   // (1.12.143)
+                        perLevelLink);   // (1.12.234)
                 }
             }
             // hierLat = per-tier hop-based latency through the LCA path (no double-counting)

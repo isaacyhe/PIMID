@@ -267,6 +267,7 @@ private:
 
     // -- Node name -> ID mapping -------------------------------
     std::unordered_map<std::string, uint32_t> nodeMap_;
+    bool (*msgTierWalk_)(uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, bool*, uint32_t*, int*) = nullptr;   // (1.12.234)
 
     // -- Latency cache (simple mode only) ---------------------
     std::unordered_map<std::string, uint32_t> latencyCache_;
@@ -630,6 +631,25 @@ public:
     uint32_t getRTT(const char* src, const char* dst) override {
         futex_lock(&garnetLock_);
         const uint32_t rtt = getRTTLocked_(src, dst);
+        futex_unlock(&garnetLock_);
+        return rtt;
+    }
+    /* (1.12.234): getRTT for an analytical MPI message of `packets` cache-line
+     * packets: the same RTT from the same latency cache (the timing is
+     * getRTT's), and every message's packets counted -- getRTT alone counts
+     * one packet, at the first message of a pair (the cache miss). A
+     * cycle-accurate network: getRTT. */
+    uint32_t getRTTMessage(const char* src, const char* dst, uint32_t packets) {
+        if (cycleAccurate_) return getRTT(src, dst);
+        futex_lock(&garnetLock_);
+        const size_t cached = latencyCache_.size();
+        const uint32_t rtt = getRTTLocked_(src, dst);
+        const bool counted = latencyCache_.size() > cached;   // the miss counted the message's first packet
+        const uint64_t more = (uint64_t)std::max(1u, packets) - (counted ? 1u : 0u);
+        if (more && topology_ != NoCTopology::CUSTOM) {
+            const uint32_t s = nodeMap_[src], d = nodeMap_[dst];
+            countMessagePackets_(s, d, getHopCount(s, d), more);
+        }
         futex_unlock(&garnetLock_);
         return rtt;
     }
@@ -1577,6 +1597,13 @@ public:
 
     // -- Statistics -------------------------------------------
 
+    /* (1.12.234): the tree walk of an analytical message between two PEs (by the
+     * numeric endpoint names the MPI path binds), set by the runtime. */
+    typedef bool (*MsgTierWalkFn)(uint32_t srcPe, uint32_t dstPe, uint32_t perLevel[8], uint32_t perLevelLink[8],
+                                  uint32_t* links, uint32_t* tsvDies, bool* stackLayout, uint32_t* gridEdges,
+                                  int* gridLevel);
+    void setMsgTierWalk(MsgTierWalkFn f) { msgTierWalk_ = f; }
+
     void getStats(uint64_t& packets, uint64_t& hops, uint64_t& avgLat) const {
         packets = stats_.total_packets;
         hops = stats_.total_hops;
@@ -1736,7 +1763,8 @@ public:
     void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94 (H17): rung 7 = HOST_MC, no on-die router (not counted below)
                         bool ctrl = false,
                         uint32_t tsvDies = 0, bool stackLayout = false,   // 1.12.18: die boundaries this walk crossed
-                        uint32_t gridEdges = 0, int gridLevel = -1) {   // (1.12.143): in-die node links crossed, and the tier the grid sits at
+                        uint32_t gridEdges = 0, int gridLevel = -1,   // (1.12.143): in-die node links crossed, and the tier the grid sits at
+                        const uint32_t* perLevelLink = nullptr) {   // (1.12.234): the nodes built as links the walk crossed, per tier
         const uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
         const uint32_t bits = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
         const uint64_t flits = std::max(1u, (bits + fb - 1) / fb);
@@ -1752,7 +1780,10 @@ public:
         __atomic_fetch_add(&stats_.total_packets, (uint64_t)1, __ATOMIC_RELAXED);
         __atomic_fetch_add(ctrl ? &stats_.control_packets : &stats_.data_packets,
                            (uint64_t)1, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&stats_.total_hops, (uint64_t)links, __ATOMIC_RELAXED);
+        /* (1.12.234): a node built as a link is no hop: the two links beside it are one */
+        uint64_t linkNodes = 0;
+        if (perLevelLink) for (int l = 0; l < 7; l++) linkNodes += perLevelLink[l];
+        __atomic_fetch_add(&stats_.total_hops, (uint64_t)links - std::min<uint64_t>(linkNodes, links), __ATOMIC_RELAXED);
         __atomic_fetch_add(&stats_.total_flits, flits, __ATOMIC_RELAXED);
         __atomic_fetch_add(&stats_.total_router_traversals, routers * flits,
                            __ATOMIC_RELAXED);
@@ -1763,8 +1794,11 @@ public:
          * perLevel[l] edges, minus one at the top tier. Rung 7 (HOST_MC) has
          * no on-die router: its edges stay unattributed and say so. */
         {
+            /* (1.12.234): a node built as a link leaves by its up-link too: its
+             * tier owns that link, as it did when the node was a router */
+            auto visits = [&](int l) -> uint64_t { return (uint64_t)perLevel[l] + ((perLevelLink && l < 7) ? perLevelLink[l] : 0u); };
             int top = -1;
-            for (int l = 0; l < 8; l++) if (perLevel[l]) top = l;
+            for (int l = 0; l < 8; l++) if (visits(l)) top = l;
             uint64_t attributed = 0;
             /* (1.12.143): on an in-die fabric the grid tier's routers are visited
              * along the grid, so only the walk's exits leave them by an
@@ -1772,8 +1806,8 @@ public:
              * own node links, recorded apart and priced as those links. */
             uint64_t grid = 0;
             for (int l = 0; l < 7; l++) {
-                if (!perLevel[l]) continue;
-                uint64_t e = (uint64_t)perLevel[l] - (l == top ? 1u : 0u);
+                if (!visits(l)) continue;
+                uint64_t e = visits(l) - (l == top ? 1u : 0u);
                 if (gridEdges && l == gridLevel) { grid = std::min<uint64_t>(e, gridEdges); e -= grid; }
                 if (!e) continue;
                 __atomic_fetch_add(&stats_.level_link_flit_traversals[l], e * flits,
@@ -1888,7 +1922,7 @@ public:
         if (!routerUpBits_.empty())
             info("  Busiest tree link: %lu cycle(s) of service in the ROI (each link serves one flit of its width per cycle, both directions together)",
                  (unsigned long)linkBusyMaxCycles());
-        info("  Router traversals: %lu (flits x routers crossed, routers = links + 1)",
+        info("  Router traversals: %lu (flits x routers crossed, the routers as built)",
              stats_.total_router_traversals);
         info("  Link traversals: %lu (flits x router-to-router links)",
              stats_.link_traversals);
@@ -2522,11 +2556,89 @@ private:
     /* 1.11.92 (F2): ONE place that counts a packet. Replaces five copies of
      * "total_flits += 1; buffer_reads += hops; ...", which counted a packet
      * as one flit and a router traversal as a link hop. */
+    /* (1.12.234): the PE a node is bound for (its numeric endpoint name). */
+    bool numericNameOf_(uint32_t node, uint32_t* out) const {
+        for (const auto& kv : nodeMap_) {
+            if (kv.second != node || kv.first.empty() || kv.first.size() > 9) continue;
+            bool num = true;
+            for (char ch : kv.first) if (ch < '0' || ch > '9') { num = false; break; }
+            if (num) { *out = (uint32_t)std::stoul(kv.first); return true; }
+        }
+        return false;
+    }
+    /* (1.12.234): an analytical message priced at the tree levels it crosses, as
+     * recordTierWalk prices a memory access's tier walk: router visits by level
+     * (a node built as a link is a link), each visited node's up-link on its
+     * level, the die boundaries under the stated layout. *routers = routers
+     * crossed, *links = tree links crossed, *attributed = links given to a level. */
+    bool msgWalk_(uint32_t src, uint32_t dst, uint64_t flits, uint64_t* routers, uint64_t* links, uint64_t* attributed,
+                  uint64_t mult = 1) {   // (1.12.234): mult = packets priced at once
+        if (!msgTierWalk_) return false;
+        uint32_t sp = 0, dp = 0;
+        if (!numericNameOf_(src, &sp) || !numericNameOf_(dst, &dp)) return false;
+        uint32_t pl[8] = {0,0,0,0,0,0,0,0}, plk[8] = {0,0,0,0,0,0,0,0}, nl = 0, tsv = 0, grid = 0;
+        bool stack = false; int gridLevel = -1;
+        if (!msgTierWalk_(sp, dp, pl, plk, &nl, &tsv, &stack, &grid, &gridLevel)) return false;
+        uint64_t r = 0;
+        for (int l = 0; l < 7; l++) {
+            if (!pl[l]) continue;
+            __atomic_fetch_add(&stats_.level_packet_traversals[l], (uint64_t)pl[l] * mult, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&stats_.level_flit_traversals[l], (uint64_t)pl[l] * flits * mult, __ATOMIC_RELAXED);
+            r += pl[l];
+        }
+        auto visits = [&](int l) -> uint64_t { return (uint64_t)pl[l] + (l < 7 ? plk[l] : 0u); };
+        int top = -1;
+        for (int l = 0; l < 8; l++) if (visits(l)) top = l;
+        uint64_t att = 0, g = 0;
+        for (int l = 0; l < 7; l++) {
+            if (!visits(l)) continue;
+            uint64_t e = visits(l) - (l == top ? 1u : 0u);
+            if (grid && l == gridLevel) { g = std::min<uint64_t>(e, grid); e -= g; }
+            if (!e) continue;
+            __atomic_fetch_add(&stats_.level_link_flit_traversals[l], e * flits * mult, __ATOMIC_RELAXED);
+            att += e;
+        }
+        if (g) { __atomic_fetch_add(&stats_.indie_grid_link_flit_traversals, g * flits * mult, __ATOMIC_RELAXED); att += g; }
+        if (stack) {
+            stats_.stack_layout = true;
+            if (tsv) __atomic_fetch_add(&stats_.level_tsv_die_crossings[3], (uint64_t)tsv * flits * mult, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&stats_.tsv_dies_hist[tsv < 64 ? tsv : 64], mult, __ATOMIC_RELAXED);
+        }
+        *routers = r; *links = nl; *attributed = att;
+        return true;
+    }
+
+    /* (1.12.234): `packets` data packets of an analytical message, counted as
+     * countPacket_ counts one, at once. The latency inputs (total_packets,
+     * total_hops, the latency cache) and the link service are left as getRTT
+     * keeps them, so the timing is unchanged. */
+    void countMessagePackets_(uint32_t src, uint32_t dst, uint32_t hops, uint64_t packets) {
+        if (!packets || src == dst) return;
+        const uint64_t flits = flitsFor_(src, false);
+        uint64_t routers = 0, links = 0, attributed = 0;
+        if (!msgWalk_(src, dst, flits, &routers, &links, &attributed, packets)) {
+            routers = (topology_ == NoCTopology::BUS || topology_ == NoCTopology::CROSSBAR) ? 1 : (uint64_t)hops + 1;
+            links = hops; attributed = 0;
+        }
+        const uint64_t f = flits * packets;
+        stats_.total_flits += f;
+        stats_.total_router_traversals += routers * f;
+        stats_.data_packets += packets;
+        stats_.buffer_reads += routers * f;
+        stats_.buffer_writes += routers * f;
+        stats_.crossbar_traversals += routers * f;
+        stats_.arbiter_events += routers * packets;
+        stats_.link_traversals += links * f;
+        if (links >= attributed) stats_.link_traversals_unattributed += (links - attributed) * f;
+        else stats_.link_traversals_overattributed += (attributed - links) * f;
+    }
+
     void countPacket_(uint32_t src, uint32_t dst, uint32_t hops, bool ctrl) {
         const uint64_t flits = flitsFor_(src, ctrl);
         uint64_t routers;
         uint64_t linkAttributed = 0;   // 1.12.18: edges given to a tree level
         uint64_t segCrossed = 0;       // (1.12.231): replaced links crossed (inside the links built for them)
+        uint64_t walkLinks = 0; bool walked = false;   // (1.12.234): an analytical message's tree walk
         thread_local std::vector<uint32_t> path;
         if (topology_ == NoCTopology::CUSTOM && pathRouters_(src, dst, path)) {
             routers = path.size();
@@ -2586,6 +2698,8 @@ private:
                 stats_.stack_layout = true;
                 stats_.tsv_dies_hist[pktDies < 64 ? pktDies : 64]++;
             }
+        } else if (!cycleAccurate_ && msgWalk_(src, dst, flits, &routers, &walkLinks, &linkAttributed)) {
+            walked = true;    // (1.12.234): priced at the tree levels it crosses; hops stays the latency input
         } else if (topology_ == NoCTopology::BUS || topology_ == NoCTopology::CROSSBAR) {
             routers = 1;      // one arbiter / one crossbar, hop count is 1
         } else {
@@ -2601,7 +2715,7 @@ private:
         stats_.arbiter_events += routers;          // one allocation per packet per router
         /* (1.12.231): the links counted are the tree's: a link built for nodes that
          * are not routers counts each link it replaced */
-        const uint64_t treeLinks = (uint64_t)hops + segCrossed;
+        const uint64_t treeLinks = (walked ? walkLinks : (uint64_t)hops) + segCrossed;
         stats_.link_traversals += treeLinks * flits;
         // 1.12.18: what no level took (or the reverse), so the sum can be checked
         if (treeLinks >= linkAttributed)

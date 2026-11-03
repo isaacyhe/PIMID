@@ -111,7 +111,9 @@ struct TreeWalker {
     uint32_t walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
                   const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost,
                   uint32_t* tsvDies = nullptr,     // 1.12.18: die boundaries crossed (stackDieCrossing)
-                  uint32_t* gridEdges = nullptr) const;   // (1.12.143): node <-> node (or node <-> hub) links of an in-die fabric
+                  uint32_t* gridEdges = nullptr,   // (1.12.143): node <-> node (or node <-> hub) links of an in-die fabric
+                  const uint32_t* levelLinkLat = nullptr,   // (1.12.234): the level cost at a node built as a link (t.walkLink)
+                  uint32_t* perLevelLink = nullptr) const;  // (1.12.234): given, a node built as a link is counted here per tier, not in perLevel
 };
 
 struct SparseHTree {
@@ -164,6 +166,9 @@ struct SparseHTree {
      * Filled from the same info map the build maintains, so it cannot
      * disagree with the tree it describes. */
     std::vector<int> levelOfRouter;
+    /* (1.12.234): nodes built as links (1 = a link, not a router); the walk
+     * charges their level the link latency only. Empty = every node a router. */
+    std::vector<char> walkLink;
     /* 1.11.103: the in-die fabric. gridLinks are the node<->node links of the
      * grids (kept apart from intLinks so the tree's parent map stays a tree);
      * gridX/gridY/gridDie index every router (-1 = not a grid node; a hub has
@@ -711,8 +716,10 @@ inline uint32_t stackDieCrossing(const SparseHTree& t, int a, int b) {
 
 inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uint32_t perLevel[8],
                                  const uint32_t* levelLat, const uint32_t* bridgeLat, uint64_t* cost,
-                                 uint32_t* tsvDies, uint32_t* gridEdges) const {
+                                 uint32_t* tsvDies, uint32_t* gridEdges, const uint32_t* levelLinkLat,
+                                 uint32_t* perLevelLink) const {
     for (int l = 0; l < 8; l++) perLevel[l] = 0;
+    if (perLevelLink) for (int l = 0; l < 8; l++) perLevelLink[l] = 0;
     if (cost) *cost = 0;
     if (tsvDies) *tsvDies = 0;
     if (gridEdges) *gridEdges = 0;
@@ -724,7 +731,13 @@ inline uint32_t TreeWalker::walk(const SparseHTree& t, int srcEp, int dstEp, uin
     for (size_t i = 0; i < rs.size(); ++i) {
         const int r = rs[i];
         const int lv = lvlOf(r);
-        if (lv >= 0 && lv <= 6) { perLevel[lv]++; if (cost && levelLat) *cost += levelLat[lv]; }
+        /* (1.12.234): a node built as a link costs its level's link latency (no router stages) */
+        const bool isLk = r >= 0 && r < (int)t.walkLink.size() && t.walkLink[(size_t)r];
+        const bool asLk = levelLinkLat && isLk;
+        if (lv >= 0 && lv <= 6) {
+            if (perLevelLink && isLk) perLevelLink[lv]++; else perLevel[lv]++;   // (1.12.234): a link is no router access
+            if (cost && levelLat) *cost += asLk ? levelLinkLat[lv] : levelLat[lv];
+        }
         if (i + 1 < rs.size()) {
             const int rn = rs[i + 1];
             const int la = lvlOf(r), lb = lvlOf(rn);

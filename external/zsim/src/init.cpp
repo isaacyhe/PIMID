@@ -699,6 +699,18 @@ static void InitSystem(Config& config) {
             char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.bridgeLatency%d", i);
             zinfo->hierarchy.bridgeLatency[i] = config.get<uint32_t>(key, 0);
         }
+        {   /* (1.12.234): the nodes built as links, charged their link latency by the tier walk */
+            for (int i = 0; i < 7; i++) {
+                char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.levelLinkLatency%d", i);
+                zinfo->hierarchy.levelLinkLatency[i] = config.get<uint32_t>(key, zinfo->hierarchy.levelLatency[i]);
+            }
+            std::istringstream iss(std::string(config.get<const char*>("sys.hierarchy.linkNodes", "")));
+            uint32_t r;
+            while (iss >> r) {
+                if (r >= sizeof(zinfo->hierarchy.linkNode)) panic("sys.hierarchy.linkNodes: node %u beyond the table (%zu)", r, sizeof(zinfo->hierarchy.linkNode));
+                zinfo->hierarchy.linkNode[r] = 1; zinfo->hierarchy.linkNodeCount++;
+            }
+        }
         for (int i = 0; i < 7; i++) {
             char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.bridgeModel%d", i);
             const char* bm = config.get<const char*>(key, "auto");

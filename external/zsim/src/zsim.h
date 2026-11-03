@@ -280,6 +280,11 @@ struct GlobSimInfo {
         uint32_t levelLatency[8] = {};
         uint32_t indieFabric = 0, indieGridW = 0, indieGridH = 0;   // 1.11.103 (ruling 9): the in-die fabric below the chip router (0 = the tree)
         uint32_t bridgeLatency[7] = {};
+        /* (1.12.234): the tree nodes built as links (linkNode[r] = 1) and the level
+         * latency the walk charges at them (no router stages). */
+        uint32_t levelLinkLatency[8] = {};
+        uint8_t linkNode[8192] = {};
+        uint32_t linkNodeCount = 0;
         // Bridge model strings: "auto", "simple", "md1", "detailed"
         // Stored as uint32_t enum: 0=auto, 1=simple, 2=md1, 3=detailed
         uint32_t bridgeModel[7] = {};  // 0=auto (default); 1.11.94: 7 boundaries incl. system->HOST_MC
