@@ -4052,6 +4052,8 @@ struct UnifiedConfig {
     std::vector<int> htree_walk_link_nodes;   // (1.12.234): tree nodes the tier walk charges as links (built as links)
     int htree_endpoints      = -1;   // PE endpoints + aggregated-region endpoints
     int htree_abstract       = -1;   // of those, the aggregated regions
+    int htree_pe_mcs         = -1;   // (1.12.251): element controllers: one per PE
+    int htree_channel_mcs    = -1;   // (1.12.251): controllers for the banks with no PE: one per channel holding such banks
     // Derived: topology-aware NoC average one-way latency (cycles)
     int noc_avg_one_way_latency = 0;
     // Derived: bisection bandwidth in links (for M/D/1 contention)
@@ -6020,6 +6022,45 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
     }
     config.htree_endpoints      = tree.totalEndpoints();
     config.htree_abstract       = tree.numAbstract;
+    /* (1.12.251): the device's memory controllers are where the hardware has them: one PARE element controller per PE,
+     * for its own region's banks, and one controller per channel that holds banks with no PE (an aggregated region),
+     * for those banks only, so a channel's PE banks are never served twice. An HBM stack's channel is the chip slot
+     * (tree level 3); every other part's is the channel level (5). A region aggregated above the channel level stands
+     * for whole channels with no PE, each of which gets its controller. */
+    {
+        const std::string mtc = canonicalMemTech(config.memory_tech);
+        const int ch_level = (mtc == "HBM2" || mtc == "HBM3") ? 3 : 5;
+        std::map<int,int> parentOf;
+        for (const auto& l : tree.intLinks) parentOf[l.b] = l.a;
+        std::map<int,int> routerOfEp;
+        for (const auto& e : tree.extLinks) routerOfEp[e.a] = e.b;
+        auto lvl = [&](int r) { return (r >= 0 && r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1; };
+        const int fan[7] = {1, tree.SA, tree.BpBG, tree.BGpC, tree.CpR, tree.RpCh, 1};
+        long orgs_per_ch = 1, chs_per_org = 1;   // PE-level organisations per channel, or channels per organisation
+        for (int l = tree.peLevel + 1; l <= ch_level; ++l) orgs_per_ch *= std::max(1, fan[l]);
+        for (int l = ch_level + 1; l <= tree.peLevel && l <= 6; ++l) chs_per_org *= std::max(1, fan[l]);
+        std::set<int> chans;
+        long whole = 0;
+        for (int ep = tree.numPEs; ep < tree.totalEndpoints(); ++ep) {
+            auto it = routerOfEp.find(ep);
+            if (it == routerOfEp.end()) continue;
+            int r = it->second;
+            if (lvl(r) > ch_level) {
+                auto c = tree.coverageOf.find(ep);
+                const long cov = (c != tree.coverageOf.end()) ? std::max(1L, c->second) : 1L;
+                whole += (tree.peLevel >= ch_level) ? cov * chs_per_org : (cov + orgs_per_ch - 1) / orgs_per_ch;
+                continue;
+            }
+            while (lvl(r) >= 0 && lvl(r) < ch_level) {
+                auto p = parentOf.find(r);
+                if (p == parentOf.end()) break;
+                r = p->second;
+            }
+            chans.insert(r);
+        }
+        config.htree_pe_mcs = tree.numPEs;
+        config.htree_channel_mcs = static_cast<int>(chans.size() + whole);
+    }
     /* 1.11.92 (F6): ports per router = router children + parent link
      * (every router but ROOT) + endpoints attached to it. */
     {
@@ -15003,7 +15044,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
      * tree exists (non-DRAM, or hierarchy disabled) the old grouping is the
      * only information available, so it stands. */
     if (config.htree_endpoints > 0) {
-        mcfg.num_memory_controllers = config.htree_endpoints;
+        mcfg.num_memory_controllers = (config.htree_pe_mcs >= 0)
+            ? std::max(1, config.htree_pe_mcs + std::max(0, config.htree_channel_mcs)) : config.htree_endpoints;   // (1.12.251)
+        if (config.htree_pe_mcs >= 0)
+            std::cout << "  [power] device memory controllers: " << mcfg.num_memory_controllers << " = "
+                      << config.htree_pe_mcs << " element controller(s), one per PE, + " << std::max(0, config.htree_channel_mcs)
+                      << " for the banks with no PE, one per channel holding them" << std::endl;
     } else if (config.pe_mc_enabled && config.pes_per_mc > 0) {
         /* 1.11.57 (audit round 3, A004): CLAMP, as the per-node twin does.
          * Integer division gives 0 whenever pes_per_mc exceeds num_pes -- one
@@ -18128,18 +18174,24 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
          * with the MC-tech parameters below. */
         if (node.role == UnifiedConfig::SystemNode::DEVICE) {
             if (config.htree_endpoints > 0) {
-                mcfg.num_memory_controllers = config.htree_endpoints;
+                mcfg.num_memory_controllers = (config.htree_pe_mcs >= 0)
+                    ? std::max(1, config.htree_pe_mcs + std::max(0, config.htree_channel_mcs)) : config.htree_endpoints;   // (1.12.251)
             } else if (config.pe_mc_enabled && config.pes_per_mc > 0) {
                 mcfg.num_memory_controllers =
                     std::max(1, config.num_pes / config.pes_per_mc);
             } else {
                 mcfg.num_memory_controllers = 1;
             }
-            if (mcfg.num_memory_controllers != 1)
+            if (mcfg.num_memory_controllers != 1) {
                 std::cout << "  [power] " << node.name << ": "
-                          << mcfg.num_memory_controllers
-                          << " element controllers (one per placement-tree "
-                             "region, as in device scope)" << std::endl;
+                          << mcfg.num_memory_controllers << " memory controllers";
+                if (config.htree_endpoints > 0 && config.htree_pe_mcs >= 0)
+                    std::cout << " (" << config.htree_pe_mcs << " element controller(s), one per PE, + "
+                              << std::max(0, config.htree_channel_mcs) << " for the banks with no PE, one per channel holding them, as in device scope)";
+                else
+                    std::cout << " (one per PE, as in device scope)";
+                std::cout << std::endl;
+            }
         } else {
             mcfg.num_memory_controllers = hostMcOrganisation(node.memory_tech, config).mcs;   // (1.12.209)
         }

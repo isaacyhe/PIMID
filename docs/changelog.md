@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.251 -- a device has one memory controller per PE and one per channel for the banks with no PE
+
+- **The problem.** A device's memory controllers were counted as the endpoints of its placement tree: one per PE and
+  one per aggregated region, the region standing for the banks that hold no PE. On the HBM3 bank-placement device with
+  16 PEs that was 48 controllers, 32 of them at regions, priced in full (structure, leakage, area, clock network).
+- **The fix** (`src/main.cpp`). A device has one PIM element controller per PE, for its own region's banks, and one
+  controller per channel that holds banks with no PE, for those banks only, so a channel's PE banks are not served
+  twice. An HBM stack's channel is the chip slot; every other part's is its channel. The run prints the count and its
+  two parts. A device without a placement tree keeps one controller per PE.
+- **Effect.** Power and area only. With 16 PEs at the bank: HBM3 48 -> 32 controllers, HBM2 40 -> 24, DDR4 40 -> 17,
+  DDR5 40 -> 18, LPDDR5 32 -> 20, GDDR6 24 -> 18; the channel and logic-die placements keep 16.
+
 ## 1.12.250 -- a memory controller's backend area scales with the square of the feature size
 
 - **The problem.** McPAT's fit for a high-performance memory controller's backend (its type 0, the one every PIMID

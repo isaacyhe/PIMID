@@ -627,8 +627,10 @@ and the clocked port registers are every queue's (a host controller's per-bank
 queues are priced as one array of all their entries). A transaction is the run's
 cache line. The run prints the structure it priced on a
 `memory-controller structure` line.
-Where there are several controllers (a device's element controllers, one per
-region of the placement tree), every controller's transactions are priced,
+Where there are several controllers (a device's: one PIM element controller
+per PE, for its region's banks, and one controller per channel that holds banks
+with no PE, for those banks; an HBM stack's channel is the chip slot), every
+controller's transactions are priced,
 each once, and leakage, area and the clock network count every controller.
 A host's memory controllers are priced per memory type, following the
 published controller organisation of that type over the memory's channels
