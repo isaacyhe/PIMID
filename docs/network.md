@@ -136,6 +136,30 @@ credit-based flow control, deadlock-free routing.
   priced a different shape (every bank in one group, and rank and channel
   tiers the device does not have). The `MAT` (`SUBBANK`) placement keeps the
   flat fabric.
+- **`memory.local_path` ((1.12.258)).** How an SRAM or NVM element reaches the
+  banks of its own group, at the `BANK` placement. `bus` (the default) is the
+  shared local bus above. `garnet` builds the group as a router instead: every
+  bank of the group is its own network endpoint, the element's interface is
+  its own port on the group's router, and the group routers hang on the die
+  router. In the detailed model every access, inside the group included, is a
+  request and a reply message on the network, and the bank starts when the
+  request has arrived. The analytical model prices an access inside the group
+  along the same path: the element's port into the router carries the
+  requests and the router's port back to it the replies, one flit per cycle,
+  each message costs the network interfaces plus one router stage and one
+  link per router it crosses and its flits beyond the first, and the bank
+  starts when the request has arrived; an access to another group's bank is
+  priced as any routed access. Every link of the die, a bank's link to its
+  group router included, costs one device cycle and is the bank's access
+  width wide, clamped at `noc.flit_size_bits` as every link is: with the
+  default 128-bit flit a line reply is 5 flits on the router path against 2
+  on the 512-bit local bus. The rules above hold (a bank leaf is a link,
+  full rate, 4 VCs per vnet, the device clock as the fabric clock); a group
+  router has a port per bank, one for the element and one to the die router
+  (18 for a group of 16 banks), and the power model's router classes stop at
+  16 ports, so it is priced as a 16-port router. The key is refused on a DRAM
+  device, at the `MAT` / `SUBBANK` placement, and with a named flat
+  `noc.topology`.
 - Flat topologies remain available for non-DRAM device memories, when named: `MESH_2D`
   (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts

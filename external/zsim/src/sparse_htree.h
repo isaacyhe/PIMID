@@ -126,6 +126,7 @@ struct SparseHTree {
     // dims for endpointForUnit
     int peLevel = 1, SA = 1, BpBG = 1, BGpC = 1, CpR = 1, RpCh = 1;
     int topLevel = 6;             // (1.12.247): the root's tier: 6 (system), or 3 (the die of an SRAM/NVM device)
+    bool fullLeaves = false;      // (1.12.258): every placement unit its own leaf; an element attaches at its group's router
     int unitDiv = 1;              // (1.12.247): placement units per leaf organisation (an SRAM/NVM group's banks)
     std::map<std::string,int> routerOf;   // coord-prefix key -> router id
     std::map<int,int> abstractOf;         // router id -> abstract endpoint id (if it has empties)
@@ -202,7 +203,9 @@ struct SparseHTree {
          * organisations "covered" 8 and the coverage gate in main.cpp exited.
          * When every PE has its own home (every corpus cell) the two counts
          * are equal. */
-        long n = (long)peOfLeaf.size();
+        /* (1.12.258): with every unit its own leaf an element attaches at its group's router and fronts no
+         * organisation; every organisation is behind its own endpoint. */
+        long n = fullLeaves ? 0 : (long)peOfLeaf.size();
         for (const auto& kv : coverageOf) n += kv.second;
         return n;
     }
@@ -363,10 +366,12 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                                     int peLevel, int N,
                                     int SA, int BpBG, int BGpC, int CpR, int RpCh,
                                     const int layerW[4], const int layerLat[4],
-                                    const InDieFabric* fab = nullptr, int topLevel = 6) {
+                                    const InDieFabric* fab = nullptr, int topLevel = 6,
+                                    bool fullLeaves = false) {
     SparseHTree t;
     if (topLevel < 1 || topLevel > 6) topLevel = 6;
     t.topLevel = topLevel;
+    t.fullLeaves = fullLeaves;
     t.peLevel = peLevel < 0 ? 0 : peLevel;
     t.SA = SA; t.BpBG = BpBG; t.BGpC = BGpC; t.CpR = CpR; t.RpCh = RpCh;
     t.routerOf[""] = 0;
@@ -385,7 +390,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
 
     for (size_t p = 0; p < peHomes.size(); ++p) {
         std::vector<long> path = decompose(peHomes[p], t.peLevel, SA, BpBG, BGpC, CpR, RpCh);
-        int Lp = (int)path.size();
+        int Lp = (int)path.size() - (fullLeaves ? 1 : 0);   // (1.12.258): every unit its own leaf: the element at its group's router
         std::string key;
         int parent = 0;
         for (int i = 6 - topLevel; i < Lp; ++i) {   // (1.12.247): the tiers above the root are not built
@@ -408,8 +413,35 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
             parent = rid;
         }
         if (gridded && info[parent].first <= 3) continue;                 // placed on the die's grid below
-        t.peOfLeaf[parent] = (int)p;
+        if (!fullLeaves) t.peOfLeaf[parent] = (int)p;   // (1.12.258): at its group's router the element is no unit's leaf
         t.extLinks.push_back({ (int)p, parent, layerW[0], layerLat[0], 0 });  // PE at its unit -> L0
+    }
+    /* (1.12.258): every placement unit its own leaf (each then gets its own endpoint below), not only the elements'
+     * homes -- an SRAM/NVM device with memory.local_path garnet. */
+    if (fullLeaves) {
+        const long units = orgsBelow(topLevel, t.peLevel, N, SA, BpBG, BGpC, CpR, RpCh);
+        for (long u = 0; u < units; ++u) {
+            std::vector<long> path = decompose((uint64_t)u, t.peLevel, SA, BpBG, BGpC, CpR, RpCh);
+            std::string key;
+            int parent = 0;
+            for (int i = 6 - topLevel; i < (int)path.size(); ++i) {
+                info[parent].second.insert(path[i]);
+                key += "/" + std::to_string(path[i]);
+                auto it = t.routerOf.find(key);
+                int rid;
+                if (it == t.routerOf.end()) {
+                    rid = nextRouter++;
+                    t.routerOf[key] = rid;
+                    const int childLevel = info[parent].first - 1;
+                    info[rid] = { childLevel, {} };
+                    const int li = layerForLevel(childLevel, chanLevel);
+                    t.intLinks.push_back({ parent, rid, layerW[li], layerLat[li], li });
+                } else {
+                    rid = it->second;
+                }
+                parent = rid;
+            }
+        }
     }
     t.numPEs = (int)peHomes.size();
     if (gridded) {

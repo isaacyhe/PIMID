@@ -55,16 +55,17 @@ protected:
     // Connection mode link latency
     uint32_t localLinkLat_ = 0;  // additional PE<->mem hop for SEPARATE_ENDPOINTS
     std::map<uint64_t, uint64_t> busBusy_;   // (1.12.257): the element's local bus, its booked slots (start -> end)
+    std::map<uint64_t, uint64_t> pathIn_, pathOut_;   // (1.12.258): local_path garnet, analytical: the element's port, both ways
 
-    /* (1.12.257): the first free slot of f bus cycles at or after t, booked. Slots that ended long before t
-     * (4096 cycles; no access of this interface reaches that far back) are dropped. */
-    uint64_t busBook(uint64_t t, uint32_t f) {
-        while (!busBusy_.empty() && busBusy_.begin()->second + 4096 < t) busBusy_.erase(busBusy_.begin());
+    /* (1.12.258): the first free slot of f cycles at or after t on a booked medium (a local bus, a router port), booked.
+     * Slots that ended long before t (4096 cycles; no access of this interface reaches that far back) are dropped. */
+    uint64_t busBook(std::map<uint64_t, uint64_t>& busy, uint64_t t, uint32_t f) {
+        while (!busy.empty() && busy.begin()->second + 4096 < t) busy.erase(busy.begin());
         uint64_t s = t;
-        auto it = busBusy_.upper_bound(s);
-        if (it != busBusy_.begin() && std::prev(it)->second > s) s = std::prev(it)->second;
-        for (it = busBusy_.lower_bound(s); it != busBusy_.end() && it->first < s + f; ++it) s = std::max(s, it->second);
-        busBusy_[s] = s + f;
+        auto it = busy.upper_bound(s);
+        if (it != busy.begin() && std::prev(it)->second > s) s = std::prev(it)->second;
+        for (it = busy.lower_bound(s); it != busy.end() && it->first < s + f; ++it) s = std::max(s, it->second);
+        busy[s] = s + f;
         return s;
     }
 
@@ -82,12 +83,51 @@ protected:
         const uint32_t fReq = std::max(1u, ((wr ? dataB : ctrlB) + w - 1) / w);
         const uint32_t fRsp = std::max(1u, ((wr ? ctrlB : dataB) + w - 1) / w);
         const uint32_t L = zinfo->hierarchy.localBusCycles;
-        const uint64_t rq = busBook(req.cycle, fReq);
+        const uint64_t rq = busBook(busBusy_, req.cycle, fReq);
         const uint64_t at = rq + L + (fReq - 1);                       // the request is at the bank
         const uint64_t ready = at + localAccessLatency(req, byReplay, at);
-        const uint64_t rs = busBook(ready, fRsp);
+        const uint64_t rs = busBook(busBusy_, ready, fRsp);
         if (gn) { gn->recordLocalBus(mcId_, 2, !wr); gn->recordLocalBus(mcId_, 2, wr); }
         return (uint32_t)(rs + L + (fRsp - 1) - req.cycle);
+    }
+
+    /* (1.12.258): memory.local_path garnet, the analytical model: an access inside the element's group takes the path
+     * the detailed fabric's packets take, with the same messages (a read: a control request and a data reply; a
+     * write: a data request and a control ack) in flits of the element's port width. The element's port into its
+     * group's router carries the requests and the router's port back to it the replies, one flit per cycle each,
+     * booked as the bus slots are; the bank starts when the request arrives (and is free). Each message costs the
+     * network interfaces (the element's and the bank's links included), a router stage per router it crosses and a
+     * link per link between two routers (the walk over the built tree), and its flits beyond the first. The traversal is counted on the tiers it crosses, as a routed access's is. Returns the
+     * latency from the issue, the device's time and the element's local link at both ends included, as the
+     * detailed path charges them. */
+    uint32_t localRouterAccess(MemReq& req, bool* byReplay, uint32_t targetUnit) {
+        const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+        GarnetNetwork* gn = zinfo->garnetNetwork;
+        const uint32_t dataB = gn ? gn->dataMsgBits() : 576u, ctrlB = gn ? gn->controlMsgBits() : 64u;
+        const uint32_t w = std::max(1u, zinfo->hierarchy.localPathPortBits);
+        const uint32_t fReq = std::max(1u, ((wr ? dataB : ctrlB) + w - 1) / w);
+        const uint32_t fRsp = std::max(1u, ((wr ? ctrlB : dataB) + w - 1) / w);
+        uint32_t perLevel[8] = {0,0,0,0,0,0,0,0}, perLevelLink[8] = {0,0,0,0,0,0,0,0};
+        uint32_t links = 0, tsvDies = 0, gridEdges = 0; uint64_t wc = 0;
+        uint32_t routers = 1, between = 0;   // the group's router, no link between two routers
+        if (treeWalk((int)mcId_, unitToEndpoint(targetUnit), perLevel, &links, &wc, &tsvDies, &gridEdges, perLevelLink)) {
+            routers = 0;
+            uint32_t asLinks = 0;   // nodes built as links: their link is the bank's own, in the interfaces' cost
+            for (int i = 0; i < 8; i++) { routers += perLevel[i]; asLinks += perLevelLink[i]; }
+            between = (links > asLinks) ? links - asLinks : 0;
+            if (gn && !zinfo->terminationConditionMet) {
+                gn->recordTierWalk(perLevel, links, false, tsvDies, false, gridEdges, (int)zinfo->hierarchy.placementLevel, perLevelLink);
+                gn->recordTierWalk(perLevel, links, true, tsvDies, false, gridEdges, (int)zinfo->hierarchy.placementLevel, perLevelLink);
+            }
+        }
+        if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases); zinfo->pgres.nocGaps.event(req.cycle); }
+        const uint64_t leg = zinfo->hierarchy.localPathNiCycles + (uint64_t)routers * zinfo->hierarchy.localPathRouterCycles
+                           + (uint64_t)between * zinfo->hierarchy.localPathLinkCycles;
+        const uint64_t rq = busBook(pathIn_, req.cycle, fReq);
+        const uint64_t at = rq + leg + (fReq - 1);                     // the request is at the bank
+        const uint64_t ready = at + localAccessLatency(req, byReplay, at);
+        const uint64_t rs = busBook(pathOut_, ready, fRsp);
+        return (uint32_t)(rs + leg + (fRsp - 1) - req.cycle) + localLinkLat_;
     }
 
     // Phase tracking for Garnet batch processing
@@ -331,7 +371,7 @@ public:
                 (int)zinfo->hierarchy.subarraysPerBank, (int)zinfo->hierarchy.banksPerBG,
                 (int)zinfo->hierarchy.bgPerChip, (int)zinfo->hierarchy.chipsPerRank,
                 (int)zinfo->hierarchy.ranksPerChannel, W, Lt, fab.kind > 0 ? &fab : nullptr,
-                (int)zinfo->hierarchy.treeTopLevel);
+                (int)zinfo->hierarchy.treeTopLevel, zinfo->hierarchy.treeFullLeaves != 0);
             t.unitDiv = div;
             /* 1.12.18: the stated stack layout, as main.cpp placed it */
             pimid_htree::assignStackDies(t, (int)zinfo->hierarchy.stackChannelsPerDie);
@@ -855,12 +895,15 @@ public:
         // NoC, which has no packets and must fall back to a distance model.)
         /* (1.12.247): on an SRAM/NVM die an access inside the element's slot crosses the element's local bus, in both
          * network models; only an access to another element's slot travels the fabric. */
-        bool wantLocal = zinfo->garnetNetwork && zinfo->garnetNetwork->isCycleAccurate() &&
-                         !zinfo->hierarchy.localBusCycles
+        /* (1.12.258): memory.local_path garnet: on the detailed fabric every access is a packet; the analytical model
+         * prices an access inside the element's group by the same router path (localRouterAccess). */
+        const bool caNet = zinfo->garnetNetwork && zinfo->garnetNetwork->isCycleAccurate();
+        bool wantLocal = (caNet && (zinfo->hierarchy.routeAllAccesses || !zinfo->hierarchy.localBusCycles))
                          ? false : isLocal(targetUnit);
         if (wantLocal) {
             bool byReplay = false;
-            uint32_t lat = (zinfo->hierarchy.localBusCycles ? localBusAccess(req, &byReplay)   // (1.12.257): bus and bank composed
+            uint32_t lat = (zinfo->hierarchy.routeAllAccesses ? localRouterAccess(req, &byReplay, targetUnit)   // (1.12.258)
+                            : zinfo->hierarchy.localBusCycles ? localBusAccess(req, &byReplay)   // (1.12.258): bus and bank composed
                                                             : localAccessLatency(req, &byReplay)) + localLinkLat_;
 
             // DRAM channel bandwidth bottleneck (accuracy fix): even a "local"
@@ -900,7 +943,11 @@ public:
             // Remote: route through network to destination MI
             uint32_t myUnit = representativeUnit();
             bool byReplay = false;
-            uint32_t remoteLat = localAccessLatency(req, &byReplay);
+            /* (1.12.258): memory.local_path garnet on the detailed fabric: the bank starts when the request has
+             * arrived, priced below once the request's leg is known */
+            const bool deferBank = zinfo->hierarchy.routeAllAccesses && zinfo->garnetNetwork &&
+                                   zinfo->garnetNetwork->isCycleAccurate();
+            uint32_t remoteLat = deferBank ? 0 : localAccessLatency(req, &byReplay);
 
             GarnetNetwork* gn = zinfo->garnetNetwork;
             if (gn && gn->isCycleAccurate()) {
@@ -914,6 +961,7 @@ public:
                 // dst==src (own unit) = 0 network hops = near-data; nearer = fewer
                 // hops; farther = more.
                 int dstEp = unitToEndpoint(targetUnit);
+                if (dstEp < 0 && deferBank) remoteLat = localAccessLatency(req, &byReplay);
                 if (dstEp < 0) {
                     // Degenerate: the tree has no PEs (no placement) -> nothing to
                     // route to. Price as plain Ramulator DRAM (no Garnet traversal).
@@ -964,6 +1012,7 @@ public:
                  * this access already read (localAccessLatency above; no second read) -- counted on
                  * this source port's stream. Only a traversing packet (src != dst), only before the
                  * ROI end (as the fabric replay). */
+                auto countWire = [&]() {   // (1.12.258): after the line's read (the bank's access)
                 if (zinfo->nocWire && srcNode != dstNode && !zinfo->terminationConditionMet && !inTail()) {   // (1.12.181): not the tail
                     const AccessLine& al = accessLine();
                     const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
@@ -984,6 +1033,8 @@ public:
                                                 (al.ok && al.lineAddr == req.lineAddr) ? al.b : nullptr, al.n,
                                                 ctrlMsgs);   // + its control message (user ruling 2026-10-26: control messages)
                 }
+                };
+                if (!deferBank) countWire();
                 uint32_t networkLat;
                 // Synchronous shared-Garnet accounting (the ONLY detailed NoC):
                 // record this access and drain the batch on the critical path at
@@ -1169,6 +1220,10 @@ public:
                     if (!legReq) legReq = zinfo->hierarchy.nocAvgOneWayLatency;
                     if (!legResp) legResp = zinfo->hierarchy.nocAvgOneWayLatency;
                     networkLat = legReq + legResp;   // request leg + response leg (user ruling 2026-10-26: control messages)
+                }
+                if (deferBank) {   // (1.12.258): the bank at the request's arrival
+                    remoteLat = localAccessLatency(req, &byReplay, req.cycle + legReq);
+                    countWire();
                 }
                 /* the response message (user ruling 2026-10-26: control messages): from the target back to the
                  * requester, injected when the request has arrived (its leg) and the

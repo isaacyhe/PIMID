@@ -6,6 +6,50 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.258 -- an SRAM or NVM element can reach its group's banks through a router: `memory.local_path` bus or garnet
+
+- **The change.** A new key, `memory.local_path`, chooses how an SRAM, PCM, ReRAM or STT-MRAM element reaches the
+  banks of its own group at the `BANK` placement. `bus`, the default, is the group's shared local bus, as before; a
+  run that does not set the key is unchanged. `garnet` builds each group as a router: every bank of the group is its
+  own network endpoint, the element's interface is its own port on the group's router, and the group routers hang on
+  the die router (16 elements on 256 banks: 17 routers and 272 endpoints).
+  - Detailed model: every access, inside the group included, is a request and a reply on the network, timed by
+    Garnet, and the bank starts when the request has arrived.
+  - Analytical model: an access inside the group takes the same path. The element's port into the router carries
+    the requests and the router's port back to it the replies, one flit per cycle, each booked as the local bus's
+    slots are; a message costs the network interfaces, a router stage per router it crosses, a link per link between
+    two routers and its flits beyond the first; the bank starts when the request has arrived; the traversal is
+    counted on the tiers it crosses for the power model. An access to another group's bank is priced as before.
+  - Every link of the die costs one device cycle and is the bank's access width wide, clamped at
+    `noc.flit_size_bits` as every link is (with the default 128-bit flit a line reply is 5 flits on the router path,
+    against 2 on the 512-bit local bus). The rules of 1.12.231 to 1.12.236 hold: a bank leaf is a link, links run at
+    full rate with 4 VCs per vnet, the fabric clock is the device clock. A group router has 18 ports for a group of
+    16 banks; the power model's router classes stop at 16 ports, so it is priced as a 16-port router.
+  - The key is refused on a DRAM device, at the `MAT` / `SUBBANK` placement and with a named flat `noc.topology`.
+  - Code: src/main.cpp; external/zsim: sparse_htree.h, pe_memory_interface.h, init.cpp, zsim.h. Docs: network.md,
+    memory.md, yaml_reference.md.
+- **Effect of `garnet`** (against `bus` on this build; 16 elements at the bank of a 256-bank device, the 40 SRAM / NVM
+  cells, message passing and shared memory, smoke sizes).
+  - Detailed run time -28.8% to +135.2% (median +15.4%; 36 slower, 4 faster). The fast arrays lose most: SRAM
+    histogram +135% and bfs +116%, STT-MRAM histogram +98% and bfs +85% (message passing); PCM +5% to +33%; ReRAM
+    -29% to +15% (shared-memory stream_triad -28.8%, histogram -14.6%). With `noc.flit_size_bits: 512` the SRAM
+    histogram cell is +99% and the STT-MRAM bfs cell +68%.
+  - NoC power 0.22-0.31 W -> 2.90-3.14 W on SRAM, ReRAM and STT-MRAM: the 16 group routers (512 bits, 16 ports
+    priced) leak 2.67 W together. On PCM, whose die logic is priced in its memory process, 0.007-0.031 W ->
+    0.07-0.14 W. Device energy +11% to +764% (median +184%).
+  - The detailed run time is -6.7% to +65.8% from the analytical one (median +17.7%), against -3.2% to +169.5%
+    (median +15.2%) with `bus`; the two models' NoC power agrees within 3%. The four bank-overlap probes (PCM gemv,
+    PCM / ReRAM / SRAM stream_triad, detailed) run 12% to 25% longer than on the bus.
+  - Host time, the two paths side by side with no debug checks: PCM gemv 23 -> 47 s, SRAM histogram 17 -> 35 s,
+    STT-MRAM stencil_2d 18 -> 49 s, PCM bfs 32 -> 371 s.
+- **Validation.** With `bus` (no key) every cell is identical to the release before: the 40 SRAM / NVM cells in both
+  network models, the 135 device message-passing smoke cells, the 11 co-simulation message-passing smoke cells, the
+  40 host baselines, the 116-cell set and the 30 bfs variants. With `garnet`: five runs of 8 cells whose stack layout
+  differs vary by at most 1.27% (cv at most 0.50%); the four probe cells run 8 times each give one output per cell;
+  every run exits 0; the power checker reports no internal-consistency failure over the 84 logs, and its reference
+  flags are the same metrics in the same logs as with `bus`.
+- **Data impact.** None by default. A run with `memory.local_path: garnet` times and prices its groups as routers.
+
 ## 1.12.257 -- an SRAM or NVM element's local bus and its banks are timed as one path: the bank starts when the request arrives, and the reply takes the bus when the bank answers
 
 - **The problem.** At the `BANK` placement an SRAM or NVM element reaches the banks of its group over its local bus.

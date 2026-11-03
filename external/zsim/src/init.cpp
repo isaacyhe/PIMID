@@ -686,6 +686,12 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.treeUnitDiv = config.get<uint32_t>("sys.hierarchy.treeUnitDiv", 1);
         zinfo->hierarchy.localBusCycles = config.get<uint32_t>("sys.hierarchy.localBusCycles", 0);
         zinfo->hierarchy.localBusWidthBits = config.get<uint32_t>("sys.hierarchy.localBusWidthBits", 0);
+        zinfo->hierarchy.treeFullLeaves = config.get<uint32_t>("sys.hierarchy.treeFullLeaves", 0);     // (1.12.258)
+        zinfo->hierarchy.routeAllAccesses = config.get<uint32_t>("sys.hierarchy.routeAllAccesses", 0);
+        zinfo->hierarchy.localPathPortBits = config.get<uint32_t>("sys.hierarchy.localPathPortBits", 0);
+        zinfo->hierarchy.localPathNiCycles = config.get<uint32_t>("sys.hierarchy.localPathNiCycles", 6);
+        zinfo->hierarchy.localPathRouterCycles = config.get<uint32_t>("sys.hierarchy.localPathRouterCycles", 1);
+        zinfo->hierarchy.localPathLinkCycles = config.get<uint32_t>("sys.hierarchy.localPathLinkCycles", 1);
         zinfo->hierarchy.channelsPerSystem = config.get<uint32_t>("sys.hierarchy.channelsPerSystem", 1);
         zinfo->hierarchy.dramChannels = config.get<uint32_t>("sys.hierarchy.dramChannels", 1);
         zinfo->hierarchy.stackChannelsPerDie = config.get<uint32_t>("sys.hierarchy.stackChannelsPerDie", 0);   // 1.12.18
