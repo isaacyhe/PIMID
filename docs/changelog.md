@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.261 -- an SRAM or NVM die's detailed network carries a line in one flit, at the bank's access width
+
+- **The problem.** The local buses and links of an SRAM or NVM die carry the bank's access width (512 bits for a 64 B
+  line): the analytical tier walk and the local bus time them so, and power prices the die's routers and links at that
+  width. The detailed network built them with Garnet's default 128-bit flit, so a line reply crossed each link in five
+  flits and queued for five. On the 40 fig2 cells the detailed run time was -28.3% to +82.8% of the analytical one
+  (median +7.5%), the widest gaps on the fast SRAM and STT-MRAM arrays (SRAM message-passing stencil_2d +82.8%).
+- **The fix** (src/main.cpp; docs/yaml_reference.md). Without `noc.flit_size_bits`, an SRAM, PCM, ReRAM or STT-MRAM
+  device at `BANK` with no flat topology named builds its detailed network's flit at the bank's access width, and the
+  run prints it. `noc.flit_size_bits` still wins, a flat fabric named in `noc.topology` keeps its flit, and DRAM fabrics
+  are unchanged. With `memory.local_path: garnet` or `garnet_bus` the in-group path's port follows the same flit in
+  both network models.
+- **Validation** (the previous release against this build, logs compared with the tree paths masked):
+  - The 40 fig2 cells, detailed: 39 change run time, -38.6% to +4.4% (SRAM -5.5% to -38.6%, STT-MRAM -2.7% to -22.3%,
+    PCM -6.3% to +0.5%, ReRAM -19.2% to +4.4%); energy -37.1% to +0.5% (median -2.7%). Analytical: run time and energy
+    identical.
+  - Detailed against analytical on the same cells: -28.8% to +13.0% (median +2.0%; message passing +2.4%, shared memory
+    +1.6%); 38 of the 40 within -1.6% to +13.0%. The two outside are the ReRAM gemv cells (shared memory -28.8%, message
+    passing +13.0%), and the SRAM and STT-MRAM stencil_2d cells are the widest of the rest (+7.6% to +12.3%): both
+    follow queueing at the port into a busy group, which the analytical model prices only on average.
+  - Every DRAM cell is identical: the 115 DRAM device message-passing smoke cells, the 11 co-simulation message-passing
+    smoke cells, the 40 host baselines, the 116-cell validation set and the 30 bfs smoke variants. The 20 SRAM and NVM
+    cells of the 135 name `MESH_2D` and are identical.
+  - Five zero-padded copies of each of the eight fig2 message-passing gemv and stream_triad cells give the same cycles.
+    Four cells run 8 times each in each model give one output per cell. The power checker reports no flag that the
+    release before does not, and no internal-consistency failure.
+- **Data impact.** Detailed runs of SRAM and NVM devices at `BANK` with no topology named and no `noc.flit_size_bits`.
+
 ## 1.12.260 -- on an SRAM or NVM device the analytical model keeps as many accesses outstanding as the PE does
 
 - **The problem.** The analytical model prices an access to another element's slot at `max((L + W_q) / M, P*D/c)`, and

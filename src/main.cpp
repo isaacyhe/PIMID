@@ -3788,6 +3788,7 @@ struct UnifiedConfig {
     int noc_vcs_per_vnet;
     int noc_vnets = 2;          // 1.11.97 (H31): virtual networks the fabric builds (Garnet: read + write)
     int noc_flit_size_bits_cfg = 128;   // 1.11.97 (sweep-94 row 18, class A): noc.flit_size_bits, the Garnet flit; ladder rungs run at their true width up to it
+    bool noc_flit_size_bits_user_set = false;   // (1.12.261): noc.flit_size_bits given (an SRAM/NVM die otherwise takes the bank access width)
     int noc_buffers_per_vc;
     // 1.10.3: did the user actually ask for these, or are they carrying the
     // built-in default? The per-technology fabric defaults below must not
@@ -8248,6 +8249,15 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             const double dev_ghz = deviceCycleClockMHz(config) / 1000.0;
             const int port_w = std::max(1, config.cache_line_size) * 8;
             const double port_bw = port_w / 8.0 * dev_ghz;
+            /* (1.12.261): the die's links carry the bank's access width, and power prices its routers and links at that
+             * width; the detailed network's flit is that width too, so a line crosses a link in one flit as it does
+             * on the local bus and in the analytical tier walk. noc.flit_size_bits wins; a flat fabric named in
+             * noc.topology keeps its flit. */
+            if (!config.noc_flit_size_bits_user_set && (!config.noc_topology_user_set || config.noc_topology == "H_TREE") &&
+                config.noc_flit_size_bits_cfg != port_w) {
+                config.noc_flit_size_bits_cfg = port_w;
+                std::cout << "  [noc] flit width " << port_w << " bits (the " << tech << " die's link width, the bank's access width; noc.flit_size_bits overrides)" << std::endl;
+            }
             int w7[7] = {0, port_w, port_w, port_w, 0, 0, 0};
             double bw7[7] = {0.0, port_bw, port_bw, port_bw, 0.0, 0.0, 0.0};
             hierarchy->applySourcedLadder(w7, bw7);
@@ -22923,6 +22933,7 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
                 return 1;
             }
             config.noc_flit_size_bits_cfg = fsb;
+            config.noc_flit_size_bits_user_set = true;   // (1.12.261)
             std::cout << "  [noc] flit width " << fsb << " bits (" << sc.pfx << "noc.flit_size_bits, user's choice; the rung widths are clamped at the flit)" << std::endl;
         }
         config.noc_topology_file = yamlString(root["noc"]["topology_file"], config.noc_topology_file, sc.pfx + "noc.topology_file");
