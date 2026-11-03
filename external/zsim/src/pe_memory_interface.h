@@ -54,22 +54,40 @@ protected:
 
     // Connection mode link latency
     uint32_t localLinkLat_ = 0;  // additional PE<->mem hop for SEPARATE_ENDPOINTS
-    uint64_t busFree_ = 0;       // (1.12.247): the cycle the element's local bus is next free (SRAM/NVM)
+    std::map<uint64_t, uint64_t> busBusy_;   // (1.12.257): the element's local bus, its booked slots (start -> end)
 
-    /* (1.12.247): an access inside the element's slot crosses its local bus twice, the request and the reply, each a
-     * link of localBusCycles plus its flits beyond the first at the bus width; the element's controller puts them on
-     * the bus in turn, so a transfer waits for the one before it. Both are a link crossing at the group tier (2). */
-    uint32_t localBusCost(const MemReq& req) {
+    /* (1.12.257): the first free slot of f bus cycles at or after t, booked. Slots that ended long before t
+     * (4096 cycles; no access of this interface reaches that far back) are dropped. */
+    uint64_t busBook(uint64_t t, uint32_t f) {
+        while (!busBusy_.empty() && busBusy_.begin()->second + 4096 < t) busBusy_.erase(busBusy_.begin());
+        uint64_t s = t;
+        auto it = busBusy_.upper_bound(s);
+        if (it != busBusy_.begin() && std::prev(it)->second > s) s = std::prev(it)->second;
+        for (it = busBusy_.lower_bound(s); it != busBusy_.end() && it->first < s + f; ++it) s = std::max(s, it->second);
+        busBusy_[s] = s + f;
+        return s;
+    }
+
+    /* (1.12.257): an access inside the element's slot over its local bus, the bus and the bank composed. The request
+     * takes the first free bus slot from its issue and crosses in localBusCycles plus its flits beyond the first at
+     * the bus width; the bank starts when the request has arrived (and is free); the reply takes the first free bus
+     * slot from the bank's answer and crosses the same way. The element's controller books the slots, so a transfer
+     * waits only for the bus time booked before it, and a long array access holds no bus. Both crossings are a link
+     * at the group tier (2). Returns the latency from the issue, the device's time included. */
+    uint32_t localBusAccess(MemReq& req, bool* byReplay) {
         const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
         GarnetNetwork* gn = zinfo->garnetNetwork;
         const uint32_t dataB = gn ? gn->dataMsgBits() : 576u, ctrlB = gn ? gn->controlMsgBits() : 64u;
         const uint32_t w = std::max(1u, zinfo->hierarchy.localBusWidthBits);
         const uint32_t fReq = std::max(1u, ((wr ? dataB : ctrlB) + w - 1) / w);
         const uint32_t fRsp = std::max(1u, ((wr ? ctrlB : dataB) + w - 1) / w);
-        const uint64_t start = std::max<uint64_t>(req.cycle, busFree_);
-        busFree_ = start + fReq + fRsp;
+        const uint32_t L = zinfo->hierarchy.localBusCycles;
+        const uint64_t rq = busBook(req.cycle, fReq);
+        const uint64_t at = rq + L + (fReq - 1);                       // the request is at the bank
+        const uint64_t ready = at + localAccessLatency(req, byReplay, at);
+        const uint64_t rs = busBook(ready, fRsp);
         if (gn) { gn->recordLocalBus(mcId_, 2, !wr); gn->recordLocalBus(mcId_, 2, wr); }
-        return (uint32_t)(start - req.cycle) + 2 * zinfo->hierarchy.localBusCycles + (fReq - 1) + (fRsp - 1);
+        return (uint32_t)(rs + L + (fRsp - 1) - req.cycle);
     }
 
     // Phase tracking for Garnet batch processing
@@ -842,8 +860,8 @@ public:
                          ? false : isLocal(targetUnit);
         if (wantLocal) {
             bool byReplay = false;
-            uint32_t lat = localAccessLatency(req, &byReplay) + localLinkLat_;
-            if (zinfo->hierarchy.localBusCycles) lat += localBusCost(req);   // (1.12.247)
+            uint32_t lat = (zinfo->hierarchy.localBusCycles ? localBusAccess(req, &byReplay)   // (1.12.257): bus and bank composed
+                                                            : localAccessLatency(req, &byReplay)) + localLinkLat_;
 
             // DRAM channel bandwidth bottleneck (accuracy fix): even a "local"
             // bank access consumes the shared DRAM channel's DQ bandwidth. In
@@ -1731,7 +1749,9 @@ protected:
      * turnaround); the analytical service below serves only the bootstrap
      * (no replayed epoch yet). byReplay tells the caller to skip the
      * analytical channel wait, which the controller already contains. */
-    uint32_t localAccessLatency(MemReq& req, bool* byReplay = nullptr) {
+    /* arriveAt (1.12.257): the cycle the request reaches the bank, when a local bus carries it there; the bank waits from
+     * then (default: the request's own cycle). */
+    uint32_t localAccessLatency(MemReq& req, bool* byReplay = nullptr, uint64_t arriveAt = ~0ull) {
         uint32_t result;
         if (byReplay) *byReplay = false;
         /* 1.11.97 (review H07): the rd/wr stats follow the same rule as the
@@ -1894,7 +1914,7 @@ protected:
             const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
             const double occ = bankSvcCycles_ + (wr ? (double)localWriteExtra_ : 0.0);
             const uint32_t u = addrToUnit(req.lineAddr);
-            const double arrive = (double)req.cycle;
+            const double arrive = (arriveAt != ~0ull) ? (double)arriveAt : (double)req.cycle;   // (1.12.257)
             futex_lock(&bankLock_);
             double& fr = bankFree_[u];
             double start = (fr > arrive) ? fr : arrive;

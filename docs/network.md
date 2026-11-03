@@ -118,8 +118,11 @@ credit-based flow control, deadlock-free routing.
   is a placement at `BANK_GROUP`, `CHIP`, `RANK`, `CHANNEL` or `LOGIC_DIE`. An
   access inside the element's slot crosses its local bus in both models: the
   request and the reply each cost one device cycle plus their flits beyond
-  the first at the bus width, the element's controller puts them on the bus
-  in turn, and the bus is priced as a link at the group tier, with no router.
+  the first at the bus width, and the element's controller books the bus in
+  slots ((1.12.257)): the request takes the first free slot from its issue, the
+  bank starts when the request has arrived (and is free), and the reply takes
+  the first free slot from the bank's answer, so a long array access holds no
+  bus. The bus is priced as a link at the group tier, with no router.
   An access to another element's slot, and every message between elements,
   crosses the die router. The local bus and the die links run at the device
   clock and carry the bank's access width (the 512-bit line the array model

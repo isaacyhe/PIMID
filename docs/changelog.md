@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.257 -- an SRAM or NVM element's local bus and its banks are timed as one path: the bank starts when the request arrives, and the reply takes the bus when the bank answers
+
+- **The problem.** At the `BANK` placement an SRAM or NVM element reaches the banks of its group over its local bus.
+  The bus and the bank were each timed from the request's issue, and the access paid both waits: a request that
+  queued on the bus waited again at the bank, as if the bank had waited for it from the issue. The bus also took the
+  reply's slot right after the request's, so the slot was held while the bank was still busy and later requests
+  queued behind it. A burst of line reads into one PCM bank paid about 4.4 cycles a line (3 on the bus, 1.4 at the
+  bank) where the bus allows 3.
+- **The fix** (external/zsim/src/pe_memory_interface.h). The element's controller books its bus in slots. A request
+  takes the first free slot from its issue and crosses in one device cycle plus its flits beyond the first; the bank
+  starts when the request has arrived (and is free); the reply takes the first free slot from the bank's answer and
+  crosses the same way. A long array access holds no bus, and a transfer waits only for the bus time booked before it.
+  Both network models time the local bus this way; nothing else changes.
+- **Effect** (the previous release against this build; 16 elements at the bank of a 256-bank device, smoke sizes).
+  - The 40 SRAM / NVM device cells (PCM, ReRAM, STT-MRAM and SRAM; message passing and shared memory): detailed run
+    time -1.8% to +2.7% (median -0.04%; 30 faster, 10 slower), analytical run time -1.4% to +0.5% (median -0.06%),
+    energy -1.7% to +1.1%. The mean latency of an access inside the group changes by -22% to +7% (median -0.5%; PCM
+    shared-memory histogram 86.2 -> 67.0 cycles).
+  - Four bank-overlap probes (message passing, detailed): PCM gemv (size 1024) waits 2,372 cycles on busy banks
+    instead of 115,796 and runs 0.06% faster; PCM and ReRAM stream_triad (200,000) run 0.7% and 0.6% faster, the
+    access latency 5.7% lower; SRAM stream_triad runs 0.5% slower: a block transfer's line requests now take the bus
+    first and the replies follow as the banks answer, so the mean access latency rises from 29.6 to 31.8 cycles for
+    the same bus time.
+- **Validation.** Every DRAM cell is identical: the 115 DRAM device message-passing smoke cells (and the 20 SRAM / NVM
+  cells that name a flat topology), the 11 co-simulation message-passing smoke cells, the 40 host baselines, the
+  116-cell validation set and the 30 bfs smoke variants. The power checker reports no internal-consistency failure
+  over the 84 SRAM / NVM logs (the 40 cells in both network models and the four probes), and its reference flags are
+  the same metrics in the same logs as before.
+- **Data impact.** Changes the timing, and through the run time the energy, of the SRAM / NVM device cells at the
+  `BANK` placement; DRAM results and the flat-fabric cells are unchanged.
+
 ## 1.12.256 -- an SRAM or NVM element's data is laid over its own banks one mat row at a time
 
 - **The problem.** On an SRAM or NVM device an element owns several banks (16 elements over 256 banks of 64 KB: 16 banks
