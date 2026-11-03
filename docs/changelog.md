@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.254 -- the CHANNEL and LOGIC_DIE placements replay their DRAM requests on every channel, not all on channel 0
+
+- **The problem.** The DRAM epoch replay composes each request's address from the placement unit it belongs to. On HBM
+  the channels are folded into the chip field of a unit's position (the chip is the channel), and the replay read the
+  channel from that field. At the CHANNEL and LOGIC_DIE placements the unit is itself a channel (one unit per channel;
+  the base-die elements front the stack's channels), and the position decoder puts it in the channel or system field,
+  leaving the chip field 0. Every replayed request of those placements went to channel 0: one controller of the
+  sixteen served the whole device (`ctrlChannelsUsed` 1, `ctrlMaxChannelPermille` 1000), its queues stayed full, and
+  the run time and its sensitivity to request order followed that one queue.
+- **The fix** (external/zsim/src/dram_epoch_replay.cpp, `composeAddr`). At the CHANNEL and LOGIC_DIE placements the
+  replay takes the channel from the unit's channel or system field; every other placement keeps its rule. The pages
+  of a placement unit are unchanged; only the channel their requests are replayed on moves to the unit's own.
+- **Validation** (against the previous release, same nodes; logs compared with the tree paths masked): the 40 host
+  baselines, the 11 co-simulation message-passing smoke cells and the 116-cell validation set are identical; of the
+  135 device message-passing smoke cells the 125 off these two placements are identical, and the 10 HBM3 CHANNEL and
+  LOGIC_DIE cells change. The 10 bfs startup variants on the BANK placement are identical. On the CHANNEL and
+  LOGIC_DIE cells every run now uses all 16 channels: at full size the busiest channel takes 63 to 71 per mille in
+  the message-passing cells and 110 to 233 in the shared-memory cells, whose serially initialised data lives with
+  one PE. Two cells run 8 times each give one output per cell. The power checker passes every log.
+- **Data impact.** HBM3 CHANNEL and LOGIC_DIE placement cells only.
+  - Smoke size, 16 ranks: bfs 12.2 M -> 2.13 M cycles (-82.6 %), histogram -41 to -49 %, stencil_2d -44 %,
+    stream_triad -35 to -42 %, gemv -14 to -17 %.
+  - Full size: message-passing bfs (838,859 vertices) 584 M -> 117 M cycles (-80 %), shared-memory bfs -34 %,
+    stencil_2d -17 % (message passing) and -10 to -11 % (shared memory), stream_triad -9 to -11 %, gemv -1.4 to
+    -2.9 %, histogram -1.0 to -1.4 %. The message-passing bfs at 209,715 vertices: 140.6 M -> 28.7 M cycles.
+  - The spread of the message-passing stream_triad on LOGIC_DIE across five layout copies falls from 2.4 % to
+    0.1 %, and that of the bfs startup variants from 1.0 % to 0.07 %.
+  - Host time: the replayed controller no longer scans one saturated queue. The message-passing bfs runs in 1174 s
+    instead of 4386 s (CHANNEL) and 1057 s instead of 4404 s (LOGIC_DIE) at 838,859 vertices, and in 283 s instead
+    of 592 s and 281 s instead of 602 s at 209,715.
+
 ## 1.12.253 -- an SRAM device's array cells can be low-power or low-standby-power cells
 
 - **The problem.** An SRAM device array was always characterised with CACTI's high-performance cells. At 22 nm and

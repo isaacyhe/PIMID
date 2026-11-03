@@ -415,8 +415,16 @@ uint64_t DramEpochReplay::composeAddr(uint32_t unit, uint32_t slot, uint64_t row
                                       h.bgPerChip, h.chipsPerRank, h.ranksPerChannel);
     const uint64_t nch = (uint64_t)std::max(1, counts_[0]);
     /* Channel: HBM folds its channels into chips_per_rank (the chip IS the
-     * channel); the DDR/LPDDR/GDDR classes carry the channel above the rank. */
-    const uint64_t ch = (uint64_t)(foldedChannels_ ? pos.chip : pos.channel) % nch;
+     * channel); the DDR/LPDDR/GDDR classes carry the channel above the rank.
+     * (1.12.254): at the CHANNEL and LOGIC_DIE placements the unit IS a channel
+     * (one placement unit per channel; the base-die elements front the
+     * stack's channels), and unitToHierPos decodes it into the channel or
+     * system field, not the chip. Reading the chip there gave 0 for every
+     * unit, so every replayed request of those placements went to channel 0. */
+    const uint64_t chSel = (h.placementLevel == 6) ? (uint64_t)pos.system
+                         : (h.placementLevel == 5) ? (uint64_t)pos.channel
+                         : (uint64_t)(foldedChannels_ ? pos.chip : pos.channel);
+    const uint64_t ch = chSel % nch;
     /* Bank index inside the channel: (rank, bank group, bank) of the unit plus
      * the interface's slot inside it (a unit coarser than a bank spans
      * rowSlotsPerUnit banks). Chips of a DDR rank work in lock step, so the
