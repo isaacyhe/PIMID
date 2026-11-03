@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.248 -- an SRAM or NVM element memory controller is priced at its own banks' bandwidth
+
+- **The problem.** McPAT's memory-controller backend area grows with the controller's peak transfer rate. An SRAM or
+  NVM element controller was given the whole device's bank-parallel rate (all of the device's banks x the cache line /
+  the array access time: 5.8 TB/s for the PCM devices of the shipped configurations, 75 TB/s for SRAM), though each of
+  the 16 controllers serves 16 of the 256 banks. A DRAM element controller is given its own channel's rate.
+- **The fix** (`src/main.cpp`). The element controller's peak rate is its banks' share of the array's rate (16 of 256
+  here); the run prints it once per structure. A host controller and every DRAM controller are unchanged.
+- **Effect.** Power and area only; the controller model does not feed the timing. On the 16-PE SRAM/NVM bank-placement
+  devices each controller's area falls by a quarter to a third (PCM 1.77 -> 1.24 mm^2, SRAM 2.27 -> 1.73), and its
+  leakage with it (the PCM device's 16 controllers 138 -> 98 mW).
+
 ## 1.12.247 -- an SRAM or NVM device is one die of local groups, each element with the banks of its slot on one local bus, in both network models
 
 - **The problem.** With no topology named, an SRAM, PCM, ReRAM or STT-MRAM device's detailed network was a flat

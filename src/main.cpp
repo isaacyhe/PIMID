@@ -11598,6 +11598,21 @@ static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
         p.req_window_size_per_channel = 2 * kMcUnifiedQueueEntries;
         p.req_cam_tag_bits = std::max(1, static_cast<int>(std::ceil(std::log2(static_cast<double>(p.banks_served)))));
         p.req_cam_field = "bank ID";
+        /* (1.12.248): an SRAM/NVM element controller moves its own banks' requests, so its peak rate is those banks'
+         * share of the array's bank-parallel rate (the device's banks x line / access time), not the whole device's.
+         * A DRAM element controller keeps its channel's DQ rate. */
+        if (!pimid::isDRAM(pimid::parseMemoryTechnology(t))) {
+            const int dev_banks = std::max(1, config.num_banks);
+            const long long dev_rate = p.peak_transfer_rate;
+            const double share = std::min(1.0, static_cast<double>(p.banks_served) / static_cast<double>(dev_banks));
+            p.peak_transfer_rate = static_cast<int>(std::max(1LL, std::llround(static_cast<double>(dev_rate) * share)));
+            static std::set<std::string> said;
+            std::ostringstream k; k << t << ':' << p.banks_served << ':' << dev_banks << ':' << dev_rate;
+            if (said.insert(k.str()).second)
+                std::cout << "  [power] " << t << " element memory controller: peak rate " << p.peak_transfer_rate
+                          << " MB/s, its " << p.banks_served << " of the device's " << dev_banks
+                          << " banks' share of the array's " << dev_rate << " MB/s" << std::endl;
+        }
     } else {
         p.banks_served = std::max(1, channel_banks);
         p.req_window_queues_per_channel = 2 * p.banks_served;

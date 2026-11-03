@@ -620,7 +620,8 @@ bank groups x banks (16 on a DDR4 channel or an LPDDR5 or GDDR6 channel, 32 on
 a DDR5 sub-channel or an HBM2 channel, 64 on the channel of an 8-high HBM3
 stack). A PIM element controller is PARE itself (Sec. V-A): one read and one
 write unified queue of 32 entries, each a CAM on the bank ID of its region (the
-device's banks over its controllers). A request is written into, searched in
+device's banks over its controllers); an SRAM or NVM element controller's peak
+rate is its banks' share of the array's bank-parallel rate. A request is written into, searched in
 and picked from one queue, so its energy is one queue's; the area, the leakage
 and the clocked port registers are every queue's. A transaction is the run's
 cache line. The run prints the structure it priced on a
