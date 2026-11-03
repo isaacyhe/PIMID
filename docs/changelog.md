@@ -6,6 +6,22 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.239 -- the NVM model prints say what the run uses
+
+- **The problem.** Three kinds of print told the reader something the run does not do.
+  - The PCM model printed an inner-bank SET and RESET write latency of 2.55 ns. Without a SET or RESET pulse in the
+    characterization (a cached one holds no per-component delays) that is the decoder and wordline terms alone, and
+    no write is timed by it: every PCM write is timed at NVSim's bank write latency, 152.8 ns at the
+    64 KB / 512-bit / 22 nm unit.
+  - The ReRAM and PCM prints judged their values ("fast!", "VERY fast!", "very low!", "SLOW!").
+  - The NVSim cache line printed the capacity in whole megabytes, "0MB" for a 64 KB bank.
+- **The fix** (src/memory/pcm_model.cpp, reram_model.cpp, nvsim_wrapper.cpp). Without a pulse the PCM model prints
+  one line that says so and gives the bank write latency the timing path uses; with a pulse it prints the inner-bank
+  paths as before. The judging labels are gone. The capacity is printed in MB, KB or bytes, whichever is exact.
+- **Validation:** the 40 SRAM / NVM device cells, the 135 device message-passing smoke cells, the 11 co-simulation
+  message-passing smoke cells, the 40 host baseline smoke cells, the 116-cell validation set and the 30 bfs smoke
+  variants: timing and power identical; only these lines change, in the PCM and ReRAM cells.
+
 ## 1.12.238 -- the logic on a PCM die is priced in the memory process, as the logic on a DRAM die is
 
 - **The problem.** A device's PEs, their caches, the element memory controllers and the on-die network were priced in

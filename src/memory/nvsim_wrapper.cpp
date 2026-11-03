@@ -881,7 +881,12 @@ void NVSimWrapper::runNVSim() {
             valid_ = true;
             std::cout << "[NVSimWrapper] Reusing cached NVSim characterization "
                       << "(type=" << (int)config_.nvm_type
-                      << ", " << (config_.capacity_bytes / (1024*1024)) << "MB, "
+                      << ", " << ((config_.capacity_bytes % (1024*1024) == 0)
+                                  ? std::to_string(config_.capacity_bytes / (1024*1024)) + "MB"
+                                  : (config_.capacity_bytes % 1024 == 0)
+                                    ? std::to_string(config_.capacity_bytes / 1024) + "KB"
+                                    : std::to_string(config_.capacity_bytes) + "B")   // (1.12.239): exact unit
+                      << ", "
                       << config_.process_node_nm << "nm)" << std::endl;
             return;
         }

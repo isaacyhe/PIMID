@@ -133,7 +133,7 @@ void ReRAMModel::initialize() {
 
     if (reram_arch_->hasAnalogCompute()) {
         std::cout << "[ReRAMModel] Analog compute latency: "
-                  << reram_arch_->timing.inner_bank.getAnalogComputeLatency() << " ns (FAST!)" << std::endl;
+                  << reram_arch_->timing.inner_bank.getAnalogComputeLatency() << " ns" << std::endl;
     }
 
     // Use architecture energy values (may have been extracted from NVSim)
@@ -163,9 +163,9 @@ void ReRAMModel::initialize() {
      * reported and what these fields hold. They were labelled "cycles" while
      * carrying a 1 GHz product, so the number was right only at 1 GHz. */
     std::cout << "  Read Latency: " << reram_config_.read_latency_ns << " ns" << std::endl;
-    std::cout << "  Write Latency: " << reram_config_.write_latency_ns << " ns (fast!)" << std::endl;
+    std::cout << "  Write Latency: " << reram_config_.write_latency_ns << " ns" << std::endl;
     std::cout << "  Analog Compute Latency: " << reram_config_.analog_compute_latency
-              << " cycles (VERY fast!)" << std::endl;
+              << " cycles" << std::endl;
     std::cout << "  Endurance: " << reram_config_.endurance << " writes" << std::endl;
     std::cout << "  Analog Capable: " << (reram_config_.analog_capable ? "Yes" : "No") << std::endl;
     /* 1.11.60 (audit round 4, C001): nJ PER ACCESS, the unit the assignments
@@ -178,7 +178,7 @@ void ReRAMModel::initialize() {
      * is untouched: it is pJ per operation and always was.) */
     std::cout << "  Read Energy: " << read_energy_ << " nJ/access" << std::endl;
     std::cout << "  Write Energy: " << write_energy_ << " nJ/access" << std::endl;
-    std::cout << "  Analog Compute Energy: " << analog_compute_energy_ << " pJ (very low!)" << std::endl;
+    std::cout << "  Analog Compute Energy: " << analog_compute_energy_ << " pJ" << std::endl;
     std::cout << "  Leakage Power: " << leakage_power_ << " W" << std::endl;
     std::cout << "[ReRAMModel] Initialization complete" << std::endl;
 }
@@ -395,12 +395,12 @@ void ReRAMModel::printStats() const {
     std::cout << "  Mat Read: " << getMatReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Mat Write: " << getMatWriteLatency() << " ns (fast!)" << std::endl;
+    std::cout << "  Mat Write: " << getMatWriteLatency() << " ns" << std::endl;
     std::cout << "  Bank Write: " << getBankWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip Write: " << getChipWriteLatency() << " ns" << std::endl;
 
     if (reram_config_.analog_capable) {
-        std::cout << "  Analog Compute: " << getAnalogComputeLatency() << " ns (VERY fast!)" << std::endl;
+        std::cout << "  Analog Compute: " << getAnalogComputeLatency() << " ns" << std::endl;
     }
 
     std::cout << "\nEnergy Consumption:" << std::endl;
@@ -431,7 +431,7 @@ void ReRAMModel::printStats() const {
     std::cout << "  Write Energy (per byte): " << (write_energy_ * 1000.0 / bpa) << " pJ" << std::endl;
     /* analog_compute_energy_ is pJ PER OPERATION and always was -- it is not a
      * density, so 1.11.58 did not re-base it and this line is unchanged. */
-    std::cout << "  Analog Compute Energy (per op): " << analog_compute_energy_ << " pJ (very low!)" << std::endl;
+    std::cout << "  Analog Compute Energy (per op): " << analog_compute_energy_ << " pJ" << std::endl;
     std::cout << "  Total Read Energy: " << (total_reads_ * read_energy_) << " nJ" << std::endl;
     std::cout << "  Total Write Energy: " << (total_writes_ * write_energy_) << " nJ" << std::endl;
     std::cout << "  Total Analog Compute Energy: " << (total_analog_ops_ * analog_compute_energy_) << " pJ" << std::endl;
@@ -639,7 +639,7 @@ void ReRAMModel::initializeNVSim() {
 
             std::cout << "[ReRAMModel] Using NVSim-generated parameters" << std::endl;
             std::cout << "[ReRAMModel] NVSim Read Latency: " << read_ns << " ns" << std::endl;
-            std::cout << "[ReRAMModel] NVSim Write Latency: " << write_ns << " ns (fast!)" << std::endl;
+            std::cout << "[ReRAMModel] NVSim Write Latency: " << write_ns << " ns" << std::endl;
         } else {
             std::cerr << "[ReRAMModel] NVSim failed: "
                       << nvsim_wrapper_->getErrorMessage() << std::endl;

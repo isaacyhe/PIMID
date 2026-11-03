@@ -121,16 +121,26 @@ void PCMModel::initialize() {
 
     std::cout << "[PCMModel] Inner-bank read latency: "
               << pcm_arch_->timing.inner_bank.getTotalReadLatency() << " ns" << std::endl;
-    /* 1.11.56 (audit D062): say when the SET path is a substitution. */
-    std::cout << "[PCMModel] Inner-bank SET write latency: "
-              << pcm_arch_->timing.inner_bank.getTotalSetWriteLatency() << " ns"
-              << (pcm_arch_->timing.set_from_generic_write
-                  ? " (NVSim did not resolve setLatency -- this IS the generic"
-                    " write path)"
-                  : "")
-              << std::endl;
-    std::cout << "[PCMModel] Inner-bank RESET write latency: "
-              << pcm_arch_->timing.inner_bank.getTotalResetWriteLatency() << " ns" << std::endl;
+    /* (1.12.239): the inner-bank write paths are printed only when they carry a SET or RESET pulse.
+     * Without one (a cached characterization holds no per-component delays) they are the decoder
+     * and wordline terms alone, and no write is timed by them: the timing path takes NVSim's bank
+     * write latency, printed here instead. */
+    if (pcm_arch_->timing.inner_bank.set_pulse_ns > 0.0 || pcm_arch_->timing.inner_bank.reset_pulse_ns > 0.0) {
+        /* 1.11.56 (audit D062): say when the SET path is a substitution. */
+        std::cout << "[PCMModel] Inner-bank SET write latency: "
+                  << pcm_arch_->timing.inner_bank.getTotalSetWriteLatency() << " ns"
+                  << (pcm_arch_->timing.set_from_generic_write
+                      ? " (NVSim did not resolve setLatency -- this IS the generic"
+                        " write path)"
+                      : "")
+                  << std::endl;
+        std::cout << "[PCMModel] Inner-bank RESET write latency: "
+                  << pcm_arch_->timing.inner_bank.getTotalResetWriteLatency() << " ns" << std::endl;
+    } else {
+        std::cout << "[PCMModel] Inner-bank write path: no SET/RESET pulse in this characterization;"
+                     " a write is timed at the bank write latency, "
+                  << pcm_config_.set_write_latency_ns << " ns" << std::endl;
+    }
     std::cout << "[PCMModel] Architecture source: "
               << pcm_arch_->timing.inner_bank.source << std::endl;
 
@@ -188,7 +198,7 @@ void PCMModel::initialize() {
      * reported and what these fields hold. They were labelled "cycles" while
      * carrying a 1 GHz product, so the number was right only for a 1 GHz PE. */
     std::cout << "  Read Latency: " << pcm_config_.read_latency_ns << " ns" << std::endl;
-    std::cout << "  SET Write Latency: " << pcm_config_.set_write_latency_ns << " ns (SLOW!)" << std::endl;
+    std::cout << "  SET Write Latency: " << pcm_config_.set_write_latency_ns << " ns" << std::endl;
     /* 1.11.56 (audit D045): name the substitution when there is one. */
     std::cout << "  RESET Write Latency: " << pcm_config_.reset_write_latency_ns << " ns"
               << (reset_latency_is_set_path_
@@ -421,7 +431,7 @@ void PCMModel::printStats() const {
     std::cout << "  Mat Read: " << getMatReadLatency() << " ns" << std::endl;
     std::cout << "  Bank Read: " << getBankReadLatency() << " ns" << std::endl;
     std::cout << "  Chip Read: " << getChipReadLatency() << " ns" << std::endl;
-    std::cout << "  Mat SET Write: " << getMatSetWriteLatency() << " ns (SLOW!)" << std::endl;
+    std::cout << "  Mat SET Write: " << getMatSetWriteLatency() << " ns" << std::endl;
     std::cout << "  Bank SET Write: " << getBankSetWriteLatency() << " ns" << std::endl;
     std::cout << "  Chip SET Write: " << getChipSetWriteLatency() << " ns" << std::endl;
 
