@@ -147,7 +147,7 @@ in-package logic die.
 | DDR4, DDR5 | `SUBARRAY -> BANK -> BANK_GROUP -> RANK` |
 | LPDDR5, GDDR6 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL` |
 | HBM2, HBM3 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL -> LOGIC_DIE` |
-| SRAM | `SUBBANK -> BANK` (one die: at BANK each element and the banks of its slot are one local group under the die ((1.12.258)); there is no bank-group, chip, rank or channel tier to place at; `memory.local_path` chooses the group's path, its local bus or its router) |
+| SRAM | `SUBBANK -> BANK` (one die: at BANK each element and the banks of its slot are one local group under the die ((1.12.259)); there is no bank-group, chip, rank or channel tier to place at; `memory.local_path` chooses the group's path, its local bus, its router or its shared bus on the network) |
 | STT_MRAM, PCM, RERAM | `MAT -> BANK` (as SRAM) |
 
 **Where an element's data lives on SRAM/NVM.** A page belongs to the element that touches it first

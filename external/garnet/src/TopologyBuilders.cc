@@ -784,6 +784,7 @@ struct TopoParsed {
     bool rtt_buffers = false;
     std::map<uint32_t, int> router_level;                  // (1.12.230): rlevel lines
     std::map<int, std::pair<long, int>> pipe_of_level;     // (1.12.230): pipe lines: level -> (stages, line)
+    std::set<int> bus_levels;                              // (1.12.259): bus lines: the levels whose routers are shared buses
 };
 
 /* (1.12.230): read and check a CUSTOM file; refuses a malformed pipe line, and a pipe line for a level no router sits
@@ -841,6 +842,12 @@ void topoParse(const std::string& filename, TopoParsed& t)
         } else if (token == "rlevel") {
             uint32_t r; int lv;
             if (iss >> r >> lv) router_level[r] = lv;
+        } else if (token == "bus") {   // (1.12.259): "bus <level>": the level's routers are shared buses
+            std::string slv;
+            long lv = -1;
+            if (!(iss >> slv) || !topoInt(slv, lv) || lv < 0 || lv > 6)
+                topoFail(filename, lineno, "expected 'bus <level>' with a hierarchy level 0 .. 6, got '" + line + "'");
+            t.bus_levels.insert((int)lv);
         } else if (token == "pipe") {
             std::string slv, sst, extra;
             iss >> slv >> sst;
@@ -991,8 +998,24 @@ TopologyBuilders::buildFromFile(const std::string& filename,
 
     result.topology->setName("CUSTOM (" + filename + ")");
 
+    if (!t.bus_levels.empty() && !is_tree)   // (1.12.259)
+        throw std::runtime_error("Topology file " + filename + ": a 'bus' line needs a rooted tree (its routers take "
+                                 "the tree's up/down VC classes)");
     for (uint32_t i = 0; i < num_routers; i++) {
-        if (is_tree) {
+        if (is_tree && t.bus_levels.count(lvlOf(i))) {
+            /* (1.12.259): a router of a bus level is a shared bus: one transfer per cycle over all its ports
+             * (BusArbiter), in the tree's up/down VC classes, its pipe and buffers as the level's routers'. */
+            GarnetRouterParams rp;
+            rp.name = "tree_bus" + std::to_string(i);
+            rp.router_id = i;
+            rp.vcs_per_vnet = vcs_per_vnet;
+            rp.virt_nets = virt_nets;
+            rp.latency = router_stages[i];
+            rp.width = width;
+            BusArbiter* bus = new BusArbiter(rp);
+            bus->setUpDown(true);
+            result.routers.push_back(bus);
+        } else if (is_tree) {
             // up*/down* deadlock-free router (VC-class separation).
             GarnetRouterParams rp;
             rp.name = "tree_router" + std::to_string(i);

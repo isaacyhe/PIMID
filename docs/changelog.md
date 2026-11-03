@@ -6,6 +6,43 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.259 -- `memory.local_path: garnet_bus`: each group of an SRAM or NVM device a shared bus on the network
+
+- **The change.** `memory.local_path` takes a third value, `garnet_bus`. It builds the endpoints of `garnet` (every
+  bank of a group its own endpoint, the element its own port) with each group's router a shared bus instead: one
+  transfer per cycle over all its ports, granted in turn.
+  - Detailed model: the bus is Garnet's bus arbiter, now usable inside the device's tree. There it takes the tree's
+    up/down virtual-channel classes (a packet starts in the up class and a down hop moves it to the down class, as
+    at the tree's routers), its pipe stages are the level's router stages, and its input buffers hold their links'
+    credit round trip, so an uncontended link still carries a flit per cycle. The topology file names the level with
+    a `bus <level>` line. The `BUS` topology's arbiter is unchanged.
+  - Analytical model: an access inside the group takes the router path of `garnet`, but its request and its reply
+    are booked on one medium, the group's bus.
+  - Power: each group's bus is priced as a McPAT bus, its wire plus an arbiter over its ports (CACTI's matrix
+    arbiter, 18 requesters for a group of 16 banks, charged per access, leaking per bus); the group's link to the die
+    router is priced as a link.
+  - Code: external/garnet (BusArbiter, TopologyBuilders.cc), external/mcpat (noc, XML_Parse), src/main.cpp,
+    src/power/mcpat_wrapper.cpp, include/power/mcpat_wrapper.h, external/zsim (pe_memory_interface.h, init.cpp,
+    zsim.h). Docs: network.md, memory.md, yaml_reference.md.
+- **Effect** (16 elements at the bank of a 256-bank device, the 40 SRAM / NVM cells, smoke sizes).
+  - Against `bus`: detailed run time -9.5% to +138.0% (median +19.8%; 37 slower, 3 faster), analytical run time 0% to
+    +146.0% (median +15.5%), device energy -6.2% to +130.2% (median +8.2%). Against `garnet`: run time -8.6% to
+    +41.0% (median +2.8%), energy -79.9% to -7.3% (median -48.9%).
+  - NoC power: SRAM, ReRAM and STT-MRAM 0.197-0.261 W (`bus` 0.218-0.314 W, `garnet` 2.90-3.14 W); PCM 0.005-0.030 W.
+  - The detailed run time is -2.8% to +104.0% from the analytical one (median +21.4%; `garnet` median +17.7%, `bus`
+    +15.2%). The largest gaps are the shared-memory bfs cells (+65% to +104%) and the SRAM and STT-MRAM histogram and
+    stencil_2d cells (+35% to +58%).
+  - The four bank-overlap probes run 12.8% to 28.4% longer than with `bus` and 1.0% to 3.1% longer than with `garnet`.
+  - Host time, the three paths side by side with no debug checks (`bus` / `garnet` / `garnet_bus`): PCM gemv 17 /
+    37 / 37 s, SRAM histogram 11 / 20 / 20 s, STT-MRAM stencil_2d 13 / 46 / 42 s, PCM bfs 21 / 370 / 302 s.
+- **Validation.** `bus` and `garnet` are identical to the release before: the 40 SRAM / NVM cells in both network
+  models in each of the two modes, the 135 device message-passing smoke cells, the 11 co-simulation message-passing
+  smoke cells, the 40 host baselines, the 116-cell set and the 30 bfs variants. With `garnet_bus`: five runs of 8 cells
+  whose stack layout differs vary by at most 0.67% (cv at most 0.27%); the four probe cells run 8 times each give one
+  output per cell; every run exits 0; the power checker reports no internal-consistency failure over the 84 logs, and
+  its reference flags are the same metrics in the same logs as with `bus`.
+- **Data impact.** None unless `memory.local_path: garnet_bus` is set.
+
 ## 1.12.258 -- an SRAM or NVM element can reach its group's banks through a router: `memory.local_path` bus or garnet
 
 - **The change.** A new key, `memory.local_path`, chooses how an SRAM, PCM, ReRAM or STT-MRAM element reaches the

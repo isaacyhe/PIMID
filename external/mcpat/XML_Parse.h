@@ -554,6 +554,9 @@ typedef struct{
 	 * tile pitch, sqrt(link_span_area_mm2 / link_parent_regions), the regions
 	 * being the tiles (the processor's area x chip_coverage when no span). */
 	int link_span_processor;
+	/* PIMID (1.12.259): > 1 = a BUS level (type 0) whose bus arbitrates this many requesters (a router built as a
+	 * shared bus): one CACTI arbiter per bus, charged per access. 0 (default) = a bus with no arbiter priced. */
+	int bus_arbiter_ports;
 	/* PIMID (user ruling 2026-10-25): link_kind 2 = an off-package link
 	 * riding the DRAM channel, priced per bit crossed at this energy (pJ/bit,
 	 * given by PIMID from the part's DQ crossing); < 0 = not set. */

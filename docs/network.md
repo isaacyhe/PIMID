@@ -146,8 +146,9 @@ credit-based flow control, deadlock-free routing.
   request has arrived. The analytical model prices an access inside the group
   along the same path: the element's port into the router carries the
   requests and the router's port back to it the replies, one flit per cycle,
-  each message costs the network interfaces plus one router stage and one
-  link per router it crosses and its flits beyond the first, and the bank
+  each message costs the network interfaces, a router stage per router it
+  crosses, a link per link between two routers and its flits beyond the
+  first, and the bank
   starts when the request has arrived; an access to another group's bank is
   priced as any routed access. Every link of the die, a bank's link to its
   group router included, costs one device cycle and is the bank's access
@@ -157,9 +158,16 @@ credit-based flow control, deadlock-free routing.
   full rate, 4 VCs per vnet, the device clock as the fabric clock); a group
   router has a port per bank, one for the element and one to the die router
   (18 for a group of 16 banks), and the power model's router classes stop at
-  16 ports, so it is priced as a 16-port router. The key is refused on a DRAM
-  device, at the `MAT` / `SUBBANK` placement, and with a named flat
-  `noc.topology`.
+  16 ports, so it is priced as a 16-port router. `garnet_bus` ((1.12.259)) builds
+  the same endpoints with each group's router a shared bus: one transfer per
+  cycle over all its ports, granted in turn, in the tree's up/down VC classes
+  and with the routers' pipe and buffer rules (the topology file's
+  `bus <level>` line). The analytical model books the requests and the
+  replies of an access inside the group on that one medium. The power model
+  prices each group's bus as a bus, its wire and an arbiter over its ports
+  (CACTI's matrix arbiter, charged per access), and the group's link to the
+  die router as a link. The key is refused on a DRAM device, at the `MAT` /
+  `SUBBANK` placement, and with a named flat `noc.topology`.
 - Flat topologies remain available for non-DRAM device memories, when named: `MESH_2D`
   (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts

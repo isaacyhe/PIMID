@@ -4028,6 +4028,7 @@ struct UnifiedConfig {
     bool htree_full_leaves       = false;   // (1.12.258): every placement unit its own leaf and endpoint (local_path garnet)
     bool route_all_accesses      = false;   // (1.12.258): every access travels the fabric, in both models (local_path garnet)
     int local_path_port_bits     = 0;       // (1.12.258): local_path garnet: an element's port width on its group's router
+    bool local_path_bus          = false;   // (1.12.259): local_path garnet_bus: each group's router is a shared bus
     int noc_ni_cycles            = 6;       // (1.12.258): the analytical NI overhead per message
     /* (1.12.143): the BUILT in-die fabric (ruling 9): its node links, the dies it
      * grids (one exit up-link each), and the mean node-link length in node
@@ -6814,6 +6815,7 @@ static bool dramHTreeBuilder(const std::string& tech,
      * buffer holds the link's credit round trip (Garnet sizes it per link).
      * An explicit noc.buffers_per_vc keeps the configured depth everywhere. */
     if (!config.noc_buffers_user_set) f << "buffers rtt\n";
+    if (config.local_path_bus) f << "bus 2\n";   // (1.12.259): memory.local_path garnet_bus: the group tier's routers are shared buses
     for (auto& e : tree.intLinks) {
         if (nid(e.b) < 0) continue;   // its up-link is part of the link written for the node below it
         const Span sp = spanUp(e.a, e.lat);
@@ -8242,7 +8244,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             hierarchy->setTopLevelNodeCounts(1, 1);
             config.htree_top_level = 3;
             config.nvm_die = true;
-            if (config.local_path != "garnet") {   // the shared local bus (the default)
+            if (config.local_path == "bus") {   // the shared local bus (the default)
                 config.htree_leaf_level = 2;
                 config.htree_unit_div = std::max(1, banks_per_bg);
                 config.local_bus_width_bits = port_w;
@@ -8256,11 +8258,14 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                 config.htree_full_leaves = true;
                 config.route_all_accesses = true;
                 config.local_path_port_bits = port_w;
+                config.local_path_bus = (config.local_path == "garnet_bus");   // (1.12.259): the group's router a shared bus
                 hierarchy->overrideLevelConfig(1, -1, -1.0, 1, "", -1, -1, -1, 0, 0, 0, 0);   // a bank's link to its group
                 std::cout << "  [hierarchy] " << tech << " device: " << (long)bg_per_chip * banks_per_bg << " banks, "
                           << bg_per_chip << " group(s) of an element interface and its " << banks_per_bg
                           << " bank(s), each bank its own network endpoint and the element its own port on its group's "
-                             "router, the group routers under the die's (memory.local_path garnet; no bank group, rank, channel or system tier); "
+                          << (config.local_path_bus ? "shared bus (one transfer per cycle over all its ports, arbitrated), the group buses under the die's router (memory.local_path garnet_bus;"
+                                                    : "router, the group routers under the die's (memory.local_path garnet;")
+                          << " no bank group, rank, channel or system tier); "
                              "every link at the " << deviceCycleClockMHz(config) << " MHz device clock, " << port_w
                           << " bits wide (the bank's access width), one device cycle per crossing"
                           << pimid::provLabel(" (DERIVED)") << std::endl;
@@ -9511,7 +9516,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
             << "        localPathPortBits = " << std::max(8, std::min(config.local_path_port_bits, config.noc_flit_size_bits_cfg)) << ";\n"
             << "        localPathNiCycles = " << config.noc_ni_cycles << ";\n"
             << "        localPathRouterCycles = " << config.noc_router_latency << ";\n"
-            << "        localPathLinkCycles = " << config.noc_link_latency << ";\n";
+            << "        localPathLinkCycles = " << config.noc_link_latency << ";\n"
+            << (config.local_path_bus ? "        localPathShared = 1;\n" : "");   // (1.12.259): garnet_bus: one medium, both ways
     // 1.11.57 (latent B031): a literal, because the field behind it never had
     // a writer. The plugin still receives the key it has always received.
     out << "        channelsPerSystem = 1;\n";
@@ -12557,6 +12563,12 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
 
             // Lower levels (subarray/bank) -> bus; upper levels -> router NoC
             nc.type = (lvl <= 1) ? 0 : topologyToMcPATType(config.noc_topology);
+            /* (1.12.259): memory.local_path garnet_bus: the group tier is shared buses, priced as McPAT buses (the wire
+             * and, per bus, an arbiter over its ports); its up-links to the die router are priced as links. */
+            if (config.local_path_bus && lvl == 2) {
+                nc.type = 0;
+                nc.bus_arbiter_ports = std::max(2, config.htree_level_max_ports[lvl]);
+            }
             /* (1.12.143): an in-die fabric's grid tier is switches joined by node
              * links (ruling 9: every grid node, and a CROSSBAR hub, is a
              * priced switch), not a shared bus; its node links and exits are
@@ -12830,7 +12842,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             /* 1.12.18: the level's up-links, priced on their own instance so
              * the router classes below are untouched. A bus level's bus is
              * its wire already (see emitLinks). */
-            if (nc.type != 0) {
+            if (nc.type != 0 || nc.bus_arbiter_ports > 0) {   // (1.12.259): a group bus's up-links are their own wires
                 emitLinks(lvl, nc.name, nc.on_dram_die, nc.chip_coverage, false);
             } else if (link_counts && garnet.level_link_traversals[lvl] > 0) {
                 pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " ("
@@ -23293,8 +23305,8 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
         if (root["memory"]["local_path"]) {   // (1.12.258)
             std::string lp = yamlString(root["memory"]["local_path"], config.local_path, sc.pfx + "memory.local_path");
             std::transform(lp.begin(), lp.end(), lp.begin(), ::tolower);
-            if (lp != "bus" && lp != "garnet") {
-                std::cerr << "[config] FATAL: " << sc.pfx << "memory.local_path = " << lp << ": it takes bus or garnet." << std::endl;
+            if (lp != "bus" && lp != "garnet" && lp != "garnet_bus") {
+                std::cerr << "[config] FATAL: " << sc.pfx << "memory.local_path = " << lp << ": it takes bus, garnet or garnet_bus." << std::endl;
                 std::exit(2);
             }
             config.local_path = lp;

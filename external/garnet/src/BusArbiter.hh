@@ -31,8 +31,16 @@ class BusArbiter : public Router {
     void wakeup() override;
     void init() override;
     void resetStats();
-
+    /* (1.12.259): a bus inside a CUSTOM tree takes the tree's up/down VC classes (see TreeRouter): a packet
+     * injected here starts in the UP class, a DOWN outport promotes it to the DOWN class, and an output VC
+     * is drawn only from its class. Off (the BUS topology) = one shared VC pool, as before. */
+    void setUpDown(bool on) { m_updown = on; }
   private:
+    bool m_updown = false;
+    bool isDownOutport(int outport) const;
+    int vcClassOf(int vc) const;
+    void getClassRange(int vnet, int vc_class, int &lo, int &hi) const;
+    int targetClass(int inport, int invc, int outport) const;
     // SA-I: per-input VC selection (same as crossbar SA-I)
     void arbitrate_inports();
 

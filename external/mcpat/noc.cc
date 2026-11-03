@@ -742,6 +742,22 @@ void NoC ::init_link_bus(double link_len_)
 			          << g_tp.peri_global.Vdd << " V" << std::endl;
 	}
 	link_bus_exist = true;
+	/* PIMID (1.12.259): a bus that arbitrates (a router built as a shared bus) has one arbiter per bus over its
+	 * requesters: CACTI's matrix arbiter (cacti/arbiter.cc, the one CACTI prices for a router's switch), one grant
+	 * per access, its grant lines running the bus's length. Dynamic per access, leakage per bus; CACTI gives the
+	 * arbiter no area. */
+	if (!nocdynp.type && XML->sys.NoC[ithNoC].bus_arbiter_ports > 1)
+	{
+		const int req = XML->sys.NoC[ithNoC].bus_arbiter_ports;
+		bus_arb = new Arbiter(req, nocdynp.flit_size, link_len, &(g_tp.peri_global));
+		bus_arb->compute_power();
+		bus_arb_exist = true;
+		pimid::debugStream(std::cerr) << "  [link] noc" << ithNoC << " bus arbiter (CACTI matrix arbiter, " << req
+		          << " requesters, grant lines over the bus's " << link_len << " um): per access dynamic "
+		          << bus_arb->power.readOp.dynamic << " J; per bus leakage " << bus_arb->power.readOp.leakage
+		          << " W, gate leakage " << bus_arb->power.readOp.gate_leakage << " W; x "
+		          << nocdynp.total_nodes << " bus(es)" << std::endl;
+	}
 	if (nocdynp.type) build_link_clock();   /* PIMID 1.12.18: global links, built after the chip area is known */
 }
 void NoC::computeEnergy(bool is_tdp)
@@ -779,6 +795,11 @@ void NoC::computeEnergy(bool is_tdp)
                 		         nocdynp.total_nodes);
             	power     = power + link_bus_tot_per_Router.power*pppm_t;
 
+            }
+            if (bus_arb_exist)   /* PIMID (1.12.259): one grant per access at the peak duty, every bus */
+            {
+            	set_pppm(pppm_t, M*nocdynp.total_nodes, nocdynp.total_nodes, nocdynp.total_nodes, nocdynp.total_nodes);
+            	power = power + bus_arb->power*pppm_t;
             }
 	    }
 	    else
@@ -852,6 +873,12 @@ void NoC::computeEnergy(bool is_tdp)
         		set_pppm(pppm_t, link_acc * wact, glp_nodes, glp_nodes, link_acc * wact);
         		link_bus->rt_power = link_bus->power * pppm_t;
         		rt_power = rt_power + link_bus->rt_power;
+        	}
+        	if (bus_arb_exist)   /* PIMID (1.12.259): one grant per measured access; leakage per bus */
+        	{
+        		set_pppm(pppm_t, rtp_stats.readAc.access, nocdynp.total_nodes, nocdynp.total_nodes, rtp_stats.readAc.access);
+        		bus_arb->rt_power = bus_arb->power * pppm_t;
+        		rt_power = rt_power + bus_arb->rt_power;
         	}
 
 	    }

@@ -126,7 +126,9 @@ protected:
         const uint64_t rq = busBook(pathIn_, req.cycle, fReq);
         const uint64_t at = rq + leg + (fReq - 1);                     // the request is at the bank
         const uint64_t ready = at + localAccessLatency(req, byReplay, at);
-        const uint64_t rs = busBook(pathOut_, ready, fRsp);
+        /* (1.12.259): garnet_bus: the group's shared bus carries one transfer per cycle in either direction, so the
+         * replies book the medium the requests book */
+        const uint64_t rs = busBook(zinfo->hierarchy.localPathShared ? pathIn_ : pathOut_, ready, fRsp);
         return (uint32_t)(rs + leg + (fRsp - 1) - req.cycle) + localLinkLat_;
     }
 

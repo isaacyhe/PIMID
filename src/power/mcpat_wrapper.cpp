@@ -1400,6 +1400,7 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.link_kind);       f(lvl.link_span_area_mm2);
         f(lvl.link_parent_regions); f(lvl.tech_node_nm);
         f(lvl.link_span_processor);   // 1.12.19
+        if (lvl.bus_arbiter_ports) f(lvl.bus_arbiter_ports);   // (1.12.259)
         f(lvl.router_stages);
         f(lvl.clock_root_shared);
         f(lvl.link_io_pj_per_bit);    // user ruling 2026-10-25
@@ -4340,6 +4341,8 @@ std::string McPATWrapper::generateXMLConfig() const {
             xml << "      <param name=\"link_span_area_mm2\" value=\"" << lvl.link_span_area_mm2 << "\"/>\n";
             xml << "      <param name=\"link_parent_regions\" value=\"" << lvl.link_parent_regions << "\"/>\n";
             xml << "      <param name=\"link_span_processor\" value=\"" << lvl.link_span_processor << "\"/>\n";   /* 1.12.23 */
+            if (lvl.bus_arbiter_ports > 0)   /* (1.12.259): a bus level's arbiter */
+                xml << "      <param name=\"bus_arbiter_ports\" value=\"" << lvl.bus_arbiter_ports << "\"/>\n";
             if (lvl.link_kind == 1 && lvl.tsv_vdd > 0.0)   /* the TSV interface supply */
                 xml << "      <param name=\"tsv_vdd\" value=\"" << lvl.tsv_vdd << "\"/>\n";
             if (lvl.link_activity >= 0.0)   /* measured wire activity */

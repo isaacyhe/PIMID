@@ -129,6 +129,7 @@ BusArbiter::arbitrate_bus()
             outvc = vc_allocate(outport, inport, invc);
         }
 
+        if (m_updown) m_round_robin_invc[inport] = (invc + 1) % m_num_vcs;   // (1.12.259): as the tree's routers
         // Remove flit from input VC
         flit *t_flit = input_unit->getTopFlit(invc);
 
@@ -177,7 +178,14 @@ BusArbiter::send_allowed(int inport, int invc, int outport, int outvc)
 
     auto output_unit = getOutputUnit(outport);
     if (!has_outvc) {
-        if (output_unit->has_free_vc(vnet)) {
+        if (m_updown) {   // (1.12.259): a free VC of the class the hop needs
+            int lo, hi;
+            getClassRange(vnet, targetClass(inport, invc, outport), lo, hi);
+            if (output_unit->has_free_vc_in_range(lo, hi)) {
+                has_outvc = true;
+                has_credit = true;
+            }
+        } else if (output_unit->has_free_vc(vnet)) {
             has_outvc = true;
             has_credit = true;
         }
@@ -209,8 +217,13 @@ BusArbiter::send_allowed(int inport, int invc, int outport, int outvc)
 int
 BusArbiter::vc_allocate(int outport, int inport, int invc)
 {
-    int outvc =
-        getOutputUnit(outport)->select_free_vc(get_vnet(invc));
+    int outvc;
+    if (m_updown) {   // (1.12.259): from the class the hop needs (send_allowed found one free)
+        int lo, hi;
+        getClassRange(get_vnet(invc), targetClass(inport, invc, outport), lo, hi);
+        outvc = getOutputUnit(outport)->select_free_vc_in_range(lo, hi);
+    } else
+        outvc = getOutputUnit(outport)->select_free_vc(get_vnet(invc));
     assert(outvc != -1);
     getInputUnit(inport)->grant_outvc(invc, outvc);
     return outvc;
@@ -240,6 +253,53 @@ BusArbiter::check_for_wakeup()
             }
         }
     }
+}
+
+/* (1.12.259): the tree's up/down VC classes, as TreeRouter's: within a vnet the lower half of the VCs is the UP
+ * class, the upper half the DOWN class (one shared class with one VC per vnet). */
+bool
+BusArbiter::isDownOutport(int outport) const
+{
+    PortDirection d = const_cast<BusArbiter*>(this)->getOutportDirection(outport);
+    return d == "Down";
+}
+
+int
+BusArbiter::vcClassOf(int vc) const
+{
+    int offset = vc % m_vc_per_vnet;
+    int half = m_vc_per_vnet / 2;
+    if (half <= 0) half = 1;
+    return (offset < half) ? 0 : 1;
+}
+
+void
+BusArbiter::getClassRange(int vnet, int vc_class, int &lo, int &hi) const
+{
+    int base = vnet * m_vc_per_vnet;
+    int half = m_vc_per_vnet / 2;
+    if (half <= 0) half = 1;
+    if (m_vc_per_vnet <= 1) {
+        lo = base;
+        hi = base + m_vc_per_vnet;
+        return;
+    }
+    if (vc_class == 0) {
+        lo = base;
+        hi = base + half;
+    } else {
+        lo = base + half;
+        hi = base + m_vc_per_vnet;
+    }
+}
+
+int
+BusArbiter::targetClass(int inport, int invc, int outport) const
+{
+    if (isDownOutport(outport)) return 1;
+    auto input_unit = const_cast<BusArbiter*>(this)->getInputUnit(inport);
+    if (input_unit->get_direction() == "Local") return 0;
+    return vcClassOf(invc);
 }
 
 void

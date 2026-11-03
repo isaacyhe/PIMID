@@ -220,6 +220,7 @@ struct GlobSimInfo {
         uint32_t localPathNiCycles = 6;  // (1.12.258): a message's network interfaces on that path (the analytical model)
         uint32_t localPathRouterCycles = 1;   // (1.12.258): a router stage on that path
         uint32_t localPathLinkCycles = 1;     // (1.12.258): a link between two routers on that path
+        uint32_t localPathShared = 0;    // (1.12.259): garnet_bus: the group's bus carries requests and replies on one medium
         uint32_t channelsPerSystem = 1;  // >1 for multi-device (L6)
         // TEMP (pre-arXiv): number of independent DRAM channels that serve memory
         // requests in PARALLEL (HBM3=16, HBM2=8, DDR/LPDDR/GDDR=1). Used as the

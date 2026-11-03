@@ -180,6 +180,8 @@ public:
          * sqrt(link_span_area_mm2 / link_parent_regions) (the array the routers
          * sit over; the processor's area when 0), the regions being the tiles. */
         int link_span_processor = 0;
+        /* (1.12.259): > 1 = a bus level whose bus arbitrates this many requesters (memory.local_path garnet_bus) */
+        int bus_arbiter_ports = 0;
         /* the router's pipeline depth in cycles (the router latency the timing model ran); its
          * (stages - 1) x input ports x flit bits pipeline registers clock the router tree */
         int router_stages = 1;

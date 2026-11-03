@@ -55,6 +55,8 @@ class NoC :public Component {
 	 * upstream path) or link_tsv_flit (a CACTI-3DD TSV x flit bits). A view
 	 * only: link_wire and link_tsv are the owners. */
 	Component * link_bus;
+	Arbiter * bus_arb = nullptr;   /* PIMID (1.12.259): a bus level's arbiter (bus_arbiter_ports > 1), one per bus */
+	bool bus_arb_exist = false;
 	interconnect * link_wire;
 	TSV * link_tsv;
 	Component link_tsv_flit;
