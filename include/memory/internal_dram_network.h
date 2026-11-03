@@ -547,6 +547,11 @@ public:
      * each level's router charges, the same count the detailed network's routers run.
      */
     void setRouterPipeStages(int stages);
+    /* (1.12.235): what a router at a level costs in the tier walk -- its pipe stages, one fewer at a single-hop
+     * level with router_bypass on (as getTransferLatencyNs charges them), and the clock they tick at (GHz).
+     * The detailed DRAM tree takes its routers' pipe time from these, so both models charge the same. */
+    int levelRouterStages(int level) const;
+    double levelClockGHz(int level) const;
 
     /**
      * @brief Get the simulation model for a specific hierarchy level

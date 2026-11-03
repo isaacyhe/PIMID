@@ -2465,6 +2465,22 @@ void InternalDRAMNetwork::setRouterPipeStages(int stages) {
     for (int i = 0; i < NUM_HIERARCHY_LEVELS; ++i) network_configs_[i].router_latency = stages;
 }
 
+/* (1.12.235): see the header. Kept to the rule getTransferLatencyNs applies per traversal. */
+int InternalDRAMNetwork::levelRouterStages(int level) const {
+    if (level < 0 || level >= NUM_HIERARCHY_LEVELS) return 1;
+    const InternalNetworkLink& link = network_configs_[level];
+    int per_hop_router = std::max(1, link.router_latency);
+    if (avgHops(link.topology, link.num_nodes) <= 1.0 && link.router_bypass && per_hop_router > 1)
+        per_hop_router = std::max(1, per_hop_router - 1);
+    return per_hop_router;
+}
+
+double InternalDRAMNetwork::levelClockGHz(int level) const {
+    if (level < 0 || level >= NUM_HIERARCHY_LEVELS) return 1.0;
+    const double f = network_configs_[level].frequency_GHz;
+    return f > 0.0 ? f : 1.0;
+}
+
 void InternalDRAMNetwork::overrideBridgeConfig(int boundary, int router_latency,
                                                 int router_pipeline, int router_bypass,
                                                 int virtual_networks,

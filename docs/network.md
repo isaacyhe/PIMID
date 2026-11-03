@@ -361,9 +361,25 @@ spends in it (Garnet's router latency, `Router::get_pipe_stages()`).
   DRAM tree, `H_TREE`, `MESH_2D` and the rest, and a `CUSTOM` file), the
   per-hop router term of the analytical model, and the router stages the
   power model prices. The analytical DRAM hierarchy charges the same count at
-  every level, so the two models agree level by level.
+  every level.
+- A stage lasts one cycle of the router's own clock: its level's
+  `noc.levels.<level>.frequency_ghz`, else the memory technology's clock. With
+  `router_bypass` on (the default), a router at a single-hop level (a bus or
+  crossbar, or a single node) takes one stage fewer when it has more than one.
+  The analytical hierarchy has always charged a router this way. The detailed
+  network runs at the device clock, so the generated DRAM tree gives each
+  level's routers their stages times the device clock over the level's clock,
+  rounded up, and never less than one network cycle per stage. The two models
+  then charge a router the same time wherever the device clock is a whole
+  multiple of the level clock. Elsewhere the detailed network rounds up: by
+  less than one network cycle per router at a level slower than the device
+  clock, and to one network cycle per stage at a level faster than it.
 - Per level, a topology file can set a level's routers with a
-  `pipe <level> <stages>` line (below). The generated DRAM tree writes none.
+  `pipe <level> <stages>` line (below), in network cycles. The generated DRAM
+  tree writes one for each level whose routers come out at a number other than
+  `noc.router_pipe_stages` (none when every level is at least as fast as the
+  device clock and no stage is bypassed), and prints the levels it set. A
+  hand-written file runs as written: every stage one network cycle, no bypass.
 - `system.network.router_pipe_stages` (default 1) is the same setting for
   the host system network, which has no topology file.
 - `noc.router_latency` and `system.network.router_latency` are the old

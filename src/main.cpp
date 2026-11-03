@@ -3957,6 +3957,12 @@ struct UnifiedConfig {
     int htree_level_branch[7]    = {-1,-1,-1,-1,-1,-1,-1};  // 1.11: per-level census
     int htree_level_endpoints[7] = {-1,-1,-1,-1,-1,-1,-1};
     int htree_all_routers    = -1;   // including degenerate single-child pass-throughs
+    /* (1.12.235): the network cycles a router at each level (index = hierarchy level) spends in its pipe, as
+     * the tier walk charges it: its stages (one fewer at a single-hop level with router_bypass on) at the
+     * level's clock, in the clock the detailed network runs at. 0 = not computed. */
+    int htree_level_pipe_cycles[7] = {0, 0, 0, 0, 0, 0, 0};
+    int htree_level_pipe_stages[7] = {0, 0, 0, 0, 0, 0, 0};             // the tier walk's stages (after bypass)
+    double htree_level_clock_ghz[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};  // the level clock they tick at
     /* 1.12.18: ALL routers built at each level (branch and pass-through),
      * and the level of the ROOT router (router 0, the one with no parent).
      * A level's up-links number its routers, less the root if it sits there;
@@ -6709,6 +6715,30 @@ static bool dramHTreeBuilder(const std::string& tech,
             f << "rlevel " << nid(r) << " " << lvOf(r) << " "
               << ((fold.kids[(size_t)r] >= 2) ? 1 : 0) << "\n";
         }
+        /* (1.12.235): "pipe <level> <stages>" for each level whose routers spend a number of network cycles other
+         * than noc.router_pipe_stages in their pipe: their stages at the level's clock, with the tier walk's
+         * bypass (see computeHierarchyLatencies). A level no router is built at gets no line. */
+        {
+            bool atLevel[7] = {false, false, false, false, false, false, false};
+            for (int r = 0; r < tree.numRouters; ++r) {
+                if (nid(r) < 0) continue;
+                const int lv = lvOf(r);
+                if (lv >= 0 && lv <= 6) atLevel[lv] = true;
+            }
+            std::ostringstream said;
+            for (int lv = 0; lv <= 6; ++lv) {
+                const int c = config.htree_level_pipe_cycles[lv];
+                if (!atLevel[lv] || c < 1 || c == config.noc_router_latency) continue;
+                f << "pipe " << lv << " " << c << "\n";
+                said << " level " << lv << ": " << config.htree_level_pipe_stages[lv] << " stage(s) at "
+                     << config.htree_level_clock_ghz[lv] << " GHz = " << c << ";";
+            }
+            if (!said.str().empty())
+                std::cout << "  [NoC] router pipe in network cycles at " << deviceCycleClockMHz(config) / 1000.0
+                          << " GHz (stages at the level clock, with the tier walk's bypass):" << said.str()
+                          << " every other level " << config.noc_router_latency << " (noc.router_pipe_stages)"
+                          << std::endl;
+        }
         /* (1.12.171): "rlinkw <router> <bits>", the width of the router's up-link to its parent (the level's tree
          * link width, the one the power model prices). The network serves one flit of this width per cycle on
          * the link and queues the packets behind it. */
@@ -8713,6 +8743,25 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                                       + "_" + std::to_string((long)getpid()) + ".topo";
                 std::string topo_path = "/tmp/pimid_" + topo_name;
                 registerGeneratedTopologyFile(topo_path);   // before the write: a partial file goes too
+                /* (1.12.235): a router stage lasts one cycle of its level's clock, and the detailed network
+                 * runs at the device clock: stages x (device clock / level clock), rounded up, and never
+                 * less than one network cycle per stage. The stages and the bypass rule are the tier
+                 * walk's (levelRouterStages), so the two models charge a router the same time wherever the
+                 * device clock is a whole multiple of the level clock. Elsewhere the detailed network rounds
+                 * up: by less than one network cycle per router at a level slower than the device clock, and
+                 * to one network cycle per stage at a level faster than it. */
+                {
+                    const double net_ghz = deviceCycleClockMHz(config) / 1000.0;
+                    for (int lv = 0; lv < 7; ++lv) {
+                        const int s = hierarchy->levelRouterStages(lv);
+                        const double ratio = net_ghz > 0.0 ? net_ghz / hierarchy->levelClockGHz(lv) : 1.0;
+                        long c = static_cast<long>(std::ceil(static_cast<double>(s) * ratio - 1e-9));
+                        if (c < s) c = s;
+                        config.htree_level_pipe_cycles[lv] = static_cast<int>(c);
+                        config.htree_level_pipe_stages[lv] = s;
+                        config.htree_level_clock_ghz[lv] = hierarchy->levelClockGHz(lv);
+                    }
+                }
                 if (dramHTreeBuilder(tech, topo_path, config)) {
                     config.noc_topology = "CUSTOM";
                     config.noc_topology_file = topo_path;

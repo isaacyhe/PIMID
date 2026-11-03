@@ -723,7 +723,7 @@ Valid level names: `subarray`, `bank`, `bank_group`, `chip`, `rank`, `channel`, 
 | `noc.levels.<level>.topology` | string | `""` | Override topology for this level. |
 | `noc.levels.<level>.router_latency` | - | - | Refused at load: router timing is pipeline stages (`noc.router_pipe_stages`; per level, the topology file's `pipe` line). |
 | `noc.levels.<level>.router_pipeline` | - | - | Refused at load, as `router_latency`. Its names (`full`, `reduced`, `simple`, `minimal` = 4, 3, 2, 1 stages) never reached a latency. |
-| `noc.levels.<level>.router_bypass` | bool | - | Enable router bypass. |
+| `noc.levels.<level>.router_bypass` | bool | true | A router at this level, when the level is single-hop (a bus or crossbar, or one node), takes one pipeline stage fewer when it has more than one. Both the analytical hierarchy and the generated DRAM tree of the detailed network apply it. |
 | `noc.levels.<level>.virtual_networks` | int | `-1` | Virtual networks. |
 | `noc.levels.<level>.virtual_channels_per_vn` | int | `-1` | VCs per virtual network. |
 | `noc.levels.<level>.input_buffer_depth` | int | `-1` | Input buffer depth of the routers at this level: the analytical DRAM hierarchy's, and on the detailed network the buffers per VC of the routers the tree (or a `CUSTOM` file's `rlevel` lines) puts at this level, as given. `-1` = the network's rule. |

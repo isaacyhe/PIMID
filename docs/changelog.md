@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.235 -- a router's pipeline stage lasts one cycle of its own level's clock in both network models, and router_bypass acts in both
+
+- **The problem.** The two network models agreed on a router's stage count but not on its time. The analytical hierarchy
+  charged a stage at the level's own clock, and with `router_bypass` on (the default) one stage fewer at a single-hop
+  level that has more than one. The detailed network charged every stage one cycle of the device clock and had no
+  bypass. So with a device clock faster than a level's clock, or with `noc.router_pipe_stages` of 2 or more, the same
+  router took a different time in the two models.
+- **The fix** (`src/main.cpp`, `src/memory/internal_dram_network.cpp/.h`).
+  - The generated DRAM tree gives each level's routers their stages times the device clock over the level's clock,
+    rounded up and never below one network cycle per stage, and writes it as the level's `pipe` line where it differs
+    from `noc.router_pipe_stages`. The level clock is the one the analytical hierarchy divides by. A run that writes
+    such lines prints them in one `[NoC] router pipe in network cycles` line.
+  - With `router_bypass` on, a router at a single-hop level takes one stage fewer in the detailed network when it has
+    more than one, as in the analytical model; both drop the same stage at the same levels.
+  - A hand-written topology file runs as written: every stage one network cycle, no bypass.
+  - docs/network.md describes the stage clock, the bypass and the rounding; docs/yaml_reference.md the
+    `noc.levels.<level>.router_bypass` row.
+- **Data impact.** None at the defaults: one stage per router and a device clock no faster than any level's clock (500
+  MHz in every shipped configuration), so no `pipe` line is written and no cell's timing changes. A configuration
+  changes when its device clock exceeds a level's clock (e.g. DDR4 at the bank-group level at 2.4 GHz: those routers
+  take 2 cycles) or when it sets `noc.router_pipe_stages` to 2 or more.
+- **Validation** (the previous release and this build on the same node; logs compared with tree paths masked). Every
+  cell of the 116-cell validation set exits 0 with the simulated time of the previous release, the 135 device
+  message-passing smoke cells are identical, the generated topology files at the corpus clock are byte-identical, and
+  the power checks report no flag. A single packet through five routers of a DDR4 bank tree at a 2.4 GHz device clock
+  gains exactly the two bank-group routers' extra cycle, which equals their analytical time; with two stages and bypass
+  on and off both models drop the same stage at the same levels.
+
 ## 1.12.234 -- the analytical network model treats a node that only passes flits along as a link, as the detailed model does
 
 - **The problem.** The analytical model's tier walk charged router stages at every node of the DRAM tree, including the
