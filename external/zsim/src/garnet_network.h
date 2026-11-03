@@ -1837,6 +1837,16 @@ public:
      * it -- the same links + 1 as the detailed path). Flits per packet are
      * the message at this network's flit width, as on the detailed path.
      * Lock-free: PE-MI threads call it concurrently. */
+    /* (1.12.247): one message on an SRAM/NVM element's local bus: a link crossing at `level`, no router, no packet */
+    uint32_t dataMsgBits() const { return stats_.data_msg_bits; }
+    uint32_t controlMsgBits() const { return stats_.control_msg_bits; }
+    void recordLocalBus(uint32_t srcEp, int level, bool ctrl) {
+        const uint64_t flits = flitsFor_(srcEp, ctrl);
+        __atomic_fetch_add(&stats_.link_traversals, flits, __ATOMIC_RELAXED);
+        if (level >= 0 && level < 7)
+            __atomic_fetch_add(&stats_.level_link_flit_traversals[level], flits, __ATOMIC_RELAXED);
+    }
+
     void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94 (H17): rung 7 = HOST_MC, no on-die router (not counted below)
                         bool ctrl = false,
                         uint32_t tsvDies = 0, bool stackLayout = false,   // 1.12.18: die boundaries this walk crossed

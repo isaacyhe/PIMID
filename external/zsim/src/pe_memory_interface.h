@@ -54,6 +54,23 @@ protected:
 
     // Connection mode link latency
     uint32_t localLinkLat_ = 0;  // additional PE<->mem hop for SEPARATE_ENDPOINTS
+    uint64_t busFree_ = 0;       // (1.12.247): the cycle the element's local bus is next free (SRAM/NVM)
+
+    /* (1.12.247): an access inside the element's slot crosses its local bus twice, the request and the reply, each a
+     * link of localBusCycles plus its flits beyond the first at the bus width; the element's controller puts them on
+     * the bus in turn, so a transfer waits for the one before it. Both are a link crossing at the group tier (2). */
+    uint32_t localBusCost(const MemReq& req) {
+        const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
+        GarnetNetwork* gn = zinfo->garnetNetwork;
+        const uint32_t dataB = gn ? gn->dataMsgBits() : 576u, ctrlB = gn ? gn->controlMsgBits() : 64u;
+        const uint32_t w = std::max(1u, zinfo->hierarchy.localBusWidthBits);
+        const uint32_t fReq = std::max(1u, ((wr ? dataB : ctrlB) + w - 1) / w);
+        const uint32_t fRsp = std::max(1u, ((wr ? ctrlB : dataB) + w - 1) / w);
+        const uint64_t start = std::max<uint64_t>(req.cycle, busFree_);
+        busFree_ = start + fReq + fRsp;
+        if (gn) { gn->recordLocalBus(mcId_, 2, !wr); gn->recordLocalBus(mcId_, 2, wr); }
+        return (uint32_t)(start - req.cycle) + 2 * zinfo->hierarchy.localBusCycles + (fReq - 1) + (fRsp - 1);
+    }
 
     // Phase tracking for Garnet batch processing
     uint64_t batchLastPhase_ = 0;
@@ -283,17 +300,21 @@ public:
                 peHomes.push_back(off < 4096
                     ? (uint64_t)zinfo->hierarchy.peMemMapData[off] : (uint64_t)p);
             }
+            const uint32_t div = std::max(1u, zinfo->hierarchy.treeUnitDiv);   // (1.12.247): an SRAM/NVM group
+            if (div > 1) for (auto& h : peHomes) h /= div;
             const int W[4] = {1, 1, 1, 1}, Lt[4] = {1, 1, 1, 1};  // structure only
             pimid_htree::InDieFabric fab;   // 1.11.103 (ruling 9): the grid the simulator's census built
             fab.kind = (int)zinfo->hierarchy.indieFabric;
             fab.gridW = (int)zinfo->hierarchy.indieGridW;
             fab.gridH = (int)zinfo->hierarchy.indieGridH;
             t = pimid_htree::buildSparseHTree(
-                peHomes, (int)zinfo->hierarchy.placementLevel,
+                peHomes, zinfo->hierarchy.treeLeafLevel >= 0 ? (int)zinfo->hierarchy.treeLeafLevel : (int)zinfo->hierarchy.placementLevel,
                 (int)zinfo->hierarchy.dramChannels,
                 (int)zinfo->hierarchy.subarraysPerBank, (int)zinfo->hierarchy.banksPerBG,
                 (int)zinfo->hierarchy.bgPerChip, (int)zinfo->hierarchy.chipsPerRank,
-                (int)zinfo->hierarchy.ranksPerChannel, W, Lt, fab.kind > 0 ? &fab : nullptr);
+                (int)zinfo->hierarchy.ranksPerChannel, W, Lt, fab.kind > 0 ? &fab : nullptr,
+                (int)zinfo->hierarchy.treeTopLevel);
+            t.unitDiv = div;
             /* 1.12.18: the stated stack layout, as main.cpp placed it */
             pimid_htree::assignStackDies(t, (int)zinfo->hierarchy.stackChannelsPerDie);
             /* (1.12.234): the nodes main.cpp's plan builds as links */
@@ -814,11 +835,15 @@ public:
         // level's resolution. So do not special-case "local"; route all traffic
         // through the network path below. (isLocal is kept only for the analytical
         // NoC, which has no packets and must fall back to a distance model.)
-        bool wantLocal = zinfo->garnetNetwork && zinfo->garnetNetwork->isCycleAccurate()
+        /* (1.12.247): on an SRAM/NVM die an access inside the element's slot crosses the element's local bus, in both
+         * network models; only an access to another element's slot travels the fabric. */
+        bool wantLocal = zinfo->garnetNetwork && zinfo->garnetNetwork->isCycleAccurate() &&
+                         !zinfo->hierarchy.localBusCycles
                          ? false : isLocal(targetUnit);
         if (wantLocal) {
             bool byReplay = false;
             uint32_t lat = localAccessLatency(req, &byReplay) + localLinkLat_;
+            if (zinfo->hierarchy.localBusCycles) lat += localBusCost(req);   // (1.12.247)
 
             // DRAM channel bandwidth bottleneck (accuracy fix): even a "local"
             // bank access consumes the shared DRAM channel's DQ bandwidth. In
@@ -2141,7 +2166,7 @@ protected:
     void hostTarget(Address lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row) const {
         const uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0) ? zinfo->hierarchy.pagesPerUnit : 1;
         const uint32_t page = (uint32_t)(lineAddr >> 6);
-        unit = (totalUnits_ > 0) ? (page / ppu) % totalUnits_ : 0;
+        unit = (totalUnits_ > 0) ? blockUnitOf(page, ppu, totalUnits_) : 0;
         const uint64_t byteAddr = (uint64_t)lineAddr << 6;
         bool placed = false;
         if (zinfo->stackRanges && byteAddr >= zinfo->stackMin && byteAddr < zinfo->stackMax) {
@@ -2149,7 +2174,7 @@ protected:
                 const uint64_t lo = zinfo->stackLo[i];
                 if (byteAddr < lo || byteAddr >= zinfo->stackHi[i]) continue;
                 if (zinfo->stackOwner[i] > 0 && zinfo->stackCovN[i] > 0) {
-                    unit = zinfo->stackCovLo[i] + (uint32_t)(((byteAddr - lo) >> 12) / ppu % zinfo->stackCovN[i]);
+                    unit = zinfo->stackCovLo[i] + blockUnitOf((byteAddr - lo) >> 12, ppu, zinfo->stackCovN[i]);
                     placed = true;
                 }
                 break;
@@ -2187,6 +2212,12 @@ protected:
     }
   protected:
 
+    /* (1.12.247): THE rule that puts pages on the device's units, in one place. The k-th page of a region (an element's
+     * pages in the order it first touches them, a registered stack's pages, or the address map's pages) goes to the
+     * region's unit (k / ppu) mod n: ppu pages (one unit's capacity) to a unit, then the next unit -- contiguous
+     * blocks of pages per unit, not lines interleaved over the units. */
+    static uint32_t blockUnitOf(uint64_t k, uint32_t ppu, uint32_t n) { return (uint32_t)((k / ppu) % n); }
+
     uint32_t addrToUnit(Address lineAddr) const {
         // Device-local CONTIGUOUS block mapping (point-1 fix): each unit owns a
         // contiguous address range (pagesPerUnit 4KB-pages, sized by subarray
@@ -2197,7 +2228,7 @@ protected:
         uint32_t page = (uint32_t)(lineAddr >> 6);
         uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0)
                        ? zinfo->hierarchy.pagesPerUnit : 1;
-        uint32_t unit = (page / ppu) % totalUnits_;
+        uint32_t unit = blockUnitOf(page, ppu, totalUnits_);
         // 1.12.17: a thread's stack lives in its PE's own memory. A registered
         // stack (zsim.h stackLo) maps into its owner's coverage; the owner is the
         // first PE-MI that touches it below the thread's initial stack pointer.
@@ -2219,8 +2250,7 @@ protected:
                     own = zinfo->stackOwner[i];
                 }
                 if (own > 0)
-                    return zinfo->stackCovLo[i] +
-                           (uint32_t)(((byteAddr - lo) >> 12) / ppu % zinfo->stackCovN[i]);
+                    return zinfo->stackCovLo[i] + blockUnitOf((byteAddr - lo) >> 12, ppu, zinfo->stackCovN[i]);
                 break;
             }
         }
@@ -2297,7 +2327,7 @@ protected:
                 if (k == page + 1) { *out = ftWait(t.unit[h]); return true; }
                 continue;
             }
-            const uint64_t i = (ftSeq_.fetch_add(1, std::memory_order_relaxed) / ppu) % covN;
+            const uint64_t i = blockUnitOf(ftSeq_.fetch_add(1, std::memory_order_relaxed), ppu, covN);
             const uint32_t u = nonContiguous_ ? coverageSet_[i] : coverageStart_ + (uint32_t)i;
             t.unit[h].store(u + 1, std::memory_order_release);
             roiInc(profFtPages_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates

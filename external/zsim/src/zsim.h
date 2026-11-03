@@ -209,6 +209,11 @@ struct GlobSimInfo {
         uint32_t bgPerChip = 4;
         uint32_t chipsPerRank = 8;
         uint32_t ranksPerChannel = 1;    // >1 for multi-rank (L5)
+        uint32_t treeTopLevel = 6;       // (1.12.247): the tree root's tier (3: the die of an SRAM/NVM device)
+        int32_t  treeLeafLevel = -1;     // (1.12.247): the tree's leaf tier when not the placement (2: SRAM/NVM groups)
+        uint32_t treeUnitDiv = 1;        // (1.12.247): placement units per tree leaf
+        uint32_t localBusCycles = 0;     // (1.12.247): one crossing of an SRAM/NVM element's local bus (0 = none)
+        uint32_t localBusWidthBits = 0;  // (1.12.247): that bus's width
         uint32_t channelsPerSystem = 1;  // >1 for multi-device (L6)
         // TEMP (pre-arXiv): number of independent DRAM channels that serve memory
         // requests in PARALLEL (HBM3=16, HBM2=8, DDR/LPDDR/GDDR=1). Used as the

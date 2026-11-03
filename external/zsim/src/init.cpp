@@ -680,6 +680,12 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.bgPerChip = config.get<uint32_t>("sys.hierarchy.bgPerChip", 4);
         zinfo->hierarchy.chipsPerRank = config.get<uint32_t>("sys.hierarchy.chipsPerRank", 8);
         zinfo->hierarchy.ranksPerChannel = config.get<uint32_t>("sys.hierarchy.ranksPerChannel", 1);
+        zinfo->hierarchy.treeTopLevel = config.get<uint32_t>("sys.hierarchy.treeTopLevel", 6);   // (1.12.247)
+        { const uint32_t v = config.get<uint32_t>("sys.hierarchy.treeLeafLevel", 999u);
+          zinfo->hierarchy.treeLeafLevel = (v == 999u) ? -1 : (int32_t)v; }
+        zinfo->hierarchy.treeUnitDiv = config.get<uint32_t>("sys.hierarchy.treeUnitDiv", 1);
+        zinfo->hierarchy.localBusCycles = config.get<uint32_t>("sys.hierarchy.localBusCycles", 0);
+        zinfo->hierarchy.localBusWidthBits = config.get<uint32_t>("sys.hierarchy.localBusWidthBits", 0);
         zinfo->hierarchy.channelsPerSystem = config.get<uint32_t>("sys.hierarchy.channelsPerSystem", 1);
         zinfo->hierarchy.dramChannels = config.get<uint32_t>("sys.hierarchy.dramChannels", 1);
         zinfo->hierarchy.stackChannelsPerDie = config.get<uint32_t>("sys.hierarchy.stackChannelsPerDie", 0);   // 1.12.18

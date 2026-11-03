@@ -109,7 +109,31 @@ credit-based flow control, deadlock-free routing.
   with a `buffers rtt` line. The same rule holds on every detailed fabric
   (see [Buffer depth](#buffer-depth)); an explicit `noc.buffers_per_vc`
   keeps that one depth on every link.
-- Flat topologies remain available for non-DRAM device memories: `MESH_2D`
+- **SRAM and NVM devices: local groups under the die ((1.12.247)).** At the
+  `BANK` placement an SRAM, PCM, ReRAM or STT-MRAM device with no flat
+  topology named is one die on which each processing element's interface and
+  the banks of its slot form one local group on a local bus, and the groups
+  hang on the die's router, the tree's root. The device has no bank-group,
+  rank, channel or system tier: `memory.organization` is refused on it, and so
+  is a placement at `BANK_GROUP`, `CHIP`, `RANK`, `CHANNEL` or `LOGIC_DIE`. An
+  access inside the element's slot crosses its local bus in both models: the
+  request and the reply each cost one device cycle plus their flits beyond
+  the first at the bus width, the element's controller puts them on the bus
+  in turn, and the bus is priced as a link at the group tier, with no router.
+  An access to another element's slot, and every message between elements,
+  crosses the die router. The local bus and the die links run at the device
+  clock and carry the bank's access width (the 512-bit line the array model
+  characterises the bank for); one crossing costs one device cycle. Both
+  models build the same tree, so the rules above hold on it: each group is a
+  link to the die router (one router in all), the die router is priced at
+  its port count, links run at full rate with 4 VCs per vnet, and the fabric
+  clock is the device clock. Until this release such a device ran a flat
+  `MESH_2D` with one router per bank (256 for the 256-bank devices), on which
+  an element's banks sat on different mesh nodes, and the analytical model
+  priced a different shape (every bank in one group, and rank and channel
+  tiers the device does not have). The `MAT` (`SUBBANK`) placement keeps the
+  flat fabric.
+- Flat topologies remain available for non-DRAM device memories, when named: `MESH_2D`
   (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts
   exactly this list, in any case, for every memory family, and refuses any

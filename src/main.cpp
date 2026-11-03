@@ -4009,6 +4009,11 @@ struct UnifiedConfig {
      * the link pricing reads both. -1 = no tree was built. */
     int htree_level_routers[7]   = {-1,-1,-1,-1,-1,-1,-1};
     int htree_root_level         = -1;
+    int htree_top_level          = 6;    // (1.12.247): the tree root's tier (6 system; 3 the die of an SRAM/NVM device)
+    int htree_leaf_level         = -1;   // (1.12.247): the tree's leaf tier when not the placement (2: SRAM/NVM local groups)
+    int htree_unit_div           = 1;    // (1.12.247): placement units per tree leaf (an SRAM/NVM group's banks)
+    int local_bus_cycles         = 0;    // (1.12.247): one crossing of an SRAM/NVM element's local bus, device cycles (0 = none)
+    int local_bus_width_bits     = 0;    // (1.12.247): that bus's width
     /* (1.12.143): the BUILT in-die fabric (ruling 9): its node links, the dies it
      * grids (one exit up-link each), and the mean node-link length in node
      * pitches (Manhattan, from the grid positions; a CROSSBAR spoke runs from
@@ -6300,6 +6305,7 @@ struct DramTreeLayer { double width_bits; double freq_ghz; };
 static bool dramTreeLayers(const std::string& tech, UnifiedConfig& config,
                            DramTreeLayer L[4], int& N, bool emit) {
 
+    bool nvm = false;   // (1.12.247): an SRAM/NVM die, one width and one clock on every layer
     if (tech == "DDR3") {
         L[0]={512,0.8}; L[1]={256,0.8}; L[2]={256,0.8}; L[3]={192,0.8}; N=1;
     } else if (tech == "DDR4") {
@@ -6323,6 +6329,11 @@ static bool dramTreeLayers(const std::string& tech, UnifiedConfig& config,
         L[0]={256,1.2}; L[1]={192,1.2}; L[2]={160,1.2}; L[3]={128,1.2}; N=8;
     } else if (tech == "HBM3") {
         L[0]={512,1.8}; L[1]={384,1.8}; L[2]={256,1.8}; L[3]={128,1.8}; N=16;
+    } else if ((tech == "SRAM" || tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM") && config.htree_leaf_level == 2) {
+        const double w = std::max(1, config.cache_line_size) * 8.0;
+        const double f = deviceCycleClockMHz(config) / 1000.0;
+        L[0]={w,f}; L[1]={w,f}; L[2]={w,f}; L[3]={w,f}; N=1;
+        nvm = true;
     } else {
         return false;  // not a modeled DRAM tech
     }
@@ -6346,7 +6357,10 @@ static bool dramTreeLayers(const std::string& tech, UnifiedConfig& config,
      * applySourcedLadder back-derived. When no ladder was adopted -- the
      * technology did not reconcile with its preset, so its ladder is not
      * tool-sourced -- the table stands, and that is a real fallback. */
-    if (config.sourced_ladder_valid) {
+    if (nvm) {
+        if (emit) std::cout << "  [htree] Garnet topology of the " << tech << " die: every layer " << L[0].width_bits
+                            << " bits (the bank's access width) at the " << L[0].freq_ghz * 1000.0 << " MHz device clock\n";
+    } else if (config.sourced_ladder_valid) {
         /* 1.11.60 (ONE FABRIC, user-approved design; corrects round-4 B001).
          *
          * The four topology layers are ANCHORED AT THE CHANNEL and measured
@@ -6598,6 +6612,7 @@ static bool dramHTreeBuilder(const std::string& tech,
             home = (uint64_t)config.pe_mem_map[pe].mem_org_ids[0];
         peHomes.push_back(home);
     }
+    if (config.htree_unit_div > 1) for (auto& h : peHomes) h /= (uint64_t)config.htree_unit_div;   // (1.12.247): the group
     pimid_htree::InDieFabric fab;   // 1.11.103 (ruling 9)
     if (!config.indie_fabric.empty()) {
         fab.kind = (config.indie_fabric == "MESH_2D") ? 1 : (config.indie_fabric == "RING") ? 2 : 3;
@@ -6612,11 +6627,11 @@ static bool dramHTreeBuilder(const std::string& tech,
         }
     }
     pimid_htree::SparseHTree tree = pimid_htree::buildSparseHTree(
-        peHomes, pe_level, N,
+        peHomes, config.htree_leaf_level >= 0 ? config.htree_leaf_level : pe_level, N,
         config.subarrays_per_bank, config.hierarchy_banks_per_bg,
         config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
         config.hierarchy_ranks_per_channel, layer_w, layer_lat,
-        config.indie_fabric.empty() ? nullptr : &fab);
+        config.indie_fabric.empty() ? nullptr : &fab, config.htree_top_level);
     pimid_htree::assignStackDies(tree, stackChannelsPerDie(config, true));   // 1.12.18 (TSV layout)
     /* (1.12.236): a link's fixed latency is the tier walk's for the level of the router it enters going up -- an
      * endpoint's link its router's level, a router's up-link its parent's level -- in fabric cycles. */
@@ -6645,7 +6660,7 @@ static bool dramHTreeBuilder(const std::string& tech,
      * memory is priced by nothing, or by something twice. */
     {
         long covered = tree.coveredOrgs();
-        long expected = (long)config.total_mem_orgs;
+        long expected = (long)config.total_mem_orgs / std::max(1, config.htree_unit_div);
         if (expected > 0 && covered != expected) {
             std::cerr << "[htree] FATAL: the placement tree does not cover the "
                       << "configured memory. It accounts for " << covered
@@ -6659,7 +6674,7 @@ static bool dramHTreeBuilder(const std::string& tech,
         double lBits[4], lGHz[4];
         for (int i = 0; i < 4; ++i) { lBits[i] = L[i].width_bits; lGHz[i] = L[i].freq_ghz; }
         fold = planSinglePathLinks(tree, lBits, lGHz, config.noc_single_path_as_link);
-        censusSparseTree(tree, config, covered, pe_level, &fold.asLink);
+        censusSparseTree(tree, config, covered, config.htree_leaf_level >= 0 ? config.htree_leaf_level : pe_level, &fold.asLink);
     }
     {   /* (1.12.231): what the tree's two-attachment nodes are built as */
         static const char* kLv[7] = { "subarray", "bank", "bank group", "chip", "rank", "channel", "system" };
@@ -6848,6 +6863,7 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
             home = (uint64_t)config.pe_mem_map[pe].mem_org_ids[0];
         peHomes.push_back(home);
     }
+    if (config.htree_unit_div > 1) for (auto& h : peHomes) h /= (uint64_t)config.htree_unit_div;   // (1.12.247): the group
     /* 1.11.97 (review H20): the tier widths the detailed path would build, from
      * the same channel-anchored projection of the sourced ladder. */
     {
@@ -6863,6 +6879,8 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
             for (int tier = 0; tier <= chanL - 3; ++tier) { const int r = rungOfTreeTier(tier);
                 if (config.sourced_ladder_valid && config.sourced_ladder_w[r] > 0 && config.sourced_ladder_bw[r] > 0.0 && (best_bw < 0.0 || config.sourced_ladder_bw[r] < best_bw)) { best_bw = config.sourced_ladder_bw[r]; best_w = config.sourced_ladder_w[r]; } }
             if (best_w > 0) Lw[0] = best_w; }
+        if (config.htree_top_level != 6)   // (1.12.247): the SRAM/NVM die carries the bank's access width on every layer
+            for (int li = 0; li < 4; ++li) Lw[li] = std::max(1, config.cache_line_size) * 8;
         for (int t = 0; t < 7; ++t) { const int li = pimid_htree::layerForLevel(t, chanL); config.htree_tier_width_bits[t] = (li >= 0 && li < 4) ? Lw[li] : 0; }
     }
     const int ones[4] = {1, 1, 1, 1};
@@ -6872,14 +6890,14 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
         fab.gridW = config.indie_grid_w; fab.gridH = config.indie_grid_h;
     }
     pimid_htree::SparseHTree tree = pimid_htree::buildSparseHTree(
-        peHomes, pe_level, N,
+        peHomes, config.htree_leaf_level >= 0 ? config.htree_leaf_level : pe_level, N,
         config.subarrays_per_bank, config.hierarchy_banks_per_bg,
         config.hierarchy_bg_per_chip, config.hierarchy_chips_per_rank,
         config.hierarchy_ranks_per_channel, ones, ones,
-        config.indie_fabric.empty() ? nullptr : &fab);
+        config.indie_fabric.empty() ? nullptr : &fab, config.htree_top_level);
     pimid_htree::assignStackDies(tree, stackChannelsPerDie(config, true));   // 1.12.18 (TSV layout)
     const long covered = tree.coveredOrgs();
-    const long expected = (long)config.total_mem_orgs;
+    const long expected = (long)config.total_mem_orgs / std::max(1, config.htree_unit_div);
     if (expected > 0 && covered != expected) {
         std::cerr << "[htree] FATAL: the placement tree does not cover the configured memory (analytical census). "
                      "It accounts for " << covered << " organisations at the placement level; the configuration describes "
@@ -6899,7 +6917,7 @@ static bool analyticalTreeCensus(const std::string& tech, UnifiedConfig& config)
         }
     }
     /* (1.12.234): and the census prices them as what is built: links, not routers */
-    censusSparseTree(tree, config, covered, pe_level, fold.asLink.empty() ? nullptr : &fold.asLink);
+    censusSparseTree(tree, config, covered, config.htree_leaf_level >= 0 ? config.htree_leaf_level : pe_level, fold.asLink.empty() ? nullptr : &fold.asLink);
     return true;
 }
 
@@ -7533,6 +7551,24 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     }
     else if (tech == "SRAM" || tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM") {
         banks_per_bg = config.num_banks; bg_per_chip = 1; chips_per_rank = 1;
+        /* (1.12.247): at the BANK placement an SRAM or NVM device is one die on which each processing element's
+         * interface and the banks of its slot form one local group on a local bus; the groups hang on the die. The
+         * tiers that carry the groups here (banks per group, groups per die) are those slots, nothing more. */
+        if (config.pe_hierarchy_level == 1) {
+            const int nb = std::max(1, config.num_banks), ne = std::max(1, config.num_pes);
+            const int ports = std::max(1, config.ports_per_bank);
+            const int ppm = config.pes_per_mc_user_set ? std::max(1, config.pes_per_mc)
+                                                       : std::max(1, (ne + nb * ports - 1) / (nb * ports));
+            const int mis = (ne + ppm - 1) / ppm;   // the elements' interfaces, one slot each
+            if (mis <= nb && nb % mis == 0)      { banks_per_bg = nb / mis; bg_per_chip = mis; }
+            else if (mis > nb && mis % nb == 0)  { banks_per_bg = 1;        bg_per_chip = nb;  }
+            else {
+                std::cerr << "[config] FATAL: " << mis << " element interface(s) cannot share the " << nb << " banks of the "
+                          << tech << " device evenly; each interface and the banks of its slot form one local group, so "
+                             "the interfaces must divide the banks (or the banks the interfaces)." << std::endl;
+                std::exit(2);
+            }
+        }
     }
     /* 1.11.101 (step 2): the chips-per-rank column from the part record --
      * the DDR family's channel width over the device width (DDR5: 32-bit
@@ -7602,6 +7638,13 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
     // Optional YAML override of the per-tech JEDEC defaults (bank-groups/chip and
     // banks/bank-group are real params): memory.organization.{bank_groups,
     // banks_per_group}. 0 = keep the JEDEC default set above.
+    if ((config.bg_per_chip_override > 0 || config.banks_per_bg_override > 0) &&
+        (tech == "SRAM" || tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM")) {
+        std::cerr << "[config] FATAL: memory.organization.{bank_groups, banks_per_group} name DRAM tiers; the " << tech
+                  << " device has no bank groups: each element's interface and the banks of its slot form one local "
+                     "group. Remove the key." << std::endl;   // (1.12.247)
+        std::exit(2);
+    }
     if (config.bg_per_chip_override > 0)  bg_per_chip  = config.bg_per_chip_override;
     if (config.banks_per_bg_override > 0) banks_per_bg = config.banks_per_bg_override;
 
@@ -8095,6 +8138,43 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
 
     /* (1.12.230): every level's router charges the same pipeline stages as the detailed network's routers
      * (noc.router_pipe_stages); there is no per-level router setting in the YAML. */
+    /* (1.12.247): an SRAM or NVM device is one die. Its placement tiers are the mat (SRAM subbank) and the bank; above
+     * the bank there is only each element's local group and the die. At the BANK placement the local bus of a group
+     * (level 2) and the die's links (level 3) run in the device clock domain (the arrays report latencies, not a bus
+     * clock, and the fabric between them is the device's logic), carry the bank's access width (the width the array
+     * model characterises the bank for), and one crossing costs one device cycle (a repeated wire across the die is
+     * shorter than one cycle); a bank adds no link of its own (it sits on its group's bus). There is no rank, channel
+     * or system tier. noc.levels still wins. */
+    if (!ladder_is_dram) {
+        if (config.pe_hierarchy_level >= 2 && config.pe_hierarchy_level <= 6) {
+            std::cerr << "[config] FATAL: pim.placement.level " << config.placement_level << " names a tier the " << tech
+                      << " device does not have: it is one die whose elements each own a local group of banks; place "
+                         "the elements at the BANK (or the " << (tech == "SRAM" ? "SUBBANK" : "MAT") << ")." << std::endl;
+            std::exit(2);
+        }
+        if (config.pe_hierarchy_level == 1) {
+            const double dev_ghz = deviceCycleClockMHz(config) / 1000.0;
+            const int port_w = std::max(1, config.cache_line_size) * 8;
+            const double port_bw = port_w / 8.0 * dev_ghz;
+            int w7[7] = {0, port_w, port_w, port_w, 0, 0, 0};
+            double bw7[7] = {0.0, port_bw, port_bw, port_bw, 0.0, 0.0, 0.0};
+            hierarchy->applySourcedLadder(w7, bw7);
+            for (int lv = 1; lv <= 6; ++lv)
+                hierarchy->overrideLevelConfig(lv, -1, -1.0, (lv == 2 || lv == 3) ? 1 : 0, "", -1, -1, -1, 0, 0, 0, 0);
+            hierarchy->setTopLevelNodeCounts(1, 1);
+            config.htree_top_level = 3;
+            config.htree_leaf_level = 2;
+            config.htree_unit_div = std::max(1, banks_per_bg);
+            config.local_bus_width_bits = port_w;
+            std::cout << "  [hierarchy] " << tech << " device: " << (long)bg_per_chip * banks_per_bg << " banks, "
+                      << bg_per_chip << " local group(s) of an element interface and its " << banks_per_bg
+                      << " bank(s) on one local bus each, under the die (no bank group, rank, channel or system tier); "
+                         "the local bus and the die links at the " << deviceCycleClockMHz(config) << " MHz device clock, "
+                      << port_w << " bits wide (the bank's access width), one device cycle per crossing"
+                      << pimid::provLabel(" (DERIVED)") << std::endl;
+        }
+    }
+
     hierarchy->setRouterPipeStages(config.noc_router_latency);
 
     // Apply per-level link + router overrides from YAML
@@ -8567,7 +8647,14 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         // mesh/ring/crossbar the config may request (those are only meaningful for
         // the host-side network and for non-DRAM device memories like SRAM/NVM).
         // A user H_TREE/CUSTOM choice is left as-is.
-        if (is_dram) {
+        /* (1.12.247): an SRAM or NVM device at the BANK placement takes the same tree builder (detailed and analytical)
+         * unless a flat fabric is named: BUS, MESH_2D, RING, TORUS_2D, FAT_TREE or CROSSBAR stay what they are. */
+        const bool nvm_tree = !is_dram && config.hierarchy_enabled && config.htree_leaf_level == 2 &&
+            (tech == "SRAM" || tech == "STT_MRAM" || tech == "PCM" || tech == "RERAM") &&
+            (!config.noc_topology_user_set || config.noc_topology == "H_TREE");
+        if (nvm_tree) config.local_bus_cycles = 1;   // an access inside the slot crosses the group's local bus
+        else if (!is_dram) { config.htree_leaf_level = -1; config.htree_unit_div = 1; config.local_bus_width_bits = 0; }
+        if (is_dram || nvm_tree) {
             // -- ALWAYS query the datasheet aggregate BW + channel count for any
             //    DRAM tech, regardless of whether the user already chose H_TREE.
             //    These feed the detailed NoC model's channel-BW bottleneck cap
@@ -8577,7 +8664,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             double agg_mbs = 0.0;
             double per_chan_mbs = 0.0;
             int num_chan = 1;
-            try {
+            if (is_dram) try {
                 pimid::RamulatorWrapper bw_q("", tech);
                 applyDramKnobs(bw_q, config);   // 1.11.66
                 bw_q.initialize();
@@ -8790,7 +8877,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                 config.noc_cycle_accurate &&
                 (tech == "DDR3" || tech == "DDR4" || tech == "DDR5" ||
                  tech == "LPDDR5" || tech == "GDDR6" ||
-                 tech == "HBM2" || tech == "HBM3");
+                 tech == "HBM2" || tech == "HBM3" || nvm_tree);
             if (detailed_dram) {
                 // Filename carries the tech, PE count (topology widths depend on
                 // it via min(pes,N) concurrency) and PID, so concurrent runs and
@@ -8816,6 +8903,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                         double f = 0.0;
                         for (int lv = 0; lv <= 2; ++lv) {
                             if (lv == 2 && config.hierarchy_bg_per_chip <= 1) continue;   // no bank groups
+                            if (lv == 0 && config.htree_top_level != 6) continue;   // (1.12.247): an SRAM/NVM mat is inside its bank
                             f = std::max(f, hierarchy->levelClockGHz(lv));
                         }
                         fab_mhz = f * 1000.0;
@@ -8931,8 +9019,9 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             // already pick H_TREE/CUSTOM), to preserve any user link tuning.
             /* 1.11.97 (review C3): the analytical path takes the census of the fabric it prices. */
             if (!detailed_dram && config.hierarchy_enabled && config.htree_branch_routers < 0 &&
-                pimid::isDRAM(pimid::parseMemoryTechnology(tech))) {
+                (pimid::isDRAM(pimid::parseMemoryTechnology(tech)) || nvm_tree)) {
                 analyticalTreeCensus(tech, config);
+                if (nvm_tree) { config.noc_topology = "H_TREE"; config.noc_link_latency = 1; }
                 /* 1.11.97 (gate 1206B P2): the SAME fabric description as the
                  * detailed path -- 2 VCs per vnet (1 UP + 1 DOWN, the tree
                  * routing's floor) and 2-deep buffers unless the user names
@@ -9308,6 +9397,11 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     out << "        bgPerChip = " << config.hierarchy_bg_per_chip << ";\n";
     out << "        chipsPerRank = " << config.hierarchy_chips_per_rank << ";\n";
     out << "        ranksPerChannel = " << config.hierarchy_ranks_per_channel << ";\n";
+    if (config.htree_top_level != 6) out << "        treeTopLevel = " << config.htree_top_level << ";\n";   // (1.12.247)
+    if (config.htree_leaf_level >= 0) out << "        treeLeafLevel = " << config.htree_leaf_level << ";\n";
+    if (config.htree_unit_div > 1) out << "        treeUnitDiv = " << config.htree_unit_div << ";\n";
+    if (config.local_bus_cycles > 0) out << "        localBusCycles = " << config.local_bus_cycles << ";\n"
+                                         << "        localBusWidthBits = " << config.local_bus_width_bits << ";\n";
     // 1.11.57 (latent B031): a literal, because the field behind it never had
     // a writer. The plugin still receives the key it has always received.
     out << "        channelsPerSystem = 1;\n";

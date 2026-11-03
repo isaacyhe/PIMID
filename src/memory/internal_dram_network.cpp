@@ -78,11 +78,13 @@ std::string SwitchHierarchyConfig::levelName(int idx) const {
             default: return "Unknown";
         }
     } else if (!isDRAM(technology)) {
-        // NVM/SRAM: L0-L1 active, L2-L6 passthrough
+        // NVM/SRAM: one die -- the mat (SRAM subbank), the bank, each element's local group and the die; L4-L6 do not exist
         // 1.11.73: one tier below the bank per family -- SRAM subbank, NVM mat
         switch (idx) {
             case 0: return (technology == MemoryTechnology::SRAM) ? "Subbank" : "Mat";
             case 1: return "Bank";
+            case 2: return "LocalGroup";   // (1.12.247): an element and the banks of its slot on one local bus
+            case 3: return "Chip";         // (1.12.247): the die
             default: return "Unused";
         }
     } else {
@@ -322,6 +324,11 @@ void InternalDRAMNetwork::initialize(int num_subarrays_per_bank,
     network_configs_[4].num_nodes = 2;  // ranks per channel -- ASSUMED, see above
     network_configs_[5].num_nodes = 2;  // channels -- ASSUMED, see above
     network_configs_[6].num_nodes = 1;  // system root
+    if (!isDRAM(technology_)) {   // (1.12.247): an SRAM/NVM device is one die: no rank and no channel tier
+        network_configs_[4].num_nodes = 1;
+        network_configs_[5].num_nodes = 1;
+        top_level_nodes_set_ = true;
+    }
     if (!top_level_nodes_set_) {
         static bool announced_top_nodes = false;
         if (!announced_top_nodes) {

@@ -125,6 +125,8 @@ struct SparseHTree {
 
     // dims for endpointForUnit
     int peLevel = 1, SA = 1, BpBG = 1, BGpC = 1, CpR = 1, RpCh = 1;
+    int topLevel = 6;             // (1.12.247): the root's tier: 6 (system), or 3 (the die of an SRAM/NVM device)
+    int unitDiv = 1;              // (1.12.247): placement units per leaf organisation (an SRAM/NVM group's banks)
     std::map<std::string,int> routerOf;   // coord-prefix key -> router id
     std::map<int,int> abstractOf;         // router id -> abstract endpoint id (if it has empties)
     std::map<int,int> peOfLeaf;           // leaf router id -> PE index
@@ -209,10 +211,11 @@ struct SparseHTree {
     // abstract endpoint of the unit's deepest LIVE ancestor. -1 only if the map is
     // empty (no PEs). Both sides call THIS -> ids agree.
     int endpointForUnit(uint64_t unit) const {
+        if (unitDiv > 1) unit /= (uint64_t)unitDiv;   // (1.12.247): the unit's group
         std::vector<long> path = decompose(unit, peLevel, SA, BpBG, BGpC, CpR, RpCh);
         std::string key;
         int parent = 0;
-        for (size_t i = 0; i < path.size(); ++i) {
+        for (size_t i = (size_t)(6 - topLevel); i < path.size(); ++i) {   // (1.12.247): the tiers above the root are not built
             key += "/" + std::to_string(path[i]);
             auto it = routerOf.find(key);
             if (it == routerOf.end() && dieExitOf.count(parent)) {
@@ -360,8 +363,10 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                                     int peLevel, int N,
                                     int SA, int BpBG, int BGpC, int CpR, int RpCh,
                                     const int layerW[4], const int layerLat[4],
-                                    const InDieFabric* fab = nullptr) {
+                                    const InDieFabric* fab = nullptr, int topLevel = 6) {
     SparseHTree t;
+    if (topLevel < 1 || topLevel > 6) topLevel = 6;
+    t.topLevel = topLevel;
     t.peLevel = peLevel < 0 ? 0 : peLevel;
     t.SA = SA; t.BpBG = BpBG; t.BGpC = BGpC; t.CpR = CpR; t.RpCh = RpCh;
     t.routerOf[""] = 0;
@@ -371,7 +376,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
     const int chanLevel = channelBearingLevel(N, CpR);
     // per-router: (level, set of live child coords)
     std::map<int, std::pair<int, std::set<long>>> info;
-    info[0] = { 6, {} };                       // ROOT at level 6 (system)
+    info[0] = { topLevel, {} };                // ROOT at level 6 (system), or the die (1.12.247)
     /* 1.11.103: with an in-die fabric the tree stops at the chip (level 3);
      * the tiers below it are the die's grid, built after the PE paths. */
     const bool gridded = (fab && fab->kind > 0 && t.peLevel <= 2);
@@ -383,7 +388,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
         int Lp = (int)path.size();
         std::string key;
         int parent = 0;
-        for (int i = 0; i < Lp; ++i) {
+        for (int i = 6 - topLevel; i < Lp; ++i) {   // (1.12.247): the tiers above the root are not built
             if (gridded && info[parent].first <= 3) { peOfDie[parent].push_back({ p, path }); break; }   // the die holds the rest
             info[parent].second.insert(path[i]);      // parent now has this live child
             key += "/" + std::to_string(path[i]);

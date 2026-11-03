@@ -147,8 +147,8 @@ in-package logic die.
 | DDR4, DDR5 | `SUBARRAY -> BANK -> BANK_GROUP -> RANK` |
 | LPDDR5, GDDR6 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL` |
 | HBM2, HBM3 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL -> LOGIC_DIE` |
-| SRAM | `SUBBANK -> BANK` (CHIP is the configured device network) |
-| STT_MRAM, PCM, RERAM | `MAT -> BANK` (CHIP is the configured device network) |
+| SRAM | `SUBBANK -> BANK` (one die: at BANK each element and the banks of its slot are one local group under the die ((1.12.247)); there is no bank-group, chip, rank or channel tier to place at) |
+| STT_MRAM, PCM, RERAM | `MAT -> BANK` (as SRAM) |
 
 **Exactly one tier below the bank, per family (1.11.73).** The word for that
 tier is the family's own, and each family has only one:

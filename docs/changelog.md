@@ -6,6 +6,44 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.247 -- an SRAM or NVM device is one die of local groups, each element with the banks of its slot on one local bus, in both network models
+
+- **The problem.** With no topology named, an SRAM, PCM, ReRAM or STT-MRAM device's detailed network was a flat
+  `MESH_2D` with one router per bank (256 routers for a 256-bank device) at the device clock. An element's banks lay on
+  different mesh nodes, so every access crossed the mesh, and the mesh drew 0.51-0.58 W of a device of about 1.3 W
+  (0.02-0.04 W on PCM, whose logic is priced in the memory process). The analytical model priced a different shape:
+  every bank in one group, and rank and channel tiers (two of each) the device does not have, with placeholder latencies
+  at the tiers above the bank, which it printed as unused.
+- **The fix** (src/main.cpp; external/zsim: sparse_htree.h, pe_memory_interface.h, garnet_network.h, init.cpp, zsim.h;
+  src/memory/internal_dram_network.cpp). At the `BANK` placement such a device is one die: each element's interface and
+  the banks of its slot form one local group on a local bus, and the groups hang on the die's router, the tree's root.
+  There is no bank-group, rank, channel or system tier: `memory.organization` is refused on these devices, and so is a
+  placement at `BANK_GROUP`, `CHIP`, `RANK`, `CHANNEL` or `LOGIC_DIE`. An access inside the element's slot crosses its
+  local bus in both models: the request and the reply each cost one device cycle plus their flits beyond the first at
+  the bus width, the element's controller puts them on the bus in turn, and the bus is priced as a link at the group
+  tier, with no router. An access to another element's slot, and every message between elements, crosses the die router.
+  The local bus and the die links run at the device clock and carry the bank's access width (the 512-bit line the array
+  model characterises the bank for); one crossing costs one device cycle. Both models build the same tree, so the rules
+  of 1.12.231 to 1.12.236 hold on it: each group is a link to the die router, the one router there is, priced at its
+  port count; links run at full rate with 4 VCs per vnet; the fabric clock is the device clock. A flat topology named in
+  `noc.topology` is still built as that fabric and carries the traffic between groups, while an element's accesses to
+  its own slot take its local bus, its own path to its group's banks; the `MAT` (`SUBBANK`) placement keeps the flat
+  fabric. The rule that puts a region's pages on its units (contiguous blocks of one unit's capacity, in first-touch
+  order) is now one function; the mapping is unchanged.
+- **Effect** (16 elements at the bank of a 256-bank device, no topology named, smoke sizes). In message passing,
+  detailed run time falls 1.2-77% (bfs 5.8-77%, histogram 3.1-64%, stencil_2d 5.2-45%, gemv 10-22%, stream_triad
+  1.2-22%; RERAM, whose 3.82 us writes dominate, 1.2-10%); NoC power falls from 0.51-0.58 W to 0.23-0.27 W (PCM
+  0.021-0.035 W to 0.008-0.015 W), and device energy by 9.9-77%. With shared memory, the cells move -67.6% to +24.7%
+  (RERAM histogram +24.7%: its bank-wait cycles rise 1.29x). A named flat fabric routes as before (the same hops per
+  packet), but an element's accesses to its own slot now take its local bus: those cells move -9.4% to +35.3% (message
+  passing -2.7% to +0.2%; shared-memory RERAM gemv +35.3% and histogram +31.2%, with 1-7% fewer packets and 1.3-2.9x the
+  bank-wait cycles).
+- **Validation** (the release before and this build, logs compared with the tree paths masked). DRAM cells are
+  byte-identical: 115 device message-passing smoke cells (the other 20 of the 135 are SRAM and NVM cells), 11
+  co-simulation message-passing smoke cells, 40 host baselines, the 116-cell set and 30 bfs variants. The power checker
+  reports no flag and no internal-consistency failure over the SRAM and NVM logs; four cells run 8 times each give one
+  output per cell.
+
 ## 1.12.246 -- a flat fabric named on an SRAM or NVM device sends each access to the node of the unit it reads
 
 - **The problem.** With a flat `noc.topology` (`MESH_2D`, `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE` or `BUS`) on an
