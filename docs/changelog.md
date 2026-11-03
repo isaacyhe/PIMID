@@ -6,6 +6,39 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.237 -- thread-MPI prices each remote access at its own pair's measured latency, so a cell's run time no longer depends on its memory layout
+
+- **The problem.** Under thread-MPI with the detailed network, every remote PE access was priced at one epoch's mean
+  latency over all replayed messages, read at epoch k-2 of the access's own clock. The mean gave a near and a far pair
+  the same cost and every rank the same cost per access, so ranks running the same code could fall into step, inject in
+  bursts, and the lagged mean fed the high latency back; and a rank running ahead of the slowest one read an epoch that
+  was not yet replayed and fell to the static average. Which state a run settled in depended on where the guest's stack
+  lay (the same cell with its size argument zero-padded): on the 16-PE NVM and SRAM mesh cells (gemv, stream_triad) five
+  such copies spread by up to 58% of their mean (STT-MRAM gemv 3.21M to 5.45M cycles), with the same instructions,
+  accesses and messages in every copy.
+- **The fix** (external/zsim/src/pe_memory_interface.h, garnet_network.h; src/main.cpp). Thread-MPI now prices as the
+  shared-memory path does: each of an access's two messages at its own source-destination pair's measured latency of its
+  class. A per-epoch per-pair table (integer sums, folded at the barrier, order-free) gives each pair its mean over the
+  newest `noc.mpi_pair_window_epochs` wholly folded epochs (new key, default 8), so a burst stops pricing a pair once it
+  leaves the window, and a rank ahead of the others reads the latest measurement. A pair with no sample in the window
+  pays the ladder cost of its distance. The trace method's per-rank-process shared record log keeps the epoch mean;
+  `PIMID_MPI_ANALYTICAL_PRICING=1` is unchanged.
+- **Validation.**
+  - Five zero-padded copies of each of the eight NVM and SRAM mesh cells: coefficient of variation 0.12-0.73% (range at
+    most 2.0%; up to 24% and 58% before). DRAM-tree message-passing cells: 0.009-0.065%, as before. Repeated runs of one
+    copy give identical cycles (two cells, eight runs each).
+  - Unchanged: the 116-cell validation set and the 40 host baselines are byte-identical; the 30 bfs variants move by
+    -0.61% to +0.73%.
+  - At the sizes the figures use, the DRAM bank-placement stencil_2d and stream_triad cells (ten cells) stay within 0.2%
+    of the previous release, and the HBM3 bank bfs at 209,715 vertices within 0.01%.
+  - Window 4, 8 and 16 at those sizes: within 0.1% on HBM3 and 0.6% on STT-MRAM gemv, 3.3% on ReRAM stream_triad.
+  - Smoke-size runs of a few epochs move more (135 device message-passing cells: median +4.5%, up to +63%; 11
+    co-simulation cells: -10% to +8%): there the burst at the start of the region of interest stays in the window for
+    most of the run.
+- **Data impact.** Every thread-MPI device and co-simulation message-passing cell on the detailed network changes
+  timing; the NVM and SRAM mesh cells lose their dependence on memory layout. OpenMP, serial and host-only runs are
+  unchanged.
+
 ## 1.12.236 -- the detailed DRAM tree runs at its own fabric clock, with the analytical model's per-level link latencies
 
 - **The problem.** The generated DRAM tree's detailed network ran at the device clock (500 MHz in the shipped

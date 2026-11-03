@@ -1030,13 +1030,47 @@ public:
                     //  - OMP/non-MPI: live rolling EWMA (unchanged).
                     uint32_t garnetLat;
                     if (mpiThreadDetPricing()) {
-                        garnetLat = forceAnalyticalPricing()
-                            ? 0
-                            : epochFrozenNocLat(gn, sn, req.cycle, req.srcId);
-                        /* the epoch's mean over every replayed message: with each access
-                         * replaying one message of each class, 2 x the mean is the mean
-                         * control leg + the mean data leg (user ruling 2026-10-26: control messages) */
-                        legReq = legResp = garnetLat;
+                        if (forceAnalyticalPricing() || sn) {
+                            garnetLat = forceAnalyticalPricing()
+                                ? 0
+                                : epochFrozenNocLat(gn, sn, req.cycle, req.srcId);
+                            legReq = legResp = garnetLat;   /* the shared multi-process NoC keeps the epoch mean */
+                        } else {
+                            /* (1.12.237): THIS pair's epoch-frozen measured latency, each leg at its own class
+                             * (the H09 rule of the shared-memory path). The epoch-wide mean priced a near
+                             * and a far pair alike and gave every rank the same cost per access, so ranks
+                             * running the same code could lock into step and inject in bursts, and the
+                             * lagged mean fed that back: the same cell landed in a fast or a slow state
+                             * depending on its memory layout. The pair's value is its mean over the last
+                             * W folded epochs; a pair with no sample there takes the ladder cost of its
+                             * distance; the bootstrap epochs keep the static average. */
+                            const uint64_t kE = epochOfAccess(gn, sn, req.cycle, req.srcId);
+                            legReq = legResp = 0;
+                            const uint64_t nF = gn->tmFoldedEpochs();
+                            if (kE >= kNocReadLagEpochs && nF > 0) {
+                                /* the newest epoch that is wholly folded: a rank far ahead of the
+                                 * slowest one reads the latest measurement, never an unfolded epoch */
+                                const uint64_t eR = std::min<uint64_t>(kE - kNocReadLagEpochs, nF - 1);
+                                legReq = gn->tmFrozenPairLatency(eR, srcNode, dstNode, reqCtrl);
+                                legResp = ctrlMsgs ? gn->tmFrozenPairLatency(eR, dstNode, srcNode, ctrlMsgs && isWr) : legReq;
+                                if (!legReq || !legResp) {
+                                    uint32_t lad = 0; uint32_t pl[8]; uint64_t wc = 0;
+                                    if (treeWalk((int)mcId_, dstEp, pl, nullptr, &wc)) lad = (uint32_t)wc;
+                                    else lad = (uint32_t)computeHierTraversal(
+                                        myUnit, targetUnit,
+                                        zinfo->hierarchy.levelLatency, zinfo->hierarchy.bridgeLatency,
+                                        zinfo->hierarchy.placementLevel, zinfo->hierarchy.subarraysPerBank,
+                                        zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
+                                        zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
+                                    if (!legReq) legReq = lad;
+                                    if (!legResp) legResp = lad;
+                                    roiInc(profPairFallback_);
+                                } else {
+                                    roiInc(profPairSampled_);
+                                }
+                            }
+                            garnetLat = legReq;
+                        }
                     } else {
                         /* 1.11.97 (review H09 / x02-7): THIS PAIR's measured latency,
                          * not the batch-wide mean -- a near unit and a far one used

@@ -3217,6 +3217,7 @@ static const char* kSchemaPaths[] = {
     "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
     "noc.single_path_as_link",   // (1.12.231): the detailed DRAM tree's two-attachment nodes as links
     "noc.fabric_clock_mhz",      // (1.12.236): the clock domain of the detailed DRAM tree's network
+    "noc.mpi_pair_window_epochs",   // (1.12.237): thread-MPI per-pair pricing window, in epochs
     "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
     "power.pcie.model", "power.pcie.num_channels", "power.pcie.num_lanes", "power.pcie.num_units", "power.pcie.pj_per_bit_override", "power.pcie.total_load_perc",
@@ -3769,6 +3770,10 @@ struct UnifiedConfig {
     /* (1.12.236): noc.fabric_clock_mhz. The clock the detailed DRAM tree's network runs at, its own clock domain;
      * 0 = the fastest inner level clock (subarray, bank, bank group) of the technology's hierarchy. */
     double noc_fabric_clock_mhz = 0.0;
+    /* (1.12.237): noc.mpi_pair_window_epochs. Thread-MPI prices a remote access's messages at their own
+     * source-destination pair's mean measured latency over this many of the newest wholly folded
+     * epochs (simulation.det_epoch_phases phases each). Passed to the simulator as PIMID_MPI_PAIR_WINDOW. */
+    int noc_mpi_pair_window_epochs = 8;
     std::string noc_topology_file;        // required for CUSTOM topology
     std::string noc_routing_table_file;   // optional for TABLE routing
     int noc_control_msg_bits;             // 0 = default (64 bits)
@@ -22501,6 +22506,14 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
         config.noc_buffers_per_vc = yamlInt(root["noc"]["buffers_per_vc"], config.noc_buffers_per_vc, sc.pfx + "noc.buffers_per_vc");
         config.noc_single_path_as_link = yamlBool(root["noc"]["single_path_as_link"], config.noc_single_path_as_link,
                                                   sc.pfx + "noc.single_path_as_link");   // (1.12.231)
+        if (root["noc"]["mpi_pair_window_epochs"]) {   // (1.12.237)
+            config.noc_mpi_pair_window_epochs = yamlInt(root["noc"]["mpi_pair_window_epochs"], 8, sc.pfx + "noc.mpi_pair_window_epochs");
+            if (config.noc_mpi_pair_window_epochs < 1) {
+                std::cerr << "[config] FATAL: " << sc.pfx << "noc.mpi_pair_window_epochs must be at least 1 epoch" << std::endl;
+                std::exit(2);
+            }
+            setenv("PIMID_MPI_PAIR_WINDOW", std::to_string(config.noc_mpi_pair_window_epochs).c_str(), 1);   // (1.12.237): the key, not the environment
+        }
         if (root["noc"]["fabric_clock_mhz"]) {   // (1.12.236)
             config.noc_fabric_clock_mhz = yamlDouble(root["noc"]["fabric_clock_mhz"], 0.0, sc.pfx + "noc.fabric_clock_mhz");
             if (!(config.noc_fabric_clock_mhz > 0.0)) {
@@ -23717,6 +23730,7 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
 
 int main(int argc, char** argv) {
     (void)pimid::debugChecks();   // latch the internal diagnostic switch once, at startup
+    setenv("PIMID_MPI_PAIR_WINDOW", "8", 1);   // (1.12.237): noc.mpi_pair_window_epochs's default; only the key changes it
     UnifiedConfig config;
     std::string config_file;
     bool parsing_workload_args = false;

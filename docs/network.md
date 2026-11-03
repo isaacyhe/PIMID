@@ -207,13 +207,23 @@ rather than read live:
 
 - Garnet congestion is sampled once per N-phase **epoch** on the per-core
   ROI-relative axis; ROI-gated recording, single-actor complete-bucket folds.
-  An access in epoch `k` prices from epoch `k-2`'s **frozen** sample (`k-1` on
-  the trace method's per-rank-process shared record log), looked up by epoch
-  index from the access's own simulated cycle -- a keyed table lookup, never a
-  live rolling scalar.
+  An access in epoch `k` prices each of its two messages at **its own
+  source-destination pair's** frozen latency of its class, read from the
+  newest epoch that is wholly folded, `min(k-2, last folded epoch)` -- a keyed
+  table lookup, never a live rolling scalar. Each pair's value is its mean
+  over the last 8 folded epochs (`noc.mpi_pair_window_epochs`); a pair with no sample
+  there takes the ladder cost of its distance on the built tree. The trace method's
+  per-rank-process shared record log keeps the epoch's mean over all
+  messages, read at `k-1`.
+- Until (1.12.237) an access was priced at the epoch's mean over every replayed
+  message, read at epoch `k-2` only. The mean gave every rank the same cost per
+  access, so ranks running the same code could fall into step and inject in
+  bursts; and a rank running ahead of the slowest one read an epoch not yet
+  folded and fell to the static average. Which of the two happened depended on
+  the guest's memory layout.
 - This replaces a live per-drain EWMA read, which depended on how many drains
-  a rank had blended and was read-depth inflated. The frozen level sits
-  **+5-12% above the analytical floor** with real congestion priced in.
+  a rank had blended and was read-depth inflated. On the epoch-mean model the
+  frozen level sat **+5-12% above the analytical floor**.
 - Since 1.12.18 single-process runs (serial, OpenMP, co-sim OpenMP) use the
   same mechanism: per-core ROI-relative stamps, the consistent cut, and an
   epoch-frozen per-pair table read at epoch `k-2`

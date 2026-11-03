@@ -961,6 +961,14 @@ private:
     // snapshot -- this is what removes the read-instant nondeterminism (E1).
     struct EpochLatAcc { uint64_t sumLat = 0; uint64_t cnt = 0; };
     std::map<uint64_t, EpochLatAcc> epochAvgLat_;
+    /* (1.12.237): thread-MPI per-pair frozen latencies. Per epoch, each sampled pair's integer
+     * sum/count (order-free, like epochAvgLat_), and per-epoch snapshots in which each pair
+     * holds its mean over the folded epochs (e - W, e], W = noc.mpi_pair_window_epochs (8):
+     * a burst's latency stops pricing a pair once it leaves the window. Built on first read;
+     * the reader only asks for wholly folded epochs (tmFoldedEpochs). */
+    std::map<uint64_t, std::map<uint64_t, std::pair<uint64_t, uint64_t>>> tmPairAcc_;
+    std::map<uint64_t, std::vector<uint32_t>> tmSnaps_;
+    std::atomic<uint64_t> tmFoldedEpochs_{0};   // epochs [0, n) wholly folded (set at the barrier fold)
     lock_t epochLock_;
     uint32_t detEpochPhases_ = kDefaultDetEpochPhases;   // E_phases (env PIMID_DET_EPOCH_PHASES)
     // Records accumulated but not yet <= the consistent cut. Drained ONLY by
@@ -1130,6 +1138,11 @@ public:
             pendingByPhase_[p].push_back(a);
         }
         if (cutAxis_ && cut != ~0ull && cut > lastFoldCut_) lastFoldCut_ = cut;
+        if (!frozenPublish_) {   // (1.12.237): thread-MPI: epochs whose every phase is below the cut are folded below
+            const uint64_t ePl = (uint64_t)(pl > 0 ? pl : 1) * (detEpochPhases_ > 0 ? detEpochPhases_ : 1);
+            const uint64_t nE = (cut == ~0ull) ? ~0ull : cut / ePl;
+            if (nE > tmFoldedEpochs_.load(std::memory_order_relaxed)) tmFoldedEpochs_.store(nE, std::memory_order_release);
+        }
         phaseBatch_.clear();
         // PIMID_FOLD_DEBUG=1: per-fold trace of the consistent cut and the pending
         // backlog, to detect a pinned cut (backlog grows without bound => each fold
@@ -1195,6 +1208,35 @@ public:
         if (it == snaps_.end()) staleReads_++;
         --it;
         return &it->second;
+    }
+    /* (1.12.237): thread-MPI: the pair's frozen one-way latency as of epoch e (its mean over the
+     * folded epochs (e - W, e]); 0 = no sample in the window (the caller takes the ladder cost). */
+    uint64_t tmFoldedEpochs() const { return tmFoldedEpochs_.load(std::memory_order_acquire); }
+    uint32_t tmFrozenPairLatency(uint64_t e, uint32_t src, uint32_t dst, bool ctrl) {
+        futex_lock(&epochLock_);
+        ensurePairTable_();
+        uint32_t v = 0;
+        if (pairLatN_ > 0 && src < pairLatN_ && dst < pairLatN_) {
+            auto it = tmSnaps_.find(e);
+            if (it == tmSnaps_.end()) {
+                static const uint64_t W = []{ const char* w = getenv("PIMID_MPI_PAIR_WINDOW"); return (uint64_t)((w && atoi(w) > 0) ? atoi(w) : 8); }();   // noc.mpi_pair_window_epochs
+                std::vector<uint32_t> s(pairCells_(), 0);
+                std::map<uint64_t, std::pair<uint64_t, uint64_t>> win;
+                const uint64_t from = (e + 1 > W) ? e + 1 - W : 0;
+                for (auto a = tmPairAcc_.lower_bound(from); a != tmPairAcc_.end() && a->first <= e; ++a)
+                    for (const auto& kv : a->second) { auto& w2 = win[kv.first]; w2.first += kv.second.first; w2.second += kv.second.second; }
+                for (const auto& kv : win) {
+                    const uint32_t ps = (uint32_t)((kv.first >> 32) & 0x7fffffffu), pd = (uint32_t)(kv.first & 0xffffffffu);
+                    if (ps >= pairLatN_ || pd >= pairLatN_ || kv.second.second == 0) continue;
+                    s[pairIdx_(ps, pd, (kv.first & kPairCtrlKey) != 0)] = (uint32_t)(kv.second.first / kv.second.second);
+                }
+                it = tmSnaps_.emplace(e, std::move(s)).first;
+                while (tmSnaps_.size() > 64) tmSnaps_.erase(tmSnaps_.begin());
+            }
+            v = it->second[pairIdx_(src, dst, ctrl)];
+        }
+        futex_unlock(&epochLock_);
+        return v;
     }
     uint32_t frozenPairLatency(int64_t e, uint32_t src, uint32_t dst, bool ctrl = false) {   // ctrl: the control plane (user ruling 2026-10-26: control messages)
         futex_lock(&epochLock_);
@@ -1264,6 +1306,15 @@ public:
     }
 
 private:
+    /* (1.12.237): fold one drained phase bucket's per-pair latency totals into its epoch. */
+    void foldEpochPairs_(uint64_t phaseNum, const std::map<uint64_t, std::pair<uint64_t, uint32_t>>& pp) {
+        if (pp.empty()) return;
+        const uint64_t epoch = phaseNum / (detEpochPhases_ > 0 ? detEpochPhases_ : 1);
+        futex_lock(&epochLock_);
+        auto& acc = tmPairAcc_[epoch];
+        for (const auto& kv : pp) { auto& a = acc[kv.first]; a.first += kv.second.first; a.second += kv.second.second; }
+        futex_unlock(&epochLock_);
+    }
     /** Fold one drained phase bucket's delivered-latency total into its epoch
      *  (epoch = phaseNum / E_phases) with an integer sum/count reducer. */
     void foldEpochLat_(uint64_t phaseNum, uint64_t totalLat, uint32_t delivered) {
@@ -1560,6 +1611,7 @@ private:
         // sum/count). The EWMA above stays for the OMP/non-MPI live-feedback path;
         // thread-MPI reads latencyForEpoch() instead. Order-free => deterministic.
         foldEpochLat_(phaseNum, totalLat, delivered);
+        if (!frozenPublish_) foldEpochPairs_(phaseNum, perPairLat);   // (1.12.237): thread-MPI per-pair epoch table
 
         // Epoch-fold DUMP (PIMID_DET_EPOCH_DUMP=<path>): per fold, append phase,
         // epoch, delivered/total latency, an order-independent INPUT-record checksum
