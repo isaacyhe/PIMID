@@ -281,14 +281,16 @@ system:
             frequency_ghz: 2.4
           chip:
             model: detailed        # this level: full Garnet
-            router_latency: 3
             virtual_channels_per_vn: 8
 ```
 
 Per-level knobs include `model`, `topology`, `link_width_bits`,
-`frequency_ghz`, `latency_cycles`, `router_latency`, `router_pipeline`,
-`router_bypass`, `virtual_networks`, `virtual_channels_per_vn`, and
-input/output buffer depths.
+`frequency_ghz`, `latency_cycles`, `router_bypass`, `virtual_networks`,
+`virtual_channels_per_vn`, and input/output buffer depths. A router's timing
+is not a per-level YAML setting: it is the router's pipeline stages (see
+[Router pipeline stages](#router-pipeline-stages)); `router_latency` and
+`router_pipeline` under `noc.levels`, `noc.bridges` or `noc.gateways` are
+refused at load.
 
 ### Bridge overrides (`noc.bridges.<boundary>`)
 
@@ -309,12 +311,80 @@ system:
             latency_ns: 1.0
           chip_rank:
             model: detailed
-            router_latency: 2
 ```
 
 A bridge override is the natural place to model serialization chokepoints
 (e.g. a wide internal prefetch funneling into a narrow external bus) without
 touching either adjacent level.
+
+### Router pipeline stages
+
+A router's timing is one number: its pipeline stages, the cycles a flit
+spends in it (Garnet's router latency, `Router::get_pipe_stages()`).
+
+- `noc.router_pipe_stages` (default 1) sets every router of the device
+  network: the detailed network's routers on every topology (the generated
+  DRAM tree, `H_TREE`, `MESH_2D` and the rest, and a `CUSTOM` file), the
+  per-hop router term of the analytical model, and the router stages the
+  power model prices. The analytical DRAM hierarchy charges the same count at
+  every level, so the two models agree level by level.
+- Per level, a topology file can set a level's routers with a
+  `pipe <level> <stages>` line (below). The generated DRAM tree writes none.
+- `system.network.router_pipe_stages` (default 1) is the same setting for
+  the host system network, which has no topology file.
+- `noc.router_latency` and `system.network.router_latency` are the old
+  names, read as aliases with a NOTE; giving a key under both names is
+  refused.
+
+The per-level and bridge `router_latency` / `router_pipeline` YAML keys are
+gone. The pipeline names they took (`full`, `reduced`, `simple`, `minimal`,
+for 4, 3, 2 and 1 stages) never reached a latency: no model read them, so a
+configuration that set one ran exactly as without it. A per-level
+`router_latency` set the analytical hierarchy's router cycles at that level;
+that is now the level's `pipe` line on the detailed network, and the global
+stage count on the analytical one. A bridge's crossing keeps its own
+`latency_ns` / `latency_cycles`: in the tree a bridge is the link between a
+level's router and its parent, which has no pipeline.
+
+### Topology file (`noc.topology_file`)
+
+A `CUSTOM` topology is read from a text file, one entry per line; `#`
+starts a comment. Ids are 0-based. A DRAM device writes its own file (the
+generated tree above); a hand-written file is used as written.
+
+| Line | Fields | Meaning |
+|------|--------|---------|
+| `routers <N>` | count | The routers, ids `0 .. N-1`. Required. Router 0 is the root when the links form a tree. |
+| `endpoints <M>` | count | The endpoints (network interfaces), ids `0 .. M-1`. Absent: one per router. |
+| `ext <ep> <router> [latency] [width]` | latency cycles (`-1` or absent: `noc.link_latency`), width bits (`0` or absent: `noc.flit_size_bits`) | Endpoint `ep`'s link to its router. The endpoint cuts a message into flits of this width. |
+| `int <src> <dst> [weight] [latency] [width]` | weight (default 1, the routing cost), latency, width as for `ext` | One direction of a router-to-router link; give both directions for a two-way link. The link carries one flit per cycle and returns credits over its own latency. |
+| `rlevel <router> <level> [branch]` | level `0` subarray, `1` bank, `2` bank group, `3` chip, `4` rank, `5` channel, `6` system; branch `1` = two or more router children | The hierarchy level of a router: what `pipe` lines and the per-level traffic counts are keyed by. |
+| `rlinkw <router> <bits>` | width bits | The width of a router's link to its parent, for the link-occupancy floor and the link power. |
+| `rdie <router> <die>` | core die | The stacked die a chip-slot router sits on (HBM), for the die crossings. |
+| `pipe <level> <stages>` | level as for `rlevel`, stages >= 1 | Every router the `rlevel` lines put at that level runs `stages` pipeline stages instead of `noc.router_pipe_stages`. A level no router sits at, a second line for a level, or stages below 1 are refused. |
+
+When the links form a tree, the routers route up to the common ancestor and
+down, with separate virtual-channel classes for the two phases
+(deadlock-free); any other graph is routed by shortest path. A small
+two-level tree with its leaves at the bank level, three stages there:
+
+```
+routers 3
+endpoints 2
+int 0 1 1 1 128
+int 1 0 1 1 128
+int 0 2 1 1 128
+int 2 0 1 1 128
+ext 0 1 1 128
+ext 1 2 1 128
+rlevel 0 6 1
+rlevel 1 1 0
+rlevel 2 1 0
+pipe 1 3
+```
+
+A packet between the two endpoints crosses routers 1, 0 and 2: 3 + 1 + 3
+router cycles, plus the four links.
 
 ### When to use which
 

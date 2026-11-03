@@ -3186,7 +3186,7 @@ static const char* kSchemaPaths[] = {
     "noc.gateways.<name>.router_bypass", "noc.gateways.<name>.router_latency", "noc.gateways.<name>.router_pipeline", "noc.gateways.<name>.upper_frequency_mhz",
     "noc.gateways.<name>.upper_width_bits", "noc.gateways.<name>.virtual_channels_per_vn", "noc.gateways.<name>.virtual_networks", "noc.gateways.<name>.width_bits",
     "noc.buffers_per_vc", "noc.clock_mhz", "noc.control_message_bits", "noc.data_message_bits", "noc.flit_size_bits", "noc.header_bits", "noc.link_latency", "noc.mlp", "noc.model",
-    "noc.pg", "noc.ring_direction", "noc.router_latency", "noc.routing", "noc.routing_table_file", "noc.topology", "noc.topology_file", "noc.vcs_per_vnet", "noc.virtual_channels_per_vn",
+    "noc.pg", "noc.ring_direction", "noc.router_latency", "noc.router_pipe_stages", "noc.routing", "noc.routing_table_file", "noc.topology", "noc.topology_file", "noc.vcs_per_vnet", "noc.virtual_channels_per_vn",
     "noc.levels.<level>.frequency_ghz", "noc.levels.<level>.input_buffer_depth", "noc.levels.<level>.latency_cycles", "noc.levels.<level>.link_width_bits", "noc.levels.<level>.model",
     "noc.levels.<level>.output_buffer_depth", "noc.levels.<level>.router_bypass", "noc.levels.<level>.router_latency", "noc.levels.<level>.router_pipeline", "noc.levels.<level>.topology",
     "noc.levels.<level>.virtual_channels_per_vn", "noc.levels.<level>.virtual_networks",
@@ -3271,7 +3271,7 @@ static const char* kSchemaPaths[] = {
     "system.hosts[].workload.binary", "system.hosts[].workload.env",
     "system.launch.ack_bytes", "system.launch.cmd_bytes", "system.launch.dispatch_ns", "system.launch.doorbell_ns",
     "system.network.frequency_ghz", "system.network.input_buffer_depth", "system.network.latency_cycles", "system.network.link_width_bits", "system.network.links", "system.network.model",
-    "system.network.output_buffer_depth", "system.network.router_latency", "system.network.topology", "system.network.virtual_channels_per_vn",
+    "system.network.output_buffer_depth", "system.network.router_latency", "system.network.router_pipe_stages", "system.network.topology", "system.network.virtual_channels_per_vn",
     "system.network.links[].bandwidth_GBs", "system.network.links[].base_latency_ns", "system.network.links[].dst", "system.network.links[].lanes", "system.network.links[].src", "system.network.links[].type",
     "technology.node_nm",
     "workload.args", "workload.binary", "workload.env", "workload.mpi_ranks", "workload.mpich_path", "workload.type",
@@ -7767,6 +7767,10 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         }
     }
 
+    /* (1.12.230): every level's router charges the same pipeline stages as the detailed network's routers
+     * (noc.router_pipe_stages); there is no per-level router setting in the YAML. */
+    hierarchy->setRouterPipeStages(config.noc_router_latency);
+
     // Apply per-level link + router overrides from YAML
     bool has_overrides = false;
     for (int i = 0; i < 7; ++i) {
@@ -7793,7 +7797,6 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             if (ov.frequency_ghz > 0)          std::cout << " freq=" << ov.frequency_ghz << "GHz";
             if (ov.latency_cycles >= 0)        std::cout << " lat=" << ov.latency_cycles << "cy";
             if (!ov.topology.empty())          std::cout << " topo=" << ov.topology;
-            if (ov.router_latency >= 0)        std::cout << " rtr_lat=" << ov.router_latency;
             if (ov.virtual_channels_per_vn > 0) std::cout << " vcs=" << ov.virtual_channels_per_vn;
             std::cout << "\n";
         }
@@ -22046,7 +22049,24 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
                            "MESH_2D (alias MESH), TORUS_2D, RING, CROSSBAR, FAT_TREE, BUS, H_TREE, CUSTOM",
                            "run a 1 x N mesh with XY routing on an SRAM/NVM device");
         }
-        config.noc_router_latency = yamlInt(root["noc"]["router_latency"], config.noc_router_latency, sc.pfx + "noc.router_latency");
+        /* (1.12.230): a router's timing is its pipeline depth, noc.router_pipe_stages (cycles; Garnet's router latency). The
+         * old name noc.router_latency is read as an alias, with a NOTE; giving both is refused. */
+        if (root["noc"]["router_pipe_stages"] && root["noc"]["router_latency"]) {
+            std::cerr << "[config] FATAL: " << sc.pfx << "noc.router_pipe_stages and " << sc.pfx << "noc.router_latency are the"
+                         " same setting (noc.router_latency is the old name); give only noc.router_pipe_stages" << std::endl;
+            std::exit(2);
+        }
+        if (root["noc"]["router_latency"]) {
+            std::cout << "NOTE: " << sc.pfx << "noc.router_latency is the old name of " << sc.pfx << "noc.router_pipe_stages"
+                         " (the router's pipeline depth in cycles); read as that" << std::endl;
+            config.noc_router_latency = yamlInt(root["noc"]["router_latency"], config.noc_router_latency, sc.pfx + "noc.router_latency");
+        }
+        config.noc_router_latency = yamlInt(root["noc"]["router_pipe_stages"], config.noc_router_latency, sc.pfx + "noc.router_pipe_stages");
+        if (config.noc_router_latency < 1) {
+            std::cerr << "[config] FATAL: " << sc.pfx << "noc.router_pipe_stages = " << config.noc_router_latency
+                      << ": a router has at least 1 pipeline stage" << std::endl;
+            std::exit(2);
+        }
         config.noc_link_latency = yamlInt(root["noc"]["link_latency"], config.noc_link_latency, sc.pfx + "noc.link_latency");
 
         // Parse noc.model. The lineup is exactly TWO models -- no aliases:
@@ -22256,17 +22276,17 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
                         config.network_level_overrides[i].latency_cycles = lv["latency_cycles"].as<int>();
                     if (lv["topology"])
                         config.network_level_overrides[i].topology = yamlStringReq(lv["topology"], sc.pfx + "noc.levels." + key + ".topology");
-                    // Router params
-                    if (lv["router_latency"])
-                        config.network_level_overrides[i].router_latency = lv["router_latency"].as<int>();
-                    if (lv["router_pipeline"]) {
-                        std::string rp = yamlStringReq(lv["router_pipeline"], sc.pfx + "noc.levels." + key + ".router_pipeline");
-                        if (rp == "full")           config.network_level_overrides[i].router_pipeline = 0;
-                        else if (rp == "reduced")   config.network_level_overrides[i].router_pipeline = 1;
-                        else if (rp == "simple")    config.network_level_overrides[i].router_pipeline = 2;
-                        else if (rp == "minimal")   config.network_level_overrides[i].router_pipeline = 3;
-                        else                        config.network_level_overrides[i].router_pipeline = lv["router_pipeline"].as<int>();
-                    }
+                    /* Router params. (1.12.230): a router's timing is its pipeline stages only: the global
+                     * noc.router_pipe_stages, and per level the topology file's "pipe <level> <stages>" line (see
+                     * docs/network.md). The per-level router_latency / router_pipeline keys are refused. */
+                    for (const char* rk : {"router_latency", "router_pipeline"})
+                        if (lv[rk]) {
+                            std::cerr << "[config] FATAL: " << sc.pfx << "noc.levels." << key << "." << rk
+                                      << " is no longer a setting: a router's timing is its pipeline stages, set by "
+                                      << sc.pfx << "noc.router_pipe_stages for every router and, per level, by a"
+                                         " 'pipe <level> <stages>' line in the topology file (docs/network.md)" << std::endl;
+                            std::exit(2);
+                        }
                     if (lv["router_bypass"])
                         config.network_level_overrides[i].router_bypass = yamlBool(lv["router_bypass"], false, sc.pfx + "noc.levels." + key + ".router_bypass") ? 1 : 0;
                     if (lv["virtual_networks"])
@@ -22282,7 +22302,7 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
         }
 
         // Per-boundary bridge overrides (under noc.bridges, backward compat: noc.gateways)
-        auto parse_bridge_overrides = [&](const YAML::Node& node) {
+        auto parse_bridge_overrides = [&](const YAML::Node& node, const char* bridge_block) {
             const std::array<std::string, 6> br_keys = {
                 "subarray_bank", "bank_bankgroup", "bankgroup_chip",
                 "chip_rank", "rank_channel", "channel_system"
@@ -22351,17 +22371,17 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
                                        "simple (analytical and md1 are aliases), detailed, auto or empty (derive)",
                                        "run the auto-derived bridge model");
                     }
-                    // Router params
-                    if (n["router_latency"])
-                        ov.router_latency = n["router_latency"].as<int>();
-                    if (n["router_pipeline"]) {
-                        std::string rp = yamlStringReq(n["router_pipeline"], sc.pfx + "noc.bridges." + br_keys[i] + ".router_pipeline");
-                        if (rp == "full")           ov.router_pipeline = 0;
-                        else if (rp == "reduced")   ov.router_pipeline = 1;
-                        else if (rp == "simple")    ov.router_pipeline = 2;
-                        else if (rp == "minimal")   ov.router_pipeline = 3;
-                        else                        ov.router_pipeline = n["router_pipeline"].as<int>();
-                    }
+                    /* Router params. (1.12.230): refused, as on a level: a bridge's crossing is the link between
+                     * the two levels (its latency_ns / latency_cycles stay), and router timing is pipeline stages
+                     * (noc.router_pipe_stages; per level, the topology file's pipe line). */
+                    for (const char* rk : {"router_latency", "router_pipeline"})
+                        if (n[rk]) {
+                            std::cerr << "[config] FATAL: " << sc.pfx << bridge_block << "." << br_keys[i] << "." << rk
+                                      << " is no longer a setting: a router's timing is its pipeline stages, set by "
+                                      << sc.pfx << "noc.router_pipe_stages for every router and, per level, by a"
+                                         " 'pipe <level> <stages>' line in the topology file (docs/network.md)" << std::endl;
+                            std::exit(2);
+                        }
                     if (n["router_bypass"])
                         ov.router_bypass = yamlBool(n["router_bypass"], false, sc.pfx + "noc.bridges." + br_keys[i] + ".router_bypass") ? 1 : 0;
                     if (n["virtual_networks"])
@@ -22376,10 +22396,10 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
             }
         };
         if (root["noc"]["bridges"]) {
-            parse_bridge_overrides(root["noc"]["bridges"]);
+            parse_bridge_overrides(root["noc"]["bridges"], "noc.bridges");
         } else if (root["noc"]["gateways"]) {
             std::cerr << "WARNING: '" << sc.pfx << "noc.gateways' is deprecated, use '" << sc.pfx << "noc.bridges' instead\n";
-            parse_bridge_overrides(root["noc"]["gateways"]);
+            parse_bridge_overrides(root["noc"]["gateways"], "noc.gateways");
         }
     }
     return 0;
@@ -25323,7 +25343,24 @@ int main(int argc, char** argv) {
                     config.system_network.link_width_bits = yamlInt(net["link_width_bits"], config.system_network.link_width_bits, "system.network.link_width_bits");
                     config.system_network.frequency_ghz = yamlDouble(net["frequency_ghz"], config.system_network.frequency_ghz, "system.network.frequency_ghz");
                     config.system_network.latency_cycles = yamlInt(net["latency_cycles"], config.system_network.latency_cycles, "system.network.latency_cycles");
-                    config.system_network.router_latency = yamlInt(net["router_latency"], config.system_network.router_latency, "system.network.router_latency");
+                    /* (1.12.230): the host network's routers, as the device's: pipeline stages, with the old name
+                     * read as an alias (a NOTE); both is refused. */
+                    if (net["router_pipe_stages"] && net["router_latency"]) {
+                        std::cerr << "[config] FATAL: system.network.router_pipe_stages and system.network.router_latency"
+                                     " are the same setting (router_latency is the old name); give only router_pipe_stages" << std::endl;
+                        std::exit(2);
+                    }
+                    if (net["router_latency"]) {
+                        std::cout << "NOTE: system.network.router_latency is the old name of system.network.router_pipe_stages"
+                                     " (the router's pipeline depth in cycles); read as that" << std::endl;
+                        config.system_network.router_latency = yamlInt(net["router_latency"], config.system_network.router_latency, "system.network.router_latency");
+                    }
+                    config.system_network.router_latency = yamlInt(net["router_pipe_stages"], config.system_network.router_latency, "system.network.router_pipe_stages");
+                    if (config.system_network.router_latency < 1) {
+                        std::cerr << "[config] FATAL: system.network.router_pipe_stages = " << config.system_network.router_latency
+                                  << ": a router has at least 1 pipeline stage" << std::endl;
+                        std::exit(2);
+                    }
                     config.system_network.virtual_channels_per_vn = yamlInt(net["virtual_channels_per_vn"], config.system_network.virtual_channels_per_vn, "system.network.virtual_channels_per_vn");
                     config.system_network.input_buffer_depth = yamlInt(net["input_buffer_depth"], config.system_network.input_buffer_depth, "system.network.input_buffer_depth");
                     config.system_network.output_buffer_depth = yamlInt(net["output_buffer_depth"], config.system_network.output_buffer_depth, "system.network.output_buffer_depth");

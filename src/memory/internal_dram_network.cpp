@@ -2456,6 +2456,11 @@ void InternalDRAMNetwork::setBridgeModel(int boundary, NetworkModelType model) {
     }
 }
 
+void InternalDRAMNetwork::setRouterPipeStages(int stages) {
+    if (stages < 1) return;
+    for (int i = 0; i < NUM_HIERARCHY_LEVELS; ++i) network_configs_[i].router_latency = stages;
+}
+
 void InternalDRAMNetwork::overrideBridgeConfig(int boundary, int router_latency,
                                                 int router_pipeline, int router_bypass,
                                                 int virtual_networks,

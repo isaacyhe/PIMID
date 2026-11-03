@@ -542,6 +542,12 @@ public:
                               int output_buffer_depth);
 
     /**
+     * @brief (1.12.230): the routers' pipeline stages at every hierarchy level (noc.router_pipe_stages): the cycles
+     * each level's router charges, the same count the detailed network's routers run.
+     */
+    void setRouterPipeStages(int stages);
+
+    /**
      * @brief Get the simulation model for a specific hierarchy level
      */
     NetworkModelType getLevelModel(int level) const;

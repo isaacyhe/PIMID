@@ -14,7 +14,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -692,29 +695,63 @@ TopologyBuilders::buildHTree(uint32_t num_endpoints,
 // CUSTOM: parse topology from file
 // ===============================================================
 
-TopologyResult
-TopologyBuilders::buildFromFile(const std::string& filename,
-                                uint32_t vcs_per_vnet, uint32_t virt_nets,
-                                Cycles link_latency, Cycles router_latency,
-                                uint32_t width)
+/* (1.12.230): the lines this builder reads ('#' starts a comment; the full grammar is in docs/network.md):
+ *   routers <N>                                  router count (ids 0..N-1)
+ *   endpoints <M>                                endpoint count
+ *   ext <ep> <router> [latency] [width]          an endpoint's link to its router
+ *   int <src> <dst> [weight] [latency] [width]   one direction of a router-to-router link
+ *   rlevel <router> <level> [branch]             the hierarchy level of a router (0 subarray .. 6 system)
+ *   pipe <level> <stages>                        pipeline stages of every router at that level
+ * A router's stages are its pipeline depth in cycles (Garnet's router latency); a router without a pipe line takes
+ * the network's router_pipe_stages. Other tokens (rlinkw, rdie) are read by the network wrapper and skipped here. */
+
+namespace {
+
+[[noreturn]] void topoFail(const std::string& file, int line, const std::string& msg)
+{
+    std::ostringstream os;
+    os << "topology file " << file;
+    if (line > 0) os << " line " << line;
+    os << ": " << msg;
+    throw std::runtime_error(os.str());
+}
+
+bool topoInt(const std::string& s, long& v)
+{
+    if (s.empty()) return false;
+    char* end = nullptr;
+    v = std::strtol(s.c_str(), &end, 10);
+    return end && *end == '\0';
+}
+
+struct TopoExtEntry { uint32_t endpoint; uint32_t router; long latency; uint32_t width; };
+struct TopoIntEntry { uint32_t src; uint32_t dst; int weight; long latency; uint32_t width; };
+struct TopoParsed {
+    uint32_t num_routers = 0, num_endpoints = 0;
+    std::vector<TopoExtEntry> ext_entries;
+    std::vector<TopoIntEntry> int_entries;
+    std::map<uint32_t, int> router_level;                  // (1.12.230): rlevel lines
+    std::map<int, std::pair<long, int>> pipe_of_level;     // (1.12.230): pipe lines: level -> (stages, line)
+};
+
+/* (1.12.230): read and check a CUSTOM file; refuses a malformed pipe line, and a pipe line for a level no router sits
+ * at, with the file and line. */
+void topoParse(const std::string& filename, TopoParsed& t)
 {
     std::ifstream infile(filename);
     if (!infile.is_open()) {
         throw std::runtime_error("Cannot open topology file: " + filename);
     }
-
-    uint32_t num_routers = 0, num_endpoints = 0;
-    // Optional per-link latency (cycles) and width (bits): -1 / 0 mean
-    // "inherit the global link_latency / width". This lets a CUSTOM topology
-    // file encode a real DRAM hierarchy where each layer's link carries its
-    // own per-layer latency and channel width (the per-link latency+bw target).
-    struct ExtEntry { uint32_t endpoint; uint32_t router; long latency; uint32_t width; };
-    struct IntEntry { uint32_t src; uint32_t dst; int weight; long latency; uint32_t width; };
-    std::vector<ExtEntry> ext_entries;
-    std::vector<IntEntry> int_entries;
-
+    uint32_t& num_routers = t.num_routers;
+    uint32_t& num_endpoints = t.num_endpoints;
+    std::vector<TopoExtEntry>& ext_entries = t.ext_entries;
+    std::vector<TopoIntEntry>& int_entries = t.int_entries;
+    std::map<uint32_t, int>& router_level = t.router_level;
+    std::map<int, std::pair<long, int>>& pipe_of_level = t.pipe_of_level;
     std::string line;
+    int lineno = 0;
     while (std::getline(infile, line)) {
+        lineno++;
         auto hash_pos = line.find('#');
         if (hash_pos != std::string::npos) line = line.substr(0, hash_pos);
 
@@ -727,7 +764,7 @@ TopologyBuilders::buildFromFile(const std::string& filename,
         } else if (token == "endpoints") {
             iss >> num_endpoints;
         } else if (token == "ext") {
-            ExtEntry e; e.latency = -1; e.width = 0;
+            TopoExtEntry e; e.latency = -1; e.width = 0;
             iss >> e.endpoint >> e.router;
             // optional per-link latency / width; guarded so an absent field
             // inherits the global (C++11 >> zeroes the target on failure).
@@ -736,7 +773,7 @@ TopologyBuilders::buildFromFile(const std::string& filename,
             if (iss >> w)   e.width = w;
             ext_entries.push_back(e);
         } else if (token == "int") {
-            IntEntry e;
+            TopoIntEntry e;
             e.weight = 1; e.latency = -1; e.width = 0;
             iss >> e.src >> e.dst;
             int wt; long lat; uint32_t w;
@@ -744,12 +781,70 @@ TopologyBuilders::buildFromFile(const std::string& filename,
             if (iss >> lat) e.latency = lat;
             if (iss >> w)   e.width = w;
             int_entries.push_back(e);
+        } else if (token == "rlevel") {
+            uint32_t r; int lv;
+            if (iss >> r >> lv) router_level[r] = lv;
+        } else if (token == "pipe") {
+            std::string slv, sst, extra;
+            iss >> slv >> sst;
+            long lv = -1, st = 0;
+            if (!topoInt(slv, lv) || !topoInt(sst, st))
+                topoFail(filename, lineno, "expected 'pipe <level> <stages>', got '" + line + "'");
+            if (lv < 0 || lv > 6)
+                topoFail(filename, lineno, "pipe level " + slv + " is not a hierarchy level (0 subarray .. 6 system)");
+            if (st < 1)
+                topoFail(filename, lineno, "pipe " + slv + ": " + sst + " stage(s); a router has at least 1");
+            if (iss >> extra)
+                topoFail(filename, lineno, "pipe " + slv + ": unexpected field '" + extra + "' (pipe <level> <stages>)");
+            if (pipe_of_level.count((int)lv))
+                topoFail(filename, lineno, "pipe " + slv + " is given twice (first on line " +
+                         std::to_string(pipe_of_level[(int)lv].second) + ")");
+            pipe_of_level[(int)lv] = std::make_pair(st, lineno);
         }
     }
 
     if (num_routers == 0) {
         throw std::runtime_error("Topology file missing 'routers' count");
     }
+    /* (1.12.230): a pipe line sets the stages of every router the rlevel lines put at its level; a level no router
+     * sits at is refused (the line would set nothing). */
+    for (const auto& kv : pipe_of_level) {
+        bool any = false;
+        for (const auto& rl : router_level)
+            if (rl.second == kv.first && rl.first < num_routers) { any = true; break; }
+        if (!any)
+            topoFail(filename, kv.second.second, "pipe " + std::to_string(kv.first) +
+                     ": no router is at that level (the rlevel lines place none there)");
+    }
+
+}
+
+} // namespace
+
+void
+TopologyBuilders::validateFile(const std::string& filename)
+{
+    TopoParsed t;
+    topoParse(filename, t);
+}
+
+TopologyResult
+TopologyBuilders::buildFromFile(const std::string& filename,
+                                uint32_t vcs_per_vnet, uint32_t virt_nets,
+                                Cycles link_latency, Cycles router_latency,
+                                uint32_t width)
+{
+    // Optional per-link latency (cycles) and width (bits): -1 / 0 mean
+    // "inherit the global link_latency / width". This lets a CUSTOM topology
+    // file encode a real DRAM hierarchy where each layer's link carries its
+    // own per-layer latency and channel width (the per-link latency+bw target).
+    TopoParsed t;
+    topoParse(filename, t);
+    uint32_t num_routers = t.num_routers, num_endpoints = t.num_endpoints;
+    std::vector<TopoExtEntry>& ext_entries = t.ext_entries;
+    std::vector<TopoIntEntry>& int_entries = t.int_entries;
+    const std::map<uint32_t, int>& router_level = t.router_level;
+    const std::map<int, std::pair<long, int>>& pipe_of_level = t.pipe_of_level;
     if (num_endpoints == 0) num_endpoints = num_routers;
 
     // -- Tree detection for up*/down* deadlock-free routing ------------------
@@ -812,6 +907,13 @@ TopologyBuilders::buildFromFile(const std::string& filename,
     result.topology->setName("CUSTOM (" + filename + ")");
 
     for (uint32_t i = 0; i < num_routers; i++) {
+        /* (1.12.230): the router's stages: its level's pipe line, else the network's. */
+        Cycles stages_i = router_latency;
+        auto rl = router_level.find(i);
+        if (rl != router_level.end()) {
+            auto pl = pipe_of_level.find(rl->second);
+            if (pl != pipe_of_level.end()) stages_i = Cycles(pl->second.first);
+        }
         if (is_tree) {
             // up*/down* deadlock-free router (VC-class separation).
             GarnetRouterParams rp;
@@ -819,12 +921,12 @@ TopologyBuilders::buildFromFile(const std::string& filename,
             rp.router_id = i;
             rp.vcs_per_vnet = vcs_per_vnet;
             rp.virt_nets = virt_nets;
-            rp.latency = router_latency;
+            rp.latency = stages_i;
             rp.width = width;
             result.routers.push_back(new TreeRouter(rp));
         } else {
             result.routers.push_back(
-                makeRouter(i, vcs_per_vnet, virt_nets, router_latency, width));
+                makeRouter(i, vcs_per_vnet, virt_nets, stages_i, width));
         }
     }
 

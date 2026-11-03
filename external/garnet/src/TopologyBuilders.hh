@@ -87,6 +87,9 @@ public:
         uint32_t vcs_per_vnet, uint32_t virt_nets,
         Cycles link_latency, Cycles router_latency, uint32_t width);
 
+    // (1.12.230): read and check a CUSTOM file without building it; throws std::runtime_error naming the file and line.
+    static void validateFile(const std::string& filename);
+
 private:
     // 1.11.94 (H35): the mesh body, shared by MESH_2D and TORUS_2D. With
     // torus_routers the routers are dateline-aware RingRouters; without it

@@ -667,7 +667,7 @@ noc:
   topology: MESH_2D
   routing: XY
   model: detailed
-  router_latency: 1
+  router_pipe_stages: 1
   link_latency: 1
   vcs_per_vnet: 4
   buffers_per_vc: 4
@@ -678,7 +678,8 @@ noc:
 | `noc.topology` | string | `"MESH_2D"` | Network topology: `MESH_2D` (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`, `H_TREE` or `CUSTOM`, in any case, for every memory family. Any other word is refused (1.11.106; on an SRAM/NVM device it used to run a 1 x N mesh with XY routing in silence). A DRAM device then applies its own rule: the tier tree, or the in-die `MESH_2D` / `RING` / `CROSSBAR` of 1.11.103. See [NoC Topologies](#noc-topologies). |
 | `noc.routing` | string | `""` | Routing algorithm. Empty = auto-derived from topology. See [Routing Algorithms](#routing-algorithms). |
 | `noc.model` | string | `"detailed"` | Network model: `detailed` (Garnet cycle-accurate; the default) or `analytical` (closed-form hop-count + M/D/1 + MLP). No other values are accepted. |
-| `noc.router_latency` | int | `1` | Router traversal latency in cycles. |
+| `noc.router_pipe_stages` | int | `1` | Pipeline stages of every router (cycles a flit spends in a router): the detailed network's routers on every topology, the analytical model's per-hop router term and the analytical DRAM hierarchy at every level, and the router stages priced. At least 1. Per level, a topology file's `pipe` line overrides it (see [network.md](network.md#topology-file-noctopology_file)). |
+| `noc.router_latency` | int | - | The old name of `noc.router_pipe_stages`, read as it with a NOTE; giving both is refused. |
 | `noc.link_latency` | int | `1` | Link traversal latency in cycles. |
 | `noc.mlp` | int | `10` | Memory-level-parallelism intensity `M` of the analytical model (`t_eff = max((L + W_q)/M, P*D/c)`). Absent: 10 for every core type (calibrated for `alu_core` against `detailed`; a placeholder for the cached cores). Must be >= 1: a smaller value is refused (1.11.106; it used to be clamped to 1 in silence). |
 | `noc.vcs_per_vnet` | int | `4` | Virtual channels per virtual network. |
@@ -707,7 +708,6 @@ noc:
       frequency_ghz: 2.4
     chip:
       model: detailed
-      router_latency: 3
       virtual_channels_per_vn: 8
 ```
 
@@ -720,8 +720,8 @@ Valid level names: `subarray`, `bank`, `bank_group`, `chip`, `rank`, `channel`, 
 | `noc.levels.<level>.frequency_ghz` | double | `-1.0` | Link frequency in GHz. `-1` = auto. |
 | `noc.levels.<level>.latency_cycles` | int | `-1` | Link latency in cycles. |
 | `noc.levels.<level>.topology` | string | `""` | Override topology for this level. |
-| `noc.levels.<level>.router_latency` | int | `-1` | Router latency in cycles. |
-| `noc.levels.<level>.router_pipeline` | string/int | `-1` | Router pipeline: `"full"` (0), `"reduced"` (1), `"simple"` (2), `"minimal"` (3). |
+| `noc.levels.<level>.router_latency` | - | - | Refused at load: router timing is pipeline stages (`noc.router_pipe_stages`; per level, the topology file's `pipe` line). |
+| `noc.levels.<level>.router_pipeline` | - | - | Refused at load, as `router_latency`. Its names (`full`, `reduced`, `simple`, `minimal` = 4, 3, 2, 1 stages) never reached a latency. |
 | `noc.levels.<level>.router_bypass` | bool | - | Enable router bypass. |
 | `noc.levels.<level>.virtual_networks` | int | `-1` | Virtual networks. |
 | `noc.levels.<level>.virtual_channels_per_vn` | int | `-1` | VCs per virtual network. |
@@ -742,7 +742,6 @@ noc:
       latency_ns: 1.0
     chip_rank:
       model: detailed
-      router_latency: 2
 ```
 
 Valid boundary names: `subarray_bank`, `bank_bankgroup`, `bankgroup_chip`, `chip_rank`, `rank_channel`, `channel_system`.
@@ -762,7 +761,7 @@ Valid boundary names: `subarray_bank`, `bank_bankgroup`, `bankgroup_chip`, `chip
 | `noc.bridges.<name>.latency_cycles` | int | `-1` | Bridge latency in cycles (backward compat). |
 | `noc.bridges.<name>.width_bits` | int | `-1` | Single-width field (sets both lower + upper). |
 
-Bridge router params: same as per-level (`router_latency`, `router_pipeline`, `router_bypass`, `virtual_networks`, `virtual_channels_per_vn`, `input_buffer_depth`, `output_buffer_depth`).
+Bridge router params: same as per-level (`router_bypass`, `virtual_networks`, `virtual_channels_per_vn`, `input_buffer_depth`, `output_buffer_depth`). `router_latency` and `router_pipeline` are refused at load, as on a level (also under `noc.gateways`).
 
 **Bridge latency formula**: `base_latency + max(ingress_time, egress_time)`, where ingress/egress depend on link width and frequency.
 
@@ -1670,7 +1669,8 @@ system:
 | `system.network.link_width_bits` | int | `512` | Link width in bits. |
 | `system.network.frequency_ghz` | double | `1.0` | Network frequency in GHz. |
 | `system.network.latency_cycles` | int | `5` | Base latency in cycles. |
-| `system.network.router_latency` | int | `1` | Router latency. |
+| `system.network.router_pipe_stages` | int | `1` | Pipeline stages of the host network's routers (cycles per router; the per-hop router term). At least 1. The host network has no topology file, so there is no per-level or per-router setting. |
+| `system.network.router_latency` | int | - | The old name of `system.network.router_pipe_stages`, read as it with a NOTE; giving both is refused. |
 | `system.network.virtual_channels_per_vn` | int | `1` | VCs per virtual network. |
 | `system.network.input_buffer_depth` | int | `4` | Input buffer depth. |
 | `system.network.output_buffer_depth` | int | `4` | Output buffer depth. |
@@ -1989,7 +1989,6 @@ system:
             frequency_ghz: 2.4
           bank_group:
             model: detailed         # Garnet for bank-group level
-            router_latency: 2
             virtual_channels_per_vn: 8
           chip:
             model: simple

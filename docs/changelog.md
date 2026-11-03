@@ -6,6 +6,45 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.230 -- a router's timing is its pipeline stages: one setting for every router, and a per-level line in the topology file
+
+- **The problem.** Router timing had four spellings, and they did not agree. `noc.router_latency` set every router of
+  the detailed network and the analytical model's per-hop router term. `noc.levels.<level>.router_latency` and
+  `noc.bridges.<name>.router_latency` (also under `noc.gateways`) reached only the analytical DRAM hierarchy: the
+  detailed network's routers never read them, so a level given 3 cycles in the YAML still ran 1 cycle in Garnet.
+  `router_pipeline` (`full`, `reduced`, `simple`, `minimal`) at the same places was stored and read by no model at
+  all. A hand-written CUSTOM topology had no way to time one level's routers apart from the others.
+- **The fix** (`src/main.cpp`, `external/garnet/src/TopologyBuilders.cc/.hh`, `external/zsim/src/garnet_network.h`,
+  `src/memory/internal_dram_network.cpp/.h`). A router's timing is one number, its pipeline stages: the cycles a flit
+  spends in it (Garnet's router latency).
+  - `noc.router_pipe_stages` (default 1) sets every router of the device network: the detailed network's routers on
+    every topology, the analytical model's per-hop router term, the router stages the power model prices, and the
+    router of every level of the analytical DRAM hierarchy, so the two models run the same count at each level.
+  - A topology file sets the routers of one level with `pipe <level> <stages>`, keyed by its `rlevel` lines. A pipe
+    line for a level no router sits at, a second line for a level, stages below 1 and a malformed line are refused
+    when the network is constructed, with the file and the line. The generated DRAM tree writes none.
+  - `system.network.router_pipe_stages` (default 1) does the same for the host system network, which has no topology
+    file.
+  - `noc.router_latency` and `system.network.router_latency` are read as the old names, with a NOTE; a key given
+    under both names is refused, as are stages below 1.
+  - The `router_latency` and `router_pipeline` keys under `noc.levels`, `noc.bridges` and `noc.gateways` are refused
+    at load, with a message naming the new setting and the pipe line. No shipped configuration, example or test
+    configuration sets them. The pipeline names stood for 4, 3, 2 and 1 stages and never reached a latency: a
+    configuration that set one ran exactly as without it.
+  - docs/network.md describes the topology file line by line, with an example.
+  - The analytical hierarchy charges a stage at its level's own clock, and a level with `router_bypass` on (the
+    default) one stage less where it has one hop; the detailed network charges a stage per network cycle. Both
+    are unchanged.
+- **Validation** (the previous release and this build on the same nodes; logs compared with tree paths masked). At
+  the defaults every log is identical: 135 device message-passing smoke cells, 11 co-simulation message-passing
+  smoke cells, 40 multi-core host baseline smoke cells, the 116-cell validation set and 30 bfs smoke variants, and a
+  hand-written CUSTOM file and two topology files written by an earlier release run as before. One packet between
+  the two endpoints of a three-router tree takes 14, 17 and 20 cycles at 1, 2 and 3 stages (three routers crossed);
+  `pipe 1 3` on the two leaves gives 18, `pipe 6 3` on the root 16, and `pipe 1 3` with 2 stages elsewhere 19. On
+  the generated HBM3 bank-placement tree cut to two endpoints (seven routers crossed): 22, 29 and 36 cycles, and
+  `pipe 3 4` on the chip level 28. A host RING network with one hop: 14, 16 and 18 host cycles at 1, 2 and 3 stages.
+  The old names give the results of the new ones at the same value.
+
 ## 1.12.229 -- the DRAM controller's FR-FCFS pick takes one pass and re-derives a queued request only after its channel changed
 
 - **The problem.** The device placements above the bank (RANK, CHANNEL, LOGIC_DIE) and every host memory replay their

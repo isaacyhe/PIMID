@@ -411,6 +411,18 @@ public:
         // Parse custom topology file if needed
         if (topology_ == NoCTopology::CUSTOM && !customTopoFile_.empty()) {
             parseCustomTopologyFile();
+#ifdef HAVE_GARNET
+            /* (1.12.230): a malformed line (a pipe line for a level no router sits at, ...) is refused here, at
+             * construction, with the file and line -- not when the network is first built mid-run. */
+            if (cycleAccurate_) {
+                try {
+                    gem5::ruby::garnet::TopologyBuilders::validateFile(customTopoFile_);
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "[GarnetNetwork] FATAL: %s\n", e.what());
+                    exit(2);
+                }
+            }
+#endif
         }
 
         info("[GarnetNetwork] Topology: %s, Routing: %s",
