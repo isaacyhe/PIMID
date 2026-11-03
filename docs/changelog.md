@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.244 -- a RERAM access costs what the measured macro of the same cell costs: a 1T1R cell's resistances, its read energy and its write-verify time and energy
+
+- **The problem.** The RERAM cell is a 1T1R cell of the TSMC 40 nm family, and its 13 write-verify rounds come from
+  that family's open macro, EMBER (Levy et al., JSSC 2024). Everything else came from NVSim's sample cell:
+  - the cell's resistances (1 MOhm and 10 MOhm at a 0.4 V read) were a selector-less crosspoint cell's;
+  - a read was priced on the sense amplifier's latch time;
+  - each write-verify round was a 10 ns, 0.6 pJ pulse and a 4.2 ns verify read, all 512 bits at once.
+  At the 64 KB / 512 b / 22 nm unit a read cost 0.153 pJ/bit and a write 186.7 ns and 6.8 pJ/bit, where EMBER
+  measures 1.0 pJ/bit, and 3.87 us and 400 pJ/bit per 48-bit word.
+- **The fix (external/nvsim: MemCell, SubArray, RRAM_1T1R.cell; src/memory/nvsim_wrapper.cpp).**
+  - **Cell:** LRS 10 kOhm and HRS 100 kOhm (storage cells of that family, arXiv 2205.03996) and EMBER's 0.1 V read.
+  - **Read:** priced at EMBER's measured 1.0 pJ per bit (cell, bitlines, sense amplifiers and decoders together;
+    new cell key `-MacroReadEnergy`).
+  - **Write:** each round costs what EMBER's fits against the round count give: (0.71 + 6.06 R) ns per bit of a
+    48-bit word and (41.37 + 27.91 R) pJ per bit (new cell keys `-WriteVerifyWordBits`, `-WriteVerifyFitTime`,
+    `-WriteVerifyFitEnergy`). Every 48-bit word of an access has its own write-verify engine and the words of a
+    512-bit access are written in parallel, 11 words, so a write takes one word's time.
+  - **Pump:** the measured energy includes the write supplies, so `memory.nvm_write_pump.efficiency` no longer
+    applies to this cell; `memory.nvm_write_verify.reram_rounds` still sets R.
+  - **Cache:** ReRAM characterizations made before this change are not reused.
+- **Data impact.** At the 64 KB / 512 b / 22 nm unit:
+  - read 4.81 ns (was 4.22) and 1.0 pJ/bit (was 0.153);
+  - write 3.82 us (was 186.7 ns) and 404 pJ/bit (was 6.80);
+  - area and leakage unchanged.
+  Smoke-size fig2 ReRAM cells run 2.1 to 9.0 times longer, the writes now taking 3.82 us:
+  - MPI: gemv 2.12x, stream_triad 4.92x, histogram 6.87x, stencil_2d 7.73x, bfs 6.20x;
+  - OpenMP: gemv 4.55x, histogram 3.07x, stream_triad 6.26x, stencil_2d 7.55x, bfs 9.00x.
+  The other technologies' results are identical.
+
 ## 1.12.243 -- a PCM read takes the cell's published read time
 
 - **The problem.** A PCM bank read in 2.83 ns at the 64 KB / 512 b / 22 nm unit, well below any published PCM read

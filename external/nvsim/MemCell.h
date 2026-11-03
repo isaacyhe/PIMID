@@ -85,6 +85,14 @@ public:
 	double writePumpEfficiency;  /* PIMID (1.12.163): efficiency of the charge pump that makes that supply; 0 = the ideal Dickson bound */
 	double writePulsesPerBit;    /* PIMID (1.12.162): average write pulses per programmed bit (>= 1; 1 = one pulse) */
 	double writeVerifyRoundsAlt; /* PIMID (1.12.162): rounds under the cell's alternative retry model (0 = none given) */
+	/* PIMID (1.12.244): a cell calibrated to a measured macro. macroReadEnergy: the macro's read energy per bit sensed
+	 * (J/bit; 0 = not given), cell, bitlines, sense amplifiers and decoders together. wvWordBits: the bits of one
+	 * write-verify word (0 = not given). wvFitTime0/1 (s/bit) and wvFitEnergy0/1 (J/bit): the macro's measured write
+	 * time and energy per bit against the rounds R, t = t0 + t1 R and e = e0 + e1 R. */
+	double macroReadEnergy;
+	int    wvWordBits;
+	double wvFitTime0, wvFitTime1;
+	double wvFitEnergy0, wvFitEnergy1;
 	double writePulsesPerBitAlt; /* PIMID (1.12.162): pulses per bit under the alternative retry model (0 = none given) */
 	double readEnergy;      /* PIMID (1.12.92): published energy of one cell read (pJ in the file, J here); 0 = not given */
 	double readLatencyCell; /* PIMID (1.12.243): published time of one cell read, bitline precharge and sensing included

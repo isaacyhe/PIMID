@@ -61,6 +61,10 @@ MemCell::MemCell() {
 	writePulsesPerBit   = 1;
 	writeSupplyVoltage  = 0;
 	writePumpEfficiency = 0;
+	macroReadEnergy     = 0;
+	wvWordBits          = 0;
+	wvFitTime0 = wvFitTime1 = 0;
+	wvFitEnergy0 = wvFitEnergy1 = 0;
 	writeVerifyRoundsAlt = 0;
 	writePulsesPerBitAlt = 0;
         wordlineBoostRatio  = 1.0;
@@ -263,6 +267,26 @@ void MemCell::ReadCellFromFile(const string & inputFile)
 		}
 		if (!strncmp("-CumulativeWritePulsesPerBit", line, strlen("-CumulativeWritePulsesPerBit"))) {
 			sscanf(line, "-CumulativeWritePulsesPerBit (avg): %lf", &writePulsesPerBitAlt);
+			continue;
+		}
+		/* PIMID (1.12.244): calibration to a measured macro (see MemCell.h). */
+		if (!strncmp("-MacroReadEnergy", line, strlen("-MacroReadEnergy"))) {
+			sscanf(line, "-MacroReadEnergy (pJ/bit): %lf", &macroReadEnergy);
+			macroReadEnergy /= 1e12;
+			continue;
+		}
+		if (!strncmp("-WriteVerifyWordBits", line, strlen("-WriteVerifyWordBits"))) {
+			sscanf(line, "-WriteVerifyWordBits: %d", &wvWordBits);
+			continue;
+		}
+		if (!strncmp("-WriteVerifyFitTime", line, strlen("-WriteVerifyFitTime"))) {
+			sscanf(line, "-WriteVerifyFitTime (ns/bit): %lf %lf", &wvFitTime0, &wvFitTime1);
+			wvFitTime0 /= 1e9; wvFitTime1 /= 1e9;
+			continue;
+		}
+		if (!strncmp("-WriteVerifyFitEnergy", line, strlen("-WriteVerifyFitEnergy"))) {
+			sscanf(line, "-WriteVerifyFitEnergy (pJ/bit): %lf %lf", &wvFitEnergy0, &wvFitEnergy1);
+			wvFitEnergy0 /= 1e12; wvFitEnergy1 /= 1e12;
 			continue;
 		}
 		if (!strncmp("-WriteSupplyVoltage", line, strlen("-WriteSupplyVoltage"))) {

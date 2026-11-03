@@ -637,6 +637,14 @@ void SubArray::CalculateLatency(double _rampInput) {
 						const double extraPulses = (cell->writeVerifyRounds > 1) ? cell->writeVerifyRounds - 1 : 0;
 						writeLatency += extraPulses * MAX(cell->resetPulse, cell->setPulse) + cell->writeVerifyRounds * readLatency;
 					}
+					/* PIMID (1.12.244): a cell calibrated to a measured write-verify macro. Each word of wvWordBits has
+					 * its own write-verify engine and the words of an access are written in parallel, so the write
+					 * takes one word's measured time, wvWordBits x (t0 + t1 R) for R rounds. It replaces the pulse +
+					 * verify sum above. */
+					if (cell->wvWordBits > 0 && cell->wvFitTime1 > 0 && cell->writeVerifyRounds > 0) {
+						writeLatency = cell->wvWordBits * (cell->wvFitTime0 + cell->wvFitTime1 * cell->writeVerifyRounds);
+						resetLatency = setLatency = writeLatency;
+					}
 				}
 			}
 		} else if (cell->memCellType == SLCNAND) {
@@ -908,6 +916,18 @@ void SubArray::CalculatePower() {
 		if (cell->accessType == diode_access || cell->accessType == none_access) {
 			writeDynamicEnergy += bitlineMux.writeDynamicEnergy + senseAmp.writeDynamicEnergy
 					+ senseAmpMuxLev1.writeDynamicEnergy + senseAmpMuxLev2.writeDynamicEnergy;
+		}
+		/* PIMID (1.12.244): a cell calibrated to a measured macro is priced at the macro's energy per bit for the
+		 * bits this subarray senses or writes: the read at macroReadEnergy, the write at e0 + e1 R (pulses,
+		 * verify reads, drivers and write supplies, as measured). They replace the component sums above. */
+		if (cell->memCellType == MRAM || cell->memCellType == memristor) {
+			const double bitsAccessed = numColumn / muxSenseAmp / muxOutputLev1 / muxOutputLev2;
+			if (cell->macroReadEnergy > 0)
+				readDynamicEnergy = cell->macroReadEnergy * bitsAccessed;
+			if (cell->wvFitEnergy1 > 0 && cell->writeVerifyRounds > 0) {
+				writeDynamicEnergy = (cell->wvFitEnergy0 + cell->wvFitEnergy1 * cell->writeVerifyRounds) * bitsAccessed;
+				setDynamicEnergy = resetDynamicEnergy = writeDynamicEnergy;
+			}
 		}
 		leakage += rowDecoder.leakage + bitlineMuxDecoder.leakage + senseAmpMuxLev1Decoder.leakage
 				+ senseAmpMuxLev2Decoder.leakage + precharger.leakage + bitlineMux.leakage

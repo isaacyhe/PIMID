@@ -230,7 +230,7 @@ std::string NVSimWrapper::writeOptionsKey() const {
     const WriteOptions& o = writeOptions();
     std::ostringstream os;
     if (config_.nvm_type == NVMType::RERAM) {
-        os << "wv" << o.reram_rounds;
+        os << "wv" << o.reram_rounds << "_emb";   /* (1.12.244): the 1T1R cell calibrated to EMBER */
     } else if (config_.nvm_type == NVMType::STTRAM) {
         os << (o.stt_cumulative ? "wvcum" : "wvind");
     }

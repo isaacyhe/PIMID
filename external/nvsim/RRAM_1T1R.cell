@@ -9,20 +9,29 @@
 -CellArea (F^2): 53
 -CellAspectRatio: 1
 
--ResistanceOnAtSetVoltage (ohm): 100000
--ResistanceOffAtSetVoltage (ohm): 10000000
--ResistanceOnAtResetVoltage (ohm): 100000
--ResistanceOffAtResetVoltage (ohm): 10000000
--ResistanceOnAtReadVoltage (ohm): 1000000
--ResistanceOffAtReadVoltage (ohm): 10000000
--ResistanceOnAtHalfResetVoltage (ohm): 500000
+# PIMID (1.12.244): the resistances of a 1T1R storage cell of the referenced 40 nm family, LRS about 10 kOhm and HRS
+# about 100 kOhm (Chiang, Ni, Sung, Hou, Chang, Jou, "Hardware-Robust In-RRAM-Computing for Object Detection",
+# arXiv 2205.03996, on a TSMC 40 nm RRAM test chip designed for storage: "resistance values of [LRS] and [HRS] from
+# storage applications are around 10^4 ohms and 10^5 ohms"), taken at every voltage (the sample's values were a
+# selector-less crosspoint cell's, 100 kOhm to 10 MOhm). The half-reset LRS keeps the sample's 5x ratio.
+-ResistanceOnAtSetVoltage (ohm): 10000
+-ResistanceOffAtSetVoltage (ohm): 100000
+-ResistanceOnAtResetVoltage (ohm): 10000
+-ResistanceOffAtResetVoltage (ohm): 100000
+-ResistanceOnAtReadVoltage (ohm): 10000
+-ResistanceOffAtReadVoltage (ohm): 100000
+-ResistanceOnAtHalfResetVoltage (ohm): 50000
 
 -CapacitanceOn (F): 1e-16
 -CapacitanceOff (F): 1e-16
 
 -ReadMode: current
--ReadVoltage (V): 0.4
--ReadPower (uW): 0.16
+# PIMID (1.12.244): EMBER reads at 100 mV (Levy et al., JSSC 2024, Fig. 14); read power V^2 / LRS = 1 uW.
+-ReadVoltage (V): 0.1
+-ReadPower (uW): 1
+# PIMID (1.12.244): the read is priced at EMBER's measured macro read energy, 1.0 pJ/bit for 1 b/cell (cell, bitlines,
+# sense amplifiers -- half of it -- and decoders; Levy et al., JSSC 2024, Sec. V-A and Fig. 14).
+-MacroReadEnergy (pJ/bit): 1.0
 
 -ResetMode: voltage
 -ResetVoltage (V): 2.0
@@ -45,6 +54,15 @@
 # and-verify rounds per word, about 13; and about 9 of 48 cells pulsed per round gives about 3.2 cell
 # pulses per bit (Fig. 5.10). Its ISPP starts from 0 V, so these are on the high side.
 -WriteVerifyRounds (avg): 13
+# PIMID (1.12.244): the time and energy of those rounds, from the same macro's fits against the pulse count R (the
+# fits the 13 rounds come from): (0.71 + 6.06 R) ns per bit of a 48-bit word and (41.37 + 27.91 R) pJ per bit,
+# 3.82 us and 404 pJ/bit at R = 13 (EMBER measures 12.4 Mb/s and 0.40 nJ/bit). Every 48-bit word of an access has
+# its own write-verify engine and the words are written in parallel (EMBER writes one 48-bit word at a
+# time per macro; a 512-bit access is taken as 11 such words side by side), so a write takes one word's time. The
+# measured energy includes the write supplies, so the pump efficiency below no longer applies to this cell.
+-WriteVerifyWordBits: 48
+-WriteVerifyFitTime (ns/bit): 0.71 6.06
+-WriteVerifyFitEnergy (pJ/bit): 41.37 27.91
 -WritePulsesPerBit (avg): 3.2
 # PIMID (1.12.163): the write supply. The 2.0 V SET/RESET pulses come from an on-chip charge pump above the
 # logic supply (Intel 22FFL, Jain et al. ISSCC 2019: "a single supply coming from an in-situ charge pump").
