@@ -82,8 +82,10 @@ compute cost:
 ## Memory-level parallelism (MLP)
 
 The analytical NoC model divides per-access latency by an MLP intensity `M`
-(`noc.mlp`). `M` is a property of the core model, calibrated against the
-cycle-accurate `detailed` model; omit `noc.mlp` to use the calibrated default.
+(`noc.mlp`). `M` is a property of the core model. On a DRAM device the default is
+calibrated against the cycle-accurate `detailed` model; on an SRAM or NVM device it
+is the PE's own window (1 for the blocking cores, the L1D fill buffers for
+`ooo_core`); `noc.mlp` overrides both.
 See [network.md](network.md).
 
 ## Fidelity ladder (scalar in-order vs in-order vs out-of-order)

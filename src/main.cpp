@@ -7154,6 +7154,18 @@ static bool reportBandwidthScopes(const std::string& tech, int ranks_per_channel
     return false;
 }
 
+/* (1.12.260): the analytical model's outstanding-access window M when noc.mlp is absent. On an SRAM or NVM device it
+ * is the PE's own window, the one the detailed model's core keeps and the packet header's tag is sized for: a
+ * blocking PE (alu_core, in_order_core) has one access outstanding; an ooo_core PE has its L1D fill buffers. A DRAM
+ * device keeps 10, calibrated for alu_core against the detailed model. */
+static int analyticalMlpWindow(const UnifiedConfig& config) {
+    if (config.noc_mlp_degree > 0) return config.noc_mlp_degree;
+    const std::string& t = config.memory_tech;
+    if (!(t == "SRAM" || t == "STT_MRAM" || t == "PCM" || t == "RERAM")) return 10;
+    if (config.pe_type == "ooo_core") return std::max(1, (int)g_core_rec.ooo.l1d_fill_buffers);
+    return 1;
+}
+
 static void reportStatedConstants(const UnifiedConfig& config) {
     struct Row { const char* what; std::string value; const char* knob; const char* governs; };
     std::vector<Row> rows;
@@ -7244,7 +7256,7 @@ static void reportStatedConstants(const UnifiedConfig& config) {
                     "flits-per-access on the detailed path"});
     if (!config.noc_cycle_accurate) {
         rows.push_back({"MLP degree M",
-                        std::to_string(config.noc_mlp_degree > 0 ? config.noc_mlp_degree : 10),
+                        std::to_string(analyticalMlpWindow(config)),   // (1.12.260): the PE's own window on SRAM/NVM
                         "noc.mlp",
                         "the PE outstanding-access window in the M/D/1 model"});
     }
@@ -9757,8 +9769,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
      * All three are user-overridable with noc.mlp. The numeric consequence of
      * the one-size-fits-all default is tracked separately as B014. */
     {
-        int mlpM = config.noc_mlp_degree;
-        if (mlpM < 1) mlpM = 10;   // no explicit noc.mlp: the single default
+        int mlpM = analyticalMlpWindow(config);   // (1.12.260): no explicit noc.mlp: 10 on DRAM, the PE's own window on SRAM/NVM
         out << "        nocMlpDegree = " << mlpM << ";\n";
         out << "        peOooTags = " << (config.pe_type == "ooo_core" ? "true" : "false") << ";\n";   // the header tag's source (user ruling 2026-10-26: PIMID's own packet header)
     }

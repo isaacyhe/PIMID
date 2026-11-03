@@ -250,8 +250,10 @@ t_eff = max( (L + W_q) / M ,  P * D / c )
   bandwidth enters through the floor term instead.
 - `W_q` -- M/D/1 queuing contention at the bottleneck channel, computed from
   the aggregate injection rate spread over the topology's channels
-- `M` -- memory-level-parallelism intensity (`noc.mlp`, at least 1; omit for
-  the default 10, one value for every core type, calibrated for `alu_core`)
+- `M` -- memory-level-parallelism intensity (`noc.mlp`, at least 1; omitted, a
+  DRAM device uses 10, one value for every core type, calibrated for `alu_core`,
+  and an SRAM or NVM device the PE's own window: 1 for the blocking `alu_core`
+  and `in_order_core`, the L1D fill buffers for `ooo_core`)
 - `P * D / c` -- aggregate-bandwidth floor: P PEs sharing c channels of
   deterministic service time D
 

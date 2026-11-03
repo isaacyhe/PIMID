@@ -6,6 +6,36 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.260 -- on an SRAM or NVM device the analytical model keeps as many accesses outstanding as the PE does
+
+- **The problem.** The analytical model prices an access to another element's slot at `max((L + W_q) / M, P*D/c)`, and
+  without `noc.mlp` its outstanding-access window M was 10 for every core type, a value calibrated for `alu_core` on
+  DRAM devices. The detailed model's `alu_core` and `in_order_core` PEs keep one access outstanding (the packet header
+  sizes its tag for that), and on an SRAM or NVM device the detailed path charges each access its network legs and its
+  bank in full. The analytical model therefore priced a cross-slot access on SRAM at about 2 cycles, less than an
+  access to the element's own slot (6 to 19 cycles), against 31 to 159 cycles in the detailed model, and its cores ran
+  ahead of their banks, so its bank waits ran several times the detailed model's. On the 40 fig2 cells (16 elements at
+  the bank, smoke sizes, no topology named, no write budget) the detailed run time was -3.2% to +169.5% of the
+  analytical one (median +15.2%; shared memory +33.8%).
+- **The fix** (src/main.cpp; docs/yaml_reference.md, docs/network.md, docs/cores.md). Without `noc.mlp`, an SRAM, PCM,
+  ReRAM or STT-MRAM device's window is the PE's own: 1 for `alu_core` and `in_order_core`, the L1D fill buffers for
+  `ooo_core`. The packet header's tag follows it (1 bit instead of 4 on a blocking PE). A DRAM device keeps 10;
+  `noc.mlp` still wins. The run prints the window in its `MLP degree M` line.
+- **Validation** (the previous release against this build, logs compared with the tree paths masked):
+  - The 40 fig2 cells, analytical: run time +0.46% to +116.8% (message passing +0.46% to +13.1%, median +1.5%; shared
+    memory +1.5% to +116.8%, median +9.0%), energy +0.2% to +89.3% (median +2.9%). Detailed: run time identical in
+    every cell; each packet's header carries 3 bits fewer, and energy is unchanged to 0.05%.
+  - Detailed against analytical on the same cells: -28.3% to +82.8% (median +7.5%; message passing +6.8%, shared memory
+    +8.9%). The largest gaps left are the detailed network's 128-bit flit (SRAM message-passing stencil_2d +82.8%) and
+    the ReRAM shared-memory gemv (-28.3%), whose bank waits rise steeply with the request rate.
+  - Every DRAM cell is identical: the 115 DRAM device message-passing smoke cells, the 11 co-simulation message-passing
+    smoke cells, the 40 host baselines, the 116-cell validation set and the 30 bfs smoke variants. The other 20 of the
+    135 (SRAM and NVM cells naming `MESH_2D`) keep their run time; only the header bits they send change.
+  - Four cells run 8 times each in each model give one output per cell. The power checker reports no flag that the
+    release before does not, and no internal-consistency failure.
+- **Data impact.** Analytical runs of SRAM and NVM devices without `noc.mlp`, and the header bits of their detailed
+  runs. DRAM devices are unchanged; their window of 10 stays a calibration against the detailed model.
+
 ## 1.12.259 -- `memory.local_path: garnet_bus`: each group of an SRAM or NVM device a shared bus on the network
 
 - **The change.** `memory.local_path` takes a third value, `garnet_bus`. It builds the endpoints of `garnet` (every

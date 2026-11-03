@@ -544,7 +544,7 @@ static void InitSystem(Config& config) {
          *             MAX_THREADS clamp in autoGeneratePEMemMap) plus the memory / aggregated
          *             region endpoints -- 4096 ids;
          *   tag       ceil(log2(M)) bits, M = the PE outstanding-access window the run uses
-         *             (sys.hierarchy.nocMlpDegree, noc.mlp; 10 by default -> 4 bits);
+         *             (sys.hierarchy.nocMlpDegree, noc.mlp; 10 by default on DRAM -> 4 bits, the PE's own window on SRAM/NVM);
          *   address   the rest of the word: 64 - 24 - 2 - tag (34 at the defaults). */
         const uint32_t m = std::max<uint32_t>(2, config.get<uint32_t>("sys.hierarchy.nocMlpDegree", 10));
         uint32_t tb = 0; while ((1u << tb) < m) tb++;
