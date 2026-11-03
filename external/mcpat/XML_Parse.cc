@@ -1313,7 +1313,6 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"total_accesses")==0) sys.NoC[i].total_accesses=atof(xNode3.getChildNode("stat",k).getAttribute("value"));
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"link_traversals")==0) sys.NoC[i].link_traversals=atof(xNode3.getChildNode("stat",k).getAttribute("value"));   /* PIMID 1.12.18 */
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"tsv_die_crossings")==0) sys.NoC[i].tsv_die_crossings=atof(xNode3.getChildNode("stat",k).getAttribute("value"));
-							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"passthrough_accesses")==0) sys.NoC[i].passthrough_accesses=atof(xNode3.getChildNode("stat",k).getAttribute("value"));   /* PIMID 1.12.18 */
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"duty_cycle")==0) sys.NoC[i].duty_cycle=atof(xNode3.getChildNode("stat",k).getAttribute("value"));
 						}
 					}
@@ -1909,7 +1908,6 @@ void ParseXML::initialize() //Initialize all
 		sys.NoC[i].tech_node = 0;
 		sys.NoC[i].link_traversals = -1;
 		sys.NoC[i].tsv_die_crossings = -1;
-		sys.NoC[i].passthrough_accesses = -1;   /* PIMID 1.12.18: upstream */
 		strcpy(sys.NoC[i].topology,"default");
 		sys.NoC[i].horizontal_nodes=1;
 		sys.NoC[i].vertical_nodes=1;

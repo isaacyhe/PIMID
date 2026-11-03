@@ -779,7 +779,7 @@ void NoC::computeEnergy(bool is_tdp)
 	    else
 	    {
 	    	//init stats for runtime power (RTP)
-	    	stats_t.readAc.access  = router_accesses;   /* PIMID 1.12.18: total_accesses less pass-through (set_noc_param) */
+	    	stats_t.readAc.access  = router_accesses;   /* PIMID: total_accesses (set_noc_param) */
             rtp_stats = stats_t;
         	set_pppm(pppm_t, 1, 0 , 0, 0);
         	/* PIMID 1.11.33: RUNTIME LEAKAGE MISSED THE STRUCTURAL MULTIPLIERS.
@@ -819,25 +819,6 @@ void NoC::computeEnergy(bool is_tdp)
         		router->rt_power = router->rt_power + (router->buffer.rt_power + router->crossbar.rt_power + router->arbiter.rt_power)*pppm_t +
 					router->power*pppm_lkg_nodes;//TDP power must be calculated first!
         		rt_power     = rt_power + router->rt_power;
-        		/* PIMID 1.12.18 (ruling "pass-through routers as wire"): the
-        		 * router dynamic the moved accesses would have cost, at this
-        		 * instance's own per-access energy, for the hand check. */
-        		const double moved = XML->sys.NoC[ithNoC].total_accesses - router_accesses;
-        		if (moved > 0 && nocdynp.executionTime > 0)
-        		{
-        			const double e_acc = router->buffer.power.readOp.dynamic + router->buffer.power.writeOp.dynamic
-        			                   + router->crossbar.power.readOp.dynamic + router->arbiter.power.readOp.dynamic;
-        			pimid::debugStream(std::cerr) << "[mcpat noc] NoC " << ithNoC << " runtime: " << moved
-        			          << " pass-through accesses NOT charged as router accesses (priced on the links): "
-        			          << moved << " x " << e_acc << " J = " << moved*e_acc << " J = "
-        			          << moved*e_acc/nocdynp.executionTime << " W of router dynamic removed; "
-        			          << router_accesses << " router accesses charged = "
-        			          << router_accesses*e_acc/nocdynp.executionTime << " W (logic-process router energy;"
-        			          << (XML->sys.NoC[ithNoC].on_dram_die ? " this level is on the DRAM die, so processor.cc"
-        			                                                   " then scales it by the DRAM-periphery dynamic factor)"
-        			                                                 : " off-die, no family transform)")
-        			          << std::endl;
-        		}
         	}
         	if (link_bus_exist)
         	{
@@ -1064,36 +1045,7 @@ void NoC::set_noc_param()
 	nocdynp.vertical_nodes    = XML->sys.NoC[ithNoC].vertical_nodes;
 	nocdynp.total_nodes       = nocdynp.horizontal_nodes*nocdynp.vertical_nodes;
 	nocdynp.duty_cycle        = XML->sys.NoC[ithNoC].duty_cycle;
-	/* PIMID 1.12.18 (user ruling "pass-through routers as wire"): a router
-	 * with one router child and no endpoint is a single in/out path. It has
-	 * nothing to arbitrate and no crossbar choice to make; its flits come up
-	 * one link and leave by the other, and the caller prices those links
-	 * (links-only instances, routers_present=0). Its accesses are therefore
-	 * NOT router accesses: this instance charges its buffers, crossbar and
-	 * arbiter total_accesses - passthrough_accesses, and the duty_cycle the
-	 * caller derived from total_accesses (accesses / (cycles x nodes)) is
-	 * scaled by the same ratio, so the clock gating and the TDP traffic
-	 * factor read the routers' own activity. Nothing is added: the moved
-	 * accesses are already the links' traversals. The node count is the
-	 * caller's (pass-through routers are not in it). */
 	router_accesses = XML->sys.NoC[ithNoC].total_accesses;
-	if (nocdynp.type && XML->sys.NoC[ithNoC].routers_present &&
-	    XML->sys.NoC[ithNoC].passthrough_accesses > 0)
-	{
-		const double T = XML->sys.NoC[ithNoC].total_accesses;
-		const double P = std::min(T, XML->sys.NoC[ithNoC].passthrough_accesses);
-		const double d0 = nocdynp.duty_cycle;
-		router_accesses = T - P;
-		if (T > 0) nocdynp.duty_cycle = d0 * (router_accesses / T);
-		pimid::debugStream(std::cerr) << "[mcpat noc] NoC " << ithNoC << ": pass-through routers as wire: router accesses "
-		          << T << " - " << P << " pass-through = " << router_accesses
-		          << "; duty_cycle " << d0 << " -> " << nocdynp.duty_cycle
-		          << " (x " << (T > 0 ? router_accesses / T : 0.0) << ")" << std::endl;
-		if (XML->sys.NoC[ithNoC].passthrough_accesses > T)
-			std::cerr << "[mcpat noc] NoC " << ithNoC << ": WARNING passthrough_accesses "
-			          << XML->sys.NoC[ithNoC].passthrough_accesses << " > total_accesses " << T
-			          << ", clamped" << std::endl;
-	}
 	nocdynp.has_global_link   = XML->sys.NoC[ithNoC].has_global_link;
 	nocdynp.link_throughput   = XML->sys.NoC[ithNoC].link_throughput;
 	nocdynp.link_latency      = XML->sys.NoC[ithNoC].link_latency;

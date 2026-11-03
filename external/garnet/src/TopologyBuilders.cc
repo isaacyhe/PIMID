@@ -82,8 +82,9 @@ TopologyBuilders::makeIntLink(uint32_t id,
                               const std::string& dst_inport,
                               Cycles latency,
                               uint32_t vcs_per_vnet, uint32_t virt_nets,
-                              uint32_t width)
+                              uint32_t width, long credit_latency)
 {
+    const Cycles cred_lat = (credit_latency >= 0) ? Cycles(credit_latency) : latency;   // (1.12.231)
     NetworkLinkParams nlp;
     nlp.name = "int_net_link" + std::to_string(id);
     nlp.link_id = id * 2;
@@ -95,7 +96,7 @@ TopologyBuilders::makeIntLink(uint32_t id,
     CreditLinkParams clp;
     clp.name = "int_cred_link" + std::to_string(id);
     clp.link_id = id * 2 + 1;
-    clp.link_latency = latency;
+    clp.link_latency = cred_lat;
     clp.vcs_per_vnet = vcs_per_vnet;
     clp.virt_nets = virt_nets;
     clp.width = width;
@@ -124,8 +125,9 @@ TopologyBuilders::makeExtLink(uint32_t id,
                               NodeID ext_node, uint32_t int_node,
                               Cycles latency,
                               uint32_t vcs_per_vnet, uint32_t virt_nets,
-                              uint32_t width)
+                              uint32_t width, long credit_latency)
 {
+    const Cycles cred_lat = (credit_latency >= 0) ? Cycles(credit_latency) : latency;   // (1.12.231)
     // External links are bidirectional: index 0 = In (NI->Router),
     //                                   index 1 = Out (Router->NI)
     NetworkLinkParams nlp_in;
@@ -139,7 +141,7 @@ TopologyBuilders::makeExtLink(uint32_t id,
     CreditLinkParams clp_in;
     clp_in.name = "ext_cred_link_in" + std::to_string(id);
     clp_in.link_id = 10000 + id * 4 + 1;
-    clp_in.link_latency = latency;
+    clp_in.link_latency = cred_lat;
     clp_in.vcs_per_vnet = vcs_per_vnet;
     clp_in.virt_nets = virt_nets;
     clp_in.width = width;
@@ -155,7 +157,7 @@ TopologyBuilders::makeExtLink(uint32_t id,
     CreditLinkParams clp_out;
     clp_out.name = "ext_cred_link_out" + std::to_string(id);
     clp_out.link_id = 10000 + id * 4 + 3;
-    clp_out.link_latency = latency;
+    clp_out.link_latency = cred_lat;
     clp_out.vcs_per_vnet = vcs_per_vnet;
     clp_out.virt_nets = virt_nets;
     clp_out.width = width;
@@ -724,8 +726,11 @@ bool topoInt(const std::string& s, long& v)
     return end && *end == '\0';
 }
 
-struct TopoExtEntry { uint32_t endpoint; uint32_t router; long latency; uint32_t width; };
-struct TopoIntEntry { uint32_t src; uint32_t dst; int weight; long latency; uint32_t width; };
+/* (1.12.231): a trailing "span" word marks a link the DRAM-tree writer built
+ * in place of nodes that are not routers: its credits return in one
+ * cycle (a link has no buffer of its own to free along the way). */
+struct TopoExtEntry { uint32_t endpoint; uint32_t router; long latency; uint32_t width; bool span = false; };
+struct TopoIntEntry { uint32_t src; uint32_t dst; int weight; long latency; uint32_t width; bool span = false; };
 struct TopoParsed {
     uint32_t num_routers = 0, num_endpoints = 0;
     std::vector<TopoExtEntry> ext_entries;
@@ -771,6 +776,7 @@ void topoParse(const std::string& filename, TopoParsed& t)
             long lat; uint32_t w;
             if (iss >> lat) e.latency = lat;
             if (iss >> w)   e.width = w;
+            { std::string kw; if (iss >> kw && kw == "span") e.span = true; }   // (1.12.231)
             ext_entries.push_back(e);
         } else if (token == "int") {
             TopoIntEntry e;
@@ -780,6 +786,7 @@ void topoParse(const std::string& filename, TopoParsed& t)
             if (iss >> wt)  e.weight = wt;
             if (iss >> lat) e.latency = lat;
             if (iss >> w)   e.width = w;
+            { std::string kw; if (iss >> kw && kw == "span") e.span = true; }   // (1.12.231)
             int_entries.push_back(e);
         } else if (token == "rlevel") {
             uint32_t r; int lv;
@@ -951,7 +958,8 @@ TopologyBuilders::buildFromFile(const std::string& filename,
             uint32_t eff_w  = (e.width   >  0) ? e.width           : width;
             GarnetExtLink* elink = makeExtLink(ext_id++, e.endpoint, e.router,
                                                eff_lat,
-                                               vcs_per_vnet, virt_nets, eff_w);
+                                               vcs_per_vnet, virt_nets, eff_w,
+                                               e.span ? 1 : -1);   // (1.12.231)
             result.ext_links.push_back(elink);
             result.topology->addExternalLink(elink);
         }
@@ -979,7 +987,8 @@ TopologyBuilders::buildFromFile(const std::string& filename,
         uint32_t eff_w  = (e.width   >  0) ? e.width           : width;
         GarnetIntLink* link = makeIntLink(int_id++,
             e.src, e.dst, src_port, dst_port,
-            eff_lat, vcs_per_vnet, virt_nets, eff_w);
+            eff_lat, vcs_per_vnet, virt_nets, eff_w,
+            e.span ? 1 : -1);   // (1.12.231)
         result.int_links.push_back(link);
         result.topology->addInternalLink(link);
     }

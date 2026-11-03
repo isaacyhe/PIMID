@@ -198,12 +198,6 @@ public:
         int tech_node_nm = 0;
         int64_t link_traversals = -1;
         int64_t tsv_die_crossings = -1;
-        /* 1.12.18 (user ruling "pass-through routers as wire"): >= 0 = the
-         * part of total_accesses that went through pass-through routers (one
-         * router child, no endpoint) of this router instance's level; the
-         * McPAT fork prices total_accesses - passthrough_accesses router
-         * accesses. -1 = not described (upstream). */
-        int64_t passthrough_accesses = -1;
         // Activity
         uint64_t total_accesses;  // packets at this level
         double duty_cycle;        // derived: total_accesses / total_cycles

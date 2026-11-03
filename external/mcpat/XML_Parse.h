@@ -577,14 +577,6 @@ typedef struct{
 	double total_accesses;
 	double link_traversals;
 	double tsv_die_crossings;
-	/* PIMID 1.12.18 (user ruling "pass-through routers as wire"): (stat)
-	 * > 0 = the part of total_accesses that went through routers with one
-	 * router child and no endpoint (a single in/out path). They are wire:
-	 * their flits are priced by the level's links-only instances, so this
-	 * instance's routers are charged total_accesses - passthrough_accesses
-	 * and its duty_cycle is scaled by the same ratio. <= 0 (default -1) =
-	 * upstream. */
-	double passthrough_accesses;
 	double duty_cycle;
 	double route_over_perc;
 } system_NoC;

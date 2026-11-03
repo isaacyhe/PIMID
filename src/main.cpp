@@ -3215,6 +3215,7 @@ static const char* kSchemaPaths[] = {
     "power.models.host_uncore_static", "power.host_uncore.w_per_socket",   // (1.12.97): host socket uncore, awake
     "power.models.host_uncore_load", "power.host_uncore.load_w_per_mb_llc",   // (1.12.154): host uncore rise under load
     "power.models.coherence_directory", "power.models.nondram_array_system",   // 1.12.18
+    "noc.single_path_as_link",   // (1.12.231): the detailed DRAM tree's two-attachment nodes as links
     "power.models.passthrough_as_wire", "power.models.sharer_bits_from_children",   // 1.12.18 (rulings)
     "power.pcie.bandwidth_GBs", "power.pcie.base_latency_ns", "power.pcie.coherence_extra_ns", "power.pcie.duty_cycle", "power.pcie.enabled", "power.pcie.header_bytes", "power.pcie.link_type",
     "power.pcie.model", "power.pcie.num_channels", "power.pcie.num_lanes", "power.pcie.num_units", "power.pcie.pj_per_bit_override", "power.pcie.total_load_perc",
@@ -3759,6 +3760,11 @@ struct UnifiedConfig {
     // overwrite an explicit choice.
     bool noc_vcs_user_set = false;
     bool noc_buffers_user_set = false;
+    /* (1.12.231): noc.single_path_as_link. A node of the detailed DRAM tree with
+     * exactly two attachments and the same width and clock on both of its
+     * links is built as part of a link, not as a router; false builds every
+     * node of the tree as a router. */
+    bool noc_single_path_as_link = true;
     std::string noc_topology_file;        // required for CUSTOM topology
     std::string noc_routing_table_file;   // optional for TABLE routing
     int noc_control_msg_bits;             // 0 = default (64 bits)
@@ -4139,13 +4145,6 @@ struct UnifiedConfig {
      * BY USER OPTION. */
     bool power_model_noc_links = true;
     bool power_model_fabric_tsv = true;
-    /* 1.12.18 (user ruling "pass-through routers as wire"): a router with
-     * one router child and no endpoint (a single in/out path) on a level
-     * that survives is priced as the wire it is: its flit traversals leave
-     * the level's router accesses (the McPAT fork subtracts the measured
-     * passthrough_accesses) and stay priced on the links-only instances.
-     * Off = they are priced as router accesses, as before. */
-    bool power_model_passthrough_as_wire = true;
     /* 1.12.18 (user ruling "sharer bits from the real child count"): the SBT
      * directory of an L2/L3 is sized from the children zsim gives the cache
      * (McPAT fork param dir_sharers), not from number_of_cores. */
@@ -5849,7 +5848,8 @@ static int stackChannelsPerDie(const UnifiedConfig& config, bool print) {
     return per_die;
 }
 
-static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig& config, long covered, int pe_level) {
+static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig& config, long covered, int pe_level,
+                             const std::vector<char>* as_link = nullptr) {   // (1.12.231): the nodes built as links (none = every node a router)
     /* 1.11.103 (ruling 9): the in-die fabric's node links count as ports and
      * every grid node (and a CROSSBAR hub) is a priced switch; the walk census
      * below takes the walker's own paths, so the hop counts, the hotspot and
@@ -6019,12 +6019,13 @@ static void censusSparseTree(const pimid_htree::SparseHTree& tree, UnifiedConfig
         std::cout << "[htree] hotspot: max link load " << maxL << " vs mean " << ((nLinks > 0) ? (double)sumL / (double)nLinks : 0.0)
                   << " over " << nLinks << " directed links -> factor " << config.htree_hotspot_100 / 100.0 << " (uniform PE->endpoint walk; ruling 12 (c))" << std::endl;
     }
+    int built = 0;   // (1.12.231): the routers built
+    for (int r = 0; r < tree.numRouters; ++r) if (!(as_link && r < (int)as_link->size() && (*as_link)[(size_t)r])) built++;
     std::cout << "[htree] " << branch << " branch routers of "
-              << tree.numRouters << " (" << (tree.numRouters - branch)
-              << " pass-through), " << tree.totalEndpoints()
+              << built << " routers, " << tree.totalEndpoints()
               << " endpoints\n";
 
-    std::cout << "[htree] " << tree.numRouters << " routers, "
+    std::cout << "[htree] " << built << " routers, "
               << tree.totalEndpoints() << " endpoints ("
               << tree.numPEs << " PE + " << tree.numAbstract
               << " aggregated), covering " << covered
@@ -6095,6 +6096,88 @@ static int treeLevelLinkWidthBits(const UnifiedConfig& config, int lvl, int fall
 }
 
 static double deviceCycleClockMHz(const UnifiedConfig& config);   // 1.11.97 (7c): the device clock the Garnet link latencies are quoted in
+
+/* (1.12.231): which nodes of the sparse tree are built as links.
+ *
+ * A node with exactly two attachments -- its parent and one router child, or
+ * its parent and one endpoint -- whose two links have the same width and the
+ * same clock is not a router: nothing arbitrates there and the datapath does
+ * not change. It is built as part of a link, the link from the node below it
+ * to the first router above, whose latency is the sum of the links it
+ * replaces. A two-attachment node where the width or the clock changes is a
+ * converter and stays a router. Widths and clocks are the layers' own (the
+ * true ladder width, before the flit clamp). The root anchors the tree and
+ * the in-die fabric's nodes are its switches (1.11.103): both stay routers.
+ * on = noc.single_path_as_link; the counts are taken either way. */
+struct SinglePathLinks {
+    std::vector<int> newId;    // tree router -> router id as built; -1 = built as part of a link
+    std::vector<int> parent;   // tree router -> tree parent (-1 = root)
+    std::vector<int> upLink;   // tree router -> its up-link in tree.intLinks (-1 = root)
+    std::vector<int> kids;     // tree router -> router children in the tree
+    std::vector<char> asLink;  // tree router -> 1 = built as part of a link
+    int qualifying = 0;        // two-attachment nodes with the same width and clock on both links
+    int linked = 0;            // of them, built as links (0 when the option is off)
+    int converters = 0;        // two-attachment nodes kept as routers: the width or the clock changes
+    int rootTwo = 0;           // a two-attachment root (kept)
+    int fabricTwo = 0;         // two-attachment in-die fabric nodes (kept)
+    int qualAt[7] = {0,0,0,0,0,0,0}, convAt[7] = {0,0,0,0,0,0,0};
+    int built = 0;             // routers built
+};
+static SinglePathLinks planSinglePathLinks(const pimid_htree::SparseHTree& t, const double layerBits[4],
+                                           const double layerGHz[4], bool on) {
+    SinglePathLinks p;
+    const int R = t.numRouters;
+    p.newId.assign((size_t)R, -1); p.parent.assign((size_t)R, -1); p.upLink.assign((size_t)R, -1);
+    p.kids.assign((size_t)R, 0);
+    std::vector<int> eps((size_t)R, 0), kidLink((size_t)R, -1), epLink((size_t)R, -1);
+    for (size_t i = 0; i < t.intLinks.size(); ++i) {
+        const auto& l = t.intLinks[i];
+        if (l.a < 0 || l.a >= R || l.b < 0 || l.b >= R) continue;
+        p.parent[(size_t)l.b] = l.a; p.upLink[(size_t)l.b] = (int)i;
+        p.kids[(size_t)l.a]++; kidLink[(size_t)l.a] = (int)i;
+    }
+    for (size_t i = 0; i < t.extLinks.size(); ++i) {
+        const auto& e = t.extLinks[i];
+        if (e.b < 0 || e.b >= R) continue;
+        eps[(size_t)e.b]++; epLink[(size_t)e.b] = (int)i;
+    }
+    std::vector<char> fabric((size_t)R, 0);
+    for (const auto& g : t.gridLinks) {
+        if (g.a >= 0 && g.a < R) fabric[(size_t)g.a] = 1;
+        if (g.b >= 0 && g.b < R) fabric[(size_t)g.b] = 1;
+    }
+    for (int r = 0; r < R && r < (int)t.gridDie.size(); ++r) if (t.gridDie[(size_t)r] >= 0) fabric[(size_t)r] = 1;
+    for (const auto& kv : t.dieExitOf) {
+        if (kv.first >= 0 && kv.first < R) fabric[(size_t)kv.first] = 1;
+        if (kv.second >= 0 && kv.second < R) fabric[(size_t)kv.second] = 1;
+    }
+    auto sameLayer = [&](int la, int lb) {
+        if (la < 0 || la > 3 || lb < 0 || lb > 3) return false;
+        if (layerBits[la] != layerBits[lb]) return false;
+        const double fa = layerGHz[la], fb = layerGHz[lb];
+        return std::fabs(fa - fb) <= 1e-9 * std::max(std::fabs(fa), std::fabs(fb));
+    };
+    std::vector<char> asLink((size_t)R, 0);
+    for (int r = 0; r < R; ++r) {
+        const int att = p.kids[(size_t)r] + eps[(size_t)r] + (r != 0 ? 1 : 0);
+        if (att != 2) continue;
+        if (r == 0) { p.rootTwo++; continue; }
+        if (fabric[(size_t)r]) { p.fabricTwo++; continue; }
+        const int lv = (r < (int)t.levelOfRouter.size()) ? t.levelOfRouter[(size_t)r] : -1;
+        const int below = (p.kids[(size_t)r] == 1) ? t.intLinks[(size_t)kidLink[(size_t)r]].li
+                                                   : t.extLinks[(size_t)epLink[(size_t)r]].li;
+        const int above = t.intLinks[(size_t)p.upLink[(size_t)r]].li;
+        if (sameLayer(below, above)) {
+            p.qualifying++; if (lv >= 0 && lv <= 6) p.qualAt[lv]++;
+            if (on) { asLink[(size_t)r] = 1; p.linked++; }
+        } else {
+            p.converters++; if (lv >= 0 && lv <= 6) p.convAt[lv]++;
+        }
+    }
+    for (int r = 0; r < R; ++r) if (!asLink[(size_t)r]) p.newId[(size_t)r] = p.built++;
+    p.asLink = asLink;
+    return p;
+}
 
 static bool dramHTreeBuilder(const std::string& tech,
                              const std::string& outPath,
@@ -6410,6 +6493,7 @@ static bool dramHTreeBuilder(const std::string& tech,
         config.hierarchy_ranks_per_channel, layer_w, layer_lat,
         config.indie_fabric.empty() ? nullptr : &fab);
     pimid_htree::assignStackDies(tree, stackChannelsPerDie(config, true));   // 1.12.18 (TSV layout)
+    SinglePathLinks fold;   // (1.12.231): set with the census below
 
     /* 1.10: the tree must cover the memory exactly. Every organisation at the
      * placement level is either hosted by a processing element or sits behind
@@ -6439,7 +6523,29 @@ static bool dramHTreeBuilder(const std::string& tech,
                       << "nothing, or by something twice.\n";
             std::exit(2);
         }
-        censusSparseTree(tree, config, covered, pe_level);
+        double lBits[4], lGHz[4];
+        for (int i = 0; i < 4; ++i) { lBits[i] = L[i].width_bits; lGHz[i] = L[i].freq_ghz; }
+        fold = planSinglePathLinks(tree, lBits, lGHz, config.noc_single_path_as_link);
+        censusSparseTree(tree, config, covered, pe_level, &fold.asLink);
+    }
+    {   /* (1.12.231): what the tree's two-attachment nodes are built as */
+        static const char* kLv[7] = { "subarray", "bank", "bank group", "chip", "rank", "channel", "system" };
+        auto at = [&](const int* a) {
+            std::ostringstream o; bool any = false;
+            for (int l = 0; l < 7; ++l) if (a[l]) { o << (any ? ", " : " (") << a[l] << " " << kLv[l]; any = true; }
+            if (any) o << ")";
+            return o.str();
+        };
+        if (fold.qualifying + fold.converters + fold.rootTwo + fold.fabricTwo > 0)
+            std::cout << "[htree] two-attachment nodes: " << fold.qualifying << " with the same width and clock on"
+                         " both links" << at(fold.qualAt)
+                      << (config.noc_single_path_as_link ? " built as links"
+                                                         : " built as routers BY USER OPTION (noc.single_path_as_link: false)")
+                      << "; " << fold.converters << " converter(s) kept as routers (the width or the clock changes)"
+                      << at(fold.convAt)
+                      << (fold.rootTwo ? "; the root kept as a router" : "")
+                      << (fold.fabricTwo ? "; " + std::to_string(fold.fabricTwo) + " in-die fabric node(s) kept as switches" : "")
+                      << "; " << fold.built << " router(s) built of " << tree.numRouters << " tree node(s)" << std::endl;
     }
 
     std::ofstream f(outPath);
@@ -6455,62 +6561,89 @@ static bool dramHTreeBuilder(const std::string& tech,
     f << "# per-layer (width_bits, latency_cyc): L0=(" << layer_w[0] << "," << layer_lat[0]
       << ") L1=(" << layer_w[1] << "," << layer_lat[1] << ") L2=(" << layer_w[2] << ","
       << layer_lat[2] << ") L3=(" << layer_w[3] << "," << layer_lat[3] << ")\n";
-    f << "routers " << tree.numRouters << "\n";
+    /* (1.12.231): the fabric as built. A node built as part of a link has no
+     * router: the link from the node below it runs to the first router above,
+     * its latency the sum of the links it replaces, and it is written with
+     * "span" (its credits return in one cycle: a link has no buffer of its own
+     * to free along the way). "lseg" lines keep each replaced link's level,
+     * width and die, so the network's per-level link counts, link service and
+     * die crossings are the same links as before:
+     *   lseg r <router> <level> <bits> <die> <parent level>   on <router>'s up-link
+     *   lseg e <endpoint> <level> <bits> <die> <parent level> on the endpoint's link
+     * in order from the lower end. Garnet's reader skips them. */
+    auto nid = [&](int r) { return (r >= 0 && r < (int)fold.newId.size()) ? fold.newId[(size_t)r] : r; };
+    auto lvOf = [&](int r) { return (r >= 0 && r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[(size_t)r] : -1; };
+    struct Span { int top = -1; long lat = 0; std::vector<int> via; };
+    auto spanUp = [&](int q, long lat0) {   // q = the node above; walk up through the nodes built as links
+        Span sp; sp.lat = lat0;
+        while (q > 0 && q < (int)fold.newId.size() && fold.newId[(size_t)q] < 0) {
+            sp.via.push_back(q);
+            sp.lat += tree.intLinks[(size_t)fold.upLink[(size_t)q]].lat;
+            q = fold.parent[(size_t)q];
+        }
+        sp.top = q;
+        return sp;
+    };
+    std::ostringstream segs;
+    auto segLine = [&](int q) {
+        const int lv = lvOf(q);
+        const int bits = (lv >= 0 && lv <= 6) ? treeLevelLinkWidthBits(config, lv, 0) : 0;
+        const int die = (q < (int)tree.stackDie.size()) ? tree.stackDie[(size_t)q] : 0;
+        std::ostringstream o;
+        o << lv << " " << std::max(0, bits) << " " << std::max(0, die) << " " << lvOf(fold.parent[(size_t)q]);
+        return o.str();
+    };
+    f << "routers " << fold.built << "\n";
     f << "endpoints " << tree.totalEndpoints() << "\n";
     for (auto& e : tree.intLinks) {
-        f << "int " << e.a << " " << e.b << " 1 " << e.lat << " " << e.w << "\n";
-        f << "int " << e.b << " " << e.a << " 1 " << e.lat << " " << e.w << "\n";
+        if (nid(e.b) < 0) continue;   // its up-link is part of the link written for the node below it
+        const Span sp = spanUp(e.a, e.lat);
+        const char* tag = sp.via.empty() ? "" : " span";
+        f << "int " << nid(sp.top) << " " << nid(e.b) << " 1 " << sp.lat << " " << e.w << tag << "\n";
+        f << "int " << nid(e.b) << " " << nid(sp.top) << " 1 " << sp.lat << " " << e.w << tag << "\n";
+        for (int q : sp.via) segs << "lseg r " << nid(e.b) << " " << segLine(q) << "\n";
     }
     for (auto& e : tree.gridLinks) {   // 1.11.103: the in-die fabric's node links (a CROSSBAR's hub spokes)
-        f << "int " << e.a << " " << e.b << " 1 " << e.lat << " " << e.w << "\n";
-        f << "int " << e.b << " " << e.a << " 1 " << e.lat << " " << e.w << "\n";
+        f << "int " << nid(e.a) << " " << nid(e.b) << " 1 " << e.lat << " " << e.w << "\n";
+        f << "int " << nid(e.b) << " " << nid(e.a) << " 1 " << e.lat << " " << e.w << "\n";
     }
-    for (auto& e : tree.extLinks)
-        f << "ext " << e.a << " " << e.b << " " << e.lat << " " << e.w << "\n";
-    /* 1.11.92 (F4/F3): the level and kind of every router, so the network can
-     * attribute its MEASURED per-router flit traversals to hierarchy levels
-     * and keep branch routers apart from pass-throughs. "rlevel <router>
-     * <level> <branch 1|0>"; branch = >= 2 router children, the same rule as
-     * the "[htree] N branch routers" census above. Garnet's own topology
+    for (auto& e : tree.extLinks) {
+        if (nid(e.b) >= 0) { f << "ext " << e.a << " " << nid(e.b) << " " << e.lat << " " << e.w << "\n"; continue; }
+        const Span sp = spanUp(e.b, e.lat);
+        f << "ext " << e.a << " " << nid(sp.top) << " " << sp.lat << " " << e.w << " span\n";
+        for (int q : sp.via) segs << "lseg e " << e.a << " " << segLine(q) << "\n";
+    }
+    /* 1.11.92 (F4/F3): the level and kind of every router built, so the
+     * network can attribute its MEASURED per-router flit traversals to
+     * hierarchy levels and keep branch routers apart. "rlevel <router>
+     * <level> <branch 1|0>"; branch = >= 2 router children in the tree (a
+     * child built as a link still counts as the child it was), the same rule
+     * as the "[htree] N branch routers" census above. Garnet's own topology
      * reader skips tokens it does not know, so this changes nothing it
      * builds. */
     {
-        std::map<int,int> kids;
-        for (const auto& l : tree.intLinks) kids[l.a]++;
-        /* 1.12.18 (user ruling "pass-through routers as wire"): a 4th field,
-         * 1 = a WIRE router: exactly one router child, no endpoint attached,
-         * no grid link, not a grid node, not the root -- a single in/out
-         * path. Garnet sums its measured flits apart (wire_router_traversals)
-         * and the power model prices them as the links they ride. */
-        std::map<int,int> eps;
-        for (const auto& e : tree.extLinks) eps[e.b]++;
-        std::set<int> gridded;
-        for (const auto& e : tree.gridLinks) { gridded.insert(e.a); gridded.insert(e.b); }
         for (int r = 0; r < tree.numRouters; ++r) {
-            int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
-            const bool grid = (r < (int)tree.gridDie.size() && tree.gridDie[(size_t)r] >= 0) ||
-                              gridded.count(r);
-            const bool wire = (r != 0) && kids.count(r) && kids[r] == 1 &&
-                              !eps.count(r) && !grid;
-            f << "rlevel " << r << " " << lv << " "
-              << ((kids.count(r) && kids[r] >= 2) ? 1 : 0) << " "
-              << (wire ? 1 : 0) << "\n";
+            if (nid(r) < 0) continue;
+            f << "rlevel " << nid(r) << " " << lvOf(r) << " "
+              << ((fold.kids[(size_t)r] >= 2) ? 1 : 0) << "\n";
         }
         /* (1.12.171): "rlinkw <router> <bits>", the width of the router's up-link to its parent (the level's tree
          * link width, the one the power model prices). The network serves one flit of this width per cycle on
          * the link and queues the packets behind it. */
         for (int r = 1; r < tree.numRouters; ++r) {
-            int lv = (r < (int)tree.levelOfRouter.size()) ? tree.levelOfRouter[r] : -1;
+            if (nid(r) < 0) continue;
+            int lv = lvOf(r);
             if (lv < 0 || lv > 6) continue;
             const int w = treeLevelLinkWidthBits(config, lv, 0);
-            if (w > 0) f << "rlinkw " << r << " " << w << "\n";
+            if (w > 0) f << "rlinkw " << nid(r) << " " << w << "\n";
         }
         /* 1.12.18 (TSV layout): "rdie <router> <core die>" for the chip-slot
          * routers the stated layout placed; the network counts the die
          * boundaries each packet crosses from them. */
         for (int r = 0; r < tree.numRouters && r < (int)tree.stackDie.size(); ++r)
-            if (tree.stackDie[(size_t)r] > 0)
-                f << "rdie " << r << " " << tree.stackDie[(size_t)r] << "\n";
+            if (tree.stackDie[(size_t)r] > 0 && nid(r) >= 0)
+                f << "rdie " << nid(r) << " " << tree.stackDie[(size_t)r] << "\n";
+        f << segs.str();
     }
     f.close();
     return true;
@@ -10663,12 +10796,6 @@ struct GarnetParsedStats {
     std::string level_source;
     uint64_t level_router_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_passthrough_traversals[7] = {0,0,0,0,0,0,0};
-    /* 1.12.18 (ruling "pass-through routers as wire"): flits through the
-     * level's WIRE routers (one router child, no endpoint) and their count;
-     * level_wire_present = the file carries them. */
-    uint64_t level_wire_traversals[7] = {0,0,0,0,0,0,0};
-    uint32_t level_wire_routers[7] = {0,0,0,0,0,0,0};
-    bool level_wire_present = false;
     uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
     uint32_t level_routers[7] = {0,0,0,0,0,0,0};
     uint32_t level_branch_routers[7] = {0,0,0,0,0,0,0};
@@ -10747,11 +10874,6 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
                     try {
                         if (fld == "router_traversals") stats.level_router_traversals[k] = std::stoull(val);
                         else if (fld == "passthrough_traversals") stats.level_passthrough_traversals[k] = std::stoull(val);
-                        else if (fld == "wire_router_traversals") {   // 1.12.18
-                            stats.level_wire_traversals[k] = std::stoull(val);
-                            stats.level_wire_present = true;
-                        }
-                        else if (fld == "wire_routers") stats.level_wire_routers[k] = std::stoul(val);   // 1.12.18
                         else if (fld == "packet_traversals") stats.level_packet_traversals[k] = std::stoull(val);
                         else if (fld == "routers") stats.level_routers[k] = std::stoul(val);
                         else if (fld == "branch_routers") stats.level_branch_routers[k] = std::stoul(val);
@@ -10819,7 +10941,6 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
         for (int l = 0; l < 7; l++) {
             stats.level_router_traversals[l] = 0;
             stats.level_passthrough_traversals[l] = 0;
-            stats.level_wire_traversals[l] = 0;   // 1.12.18
             stats.level_packet_traversals[l] = 0;
             stats.level_link_traversals[l] = 0;   // 1.12.18
             stats.level_tsv_die_crossings[l] = 0;
@@ -11368,8 +11489,8 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
         if (surviving_levels == 0) { surviving_levels = 1; surviving_weight = 1.0; }
         if (surviving_levels != num_active)
             pimid::debugStream(std::cout) << "  [NoC] " << (num_active - surviving_levels)
-                      << " hierarchy level(s) are pure pass-through wire: no router"
-                         " is priced there (1.12.18: their links are, below); chip"
+                      << " hierarchy level(s) have no branch router and no endpoint: no"
+                         " router is priced there (their links are, below); chip"
                          " coverage is normalised over the "
                       << surviving_levels << " level(s) that are"
                       << (has_levels ? "" : ", and so are the preset traversal weights")
@@ -11818,16 +11939,16 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                                  : "the run's logic node") << ")"
                       << "; duty " << lk.duty_cycle << "; "
                       << (on_die ? "on the DRAM die" : "off-die logic")
-                      << (passthrough ? "; pass-through level: its routers forward, they"
-                                        " are NOT priced as routers, their flits are"
-                                        " priced on this wire" : "")
+                      << (passthrough ? "; a level with no branch router and no endpoint: its"
+                                        " routers forward, they are NOT priced as routers,"
+                                        " their flits are priced on this wire" : "")
                       << std::endl;
-            if (passthrough && garnet.level_router_traversals[lvl] != lf)
+            if (passthrough && garnet.level_routers[lvl] > 0 && garnet.level_router_traversals[lvl] != lf)
                 pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " cross-check: " << garnet.level_router_traversals[lvl]
                           << " router flit traversals vs " << lf << " up-link flit"
-                             " traversals (equal on a pure pass-through level with no"
-                             " endpoint)" << std::endl;
+                             " traversals (equal on a level whose routers each have one"
+                             " router child and no endpoint)" << std::endl;
             if (lk.link_kind == 2)
                 pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                           << " links leave the DRAM package over the DRAM channel (user ruling"
@@ -11930,7 +12051,7 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                         pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level)
                                   << " (" << nc.name << "): "
                                   << garnet.level_router_traversals[lvl]
-                                  << " flit traversals of pass-through routers"
+                                  << " flit traversals of routers with fewer than two router children"
                                   << (garnet.level_source == "tier_walk"
                                           ? " (analytical tier walk)" : " (MEASURED)")
                                   << (config.power_model_noc_links
@@ -12106,76 +12227,6 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.vc_buffer_entries = built_bufs;   // 1.11.93
             nc.router_stages = std::max(1, config.noc_router_latency);   // the one router latency the timing fabric runs
 
-            /* 1.12.18 (user ruling "pass-through routers as wire"): a router
-             * on this (surviving) level with one router child and no
-             * endpoint -- a single in/out path -- only forwards: every flit
-             * it carries came up the child's up-link and leaves by its own
-             * up-link (or the reverse), and both links are priced by the
-             * links-only instances (power.models.noc_links). Its measured
-             * flits are passed to McPAT as passthrough_accesses, re-cut at
-             * the level's width exactly as the level's accesses are (F7),
-             * and the McPAT fork prices total_accesses - passthrough_accesses
-             * router accesses (noc.cc). No new wire term: the link instance
-             * already carries them. The router COUNT is unchanged: the level
-             * is priced at branch routers + endpoints (1.11 census), which
-             * never counted a pass-through router. A bus level has no router
-             * to remove (its bus is its wire). */
-            if (nc.type != 0 && has_levels && garnet.level_wire_present &&
-                garnet.level_wire_traversals[lvl] > 0) {
-                const uint64_t wt = garnet.level_wire_traversals[lvl];
-                const uint64_t lf = garnet.level_link_traversals[lvl];
-                const double wpk = static_cast<double>(wt) / fpp;
-                const uint64_t wacc = std::min<uint64_t>(level_accesses,
-                    static_cast<uint64_t>(std::llround(wpk * fW)));
-                const std::string head = "  [NoC] " + lbl + "level " + std::to_string(lvl - pe_level)
-                                       + " (" + nc.name + "): ";
-                if (!config.power_model_passthrough_as_wire)
-                    std::cout << head << wt << " flit traversals of " << garnet.level_wire_routers[lvl]
-                              << " pass-through router(s) (one router child, no endpoint) are priced"
-                                 " as router accesses BY USER OPTION (power.models.passthrough_as_wire:"
-                                 " false)" << std::endl;
-                else if (!config.power_model_noc_links || !link_counts)
-                    std::cout << head << wt << " flit traversals of " << garnet.level_wire_routers[lvl]
-                              << " pass-through router(s) stay router accesses: the links they ride are"
-                                 " not priced in this run ("
-                              << (!config.power_model_noc_links ? "power.models.noc_links: false"
-                                                                : "no per-level link counts")
-                              << "), so moving them would price them nowhere" << std::endl;
-                else if (it_acc != overrides.end())
-                    std::cout << head << "pass-through as wire NOT applied: the level's accesses are"
-                                 " overridden by yaml (" << prefix << ".total_accesses)" << std::endl;
-                else {
-                    nc.passthrough_accesses = static_cast<int64_t>(wacc);
-                    const int branch_here = config.htree_level_branch[lvl];
-                    const int eps_lvl = config.htree_level_endpoints[lvl];
-                    std::cout << head << "pass-through routers as wire (power.models.passthrough_as_wire): "
-                              << garnet.level_wire_routers[lvl] << " of the level's "
-                              << garnet.level_routers[lvl] << " router(s) have one router child and no"
-                                 " endpoint (a single in/out path) and carry " << wt << " of its "
-                              << garnet.level_router_traversals[lvl] << " router flit traversals"
-                              << (garnet.level_source == "tier_walk" ? " (analytical tier walk)" : " (MEASURED)")
-                              << "; passthrough_accesses " << wacc << " = " << wpk << " packet crossings x "
-                              << fW << " flits to McPAT, which prices " << level_accesses << " - " << wacc
-                              << " = " << (level_accesses - wacc) << " router accesses (router accesses"
-                                 " before " << level_accesses << " = after " << (level_accesses - wacc)
-                              << " + moved " << wacc << "); router count unchanged at " << nodes
-                              << " priced node(s) = " << branch_here << " branch + " << eps_lvl
-                              << " endpoint(s) (the census never counted a pass-through router)"
-                              << std::endl;
-                    std::cout << head << "the moved flits are priced as wire, once: each leaves its"
-                                 " pass-through router by the level's up-link ("
-                              << nc.name << "_links, " << lf << " link flit traversals; " << wt
-                              << " <= " << lf << ": " << (wt <= lf ? "OK" : "FAIL")
-                              << ") and entered it by the child level's up-link; no wire term is"
-                                 " added for them" << std::endl;
-                    if (wt > lf)
-                        std::cerr << "[NoC] WARNING: " << lbl << "level " << (lvl - pe_level)
-                                  << " pass-through flits " << wt << " exceed the level's up-link"
-                                     " flit traversals " << lf << ": a pass-through flit priced"
-                                     " on no link" << std::endl;
-                }
-            }
-
             /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED -- every number
              * McPAT scales this level by, with its formula, on one line.
              * 1.11.92: the accesses clause says what it counts (packet
@@ -12243,29 +12294,11 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                     const int class_nodes_total = total_hist + eps_here;
                     const uint64_t acc_total = nc.total_accesses;
                     uint64_t acc_given = 0; int emitted = 0;
-                    /* 1.12.18 (ruling "pass-through routers as wire"): the
-                     * router accesses (total - pass-through) and the
-                     * pass-through accesses are each split by the H19 rule,
-                     * so every class keeps pass-through <= total and the
-                     * sums stay exact (router sum = total - pass-through). */
-                    const bool pt_on = (nc.passthrough_accesses >= 0);
-                    const uint64_t pt_total = pt_on ? static_cast<uint64_t>(nc.passthrough_accesses) : 0;
-                    uint64_t rt_given = 0, pt_given = 0;
                     auto emitClass = [&](int ports, int count, const std::string& tag, bool last) {
                         NoCLevel c = nc;
                         c.name = nc.name + tag;
                         c.input_ports = ports; c.output_ports = ports;
                         exactRect(count, c.vertical_nodes, c.horizontal_nodes);
-                        if (pt_on) {
-                            const uint64_t rt_total = acc_total - pt_total;
-                            const uint64_t rc = last ? (rt_total - rt_given)
-                                                     : (uint64_t)((double)rt_total * (double)count / (double)class_nodes_total + 0.5);
-                            const uint64_t pc = last ? (pt_total - pt_given)
-                                                     : (uint64_t)((double)pt_total * (double)count / (double)class_nodes_total + 0.5);
-                            rt_given += rc; pt_given += pc;
-                            c.total_accesses = rc + pc;
-                            c.passthrough_accesses = static_cast<int64_t>(pc);
-                        } else
                         c.total_accesses = last ? (acc_total - acc_given)
                                                 : (uint64_t)((double)acc_total * (double)count / (double)class_nodes_total + 0.5);
                         acc_given += c.total_accesses;
@@ -12281,10 +12314,6 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
                         levels.push_back(c);
                         pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " class " << c.name << ": " << count
                                   << " node(s) x " << ports << " ports, " << c.total_accesses << " traversals (H19)";
-                        if (pt_on)   // 1.12.18
-                            pimid::debugStream(std::cout) << ", of which " << c.passthrough_accesses << " pass-through (priced as"
-                                         " wire), " << (c.total_accesses - c.passthrough_accesses)
-                                      << " router accesses to McPAT";
                         pimid::debugStream(std::cout) << "; duty " << c.duty_cycle << " = traversals/(" << net_cycles
                                   << " net cycles x " << count << " nodes x " << ports << " ports)";
                         pimid::debugStream(std::cout) << std::endl;
@@ -22143,6 +22172,8 @@ static int parseDeviceCoreCacheNocBlocks(YAML::Node root, UnifiedConfig& config,
         }
         if (root["noc"]["buffers_per_vc"]) config.noc_buffers_user_set = true;
         config.noc_buffers_per_vc = yamlInt(root["noc"]["buffers_per_vc"], config.noc_buffers_per_vc, sc.pfx + "noc.buffers_per_vc");
+        config.noc_single_path_as_link = yamlBool(root["noc"]["single_path_as_link"], config.noc_single_path_as_link,
+                                                  sc.pfx + "noc.single_path_as_link");   // (1.12.231)
         /* 1.11.56 (audit B049): say what this key actually does.
          *
          * noc.clock_mhz reads as a NoC-fabric frequency override; it
@@ -23280,6 +23311,7 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.noc_vcs_user_set = d.noc_vcs_user_set;
         config.noc_buffers_per_vc = d.noc_buffers_per_vc;
         config.noc_buffers_user_set = d.noc_buffers_user_set;
+        config.noc_single_path_as_link = d.noc_single_path_as_link;   // (1.12.231)
         config.noc_flit_size_bits_cfg = d.noc_flit_size_bits_cfg;
         config.noc_topology_file = d.noc_topology_file;
         config.noc_routing_table_file = d.noc_routing_table_file;
@@ -24105,7 +24137,14 @@ int main(int argc, char** argv) {
                 config.pm_mc_command_ops = yamlBool(pmn["mc_command_ops"], true, "power.models.mc_command_ops");
                 config.model_coherence_directory = yamlBool(pmn["coherence_directory"], true, "power.models.coherence_directory");     // 1.12.18
                 config.model_nondram_array_system = yamlBool(pmn["nondram_array_system"], true, "power.models.nondram_array_system"); // 1.12.18
-                config.power_model_passthrough_as_wire = yamlBool(pmn["passthrough_as_wire"], true, "power.models.passthrough_as_wire");             // 1.12.18
+                if (pmn["passthrough_as_wire"]) {   // (1.12.231): the key is gone, the fabric itself says what is a link
+                    std::cerr << "[config] ERROR: power.models.passthrough_as_wire is no longer a key. A node of the"
+                                 " detailed DRAM tree with exactly two attachments and the same width and clock on"
+                                 " both of its links is now built as part of a link, and the power model prices the"
+                                 " routers and the links that are built (noc.single_path_as_link: false builds those"
+                                 " nodes as routers). Remove the key." << std::endl;
+                    std::exit(2);
+                }
                 config.model_sharer_bits_from_children = yamlBool(pmn["sharer_bits_from_children"], true, "power.models.sharer_bits_from_children"); // 1.12.18
                 /* 1.12.18: power bug batch H */
                 config.pm_vector_moves_split = yamlBool(pmn["vector_moves_split"], true, "power.models.vector_moves_split");
@@ -24294,9 +24333,6 @@ int main(int argc, char** argv) {
             if (!config.model_sharer_bits_from_children)
                 std::cout << "  [power] SBT directory sharer bits: McPAT's ceil(number_of_cores/8)*8 BY USER OPTION"
                              " (power.models.sharer_bits_from_children: false)" << std::endl;
-            if (!config.power_model_passthrough_as_wire)
-                std::cout << "  [power] pass-through routers on surviving NoC levels: priced as routers BY USER OPTION"
-                             " (power.models.passthrough_as_wire: false)" << std::endl;
             if (config.pm_mcpat_fu_base_energy)
                 std::cout << "  [power] McPAT OOO functional-unit base energy is CHARGED BY USER OPTION"
                              " (power.models.mcpat_fu_base_energy: true)" << std::endl;

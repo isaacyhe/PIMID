@@ -75,6 +75,22 @@ credit-based flow control, deadlock-free routing.
   bandwidth is modeled by NI-side flit count; tree routing uses up/down
   virtual-channel classes and is deadlock-free (validated drain-complete
   across packet counts, technologies, and traffic patterns).
+- **Two-attachment nodes are links ((1.12.231)).** A node of the tree with exactly
+  two attachments -- its parent and one router child, or its parent and one
+  endpoint -- whose two links have the same width and the same clock (the
+  ladder's own width and clock, before the 128-bit flit clamp) arbitrates
+  nothing and changes nothing in the datapath, so it is not built as a
+  router. The writer emits one link from the node below it to the first
+  router above, its latency the sum of the links it replaces, marked `span`:
+  its credits return in one cycle, since a link has no buffer of its own
+  along the way. `lseg` lines (which Garnet skips) keep each replaced link's
+  level, width and stack die, so the per-level link counts, the link service
+  and the die crossings are those of the links the tree describes. A
+  two-attachment node where the width or the clock changes is a converter and
+  stays a router, and so do the root and every in-die fabric node; the
+  `[htree] two-attachment nodes` line gives the counts per level.
+  `noc.single_path_as_link: false` builds every node as a router. A `CUSTOM`
+  file the user writes is built as written.
 - Flat topologies remain available for non-DRAM device memories: `MESH_2D`
   (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts
@@ -131,8 +147,8 @@ credit-based flow control, deadlock-free routing.
   without per-level counts falls back to the old preset split and the
   `[NoC] level` line says `PRESET`; a run with fabric traffic and no count at
   all, or a detailed run with no stats file, is refused (exit 3). Levels with
-  no branch router and no endpoint are not priced (pass-through wire; their
-  measured traversals are printed as not priced). Since 1.12.150 a flat
+  no branch router and no endpoint price no router (their links are priced,
+  see [power.md](power.md)). Since 1.12.150 a flat
   fabric Garnet built (an SRAM/NVM device's `MESH_2D`, say) is priced as that
   fabric -- every router it built, from its measured crossbar flits, and on a
   `MESH_2D` its links -- and the router model is calibrated per shape on
@@ -356,11 +372,12 @@ generated tree above); a hand-written file is used as written.
 |------|--------|---------|
 | `routers <N>` | count | The routers, ids `0 .. N-1`. Required. Router 0 is the root when the links form a tree. |
 | `endpoints <M>` | count | The endpoints (network interfaces), ids `0 .. M-1`. Absent: one per router. |
-| `ext <ep> <router> [latency] [width]` | latency cycles (`-1` or absent: `noc.link_latency`), width bits (`0` or absent: `noc.flit_size_bits`) | Endpoint `ep`'s link to its router. The endpoint cuts a message into flits of this width. |
-| `int <src> <dst> [weight] [latency] [width]` | weight (default 1, the routing cost), latency, width as for `ext` | One direction of a router-to-router link; give both directions for a two-way link. The link carries one flit per cycle and returns credits over its own latency. |
+| `ext <ep> <router> [latency] [width] [span]` | latency cycles (`-1` or absent: `noc.link_latency`), width bits (`0` or absent: `noc.flit_size_bits`), `span` as for `int` | Endpoint `ep`'s link to its router. The endpoint cuts a message into flits of this width. |
+| `int <src> <dst> [weight] [latency] [width] [span]` | weight (default 1, the routing cost), latency, width as for `ext`; `span`: the link stands in for nodes that are not routers (written by the DRAM-tree writer, after the latency and width) | One direction of a router-to-router link; give both directions for a two-way link. The link carries one flit per cycle and returns credits over its own latency; a `span` link returns them in one cycle. |
 | `rlevel <router> <level> [branch]` | level `0` subarray, `1` bank, `2` bank group, `3` chip, `4` rank, `5` channel, `6` system; branch `1` = two or more router children | The hierarchy level of a router: what `pipe` lines and the per-level traffic counts are keyed by. |
 | `rlinkw <router> <bits>` | width bits | The width of a router's link to its parent, for the link-occupancy floor and the link power. |
 | `rdie <router> <die>` | core die | The stacked die a chip-slot router sits on (HBM), for the die crossings. |
+| `lseg <r\|e> <id> <level> <bits> <die> <parent level>` | written by the DRAM-tree writer | Accounting only: the links a `span` link replaced (their level, width, die and parent level), for the per-level traffic and link pricing. Garnet ignores it. |
 | `pipe <level> <stages>` | level as for `rlevel`, stages >= 1 | Every router the `rlevel` lines put at that level runs `stages` pipeline stages instead of `noc.router_pipe_stages`. A level no router sits at, a second line for a level, or stages below 1 are refused. |
 
 When the links form a tree, the routers route up to the common ancestor and

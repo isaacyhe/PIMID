@@ -184,14 +184,6 @@ struct GarnetStats {
      * the run has no per-level attribution). */
     uint64_t level_flit_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_passthrough_flit_traversals[7] = {0,0,0,0,0,0,0};
-    /* 1.12.18 (user ruling "pass-through routers as wire"): the subset
-     * through WIRE routers -- exactly one router child, no endpoint, not a
-     * grid node, not the root: a single in/out path ("rlevel" 4th field).
-     * A non-branch router that carries an endpoint (a PE leaf, an aggregated
-     * region) has a third port and stays in the pass-through count above but
-     * not here. level_wire_routers counts them. */
-    uint64_t level_wire_flit_traversals[7] = {0,0,0,0,0,0,0};
-    uint32_t level_wire_routers[7] = {0,0,0,0,0,0,0};
     uint64_t level_packet_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_buffer_reads[7] = {0,0,0,0,0,0,0};
     uint64_t level_buffer_writes[7] = {0,0,0,0,0,0,0};
@@ -294,7 +286,18 @@ private:
     std::vector<uint32_t> epWidth_;
     std::vector<int> routerLevel_;
     std::vector<uint8_t> routerBranch_;
-    std::vector<uint8_t> routerWire_;   // 1.12.18: "rlevel" 4th field (single in/out path)
+    /* (1.12.231): the links a node built as part of a link replaced ("lseg"
+     * lines), on a router's up-link (segOfRouter_) or on an endpoint's link
+     * (segOfEp_), in order from the lower end: the level each belongs to, its
+     * width (0 = unbounded), its stack die and its parent's level. Each has a
+     * service slot of its own in segBusy_ (rebased with edgeBusy_), so the
+     * per-level link counts, the link service and the die crossings are those
+     * of the links the tree describes. */
+    struct LinkSeg { int lv; uint32_t bits; int die; int plv; uint32_t slot; };
+    std::vector<std::vector<LinkSeg>> segOfRouter_, segOfEp_;
+    std::vector<uint64_t> segBusy_;
+    uint32_t segCount_ = 0;
+    bool segDieKnown_ = false;   // a replaced link carries a stack die: the layout is known
     std::vector<int> routerParent_;
     /* (1.12.171): "rlinkw <router> <bits>": the width of the router's up-link to its parent (0 / absent = unbounded).
      * The link serves one flit of this width per network cycle, both directions together: the capacity the
@@ -1569,25 +1572,28 @@ public:
     uint64_t linkBusyMaxCycles() const {
         uint64_t m = 0;
         for (uint64_t v : edgeBusy_) m = std::max(m, v);
+        for (uint64_t v : segBusy_) m = std::max(m, v);   // (1.12.231)
         return m;
     }
     /* (1.12.171): the same, with the records still waiting for their drain (read only, nothing is counted): the
      * floor the run time takes when it closes, before the last phase is drained. */
     uint64_t linkBusyMaxCyclesProjected() {
-        if (routerUpBits_.empty()) return 0;
+        if (routerUpBits_.empty() && !segCount_) return 0;
         std::vector<uint64_t> busy = edgeBusy_;
+        std::vector<uint64_t> sbusy = segBusy_;   // (1.12.231)
 #ifdef HAVE_GARNET
         futex_lock(&batchLock_);
         const uint64_t endC = roiEndCycle_.load(std::memory_order_acquire);
         for (const auto& a : phaseBatch_)
-            if (a.src != a.dst && a.src < numNodes_ && a.dst < numNodes_ && a.cycle <= endC) addPathService_(a.src, a.dst, a.ctrl != 0, busy);
+            if (a.src != a.dst && a.src < numNodes_ && a.dst < numNodes_ && a.cycle <= endC) addPathService_(a.src, a.dst, a.ctrl != 0, busy, sbusy);
         for (const auto& kv : pendingByPhase_)
             for (const auto& a : kv.second)
-                if (a.src != a.dst && a.src < numNodes_ && a.dst < numNodes_ && a.cycle <= endC) addPathService_(a.src, a.dst, a.ctrl != 0, busy);
+                if (a.src != a.dst && a.src < numNodes_ && a.dst < numNodes_ && a.cycle <= endC) addPathService_(a.src, a.dst, a.ctrl != 0, busy, sbusy);
         futex_unlock(&batchLock_);
 #endif
         uint64_t m = 0;
         for (uint64_t v : busy) m = std::max(m, v);
+        for (uint64_t v : sbusy) m = std::max(m, v);   // (1.12.231)
         return m;
     }
 
@@ -1623,7 +1629,6 @@ public:
         for (int l = 0; l < 7; l++) {
             stats_.level_flit_traversals[l] = 0;
             stats_.level_passthrough_flit_traversals[l] = 0;
-            stats_.level_wire_flit_traversals[l] = 0;   // 1.12.18
             stats_.level_packet_traversals[l] = 0;
             stats_.level_buffer_reads[l] = 0;
             stats_.level_buffer_writes[l] = 0;
@@ -1635,6 +1640,7 @@ public:
         for (int l = 0; l < 7; l++) stats_.level_tsv_die_crossings[l] = 0;   // 1.12.18
         for (int b = 0; b < 65; b++) stats_.tsv_dies_hist[b] = 0;
         std::fill(edgeBusy_.begin(), edgeBusy_.end(), 0);   // (1.12.171)
+        std::fill(segBusy_.begin(), segBusy_.end(), 0);     // (1.12.231)
         roiEndCycle_.store(UINT64_MAX, std::memory_order_release);   // (1.12.171)
         stats_.measured_crossbar_flits = 0;
         stats_.measured_buffer_reads = 0;
@@ -1775,7 +1781,7 @@ public:
          * run whose fabric carried nothing (one PE reading its own bank) exported
          * stack_layout 0, and the power model left the stack's TSV segments
          * unpriced (their leakage, area and clock) as if no layout were known. */
-        if (!routerStackDie_.empty()) stats_.stack_layout = true;
+        if (!routerStackDie_.empty() || segDieKnown_) stats_.stack_layout = true;
 #ifdef HAVE_GARNET
         /* A detailed tree whose Garnet was never built (every access went to
          * the PE's own unit, which does not enter the network) measured zero
@@ -1787,8 +1793,6 @@ public:
                 stats_.level_routers[lv]++;
                 if (r < routerBranch_.size() && routerBranch_[r])
                     stats_.level_branch_routers[lv]++;
-                if (r < routerWire_.size() && routerWire_[r])
-                    stats_.level_wire_routers[lv]++;   // 1.12.18
             }
             stats_.level_source = "measured_crossbar";
             return;
@@ -1802,12 +1806,10 @@ public:
             for (int l = 0; l < 7; l++) {
                 stats_.level_flit_traversals[l] = 0;
                 stats_.level_passthrough_flit_traversals[l] = 0;
-            stats_.level_wire_flit_traversals[l] = 0;   // 1.12.18
                 stats_.level_buffer_reads[l] = 0;
                 stats_.level_buffer_writes[l] = 0;
                 stats_.level_routers[l] = 0;
                 stats_.level_branch_routers[l] = 0;
-                stats_.level_wire_routers[l] = 0;   // 1.12.18
             }
             for (size_t r = 0; r < rtrXbarTot_.size(); r++) {
                 stats_.measured_crossbar_flits += rtrXbarTot_[r];
@@ -1818,10 +1820,6 @@ public:
                 bool br = (r < routerBranch_.size()) && routerBranch_[r];
                 stats_.level_flit_traversals[lv] += rtrXbarTot_[r];
                 if (!br) stats_.level_passthrough_flit_traversals[lv] += rtrXbarTot_[r];
-                if (r < routerWire_.size() && routerWire_[r]) {   // 1.12.18
-                    stats_.level_wire_flit_traversals[lv] += rtrXbarTot_[r];
-                    stats_.level_wire_routers[lv]++;
-                }
                 stats_.level_buffer_reads[lv]  += rtrBufRdTot_[r];
                 stats_.level_buffer_writes[lv] += rtrBufWrTot_[r];
                 stats_.level_routers[lv]++;
@@ -1867,16 +1865,13 @@ public:
                 continue;
             if (stats_.level_source == "measured_crossbar") {
                 info("  Level %d (%s): %lu flit traversals MEASURED at %u router(s) "
-                     "(%u branch; %lu of the flits through pass-through routers); "
-                     "%lu packet crossings by path walk; %lu flits through %u wire "
-                     "router(s) (one router child, no endpoint: a single in/out path)",
+                     "(%u branch; %lu of the flits through routers with fewer than two "
+                     "router children); %lu packet crossings by path walk",
                      l, kLvl[l],
                      stats_.level_flit_traversals[l], stats_.level_routers[l],
                      stats_.level_branch_routers[l],
                      stats_.level_passthrough_flit_traversals[l],
-                     stats_.level_packet_traversals[l],
-                     stats_.level_wire_flit_traversals[l],
-                     stats_.level_wire_routers[l]);
+                     stats_.level_packet_traversals[l]);
             } else {
                 info("  Level %d (%s): %lu flit traversals, %lu packet crossings "
                      "(analytical tier walk)", l, kLvl[l],
@@ -1963,10 +1958,6 @@ public:
                         stats_.level_flit_traversals[l]);
                 fprintf(f, "garnet.level%d.passthrough_traversals = %lu\n", l,
                         stats_.level_passthrough_flit_traversals[l]);
-                fprintf(f, "garnet.level%d.wire_router_traversals = %lu\n", l,   // 1.12.18
-                        stats_.level_wire_flit_traversals[l]);
-                fprintf(f, "garnet.level%d.wire_routers = %u\n", l,
-                        stats_.level_wire_routers[l]);
                 fprintf(f, "garnet.level%d.packet_traversals = %lu\n", l,
                         stats_.level_packet_traversals[l]);
                 fprintf(f, "garnet.level%d.buffer_reads = %lu\n", l,
@@ -2435,13 +2426,35 @@ private:
         const uint32_t b = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
         return std::max<uint64_t>(1, (b + w - 1) / w);
     }
-    void addPathService_(uint32_t src, uint32_t dst, bool ctrl, std::vector<uint64_t>& busy) const {
-        if (routerUpBits_.empty() || topology_ != NoCTopology::CUSTOM) return;
+    /* (1.12.231): cycles a packet occupies a replaced link of `bits` width. */
+    uint64_t segServiceCycles_(uint32_t bits, bool ctrl) const {
+        if (bits == 0) return 0;
+        const uint32_t b = ctrl ? stats_.control_msg_bits : stats_.data_msg_bits;
+        return std::max<uint64_t>(1, (b + bits - 1) / bits);
+    }
+    const std::vector<LinkSeg>* segsOf_(const std::vector<std::vector<LinkSeg>>& v, uint32_t id) const {
+        return (id < v.size() && !v[id].empty()) ? &v[id] : nullptr;
+    }
+    void addPathService_(uint32_t src, uint32_t dst, bool ctrl, std::vector<uint64_t>& busy,
+                         std::vector<uint64_t>& sbusy) const {
+        if ((routerUpBits_.empty() && !segCount_) || topology_ != NoCTopology::CUSTOM) return;
         thread_local std::vector<uint32_t> path;
         if (!pathRouters_(src, dst, path)) return;
+        auto segService = [&](const std::vector<LinkSeg>* sv) {   // (1.12.231)
+            if (!sv) return;
+            for (const auto& g : *sv) {
+                const uint64_t c = segServiceCycles_(g.bits, ctrl);
+                if (!c) continue;
+                if (sbusy.size() <= g.slot) sbusy.resize(segCount_, 0);
+                sbusy[g.slot] += c;
+            }
+        };
+        segService(segsOf_(segOfEp_, src));
+        segService(segsOf_(segOfEp_, dst));
         for (size_t i = 0; i + 1 < path.size(); i++) {
             const uint32_t a = path[i], b = path[i + 1];
             const uint32_t child = (routerDepth_[a] > routerDepth_[b]) ? a : b;
+            segService(segsOf_(segOfRouter_, child));
             const uint64_t sv = linkServiceCycles_(child, ctrl);
             if (!sv) continue;
             if (busy.size() <= child) busy.resize(routerUpBits_.size(), 0);
@@ -2456,6 +2469,7 @@ private:
         const uint64_t flits = flitsFor_(src, ctrl);
         uint64_t routers;
         uint64_t linkAttributed = 0;   // 1.12.18: edges given to a tree level
+        uint64_t segCrossed = 0;       // (1.12.231): replaced links crossed (inside the links built for them)
         thread_local std::vector<uint32_t> path;
         if (topology_ == NoCTopology::CUSTOM && pathRouters_(src, dst, path)) {
             routers = path.size();
@@ -2466,10 +2480,32 @@ private:
             /* 1.12.18: each consecutive pair is one tree edge; it belongs to
              * the deeper router's level (that router's up-link). */
             uint32_t pktDies = 0;   // 1.12.18 (TSV layout): die boundaries this packet crossed
+            /* (1.12.231): a replaced link counts as the link it was: its level's
+             * link traversals, its own service, and its die boundary. */
+            auto addSegs = [&](const std::vector<LinkSeg>* sv) {
+                if (!sv) return;
+                for (const auto& g : *sv) {
+                    segCrossed++;
+                    if (g.lv < 0 || g.lv > 6) continue;
+                    stats_.level_link_flit_traversals[g.lv] += flits;
+                    linkAttributed++;
+                    if (g.bits > 0) {
+                        if (segBusy_.size() < segCount_) segBusy_.resize(segCount_, 0);
+                        segBusy_[g.slot] += segServiceCycles_(g.bits, ctrl);
+                    }
+                    if (g.lv == 3 && g.plv >= 4 && g.die > 0) {
+                        stats_.level_tsv_die_crossings[3] += (uint64_t)g.die * flits;
+                        pktDies += (uint32_t)g.die;
+                    }
+                }
+            };
+            addSegs(segsOf_(segOfEp_, src));
+            addSegs(segsOf_(segOfEp_, dst));
             for (size_t i = 0; i + 1 < path.size(); i++) {
                 const uint32_t a = path[i], b = path[i + 1];
                 const uint32_t child = (routerDepth_[a] > routerDepth_[b]) ? a : b;
                 const uint32_t other = (child == a) ? b : a;
+                addSegs(segsOf_(segOfRouter_, child));
                 const int lv = (child < routerLevel_.size()) ? routerLevel_[child] : -1;
                 if (lv < 0 || lv > 6) continue;
                 stats_.level_link_flit_traversals[lv] += flits;
@@ -2485,7 +2521,7 @@ private:
                     pktDies += (uint32_t)routerStackDie_[child];
                 }
             }
-            if (!routerStackDie_.empty()) {
+            if (!routerStackDie_.empty() || segDieKnown_) {
                 stats_.stack_layout = true;
                 stats_.tsv_dies_hist[pktDies < 64 ? pktDies : 64]++;
             }
@@ -2502,12 +2538,15 @@ private:
         stats_.buffer_writes += routers * flits;
         stats_.crossbar_traversals += routers * flits;
         stats_.arbiter_events += routers;          // one allocation per packet per router
-        stats_.link_traversals += (uint64_t)hops * flits;
+        /* (1.12.231): the links counted are the tree's: a link built for nodes that
+         * are not routers counts each link it replaced */
+        const uint64_t treeLinks = (uint64_t)hops + segCrossed;
+        stats_.link_traversals += treeLinks * flits;
         // 1.12.18: what no level took (or the reverse), so the sum can be checked
-        if ((uint64_t)hops >= linkAttributed)
-            stats_.link_traversals_unattributed += ((uint64_t)hops - linkAttributed) * flits;
+        if (treeLinks >= linkAttributed)
+            stats_.link_traversals_unattributed += (treeLinks - linkAttributed) * flits;
         else
-            stats_.link_traversals_overattributed += (linkAttributed - (uint64_t)hops) * flits;
+            stats_.link_traversals_overattributed += (linkAttributed - treeLinks) * flits;
     }
 
 #ifdef HAVE_GARNET
@@ -2757,19 +2796,26 @@ private:
                 routerStackDie_[r] = d;
             } else if (token == "rlevel") {
                 // 1.11.92 (F4): "rlevel <router> <level> <branch 1|0>"
-                uint32_t r; int lv = -1, br = 0, wr = 0;
+                uint32_t r; int lv = -1, br = 0;
                 iss >> r >> lv >> br;
-                /* 1.12.18: optional 4th field, 1 = a wire router (one router
-                 * child, no endpoint); an older file has none. */
-                if (!(iss >> wr)) wr = 0;
                 if (routerLevel_.size() <= r) {
                     routerLevel_.resize(r + 1, -1);
                     routerBranch_.resize(r + 1, 0);
                 }
-                if (routerWire_.size() <= r) routerWire_.resize(r + 1, 0);
                 routerLevel_[r] = lv;
                 routerBranch_[r] = (uint8_t)(br ? 1 : 0);
-                routerWire_[r] = (uint8_t)(wr ? 1 : 0);
+            } else if (token == "lseg") {
+                /* (1.12.231): "lseg r|e <id> <level> <bits> <die> <parent level>",
+                 * one link a node built as part of a link replaced. */
+                std::string kind; uint32_t id = 0; LinkSeg g{ -1, 0, 0, -1, 0 };
+                if (iss >> kind >> id >> g.lv >> g.bits >> g.die >> g.plv && (kind == "r" || kind == "e")) {
+                    g.slot = segCount_++;
+                    auto& v = (kind == "r") ? segOfRouter_ : segOfEp_;
+                    if (v.size() <= id) v.resize(id + 1);
+                    v[id].push_back(g);
+                    if (g.die > 0) segDieKnown_ = true;
+                    segBusy_.resize(segCount_, 0);
+                }
             }
         }
 

@@ -117,7 +117,8 @@ private:
                                       Cycles latency,
                                       uint32_t vcs_per_vnet,
                                       uint32_t virt_nets,
-                                      uint32_t width);
+                                      uint32_t width,
+                                      long credit_latency = -1);   // (1.12.231): -1 = the link's latency
 
     // Helper: create an external link (NI <-> Router, bidirectional)
     static GarnetExtLink* makeExtLink(uint32_t id,
@@ -125,7 +126,8 @@ private:
                                       Cycles latency,
                                       uint32_t vcs_per_vnet,
                                       uint32_t virt_nets,
-                                      uint32_t width);
+                                      uint32_t width,
+                                      long credit_latency = -1);   // (1.12.231): -1 = the link's latency
 };
 
 } // namespace garnet

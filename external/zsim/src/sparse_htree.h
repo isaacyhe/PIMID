@@ -49,7 +49,10 @@ inline std::vector<long> decompose(uint64_t unit, int peLevel,
     return std::vector<long>(fineToCoarse.rbegin(), fineToCoarse.rend());  // top->leaf
 }
 
-struct Link { int a, b, w, lat; };
+/* (1.12.231): li = the link layer (0..3) the builder took the width and latency
+ * from, so the topology writer can tell whether the two links of a
+ * two-attachment node share a width and a clock (-1 = not recorded). */
+struct Link { int a, b, w, lat; int li = -1; };
 
 struct SparseHTree;
 
@@ -388,7 +391,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                 int childLevel = parentLevel - 1;
                 info[rid] = { childLevel, {} };
                 int li = layerForLevel(childLevel, chanLevel);
-                t.intLinks.push_back({ parent, rid, layerW[li], layerLat[li] });
+                t.intLinks.push_back({ parent, rid, layerW[li], layerLat[li], li });
             } else {
                 rid = it->second;
             }
@@ -396,7 +399,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
         }
         if (gridded && info[parent].first <= 3) continue;                 // placed on the die's grid below
         t.peOfLeaf[parent] = (int)p;
-        t.extLinks.push_back({ (int)p, parent, layerW[0], layerLat[0] });  // PE at its unit -> L0
+        t.extLinks.push_back({ (int)p, parent, layerW[0], layerLat[0], 0 });  // PE at its unit -> L0
     }
     t.numPEs = (int)peHomes.size();
     if (gridded) {
@@ -418,7 +421,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
             if (t.fabricKind == 3) {
                 hub = nextRouter++;
                 info[hub] = { t.peLevel, {} };
-                t.intLinks.push_back({ chip, hub, layerW[li0], layerLat[li0] });   // the exit: chip <-> hub
+                t.intLinks.push_back({ chip, hub, layerW[li0], layerLat[li0], li0 });   // the exit: chip <-> hub
                 t.dieExitOf[chip] = hub;
             }
             const long fan[3] = { (long)std::max(1, SA), (long)std::max(1, BpBG), (long)std::max(1, BGpC) };
@@ -431,18 +434,18 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                 nodeRouter[(size_t)n] = rid;
                 t.routerOf[key] = rid;
                 info[rid] = { t.peLevel, {} };
-                if (t.fabricKind == 3) t.gridLinks.push_back({ hub, rid, layerW[li0], layerLat[li0] });
+                if (t.fabricKind == 3) t.gridLinks.push_back({ hub, rid, layerW[li0], layerLat[li0], li0 });
             }
             for (long c = 0; c < childFanout(chipLevel, N, SA, BpBG, BGpC, CpR, RpCh); ++c) info[chip].second.insert(c);   // fully live: the grid covers the die
-            if (t.fabricKind != 3) { t.intLinks.push_back({ chip, nodeRouter[0], layerW[li0], layerLat[li0] }); t.dieExitOf[chip] = nodeRouter[0]; }
+            if (t.fabricKind != 3) { t.intLinks.push_back({ chip, nodeRouter[0], layerW[li0], layerLat[li0], li0 }); t.dieExitOf[chip] = nodeRouter[0]; }
             if (t.fabricKind == 1) {                                    // MESH: 4-neighbour links
                 for (int y = 0; y < t.gridH; ++y) for (int x = 0; x < t.gridW; ++x) {
                     const int a = nodeRouter[(size_t)(y * t.gridW + x)];
-                    if (x + 1 < t.gridW) t.gridLinks.push_back({ a, nodeRouter[(size_t)(y * t.gridW + x + 1)], layerW[li0], layerLat[li0] });
-                    if (y + 1 < t.gridH) t.gridLinks.push_back({ a, nodeRouter[(size_t)((y + 1) * t.gridW + x)], layerW[li0], layerLat[li0] });
+                    if (x + 1 < t.gridW) t.gridLinks.push_back({ a, nodeRouter[(size_t)(y * t.gridW + x + 1)], layerW[li0], layerLat[li0], li0 });
+                    if (y + 1 < t.gridH) t.gridLinks.push_back({ a, nodeRouter[(size_t)((y + 1) * t.gridW + x)], layerW[li0], layerLat[li0], li0 });
                 }
             } else if (t.fabricKind == 2 && nodes > 1) {                // RING: i <-> i+1 mod N
-                for (int n = 0; n < nodes; ++n) { if (nodes == 2 && n == 1) break; t.gridLinks.push_back({ nodeRouter[(size_t)n], nodeRouter[(size_t)((n + 1) % nodes)], layerW[li0], layerLat[li0] }); }
+                for (int n = 0; n < nodes; ++n) { if (nodes == 2 && n == 1) break; t.gridLinks.push_back({ nodeRouter[(size_t)n], nodeRouter[(size_t)((n + 1) % nodes)], layerW[li0], layerLat[li0], li0 }); }
             }
             if ((int)t.gridX.size() < nextRouter) { t.gridX.resize((size_t)nextRouter, -1); t.gridY.resize((size_t)nextRouter, -1); t.gridDie.resize((size_t)nextRouter, -1); }
             for (int n = 0; n < nodes; ++n) { const int rid = nodeRouter[(size_t)n]; t.gridX[(size_t)rid] = n % t.gridW; t.gridY[(size_t)rid] = n / t.gridW; t.gridDie[(size_t)rid] = chip; }
@@ -456,7 +459,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                 if (n < 0 || n >= nodes) n = 0;
                 const int rid = nodeRouter[(size_t)n];
                 t.peOfLeaf[rid] = (int)pp.first;
-                t.extLinks.push_back({ (int)pp.first, rid, layerW[0], layerLat[0] });
+                t.extLinks.push_back({ (int)pp.first, rid, layerW[0], layerLat[0], 0 });
             }
         }
     }
@@ -510,7 +513,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                 info[rid] = { chLevel, {} };
                 info[rk.first].second.insert(c);      // now a live child of its parent
                 int li = layerForLevel(chLevel, chanLevel);
-                t.intLinks.push_back({ rk.first, rid, layerW[li], layerLat[li] });
+                t.intLinks.push_back({ rk.first, rid, layerW[li], layerLat[li], li });
             }
         }
         t.numRouters = nextRouter;
@@ -551,7 +554,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
             t.abstractOf[rid] = abst;
             t.coverageOf[abst] = 1;                   // the router's own organisation
             t.frontsLevel[abst] = level;
-            t.extLinks.push_back({ abst, rid, layerW[0], layerLat[0] });
+            t.extLinks.push_back({ abst, rid, layerW[0], layerLat[0], 0 });
             continue;
         }
         if (level <= leafLevel) continue;             // leaf level: below = Ramulator
@@ -572,7 +575,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
                                            SA, BpBG, BGpC, CpR, RpCh);
             t.frontsLevel[abst] = childLevel;
             int li = layerForLevel(childLevel, chanLevel);
-            t.extLinks.push_back({ abst, rid, layerW[li], layerLat[li] });
+            t.extLinks.push_back({ abst, rid, layerW[li], layerLat[li], li });
         }
     }
     t.numAbstract = nextEndpoint - t.numPEs;

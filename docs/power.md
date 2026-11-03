@@ -412,6 +412,18 @@ by the geometric mean over four published crossbars. 9 to 15 ports, and
 so). Leakage follows area; the dynamic energy per flit is not scaled. The anchors are in
 [sources.md](sources.md).
 
+PIMID (1.12.231), the detailed DRAM tree priced as built: a node of the tree with
+exactly two attachments and the same width and clock on both of its links is
+built as part of a link ([network.md](network.md)), so there is no router to
+price there. Its flits are priced once, as the links it replaces, each at its
+own level, width and die (a stacked part's die crossings stay TSVs); the
+routers that are built are priced from their own measured crossbar counters.
+Earlier releases built every node as a router and took the flits of the nodes
+with one router child and no endpoint out of the level's router accesses
+(`power.models.passthrough_as_wire`). That key is refused now;
+`noc.single_path_as_link: false` builds every node as a router and prices it
+as one.
+
 (user ruling 2026-10-25, "Measured"), wire activity: every NoC link, bus
 and TSV wire is charged C V^2 per 0->1 transition (the DSENT / ORION 2.0
 physical convention), on the MEASURED data: zsim reads each fabric packet's

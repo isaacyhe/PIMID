@@ -1407,7 +1407,6 @@ uint64_t McPATWrapper::inputFingerprint() const {
         f(lvl.link_activity);         // user ruling 2026-10-25
         f(static_cast<uint64_t>(lvl.link_traversals));
         f(static_cast<uint64_t>(lvl.tsv_die_crossings));
-        f(static_cast<uint64_t>(lvl.passthrough_accesses));   // 1.12.18
         f(lvl.total_accesses);  f(lvl.duty_cycle);
     }
 
@@ -4333,9 +4332,8 @@ std::string McPATWrapper::generateXMLConfig() const {
              * link_traversals -- so McPAT's one-access-count-per-instance
              * limit no longer forces links and routers to share a count. The
              * router instances keep has_global_link=0 and are priced exactly
-             * as before. 1.12.18 (user ruling "pass-through routers as wire"):
-             * the last open part of F3 -- pass-through routers on a level that
-             * survives -- is closed by stat passthrough_accesses below. */
+             * as before. (1.12.231): a node built as part of a link is not a
+             * router instance at all; its links are priced here. */
             xml << "      <param name=\"has_global_link\" value=\"" << lvl.has_global_link << "\"/>\n";
             xml << "      <param name=\"routers_present\" value=\"" << lvl.routers_present << "\"/>\n";   /* 1.12.18 */
             xml << "      <param name=\"link_kind\" value=\"" << lvl.link_kind << "\"/>\n";
@@ -4378,8 +4376,6 @@ std::string McPATWrapper::generateXMLConfig() const {
                 xml << "      <stat name=\"link_traversals\" value=\"" << lvl.link_traversals << "\"/>\n";
             if (lvl.tsv_die_crossings >= 0)
                 xml << "      <stat name=\"tsv_die_crossings\" value=\"" << lvl.tsv_die_crossings << "\"/>\n";
-            if (lvl.passthrough_accesses >= 0)   /* 1.12.18: priced as wire, not router accesses */
-                xml << "      <stat name=\"passthrough_accesses\" value=\"" << lvl.passthrough_accesses << "\"/>\n";
             xml << "      <stat name=\"duty_cycle\" value=\"" << lvl.duty_cycle << "\"/>\n";
             xml << "    </component>\n";
         }

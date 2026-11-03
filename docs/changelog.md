@@ -6,6 +6,49 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.231 -- a node of the detailed DRAM tree that only passes flits along is built as a link, and power prices the routers and links that are built
+
+- **The problem.** The detailed DRAM tree built a router at every node of the hierarchy, including the nodes with
+  exactly two attachments (their parent and one router child, or their parent and one endpoint) whose two links have
+  the same width and clock. Such a node arbitrates nothing and changes nothing in the datapath; in the part it is a
+  stretch of wire. The timing model still sent every flit through a full router there (buffer write, allocation,
+  crossbar, credits, the router's pipe stages), while the power model took those flits out of the router accesses
+  and priced them as wire (`power.models.passthrough_as_wire`, for nodes with one router child and no endpoint), so
+  timing and power described different hardware.
+- **The fix** (`src/main.cpp`, `external/zsim/src/sparse_htree.h`, `external/zsim/src/garnet_network.h`,
+  `external/garnet/src/TopologyBuilders.cc/.hh`, `src/power/mcpat_wrapper.cpp`, `include/power/mcpat_wrapper.h`,
+  `external/mcpat/XML_Parse.cc/.h`, `external/mcpat/noc.cc`).
+  - The tree writer builds such a node as part of a link: one link from the node below it to the first router above,
+    its latency the sum of the links it replaces, marked `span` in the topology file. Its credits return in one cycle,
+    since a link has no buffer of its own along the way.
+  - `lseg` lines, which Garnet skips, keep each replaced link's level, width and stack die, so the per-level link
+    counts, the link service and the die crossings are those of the links the tree describes.
+  - The widths and clocks compared are the ladder's own, before the 128-bit flit clamp. A two-attachment node where
+    the width or the clock changes is a converter and stays a router, and so do the root and every in-die fabric
+    node. The `[htree] two-attachment nodes` line gives the counts per level.
+  - Power prices what is built: the routers that are built from their own measured crossbar counters, the links as
+    links, each replaced link at its own level, width and die. The pass-through subtraction is gone, and
+    `power.models.passthrough_as_wire` is refused at load with a message naming the new setting.
+  - `noc.single_path_as_link` (default `true`); `false` builds every node of the tree as a router. A hand-written
+    `CUSTOM` topology file is built as written.
+- **Data impact.** Nodes built as links on the current trees, per 16-PE BANK placement: DDR3 17 (and 8 x8-chip
+  converters kept as routers), DDR4 17, DDR5 18, LPDDR5 24, GDDR6 20; HBM3 SUBARRAY 17. On HBM3 and HBM2 BANK the only
+  such node is the channel node, which carries no traffic, and HBM3 CHANNEL and LOGIC_DIE have none, so their timing is
+  unchanged; their NoC power changes with the removed subtraction. Timing changes only in cells with such a node on a
+  path. With the network's buffer depth a link that replaces two hops has a longer credit loop than one hop, so a
+  saturated link with narrow ports carries fewer flits per cycle than before: on the 116-cell validation set the
+  co-simulation DDR5 cell runs 19.0% longer and the device OpenMP cells on DDR5, GDDR6 and LPDDR5 5.2% to 6.9% longer
+  (their NoC dynamic power falls 7% to 13%, with fewer router traversals priced); the serial-kernel cells with the PEs
+  at the bank change by at most 0.02%. NVM and SRAM devices have no
+  DRAM tree and are unchanged.
+- **Validation** (the previous release and this build on the same node; logs compared with tree paths masked).
+  With `noc.single_path_as_link: false` every log of the 116-cell validation
+  set is identical in simulated time and in power; with the routers this release no longer builds, the simulated time
+  is identical on the 135 device message-passing smoke cells, the 11 co-simulation message-passing smoke cells and 30
+  bfs smoke variants too. With the default, every cell of the 116-cell set exits 0, the 15 cells named above are the
+  only ones whose run time changes, and the power checks report no flag. A hand-written `CUSTOM` file gives identical
+  results.
+
 ## 1.12.230 -- a router's timing is its pipeline stages: one setting for every router, and a per-level line in the topology file
 
 - **The problem.** Router timing had four spellings, and they did not agree. `noc.router_latency` set every router of
