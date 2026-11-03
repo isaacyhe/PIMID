@@ -6,6 +6,51 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.233 -- every detailed network's links run at full rate: each buffer holds its link's credit round trip
+
+- **The problem.** Garnet's credit flow control made the buffer depth set the link rate. A flit leaves only when the
+  receiving buffer has a free entry, and an entry frees one credit round trip after it filled: link latency + the
+  receiving router's pipeline stages + the credit latency + 1. With the depth the networks built (one data packet per
+  virtual channel: five 128-bit flits at the defaults), a link whose round trip exceeded that depth ran below one flit
+  per cycle with nothing contending for it: on the DRAM tree a link standing in for two hops, a narrow-port link, and on
+  the other detailed topologies and the host network any link of two cycles or more (a hand-written file with
+  three-cycle links ran at about half its rate). The DRAM tree also ran one virtual channel per up/down class, and the
+  detailed host network one per vnet, so a packet could not follow the one ahead of it on a link until that one's tail
+  had freed its virtual channel downstream (back-to-back short packets ran at about 5/8 of the link rate). The per-level
+  `input_buffer_depth` and `output_buffer_depth` keys reached only the analytical DRAM hierarchy, never the detailed
+  network.
+- **The fix** (`external/garnet/src`: TopologyBuilders, NetworkLink, OutVcState, OutputUnit, NetworkInterface, and the
+  link parameters; `external/zsim/src`: garnet_network.h, init.cpp, synthetic_traffic.cpp, zsim_trace_api.h;
+  `src/main.cpp`).
+  - Every detailed fabric sizes the buffer each link feeds, per virtual channel, at the link's credit round trip; a
+    network interface receives in one stage and, as a sender, reads its credits one cycle late; never below one data
+    packet. An uncontended link carries one flit per cycle; rate limits come only from the flit count at the port width
+    and from contention. This holds on the generated DRAM tree (whose file says so with a `buffers rtt` line),
+    `MESH_2D`, `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`, `H_TREE`, a hand-written `CUSTOM` file (built as
+    written; only its buffers follow the rule), the detailed host network and the synthetic mode.
+  - An explicit depth wins: `noc.buffers_per_vc` on every buffer of the device network, as given;
+    `noc.levels.<level>.input_buffer_depth` / `output_buffer_depth` on the routers of that level in the detailed network
+    too; `system.network.input_buffer_depth` on the detailed host network.
+  - The DRAM tree runs 4 virtual channels per vnet by default (2 per up/down class); `noc.vcs_per_vnet` sets it. The
+    host network runs 4 per vnet by default too; `system.network.virtual_channels_per_vn` sets it, and also the simple
+    host-network model's queueing capacity.
+  - Power prices the buffers as sized: each level's router instances take the mean depth of the level's router input
+    buffers, and the virtual channels as built.
+  - docs/network.md gives the rule and the settings that run an earlier release's depths: `noc.buffers_per_vc: 5` on
+    every device topology and in the synthetic mode, `system.network.input_buffer_depth: 4` on the detailed host
+    network, and for the DRAM tree also `noc.vcs_per_vnet: 2` and `noc.single_path_as_link: false`, and
+    `system.network.virtual_channels_per_vn: 1` on the host network.
+- **Data impact.** Simulated time changes in every detailed cell whose links ran below their rate. On the 116-cell
+  validation set 65 cells change, from -15.8% to +5.9% (median -0.3%): the co-simulation DDR5 cell -15.8%, the HBM3
+  device cells -0.4% to -7.9%, the device OpenMP cells -0.1% to -5.6%; the serial-kernel cells with the PEs at the bank
+  by at most 0.03%. The NoC average latency falls in every saturated cell (co-simulation DDR5 1932 to 1405 cycles). The
+  deeper buffers add router buffer area and leakage, priced as built. The host network's virtual-channel default changes
+  no cell of the 116-cell set.
+- **Validation** (the previous release and this build on the same node; logs compared with tree paths masked). Every
+  cell of the 116-cell validation set exits 0 and the power checks report no flag. With `noc.single_path_as_link:
+  false`, `noc.buffers_per_vc: 5` and `noc.vcs_per_vnet: 2` on the devices, every cell of the set runs the simulated
+  time of the release before the link fold.
+
 ## 1.12.232 -- every router the detailed DRAM tree builds is priced as a router at its own port count, from the flits it measured
 
 - **The problem.** The NoC power census priced as router nodes only the routers with two or more router children, plus

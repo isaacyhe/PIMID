@@ -4481,8 +4481,9 @@ struct UnifiedConfig {
         double frequency_ghz = 1.0;
         int latency_cycles = 5;
         int router_latency = 1;
-        int virtual_channels_per_vn = 1;
+        int virtual_channels_per_vn = 4;   // (1.12.233): 4 per vnet, as the DRAM tree (was 1); the YAML value wins
         int input_buffer_depth = 4;
+        bool input_buffer_depth_user_set = false;   // (1.12.233): given: the detailed host network keeps it; else full rate
         int output_buffer_depth = 4;
         std::vector<SystemLinkConfig> links;
     };
@@ -6634,6 +6635,11 @@ static bool dramHTreeBuilder(const std::string& tech,
     };
     f << "routers " << fold.built << "\n";
     f << "endpoints " << tree.totalEndpoints() << "\n";
+    /* (1.12.233): every link of the tree
+     * carries one flit per cycle when nothing contends for it -- its receiving
+     * buffer holds the link's credit round trip (Garnet sizes it per link).
+     * An explicit noc.buffers_per_vc keeps the configured depth everywhere. */
+    if (!config.noc_buffers_user_set) f << "buffers rtt\n";
     for (auto& e : tree.intLinks) {
         if (nid(e.b) < 0) continue;   // its up-link is part of the link written for the node below it
         const Span sp = spanUp(e.a, e.lat);
@@ -8671,7 +8677,11 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                      * A user who names either value keeps it, including a
                      * deeper fabric for a logic-die design that genuinely has
                      * one. We only refuse to go below the deadlock floor. */
-                    if (!config.noc_vcs_user_set)     config.noc_vcs_per_vnet = 2;
+                    /* (1.12.233): 4 VCs per vnet by default, 2 per up/down class. With one
+                     * VC per class a packet could not follow the one ahead of it on a link
+                     * until that one's tail had freed the VC downstream, so back-to-back
+                     * short packets ran far below the link rate. */
+                    if (!config.noc_vcs_user_set)     config.noc_vcs_per_vnet = 4;
                     if (!config.noc_buffers_user_set) config.noc_buffers_per_vc = 2;
                     if (config.noc_vcs_per_vnet < 2) {
                         std::cerr << "[config] WARNING: noc.vcs_per_vnet="
@@ -8735,7 +8745,7 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                  * McPAT priced the analytical run's routers with 8 VCs per
                  * port against the detailed run's 4 for the same built tree
                  * (leakage 6.4x, energy per traversal 3.4x apart). */
-                if (!config.noc_vcs_user_set)     config.noc_vcs_per_vnet = 2;
+                if (!config.noc_vcs_user_set)     config.noc_vcs_per_vnet = 4;   // (1.12.233): as the detailed tree
                 if (!config.noc_buffers_user_set) config.noc_buffers_per_vc = 2;
                 if (config.noc_vcs_per_vnet < 2)  config.noc_vcs_per_vnet = 2;
             }
@@ -10773,6 +10783,25 @@ static void emitZSimNetworkBlock(std::ostream& out, const UnifiedConfig& config)
     out << "        vcsPerVnet = " << config.noc_vcs_per_vnet << ";\n";
     out << "        flitSizeBits = " << config.noc_flit_size_bits_cfg << ";\n";   // 1.11.97 (row 18): the fork's flit, every topology
     out << "        buffersPerVc = " << config.noc_buffers_per_vc << ";\n";
+    /* (1.12.233): every detailed fabric sizes each link's receiving buffer at its credit round trip unless
+     * noc.buffers_per_vc is given; noc.levels.<level>.input_buffer_depth / output_buffer_depth set the routers of
+     * a level (a CUSTOM file's rlevel levels, the generated DRAM tree's levels) as given */
+    if (config.noc_cycle_accurate && !config.noc_buffers_user_set)
+        out << "        buffersRtt = true;\n";
+    {
+        bool li = false, lo = false;
+        std::ostringstream si, so;
+        for (int l = 0; l < 7; ++l) {
+            const int a = config.network_level_overrides[l].input_buffer_depth;
+            const int b = config.network_level_overrides[l].output_buffer_depth;
+            if (a > 0) li = true;
+            if (b > 0) lo = true;
+            si << (l ? "," : "") << (a > 0 ? a : -1);
+            so << (l ? "," : "") << (b > 0 ? b : -1);
+        }
+        if (config.noc_cycle_accurate && li) out << "        levelInDepth = \"" << si.str() << "\";\n";
+        if (config.noc_cycle_accurate && lo) out << "        levelOutDepth = \"" << so.str() << "\";\n";
+    }
     if (!config.noc_topology_file.empty()) {
         out << "        topologyFile = \"" << config.noc_topology_file << "\";\n";
     }
@@ -10829,6 +10858,7 @@ struct GarnetParsedStats {
     uint32_t control_msg_bits = 0;
     uint32_t buffers_per_vc = 0;             // configured
     uint32_t effective_buffers_per_vc = 0;   // what Garnet built
+    bool buffers_sized = false;   // (1.12.233): the buffers were sized to each link's credit round trip
     /* (1.12.150): the topology Garnet built ("CUSTOM" for the device tree and the
      * in-die fabric, "MESH_2D", "RING", ... for a flat fabric; "" = an older
      * file) and the flits its routers' own crossbar counters switched
@@ -10844,6 +10874,7 @@ struct GarnetParsedStats {
     std::string level_source;
     uint64_t level_router_traversals[7] = {0,0,0,0,0,0,0};
     uint64_t level_passthrough_traversals[7] = {0,0,0,0,0,0,0};
+    double level_vc_depth[7] = {-1,-1,-1,-1,-1,-1,-1};   // (1.12.233): mean credits per VC of the level's router inputs, as sized
     /* (1.12.232): the flits MEASURED by the routers of each level, by their port
      * count (the census's router classes), and the flits through the level's
      * network interfaces (injected + ejected); class_present = the file has them. */
@@ -10929,6 +10960,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
                         if (fld == "router_traversals") stats.level_router_traversals[k] = std::stoull(val);
                         else if (fld == "passthrough_traversals") stats.level_passthrough_traversals[k] = std::stoull(val);
                         else if (fld == "packet_traversals") stats.level_packet_traversals[k] = std::stoull(val);
+                        else if (fld == "vc_depth") stats.level_vc_depth[k] = std::stod(val);   // (1.12.233)
                         else if (fld.rfind("class_flits_", 0) == 0) {   // (1.12.232)
                             const int pp = std::stoi(fld.substr(12));
                             if (pp >= 1 && pp <= 16) { stats.level_class_flits[k][pp] = std::stoull(val); stats.level_class_present = true; }
@@ -10969,6 +11001,7 @@ static GarnetParsedStats parseGarnetStatsFile(const std::string& path) {
             else if (key == "control_msg_bits") stats.control_msg_bits = std::stoul(val);
             else if (key == "buffers_per_vc") stats.buffers_per_vc = std::stoul(val);
             else if (key == "effective_buffers_per_vc") stats.effective_buffers_per_vc = std::stoul(val);
+            else if (key == "buffers_sized") stats.buffers_sized = (val == "1");   // (1.12.233)
             else if (key == "level_source") stats.level_source = (val == "none") ? std::string() : val;
             else if (key == "total_flits") stats.total_flits = std::stoull(val);
             else if (key == "total_hops") stats.total_hops = std::stoull(val);
@@ -11453,7 +11486,10 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
     auto vcText = [&]() -> std::string {
         std::ostringstream t;
         t << "; vcs=" << vcs << " buffers=" << bufs;
-        if (built_bufs > 0 && built_bufs != bufs)
+        if (built_bufs > 0 && garnet.buffers_sized)   // (1.12.233)
+            t << " configured, " << built_bufs << " built and priced (the mean router input buffer per VC, each"
+                 " sized to its link's credit round trip)";
+        else if (built_bufs > 0 && built_bufs != bufs)
             t << " configured, " << built_bufs << " built and priced (Garnet:"
                  " a VC must hold one data packet)";
         else if (built_bufs > 0)
@@ -12302,6 +12338,13 @@ static std::vector<pimid::McPATWrapper::NoCLevelConfig> buildNoCLevelsForMcPAT(
             nc.duty_cycle = duty;
             nc.chip_coverage = chip_cov;
             nc.vc_buffer_entries = built_bufs;   // 1.11.93
+            if (garnet.level_vc_depth[lvl] > 0) {   // (1.12.233): each input buffer sized to its link's round trip
+                nc.vc_buffer_entries = std::max(1, static_cast<int>(std::lround(garnet.level_vc_depth[lvl])));
+                pimid::debugStream(std::cout) << "  [NoC] " << lbl << "level " << (lvl - pe_level) << " (" << nc.name
+                          << "): input buffers sized to each link's credit round trip, mean "
+                          << garnet.level_vc_depth[lvl] << " entries per VC -> " << nc.vc_buffer_entries
+                          << " priced per VC (the network's depth " << built_bufs << ")" << std::endl;
+            }
             nc.router_stages = std::max(1, config.noc_router_latency);   // the one router latency the timing fabric runs
 
             /* 1.11.80 (audit R6-13): SAY WHAT WAS DERIVED -- every number
@@ -21403,6 +21446,10 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
     cfg << "        routerLatency = " << config.system_network.router_latency << ";\n";
     cfg << "        virtualChannelsPerVn = " << config.system_network.virtual_channels_per_vn << ";\n";
     cfg << "        inputBufferDepth = " << config.system_network.input_buffer_depth << ";\n";
+    /* (1.12.233): the detailed host network sizes each link's buffer at its credit round trip unless
+     * system.network.input_buffer_depth is given */
+    if (config.system_network.model == "detailed" && !config.system_network.input_buffer_depth_user_set)
+        cfg << "        buffersRtt = true;\n";
     cfg << "        outputBufferDepth = " << config.system_network.output_buffer_depth << ";\n";
 
     // Pre-compute inter-node latencies in reference cycles
@@ -25501,6 +25548,7 @@ int main(int argc, char** argv) {
                         std::exit(2);
                     }
                     config.system_network.virtual_channels_per_vn = yamlInt(net["virtual_channels_per_vn"], config.system_network.virtual_channels_per_vn, "system.network.virtual_channels_per_vn");
+                    if (net["input_buffer_depth"]) config.system_network.input_buffer_depth_user_set = true;   // (1.12.233)
                     config.system_network.input_buffer_depth = yamlInt(net["input_buffer_depth"], config.system_network.input_buffer_depth, "system.network.input_buffer_depth");
                     config.system_network.output_buffer_depth = yamlInt(net["output_buffer_depth"], config.system_network.output_buffer_depth, "system.network.output_buffer_depth");
 
@@ -26406,6 +26454,9 @@ int main(int argc, char** argv) {
         } else {
             rates.push_back(injRate);
         }
+
+        // (1.12.233): the synthetic network follows the detailed rule: full-rate buffers unless noc.buffers_per_vc is given
+        zsim_synthetic_traffic_buffers_rtt(!config.noc_buffers_user_set);
 
         // Lambda: run one synthetic test and optionally compute NoC power
         auto runOneSynthetic = [&](double rate) -> int {

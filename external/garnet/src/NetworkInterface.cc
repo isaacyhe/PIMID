@@ -104,6 +104,10 @@ NetworkInterface::addOutPort(NetworkLink *out_link,
         for (int i = 0; i < m_num_vcs; i++) {
             m_ni_out_vcs_enqueue_time[i] = Tick(INFINITE_);
             outVcState.emplace_back(i, m_net_ptr, consumerVcs);
+            if (out_link->vcDepth() > 0) {   // (1.12.233): the router buffer this link feeds is sized for it
+                if (out_link->vcDepthExact()) outVcState.back().setDepthExact((int)out_link->vcDepth());
+                else outVcState.back().setDepth((int)out_link->vcDepth());
+            }
         }
 
         // Reset VC Per VNET for input links already instantiated

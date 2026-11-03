@@ -40,10 +40,35 @@ struct TopologyResult {
     std::vector<GarnetIntLink*> int_links;
     std::vector<GarnetExtLink*> ext_links;
     Topology* topology;
+    /* (1.12.233): with "buffers rtt", the credits per VC of every router input
+     * port (in_depth[router][k], the k-th link into it) -- empty otherwise. */
+    std::vector<std::vector<uint32_t>> in_depth;
 };
 
 class TopologyBuilders {
 public:
+    /* (1.12.233): how a build sizes each link's receiving buffer per VC. With rtt, a link without an explicit depth
+     * feeds a buffer of its credit round trip (link latency + the receiver's pipe stages + credit latency + 1; a
+     * network interface sends one cycle late and receives in one stage), never below floor (the network's depth,
+     * one data packet), so an uncontended link carries one flit per cycle. level_in / level_out are explicit
+     * depths by hierarchy level (CUSTOM files with rlevel lines): the input buffers of the routers at a level, and
+     * the buffers the links leaving a level's routers feed (level_in wins where both apply). Explicit depths are
+     * used as given (Garnet's wormhole flow control needs no whole packet per VC). fixed = the network's depth is
+     * an explicit setting: a file's "buffers rtt" line does not apply. The wrapper sets it before a build and
+     * clears it after. */
+    struct DepthPolicy {
+        bool rtt = false;
+        bool fixed = false;
+        uint32_t floor = 0;
+        uint32_t packet = 1;
+        Cycles stages = Cycles(1);   // a built-in topology's routers (every router alike)
+        int level_in[7] = {-1, -1, -1, -1, -1, -1, -1};
+        int level_out[7] = {-1, -1, -1, -1, -1, -1, -1};
+    };
+    static void setDepthPolicy(const DepthPolicy& p);
+    // (1.12.233): the router input buffers the last build sized: their count and summed credits per VC (0 = none)
+    static void sizedInputs(uint64_t& n, uint64_t& sum);
+
     // -- Built-in topologies ----------------------------------
 
     static TopologyResult buildMesh(
@@ -118,7 +143,9 @@ private:
                                       uint32_t vcs_per_vnet,
                                       uint32_t virt_nets,
                                       uint32_t width,
-                                      long credit_latency = -1);   // (1.12.231): -1 = the link's latency
+                                      long credit_latency = -1,    // (1.12.233): -1 = the link's latency
+                                      uint32_t vc_depth = 0,       // (1.12.233): 0 = the network's (or the round trip)
+                                      bool vc_depth_exact = false);   // (1.12.233): vc_depth is an explicit setting
 
     // Helper: create an external link (NI <-> Router, bidirectional)
     static GarnetExtLink* makeExtLink(uint32_t id,
@@ -127,7 +154,11 @@ private:
                                       uint32_t vcs_per_vnet,
                                       uint32_t virt_nets,
                                       uint32_t width,
-                                      long credit_latency = -1);   // (1.12.231): -1 = the link's latency
+                                      long credit_latency = -1,    // (1.12.233): -1 = the link's latency
+                                      uint32_t depth_in = 0,       // (1.12.233): NI -> router buffer, 0 = the network's
+                                      uint32_t depth_out = 0,      // (1.12.233): router -> NI buffer
+                                      bool in_exact = false,       // (1.12.233): depth_in / depth_out are explicit
+                                      bool out_exact = false);
 };
 
 } // namespace garnet

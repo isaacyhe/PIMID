@@ -684,7 +684,7 @@ noc:
 | `noc.mlp` | int | `10` | Memory-level-parallelism intensity `M` of the analytical model (`t_eff = max((L + W_q)/M, P*D/c)`). Absent: 10 for every core type (calibrated for `alu_core` against `detailed`; a placeholder for the cached cores). Must be >= 1: a smaller value is refused (1.11.106; it used to be clamped to 1 in silence). |
 | `noc.vcs_per_vnet` | int | `4` | Virtual channels per virtual network. |
 | `noc.virtual_channels_per_vn` | int | `4` | The same setting as `noc.vcs_per_vnet` under its other name; giving both is refused (1.11.106). |
-| `noc.buffers_per_vc` | int | `4` | Buffers per virtual channel. |
+| `noc.buffers_per_vc` | int | unset | Buffers per virtual channel: every buffer of the device network takes it, as given. Unset (the default): each link's buffer holds its credit round trip, on every detailed fabric ([network.md](network.md#buffer-depth)). Earlier releases built max(this, one data packet): `5` reproduces their depth at the default 576-bit messages and 128-bit flits. |
 | `noc.single_path_as_link` | bool | `true` | (1.12.231): on the detailed DRAM tree, a node with exactly two attachments (its parent and one router child, or its parent and one endpoint) whose two links have the same width and clock is built as part of a link, not as a router: one link to the first router above, its latency the sum of the links it replaces, its credits returning in one cycle. The power model prices the routers and the links that are built. A two-attachment node where the width or the clock changes stays a router, and so do the root and the in-die fabric's nodes. `false`: every node is built as a router and priced as one. A `CUSTOM` topology file is built as written. |
 | `noc.topology_file` | string | `""` | Path to topology file (required for `CUSTOM` topology). |
 | `noc.routing_table_file` | string | `""` | Path to routing table file (for `TABLE` routing). |
@@ -726,8 +726,8 @@ Valid level names: `subarray`, `bank`, `bank_group`, `chip`, `rank`, `channel`, 
 | `noc.levels.<level>.router_bypass` | bool | - | Enable router bypass. |
 | `noc.levels.<level>.virtual_networks` | int | `-1` | Virtual networks. |
 | `noc.levels.<level>.virtual_channels_per_vn` | int | `-1` | VCs per virtual network. |
-| `noc.levels.<level>.input_buffer_depth` | int | `-1` | Input buffer depth. |
-| `noc.levels.<level>.output_buffer_depth` | int | `-1` | Output buffer depth. |
+| `noc.levels.<level>.input_buffer_depth` | int | `-1` | Input buffer depth of the routers at this level: the analytical DRAM hierarchy's, and on the detailed network the buffers per VC of the routers the tree (or a `CUSTOM` file's `rlevel` lines) puts at this level, as given. `-1` = the network's rule. |
+| `noc.levels.<level>.output_buffer_depth` | int | `-1` | Output buffer depth: the analytical DRAM hierarchy's, and on the detailed network the buffers per VC fed by the links that leave this level's routers (the receiving level's `input_buffer_depth` wins). `-1` = the network's rule. |
 
 ### Bridge Overrides (`noc.bridges`)
 
@@ -1672,8 +1672,8 @@ system:
 | `system.network.latency_cycles` | int | `5` | Base latency in cycles. |
 | `system.network.router_pipe_stages` | int | `1` | Pipeline stages of the host network's routers (cycles per router; the per-hop router term). At least 1. The host network has no topology file, so there is no per-level or per-router setting. |
 | `system.network.router_latency` | int | - | The old name of `system.network.router_pipe_stages`, read as it with a NOTE; giving both is refused. |
-| `system.network.virtual_channels_per_vn` | int | `1` | VCs per virtual network. |
-| `system.network.input_buffer_depth` | int | `4` | Input buffer depth. |
+| `system.network.virtual_channels_per_vn` | int | `4` | VCs per virtual network: the detailed host network's routers, and the queueing term of the simple model (its service capacity is VCs x 2 vnets). Earlier releases defaulted to `1`; give `1` to reproduce them. |
+| `system.network.input_buffer_depth` | int | `4` | Input buffer depth. On the detailed host network: unset, each link's buffer holds its credit round trip; given (`4` is the depth of earlier releases), every buffer takes it. |
 | `system.network.output_buffer_depth` | int | `4` | Output buffer depth. |
 | `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-system-scope) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` (PCIe / CXL only: 1, 2, 4, 8 or 16; other classes have a fixed lane structure and refuse it) sets the width the preset bandwidth and the link energy follow (it was refused from 1.11.57 to (1.12.99), when no lane count scaled the link). **Superseded by [`system.bridge`](#host-device-bridge-co-sim)** for the host<->device boundary charge in co-sim; still parsed for backward compatibility. |
 

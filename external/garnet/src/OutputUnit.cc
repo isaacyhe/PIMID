@@ -182,6 +182,11 @@ void
 OutputUnit::set_out_link(NetworkLink *link)
 {
     m_out_link = link;
+    if (link->vcDepth() > 0)   // (1.12.233): the buffer this link feeds is sized for it
+        for (auto &ovc : outVcState) {
+            if (link->vcDepthExact()) ovc.setDepthExact((int)link->vcDepth());
+            else ovc.setDepth((int)link->vcDepth());
+        }
 }
 
 void

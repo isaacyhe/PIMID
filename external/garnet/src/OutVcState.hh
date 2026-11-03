@@ -52,6 +52,10 @@ class OutVcState
     VC_state_type getState() const  { return m_vc_state; }
     Tick getStateTime() const       { return m_time; }
     inline bool has_credit()       { return (m_credit_count > 0); }
+    // (1.12.233): the receiving buffer is d deep (never below the network's floor)
+    void setDepth(int d) { if (d > m_max_credit_count) { m_max_credit_count = d; m_credit_count = d; } }
+    // (1.12.233): an explicit depth setting, as given (set before any traffic)
+    void setDepthExact(int d) { if (d > 0) { m_max_credit_count = d; m_credit_count = d; } }
     void increment_credit();
     void decrement_credit();
 

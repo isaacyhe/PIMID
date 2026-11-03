@@ -46,6 +46,8 @@ int zsim_synthetic_traffic_ex(const char* topology, const char* routing,
                               uint32_t vcsPerVnet, uint32_t buffersPerVc,
                               double clockMhz, uint32_t flitSizeBits,
                               SyntheticTrafficResult* outResult);
+// (1.12.233): the synthetic network's buffers at each link's credit round trip (on) or at buffersPerVc (off, the default)
+void zsim_synthetic_traffic_buffers_rtt(bool on);
 #endif
 
 #endif

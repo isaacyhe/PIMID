@@ -613,6 +613,23 @@ static void InitSystem(Config& config) {
         // the network is just saturated. processBatch is already bounded by its
         // own maxTick drain window, so this only suppresses the false positive.
         garnet->setDeadlockThreshold(100000000u);
+        {   /* (1.12.233): full-rate buffers unless the configuration gives a depth, and the per-level depths
+             * ("d0,d1,...,d6", -1 = none) for a CUSTOM file's rlevel levels */
+            int li[7], lo[7];
+            for (int l = 0; l < 7; l++) { li[l] = -1; lo[l] = -1; }
+            auto parse7 = [](const char* v, int out[7]) {
+                std::string s(v ? v : ""); size_t pos = 0;
+                for (int l = 0; l < 7 && pos <= s.size() && !s.empty(); l++) {
+                    size_t c = s.find(',', pos);
+                    out[l] = atoi(s.substr(pos, c == std::string::npos ? std::string::npos : c - pos).c_str());
+                    if (c == std::string::npos) break;
+                    pos = c + 1;
+                }
+            };
+            parse7(config.get<const char*>("sys.network.levelInDepth", ""), li);
+            parse7(config.get<const char*>("sys.network.levelOutDepth", ""), lo);
+            garnet->setDepthPolicy(config.get<bool>("sys.network.buffersRtt", false), li, lo);
+        }
         zinfo->garnetNetwork = garnet;  // Store for stats output
         info("[ZSim] Using Garnet %s network, routing=%s",
              topoStr.c_str(), nocRoutingStr(routing).c_str());
@@ -1614,6 +1631,9 @@ static void InitSystem(Config& config) {
                     routerLat, linkLat, true /* cycleAccurate */,
                     sysRouting, sysVCs, sysBuffers,
                     1000.0 /* clockMhz -- will use reference freq */, sysFlitBits);
+                // (1.12.233): the host network's buffers at each link's round trip unless input_buffer_depth is given
+                zinfo->systemGarnetNetwork->setDepthPolicy(
+                    config.get<bool>("sys.systemNetwork.buffersRtt", false), nullptr, nullptr);
 
                 // Register system network nodes
                 for (uint32_t n = 0; n < numNodes; n++) {

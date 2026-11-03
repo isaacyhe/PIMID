@@ -71,6 +71,9 @@ class NetworkLink : public ClockedObject, public Consumer
     virtual void wakeup();
 
     unsigned int getLinkUtilization() const { return m_link_utilized; }
+    // (1.12.233): credits per VC of the buffer this link feeds; 0 = the network's
+    uint32_t vcDepth() const { return m_vc_depth; }
+    bool vcDepthExact() const { return m_vc_depth_exact; }   // (1.12.233): an explicit depth
     const std::vector<unsigned int> & getVcLoad() const { return m_vc_load; }
 
     inline bool isReady(Tick curTime)
@@ -98,6 +101,8 @@ class NetworkLink : public ClockedObject, public Consumer
 
     std::vector<int> mVnets;
     uint32_t bitWidth;
+    uint32_t m_vc_depth = 0;   // (1.12.233)
+    bool m_vc_depth_exact = false;   // (1.12.233)
 
   private:
     const int m_id;

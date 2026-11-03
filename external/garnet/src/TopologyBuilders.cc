@@ -73,6 +73,32 @@ TopologyBuilders::makeNI(uint32_t id, uint32_t vcs_per_vnet,
     return new NetworkInterface(nip);
 }
 
+// (1.12.233): the depth policy of the build in progress, and the router input buffers it sized
+static TopologyBuilders::DepthPolicy s_depth;
+static uint64_t s_sized_n = 0, s_sized_sum = 0;
+
+void
+TopologyBuilders::setDepthPolicy(const DepthPolicy& p)
+{
+    s_depth = p;
+    s_sized_n = 0;
+    s_sized_sum = 0;
+}
+
+void
+TopologyBuilders::sizedInputs(uint64_t& n, uint64_t& sum)
+{
+    n = s_sized_n;
+    sum = s_sized_sum;
+}
+
+// (1.12.233): a link's credit round trip under the policy (see DepthPolicy), never below its floor
+static uint32_t policyRtt(Cycles L, Cycles Lc, Cycles p, uint32_t extra)
+{
+    const uint32_t d = (uint32_t)(uint64_t(L) + uint64_t(Lc) + uint64_t(p) + 1 + extra);
+    return std::max(d, s_depth.floor);
+}
+
 // -- Helper: create an internal (Router->Router) link ----------
 
 GarnetIntLink*
@@ -82,10 +108,16 @@ TopologyBuilders::makeIntLink(uint32_t id,
                               const std::string& dst_inport,
                               Cycles latency,
                               uint32_t vcs_per_vnet, uint32_t virt_nets,
-                              uint32_t width, long credit_latency)
+                              uint32_t width, long credit_latency,
+                              uint32_t vc_depth, bool vc_depth_exact)
 {
     const Cycles cred_lat = (credit_latency >= 0) ? Cycles(credit_latency) : latency;   // (1.12.231)
+    // (1.12.233): no depth given: with the policy's rtt, the round trip into a router of the policy's stages
+    if (vc_depth == 0 && s_depth.rtt) vc_depth = policyRtt(latency, cred_lat, s_depth.stages, 0);
+    if (vc_depth > 0) { s_sized_n++; s_sized_sum += vc_depth; }
     NetworkLinkParams nlp;
+    nlp.vc_depth = vc_depth;   // (1.12.233)
+    nlp.vc_depth_exact = vc_depth_exact;   // (1.12.233)
     nlp.name = "int_net_link" + std::to_string(id);
     nlp.link_id = id * 2;
     nlp.link_latency = latency;
@@ -125,15 +157,23 @@ TopologyBuilders::makeExtLink(uint32_t id,
                               NodeID ext_node, uint32_t int_node,
                               Cycles latency,
                               uint32_t vcs_per_vnet, uint32_t virt_nets,
-                              uint32_t width, long credit_latency)
+                              uint32_t width, long credit_latency,
+                              uint32_t depth_in, uint32_t depth_out,
+                              bool in_exact, bool out_exact)
 {
     const Cycles cred_lat = (credit_latency >= 0) ? Cycles(credit_latency) : latency;   // (1.12.231)
+    // (1.12.233): no depth given: with the policy's rtt, the round trips (the NI sends one cycle late; it receives in 1 stage)
+    if (depth_in == 0 && s_depth.rtt) depth_in = policyRtt(latency, cred_lat, s_depth.stages, 1);
+    if (depth_out == 0 && s_depth.rtt) depth_out = policyRtt(latency, cred_lat, Cycles(1), 0);
+    if (depth_in > 0) { s_sized_n++; s_sized_sum += depth_in; }
     // External links are bidirectional: index 0 = In (NI->Router),
     //                                   index 1 = Out (Router->NI)
     NetworkLinkParams nlp_in;
     nlp_in.name = "ext_net_link_in" + std::to_string(id);
     nlp_in.link_id = 10000 + id * 4;
     nlp_in.link_latency = latency;
+    nlp_in.vc_depth = depth_in;     // (1.12.233)
+    nlp_in.vc_depth_exact = in_exact;   // (1.12.233)
     nlp_in.vcs_per_vnet = vcs_per_vnet;
     nlp_in.virt_nets = virt_nets;
     nlp_in.width = width;
@@ -150,6 +190,8 @@ TopologyBuilders::makeExtLink(uint32_t id,
     nlp_out.name = "ext_net_link_out" + std::to_string(id);
     nlp_out.link_id = 10000 + id * 4 + 2;
     nlp_out.link_latency = latency;
+    nlp_out.vc_depth = depth_out;   // (1.12.233)
+    nlp_out.vc_depth_exact = out_exact;   // (1.12.233)
     nlp_out.vcs_per_vnet = vcs_per_vnet;
     nlp_out.virt_nets = virt_nets;
     nlp_out.width = width;
@@ -735,6 +777,11 @@ struct TopoParsed {
     uint32_t num_routers = 0, num_endpoints = 0;
     std::vector<TopoExtEntry> ext_entries;
     std::vector<TopoIntEntry> int_entries;
+    /* (1.12.233): "buffers rtt" -- every link's receiving VC buffer holds the
+     * link's credit round trip (written by the DRAM-tree writer unless the
+     * user gave noc.buffers_per_vc), so an uncontended link carries one flit
+     * per cycle. A file without it keeps the network's depth. */
+    bool rtt_buffers = false;
     std::map<uint32_t, int> router_level;                  // (1.12.230): rlevel lines
     std::map<int, std::pair<long, int>> pipe_of_level;     // (1.12.230): pipe lines: level -> (stages, line)
 };
@@ -753,6 +800,7 @@ void topoParse(const std::string& filename, TopoParsed& t)
     std::vector<TopoIntEntry>& int_entries = t.int_entries;
     std::map<uint32_t, int>& router_level = t.router_level;
     std::map<int, std::pair<long, int>>& pipe_of_level = t.pipe_of_level;
+    bool& rtt_buffers = t.rtt_buffers;
     std::string line;
     int lineno = 0;
     while (std::getline(infile, line)) {
@@ -768,6 +816,8 @@ void topoParse(const std::string& filename, TopoParsed& t)
             iss >> num_routers;
         } else if (token == "endpoints") {
             iss >> num_endpoints;
+        } else if (token == "buffers") {   // (1.12.233)
+            std::string kw; if (iss >> kw && kw == "rtt") rtt_buffers = true;
         } else if (token == "ext") {
             TopoExtEntry e; e.latency = -1; e.width = 0;
             iss >> e.endpoint >> e.router;
@@ -852,6 +902,7 @@ TopologyBuilders::buildFromFile(const std::string& filename,
     std::vector<TopoIntEntry>& int_entries = t.int_entries;
     const std::map<uint32_t, int>& router_level = t.router_level;
     const std::map<int, std::pair<long, int>>& pipe_of_level = t.pipe_of_level;
+    const bool rtt_buffers = t.rtt_buffers;
     if (num_endpoints == 0) num_endpoints = num_routers;
 
     // -- Tree detection for up*/down* deadlock-free routing ------------------
@@ -911,16 +962,36 @@ TopologyBuilders::buildFromFile(const std::string& filename,
     TopologyResult result;
     result.topology = new Topology(num_routers);
     // 1.11.94 (x03-garnet-custom-3): name used in routing refusals only.
+    /* (1.12.233): each router's pipe stages (rp.latency), the receiving end of the
+     * credit round trip below: its level's pipe line, else the network's. */
+    std::vector<Cycles> router_stages(num_routers, router_latency);
+    for (const auto& rl : router_level) {
+        if (rl.first >= num_routers) continue;
+        auto pl = pipe_of_level.find(rl.second);
+        if (pl != pipe_of_level.end()) router_stages[rl.first] = Cycles(pl->second.first);
+    }
+    /* (1.12.233): the credit round trip of a link, in cycles -- the credits a VC
+     * needs so that the link never waits for one. A flit the sender's crossbar
+     * puts out at cycle t is on the link at t+1, reaches the receiver at
+     * t+1+L, is switched out after the receiver's pipe stages at t+L+p and
+     * frees its credit, which is on the credit link at t+L+p+1, back at
+     * t+L+p+1+Lc and usable by the sender's switch allocation in that cycle:
+     * L + p + Lc + 1. A network interface acts as a 1-stage receiver, and as
+     * a sender it reads its credits after it has sent in a cycle (one more). */
+    auto rtt = [](Cycles L, Cycles Lc, Cycles p, uint32_t extra) -> uint32_t {
+        return policyRtt(L, Lc, p, extra);   // (1.12.233): never below the network's depth
+    };
+    /* (1.12.233): every CUSTOM file follows the network's rule (a hand-written one too); explicit per-level depths,
+     * by the routers' rlevel levels, win over it. */
+    const bool any_rtt = !s_depth.fixed && (rtt_buffers || s_depth.rtt);
+    auto lvlOf = [&](uint32_t r) -> int { auto it = router_level.find(r); return (it != router_level.end() && it->second >= 0 && it->second <= 6) ? it->second : -1; };
+    auto explicitIn = [&](uint32_t r) -> int { const int l = lvlOf(r); return (l >= 0 && s_depth.level_in[l] > 0) ? s_depth.level_in[l] : 0; };
+    auto explicitOut = [&](uint32_t r) -> int { const int l = lvlOf(r); return (l >= 0 && s_depth.level_out[l] > 0) ? s_depth.level_out[l] : 0; };
+    if (any_rtt) result.in_depth.assign(num_routers, {});
+
     result.topology->setName("CUSTOM (" + filename + ")");
 
     for (uint32_t i = 0; i < num_routers; i++) {
-        /* (1.12.230): the router's stages: its level's pipe line, else the network's. */
-        Cycles stages_i = router_latency;
-        auto rl = router_level.find(i);
-        if (rl != router_level.end()) {
-            auto pl = pipe_of_level.find(rl->second);
-            if (pl != pipe_of_level.end()) stages_i = Cycles(pl->second.first);
-        }
         if (is_tree) {
             // up*/down* deadlock-free router (VC-class separation).
             GarnetRouterParams rp;
@@ -928,12 +999,12 @@ TopologyBuilders::buildFromFile(const std::string& filename,
             rp.router_id = i;
             rp.vcs_per_vnet = vcs_per_vnet;
             rp.virt_nets = virt_nets;
-            rp.latency = stages_i;
+            rp.latency = router_stages[i];   // (1.12.233)
             rp.width = width;
             result.routers.push_back(new TreeRouter(rp));
         } else {
             result.routers.push_back(
-                makeRouter(i, vcs_per_vnet, virt_nets, stages_i, width));
+                makeRouter(i, vcs_per_vnet, virt_nets, router_stages[i], width));   // (1.12.233)
         }
     }
 
@@ -956,10 +1027,17 @@ TopologyBuilders::buildFromFile(const std::string& filename,
         for (auto& e : ext_entries) {
             Cycles  eff_lat = (e.latency >= 0) ? Cycles(e.latency) : link_latency;
             uint32_t eff_w  = (e.width   >  0) ? e.width           : width;
+            const Cycles cred = e.span ? Cycles(1) : eff_lat;   // (1.12.233)
+            const int x_in = (e.router < num_routers) ? explicitIn(e.router) : 0;    // (1.12.233): explicit, by level
+            const int x_out = (e.router < num_routers) ? explicitOut(e.router) : 0;
+            const uint32_t d_in  = x_in ? (uint32_t)x_in : (any_rtt && e.router < num_routers
+                                 ? rtt(eff_lat, cred, router_stages[e.router], 1) : 0);   // NI sends, the router receives
+            const uint32_t d_out = x_out ? (uint32_t)x_out : (any_rtt ? rtt(eff_lat, cred, Cycles(1), 0) : 0);   // the router sends, the NI receives
+            if (d_in && !result.in_depth.empty()) result.in_depth[e.router].push_back(d_in);
             GarnetExtLink* elink = makeExtLink(ext_id++, e.endpoint, e.router,
                                                eff_lat,
                                                vcs_per_vnet, virt_nets, eff_w,
-                                               e.span ? 1 : -1);   // (1.12.231)
+                                               e.span ? 1 : -1, d_in, d_out, x_in > 0, x_out > 0);   // (1.12.233)
             result.ext_links.push_back(elink);
             result.topology->addExternalLink(elink);
         }
@@ -985,10 +1063,15 @@ TopologyBuilders::buildFromFile(const std::string& filename,
         }
         Cycles  eff_lat = (e.latency >= 0) ? Cycles(e.latency) : link_latency;
         uint32_t eff_w  = (e.width   >  0) ? e.width           : width;
+        const Cycles cred = e.span ? Cycles(1) : eff_lat;   // (1.12.233)
+        int x = (e.dst < num_routers) ? explicitIn(e.dst) : 0;       // (1.12.233): the receiver's level first,
+        if (!x && e.src < num_routers) x = explicitOut(e.src);       // then the sender's
+        const uint32_t d = x ? (uint32_t)x : (any_rtt && e.dst < num_routers ? rtt(eff_lat, cred, router_stages[e.dst], 0) : 0);
+        if (d && !result.in_depth.empty() && e.dst < num_routers) result.in_depth[e.dst].push_back(d);
         GarnetIntLink* link = makeIntLink(int_id++,
             e.src, e.dst, src_port, dst_port,
             eff_lat, vcs_per_vnet, virt_nets, eff_w,
-            e.span ? 1 : -1);   // (1.12.231)
+            e.span ? 1 : -1, d, x > 0);   // (1.12.233)
         result.int_links.push_back(link);
         result.topology->addInternalLink(link);
     }

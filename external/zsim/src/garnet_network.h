@@ -303,6 +303,17 @@ private:
     std::vector<std::vector<LinkSeg>> segOfRouter_, segOfEp_;
     std::vector<uint64_t> segBusy_;
     uint32_t segCount_ = 0;
+    /* (1.12.233): with "buffers rtt", per level the mean credits per VC of the
+     * input buffers of the routers built there (-1 = the network's depth) */
+    double levelVcDepth_[7] = {-1, -1, -1, -1, -1, -1, -1};
+    std::vector<std::vector<uint32_t>> inDepth_;
+    /* (1.12.233): the depth policy this network builds with (setDepthPolicy), and the mean credits per VC of the
+     * router input buffers the build sized (-1 = every buffer at the network's depth) */
+    bool buffersRtt_ = false;
+    bool policySet_ = false;   // (1.12.233): setDepthPolicy was called (else the 1.12.229 depth rule, max(buffers, one packet))
+    int levelInDepth_[7] = {-1, -1, -1, -1, -1, -1, -1};
+    int levelOutDepth_[7] = {-1, -1, -1, -1, -1, -1, -1};
+    double meanVcDepth_ = -1;
     std::vector<int> epLevel_;        // (1.12.232): "elevel" lines, -1 = none
     std::vector<uint32_t> rtrPorts_;  // (1.12.232): input ports of each router as built
     bool segDieKnown_ = false;   // a replaced link carries a stack die: the layout is known
@@ -1574,6 +1585,18 @@ public:
 
     const GarnetStats& getGarnetStats() const { return stats_; }
 
+    /* (1.12.233): size each link's receiving buffer per VC at its credit round trip unless an explicit depth applies
+     * (rtt false = every buffer at the network's depth, as configured); per-level explicit depths (-1 = none) for
+     * CUSTOM files with rlevel lines. Call before the network is built. */
+    void setDepthPolicy(bool rtt, const int levelIn[7], const int levelOut[7]) {
+        policySet_ = true;
+        buffersRtt_ = rtt;
+        for (int l = 0; l < 7; l++) {
+            levelInDepth_[l] = levelIn ? levelIn[l] : -1;
+            levelOutDepth_[l] = levelOut ? levelOut[l] : -1;
+        }
+    }
+
     /* (1.12.171): the service the busiest tree up-link has had in the ROI, in network cycles (the counted packets). */
     /* (1.12.171): the ROI window closed at `cycle` (ROI-relative, the records' axis): later records are not priced. */
     void setRoiEnd(uint64_t cycle) { roiEndCycle_.store(cycle, std::memory_order_release); }
@@ -1955,8 +1978,18 @@ public:
             // What initGarnetNetwork builds: a VC must hold one data packet.
             uint32_t fb = flitSizeBits_ > 0 ? flitSizeBits_ : 128;
             uint32_t df = (stats_.data_msg_bits + fb - 1) / fb;
-            fprintf(f, "garnet.effective_buffers_per_vc = %u\n",
-                    std::max(buffersPerVc_, std::max(df, 1u)));
+            /* (1.12.233): with sized buffers and no per-level depths (a flat topology), the mean of the router input
+             * buffers as built; the per-level means are written below */
+            bool lvl = false;
+            for (int l = 0; l < 7; l++) if (levelVcDepth_[l] > 0) lvl = true;
+            if (meanVcDepth_ > 0 && !lvl)
+                fprintf(f, "garnet.effective_buffers_per_vc = %u\n", (uint32_t)std::lround(meanVcDepth_));
+            else if (policySet_ && !buffersRtt_)   // (1.12.233): a configured depth, as given
+                fprintf(f, "garnet.effective_buffers_per_vc = %u\n", std::max(buffersPerVc_, 1u));
+            else
+                fprintf(f, "garnet.effective_buffers_per_vc = %u\n",
+                        std::max(buffersPerVc_, std::max(df, 1u)));
+            if (meanVcDepth_ > 0) fprintf(f, "garnet.buffers_sized = 1\n");   // (1.12.233)
         }
         fprintf(f, "garnet.data_msg_bits = %u\n", stats_.data_msg_bits);
         fprintf(f, "garnet.control_msg_bits = %u\n", stats_.control_msg_bits);
@@ -1973,6 +2006,8 @@ public:
                         stats_.level_flit_traversals[l]);
                 fprintf(f, "garnet.level%d.passthrough_traversals = %lu\n", l,
                         stats_.level_passthrough_flit_traversals[l]);
+                if (levelVcDepth_[l] > 0)   // (1.12.233)
+                    fprintf(f, "garnet.level%d.vc_depth = %.4f\n", l, levelVcDepth_[l]);
                 if (stats_.level_source == "measured_crossbar") {   // (1.12.232)
                     for (int pp = 1; pp <= 16; pp++)
                         if (stats_.level_class_flits[l][pp])
@@ -3041,6 +3076,19 @@ private:
         uint32_t vnet_count = 3;
         g::Cycles linkLat(linkLatency_);
         g::Cycles routerLat(routerLatency_);
+        {   /* (1.12.233): the depth policy for this build (see TopologyBuilders::DepthPolicy); the floor is the network's
+             * depth set below: a VC holds one data packet */
+            gg::TopologyBuilders::DepthPolicy dp;
+            const uint32_t edb = dataMsgBits_ > 0 ? dataMsgBits_ : 576;
+            const uint32_t df = std::max(1u, (edb + flitSizeBits_ - 1) / flitSizeBits_);
+            dp.rtt = buffersRtt_;
+            dp.fixed = policySet_ && !buffersRtt_;   // an explicit depth: every buffer takes it
+            dp.floor = df;   // the round trip is never below one data packet
+            dp.packet = df;
+            dp.stages = routerLat;
+            for (int l = 0; l < 7; l++) { dp.level_in[l] = levelInDepth_[l]; dp.level_out[l] = levelOutDepth_[l]; }
+            gg::TopologyBuilders::setDepthPolicy(dp);
+        }
 
         gg::TopologyResult result;
         switch (topology_) {
@@ -3085,6 +3133,7 @@ private:
                     result = gg::TopologyBuilders::buildFromFile(
                         customTopoFile_,
                         vcsPerVnet_, vnet_count, linkLat, routerLat, flitSizeBits_);
+                    inDepth_ = result.in_depth;   // (1.12.233): the buffers as sized (priced below, after the floor is known)
                 } else {
                     warn("[GarnetNetwork] CUSTOM topology requires topology_file; "
                          "falling back to MESH_2D");
@@ -3093,6 +3142,13 @@ private:
                         vcsPerVnet_, vnet_count, linkLat, routerLat, flitSizeBits_);
                 }
                 break;
+        }
+
+        {   // (1.12.233): what the build sized, then clear the policy so no other network inherits it
+            uint64_t n = 0, sum = 0;
+            gg::TopologyBuilders::sizedInputs(n, sum);
+            meanVcDepth_ = n ? (double)sum / (double)n : -1;
+            gg::TopologyBuilders::setDepthPolicy(gg::TopologyBuilders::DepthPolicy());
         }
 
         // Create MessageBuffers for each node/vnet
@@ -3139,8 +3195,22 @@ private:
         uint32_t effectiveDataBits = dataMsgBits_ > 0 ? dataMsgBits_ : 576;
         uint32_t dataFlits = (effectiveDataBits + flitSizeBits_ - 1) / flitSizeBits_;
         uint32_t minBuf = std::max(buffersPerVc_, std::max(dataFlits, 1u));
+        /* (1.12.233): with sized buffers no depth was configured: the base is one data packet, and every link's
+         * buffer is raised to its round trip. A configured depth is used as given (wormhole flow control needs no
+         * whole packet per VC). */
+        if (buffersRtt_) minBuf = std::max(dataFlits, 1u);
+        else if (policySet_) minBuf = std::max(buffersPerVc_, 1u);
         gnp.buffers_per_data_vc = minBuf;
         gnp.buffers_per_ctrl_vc = minBuf;
+        if (!inDepth_.empty()) {   // (1.12.233): each input buffer as built -- its round trip, never below this floor
+            double sum[7] = {0}; uint64_t n[7] = {0};
+            for (size_t r = 0; r < inDepth_.size(); r++) {
+                const int lv = (r < routerLevel_.size()) ? routerLevel_[r] : -1;
+                if (lv < 0 || lv > 6) continue;
+                for (uint32_t d : inDepth_[r]) { sum[lv] += d; n[lv]++; }   // (1.12.233): floored (or explicit) by the build
+            }
+            for (int l = 0; l < 7; l++) levelVcDepth_[l] = n[l] ? sum[l] / (double)n[l] : -1;
+        }
         gnp.ni_flit_size = flitSizeBits_ / 8;
         gnp.routing_algorithm = mapRoutingAlgorithm(routing_);
         gnp.garnet_deadlock_threshold = deadlockThreshold_;  // configurable (default 500k)

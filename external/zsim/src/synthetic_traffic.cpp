@@ -35,6 +35,9 @@ int zsim_synthetic_traffic(const char* cfgPath,
     return rc;
 }
 
+static bool s_synth_buffers_rtt = false;   // (1.12.233)
+void zsim_synthetic_traffic_buffers_rtt(bool on) { s_synth_buffers_rtt = on; }
+
 int zsim_synthetic_traffic_ex(const char* topology, const char* routing,
                               uint32_t rows, uint32_t cols,
                               int trafficPattern, double injectionRate,
@@ -52,6 +55,7 @@ int zsim_synthetic_traffic_ex(const char* topology, const char* routing,
                       true,  // cycle-accurate
                       rout, vcsPerVnet, buffersPerVc,
                       clockMhz, flitSizeBits);
+    net.setDepthPolicy(s_synth_buffers_rtt, nullptr, nullptr);   // (1.12.233)
 
 #ifdef HAVE_GARNET
     auto result = net.runSyntheticTraffic(trafficPattern, injectionRate,

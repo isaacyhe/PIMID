@@ -91,6 +91,21 @@ credit-based flow control, deadlock-free routing.
   `[htree] two-attachment nodes` line gives the counts per level.
   `noc.single_path_as_link: false` builds every node as a router. A `CUSTOM`
   file the user writes is built as written.
+- **Links at full rate ((1.12.233)).** On the tree the writer emits, every link
+  carries one flit per cycle at its width when nothing contends for it: the
+  buffer each link feeds holds the link's credit round trip per VC -- link
+  latency + the receiving router's pipe stages + the credit latency + 1 (a
+  network interface receives in one stage and, as a sender, reads its
+  credits one cycle late) -- and never less than the network's depth (one
+  full data packet). Rate limits then come only from the flit count at the
+  port width and from contention at the routers. The tree runs 4 VCs per
+  vnet by default, 2 per up/down class, so a packet can follow the one ahead
+  of it on a link before that one's tail has freed its VC downstream (with
+  one VC per class back-to-back short packets ran at about 5/8 of the link
+  rate); `noc.vcs_per_vnet` sets it. The topology file says so
+  with a `buffers rtt` line. The same rule holds on every detailed fabric
+  (see [Buffer depth](#buffer-depth)); an explicit `noc.buffers_per_vc`
+  keeps that one depth on every link.
 - Flat topologies remain available for non-DRAM device memories: `MESH_2D`
   (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts
@@ -374,6 +389,7 @@ generated tree above); a hand-written file is used as written.
 | `endpoints <M>` | count | The endpoints (network interfaces), ids `0 .. M-1`. Absent: one per router. |
 | `ext <ep> <router> [latency] [width] [span]` | latency cycles (`-1` or absent: `noc.link_latency`), width bits (`0` or absent: `noc.flit_size_bits`), `span` as for `int` | Endpoint `ep`'s link to its router. The endpoint cuts a message into flits of this width. |
 | `int <src> <dst> [weight] [latency] [width] [span]` | weight (default 1, the routing cost), latency, width as for `ext`; `span`: the link stands in for nodes that are not routers (written by the DRAM-tree writer, after the latency and width) | One direction of a router-to-router link; give both directions for a two-way link. The link carries one flit per cycle and returns credits over its own latency; a `span` link returns them in one cycle. |
+| `buffers rtt` | - | Every link's receiving buffer per virtual channel holds the link's credit round trip (link latency + the receiving router's pipeline stages + credit latency + 1), so an uncontended link carries one flit per cycle. Written by the DRAM-tree writer unless `noc.buffers_per_vc` is given. A file without it follows the network's rule all the same ([Buffer depth](#buffer-depth)). |
 | `rlevel <router> <level> [branch]` | level `0` subarray, `1` bank, `2` bank group, `3` chip, `4` rank, `5` channel, `6` system; branch `1` = two or more router children | The hierarchy level of a router: what `pipe` lines and the per-level traffic counts are keyed by. |
 | `rlinkw <router> <bits>` | width bits | The width of a router's link to its parent, for the link-occupancy floor and the link power. |
 | `rdie <router> <die>` | core die | The stacked die a chip-slot router sits on (HBM), for the die crossings. |
@@ -402,6 +418,43 @@ pipe 1 3
 
 A packet between the two endpoints crosses routers 1, 0 and 2: 3 + 1 + 3
 router cycles, plus the four links.
+
+### Buffer depth
+
+Every detailed fabric sizes the buffer each link feeds, per virtual channel, at
+the link's credit round trip: link latency + the receiving router's pipeline
+stages + the credit latency + 1. A network interface receives in one stage and,
+as a sender, reads its credits one cycle late. The depth is never below one
+data packet. An uncontended link then carries one flit per cycle, and rate
+limits come only from the flit count at the port width and from contention.
+This holds on the generated DRAM tree, `MESH_2D`, `TORUS_2D`, `RING`,
+`CROSSBAR`, `FAT_TREE`, `BUS`, `H_TREE`, a hand-written `CUSTOM` file (built
+as written; only its buffers follow the rule), the detailed host network and
+the synthetic mode.
+
+An explicit depth wins:
+- `noc.buffers_per_vc` sets every buffer of the device network, as given:
+  Garnet's wormhole flow control needs no whole packet per virtual channel.
+  Earlier releases raised it to one data packet.
+- `noc.levels.<level>.input_buffer_depth` sets the input buffers of the
+  routers at that level, and `output_buffer_depth` the buffers fed by the
+  links leaving that level's routers (the input setting wins where both apply).
+  Levels are the tree's levels, or a `CUSTOM` file's `rlevel` levels; a
+  topology without levels ignores them. A per-level depth is used as given,
+  also where it is below `noc.buffers_per_vc`. The analytical DRAM hierarchy
+  reads the same keys, as before.
+- `system.network.input_buffer_depth` sets every buffer of the detailed host
+  network. Its routers run 4 virtual channels per vnet by default, as the DRAM
+  tree (`system.network.virtual_channels_per_vn`, which also sets the simple
+  model's queueing capacity).
+
+To run the depths of an earlier release, give the depth that release built:
+one data packet, or `noc.buffers_per_vc` where that was larger. With the
+default 576-bit messages and 128-bit flits that is `noc.buffers_per_vc: 5` on
+every device topology and in the synthetic mode, and
+`system.network.input_buffer_depth: 4` on the detailed host network; earlier
+releases also ran `noc.vcs_per_vnet: 2` on the generated DRAM tree and
+`system.network.virtual_channels_per_vn: 1` on the host network.
 
 ### When to use which
 

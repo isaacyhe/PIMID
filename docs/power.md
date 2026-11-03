@@ -430,15 +430,19 @@ routers, the chip routers under a folded RANK placement's leaves) are priced as
 routers too, and their up-links as the links of their level, when an endpoint
 sits beneath them; a router there with no endpoint beneath it (the chip routers
 a folded RANK placement builds to cover the memory) carries no flit and is the
-memory's, as its channel TSVs are, and is not priced.
+memory's, as its channel TSVs are, and is not priced. The tree runs 4 VCs per vnet by
+default (2 per up/down class), and its buffers are priced at that count.
 Earlier releases priced as nodes only the routers with two or more router
 children (the others' flits were priced on those; a level's accesses were split
-over its classes by node count), built every node as a
+over its classes by node count), ran 2 VCs per vnet, built every node as a
 router, and took the flits of the nodes with one router child and no
 endpoint out of the level's router accesses
 (`power.models.passthrough_as_wire`). That key is refused now;
 `noc.single_path_as_link: false` builds every node as a router and prices it
-as one.
+as one. The input buffers are priced as built: on the tree each link's
+receiving buffer holds its credit round trip ([network.md](network.md)), and
+each level's router instances take the mean depth of the level's router input
+buffers, so the area and leakage of the deeper buffers are charged.
 
 (user ruling 2026-10-25, "Measured"), wire activity: every NoC link, bus
 and TSV wire is charged C V^2 per 0->1 transition (the DSENT / ORION 2.0

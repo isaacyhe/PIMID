@@ -55,6 +55,8 @@ NetworkLink::NetworkLink(const Params &p)
     int num_vnets = (p.supported_vnets).size();
     mVnets.resize(num_vnets);
     bitWidth = p.width;
+    m_vc_depth = p.vc_depth;   // (1.12.233)
+    m_vc_depth_exact = p.vc_depth_exact;   // (1.12.233)
     for (int i = 0; i < num_vnets; i++) {
         mVnets[i] = p.supported_vnets[i];
     }
