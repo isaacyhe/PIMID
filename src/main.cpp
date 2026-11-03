@@ -14152,6 +14152,10 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
          * (Vcc_min/Vdd ~= 0.35). The cell array keeps its full leakage.
          * The split is stated rather than assumed: CACTI does not
          * separate them here, so the periphery share is declared. */
+        /* (1.12.241): both notes above and the 1.11.41 note below are superseded. The cells do
+         * not keep their full leakage: since 1.11.41 they hold their data at retention
+         * voltage (the retention path below), and the periphery share is CACTI's
+         * own cell / periphery split. */
         /* 1.11.41: memory-side flag. This gates the ARRAY periphery, which
          * is a property of the memory, not of its controller -- it was
          * driven by pim.mc.pg, so gating the controller silently gated the
@@ -14204,25 +14208,25 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
                  * applies to this constant too. If the probe fails we say
                  * so and refuse the credit rather than fall back to a
                  * made-up number. */
+                /* (1.12.241): the split is CACTI's own, from the characterization above, as the NVM
+                 * branch takes its periphery leakage from NVSim's own figure: CACTI's "leakage
+                 * power in cells" (the cell/bitline term, mem_array array_leakage) against the
+                 * bank's total; the rest is row logic, column logic and the output drivers. The
+                 * second CACTI query this replaces copied the array and set one port, which is
+                 * already the default, so it reproduced the whole array and never isolated a
+                 * share: every SRAM run refused the credit. */
                 double periph_share = -1.0;
-                try {
-                    pimid::CACTIWrapper::SRAMConfig cell_cfg = sram_cfg;
-                    cell_cfg.read_write_ports = 1;
-                    cell_cfg.quiet = true;
-                    pimid::CACTIWrapper cell_probe(cell_cfg);
-                    cell_probe.initialize();
-                    if (cell_probe.isValid()) {
-                        double cell_only = cell_probe.getLeakagePower() * banks;
-                        if (leakage > 0.0 && cell_only > 0.0 && cell_only < leakage)
-                            periph_share = 1.0 - (cell_only / leakage);
-                    }
-                } catch (const std::exception&) { periph_share = -1.0; }
+                {
+                    const double cells_only = cacti.getArrayLeakage() * banks;
+                    if (leakage > 0.0 && cells_only > 0.0 && cells_only < leakage)
+                        periph_share = 1.0 - (cells_only / leakage);
+                }
 
                 if (periph_share <= 0.0) {
-                    std::cout << "  [pg] SRAM periphery gating REFUSED: the "
-                                 "array-only CACTI probe did not isolate a "
-                                 "periphery share, so there is no measured "
-                                 "split to gate on (no credit taken)."
+                    std::cout << "  [pg] SRAM periphery gating REFUSED: CACTI's "
+                                 "leakage split gave no periphery share, so "
+                                 "there is no measured split to gate on (no "
+                                 "credit taken)."
                               << std::endl;
                 } else {
                     /* 1.11.41 (user ruling: harness the SRAM PG with a
@@ -14267,7 +14271,7 @@ static NonDramArrayPrice priceNonDramArray(const std::string& tech, int banks,
                     std::cout << "  [pg] SRAM gating: idle residency " << r_idle
                               << " -> leakage " << before << " -> " << leakage
                               << " mW (periphery share " << periph_share
-                              << pimid::provLabel(" DERIVED") << " from an array-only CACTI query; "
+                              << pimid::provLabel(" DERIVED") << " from CACTI's cell / periphery leakage split; "
                                  "periphery gates to Vcc_min/Vdd=" << kPeriphResidual
                               << ", cells hold DATA at retention Vcc_min/Vdd="
                               << kCellRetention << " -- both CACTI per-node values)"

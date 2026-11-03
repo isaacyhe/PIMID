@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.241 -- SRAM periphery gating takes CACTI's own split between the cells and the periphery
+
+- **The problem.** With `memory.array_pg` on an SRAM device, the share of the leakage that gates came from a second
+  CACTI query meant to isolate the cell array. It copied the array and set one port, which is already the default,
+  so it reproduced the whole array, never found a share, and every SRAM run refused the credit, at any measured idle
+  residency. The `memory.array_pg` row of the YAML reference also said the SRAM cell array keeps its full leakage,
+  while the model holds the cells at their retention voltage.
+- **The fix** (src/main.cpp; docs/yaml_reference.md). The share is CACTI's own, from the array's characterization:
+  its leakage in the cells against the bank's total, the rest being row logic, column logic and the output drivers.
+  This matches the NVM arrays, which take their periphery leakage from NVSim's own figure. Over the measured idle
+  residency the periphery gates to CACTI's Vcc_min/Vdd (0.35 of its leakage) and the cells hold their data at
+  CACTI's SRAM-cell Vcc_min/Vdd (0.65), as before; the YAML reference now says so. At the 64 KB / 512-bit / 22 nm
+  bank the cells carry 0.826 of the leakage, so the periphery share is 0.174.
+- **Validation** (the previous release against this build, logs compared with the tree paths masked):
+  - The 10 SRAM device cells with `memory.array_pg` on (16 elements at the bank, message passing and shared memory,
+    smoke sizes): the two bfs cells, the only ones with idle phases at these sizes, now take the credit (message
+    passing: idle residency 0.015, leakage 2440.9 -> 2426.5 mW; shared memory: 0.0012, 2440.9 -> 2439.7 mW) where
+    they refused it; the other eight have no idle phase and no gating line, as before; run time identical.
+  - Without `memory.array_pg`: the 40 SRAM / NVM device cells, the 135 device message-passing smoke cells, the 11
+    co-simulation message-passing smoke cells and the 40 host baseline smoke cells are identical. The 116-cell
+    validation set and the 30 bfs smoke variants carry no SRAM device and do not reach this code.
+
 ## 1.12.240 -- an SRAM bank is timed as the array the power model prices
 
 - **The problem.** The access time of an SRAM bank came from a CACTI query left at CACTI's default of four banks, while
