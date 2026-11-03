@@ -118,6 +118,7 @@ private:
     bool hasTier(Tier tier) const override;
     int l0UnitsPerBank() const override;   // 1.11.73
     int l0WidthBits() const override;      // 1.11.73
+    int matRowBits() const override;       // (1.12.256): the mat row the address map interleaves by
     double l0BandwidthGBs() const override; // 1.11.73
     std::string tierLatencySource(Tier tier, Op op) const override;
     void setArrayCapacityBytes(uint64_t bytes) override;

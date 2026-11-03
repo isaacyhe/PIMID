@@ -615,6 +615,12 @@ int STTMRAMModel::l0UnitsPerBank() const {
     const int v = mram_arch_->organization.mats_per_bank;
     return (v > 0) ? v : -1;
 }
+/* (1.12.256): one row of the bank's mat, from NVSim; -1 = not sourceable. */
+int STTMRAMModel::matRowBits() const {
+    if (!nvsim_wrapper_) return -1;
+    const uint32_t v = nvsim_wrapper_->getMatRowBits();
+    return (v > 0) ? static_cast<int>(v) : -1;
+}
 int STTMRAMModel::l0WidthBits() const {
     if (!mram_arch_) return -1;
     const int v = mram_arch_->datapath.mat_io_bits;

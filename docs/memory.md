@@ -150,6 +150,16 @@ in-package logic die.
 | SRAM | `SUBBANK -> BANK` (one die: at BANK each element and the banks of its slot are one local group under the die ((1.12.247)); there is no bank-group, chip, rank or channel tier to place at) |
 | STT_MRAM, PCM, RERAM | `MAT -> BANK` (as SRAM) |
 
+**Where an element's data lives on SRAM/NVM.** A page belongs to the element that touches it first
+(first-touch placement), and on SRAM and NVM an element owns several banks (fig2: 256 banks of 64 KB, 16
+elements, 16 banks each). The element's pages, in the order it touches them, form one address space over its
+own banks, cut into rows of one mat row of the bank: consecutive rows go to consecutive banks (column low, bank
+next, row high, the JEDEC order). The mat row is the array model's: NVSim's subarrays across the mat times the
+subarray's columns (PCM 256 B, ReRAM 128 B and STT-MRAM 128 B at the default 64 KB bank), CACTI's subarrays per
+mat row times the subarray's columns for SRAM (64 B). The run prints it as `[placement] <tech> mat row`. Thread stacks
+follow the same rule inside their owner's banks. A row the array model cannot source keeps whole-unit blocks
+(pages_per_unit contiguous pages per bank), as DRAM does.
+
 **Exactly one tier below the bank, per family (1.11.73).** The word for that
 tier is the family's own, and each family has only one:
 

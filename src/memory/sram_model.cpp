@@ -500,6 +500,12 @@ int SRAMModel::l0UnitsPerBank() const {
     if (per_cacti_bank <= 0 || cacti_banks <= 0) return -1;
     return per_cacti_bank * cacti_banks;
 }
+/* (1.12.256): one row of the bank's mat, from CACTI; -1 = not sourceable. */
+int SRAMModel::matRowBits() const {
+    if (!cacti_wrapper_) return -1;
+    const uint32_t v = cacti_wrapper_->getMatRowBits();
+    return (v > 0) ? static_cast<int>(v) : -1;
+}
 int SRAMModel::l0WidthBits() const {
     if (!sram_arch_) return -1;
     const int v = sram_arch_->datapath.subbank_io_bits;

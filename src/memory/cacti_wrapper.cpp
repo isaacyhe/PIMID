@@ -780,6 +780,18 @@ uint32_t CACTIWrapper::getSubarrayCols() const {
     return static_cast<uint32_t>(cacti_result_->data_array2->num_col_subarray);
 }
 
+/* (1.12.256): one row of a mat. CACTI arranges a mat's subarrays num_mats_h_dir mats across the bank
+ * (parameter.cc: 1 for Ndbl <= 2, floor(sqrt(Ndbl / 4)) otherwise), so a mat row holds
+ * Ndwl / num_mats_h_dir subarrays side by side (mat.cc num_subarrays_per_row, at most 2). */
+uint32_t CACTIWrapper::getMatRowBits() const {
+    if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0;
+    const int ndwl = cacti_result_->data_array2->Ndwl, ndbl = cacti_result_->data_array2->Ndbl;
+    if (ndwl <= 0 || ndbl <= 0) return 0;
+    const int h_dir = (ndbl <= 2) ? 1 : std::max(1, static_cast<int>(std::floor(std::sqrt(ndbl / 4.0))));
+    const int per_row = std::max(1, ndwl / h_dir);
+    return static_cast<uint32_t>(per_row) * getSubarrayCols();
+}
+
 /* 1.11.73: see the header note -- these name CACTI's fields for what they are. */
 uint32_t CACTIWrapper::getSubarraysPerBank() const {
     if (!valid_ || !cacti_result_ || !cacti_result_->data_array2) return 0;

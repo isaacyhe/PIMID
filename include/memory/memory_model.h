@@ -195,6 +195,11 @@ public:
      * caller reports that and never substitutes a count. */
     virtual int l0UnitsPerBank() const { return -1; }
     virtual int l0WidthBits() const { return -1; }
+    /* (1.12.256): the width of one row of the bank's mat in bits -- NVM: NVSim's subarrays across the mat
+     * (numColumnSubarray) x the subarray's columns; SRAM: CACTI's subarrays per mat row x the subarray's
+     * columns. -1 = not sourceable. The device address map lays an element's data over its own banks a
+     * mat row at a time (pe_memory_interface.h, rowInterleavedUnit). */
+    virtual int matRowBits() const { return -1; }
     /* The L0 link bandwidth in GB/s, or -1 when not sourceable. SRAM: the
      * subbank IS the access, so out_w per CACTI random-cycle time. NVM: the
      * word is formed by the active mats together, so each mat carries

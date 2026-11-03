@@ -6,6 +6,34 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.256 -- an SRAM or NVM element's data is laid over its own banks one mat row at a time
+
+- **The problem.** On an SRAM or NVM device an element owns several banks (16 elements over 256 banks of 64 KB: 16 banks
+  each). A page belongs to the element that touches it first, and the element's pages filled its banks one at a time: 16
+  pages (64 KB, one bank) to a bank before the next. A kernel's working set therefore sat in one or two banks, and a
+  block transfer (21 lines for a 1.3 KB scratchpad tile) queued at one bank while the element's other banks were idle. A
+  PCM or ReRAM write holds its bank 75 to 91 cycles at 500 MHz, so write-heavy kernels waited on one bank. When one
+  processing unit's data spans several banks, the published multi-bank PIM layouts spread it a row at a time (Newton's
+  DRAM-row-wide interleave; Samsung HBM-PIM's tile rows across banks).
+- **The fix** (external/zsim/src/pe_memory_interface.h; the NVSim and CACTI wrappers and the array models). The
+  element's first-touched pages, in the order it touches them, form one address space over its own banks, cut into rows
+  of one mat row of the bank, and consecutive rows go to consecutive banks: column low, bank next, row high, the JEDEC
+  order PIMID already uses inside a coarse DRAM unit. Thread stacks follow the same rule inside their owner's banks. The
+  mat row is the array model's: NVSim's subarrays across the mat times the subarray's columns (PCM 256 B, ReRAM 128 B,
+  STT-MRAM 128 B at the default 64 KB bank), CACTI's subarrays per mat row times the subarray's columns for SRAM (64 B).
+  The run prints it as `[placement] <tech> mat row`. An NVSim cache entry now stores it; an older entry has it computed
+  from the capacity where the mat's subarray grid is unambiguous (1 or 4 subarrays), and otherwise the layout keeps
+  whole-bank blocks. DRAM keeps whole-unit blocks.
+- **Validation** (the previous release against this build, logs compared with the tree paths masked):
+  - Every DRAM cell is identical: the 115 DRAM device message-passing smoke cells, the 11 co-simulation message-passing
+    smoke cells, the 40 host baselines, the 116-cell validation set and the 30 bfs smoke variants.
+  - The 40 SRAM / NVM device cells (PCM, ReRAM, STT-MRAM and SRAM; 16 elements at the bank; message passing and shared
+    memory; smoke sizes): 35 faster, 5 slower; run time -70.3% to +19.5% (median -1.7%), energy -26.9% to +8.3% (median
+    -1.2%). stream_triad gains most: PCM -27.2% / -34.8%, ReRAM -70.3% / -53.8%, STT-MRAM -8.2% / -1.7% (message passing
+    / shared memory); the ReRAM message-passing gemv runs 19.5% longer; SRAM moves at most 2.5%.
+  - Two cells run 8 times each give one output per cell.
+- **Data impact.** Changes the timing and energy of every SRAM / NVM device cell; DRAM results are unchanged.
+
 ## 1.12.255 -- the calibrated router line names the steps that follow it, and the memory-periphery family prints each level's values after them
 
 - **The problem.** With `PIMID_DEBUG_CHECKS=1` the McPAT fork prints each router as calibrated against the published

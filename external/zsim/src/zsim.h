@@ -297,6 +297,7 @@ struct GlobSimInfo {
         // Distributed PE-MI fields
         uint32_t totalUnits = 128;        // total units at placement level
         uint32_t pagesPerUnit = 32;       // contiguous block (4KB-pages) per unit (device-local addressing)
+        uint32_t slotRowBytes = 0;        // (1.12.256): SRAM/NVM row-interleaved element layout (0 = whole-unit blocks)
         /* 1.11.52 (audit D003): the DRAM ROW (page) size in bytes, so the
          * memory interface can MEASURE the row-buffer hit rate instead of
          * the energy model assuming one. 0 = unknown -> no measurement is

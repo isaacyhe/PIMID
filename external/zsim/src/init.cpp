@@ -733,6 +733,7 @@ static void InitSystem(Config& config) {
         // PE-MC distributed memory controller fields
         zinfo->hierarchy.totalUnits = config.get<uint32_t>("sys.hierarchy.totalUnits", 128);
         zinfo->hierarchy.pagesPerUnit = config.get<uint32_t>("sys.hierarchy.pagesPerUnit", 32);
+        zinfo->hierarchy.slotRowBytes = config.get<uint32_t>("sys.hierarchy.slotRowBytes", 0);   // (1.12.256)
         zinfo->hierarchy.dramRowBytes = config.get<uint32_t>("sys.hierarchy.dramRowBytes", 0);  // 1.11.52 (D003)
         zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91 (R8-1)
         zinfo->hierarchy.dramPowerDown = config.get<bool>("sys.hierarchy.dramPowerDown", false);   // 1.12.19

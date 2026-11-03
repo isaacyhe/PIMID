@@ -180,6 +180,7 @@ public:
     // Subarray organization
     uint32_t getSubarrayRows() const;         // Number of rows per subarray
     uint32_t getSubarrayCols() const;         // Number of columns per subarray
+    uint32_t getMatRowBits() const;    // (1.12.256): one row of the bank's mat (0 = not sourceable)
     uint32_t getSubarraysPerMat() const;      // Subarrays per mat
     uint32_t getMatsPerBank() const;          // Mats per bank
     uint32_t getNumSenseAmps() const;         // Number of sense amplifiers
@@ -267,6 +268,7 @@ private:
     int    cached_mats_per_bank_  = -1;      // 1.11.73
     int    cached_subarray_rows_  = -1;      // 1.11.102: the subarray (mat) rows and columns, cached like the mat count
     int    cached_subarray_cols_  = -1;
+    int    cached_mat_row_bits_   = -1;   // (1.12.256): numColumnSubarray x subarray columns
     double cached_read_energy_nj_ = 0.0;
     double cached_write_energy_nj_ = 0.0;
     double cached_leakage_mw_ = 0.0;

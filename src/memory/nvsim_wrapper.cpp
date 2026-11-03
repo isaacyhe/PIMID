@@ -461,6 +461,11 @@ namespace {
          * through 1.11.93, a refusal from 1.11.94. -1 = absent (older file). */
         int    subarray_rows  = -1;   // bank->mat.subarray.numRow
         int    subarray_cols  = -1;   // bank->mat.subarray.numColumn
+        /* (1.12.256): one row of the mat, numColumnSubarray x subarray.numColumn -- the granularity the device
+         * address map interleaves an element's data by. -1 = absent (older file): computed on load where the
+         * capacity fixes the mat's subarray grid (NVSim searches 1 or 2 per side: 1 or 4 subarrays are
+         * unambiguous), otherwise not sourceable. */
+        int    mat_row_bits   = -1;
         /* (1.12.103): how the entry was produced when temperature_k differs from
          * design_temperature_k. 1 = the design-temperature organisation
          * evaluated at temperature_k; 0 = that organisation is infeasible at
@@ -737,6 +742,7 @@ namespace {
         { double t; v.mats_per_bank  = get("mats_per_bank",  t) ? static_cast<int>(t) : -1; }
         { double t; v.subarray_rows  = get("subarray_rows",  t) ? static_cast<int>(t) : -1; }   // 1.11.102
         { double t; v.subarray_cols  = get("subarray_cols",  t) ? static_cast<int>(t) : -1; }
+        { double t; v.mat_row_bits   = get("mat_row_bits",   t) ? static_cast<int>(t) : -1; }   // (1.12.256)
         { double t; v.design_held    = get("design_held",    t) ? static_cast<int>(t) : -1; }
         if (v.subarray_rows <= 0 || v.subarray_cols <= 0) {
             /* 1.11.102: an entry without the subarray geometry cannot build the
@@ -816,6 +822,7 @@ namespace {
           << "  <mats_per_bank>" << v.mats_per_bank << "</mats_per_bank>\n"
           << "  <subarray_rows>" << v.subarray_rows << "</subarray_rows>\n"   // 1.11.102
           << "  <subarray_cols>" << v.subarray_cols << "</subarray_cols>\n"
+          << "  <mat_row_bits>" << v.mat_row_bits << "</mat_row_bits>\n"   // (1.12.256)
           << "  <design_held>" << v.design_held << "</design_held>\n"
           << "</nvsim_characterization>\n";
     }
@@ -869,6 +876,18 @@ void NVSimWrapper::runNVSim() {
             cached_mats_per_bank_  = v.mats_per_bank;
             cached_subarray_rows_  = v.subarray_rows;      // 1.11.102
             cached_subarray_cols_  = v.subarray_cols;
+            cached_mat_row_bits_   = v.mat_row_bits;       // (1.12.256)
+            if (cached_mat_row_bits_ <= 0 && v.mats_per_bank > 0 && v.subarray_rows > 0 && v.subarray_cols > 0) {
+                /* an entry written before the field: the capacity fixes the mat's subarray grid when it
+                 * holds 1 (1 x 1) or 4 (2 x 2) subarrays; 2 is ambiguous (1 x 2 or 2 x 1) and stays unsourced */
+                const uint64_t per = (uint64_t)v.mats_per_bank * (uint64_t)v.subarray_rows * (uint64_t)v.subarray_cols;
+                const uint64_t bits = (uint64_t)key.capacity_bytes * 8ull;
+                if (per > 0 && bits % per == 0) {
+                    const uint64_t s = bits / per;
+                    if (s == 1) cached_mat_row_bits_ = v.subarray_cols;
+                    else if (s == 4) cached_mat_row_bits_ = 2 * v.subarray_cols;
+                }
+            }
             if (config_.temperature_k != config_.design_temperature_k)   // (1.12.103)
                 std::cout << "[NVSimWrapper] cached characterization: "
                           << (v.design_held == 1 ? "array organisation searched at the design temperature "
@@ -1183,6 +1202,8 @@ void NVSimWrapper::runNVSim() {
                 const long sc = nvsim_result_->bank->mat.subarray.numColumn;
                 v.subarray_rows = (sr > 0) ? static_cast<int>(sr) : -1;
                 v.subarray_cols = (sc > 0) ? static_cast<int>(sc) : -1;
+                const long ncs = nvsim_result_->bank->numColumnSubarray;      // (1.12.256)
+                v.mat_row_bits  = (sc > 0 && ncs > 0) ? static_cast<int>(sc * ncs) : -1;
             }
             // Persist only when the warehouse mode permits writing (RW/WO).
             // The in-memory map is process-local but gated too for consistency.
@@ -1520,6 +1541,13 @@ uint32_t NVSimWrapper::getSubarrayCols() const {
     if (cached_) return (cached_subarray_cols_ > 0) ? static_cast<uint32_t>(cached_subarray_cols_) : 0;
     if (!valid_ || !nvsim_result_ || !nvsim_result_->bank) return 0;
     return nvsim_result_->bank->mat.subarray.numColumn;
+}
+
+/* (1.12.256): one row of the bank's mat; cache-aware like getSubarrayCols(). */
+uint32_t NVSimWrapper::getMatRowBits() const {
+    if (cached_) return (cached_mat_row_bits_ > 0) ? static_cast<uint32_t>(cached_mat_row_bits_) : 0;
+    if (!valid_ || !nvsim_result_ || !nvsim_result_->bank) return 0;
+    return nvsim_result_->bank->numColumnSubarray * nvsim_result_->bank->mat.subarray.numColumn;
 }
 
 uint32_t NVSimWrapper::getSubarraysPerMat() const {

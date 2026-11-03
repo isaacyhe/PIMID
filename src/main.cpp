@@ -3987,6 +3987,7 @@ struct UnifiedConfig {
     // Derived: total memory org units at placement level
     int total_mem_orgs = -1;  // -1 = auto from memory organization
     int pages_per_unit = 32;  // contiguous block (pages) per placement-level unit; sized by subarray capacity
+    int mat_row_bits = 0;     // (1.12.256): SRAM/NVM: one mat row of the bank (the data layout's row); 0 = DRAM / not sourced
     // Derived: total network endpoints (depends on connection mode)
     int total_network_endpoints = -1;
 
@@ -7313,6 +7314,18 @@ static void probeNonDramL0(UnifiedConfig& config, int pe_level) {
         model->initialize();
         units = model->l0UnitsPerBank();
         width = model->l0WidthBits();
+        {   /* (1.12.256): the mat row the device address map lays an element's data by */
+            const int mr = model->matRowBits();
+            config.mat_row_bits = (mr >= 512 && mr % 512 == 0) ? mr : 0;   // whole lines
+            if (mr > 0)
+                std::cout << "  [placement] " << tech << " mat row: " << mr << " bits (" << mr / 8 << " B, "
+                          << (is_sram ? "CACTI: subarrays per mat row x subarray columns"
+                                      : "NVSim: subarrays across the mat x subarray columns") << ")"
+                          << (config.mat_row_bits > 0 ? "" : ": not a whole number of lines that tiles a page; the layout keeps whole-unit blocks")
+                          << std::endl;
+            else
+                std::cout << "  [placement] " << tech << " mat row: not sourceable from the array model; the layout keeps whole-unit blocks" << std::endl;
+        }
         const double bwq = model->l0BandwidthGBs();
         config.l0_bandwidth_gbs = (bwq > 0.0) ? bwq : 0.0;
     } catch (const std::exception& e) {
@@ -9538,6 +9551,9 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     out << "        mcStandalone = " << (config.mc_standalone ? 1 : 0) << ";\n";
     out << "        totalMemOrgs = " << config.total_mem_orgs << ";\n";
     out << "        pagesPerUnit = " << config.pages_per_unit << ";\n";
+    /* (1.12.256): SRAM/NVM: an element's pages are laid over its own banks one mat row at a time (0 = whole-unit
+     * blocks, the DRAM rule) */
+    out << "        slotRowBytes = " << (config.mat_row_bits > 0 ? config.mat_row_bits / 8 : 0) << ";\n";
     /* 1.11.52 (audit D003): the DRAM ROW size, so the memory interface can
      * MEASURE the row-buffer hit rate the array-energy model used to assume
      * (ROW_MISS_FRAC = 0.5). Non-DRAM technologies have no row buffer -> 0,

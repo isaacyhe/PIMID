@@ -286,6 +286,7 @@ public:
     // Subarray organization
     uint32_t getSubarrayRows() const;         // Number of rows per subarray
     uint32_t getSubarrayCols() const;         // Number of columns per subarray
+    uint32_t getMatRowBits() const;           // (1.12.256): subarrays per mat row x subarray columns (0 = none)
     /* 1.11.73 (one level below the bank): CACTI's organisation, named by
      * what each field IS. The two accessors these replace were mislabelled:
      * the old getSubarraysPerMat() returned Ndbl x Ndwl, which is the

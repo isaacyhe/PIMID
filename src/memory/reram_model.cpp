@@ -687,6 +687,12 @@ int ReRAMModel::l0UnitsPerBank() const {
     const int v = reram_arch_->organization.mats_per_bank;
     return (v > 0) ? v : -1;
 }
+/* (1.12.256): one row of the bank's mat, from NVSim; -1 = not sourceable. */
+int ReRAMModel::matRowBits() const {
+    if (!nvsim_wrapper_) return -1;
+    const uint32_t v = nvsim_wrapper_->getMatRowBits();
+    return (v > 0) ? static_cast<int>(v) : -1;
+}
 int ReRAMModel::l0WidthBits() const {
     if (!reram_arch_) return -1;
     const int v = reram_arch_->datapath.mat_io_bits;

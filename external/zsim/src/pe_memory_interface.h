@@ -2174,7 +2174,9 @@ protected:
                 const uint64_t lo = zinfo->stackLo[i];
                 if (byteAddr < lo || byteAddr >= zinfo->stackHi[i]) continue;
                 if (zinfo->stackOwner[i] > 0 && zinfo->stackCovN[i] > 0) {
-                    unit = zinfo->stackCovLo[i] + blockUnitOf((byteAddr - lo) >> 12, ppu, zinfo->stackCovN[i]);
+                    unit = zinfo->stackCovLo[i] + (zinfo->hierarchy.slotRowBytes > 0   // (1.12.256): the SRAM/NVM row layout
+                           ? rowUnitOf(byteAddr - lo, zinfo->stackCovN[i])
+                           : blockUnitOf((byteAddr - lo) >> 12, ppu, zinfo->stackCovN[i]));
                     placed = true;
                 }
                 break;
@@ -2191,6 +2193,10 @@ protected:
                 if (k != pg + 1) continue;
                 const uint32_t u = t.unit[h].load(std::memory_order_acquire);
                 if (u != 0) { unit = u - 1; placed = true; }   // 0 = being placed right now: the address map
+                if (u != 0 && t.seq) {   // (1.12.256): the SRAM/NVM row layout
+                    const uint32_t sq = t.seq[h].load(std::memory_order_acquire), cv = t.cov[h].load(std::memory_order_acquire);
+                    if (sq > 0 && cv != 0) unit = (cv >> 12) + rowUnitOf((uint64_t)(sq - 1) * 4096ull + (byteAddr & 4095ull), cv & 4095u);
+                }
                 break;
             }
         }
@@ -2217,6 +2223,14 @@ protected:
      * region's unit (k / ppu) mod n: ppu pages (one unit's capacity) to a unit, then the next unit -- contiguous
      * blocks of pages per unit, not lines interleaved over the units. */
     static uint32_t blockUnitOf(uint64_t k, uint32_t ppu, uint32_t n) { return (uint32_t)((k / ppu) % n); }
+    /* (1.12.256): the SRAM/NVM rule. An element there owns several banks (fig2: 16 of 64 KB), and its region is
+     * laid over them one mat row at a time: byte offset o of the region (an element's first-touched pages in
+     * touch order, or a registered stack) is in row o / slotRowBytes, and consecutive rows go to consecutive
+     * units -- the column low, bank next, row high order of a JEDEC map. slotRowBytes is the bank's mat row
+     * (NVSim / CACTI); 0 (DRAM, or a row the array model cannot source) keeps blockUnitOf. */
+    static uint32_t rowUnitOf(uint64_t o, uint32_t n) {
+        return (uint32_t)((o / zinfo->hierarchy.slotRowBytes) % (n ? n : 1));
+    }
 
     uint32_t addrToUnit(Address lineAddr) const {
         // Device-local CONTIGUOUS block mapping (point-1 fix): each unit owns a
@@ -2250,7 +2264,9 @@ protected:
                     own = zinfo->stackOwner[i];
                 }
                 if (own > 0)
-                    return zinfo->stackCovLo[i] + blockUnitOf((byteAddr - lo) >> 12, ppu, zinfo->stackCovN[i]);
+                    return zinfo->stackCovLo[i] + (zinfo->hierarchy.slotRowBytes > 0   // (1.12.256): the SRAM/NVM row layout
+                           ? rowUnitOf(byteAddr - lo, zinfo->stackCovN[i])
+                           : blockUnitOf((byteAddr - lo) >> 12, ppu, zinfo->stackCovN[i]));
                 break;
             }
         }
@@ -2265,8 +2281,12 @@ protected:
          * PE access claims, so the address map and the rank offset below are
          * left for an interface with no coverage. */
         {
-            uint32_t ftu;
-            if (firstTouchUnit(byteAddr >> 12, ppu, &ftu)) return ftu;
+            uint32_t ftu, sq = 0, cv = 0;
+            if (firstTouchUnit(byteAddr >> 12, ppu, &ftu, &sq, &cv)) {
+                if (sq > 0 && cv != 0)   // (1.12.256): the SRAM/NVM row layout
+                    return (cv >> 12) + rowUnitOf((uint64_t)(sq - 1) * 4096ull + (byteAddr & 4095ull), cv & 4095u);
+                return ftu;
+            }
         }
         // MPI: each rank is a SEPARATE guest process with its own (identical-
         // looking) VA space. Without an offset, every rank's pages would map to
@@ -2298,10 +2318,20 @@ protected:
         static const uint64_t kBits = 22, kSlots = 1ull << kBits;   // 4 M pages = 16 GB of data
         std::atomic<uint64_t>* key;
         std::atomic<uint32_t>* unit;
+        /* (1.12.256): the SRAM/NVM row layout needs a page's place in its owner's slot: the owner's touch
+         * index + 1 and the owner's coverage (start << 12 | count). Allocated only for that layout. */
+        std::atomic<uint32_t>* seq;
+        std::atomic<uint32_t>* cov;
         FirstTouchTable()
             : key((std::atomic<uint64_t>*)calloc(kSlots, sizeof(std::atomic<uint64_t>))),
-              unit((std::atomic<uint32_t>*)calloc(kSlots, sizeof(std::atomic<uint32_t>))) {
+              unit((std::atomic<uint32_t>*)calloc(kSlots, sizeof(std::atomic<uint32_t>))),
+              seq(nullptr), cov(nullptr) {
             if (!key || !unit) panic("[first touch] page table allocation failed");
+            if (zinfo && zinfo->hierarchy.slotRowBytes > 0) {
+                seq = (std::atomic<uint32_t>*)calloc(kSlots, sizeof(std::atomic<uint32_t>));
+                cov = (std::atomic<uint32_t>*)calloc(kSlots, sizeof(std::atomic<uint32_t>));
+                if (!seq || !cov) panic("[first touch] layout table allocation failed");
+            }
         }
     };
     static FirstTouchTable& ftTable() { static FirstTouchTable t; return t; }
@@ -2312,7 +2342,7 @@ protected:
     }
     /* the unit of `page`: its first toucher's, claiming it for this PE if no
      * PE has touched it yet. false = this interface has no coverage. */
-    bool firstTouchUnit(uint64_t page, uint32_t ppu, uint32_t* out) const {
+    bool firstTouchUnit(uint64_t page, uint32_t ppu, uint32_t* out, uint32_t* outSeq = nullptr, uint32_t* outCov = nullptr) const {
         const uint32_t covN = nonContiguous_ ? (uint32_t)coverageSet_.size()
                                              : (coverageEnd_ > coverageStart_ ? coverageEnd_ - coverageStart_ : 0);
         FirstTouchTable& t = ftTable();
@@ -2320,15 +2350,32 @@ protected:
         uint64_t h = (page * 0x9E3779B97F4A7C15ull) >> (64 - FirstTouchTable::kBits);
         for (uint64_t n = 0; n < FirstTouchTable::kSlots; n++, h = (h + 1) & mask) {
             uint64_t k = t.key[h].load(std::memory_order_acquire);
-            if (k == page + 1) { *out = ftWait(t.unit[h]); return true; }
+            if (k == page + 1) {
+                *out = ftWait(t.unit[h]);
+                if (outSeq && t.seq) { *outSeq = t.seq[h].load(std::memory_order_acquire); *outCov = t.cov[h].load(std::memory_order_acquire); }
+                return true;
+            }
             if (k != 0) continue;
             if (covN == 0) return false;
             if (!t.key[h].compare_exchange_strong(k, page + 1, std::memory_order_acq_rel)) {
-                if (k == page + 1) { *out = ftWait(t.unit[h]); return true; }
+                if (k == page + 1) {
+                    *out = ftWait(t.unit[h]);
+                    if (outSeq && t.seq) { *outSeq = t.seq[h].load(std::memory_order_acquire); *outCov = t.cov[h].load(std::memory_order_acquire); }
+                    return true;
+                }
                 continue;
             }
-            const uint64_t i = blockUnitOf(ftSeq_.fetch_add(1, std::memory_order_relaxed), ppu, covN);
-            const uint32_t u = nonContiguous_ ? coverageSet_[i] : coverageStart_ + (uint32_t)i;
+            const uint64_t idx = ftSeq_.fetch_add(1, std::memory_order_relaxed);
+            const uint64_t i = blockUnitOf(idx, ppu, covN);
+            uint32_t u = nonContiguous_ ? coverageSet_[i] : coverageStart_ + (uint32_t)i;
+            if (t.seq && !nonContiguous_ && coverageStart_ < (1u << 20) && covN < 4096 && idx < 0xFFFFFFFFull) {
+                /* (1.12.256): the SRAM/NVM row layout: the page is its owner's idx-th, and its first row names
+                 * the page's unit */
+                t.seq[h].store((uint32_t)idx + 1, std::memory_order_relaxed);
+                t.cov[h].store((coverageStart_ << 12) | covN, std::memory_order_relaxed);
+                u = coverageStart_ + rowUnitOf(idx * 4096ull, covN);
+                if (outSeq) { *outSeq = (uint32_t)idx + 1; *outCov = (coverageStart_ << 12) | covN; }
+            }
             t.unit[h].store(u + 1, std::memory_order_release);
             roiInc(profFtPages_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             *out = u;
