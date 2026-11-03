@@ -194,16 +194,36 @@ static uint64_t g_bank_unit_bytes = 64ULL * 1024ULL;
  * array had two peripheries. Set once at config load. */
 static int g_array_device_corner = 0;
 /* (1.12.114): memory.nvm_write_budget. The device's write-power budget in mW and where it comes
- * from: the user's mw, or for PCM the published 22 nm chip value; -1 = none (STT_MRAM and RERAM
- * have no published budget). DERIVED for PCM: Jiang, Zhao, Yang, Zhang, "A Low Power and Reliable
- * Charge Pump Design for Phase Change Memories", ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the
- * RESET charge pump's 7 mA load at 5 V and 21.6 % efficiency = 35 mW / 0.216 = 162 mW drawn per
- * chip; the device is taken as one chip. */
+ * from: the user's mw, or the technology's default (PCM, STT_MRAM, RERAM); -1 = none (no default
+ * for the technology). PCM: Jiang, Zhao, Yang, Zhang, "A Low Power and Reliable Charge Pump
+ * Design for Phase Change Memories", ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the RESET charge
+ * pump delivers its 7 mA load at 5 V = 35 mW. (1.12.245): that output is drawn at the 0.388 supply
+ * efficiency the PCM writes are priced with (PCM_WRITE_SUPPLY_EFFICIENCY, external/nvsim/constant.h;
+ * Luo, Hu, Shi, Xue, Zhuge, ASP-DAC 2016), 35 mW / 0.388 = 90.2 mW per chip, so the budget and the
+ * write energy carry one efficiency (it was 35 mW / 0.216 = 162 mW, the pump's own 21.6 %, a
+ * second efficiency against the writes' 0.388). The device is taken as one chip.
+ * (1.12.245): STT_MRAM and RERAM have defaults too. No chip-level write budget is published for either,
+ * so both take the method of Xu et al., "Overcoming the Challenges of Crossbar Resistive Memory
+ * Architectures", HPCA 2015, Sec. 4.3, which gives an NVM chip the write power of a DRAM chip on
+ * the same interface, (IDD4W - IDD3N) x VDD, from the DRAM records here (params/dram): STT_MRAM on
+ * DDR4 (the shipped STT-MRAM main-memory part is a DDR4 device), DDR4-2400 x8 (123 - 43) mA x 1.2 V
+ * = 96.0 mW (no VPP increment: IPP4W = IPP3N); RERAM on DDR3 (Xu et al.'s own case), DDR3-1600 x8
+ * (125 - 38) mA x 1.5 V = 130.5 mW. Every default is per device (the device as one chip),
+ * unscaled. The budget is supply-side power, compared with the array's write energy, which is
+ * supply-side too (each NVM write energy carries its write pump's efficiency). */
 static double nvmWriteBudgetMw(const std::string& tech, double user_mw, std::string* src) {
     if (user_mw > 0.0) { if (src) *src = "memory.nvm_write_budget.mw (user)"; return user_mw; }
     if (tech == "PCM") {
-        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Jiang et al. ISCA 2014 Table 4: 22 nm PCM chip, RESET pump 7 mA x 5 V / 0.216 efficiency";
-        return 7.0 * 5.0 / 0.216;
+        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Jiang et al. ISCA 2014 Table 4: 22 nm PCM chip, RESET pump 7 mA x 5 V = 35 mW out, at the 0.388 PCM write-supply efficiency (Luo et al. ASP-DAC 2016)";
+        return 7.0 * 5.0 / 0.388;
+    }
+    if (tech == "STT_MRAM") {   // (1.12.245)
+        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Xu et al. HPCA 2015 Sec. 4.3 method: the DDR4-2400 x8 chip's write power, (IDD4W 123 - IDD3N 43) mA x 1.2 V";
+        return (123.0 - 43.0) * 1.2;
+    }
+    if (tech == "RERAM") {   // (1.12.245)
+        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Xu et al. HPCA 2015 Sec. 4.3: the DDR3-1600 x8 chip's write power, (IDD4W 125 - IDD3N 38) mA x 1.5 V";
+        return (125.0 - 38.0) * 1.5;
     }
     if (src) *src = (pimid::debugChecks() ? "no published budget for " : "no default budget for ") + tech;
     return -1.0;
@@ -9733,14 +9753,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
             const std::string& t = config.memory_tech;
             if (!(t == "STT_MRAM" || t == "PCM" || t == "RERAM")) {
                 std::cerr << "[config] FATAL: memory.nvm_write_budget.enabled is set on a " << t << " memory; the "
-                             "write-power budget applies to PCM (published default) and to STT_MRAM / RERAM with a "
-                             "user-given memory.nvm_write_budget.mw." << std::endl;
-                std::exit(2);
-            }
-            if (t != "PCM" && !(config.nvm_wb_mw > 0.0)) {
-                std::cerr << "[config] FATAL: memory.nvm_write_budget.enabled on " << t << (pimid::debugChecks() ? ": no published write-power budget is known for " : ": no default write-power budget exists for ")
-                          << t << " (only for PCM). Give memory.nvm_write_budget.mw (mW) to "
-                             "apply one, or leave the budget off." << std::endl;
+                             "write-power budget applies to the NVM arrays PCM, STT_MRAM and RERAM (each has a default; "
+                             "memory.nvm_write_budget.mw overrides it)." << std::endl;
                 std::exit(2);
             }
         }
@@ -16626,8 +16640,7 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                     << " (" << need_s / window_s << " x the run time; the average write power is "
                     << (e_j / window_s) / (b_mw * 1e-3) << " x the budget)" << std::endl;
             } else {
-                std::cout << "  [nvm] write budget: " << src << " (STT_MRAM and RERAM need memory.nvm_write_budget.mw); "
-                             "not evaluated" << std::endl;
+                std::cout << "  [nvm] write budget: " << src << "; not evaluated" << std::endl;
             }
         }
         const double total_w = lp.total_power + mem_dyn_w + mem_static_w;

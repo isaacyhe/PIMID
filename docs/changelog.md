@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.245 -- the NVM device write-power budget: defaults for STT_MRAM and RERAM, and PCM's on one efficiency
+
+- **The problem.** `memory.nvm_write_budget` (off by default) limits a device's time-averaged write power. Only PCM
+  had a default budget; on STT_MRAM and RERAM the option was refused unless `mw` was given, so the budget could not be
+  run on those technologies without an unsourced number. The PCM default, 162 mW, was the RESET pump's 35 mW output
+  drawn at the pump's own 21.6 % efficiency, while PCM writes are priced at a 0.388 supply efficiency: the budget and
+  the energy it is compared with carried two different efficiencies.
+- **The fix** (src/main.cpp; docs/yaml_reference.md, docs/sources.md). No chip-level write-power budget is published
+  for either technology, so both take the method of Xu et al., "Overcoming the Challenges of Crossbar Resistive
+  Memory Architectures", HPCA 2015, Sec. 4.3: an NVM chip gets the write power of a DRAM chip on the same interface,
+  (IDD4W - IDD3N) x VDD, from the DRAM records already used here.
+  - STT_MRAM: DDR4 (the shipped STT-MRAM main-memory part is a DDR4 device), DDR4-2400 x8, (123 - 43) mA x 1.2 V =
+    96.0 mW (IPP4W = IPP3N, so no VPP increment).
+  - RERAM: DDR3 (Xu et al.'s own case), DDR3-1600 x8, (125 - 38) mA x 1.5 V = 130.5 mW.
+  - PCM: the same 35 mW pump output (Jiang et al., ISCA 2014, Table 4) drawn at the 0.388 efficiency the writes are
+    priced with (Luo et al., ASP-DAC 2016): 35 mW / 0.388 = 90.2 mW (was 162 mW).
+  - Both apply per device, the device taken as one chip and unscaled, as the PCM default does; a given `mw` still
+    overrides the default, and SRAM and DRAM still refuse the option. The budget is supply-side power and is compared
+    with the supply-side write energy (each NVM write energy carries its write pump's efficiency), as for PCM.
+- **Data impact:** none by default (the budget stays off). With it on, STT_MRAM and RERAM devices now run with the
+  default instead of being refused, and PCM devices run against a 1.8x tighter budget (90.2 instead of 162 mW).
+  Runs with the budget off print the default in their "[nvm] write budget" line (STT_MRAM and RERAM printed that no
+  budget was evaluated); no number changes.
+
 ## 1.12.244 -- a RERAM access costs what the measured macro of the same cell costs: a 1T1R cell's resistances, its read energy and its write-verify time and energy
 
 - **The problem.** The RERAM cell is a 1T1R cell of the TSMC 40 nm family, and its 13 write-verify rounds come from
