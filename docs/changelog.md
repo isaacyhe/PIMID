@@ -6,6 +6,25 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.269 -- the DDR5 part record prices the die each grade runs on: the 16 Gb die Rev A at 4800 and 3200, the 16 Gb die Rev D at 5600
+
+- **The problem.** The DDR5 record describes the Micron 16 Gb part: its organisation and timing presets and every
+  current are that part's. Its die density, generation and feature size came from another die, an 8 Gb D1a part
+  (0.315 Gb/mm^2), so a 16 Gb die was priced at 50.79 mm^2. The part's own 16 Gb die Rev A is a D1z die of
+  66.26 mm^2 (0.241 Gb/mm^2), and the 5600 grade, whose currents are the 16 Gb die Rev D sheet's, runs on a D1b die of
+  35.83 mm^2 (0.447 Gb/mm^2).
+- **The fix.** The record's die is the part's own (16 Gb die Rev A, D1z), and a new optional block, `die_by_grade`,
+  names the die of a grade sold on another die revision: the 5600 grade carries the Rev D die (D1b). The run's
+  `memory.dram.ddr5_speed_grade` selects the die as it selects the currents, so every reader of the record (the
+  calibrated die area, the generation, the feature size, the implied array efficiency) describes one die. The loader
+  refuses a listed die that is incomplete or names a grade the record has no current row for, and a run whose host
+  memory and device are DDR5 at grades on different dies (5600 with 4800 or 3200) is refused: one run prices one DDR5
+  die. Grades on the same die (4800 with 3200) run.
+- **Data impact.** DDR5 only. Timing and the measured currents are unchanged. What follows the die area moves: the
+  DDR5 die area (66.26 mm^2 at 4800 and 3200, 35.83 mm^2 at 5600, was 50.79 mm^2), the DRAM-die clock trunks, the
+  DRAM tree's link lengths and their energy, and the area totals; the generation class reads 1z (1b at 5600). The
+  other technologies' records are unchanged.
+
 ## 1.12.268 -- one rule decides a DRAM row: the processing element's row count folds a row number onto the bank's rows as the timing replay does
 
 - **The problem.** Two places decided which DRAM row an address lives in: the replayed controller that times

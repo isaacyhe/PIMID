@@ -78,7 +78,8 @@ comments and in the changelog.
 | Quantity | Value in use | Source | Consumed at |
 |---|---|---|---|
 | DDR4 full-die density | 0.296 Gb/mm^2 (SK Hynix D1z) | TechInsights/SemiAnalysis | `vendorDieDensity()` |
-| DDR5 density | 0.315 Gb/mm^2 (Micron D1a, 8Gb/25.41mm^2) | TechInsights | same |
+| DDR5 density, 4800 and 3200 grades (16 Gb die Rev A) | 0.241 Gb/mm^2 (Micron D1z 16 Gb, Y32A, 66.26 mm^2 sealed; Y32A is the die inside MT60B2G8HB-48B:A) | TechInsights, Industry-leading DDR5 Technology: Micron vs. Samsung vs. SK Hynix; TechInsights MFR-2107-802 (Memory Floorplan Analysis of the Micron Technology Y32A found inside the Micron Technology MT60B2G8HB-48B:A) | same |
+| DDR5 density, 5600 grade (16 Gb die Rev D) | 0.447 Gb/mm^2 (Micron D1b 16 Gb, Y52K, 35.83 mm^2 sealed) | TechInsights, Micron Y52K D1b 16 Gb DDR5 DRAM Transistor Characterization | same |
 | LPDDR5 density | 16Gb/43.98mm^2 (Samsung D1z) | TechInsights | same |
 | GDDR6 density | 8Gb/37.03mm^2 (Samsung K4Z80165BC) | TechInsights floorplan | same |
 | HBM3 density | 0.160 Gb/mm^2 (SK Hynix) | SemiAnalysis | same |

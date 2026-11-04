@@ -142,6 +142,9 @@ struct VariantRec { double vdd = 0.0, vddq = 0.0; std::string source; };
 /* 1.12.25: one tRFC basis (record block 'trfc_bases'; memory.dram.trfc_basis selects one). */
 struct TrfcBasisRec { double trfc_ns = 0.0; std::string source; };
 
+/* (1.12.269): the die of a grade that runs on another die revision of the part (record block 'die_by_grade'). */
+struct DieRec { std::string part, generation, density_source; double feature_nm = 0.0, density_mb_per_mm2 = 0.0; };
+
 /* The DRAM part record. Field names mirror the YAML keys. */
 struct DramPartRecord {
     std::string file;              // the record file that was loaded
@@ -176,6 +179,12 @@ struct DramPartRecord {
     std::map<std::string, VariantRec> variants;
     std::string trfc_basis_default, trfc_basis;
     std::map<std::string, TrfcBasisRec> trfc_bases;
+    /* (1.12.269): optional per-grade dies (DDR5: a grade sold on another die revision). The selected grade's die replaces
+     * part, generation, feature_nm, density_mb_per_mm2 and density_source at load, so every reader of the record
+     * prices the die the grade runs on; a grade not listed runs on the record's own die. die_grade: the grade whose
+     * listed die is in force (0 = the record's own die). */
+    std::map<int, DieRec> die_by_grade;
+    int die_grade = 0;
     /* (1.12.61): optional data-dependent column-burst energy (data_pattern block).
      * ONES_LINEAR: factor 1 + k (f_ones - 0.5); DQ_TOGGLE_RELATIVE: pJ(dq, tsv, bg) / pJ(reference). */
     struct DataPatternRec {
@@ -208,6 +217,8 @@ bool hasDramPartRecord(const std::string& tech);
  * whenever the record is loaded from then on (checkDramPartRecords sets it before it loads). A name the record
  * does not carry refuses at load. */
 void setDramRecordSelection(const std::string& tech, const std::string& variant, const std::string& trfc_basis);
+/* (1.12.269): the run's DDR5 grade (MT/s; 0 = the record's own) for the record's die_by_grade, applied the same way. */
+void setDramRecordGrade(const std::string& tech, int grade_mts);
 /* 1.12.18: the data rate (MT/s) the record's timing preset names ("DDR5_5600B" -> 5600); 0 when the name
  * carries none. The one place a code site that is not a Ramulator wrapper reads the record's DDR5 grade. */
 int dramRecordGradeMTs(const std::string& tech);

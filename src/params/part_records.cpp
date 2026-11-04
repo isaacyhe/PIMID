@@ -67,6 +67,10 @@ std::map<std::string, std::pair<std::string, std::string>>& selection() {   // 1
 void setDramRecordSelection(const std::string& tech, const std::string& variant, const std::string& trfc_basis) {
     selection()[tech] = {variant, trfc_basis};
 }
+namespace {
+std::map<std::string, int>& gradeSelection() { static std::map<std::string, int> m; return m; }   // (1.12.269): tech -> grade
+}
+void setDramRecordGrade(const std::string& tech, int grade_mts) { gradeSelection()[tech] = grade_mts; }
 
 bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::string& error) {
     std::string t = tech;
@@ -97,6 +101,26 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     if (stacked) {
         if (!need(n, "stack_dies", r.stack_dies, error) || !need(n, "die_capacity_gb", r.die_capacity_gb, error)) {
             error = "part record " + path + ": " + error; return false;
+        }
+    }
+    /* (1.12.269): optional per-grade dies -- a grade the vendor sells on another die revision carries that die's own
+     * part name, generation, feature size and measured density with its source */
+    if (n["die_by_grade"]) {
+        if (!n["die_by_grade"].IsMap() || n["die_by_grade"].size() == 0) {
+            error = "part record " + path + ": die_by_grade must be a non-empty map keyed by the data rate in MT/s"; return false;
+        }
+        for (const auto& kv : n["die_by_grade"]) {
+            int g = 0;
+            try { g = kv.first.as<int>(); }
+            catch (...) { error = "part record " + path + ": die_by_grade has a key that is not a data rate"; return false; }
+            DieRec d;
+            if (!need(kv.second, "part", d.part, error) || !need(kv.second, "generation", d.generation, error) ||
+                !need(kv.second, "feature_nm", d.feature_nm, error) ||
+                !need(kv.second, "density_mb_per_mm2", d.density_mb_per_mm2, error) ||
+                !need(kv.second, "density_source", d.density_source, error)) {
+                error = "part record " + path + ": die_by_grade " + std::to_string(g) + ": " + error; return false;
+            }
+            r.die_by_grade[g] = d;
         }
     }
     /* (1.12.52) GDDR6 die count: the channels one die carries (GDDR6 must state it; default 1 elsewhere) */
@@ -475,6 +499,17 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         }
         /* a basis named for a record without trfc_bases is refused by the caller, which knows every record of the run */
     }
+    {   /* (1.12.269): the run's grade selects the die it runs on */
+        const auto git = gradeSelection().find(r.technology);
+        const int g = (git != gradeSelection().end()) ? git->second : 0;
+        const auto dit = r.die_by_grade.find(g);
+        if (g > 0 && dit != r.die_by_grade.end()) {
+            const DieRec& d = dit->second;
+            r.part = d.part; r.generation = d.generation; r.feature_nm = d.feature_nm;
+            r.density_mb_per_mm2 = d.density_mb_per_mm2; r.density_source = d.density_source;
+            r.die_grade = g;
+        }
+    }
     out = r;
     return true;
 }
@@ -530,6 +565,13 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
     if (rec.cell_factor_f2 <= 0) errors.push_back("cell_factor_f2 must be positive");
     if (rec.density_mb_per_mm2 <= 0.0) errors.push_back("density_mb_per_mm2 must be positive");
     if (rec.density_source.empty()) errors.push_back("density_source must name the measurement");
+    for (const auto& kv : rec.die_by_grade) {   // (1.12.269): each listed die is complete and names a grade the record prices
+        const std::string k = "die_by_grade " + std::to_string(kv.first);
+        if (kv.second.feature_nm <= 0.0) errors.push_back(k + ": feature_nm must be positive");
+        if (kv.second.density_mb_per_mm2 <= 0.0) errors.push_back(k + ": density_mb_per_mm2 must be positive");
+        if (kv.second.density_source.empty()) errors.push_back(k + ": density_source must name the measurement");
+        if (!rec.idd.by_grade.count(kv.first)) errors.push_back(k + ": the record has no idd.by_grade row for that grade");
+    }
     if (rec.channels < 1) errors.push_back("channels must be at least 1");
     double last_c = -1e9;
     for (const auto& g : rec.refresh_ladder) {
@@ -645,7 +687,8 @@ std::string describeDramPartRecord(const DramPartRecord& rec) {
     std::ostringstream o;
     o << "[params] DRAM part record " << rec.file << ": " << rec.vendor << " " << rec.part
       << " (" << rec.generation << ", F " << rec.feature_nm << " nm, " << rec.cell_factor_f2 << "F^2, "
-      << rec.density_mb_per_mm2 << " MB/mm^2; " << rec.organization_preset << " / " << rec.timing_preset
+      << rec.density_mb_per_mm2 << " MB/mm^2" << (rec.die_grade > 0 ? ", the die of the " + std::to_string(rec.die_grade) + " MT/s grade" : std::string())
+      << "; " << rec.organization_preset << " / " << rec.timing_preset
       << ", " << rec.channels << " channel(s)";
     o << ", " << rec.channel_width_bits << "-bit channel";
     if (rec.stack_dies > 0) o << ", " << rec.stack_dies << " dies x " << rec.die_capacity_gb << " Gb";

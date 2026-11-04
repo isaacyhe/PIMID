@@ -1371,6 +1371,10 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * is "Micron D1a, 8 Gb / 25.41 mm^2 (TechInsights)". At the preset's
      * density it lands at 25.40 mm^2, on that measured part.
      *
+     * (1.12.269): the record's die is the part's own now: the 16 Gb die Rev A
+     * (D1z, 66.26 mm^2) at 4800 and 3200, the Rev D die (D1b, 35.83 mm^2)
+     * at 5600 (params/dram/ddr5.yaml, die_by_grade).
+     *
      * 1.11.66: THE RESIDUAL IS RESOLVED, AND THE PRESET WAS
      * RIGHT. The 1.11.61 note that stood here claimed "a JEDEC DDR5 x8 device
      * really has 32 banks" and kept this object at 8 BG x 4 Ba against the

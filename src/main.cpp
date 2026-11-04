@@ -5076,8 +5076,10 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
                       << " is given, but this run has no DDR3 memory; remove it (1.12.25)." << std::endl;
             return 1;
         }
-        for (const auto& t : techs)
+        for (const auto& t : techs) {
             pimid::params::setDramRecordSelection(t, t == "DDR3" ? config.dram_ddr3_variant : std::string(), config.dram_trfc_basis);
+            pimid::params::setDramRecordGrade(t, t == "DDR5" ? config.ddr5_speed_grade : 0);   // (1.12.269): the die the grade runs on
+        }
     }
     bool trfc_reached = false;
     for (const auto& t : techs) {
@@ -5087,6 +5089,31 @@ static int checkDramPartRecords(const UnifiedConfig& config) {
             return 1;
         }
         pimid::params::registerDramPartRecord(rec);
+        /* (1.12.269): one run prices one DDR5 die. A host memory (a system.memories[] entry) may carry its own DDR5 grade;
+         * when that grade runs on another die revision than the device's (the record's die_by_grade), the two DDR5
+         * memories are two parts and this build prices one: refuse. Grades on the same die (4800 with 3200) run. */
+        if (t == "DDR5" && config.scope == "system" && !rec.die_by_grade.empty()) {
+            using SN = UnifiedConfig::SystemNode;
+            bool dev_ddr5 = false;
+            for (const auto& n : config.system_nodes)
+                if (n.role == SN::DEVICE && n.device_type != SN::MEMORY_ONLY && canonicalMemTech(n.memory_tech) == "DDR5") dev_ddr5 = true;
+            auto dieOf = [&](int g) { return rec.die_by_grade.count(g) ? g : 0; };
+            auto dieName = [&](int g) {
+                const int k = dieOf(g);
+                return k ? rec.die_by_grade.at(k).part : std::string("the record's own die (the grades die_by_grade does not list)");
+            };
+            for (const auto& h : config.system_nodes) {
+                if (!dev_ddr5 || h.role != SN::HOST || !h.host_mem_present || canonicalMemTech(h.host_mem_tech) != "DDR5") continue;
+                const int gh = hostDdr5Grade(h, config), gd = config.ddr5_speed_grade;
+                if (dieOf(gh) == dieOf(gd)) continue;
+                auto grade = [&](int g) { return g > 0 ? std::to_string(g) + " MT/s" : std::string("the record's grade"); };
+                std::cerr << "[config] FATAL: the host memory of '" << (h.cfg_path.empty() ? h.name : h.cfg_path) << "' is DDR5 at "
+                          << grade(gh) << ", which runs on " << dieName(gh) << ", and the device's DDR5 is at " << grade(gd)
+                          << ", which runs on " << dieName(gd) << ". The two are different dies of the part (" << rec.file
+                          << ", die_by_grade) and one run prices one DDR5 die: give both DDR5 memories grades on the same die." << std::endl;
+                return 1;
+            }
+        }
         std::vector<std::string> errors;
         pimid::params::validateDramPartRecord(rec, errors);
         if (!errors.empty()) {
