@@ -24,6 +24,7 @@
 #include <mutex>
 #include "g_std/g_string.h"
 #include "garnet_network.h"
+#include "common/debug_checks.h"   // (1.12.264): the shared bank wait's counters
 #include "noc_wire_data.h"   // (user ruling 2026-10-25: measured wire activity)
 #include "memory_hierarchy.h"
 #include "hierarchy_util.h"
@@ -166,6 +167,8 @@ protected:
      * thousandths of a cycle, accesses). Under bankLock_. See sharedBankWait(). */
     std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> bankOwn_;
     Counter profBankWaits_, profBankWaitCycles_;
+    Counter profShWaits_, profShWaitCycles_, profShBounded_;   // (1.12.264): under PIMID_DEBUG_CHECKS, SRAM/NVM banks only
+    bool shStats_ = false;
     uint64_t lastPhase_;
     double smoothedPhaseAccesses_;
     uint32_t curPhaseAccesses_;
@@ -1552,6 +1555,12 @@ public:
         s->append(&profBankWaits_);
         profBankWaitCycles_.init("bankWaitCycles", "Cycles waited for a busy bank (SRAM/NVM bank model)");
         s->append(&profBankWaitCycles_);
+        if (pimid::debugChecks() && bankSvcCycles_ > 0.0) {   // (1.12.264): the other elements' share of the bank wait
+            shStats_ = true;
+            profShWaits_.init("bankShareWaits", "Accesses that waited for the other elements' use of their bank"); s->append(&profShWaits_);
+            profShWaitCycles_.init("bankShareWaitCycles", "Cycles of that wait"); s->append(&profShWaitCycles_);
+            profShBounded_.init("bankShareBounded", "Accesses whose wait was the closed-population bound (N_o x M x S)"); s->append(&profShBounded_);
+        }
         profBudgetWaits_.init("budgetWaits", "Writes held by the device write-power budget (memory.nvm_write_budget on)");
         s->append(&profBudgetWaits_);
         profBudgetWaitCycles_.init("budgetWaitCycles", "Cycles writes were held by the device write-power budget");
@@ -1643,14 +1652,18 @@ protected:
      *    one is not final yet;
      *  - from that epoch the OTHER elements' use of the bank is the device total minus this
      *    interface's own (bankOwn_), as occupancy O over n accesses; the wait is the M/D/1 wait
-     *    of a server busy O / epochLen of the time with service O / n: rho S / (2 (1 - rho)),
-     *    rho capped at 0.95 as the interface queue's.
+     *    of a server busy O / epochLen of the time with service O / n: rho S / (2 (1 - rho));
+     *  - (1.12.264) the bank has a closed population: at most N_o other elements (those that used it in that
+     *    epoch), each with at most M accesses in flight (the PE's window, hierarchy.nocMlpDegree), can be
+     *    ahead of this access, so the wait is at most N_o x M x S. The wait is the smaller of the two, with
+     *    no cap on rho (rho >= 1 takes the bound).
      * Without cut pricing, or before the ROI baseline, the term is 0 (the bank table alone, as
      * before). One device per simulator process, as the channel wait's shared state. */
     struct BankShare {
         lock_t lk = {0};
         std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> acc;
         std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> frozen;
+        std::map<uint64_t, std::unordered_map<uint32_t, uint64_t>> srcAcc, srcFrozen;   // (1.12.264): which elements used the bank
     };
     static BankShare& bankShare() { static BankShare s; return s; }
     /* Called under bankLock_. Returns the wait (cycles) for the other elements' use of bank u. */
@@ -1679,9 +1692,15 @@ protected:
         BankShare& sh = bankShare();
         futex_lock(&sh.lk);
         { auto& a = sh.acc[k][u]; a.first += om; a.second += 1; }
+        sh.srcAcc[k][u] |= (1ull << (req.srcId % 64));
         while (!sh.acc.empty() && sh.acc.begin()->first < done) {
             auto it = sh.acc.begin();
             if (!sh.frozen.count(it->first)) sh.frozen[it->first] = std::move(it->second);
+            auto im = sh.srcAcc.find(it->first);
+            if (im != sh.srcAcc.end()) {
+                if (!sh.srcFrozen.count(it->first)) sh.srcFrozen[it->first] = std::move(im->second);
+                sh.srcAcc.erase(im);
+            }
             sh.acc.erase(it);
         }
         if (k >= lag) {
@@ -1702,7 +1721,13 @@ protected:
                 }
             }
         }
+        uint64_t src = 0;
+        if (have) {
+            auto im = sh.srcFrozen.find(r);
+            if (im != sh.srcFrozen.end()) { auto f = im->second.find(u); if (f != im->second.end()) src = f->second; }
+        }
         while (sh.frozen.size() > 64) sh.frozen.erase(sh.frozen.begin());
+        while (sh.srcFrozen.size() > 64) sh.srcFrozen.erase(sh.srcFrozen.begin());
         futex_unlock(&sh.lk);
         uint64_t oo = 0, on = 0;
         { auto& b = bankOwn_[k][u]; b.first += om; b.second += 1; }
@@ -1717,10 +1742,19 @@ protected:
         if (!have || tn <= on || to <= oo) return 0.0;
         const double O = (double)(to - oo) / 1000.0;
         const double n = (double)(tn - on);
-        double rho = O / (double)epochLen;
-        if (rho > 0.95) rho = 0.95;
+        const double rho = O / (double)epochLen;
         const double S = O / n;
-        return rho * S / (2.0 * (1.0 - rho));
+        uint32_t M = zinfo->hierarchy.nocMlpDegree;
+        if (M < 1) M = 1;
+        const double No = (double)__builtin_popcountll(src & ~(1ull << (req.srcId % 64)));
+        const double bound = No * (double)M * S;
+        const double md1 = (rho < 1.0) ? rho * S / (2.0 * (1.0 - rho)) : bound;
+        const double w = (md1 < bound) ? md1 : bound;
+        if (shStats_ && w > 0.0) {
+            roiInc(profShWaits_); roiInc(profShWaitCycles_, (uint64_t)(w + 0.5));
+            if (bound <= md1) roiInc(profShBounded_);
+        }
+        return w;
     }
 
     // Shared M/D/c channel-BW queueing wait (cycles) for an aggregate offered rate

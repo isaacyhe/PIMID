@@ -6,6 +6,40 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.264 -- an SRAM or NVM bank's wait for the other elements is bounded by how many of them can be ahead
+
+- **The problem.** Since 1.12.242 a request to an SRAM or NVM bank also waits for the other processing elements' use
+  of that bank: the M/D/1 wait of that use, read from the latest final epoch, rho S / (2 (1 - rho)) with rho capped at
+  0.95. When a few other elements' long writes (a ReRAM write holds its bank about 1,900 cycles at 500 MHz) filled 95%
+  of an epoch, the capped formula charged 9.5 S, about 18,000 cycles, per access, although only those few elements
+  could be ahead of the request. On the ReRAM shared-memory gemv at smoke size, 60 such accesses made almost all of
+  the analytical model's 941,000 shared-wait cycles, and the detailed run was 28.8% shorter than the analytical one.
+- **The fix** (external/zsim/src/pe_memory_interface.h; docs/memory.md). The bank has a closed population: at most the
+  other elements that used it in that epoch (N_o), each with at most the processing element's in-flight window (M: 1
+  for the alu and in-order cores), can be ahead of a request, so the wait is at most N_o x M x S. The wait is now the
+  smaller of the M/D/1 wait and that bound, with no cap on rho (rho >= 1 takes the bound). The elements that used a
+  bank are kept per epoch next to its occupancy count, so the wait still does not depend on the order in which the
+  elements are simulated. It applies in the detailed and the analytical model alike, to SRAM and NVM banks only; DRAM
+  devices have no such term and are unchanged. Under `PIMID_DEBUG_CHECKS` each SRAM / NVM interface reports
+  `bankShareWaits`, `bankShareWaitCycles` and `bankShareBounded`.
+- **Validation** (1.12.262 against this build, logs compared with the tree paths masked):
+  - The 40 SRAM / NVM device cells (16 elements at the bank, message passing and shared memory, smoke sizes): 11
+    change run time in the detailed model (-25.3% to +3.3%) and 12 in the analytical model (-25.3% to +2.8%): the
+    ReRAM cells and three bfs cells (PCM, STT-MRAM); the SRAM cells are identical. ReRAM: shared-memory stream_triad
+    -25.3%, message-passing gemv -15.1% and stream_triad -10.5%, shared-memory histogram and stencil_2d -4.2%. The
+    shared-memory PCM bfs gets 3.3% longer: with many elements on one bank the bound is above the old capped wait.
+    Detailed against analytical goes from -28.9..+13.0% (median +2.0%) to -5.2..+12.3% (median +1.7%); the ReRAM
+    shared-memory gemv from -28.8% to -5.2% and the message-passing gemv from +13.0% to +0.9%.
+  - Full size, ReRAM (gemv 2,032, stream_triad 1,398,000, the largest that fit the slot): shared-memory gemv -5.2%
+    (2,663,980 -> 2,524,352 cycles), shared-memory stream_triad -2.3%, message-passing gemv and stream_triad -0.3%;
+    detailed and analytical agree within 0.5% before and within 0.2% after.
+  - The 135 device message-passing smoke cells: the 115 DRAM cells are identical. The 11 co-simulation
+    message-passing smoke cells, the 40 host baselines, the 116-cell validation set and the 30 bfs smoke variants:
+    identical.
+  - Two cells run four times in each model give one output each; the replica sample (8 cells x 5 memory layouts)
+    keeps cv at most 0.03%. The power checker reports no flag; the NVM checker reports only the SRAM bank-area flag
+    1.12.262 already has.
+
 ## 1.12.263 -- an SRAM cell has the area of a published cell at its node
 
 - **The problem.** CACTI's process tables gave the 6T SRAM cell 146 F^2 at every node, from 180 nm to 22 nm. At 22 nm that is 0.071 um^2, denser than any published 22 nm cell (the densest, Intel's high-density cell, is 0.092 um^2 = 190 F^2), so every SRAM array came out too small: a 64 KB SRAM device bank was 215 F^2 per bit, below every published macro of its size (248-404 F^2 per bit).

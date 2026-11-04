@@ -15,8 +15,11 @@ array model of one bank unit (`memory.bank_kb`, default 64 KB): a read takes the
 takes the array's write time (NVSim's write latency; 1.12.90). Each bank serves one access at a time: it is busy
 for the access time (a write: the write time), and a request to a busy bank waits until it is free (the bank model,
 (1.12.111) release). The interface's own rate is its banks' aggregate (banks it covers x line / access time), so many
-requests spread over its banks overlap while requests to one bank serialise. The array is characterised at
-`power.device_corner` for both its power and its timing.
+requests spread over its banks overlap while requests to one bank serialise. A request also waits for the other
+elements' use of its bank, from the latest final epoch: the M/D/1 wait of that use, bounded by the bank's closed
+population (at most the other elements that used the bank in that epoch, each with the PE's in-flight window,
+can be ahead of it), so the wait is never more than (those elements) x (window) x (their mean service time).
+The array is characterised at `power.device_corner` for both its power and its timing.
 
 Per-technology JEDEC organization (channels, banks, timings) drives both the
 memory timing and the device-internal network shape -- see
