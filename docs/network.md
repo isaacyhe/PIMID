@@ -168,6 +168,32 @@ credit-based flow control, deadlock-free routing.
   (CACTI's matrix arbiter, charged per access), and the group's link to the
   die router as a link. The key is refused on a DRAM device, at the `MAT` /
   `SUBBANK` placement, and with a named flat `noc.topology`.
+- **Posted writes: `memory.write_buffer_entries` ((1.12.266)).** On an SRAM or NVM
+  device at the `BANK` placement each element's controller has a write
+  buffer, 32 entries by default. A write to a bank of the element's own slot
+  is acknowledged one cycle after the controller has taken it into the
+  buffer, on every local path (`bus`, `garnet`, `garnet_bus`) and in both
+  models: the write then travels the path and waits for its bank (the bus
+  slots or the router ports are booked, the detailed model still sends its
+  request and its ack). The banks serve reads first: a read is served
+  ahead of the posted writes still waiting for its bank, which start after
+  it; a write that has started is not interrupted. While more than 80% of
+  the entries are taken, the oldest writes keep their place, a read waiting
+  for them, until at most 80% would remain (the baseline PCM controller of
+  PreSET, ISCA 2012). A read of a line a buffered write holds is answered
+  by the controller from the buffer one cycle after its issue, with no path
+  or bank access. An entry is free again when its write's ack would have
+  reached the element; a write that finds every entry taken waits for the
+  earliest of them. Fences and barriers do not wait for the buffer, as on
+  Intel Optane DC persistent memory, whose fences wait for a store to reach
+  the controller's write pending queue, not the media. A write to another
+  element's slot is acknowledged by its bank, as before; the other
+  elements' use of a bank (see [memory.md](memory.md)) also serves reads
+  first. `0` keeps blocking writes. The run prints the depth on a
+  `[hierarchy] ... element controllers: posted writes` line, and each
+  element's statistics count its posted writes (`wbPosted`), those that
+  found the buffer full (`wbFull`) and the cycles they waited for an entry
+  (`wbFullCycles`).
 - Flat topologies remain available for non-DRAM device memories, when named: `MESH_2D`
   (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`,
   `H_TREE`, `CUSTOM` (file-defined). Since 1.11.106 `noc.topology` accepts

@@ -6,6 +6,71 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.266 -- an SRAM or NVM element's controller posts its writes, serves reads first and answers a read from its buffer: `memory.write_buffer_entries`
+
+- **The problem.** An SRAM or NVM element's controller held its core on every write until the bank had written the
+  line. A PCM write takes hundreds of nanoseconds and a ReRAM write with its verify rounds microseconds, so the core
+  stalled for the whole media write. A DRAM device already posts its stores into its replayed controller's write
+  queue, and main-memory NVM controllers acknowledge a write when it enters their write queue (the write pending queue
+  of Intel Optane DC persistent memory, Yang et al., FAST 2020), serve reads ahead of the queued writes and answer a
+  read of a queued line from the queue (the PCM controller of Qureshi et al., PreSET, ISCA 2012, Sec. 4.1 and Table 1).
+- **The change.** A new key, `memory.write_buffer_entries` (default 32; `0` = blocking writes, as before), gives each
+  element's controller on an SRAM or NVM device at the `BANK` placement a write buffer. The default is the depth of
+  the write queue every PIM element controller is priced with (PARE, Green et al., MICRO 2026, Sec. V-A).
+  - Timing, in both network models and on every `memory.local_path` (`bus`, `garnet`, `garnet_bus`): a write to a
+    bank of the element's own slot is acknowledged one cycle after the controller has taken it. The write then
+    crosses the path and waits for its bank; its entry is free again when its acknowledgement would have reached the
+    element, and a write that finds every entry taken waits for the earliest. Fences and barriers do not wait for the
+    buffer. A write to another element's slot is acknowledged by its bank, as before.
+  - The banks serve reads first: a read is served ahead of the posted writes still waiting for its bank, which start
+    after it; a write that has started is not interrupted. A read also uses a bank that waits idle for a write the
+    write-power budget holds. While more than 80% of the entries are taken, the oldest writes keep their place (a read
+    waits for them) until at most 80% would remain, PreSET's rule. The other elements' use of a bank is a two-class
+    queue that serves reads first (non-preemptive priority, Cobham 1954).
+  - A read of a line a buffered write holds is answered by the controller from the buffer, one cycle after its issue,
+    with no path or bank access.
+  - Each element counts `wbPosted`, `wbFull` and `wbFullCycles`.
+  - Power: the write buffer holds the posted writes' lines. At the default McPAT's write buffer is 256 bus words
+    instead of 32 (32 lines of 64 B in 64-bit words); past 32 entries the write queue holds that many requests too
+    (the two unified queues priced at their mean depth).
+  - The key is refused on a DRAM device, at `MAT` / `SUBBANK` and with a named flat `noc.topology`; a negative depth
+    is refused.
+  - Code: external/zsim (pe_memory_interface.h, zsim.h, init.cpp), src/main.cpp, src/power/mcpat_wrapper.cpp,
+    include/power/mcpat_wrapper.h, external/mcpat (memoryctrl.cc, XML_Parse.cc, XML_Parse.h). Docs:
+    yaml_reference.md, network.md, memory.md, power.md, sources.md.
+- **Effect** (the 40 SRAM / NVM cells, 16 elements at the bank of a 256-bank device, smoke sizes, against the release
+  below).
+  - Run time with `bus`: detailed -81.0% to +21.1% (median -9.5%; message passing -19.1%, shared memory -5.7%),
+    analytical -81.1% to -0.4% (median -9.8%). Detailed medians by technology: ReRAM -41.6%, PCM -10.9%, STT-MRAM
+    -3.7%, SRAM -0.8%. With `garnet`: detailed -81.2% to +5.2% (median -13.7%), analytical -81.2% to -1.9% (median
+    -16.4%). With `garnet_bus`: detailed -81.2% to +12.9% (median -13.5%), analytical -81.2% to -2.1% (median -15.8%).
+  - Energy: `bus` detailed -44.8% to +20.2% (median -5.0%), analytical -44.8% to -0.3% (median -5.1%); `garnet`
+    median -11.9% detailed, -12.0% analytical; `garnet_bus` -6.4% and -6.8%.
+  - Reads answered from the buffer: 20% of the reads on ReRAM, 5.1% on PCM, 2.7% on STT-MRAM, 1.2% on SRAM. The
+    buffer is full for 30% of the posted writes on ReRAM (its writes take microseconds, and the reads served first
+    leave them waiting longer) and 1.7% on PCM, and 19.6% of the ReRAM writes keep their place at the 80% mark; on SRAM
+    and STT-MRAM it is full for 15 of about 700,000.
+  - The 16 controllers' write buffers add 0.10 mm^2 of logic area (0.26 mm^2 on PCM); the memory controllers' power
+    rises by a median 3.1% (SRAM) to 29.0% (ReRAM), from the larger buffer and the shorter runs.
+  - No cell runs longer in the analytical model. In the detailed model a few SRAM and STT-MRAM cells do (SRAM omp gemv
+    +21.1% with `bus`, STT-MRAM omp gemv +12.9% with `garnet_bus`): their arrays are fast, so the reads gain little,
+    and the faster cores' accesses to other slots are charged more contention (SRAM omp gemv: 34 -> 110 cycles per
+    such access, while the network's mean packet latency stays at 19 to 20 cycles).
+  - Detailed against analytical: `bus` -1.1% to +26.4% (median +2.3%; before -5.2% to +12.3%, median +1.7%),
+    `garnet` -7.4% to +44.9% (median +4.1%; before -7.2% to +36.2%, +2.6%), `garnet_bus` -5.3% to +47.3% (median
+    +6.7%; before -5.9% to +36.6%, +4.0%). The widest gaps are the SRAM and STT-MRAM cells above and the message-passing
+    histogram cells, which had the widest gaps before; the ReRAM cells agree within -1.0% to +0.6% with `bus`.
+  - Eight message-passing cells at full size with the write budgets on: run time -0.01% to -38.0% (STT-MRAM
+    stream_triad -38.0%, ReRAM gemv -21.9%, PCM -4.7% to -5.7%): a read no longer waits for a write the budget holds.
+- **Validation.** Every array characterization computed fresh (an empty cache per run) in both builds.
+  `memory.write_buffer_entries: 0` is identical to the release below on the 40 cells in both models. The 135 device
+  message-passing smoke cells (their SRAM / NVM cells name a flat `MESH_2D`, which keeps blocking writes) and the 40
+  host baselines are identical. Four cells run 4 times each in each model give one output per cell. Every run exits
+  0, the refusals fire, and the power checker reports no flag and no internal-consistency failure over the 480 fig2
+  logs of the six modes and the 80 full-size logs.
+- **Data impact.** Every SRAM / NVM cell at the `BANK` placement on the device's tree (the fig2 cells). DRAM devices,
+  the hosts, and SRAM / NVM devices on a named flat fabric are unchanged.
+
 ## 1.12.265 -- an NVSim cache entry is keyed on the cell file's content, so an entry characterised from other cell inputs is never reused
 
 - **The problem.** The NVSim characterisation cache identified an entry by the array's organisation, node, access

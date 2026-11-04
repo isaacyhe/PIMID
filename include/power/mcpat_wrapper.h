@@ -274,6 +274,11 @@ public:
         int req_cam_tag_bits = 0;           // 0 = McPAT's address + opcode tag
         std::string req_cam_field;          // what the CAM compares ("row address", "line address")
         int io_buffer_size_per_channel = 32;
+        /* (1.12.266): an SRAM/NVM element controller that posts writes (memory.write_buffer_entries): its write buffer's
+         * entries (bus words) when more than the read buffer's, and its write queue's entries when more than the read
+         * queue's (the two unified queues are then priced at their mean depth); 0 = as the read side */
+        int write_buffer_size_per_channel = 0;
+        int write_queue_entries = 0;
         int block_size_bytes = 64;
         int addressbus_width = 48;
     };

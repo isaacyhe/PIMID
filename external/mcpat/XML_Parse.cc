@@ -1378,6 +1378,7 @@ void ParseXML::parse(char* filepath)
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"memory_channels_per_mc")==0) {sys.mc.memory_channels_per_mc=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_window_size_per_channel")==0) {sys.mc.req_window_size_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"IO_buffer_size_per_channel")==0) {sys.mc.IO_buffer_size_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"write_buffer_size_per_channel")==0) {sys.mc.write_buffer_size_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (1.12.266) */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_window_queues_per_channel")==0) {sys.mc.req_window_queues_per_channel=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_window_shared")==0) {sys.mc.req_window_shared=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"req_cam_tag_bits")==0) {sys.mc.req_cam_tag_bits=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
@@ -1957,6 +1958,7 @@ void ParseXML::initialize() //Initialize all
 	sys.mc.number_ranks=1;
 	sys.mc.req_window_size_per_channel=1;
 	sys.mc.IO_buffer_size_per_channel=1;
+	sys.mc.write_buffer_size_per_channel=0;   /* PIMID (1.12.266): 0 = IO_buffer_size_per_channel */
 	sys.mc.req_window_queues_per_channel=1;   /* PIMID: McPAT's single request window */
 	sys.mc.req_window_shared=0;   /* PIMID: one array per queue */
 	sys.mc.req_cam_tag_bits=0;                /* PIMID: McPAT's address + opcode tag */

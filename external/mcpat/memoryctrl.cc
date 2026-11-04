@@ -491,8 +491,10 @@ MCFrontEnd::MCFrontEnd(ParseXML *XML_interface,InputParameter* interface_ip_, co
   area.set_area(area.get_area()+ readBuffer->local_result.area*XML->sys.mc.memory_channels_per_mc);
 
   //write buffer
+  /* PIMID (1.12.266): a controller that posts writes holds their lines (write_buffer_size_per_channel bus words) */
   data    					 	   = (int)ceil(mcp.dataBusWidth/8.0);//Support key words first operation //8 means converting bit to Byte
-  interface_ip.cache_sz            = data*XML->sys.mc.IO_buffer_size_per_channel;//*llcBlockSize;
+  interface_ip.cache_sz            = data*(XML->sys.mc.write_buffer_size_per_channel > 0 ? XML->sys.mc.write_buffer_size_per_channel
+                                                                                      : XML->sys.mc.IO_buffer_size_per_channel);//*llcBlockSize;
   interface_ip.line_sz             = data;
   interface_ip.assoc               = 1;
   interface_ip.nbanks              = 1;

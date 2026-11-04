@@ -214,6 +214,7 @@ struct GlobSimInfo {
         uint32_t treeUnitDiv = 1;        // (1.12.247): placement units per tree leaf
         uint32_t localBusCycles = 0;     // (1.12.247): one crossing of an SRAM/NVM element's local bus (0 = none)
         uint32_t localBusWidthBits = 0;  // (1.12.247): that bus's width
+        uint32_t writeBufferEntries = 0; // (1.12.266): memory.write_buffer_entries, an SRAM/NVM element controller's posted writes (0 = blocking)
         uint32_t treeFullLeaves = 0;     // (1.12.258): every placement unit its own tree leaf and endpoint
         uint32_t routeAllAccesses = 0;   // (1.12.258): every access travels the fabric, in both network models
         uint32_t localPathPortBits = 0;  // (1.12.258): the width of an element's port on its group's router (flit-clamped)

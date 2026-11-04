@@ -1383,6 +1383,8 @@ uint64_t McPATWrapper::inputFingerprint() const {
     f(mc_tech_.phy_static_external ? 1 : 0);   // (1.12.209)
     f(mc_tech_.req_window_size_per_channel);
     f(mc_tech_.io_buffer_size_per_channel);
+    if (mc_tech_.write_buffer_size_per_channel > 0) f(mc_tech_.write_buffer_size_per_channel);   // (1.12.266)
+    if (mc_tech_.write_queue_entries > 0) f(mc_tech_.write_queue_entries);   // (1.12.266)
     f(mc_tech_.block_size_bytes);    f(mc_tech_.addressbus_width);
     f(mc_tech_.req_window_queues_per_channel); f(mc_tech_.req_cam_tag_bits);
     f(mc_tech_.banks_served); f(mc_tech_.unified_queues ? 1 : 0);
@@ -4525,7 +4527,10 @@ std::string McPATWrapper::generateXMLConfig() const {
         d << "  [power] memory-controller structure (McPAT front end, per controller): "
           << mc_tech_.memory_channels_per_mc << " channel, " << mc_tech_.banks_served << " bank(s) served; request window "
           << nq << " queues x " << (mc_tech_.req_window_size_per_channel + nq - 1) / nq << " entries";
-        if (mc_tech_.unified_queues) d << " (one read, one write: unified)";
+        if (mc_tech_.unified_queues && mc_tech_.write_queue_entries > 0)   // (1.12.266): a deeper write queue (posted writes)
+            d << " (one read, one write: unified; a read queue of " << (mc_tech_.req_window_size_per_channel - mc_tech_.write_queue_entries)
+              << " and a write queue of " << mc_tech_.write_queue_entries << " entries, priced at their mean depth)";
+        else if (mc_tech_.unified_queues) d << " (one read, one write: unified)";
         else if (nq > 1) d << " (" << nq / 2 << " read, " << nq - nq / 2 << " write: one of each per bank)";
         d << ", each a CAM on ";
         if (mc_tech_.req_cam_tag_bits > 0)
@@ -4534,8 +4539,12 @@ std::string McPATWrapper::generateXMLConfig() const {
         d << " with its own arbiter";
         if (!mc_tech_.unified_queues && nq > 1)
             d << " (the queues' storage priced as one array of " << mc_tech_.req_window_size_per_channel << " entries)";
-        d << "; " << mc_tech_.io_buffer_size_per_channel
-          << "-entry read and write buffers; " << mc_tech_.block_size_bytes
+        std::ostringstream bufs;   // (1.12.266): a write buffer deeper than the read buffer (posted writes)
+        if (mc_tech_.write_buffer_size_per_channel > 0)
+            bufs << "a " << mc_tech_.io_buffer_size_per_channel << "-entry read buffer and a "
+                 << mc_tech_.write_buffer_size_per_channel << "-entry write buffer (its posted writes' lines)";
+        else bufs << mc_tech_.io_buffer_size_per_channel << "-entry read and write buffers";
+        d << "; " << bufs.str() << "; " << mc_tech_.block_size_bytes
           << " B transactions -- " << (mc_tech_.unified_queues ? "the PARE controller of Green et al., MICRO 2026, Sec. V-A"
                                                                 : "the conventional sorting FR-FCFS controller of Green et al., PARE, MICRO 2026, Sec. IV")
           << pimid::provLabel(" (DERIVED: the SMC's per-bank queues carried to the bank count of the channel served; the"
@@ -4575,6 +4584,9 @@ std::string McPATWrapper::generateXMLConfig() const {
         << mc_tech_.req_window_size_per_channel << "\"/>\n";   // 1.11.56 (C008)
     xml << "      <param name=\"IO_buffer_size_per_channel\" value=\""
         << mc_tech_.io_buffer_size_per_channel << "\"/>\n";     // 1.11.56 (C008)
+    if (mc_tech_.write_buffer_size_per_channel > 0)   // (1.12.266): posted writes' lines
+        xml << "      <param name=\"write_buffer_size_per_channel\" value=\""
+            << mc_tech_.write_buffer_size_per_channel << "\"/>\n";
     xml << "      <param name=\"req_window_queues_per_channel\" value=\""
         << mc_tech_.req_window_queues_per_channel << "\"/>\n";
     /* (1.12.249): a host controller's per-bank queues are one array of all their entries (their area and leakage). */

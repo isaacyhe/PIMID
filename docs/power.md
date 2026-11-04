@@ -626,7 +626,10 @@ a DDR5 sub-channel or an HBM2 channel, 64 on the channel of an 8-high HBM3
 stack). A PIM element controller is PARE itself (Sec. V-A): one read and one
 write unified queue of 32 entries, each a CAM on the bank ID of its region (the
 device's banks over its controllers); an SRAM or NVM element controller's peak
-rate is its banks' share of the array's bank-parallel rate. A request is written into, searched in
+rate is its banks' share of the array's bank-parallel rate. One that posts writes
+(`memory.write_buffer_entries`) holds that many lines in its write buffer (McPAT's write buffer at that
+many lines of bus words, when that is more than the read buffer's 32) and, past 32 entries, that many
+requests in its write queue (its two queues are then priced at their mean depth). A request is written into, searched in
 and picked from one queue, so its energy is one queue's; the area, the leakage
 and the clocked port registers are every queue's (a host controller's per-bank
 queues are priced as one array of all their entries). A transaction is the run's

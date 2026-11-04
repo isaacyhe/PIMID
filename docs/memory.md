@@ -20,6 +20,14 @@ elements' use of its bank, from the latest final epoch: the M/D/1 wait of that u
 population (at most the other elements that used the bank in that epoch, each with the PE's in-flight window,
 can be ahead of it), so the wait is never more than (those elements) x (window) x (their mean service time).
 The array is characterised at `power.device_corner` for both its power and its timing.
+At the `BANK` placement the element's controller posts the writes to the banks of its slot ((1.12.266),
+`memory.write_buffer_entries`, 32 entries by default): a write is acknowledged when the controller has taken it into
+its write buffer, and it then waits for its bank. The banks serve reads first: a read goes ahead of the posted writes
+still waiting for its bank, a write that has started holds the bank for the write time, and while more than 80% of
+the entries are taken the oldest writes keep their place. A read of a buffered line is answered from the buffer. The
+other elements' use of the bank is then a two-class queue that serves reads first (non-preemptive priority, Cobham
+1954): a read waits for the other elements' reads and for the access in service, a write for both classes. `0` keeps
+blocking writes (see [network.md](network.md)).
 
 Per-technology JEDEC organization (channels, banks, timings) drives both the
 memory timing and the device-internal network shape -- see

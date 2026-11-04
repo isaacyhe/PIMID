@@ -3206,7 +3206,7 @@ static const char* kSchemaPaths[] = {
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
     "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.dram.ddr3_variant", "memory.dram.trfc_basis", "memory.row_policy.host_idle_timeout_clocks", "memory.row_policy.host_closed_mode", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
-    "memory.organization.bank_groups", "memory.organization.banks_per_group", "memory.local_path", "memory.power.static_power_mw",
+    "memory.organization.bank_groups", "memory.organization.banks_per_group", "memory.local_path", "memory.write_buffer_entries", "memory.power.static_power_mw",
     "memory.timing.read_latency_ns", "memory.timing.subarray_read_ns", "memory.timing.subarray_write_ns", "memory.timing.write_latency_ns",
     "noc.bridges.<name>.count", "noc.bridges.<name>.fifo_depth", "noc.bridges.<name>.input_buffer_depth", "noc.bridges.<name>.latency_cycles", "noc.bridges.<name>.latency_ns",
     "noc.bridges.<name>.lower_frequency_mhz", "noc.bridges.<name>.lower_width_bits", "noc.bridges.<name>.model", "noc.bridges.<name>.output_buffer_depth",
@@ -4030,6 +4030,8 @@ struct UnifiedConfig {
     bool route_all_accesses      = false;   // (1.12.258): every access travels the fabric, in both models (local_path garnet)
     int local_path_port_bits     = 0;       // (1.12.258): local_path garnet: an element's port width on its group's router
     bool local_path_bus          = false;   // (1.12.259): local_path garnet_bus: each group's router is a shared bus
+    int write_buffer_entries     = 32;      // (1.12.266): memory.write_buffer_entries -- an SRAM/NVM element controller's posted writes (0 = blocking)
+    bool write_buffer_user_set   = false;
     int noc_ni_cycles            = 6;       // (1.12.258): the analytical NI overhead per message
     /* (1.12.143): the BUILT in-die fabric (ruling 9): its node links, the dies it
      * grids (one exit up-link each), and the mean node-link length in node
@@ -7440,6 +7442,12 @@ static void registerGeneratedTopologyFile(const std::string& path) {
     if (!armed) { std::atexit(removeGeneratedTopologyFile); armed = true; }
 }
 
+/* (1.12.266): memory.write_buffer_entries in effect -- an SRAM/NVM element controller on the device's tree (its local bus or
+ * its group's router, memory.local_path) posts the writes inside its slot; 0 = blocking writes, or no such controller */
+static int writeBufferEntriesInEffect(const UnifiedConfig& c) {
+    return (c.write_buffer_entries > 0 && (c.local_bus_cycles > 0 || c.route_all_accesses)) ? c.write_buffer_entries : 0;
+}
+
 static void computeHierarchyLatencies(UnifiedConfig& config) {
     // Map placement_level string to integer
     /* 1.11.106 (ruling R106-1 (b)): lowercase is accepted (case-folded); an unknown word is refused below. */
@@ -8252,12 +8260,23 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * model characterises the bank for), and one crossing costs one device cycle (a repeated wire across the die is
      * shorter than one cycle); a bank adds no link of its own (it sits on its group's bus). There is no rank, channel
      * or system tier. noc.levels still wins. */
+    if (ladder_is_dram && config.write_buffer_user_set) {   // (1.12.266)
+        std::cerr << "[config] FATAL: memory.write_buffer_entries sizes the write buffer of an SRAM or NVM element's "
+                     "controller; a " << tech << " device's stores are posted into its replayed controller's write queue. "
+                     "Remove the key." << std::endl;
+        std::exit(2);
+    }
     if (ladder_is_dram && config.local_path_user_set) {   // (1.12.258)
         std::cerr << "[config] FATAL: memory.local_path chooses how an SRAM or NVM element reaches the banks of its "
                      "group; a " << tech << " device's accesses travel its tier tree. Remove the key." << std::endl;
         std::exit(2);
     }
     if (!ladder_is_dram) {
+        if (config.write_buffer_user_set && config.pe_hierarchy_level != 1) {   // (1.12.266)
+            std::cerr << "[config] FATAL: memory.write_buffer_entries applies at the BANK placement, where each element's "
+                         "controller reaches the banks of its slot; it has no meaning at " << config.placement_level << "." << std::endl;
+            std::exit(2);
+        }
         if (config.local_path_user_set && config.pe_hierarchy_level != 1) {   // (1.12.258)
             std::cerr << "[config] FATAL: memory.local_path applies at the BANK placement, where each element and the "
                          "banks of its slot form one group; it has no meaning at " << config.placement_level << "." << std::endl;
@@ -8798,6 +8817,12 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             (!config.noc_topology_user_set || config.noc_topology == "H_TREE");
         if (nvm_tree && !config.route_all_accesses) config.local_bus_cycles = 1;   // an access inside the slot crosses the group's local bus
         else if (!is_dram && !nvm_tree) {
+            if (config.write_buffer_user_set && config.nvm_die) {   // (1.12.266)
+                std::cerr << "[config] FATAL: memory.write_buffer_entries sizes the write buffer of an element's controller "
+                             "on the device's tree; the named flat fabric (noc.topology " << config.noc_topology << ") has "
+                             "no element groups. Remove one of the two keys." << std::endl;
+                std::exit(2);
+            }
             if (config.local_path_user_set && config.nvm_die) {   // (1.12.258)
                 std::cerr << "[config] FATAL: memory.local_path chooses the path inside an element's group of the "
                              "device's tree; the named flat fabric (noc.topology " << config.noc_topology << ") has no "
@@ -8807,6 +8832,15 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
             config.htree_leaf_level = -1; config.htree_unit_div = 1; config.local_bus_width_bits = 0;
             config.htree_full_leaves = false; config.route_all_accesses = false;
         }
+        if (writeBufferEntriesInEffect(config) > 0)   // (1.12.266): memory.write_buffer_entries
+            std::cout << "  [hierarchy] " << tech << " element controllers: posted writes, a write inside the element's slot "
+                         "acknowledged when it enters the controller's write buffer of " << config.write_buffer_entries
+                      << " entries (memory.write_buffer_entries) and drained to its bank in the background; the banks "
+                         "serve reads first (the oldest writes keep their place while more than 80% of the entries are "
+                         "taken), and a read of a buffered line is answered from the buffer"
+                      << pimid::provLabel(" (DERIVED: one cycle to take a write or to answer a read; the default depth "
+                                          "is the PIM element controller's 32-entry write queue; PreSET's 80% mark of a "
+                                          "bank's write queue applied to the element's buffer)") << std::endl;
         if (is_dram || nvm_tree) {
             // -- ALWAYS query the datasheet aggregate BW + channel count for any
             //    DRAM tech, regardless of whether the user already chose H_TREE.
@@ -9554,6 +9588,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
     if (config.htree_top_level != 6) out << "        treeTopLevel = " << config.htree_top_level << ";\n";   // (1.12.247)
     if (config.htree_leaf_level >= 0) out << "        treeLeafLevel = " << config.htree_leaf_level << ";\n";
     if (config.htree_unit_div > 1) out << "        treeUnitDiv = " << config.htree_unit_div << ";\n";
+    if (writeBufferEntriesInEffect(config) > 0)   // (1.12.266): memory.write_buffer_entries
+        out << "        writeBufferEntries = " << config.write_buffer_entries << ";\n";
     if (config.local_bus_cycles > 0) out << "        localBusCycles = " << config.local_bus_cycles << ";\n"
                                          << "        localBusWidthBits = " << config.local_bus_width_bits << ";\n";
     if (config.htree_full_leaves) out << "        treeFullLeaves = 1;\n";       // (1.12.258): memory.local_path garnet
@@ -11772,6 +11808,18 @@ static pimid::McPATWrapper::MCTechParams getMCTechParamsForMcPAT(
             p.peak_transfer_rate = static_cast<int>(std::max(1LL, std::llround(static_cast<double>(dev_rate) * share)));
             static std::set<std::string> said;
             std::ostringstream k; k << t << ':' << p.banks_served << ':' << dev_banks << ':' << dev_rate;
+            /* (1.12.266): memory.write_buffer_entries -- a controller that posts writes holds that many lines in its write
+             * buffer (McPAT's write buffer, in bus words: more than the read buffer's) and that many requests in its
+             * write queue (when more than PARE's 32: the two unified queues priced at their mean depth) */
+            const int wb = writeBufferEntriesInEffect(config);
+            if (wb > 0) {
+                const long long words = ((long long)wb * p.block_size_bytes * 8 + std::max(1, p.databus_width) - 1) / std::max(1, p.databus_width);
+                if (words > p.io_buffer_size_per_channel) p.write_buffer_size_per_channel = (int)words;
+                if (wb > kMcUnifiedQueueEntries) {
+                    p.write_queue_entries = wb;
+                    p.req_window_size_per_channel = kMcUnifiedQueueEntries + wb;
+                }
+            }
             if (said.insert(k.str()).second)
                 std::cout << "  [power] " << t << " element memory controller: peak rate " << p.peak_transfer_rate
                           << " MB/s, its " << p.banks_served << " of the device's " << dev_banks
@@ -23357,6 +23405,15 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
             }
             config.local_path = lp;
             config.local_path_user_set = true;
+        }
+        if (root["memory"]["write_buffer_entries"]) {   // (1.12.266): posted writes
+            config.write_buffer_entries = yamlInt(root["memory"]["write_buffer_entries"], config.write_buffer_entries, sc.pfx + "memory.write_buffer_entries");
+            if (config.write_buffer_entries < 0) {
+                std::cerr << "[config] FATAL: " << sc.pfx << "memory.write_buffer_entries = " << config.write_buffer_entries
+                          << ": it takes 0 (blocking writes) or the entries of an element controller's write buffer." << std::endl;
+                std::exit(2);
+            }
+            config.write_buffer_user_set = true;
         }
         config.memory_latency_override = yamlInt(root["memory"]["latency"], config.memory_latency_override, sc.pfx + "memory.latency");
         config.ports_per_bank = yamlInt(root["memory"]["ports_per_bank"], config.ports_per_bank, sc.pfx + "memory.ports_per_bank");

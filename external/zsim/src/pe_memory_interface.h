@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
+#include <deque>
 #include <unordered_set>
 #include <unordered_map>
 #include <mutex>
@@ -56,6 +58,109 @@ protected:
     // Connection mode link latency
     uint32_t localLinkLat_ = 0;  // additional PE<->mem hop for SEPARATE_ENDPOINTS
     std::map<uint64_t, uint64_t> busBusy_;   // (1.12.257): the element's local bus, its booked slots (start -> end)
+    /* (1.12.266): memory.write_buffer_entries -- posted writes, with read priority and read forwarding. The element's
+     * controller acknowledges a write inside its slot when it has taken the write into its write buffer. The write
+     * crosses the path to its bank and waits there, booked after the work already at the bank. The bank serves reads
+     * first: a read that arrives while posted writes wait for its bank (booked, not yet started) is served ahead of
+     * them, and they start after it; a write that has started is not interrupted. While more than 80% of the entries
+     * are taken, the oldest writes keep their place (a read waits for them) until at most 80% would remain (PreSET's
+     * baseline controller, Qureshi et al., ISCA 2012, Table 1: read priority while the write queue is under 80% full).
+     * A read of a line a buffered write holds is answered by the controller from the buffer (ibid., Sec. 4.1: a read
+     * of a line pending in the write queue is serviced by the write queue), with no path or bank access. A write that
+     * finds every entry taken waits for the earliest to complete; an entry completes when its write's blocking
+     * acknowledgement would have reached the element. All of it is this interface's own state, under bankLock_, taken
+     * in its accesses' order. */
+    struct WbEntry { uint64_t line; uint32_t unit; double start, end; uint64_t done; bool fixed; };
+    std::map<uint64_t, WbEntry> wb_;                      // the buffer's entries, by age (id)
+    std::set<std::pair<uint64_t, uint64_t>> wbByDone_;    // (completion, id)
+    std::unordered_map<uint64_t, uint32_t> wbLines_;      // line -> entries holding it
+    struct WbBank { double fixedEnd = 0.0; std::deque<uint64_t> q; };   // the end of a bank's committed work; its waiting writes
+    std::unordered_map<uint32_t, WbBank> wbBank_;
+    uint64_t wbNext_ = 0, wbLast_ = ~0ull;                // the next id; the entry the current write's booking made
+    bool wbPostThis_ = false;                             // the access being priced is a write the controller posts
+    Counter profWbPosted_, profWbFull_, profWbFullCycles_;
+    Counter profWbFwd_, profWbPrio_, profWbPrioCycles_, profWbKept_;   // (1.12.266): under PIMID_DEBUG_CHECKS
+    bool wbDbg_ = false;
+    void wbSetDone(uint64_t id, WbEntry& e, uint64_t done) {
+        wbByDone_.erase(std::make_pair(e.done, id));
+        e.done = done;
+        wbByDone_.insert(std::make_pair(e.done, id));
+    }
+    /* (1.12.266): the waiting writes of bank b that have started by t are committed: no read goes ahead of them any more */
+    void wbCommit(WbBank& b, double t) {
+        while (!b.q.empty()) {
+            auto it = wb_.find(b.q.front());
+            if (it != wb_.end()) {
+                if (it->second.start > t) break;
+                it->second.fixed = true;
+                if (it->second.end > b.fixedEnd) b.fixedEnd = it->second.end;
+            }
+            b.q.pop_front();
+        }
+    }
+    /* (1.12.266): the entries complete by t leave the buffer */
+    void wbFree(uint64_t t) {
+        while (!wbByDone_.empty() && wbByDone_.begin()->first <= t) {
+            const uint64_t id = wbByDone_.begin()->second;
+            auto it = wb_.find(id);
+            if (it != wb_.end()) {
+                WbEntry& e = it->second;
+                if (!e.fixed) wbCommit(wbBank_[e.unit], e.start);
+                auto l = wbLines_.find(e.line);
+                if (l != wbLines_.end() && --l->second == 0) wbLines_.erase(l);
+                wb_.erase(it);
+            }
+            wbByDone_.erase(wbByDone_.begin());
+        }
+    }
+    /* (1.12.266): the write issued at `issue`, whose blocking acknowledgement would reach the element at `done`, takes its
+     * entry; returns the cycles from its issue to its acknowledgement at the controller: its wait for a free entry,
+     * plus one cycle to take it */
+    uint32_t postWrite(const MemReq& req, uint64_t issue, uint64_t done) {
+        const uint32_t D = zinfo->hierarchy.writeBufferEntries;
+        futex_lock(&bankLock_);
+        uint64_t id = wbLast_;
+        wbLast_ = ~0ull;
+        auto me = wb_.find(id);
+        if (me == wb_.end()) {   // no bank booking made it (no bank model): an entry committed at once
+            id = wbNext_++;
+            me = wb_.emplace(id, WbEntry{req.lineAddr, addrToUnit(req.lineAddr), (double)issue, (double)done, done, true}).first;
+            wbByDone_.insert(std::make_pair(done, id));
+            wbLines_[req.lineAddr]++;
+        }
+        wbFree(issue);
+        uint64_t accept = issue;
+        const size_t N = wb_.size();
+        if (N > D) {   // beyond the buffer: the (N - D)th earliest completion of the other entries frees its entry
+            size_t k = N - D;
+            for (const auto& c : wbByDone_) {
+                if (c.second == id) continue;
+                if (--k == 0) { accept = (c.first > issue) ? c.first : issue; break; }
+            }
+            if (accept > issue) { roiInc(profWbFull_); roiInc(profWbFullCycles_, accept - issue); }
+        }
+        wbSetDone(id, me->second, (done < accept) ? accept : done);
+        /* while more than 80% of the entries are taken, the oldest writes keep their place until at most 80% remain */
+        const size_t H = (size_t)D * 4 / 5;
+        if (N > H) {
+            size_t kept = 0;
+            for (const auto& kv : wb_) if (kv.second.fixed || kv.second.start <= (double)issue) kept++;
+            for (auto it = wb_.begin(); it != wb_.end() && kept < N - H; ++it) {
+                WbEntry& e = it->second;
+                if (e.fixed || e.start <= (double)issue) continue;
+                WbBank& b = wbBank_[e.unit];
+                wbCommit(b, (double)issue);
+                for (auto q = b.q.begin(); q != b.q.end(); ++q) if (*q == it->first) { b.q.erase(q); break; }
+                e.fixed = true;
+                if (e.end > b.fixedEnd) b.fixedEnd = e.end;
+                kept++;
+                if (wbDbg_) roiInc(profWbKept_);
+            }
+        }
+        roiInc(profWbPosted_);
+        futex_unlock(&bankLock_);
+        return (uint32_t)(accept - issue) + 1;
+    }
     std::map<uint64_t, uint64_t> pathIn_, pathOut_;   // (1.12.258): local_path garnet, analytical: the element's port, both ways
 
     /* (1.12.258): the first free slot of f cycles at or after t on a booked medium (a local bus, a router port), booked.
@@ -166,6 +271,7 @@ protected:
     /* (1.12.242): this interface's own use of each bank, per epoch: unit -> (occupancy in
      * thousandths of a cycle, accesses). Under bankLock_. See sharedBankWait(). */
     std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> bankOwn_;
+    std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> bankOwnR_;   // (1.12.266): its reads (posted writes)
     Counter profBankWaits_, profBankWaitCycles_;
     Counter profShWaits_, profShWaitCycles_, profShBounded_;   // (1.12.264): under PIMID_DEBUG_CHECKS, SRAM/NVM banks only
     bool shStats_ = false;
@@ -902,6 +1008,26 @@ public:
          * network models; only an access to another element's slot travels the fabric. */
         /* (1.12.258): memory.local_path garnet: on the detailed fabric every access is a packet; the analytical model
          * prices an access inside the element's group by the same router path (localRouterAccess). */
+        /* (1.12.266): memory.write_buffer_entries -- a read of a line a buffered write holds is answered by the element's
+         * controller from its write buffer, with no path or bank access */
+        if (!isWrite && zinfo->hierarchy.writeBufferEntries && isLocal(targetUnit)) {
+            futex_lock(&bankLock_);
+            wbFree(req.cycle);
+            const bool fwd = wbLines_.count(req.lineAddr) > 0;
+            futex_unlock(&bankLock_);
+            if (fwd) {
+                uint32_t lat = 1 + localLinkLat_;
+                if (zinfo->hierarchy.mcStandalone) {
+                    lat += mcHopLatency(targetUnit, req.cycle, req.srcId, false);
+                    if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases); zinfo->pgres.nocGaps.event(req.cycle); }
+                }
+                if (wbDbg_) roiInc(profWbFwd_);
+                roiInc(profLocalAccesses_);
+                roiInc(profLocalLatency_, lat);
+                return req.cycle + lat;
+            }
+        }
+        wbPostThis_ = isWrite && zinfo->hierarchy.writeBufferEntries && isLocal(targetUnit);   // (1.12.266): booked as a posted write
         const bool caNet = zinfo->garnetNetwork && zinfo->garnetNetwork->isCycleAccurate();
         bool wantLocal = (caNet && (zinfo->hierarchy.routeAllAccesses || !zinfo->hierarchy.localBusCycles))
                          ? false : isLocal(targetUnit);
@@ -933,13 +1059,20 @@ public:
             // LATENCY differentiator: finer placement co-locates the PE with its
             // own MC (fewest hops -> fastest), coarser placement reaches a distant
             // shared MC (more hops). Keep it for device-only AND co-sim.
+            uint32_t mcHop = 0;   // (1.12.266): a standalone controller's hop, in a posted write's acknowledgement too
             if (zinfo->hierarchy.mcStandalone) {
-                lat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
+                mcHop = mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
+                lat += mcHop;
                 // E16 site 1: the ONLY fabric traffic a local access makes.
                 if (!inTail()) { zinfo->pgres.noc.touch(zinfo->numPhases);   // (1.12.181): not the tail
                 zinfo->pgres.nocGaps.event(req.cycle); }   // E17 measurement
             }
 
+            /* (1.12.266): memory.write_buffer_entries -- a write the element's controller posts is acknowledged when the
+             * controller has taken it; the blocking latency above is when it completes (pushed back by reads served
+         * ahead of it, as postWrite records) */
+            if (isWrite && zinfo->hierarchy.writeBufferEntries)
+                lat = postWrite(req, req.cycle, req.cycle + lat) + localLinkLat_ + mcHop;
             roiInc(profLocalAccesses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             roiInc(profLocalLatency_, lat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
             noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
@@ -1247,9 +1380,16 @@ public:
                     if (!byReplay) totalLat += channelBandwidthWait(req.srcId, req.cycle);
                 }
                 // Standalone MC: extra core -> MC node hop on top of routing.
+                uint32_t mcHopR = 0;   // (1.12.266)
                 if (zinfo->hierarchy.mcStandalone) {
-                    totalLat += mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
+                    mcHopR = mcHopLatency(targetUnit, req.cycle, req.srcId, (req.type == PUTX) || (req.type == GETX && getxIsStore_));
+                    totalLat += mcHopR;
                 }
+                /* (1.12.266): memory.write_buffer_entries -- a write inside the element's group (memory.local_path garnet /
+                 * garnet_bus) is posted at the element's controller, as on the analytical path; its request and its
+                 * ack still travel the network and the bank is booked at the request's arrival */
+                if (deferBank && isWrite && zinfo->hierarchy.writeBufferEntries && isLocal(targetUnit))
+                    totalLat = postWrite(req, req.cycle, req.cycle + totalLat) + localLinkLat_ + mcHopR;
                 noteRowAccess(targetUnit, req.lineAddr);   // 1.11.52 (D003)
             roiInc(profRemoteAccesses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
                 roiInc(profRemoteLatency_, totalLat);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
@@ -1565,6 +1705,21 @@ public:
         s->append(&profBudgetWaits_);
         profBudgetWaitCycles_.init("budgetWaitCycles", "Cycles writes were held by the device write-power budget");
         s->append(&profBudgetWaitCycles_);
+        if (zinfo->hierarchy.writeBufferEntries) {   // (1.12.266): posted writes (memory.write_buffer_entries)
+            profWbPosted_.init("wbPosted", "Writes acknowledged from the element controller's write buffer");
+            s->append(&profWbPosted_);
+            profWbFull_.init("wbFull", "Posted writes that found the write buffer full");
+            s->append(&profWbFull_);
+            profWbFullCycles_.init("wbFullCycles", "Cycles posted writes waited for a free write-buffer entry");
+            s->append(&profWbFullCycles_);
+        }
+        if (zinfo->hierarchy.writeBufferEntries && pimid::debugChecks()) {   // (1.12.266): read forwarding and read priority
+            wbDbg_ = true;
+            profWbFwd_.init("wbFwdReads", "Reads answered from the write buffer (a buffered write held the line)"); s->append(&profWbFwd_);
+            profWbPrio_.init("wbPrioReads", "Reads served ahead of posted writes waiting for their bank"); s->append(&profWbPrio_);
+            profWbPrioCycles_.init("wbPrioPushCycles", "Cycles those posted writes were pushed back"); s->append(&profWbPrioCycles_);
+            profWbKept_.init("wbKept", "Posted writes that kept their place at the 80% mark"); s->append(&profWbKept_);
+        }
         dqStats_.initStats(s);
         parentStat->append(s);
     }
@@ -1664,10 +1819,14 @@ protected:
         std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> acc;
         std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> frozen;
         std::map<uint64_t, std::unordered_map<uint32_t, uint64_t>> srcAcc, srcFrozen;   // (1.12.264): which elements used the bank
+        std::map<uint64_t, std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>> accR, frozenR;   // (1.12.266): the reads among them (posted writes)
     };
     static BankShare& bankShare() { static BankShare s; return s; }
-    /* Called under bankLock_. Returns the wait (cycles) for the other elements' use of bank u. */
-    double sharedBankWait(uint32_t u, double occ, const MemReq& req) {
+    /* Called under bankLock_. Returns the wait (cycles) for the other elements' use of bank u. cls (1.12.266): -1 one class
+     * (first come, first served); with posted writes (memory.write_buffer_entries) 0 for a read, 1 for a write: the
+     * bank serves reads first, so the wait is the non-preemptive two-class priority queue's, a read's
+     * R / (1 - rho_r) and a write's R / ((1 - rho_r)(1 - rho)), R = sum over the classes of rho_i S_i / 2. */
+    double sharedBankWait(uint32_t u, double occ, const MemReq& req, int cls = -1) {
         if (!cutPricing() || !zinfo->hierarchy.mpiNocBaselined) return 0.0;
         const uint32_t E = zinfo->garnetNetwork
             ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
@@ -1692,6 +1851,7 @@ protected:
         BankShare& sh = bankShare();
         futex_lock(&sh.lk);
         { auto& a = sh.acc[k][u]; a.first += om; a.second += 1; }
+        if (cls == 0) { auto& a = sh.accR[k][u]; a.first += om; a.second += 1; }   // (1.12.266)
         sh.srcAcc[k][u] |= (1ull << (req.srcId % 64));
         while (!sh.acc.empty() && sh.acc.begin()->first < done) {
             auto it = sh.acc.begin();
@@ -1702,6 +1862,11 @@ protected:
                 sh.srcAcc.erase(im);
             }
             sh.acc.erase(it);
+        }
+        while (!sh.accR.empty() && sh.accR.begin()->first < done) {   // (1.12.266)
+            auto it = sh.accR.begin();
+            if (!sh.frozenR.count(it->first)) sh.frozenR[it->first] = std::move(it->second);
+            sh.accR.erase(it);
         }
         if (k >= lag) {
             const uint64_t want = k - lag;
@@ -1721,6 +1886,12 @@ protected:
                 }
             }
         }
+        uint64_t tro = 0, trn = 0;   // (1.12.266): the device's reads of bank u in that epoch
+        if (have && cls >= 0) {
+            auto it = sh.frozenR.find(r);
+            if (it != sh.frozenR.end()) { auto f = it->second.find(u); if (f != it->second.end()) { tro = f->second.first; trn = f->second.second; } }
+        }
+        while (sh.frozenR.size() > 64) sh.frozenR.erase(sh.frozenR.begin());
         uint64_t src = 0;
         if (have) {
             auto im = sh.srcFrozen.find(r);
@@ -1739,6 +1910,13 @@ protected:
             }
         }
         while (bankOwn_.size() > 72) bankOwn_.erase(bankOwn_.begin());
+        uint64_t oro = 0, orn = 0;   // (1.12.266): this interface's own reads of bank u in that epoch
+        if (cls == 0) { auto& b = bankOwnR_[k][u]; b.first += om; b.second += 1; }
+        if (have && cls >= 0) {
+            auto e = bankOwnR_.find(r);
+            if (e != bankOwnR_.end()) { auto f = e->second.find(u); if (f != e->second.end()) { oro = f->second.first; orn = f->second.second; } }
+        }
+        while (bankOwnR_.size() > 72) bankOwnR_.erase(bankOwnR_.begin());
         if (!have || tn <= on || to <= oo) return 0.0;
         const double O = (double)(to - oo) / 1000.0;
         const double n = (double)(tn - on);
@@ -1748,7 +1926,16 @@ protected:
         if (M < 1) M = 1;
         const double No = (double)__builtin_popcountll(src & ~(1ull << (req.srcId % 64)));
         const double bound = No * (double)M * S;
-        const double md1 = (rho < 1.0) ? rho * S / (2.0 * (1.0 - rho)) : bound;
+        double md1 = (rho < 1.0) ? rho * S / (2.0 * (1.0 - rho)) : bound;
+        if (cls >= 0) {   // (1.12.266): reads first (posted writes)
+            const double Or = (tro > oro) ? (double)(tro - oro) / 1000.0 : 0.0;
+            const double nr = (trn > orn) ? (double)(trn - orn) : 0.0;
+            const double Ow = (O > Or) ? O - Or : 0.0, nw = (n > nr) ? n - nr : 0.0;
+            const double rr = Or / (double)epochLen;
+            const double R = ((nr > 0.0 ? Or * Or / nr : 0.0) + (nw > 0.0 ? Ow * Ow / nw : 0.0)) / (2.0 * (double)epochLen);
+            if (cls == 0) md1 = (rr < 1.0) ? R / (1.0 - rr) : bound;
+            else md1 = (rho < 1.0 && rr < 1.0) ? R / ((1.0 - rr) * (1.0 - rho)) : bound;
+        }
         const double w = (md1 < bound) ? md1 : bound;
         if (shStats_ && w > 0.0) {
             roiInc(profShWaits_); roiInc(profShWaitCycles_, (uint64_t)(w + 0.5));
@@ -2008,14 +2195,50 @@ protected:
             const double arrive = (arriveAt != ~0ull) ? (double)arriveAt : (double)req.cycle;   // (1.12.257)
             futex_lock(&bankLock_);
             double& fr = bankFree_[u];
-            double start = (fr > arrive) ? fr : arrive;
-            start += sharedBankWait(u, occ, req);   // (1.12.242): the other elements' use of the bank
+            /* (1.12.266): memory.write_buffer_entries -- a posted write is booked after everything at its bank and waits; a
+             * read (or a write the controller does not post) is booked after the bank's committed work only, ahead of
+             * the waiting writes, which start after it */
+            const bool wbOn = zinfo->hierarchy.writeBufferEntries > 0;
+            WbBank* wbb = nullptr;
+            if (wbOn) { wbb = &wbBank_[u]; wbCommit(*wbb, arrive); }
+            const bool post = wbOn && wr && wbPostThis_;
+            wbPostThis_ = false;
+            const double from = (wbOn && !post) ? wbb->fixedEnd : fr;
+            double start = (from > arrive) ? from : arrive;
+            start += sharedBankWait(u, occ, req, wbOn ? (wr ? 1 : 0) : -1);   // (1.12.242): the other elements' use of the bank
             if (wr && writeSlotCycles_ > 0.0) {   // (1.12.114): the write-power budget's slot
                 const double held = (writeSlotFree_ > start) ? writeSlotFree_ - start : 0.0;
                 if (held > 0.0) { start += held; roiInc(profBudgetWaits_); roiInc(profBudgetWaitCycles_, (uint64_t)(held + 0.5)); }
                 writeSlotFree_ = start + writeSlotCycles_;
             }
-            fr = start + occ;
+            if (!wbOn) fr = start + occ;
+            else if (post) {   // (1.12.266): the posted write waits for its bank
+                fr = start + occ;
+                const uint64_t id = wbNext_++;
+                const uint64_t d0 = (uint64_t)(start + occ + 0.5);   // until postWrite gives its completion
+                wb_.emplace(id, WbEntry{req.lineAddr, u, start, start + occ, d0, false});
+                wbByDone_.insert(std::make_pair(d0, id));
+                wbLines_[req.lineAddr]++;
+                wbb->q.push_back(id);
+                wbLast_ = id;
+            } else {   // (1.12.266): ahead of the waiting writes; each starts no earlier than the work before it ends
+                const bool ahead = !wbb->q.empty() && start < fr;   // it would have started behind them
+                double prev = start + occ, pushed = 0.0;
+                wbb->fixedEnd = prev;
+                for (uint64_t id : wbb->q) {
+                    auto it = wb_.find(id);
+                    if (it == wb_.end()) continue;
+                    WbEntry& e = it->second;
+                    if (e.start < prev) {
+                        const double d = prev - e.start;
+                        e.start += d; e.end += d; pushed += d;
+                        wbSetDone(id, e, e.done + (uint64_t)(d + 0.5));
+                    }
+                    prev = e.end;
+                }
+                fr = prev;
+                if (ahead && wbDbg_) { roiInc(profWbPrio_); if (pushed > 0.0) roiInc(profWbPrioCycles_, (uint64_t)(pushed + 0.5)); }
+            }
             futex_unlock(&bankLock_);
             const uint32_t bw = (uint32_t)(start - arrive + 0.5);
             if (bw > 0) { roiInc(profBankWaits_); roiInc(profBankWaitCycles_, bw); }

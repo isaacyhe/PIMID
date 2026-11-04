@@ -686,6 +686,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.treeUnitDiv = config.get<uint32_t>("sys.hierarchy.treeUnitDiv", 1);
         zinfo->hierarchy.localBusCycles = config.get<uint32_t>("sys.hierarchy.localBusCycles", 0);
         zinfo->hierarchy.localBusWidthBits = config.get<uint32_t>("sys.hierarchy.localBusWidthBits", 0);
+        zinfo->hierarchy.writeBufferEntries = config.get<uint32_t>("sys.hierarchy.writeBufferEntries", 0);   // (1.12.266)
         zinfo->hierarchy.treeFullLeaves = config.get<uint32_t>("sys.hierarchy.treeFullLeaves", 0);     // (1.12.258)
         zinfo->hierarchy.routeAllAccesses = config.get<uint32_t>("sys.hierarchy.routeAllAccesses", 0);
         zinfo->hierarchy.localPathPortBits = config.get<uint32_t>("sys.hierarchy.localPathPortBits", 0);
