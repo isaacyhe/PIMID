@@ -87,6 +87,7 @@ comments and in the changelog.
 | DDR3 default part (1.12.19, user rulings 2026-10-24) | 4 Gb x8 DDR3-1600 at VDD = VDDQ = 1.5 V, SSTL-15; DDR3L 1.35 V selectable (`memory.dram.ddr3_variant`) | Micron MT41K 4Gb_DDR3L Rev. R Table 20 p.44 "Die Rev. E for 1.35/1.5V Operation" = MT41J 4 Gb automotive DDR3 Rev. B Table 20 p.44 (identical x8 1600 column); JESD79-3E Tables 22/38/41, Figure 10 | Org DDR3_4Gb_x8 (was DDR3_8Gb_x8 against 4 Gb currents) |
 | DDR3 tRFC (1.12.25) | 260 ns default (`trfc_basis: datasheet`), 300 ns (`jedec`) | MT41K Rev. R Table 58 p.86 "tRFC - 4Gb MIN = 260"; JESD79-3E Table 61 p.158 | Timing (Ramulator tRFC override) and refresh energy; was 350 ns (the 8 Gb value) |
 | Array fraction of die | BLSA 8-15%, LWD 5-10% (structure statement) | Vogelsang, MICRO 2010 | on-pitch boundary rationale (L116/N1) |
+| SRAM 6T cell area per CACTI node (1.12.263) | 22 nm 190 F^2 (0.092 um^2), 32 nm 167 F^2 (0.171 um^2), 45 nm 171 F^2 (0.346 um^2), 65 nm 135 F^2 (0.57 um^2), 90 nm 123 F^2 (1.0 um^2), 180 nm 118 F^2 (3.84 um^2); the same in every device column; the 2-port (CAM) cell and the aspect ratio unchanged | 22 nm: Intel high-density cell, Karl et al., ISSCC 2012 / JSSC 2013; 32 nm: Natarajan et al., IEDM 2008; 45 nm: Mistry et al., IEDM 2007; 65 nm: Intel 4 Mb SRAM (2004); 90 nm: Thompson et al., IEDM 2002; 180 nm: Hargrove et al. (IBM), IEDM 1998 | `external/cacti/tech_params/*.dat` (SRAM -area_cell): every CACTI SRAM array, the caches and the SRAM device arrays |
 
 ## DRAM-process compute (the family + pitch model)
 

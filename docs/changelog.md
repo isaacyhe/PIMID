@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.263 -- an SRAM cell has the area of a published cell at its node
+
+- **The problem.** CACTI's process tables gave the 6T SRAM cell 146 F^2 at every node, from 180 nm to 22 nm. At 22 nm that is 0.071 um^2, denser than any published 22 nm cell (the densest, Intel's high-density cell, is 0.092 um^2 = 190 F^2), so every SRAM array came out too small: a 64 KB SRAM device bank was 215 F^2 per bit, below every published macro of its size (248-404 F^2 per bit).
+- **The fix** (external/cacti/tech_params). Each node's SRAM cell takes a published 6T cell at that node, expressed in F^2 as the table states it: 22 nm 190 (0.092 um^2), 32 nm 167 (0.171 um^2), 45 nm 171 (0.346 um^2), 65 nm 135 (0.57 um^2), 90 nm 123 (1.0 um^2), 180 nm 118 (3.84 um^2). Sources are in docs/sources.md. The aspect ratio and the 2-port (CAM) cell are unchanged, and a node between two tables interpolates between their cells as before.
+- **Data impact** (against 1.12.262; the corpus is at 22 nm, the DDR3 devices' logic at 32 nm):
+  - Timing: the SRAM arrays CACTI times are slower by the larger cell. An SRAM device bank is read in 0.325 ns instead
+    of 0.293 ns; a PE scratchpad (4 KB) in 0.1018 ns instead of 0.0972 ns at 22 nm (0.1927 instead of 0.1889 at 32 nm).
+    Cache latencies come from the cache records and do not change: the 40 host baselines keep their run times. Device
+    run times move -3.0% to +3.4% (median +0.03%; 82 of the 135 device message-passing smoke cells within 0.1%), the
+    sub-cycle scratchpad change reaching the run time through the DRAM epoch replay's request order.
+  - SRAM devices: a bank is 265 F^2 per bit instead of 215; read energy 13.89 pJ per access instead of 12.51; leakage per Mb unchanged; run time -0.4% to +0.1% and energy -0.2% to +0.2% on the 10 SRAM
+    cells of the figure set at smoke size.
+  - Caches: area and power follow the larger cell (cache latencies come from the cache records and do not change). Host baselines: host area +10.9% to +15.5% (4 cores: 101.1 mm^2 -> 116.8 mm^2), host chip power
+    +0.8% to +2.2% (L2 leakage +0.2%, L3 leakage +0.3% to +0.8%).
+  - Device cells: system power -1.9% to +0.9% and energy -2.1% to +2.9%, from the PE caches and scratchpads and the
+    run-time shifts above.
+
 ## 1.12.262 -- every router is priced at its own port count, past 16 ports too
 
 - **The problem.** The power model's router classes stopped at 16 ports: the census of the routers by port count

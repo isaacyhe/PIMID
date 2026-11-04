@@ -53,7 +53,7 @@ parameters cell_type hp  lstp   lop  lp-dram   comm-dram
 -Wmemcella (um) 0 1.31 1.31 1.31 1.31 1.31
 -Wmemcellpmos (um) 0 1.23 1.23 1.23 1.23 1.23
 -Wmemcellnmos (um) 0 2.08 2.08 2.08 2.08 2.08
--area_cell (um^2) 0 146 146 146 146 146
+-area_cell (um^2) 0 171 171 171 171 171
 -asp_ratio_cell (-) 0 1.46 1.46 1.46 1.46 1.46
 
 CAM

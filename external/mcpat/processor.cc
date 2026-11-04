@@ -834,8 +834,9 @@ Processor::Processor(ParseXML *XML_interface)
        *
        * 1.11.54 (audit E002, user-ruled): the earlier wording justified this
        * with "CELL area CACTI's tables declare device-independent". That
-       * MISREADS the tables. area_cell is 146 (292 for the 2-port cell) in
-       * EVERY device column at EVERY node -- because it is expressed in F^2,
+       * MISREADS the tables. area_cell is the same in EVERY device column of a
+       * node (a published 6T cell per node; 292 for the 2-port cell) -- because
+       * it is expressed in F^2,
        * the ITRS convention -- not because a periphery device leaves an SRAM
        * cell unchanged. CACTI simply carries no data for "SRAM built in a
        * DRAM periphery process".
@@ -843,7 +844,7 @@ Processor::Processor(ParseXML *XML_interface)
        * Physically an SRAM cell in DRAM periphery DOES suffer: it is six
        * ordinary transistors, and on a periphery process those are the
        * thick-oxide, long-channel, relaxed-rule devices whose larger F the
-       * l_phy ratio measures. area_cell = 146*F^2 evaluated at the periphery
+       * l_phy ratio measures. area_cell (in F^2) evaluated at the periphery
        * F IS the fa scaling -- so applying fa to the core's arrays is not an
        * over-reach; it is the same statement CACTI's own cell model makes.
        * fa therefore stays on the WHOLE core, arrays included.
