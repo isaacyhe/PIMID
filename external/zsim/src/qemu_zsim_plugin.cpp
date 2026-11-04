@@ -2236,6 +2236,11 @@ void EndOfPhaseActions() {
             const uint64_t cyc = co->getCycles();
             uint64_t rr = g_cosim_mode ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
+            /* (1.12.270): a device PE that has not run since its ROI origin bounds nothing. In a co-simulation its axis
+             * starts at the doorbell (spDevShift), so its stopped clock reads the doorbell, not 0, and a PE no thread
+             * runs on (a serial kernel's other PEs) held the cut there for the whole ROI. A device run has no shift:
+             * there this is the rr == 0 test below. */
+            if (g_spCut && co->wakeStampable() && PEMemoryInterface::cutRoiRelOwn(c, co->pimidRawCycle()) == 0) continue;
             else if (g_mpi_thread_mode && (st == 1 || st == 4) && g_cutFrozenRr[c] < rr) rr = g_cutFrozenRr[c];   // (1.12.178): the clock it resumes at
             if (g_mpi_thread_mode && g_setFrozen[c].load(std::memory_order_acquire) && g_setFloor > rr) rr = g_setFloor;   // (1.12.216): it waits for its settlement
             if (rr == 0) continue;       // baselined but no ROI traffic yet
@@ -5857,6 +5862,12 @@ static void cosimRoiBeginOffload(uint32_t tid) {
         uint32_t cid = cids[tid];
         if (cid != INVALID_CID && cid != UNINITIALIZED_CID) {
             if (g_detOrder && detActive() && tid < MAX_THREADS) { if (!g_detCredit[tid].exchange(1)) g_detPending.fetch_add(1); }   // (1.12.123): its re-join is awaited
+            /* (1.12.270): the host core the doorbell thread leaves keeps the clock it stopped at and no thread runs on it
+             * in the window, so it is VACATED (out of the consistent cut until a thread binds to it again, setCid), as
+             * detachThreadForMigration marks every other move onto the device. Left ACTIVE it held a single-process
+             * cut at the doorbell for the whole ROI: the device records, stamped past the doorbell (spDevShift), were
+             * folded only at the end, so every device access kept the bootstrap price and no balance was applied. */
+            if (g_spCut && cid < MAX_THREADS) g_coreRoiState[cid].store(3, std::memory_order_release);
             zinfo->sched->leave(procIdx, tid, cid);
         }
         zinfo->sched->finish(procIdx, tid);

@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.270 -- a single-process co-simulation's device side prices and reconciles its DRAM accesses from the replay, as a device run does
+
+- **The problem.** In a co-simulation whose device side runs in one process (an OpenMP or serial kernel), the host
+  thread that rings the offload doorbell moves onto a device processing element and its host core keeps the clock it
+  stopped at. That move left the host core in the consistent cut, so the core held the cut at the doorbell for the
+  whole region of interest. The device's DRAM records, stamped past the doorbell, were folded only at the end: every
+  device access kept the analytical bootstrap price (a store paid a read's), no measured-minus-charged balance was
+  applied or refunded at the phase barriers, and at the end only the largest positive balance of one element raised
+  the run time. A processing element no thread runs on (every element but one under a serial kernel) held the cut
+  the same way: its axis starts at the doorbell, so its stopped clock read the doorbell.
+- **The fix.** The host core the doorbell thread leaves is marked vacated, as every other move onto the device marks
+  it, so it is out of the cut until a thread runs on it again; an element that has not run since its ROI origin is
+  out of the cut as in a device run (judged on its own clock, without the doorbell offset). The cut then follows the
+  processing elements that run: their
+  records fold at the phase barriers, the replay prices them after the bootstrap epochs, and each element's balance
+  is applied or refunded at every phase barrier, as in a device run.
+- **Data impact.** Single-process co-simulations change: their device side is now priced and reconciled from the
+  replay. On small HBM3 OpenMP co-simulations (16 host cores) the run time moves by +5.4 % (gemv), -23.1 % (bfs)
+  and -9.9 % (stencil); a serial device kernel by +0.6 % (16 host cores) and +4.1 % (one host core); checksums are
+  unchanged. Device runs, message-passing co-simulations and host-only runs are unchanged, bit for bit: they take
+  neither path (a device run has no doorbell offset, so the element test is the existing one).
+
 ## 1.12.269 -- the DDR5 part record prices the die each grade runs on: the 16 Gb die Rev A at 4800 and 3200, the 16 Gb die Rev D at 5600
 
 - **The problem.** The DDR5 record describes the Micron 16 Gb part: its organisation and timing presets and every

@@ -672,6 +672,12 @@ public:
         const int64_t v = (int64_t)cyc - roiOriginOf(c);
         return v > 0 ? (uint64_t)v : 0;
     }
+    /* (1.12.270): a device PE's ROI-relative clock on its own origin, without a co-simulation's doorbell shift: 0 while the
+     * PE has not run since its ROI origin (the consistent cut skips it, as it skips any core with no ROI traffic yet) */
+    static uint64_t cutRoiRelOwn(uint32_t srcId, uint64_t cycle) {
+        const uint64_t o = spOriginOf(srcId);
+        return (cycle > o) ? cycle - o : 0;
+    }
     static uint64_t cutRoiRel(uint32_t srcId, uint64_t cycle) {
         if (!singleProcCut()) return perCoreRoiRel(srcId, cycle);
         Core* co = (srcId < zinfo->numCores) ? zinfo->cores[srcId] : nullptr;
