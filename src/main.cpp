@@ -9725,6 +9725,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         const std::string& mt = config.memory_tech;
         uint32_t row_bytes = 0;
         uint32_t row_stride = 0;
+        uint64_t row_rows = 0;   // (1.12.268): the preset's rows per bank (the one row rule's fold)
         std::string stride_why;
         const bool is_dram = (mt == "DDR3" || mt == "DDR4" || mt == "DDR5" ||
                               mt == "LPDDR5" || mt == "GDDR6" || mt == "HBM2" || mt == "HBM3");
@@ -9739,6 +9740,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                     row_bytes = static_cast<uint32_t>(po.rowBytes());
                     const int dev = rb.getDevicesPerAccess();
                     row_stride = static_cast<uint32_t>(rb.getRowStrideBytes());
+                    row_rows = rb.getPresetRowsPerBank();
                     std::ostringstream w;
                     const int split = dramPeChipSplit(config, mt);   // 1.12.18
                     if (split > 1) {
@@ -9758,6 +9760,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                           << "); the row-miss measurement will be disabled (0)." << std::endl;
                 row_bytes = 0;
                 row_stride = 0;
+                row_rows = 0;
             }
             std::cout << "  [mem] DRAM row (page) size: " << row_bytes
                       << " B, from preset organization (cols x dq / 8); row stride across "
@@ -9767,6 +9770,7 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         }
         out << "        dramRowBytes = " << row_bytes << ";\n";
         out << "        dramRowStrideBytes = " << row_stride << ";\n";   // 1.11.91
+        out << "        dramRowsPerBank = " << row_rows << ";\n";   // (1.12.268): the PE row count folds onto the replay's rows
         {   // 1.12.20: precharge power-down in the replayed controller
             double pd_ns = 0.0; int pd_nck = 0; std::string pd_src;
             const bool pd = is_dram && config.mem_power_down && dramPdTxp(config, mt, pd_ns, pd_nck, pd_src);

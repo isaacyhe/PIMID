@@ -172,6 +172,13 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         Ramulator::IDRAM* d = sys_->get_ifce<Ramulator::IDRAM>();
         counts_.assign(d->m_organization.count.begin(), d->m_organization.count.end());
         rowIdx_ = d->m_levels("row");
+        /* (1.12.268): the PE row count folds a row number onto the rows per bank the emitter sent; the composition
+         * below folds it onto this organisation's. One row rule needs one count. */
+        if (!hostOnly_ && zinfo->hierarchy.dramRowsPerBank > 0 &&
+            (uint64_t)std::max(1, counts_[rowIdx_]) != (uint64_t)zinfo->hierarchy.dramRowsPerBank)
+            panic("DramEpochReplay %s: the replayed organisation has %d rows per bank, the PE row model %u "
+                  "(sys.hierarchy.dramRowsPerBank): the two must name one part", name, counts_[rowIdx_],
+                  zinfo->hierarchy.dramRowsPerBank);
         colIdx_ = (int)counts_.size() - 1;
         const int prefetch = (d->m_internal_prefetch_size > 0) ? d->m_internal_prefetch_size : 1;
         colCount_ = (uint64_t)std::max(1, counts_[colIdx_] / prefetch);

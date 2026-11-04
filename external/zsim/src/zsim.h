@@ -316,6 +316,10 @@ struct GlobSimInfo {
          * by the emitter from the same rule the array energy uses. 0 = not
          * sent -> the row model claims no measurement. */
         uint32_t dramRowStrideBytes = 0;
+        /* (1.12.268): the rows one DRAM bank holds (the preset organisation's row count, the one the timing replay
+         * instantiates). The PE row count folds a row number onto them as the replay does. 0 = not sent: the
+         * row count keeps the whole row number. */
+        uint32_t dramRowsPerBank = 0;
         /* 1.12.20: DRAM precharge power-down in the replayed controller (src/main.cpp resolves the per-technology
          * default and the cited idle timer / tXP): entry after dramPdIdleClocks memory clocks idle, exit tXP =
          * max(dramPdTxpNck, dramPdTxpNs). */

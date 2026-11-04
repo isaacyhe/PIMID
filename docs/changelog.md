@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.268 -- one rule decides a DRAM row: the processing element's row count folds a row number onto the bank's rows as the timing replay does
+
+- **The problem.** Two places decided which DRAM row an address lives in: the replayed controller that times
+  every access, and the processing element's memory interface, which counts row hits and misses (`rowHits`,
+  `rowMisses`). The replay takes the row number modulo the bank's row count (the preset organisation's rows per
+  bank); the count compared the whole number. Two addresses in one bank exactly a bank's worth of rows apart
+  (64 MB on the default DDR5 part: 65 536 rows of 1 KB) were one row to the timing and two rows to the count, so
+  one access was timed as a row-buffer hit and counted as an activation.
+- **The fix.** One rule gives the bank slot and the row of an address for the row count, for the records the
+  replay times and for the host's accesses to the device array, and it folds the row number onto the bank's rows
+  as the replay does. The configuration sends the rows per bank (`sys.hierarchy.dramRowsPerBank`, from the preset
+  organisation), and the replay refuses to start when its own organisation holds a different count.
+- **When rows fold.** A row number passes a bank's row count only when the footprint is larger than the memory
+  of the processing elements it is laid out on, so the layout laps onto the same banks. The interface then prints
+  one line naming the two rows that met, and `rowFoldHits` counts the hits the fold gives (they are in `rowHits`
+  too).
+- **Data impact.** Timing and energy are unchanged: the replay already folded the row, and the activate energy is
+  charged from the activations the replayed controller issues (`power.models.dram_activates_counted`, on by
+  default). Only `rowHits` and `rowMisses` of a run whose layout laps move, to agree with the replay; with
+  `power.models.dram_activates_counted: false` the row-miss fraction those counts give prices the array.
+
 ## 1.12.267 -- the documentation is checked against the code and reads as plain design statements
 
 - **Checked against the code.** Every public document was compared with the code (configuration keys and

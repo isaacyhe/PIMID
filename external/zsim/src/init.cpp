@@ -744,6 +744,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.slotRowBytes = config.get<uint32_t>("sys.hierarchy.slotRowBytes", 0);   // (1.12.256)
         zinfo->hierarchy.dramRowBytes = config.get<uint32_t>("sys.hierarchy.dramRowBytes", 0);  // 1.11.52 (D003)
         zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91
+        zinfo->hierarchy.dramRowsPerBank = config.get<uint32_t>("sys.hierarchy.dramRowsPerBank", 0);  // (1.12.268)
         zinfo->hierarchy.dramPowerDown = config.get<bool>("sys.hierarchy.dramPowerDown", false);   // 1.12.19
         zinfo->hierarchy.dramPdIdleClocks = config.get<uint32_t>("sys.hierarchy.dramPdIdleClocks", 64);
         zinfo->hierarchy.dramPdTxpNck = config.get<uint32_t>("sys.hierarchy.dramPdTxpNck", 0);

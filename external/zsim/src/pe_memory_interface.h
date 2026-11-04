@@ -343,6 +343,9 @@ protected:
     std::vector<uint64_t> lastRow_;
     uint64_t rowStrideBytes_ = 0;     // system bytes one ACT makes resident
     uint32_t rowSlotsPerUnit_ = 1;    // independent open rows inside one unit
+    uint64_t rowsPerBank_ = 0;        // (1.12.268): rows one bank holds; a row number folds onto them (0 = no fold)
+    Counter profRowFoldHits_;         // (1.12.268): row hits that exist only because two rows folded onto one
+    std::atomic<bool> rowFoldSaid_{false};
     bool getxIsStore_ = false;        // 1.11.97: the cacheless ALU element issues GETX for stores
   public:
     void setGetxIsStore(bool v) { getxIsStore_ = v; }
@@ -1673,6 +1676,8 @@ public:
         s->append(&profRowHits_);
         profRowMisses_.init("rowMisses", "Accesses opening a different row (measured)");
         s->append(&profRowMisses_);
+        profRowFoldHits_.init("rowFoldHits", "Row hits on a row two address ranges share: their row numbers are a bank's row count apart and fold onto one row, as in the timing replay (counted in rowHits too)");
+        s->append(&profRowFoldHits_);
         profFtPages_.init("ftPages", "4 KB pages first touched by this PE in the ROI, placed in its memory (1.12.18; pre-ROI initialisation claims are not counted)");
         s->append(&profFtPages_);
         profLocalAccesses_.init("localAcc", "Local accesses (within coverage)");
@@ -2086,9 +2091,8 @@ protected:
             const uint32_t unit = addrToUnit(req.lineAddr);
             uint32_t slot = 0; uint64_t row;
             if (rowStrideBytes_ > 0) {
-                const uint64_t stripe = (uint64_t)(req.lineAddr << 6) / rowStrideBytes_;
-                slot = (uint32_t)(stripe % rowSlotsPerUnit_);
-                row = stripe / rowSlotsPerUnit_;
+                uint64_t whole;
+                rowOf((uint64_t)req.lineAddr << 6, slot, row, whole);   // (1.12.268): the one row rule
             } else {
                 row = (uint64_t)(req.lineAddr << 6) / 1024;   // no row model armed: 1 KB rows, stated
             }
@@ -2350,18 +2354,45 @@ protected:
      * one, and the two Counters on this path are already incremented without a
      * lock. 1.12.18: they are atomic now (atomicInc), as every
      * PE-MI counter: shared interfaces lost counts under parallel bound phases. */
+    /* (1.12.268): THE ONE ROW RULE. The bank slot and row of a byte address, for the row count (noteRowAccess), the
+     * timing replay's records and the host's accesses to the device array (hostTarget). The stripe is the
+     * system bytes one ACT makes resident; a unit coarser than a bank spreads consecutive stripes over its
+     * banks; the row number folds onto the bank's rows, as the replay's address composition does
+     * (DramEpochReplay::composeAddr takes it modulo the organisation's rows per bank). Two places used to
+     * decide the row: the replay folded the number and this count did not, so two addresses in one bank a
+     * bank's worth of rows apart (64 MB on the default DDR5 part, 65 536 rows of 1 KB) were one row to the
+     * timing and two to the count: one access was timed as a row hit and counted as an activation. `whole`
+     * is the unfolded number, kept to recognise a hit that only the fold gives. */
+    inline void rowOf(uint64_t byteAddr, uint32_t& slot, uint64_t& row, uint64_t& whole) const {
+        const uint64_t stripe = byteAddr / rowStrideBytes_;
+        slot = (uint32_t)(stripe % rowSlotsPerUnit_);
+        whole = stripe / rowSlotsPerUnit_;
+        row = rowsPerBank_ ? whole % rowsPerBank_ : whole;
+    }
+
     inline void noteRowAccess(uint32_t unit, Address lineAddr) {
         if (rowStrideBytes_ == 0 || lastRow_.empty()) return;
-        const uint64_t stripe = (uint64_t)(lineAddr << 6) / rowStrideBytes_;
-        const uint32_t bank = (uint32_t)(stripe % rowSlotsPerUnit_);
-        const uint64_t row = stripe / rowSlotsPerUnit_;
+        uint32_t bank; uint64_t row, whole;
+        rowOf((uint64_t)lineAddr << 6, bank, row, whole);
         const size_t slot = (size_t)unit * rowSlotsPerUnit_ + bank;
         if (slot >= lastRow_.size()) return;   // out-of-range unit: claim nothing
-        if (__atomic_load_n(&lastRow_[slot], __ATOMIC_RELAXED) == row) {
+        /* the register holds the whole number of the open row (~0ull = none yet); a hit compares the folded rows */
+        const uint64_t last = __atomic_load_n(&lastRow_[slot], __ATOMIC_RELAXED);
+        if (last != ~0ull && (rowsPerBank_ ? last % rowsPerBank_ : last) == row) {
             roiInc(profRowHits_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
+            if (last != whole) {   // (1.12.268): a hit only the fold gives
+                roiInc(profRowFoldHits_);
+                __atomic_store_n(&lastRow_[slot], whole, __ATOMIC_RELAXED);
+                if (!rowFoldSaid_.exchange(true, std::memory_order_relaxed))
+                    info("[%s] row model: rows %lu and %lu of one bank fold onto its row %lu of %lu: the layout "
+                         "laps the processing elements' memory (the footprint is larger than it), so ranges a bank's "
+                         "row count apart share a row; the timing replay folds them the same way (rowFoldHits counts "
+                         "these hits)", name_.c_str(), (unsigned long)last, (unsigned long)whole, (unsigned long)row,
+                         (unsigned long)rowsPerBank_);
+            }
         } else {
             roiInc(profRowMisses_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            __atomic_store_n(&lastRow_[slot], row, __ATOMIC_RELAXED);
+            __atomic_store_n(&lastRow_[slot], whole, __ATOMIC_RELAXED);
         }
     }
 
@@ -2431,6 +2462,7 @@ protected:
             return;
         }
         rowStrideBytes_ = (uint64_t)stride;
+        rowsPerBank_ = zinfo->hierarchy.dramRowsPerBank;   // (1.12.268): 0 (not sent) keeps the whole row number
 
         const uint32_t bpg = (zinfo->hierarchy.banksPerBG > 0)
                              ? zinfo->hierarchy.banksPerBG : 1u;
@@ -2542,9 +2574,8 @@ protected:
         if (!placed && totalUnits_ > 0) unit = page % totalUnits_;
         slot = 0;
         if (rowStrideBytes_ > 0) {
-            const uint64_t stripe = byteAddr / rowStrideBytes_;
-            slot = (uint32_t)(stripe % rowSlotsPerUnit_);
-            row = stripe / rowSlotsPerUnit_;
+            uint64_t whole;
+            rowOf(byteAddr, slot, row, whole);   // (1.12.268): the one row rule
         } else {
             row = byteAddr / 1024;   // no row model armed: 1 KB rows, as localAccessLatency states
         }
